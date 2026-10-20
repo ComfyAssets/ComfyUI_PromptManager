@@ -19,7 +19,7 @@ main.library-main { --library-positive: #73dda9; }
 .library-main .library-card-title h2 { margin: 0; font-size: 16px; font-weight: 600; min-inline-size: 0; overflow-wrap: anywhere; }
 .library-main .library-title-link { color: var(--ca-text); text-decoration: none; }
 .library-main .library-title-link:hover { color: var(--ca-accent); }
-.library-main .library-card-prompts .prompt-block { margin: 0; padding-block: 10px 0; }
+.library-main .library-card-prompts .prompt-section { margin: 0; padding-block: 10px 0; }
 .library-main .library-card-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-size: 10px; color: var(--ca-muted); }
 .library-main .library-chip { display: inline-block; max-inline-size: 100%; padding: 3px 8px; border: 1px solid var(--ca-line); border-radius: 4px; font-size: 10px; color: var(--ca-muted); background: var(--ca-field); overflow-wrap: anywhere; }
 .library-main .library-chip-negative { color: var(--ca-error-text); border-color: color-mix(in srgb, var(--ca-error) 35%, var(--ca-line)); }
@@ -95,7 +95,7 @@ main.library-main { --library-negative: #ff8c98; }
 .recorded-run-facts dd { margin: 4px 0 0; white-space: pre-wrap; }
 .recorded-run-anchors, .recorded-run-mode { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 18px; }
 .recorded-run-dialog [aria-pressed="true"] { outline: 2px solid var(--ca-focus); outline-offset: 2px; }
-.recorded-run-dialog :where(.muted, .prompt-source, .recorded-output-status) { font-size: 11px; line-height: 1.65; }
+.recorded-run-dialog :where(.muted, .recorded-output-status) { font-size: 11px; line-height: 1.65; }
 .recorded-provenance { border-block-start: 1px solid var(--ca-line); padding-block-start: 12px; margin-block: 18px; }
 .recorded-provenance summary { cursor: pointer; }
 .recorded-run-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-inline-size: 100%; }

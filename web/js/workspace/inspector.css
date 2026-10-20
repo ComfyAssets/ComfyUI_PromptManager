@@ -13,9 +13,7 @@
 .file-evidence { color: var(--ca-focus); }
 .file-format { flex-shrink: 0; max-inline-size: 50%; }
 .file-inspector .prompt-inspector { margin-block-start: 15px; }
-.file-inspector .prompt-block { padding-block: 15px 0; margin-block-start: 15px; }
-.file-inspector .prompt-text { margin-block: 8px 0; }
-.file-inspector .prompt-negative { margin-block-end: 12px; }
+.file-inspector .prompt-section.negative { margin-block-end: 12px; }
 .file-vocabulary > p { margin-block: 0 6px; font-size: 10px; }
 .file-vocabulary .file-chip { font-size: 12px; }
 .generation-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-block: 16px; font-size: 11px; }

@@ -107,7 +107,8 @@ test('full inspector shows six facts and scoped provenance',async({page,request}
     expect(await panel.evaluate(node=>node.getBoundingClientRect().width)).toBe(310);
     expect(await panel.locator('.file-inspector-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
     if (!await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
-        const copy=await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).boundingBox();expect(copy.width).toBe(30);expect(copy.height).toBe(26);
+        // The concept's prompt actions (`.prompt-actions button.icon-btn`) measure 31×31 in the mock.
+        const copy=await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).boundingBox();expect(copy.width).toBe(31);expect(copy.height).toBe(31);
         expect((await panel.getByRole('button',{name:'Send prompt pair',exact:true}).boundingBox()).height).toBe(30);
     }
     await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
@@ -124,8 +125,8 @@ test('full inspector shows six facts and scoped provenance',async({page,request}
     }
     await expect(panel).not.toContainText(/Run:|Original file unchanged|Execution recorded/);
     await selectFile(page,'empty.png');await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.getByRole('heading',{name:'empty.png',exact:true})).toBeVisible();
-    await expect(panel.getByRole('button',{name:'Send negative prompt',exact:true})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('link',{name:'Prompt history',exact:true})).toHaveCount(0);
-    await selectFile(page,'explicit-empty.png');await expect(panel).toContainText('Empty negative prompt');await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toHaveCount(1);
+    await expect(panel.getByRole('button',{name:'Send negative prompt to ComfyUI',exact:true})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('link',{name:'Prompt history',exact:true})).toHaveCount(0);
+    await selectFile(page,'explicit-empty.png');await expect(panel.locator('.prompt-section.negative p.prompt-text')).toHaveText('No negative prompt (explicitly empty)');await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toHaveCount(1);
     await selectFile(page,'workflow-only.png');await panel.getByText('File & provenance',{exact:true}).click();
     await expect(panel.getByText('Seed: Configuration evidence · Saved workflow configuration',{exact:true})).toBeVisible();
     if (testInfo.project.name === 'chromium') {
@@ -138,7 +139,7 @@ test('full inspector preserves long role text and exact sends',async({page,reque
     const host=await context.newPage();await host.goto('/prompt_manager/workspace#/overview');
     await host.evaluate(async()=>{const {createBridgeHost}=await import('/prompt_manager/js/shared/toolkit/prompt-bridge.js');const target={id:'pair',label:'Exact pair',type:'PromptManagerPair',roles:['positive','negative']};window.sent=[];window.bridge=createBridgeHost({origin:location.origin,namespace:'/',label:'Exact host',adapter:{listTargets:()=>[target],preview:(_id,roles)=>({preview:{target,fields:Object.entries(roles).map(([role,after])=>({role,before:'',after}))},snapshot:roles}),apply:roles=>{window.sent.push(roles);return{targetId:target.id,values:roles};}}});});
     try {
-        await fullFixture(page,request);const panel=inspector(page);const positive=panel.locator('.prompt-positive .prompt-text');await expect(positive).toContainText('猫 😀');const text=await positive.textContent();expect(text.length).toBeGreaterThan(1000);
+        await fullFixture(page,request);const panel=inspector(page);const positive=panel.locator('.prompt-section.positive .prompt-text');await expect(positive).toContainText('猫 😀');const text=await positive.textContent();expect(text.length).toBeGreaterThan(1000);
         await panel.getByRole('button',{name:'Send prompt pair',exact:true}).click();const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         await expect(sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).locator('option')).toContainText(['Exact host']);
         await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Exact host'});await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Exact pair'});
@@ -190,7 +191,7 @@ test('full inspector keeps long literal content reachable on mobile',async({page
     const literal='<svg onload="window.executed=true"><image href="https://invalid.test/never"/></svg></pre>'+'verylongmodelpath/'.repeat(30);
     let external=0;await page.route('https://invalid.test/**',route=>{external++;return route.abort();});
     await page.route('**/images/inspect/**',async route=>{const response=await route.fetch();const data=await response.json();data.metadata.raw.parameters=literal;data.metadata.record_formats.parameters='original-text';data.metadata.parameters=literal;data.metadata.prompt_graph.value['4'].inputs.ckpt_name=literal;await route.fulfill({response,json:data});});
-    await page.setViewportSize({width:390,height:844});await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.prompt-positive pre')).toContainText('fine geometry and light.');await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).click();await expect(panel).toContainText('Copy unavailable. Select the prompt text to copy it.');
+    await page.setViewportSize({width:390,height:844});await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('fine geometry and light.');await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).click();const fallback=page.getByRole('dialog',{name:'Copy prompt',exact:true});await expect(fallback.getByRole('textbox')).toHaveValue(/^Inspector portrait 猫 😀\nFull prompt context, fine geometry and light\./);await page.keyboard.press('Escape');await expect(fallback).toBeHidden();
     await panel.getByText('Workflow & raw metadata',{exact:true}).click();await expect(panel.locator('pre code').filter({hasText:literal}).last()).toHaveText(literal);await expect(panel.locator('.generation-facts dd').last()).toHaveText(literal);
     for(const zoom of [1,2]) {await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);const footer=panel.getByRole('button',{name:'Send prompt pair',exact:true});await footer.focus();await expect(footer).toBeFocused();const summary=panel.getByText('File & provenance',{exact:true});await summary.focus();await page.keyboard.press('Enter');await expect(panel).toContainText('historical bytes are not verified');}
     expect(await page.evaluate(()=>window.executed)).toBeUndefined();expect(external).toBe(0);
@@ -252,8 +253,8 @@ test.describe('full inspector coarse pointer',()=>{
     test.use({hasTouch:true,viewport:{width:390,height:844}});
     test('full inspector meets coarse target sizes and keeps long content reachable at zoom',async({page,request})=>{
         await fullFixture(page,request);expect(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)).toBe(true);const panel=inspector(page);
-        await expect(panel.locator('.prompt-positive pre')).toContainText('Full prompt context, fine geometry and light.');
-        const fullText=await panel.locator('.prompt-positive pre').textContent();expect(fullText.length).toBeGreaterThan(1000);
+        await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('Full prompt context, fine geometry and light.');
+        const fullText=await panel.locator('.prompt-section.positive p.prompt-text').textContent();expect(fullText.length).toBeGreaterThan(1000);
         await panel.getByText('File & provenance',{exact:true}).click();await panel.getByText('Workflow & raw metadata',{exact:true}).click();
         const bounds=await panel.locator('button,a,summary').evaluateAll(nodes=>nodes.map(node=>({name:node.getAttribute('aria-label')||node.textContent,role:node.matches('.prompt-actions button'),width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height})));
         for(const target of bounds){expect(target.width,target.name).toBeGreaterThanOrEqual(target.role?36:40);expect(target.height,target.name).toBeGreaterThanOrEqual(target.role?36:40);}
@@ -264,7 +265,7 @@ test.describe('full inspector coarse pointer',()=>{
             for(const target of [panel.locator('summary').first(),panel.getByRole('button',{name:'Download metadata JSON',exact:true}),panel.getByRole('link',{name:'Prompt history',exact:true})]) {
                 await target.scrollIntoViewIfNeeded();await target.focus();await expect(target).toBeFocused();await expect(target).toBeInViewport();
             }
-            await expect(panel.locator('.prompt-positive pre')).toHaveText(fullText);
+            await expect(panel.locator('.prompt-section.positive p.prompt-text')).toHaveText(fullText);
         }
         await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const viewer=page.locator('dialog#viewer-dialog');
         await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
@@ -525,9 +526,11 @@ test('slideshow production query and route disposal cancel the active deadline',
 });
 
 test('slideshow interaction visibility sender and disposal clear intent',async({page,request})=>{
+    // A working clipboard keeps the copy action on the toast, so no "Copy prompt" fallback covers the viewer.
+    await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{}}}));
     await slideshowFixture(page,request);const button=slideshowButton(page),modal=mediaDialog(page);
     for(const action of [
-        ()=>modal.locator('.prompt-positive pre').click(),
+        ()=>modal.locator('.prompt-section.positive p.prompt-text').click(),
         ()=>modal.locator('#viewer-details').dispatchEvent('wheel',{deltaY:100}),
         ()=>modal.getByRole('button',{name:'Copy positive prompt',exact:true}).click(),
         async()=>{await modal.getByText('Workflow & raw metadata',{exact:true}).click();await downloadText(page,modal.getByRole('button',{name:'Download metadata JSON',exact:true}));},
@@ -592,7 +595,7 @@ test('full inspector attaches matched theme and mobile evidence with reachable c
         await openCollection(page);const modal=mediaDialog(page),rail=modal.locator('#viewer-details');
         await expect(modal.locator('.viewer-canvas img')).toBeVisible();await expect.poll(()=>modal.locator('.viewer-canvas img').evaluate(node=>node.complete&&node.naturalWidth>0)).toBe(true);
         await modal.evaluate(node=>{node.scrollTop=0;});await capture(`viewer-${label}`,true);
-        await expect(rail.locator('.prompt-negative')).toContainText('blurred edges, watermark');await rail.locator('.generation-facts').scrollIntoViewIfNeeded();await capture(`facts-${label}`,true);
+        await expect(rail.locator('.prompt-section.negative')).toContainText('blurred edges, watermark');await rail.locator('.generation-facts').scrollIntoViewIfNeeded();await capture(`facts-${label}`,true);
         await rail.getByText('File & provenance',{exact:true}).click();await rail.locator('.file-facts').scrollIntoViewIfNeeded();await capture(`provenance-${label}`,true);
         await rail.getByText('Workflow & raw metadata',{exact:true}).click();const raw=rail.locator('pre code').first();await raw.scrollIntoViewIfNeeded();await expect(raw).toBeInViewport();await capture(`raw-${label}`,true);
         const send=rail.getByRole('button',{name:'Send prompt pair',exact:true});await send.focus();await expect(send).toBeInViewport();await send.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await capture(`sender-${label}`);await page.keyboard.press('Escape');await expect(send).toBeFocused();
@@ -640,7 +643,7 @@ test('collection viewer keeps nested dialog focus and route cleanup',async({page
     const send=modal.getByRole('button',{name:'Send prompt pair',exact:true});await send.click();const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
     await expect(sender).toBeVisible();const before=await position(page).textContent();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
     await page.keyboard.press('Escape');await expect(sender).toBeHidden();await expect(modal).toBeVisible();await expect(send).toBeFocused();
-    const text=modal.locator('.prompt-positive pre');await text.focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
+    const text=modal.locator('.prompt-section.positive p.prompt-text');await text.focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
     await modal.getByText('Workflow & raw metadata',{exact:true}).focus();await page.keyboard.press('ArrowLeft');await expect(position(page)).toHaveText(before);
     await modal.getByRole('button',{name:'Next media',exact:true}).click();const key=(await position(page).textContent()).split('loaded: ')[1];
     await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('.media-card.selected .image-open')).toBeFocused();await expect(inspector(page).locator('.file-name')).toHaveText(key);

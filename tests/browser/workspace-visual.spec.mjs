@@ -29,7 +29,7 @@ async function attachEvidence(page, testInfo, name, fullPage = true) {
     const screenshotPath = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.media-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.media-card', '.image-details', '.prompt-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
         const node = document.querySelector(selector);
         if (!node) return [selector, null];
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
@@ -101,7 +101,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         const roles = page.getByRole('region', { name: 'Saved prompt texts', exact: true });
         const positive = roles.getByRole('region', { name: 'Positive prompt', exact: true });
         expect(await positive.evaluate(node => node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
-        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
+        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
         // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
         await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
@@ -125,11 +125,14 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         const viewer = page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
         await expect(viewer.getByRole('region', { name: 'Positive prompt', exact: true })).toContainText(fixture.canonical_positive);
         await expect(viewer.getByRole('region', { name: 'Negative prompt', exact: true })).toContainText(fixture.canonical_negative);
-        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt', 'Send prompt pair']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
+        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI', 'Send prompt pair']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
         await expect(viewer).toContainText('42001');await expect(viewer).toContainText('720');await expect(viewer).toContainText('480');
         const currentPositive = viewer.getByRole('region', { name: 'Positive prompt', exact: true });
         await currentPositive.getByRole('button', { name: 'Copy positive prompt', exact: true }).click();
-        await expect(currentPositive.getByRole('status')).toContainText(/Copied\.|Copy unavailable/);
+        // The concept's copy outcome: the shared toast, or its "Copy prompt" dialog when the clipboard is refused.
+        const copyFallback = page.getByRole('dialog', { name: 'Copy prompt', exact: true });
+        await expect(page.locator('#workspace-toast').filter({ hasText: 'Prompt copied.' }).or(copyFallback)).toHaveCount(1);
+        if (await copyFallback.isVisible()) { await page.keyboard.press('Escape'); await expect(copyFallback).toBeHidden(); }
         await exerciseCurrentPairSend(page, { positive: fixture.canonical_positive, negative: fixture.canonical_negative });
         await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog#viewer-dialog');
         await page.keyboard.press('Escape');await expect(view).toBeFocused();await page.keyboard.press('Escape');await expect(run).toBeFocused();

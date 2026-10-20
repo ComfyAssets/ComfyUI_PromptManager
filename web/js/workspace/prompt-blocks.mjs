@@ -1,30 +1,21 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
 import { createSendButton } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
+import { showWorkspaceToast } from './toast.mjs';
+import { openCopyFallback } from './workspace-dialogs.mjs';
 
 export function promptRoles(prompts) {
     return Object.fromEntries(['positive', 'negative'].filter(role => prompts?.[role]?.status === 'resolved' && typeof prompts[role].text === 'string').map(role => [role, prompts[role].text]));
 }
 
-const sources = {
-    library: 'Saved library prompt',
-    execution: 'Recorded at execution',
-    'graph-inferred': 'Inferred from the saved workflow',
-    'embedded-parameters': 'Embedded generation parameters',
-    'zeroed-conditioning': 'Zeroed conditioning (no negative text)',
-    'saved-association': 'Saved library association',
-};
+// #249 D22: the concept's prompt block (app.js a298–302) carries no source line; a file's evidence is its panel badge
+// (D21) and its "File & provenance" line. Roles without a confirmed text keep these status strings.
 const statuses = {
     absent: 'Not recorded in this file.',
     ambiguous: 'Multiple possible prompts. Source could not be determined.',
     unresolved: 'Prompt could not be resolved.',
 };
-const fieldSources = {
-    runtime_return: 'Runtime return',
-    host_cache_output: 'Host cache output',
-    graph_literal: 'Inferred graph literal',
-    graph_semantics: 'Inferred graph semantics',
-};
+const ROLE_LABELS = Object.freeze({positive: '+ Positive prompt', negative: '\u2212 Negative prompt'});
 function el(tag, text, className) {
     const node = document.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -44,7 +35,7 @@ function childScope(parentScope) {
 export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry, includePairAction = true, contextLabel = ''}) {
     // A nested set of blocks (the current file inside a recorded run) names its regions and actions with a
     // context so assistive technology never meets two identically named prompt regions in one dialog.
-    const named = role => contextLabel ? `${contextLabel} ${role} prompt` : `${role} prompt`;
+    const named = title => contextLabel ? `${contextLabel} ${title.toLowerCase()} prompt` : `${title} prompt`;
     const action = role => contextLabel ? `${contextLabel[0].toLowerCase()}${contextLabel.slice(1)} ${role} prompt` : `${role} prompt`;
     if (parentScope.signal.aborted) return {update() {}, setState() {}, dispose() {}};
     const scope = childScope(parentScope);
@@ -52,19 +43,20 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
     scope.listen(container, 'click', async event => {
         if (!actionsEnabled) return;
         const send = event.target.closest('[data-send-role]');
-        if (send) {
+        if (send && (send.dataset.sendRole === 'pair' || Object.hasOwn(roles, send.dataset.sendRole))) {
             const role = send.dataset.sendRole;
             sender.open(role === 'pair' ? roles : {[role]:roles[role]}, send);
         }
         const copy = event.target.closest('[data-copy-role]');
-        if (copy) {
-            const role = copy.dataset.copyRole;
-            const status = copy.closest('section').querySelector('.prompt-copy-status');
+        if (copy && Object.hasOwn(roles, copy.dataset.copyRole)) {
+            // The concept's copy: the shared toast, or its "Copy prompt" select-to-copy dialog without a clipboard.
+            const text = roles[copy.dataset.copyRole];
             try {
-                await navigator.clipboard.writeText(roles[role]);
-                if (!scope.signal.aborted) status.textContent = 'Copied.';
+                if (!navigator.clipboard) throw new Error('Clipboard requires a secure context');
+                await navigator.clipboard.writeText(text);
+                if (!scope.signal.aborted) showWorkspaceToast('Prompt copied.');
             } catch {
-                if (!scope.signal.aborted) status.textContent = 'Copy unavailable. Select the prompt text to copy it.';
+                if (!scope.signal.aborted) openCopyFallback(text, {scope, trigger:copy});
             }
         }
         if (event.target.closest('[data-retry-prompts]')) onRetry?.();
@@ -87,38 +79,32 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
             return;
         }
         roles = Object.fromEntries(Object.entries(promptRoles(state.prompts)).filter(([role]) => visibleRoles.includes(role)));
-        for (const role of visibleRoles) {
-            const title = `${role[0].toUpperCase() + role.slice(1)} prompt`;
+        for (const role of visibleRoles.filter(name => Object.hasOwn(ROLE_LABELS, name))) {
             const record = state.prompts?.[role];
-            const block = el('section', undefined, `prompt-block prompt-${role}`);
-            block.setAttribute('aria-label', contextLabel ? named(role) : title);
-            const heading = el('div', undefined, 'prompt-block-heading');
-            heading.append(el('h3', title));
+            const block = el('section', undefined, `prompt-section ${role}`);
+            block.setAttribute('aria-label', named(role[0].toUpperCase() + role.slice(1)));
+            const heading = el('div', undefined, 'prompt-heading');
+            heading.append(el('span', ROLE_LABELS[role], 'role-label'));
             block.append(heading);
             if (Object.hasOwn(roles, role)) {
-                const proof = record.evidence;
-                block.append(el('p', proof ? `${fieldSources[proof.source] || 'Source unknown'} · ${proof.source}` : sources[record.source] || 'Source not recorded', 'prompt-source muted'));
-                if (roles[role] === '') block.append(el('p', `Empty ${role} prompt`, 'prompt-empty'));
-                else {
-                    const text = el('pre', roles[role], 'prompt-text');
-                    text.tabIndex = 0;
-                    block.append(text);
-                }
                 const actions = el('div', undefined, 'prompt-actions');
-                const send = createSendButton(`Send ${action(role)}`);
-                send.dataset.sendRole = role;
-                send.disabled = !actionsEnabled;
-                const copy = createButton('', 'ca-icon-button');
+                const copy = createButton('', 'icon-btn');
                 copy.setAttribute('aria-label', `Copy ${action(role)}`);
-                copy.title = `Copy ${action(role)}`;
                 copy.append(createWorkspaceIcon('copy'));
                 copy.dataset.copyRole = role;
                 copy.disabled = !actionsEnabled;
+                const send = createButton('', 'send icon-btn');
+                send.setAttribute('aria-label', `Send ${action(role)} to ComfyUI`);
+                send.append(createWorkspaceIcon('send'));
+                send.dataset.sendRole = role;
+                send.disabled = !actionsEnabled;
                 actions.append(copy, send);
                 heading.append(actions);
-                const status = el('p', '', 'prompt-copy-status muted'); status.setAttribute('role', 'status');
-                block.append(status);
-            } else block.append(el('p', typeof record?.message === 'string' && record.message ? record.message : statuses[record?.status] || statuses.unresolved, 'muted'));
+                const text = el('p', roles[role] === '' ? `No ${role} prompt (explicitly empty)` : roles[role], 'prompt-text');
+                // Production keeps a confirmed prompt keyboard-reachable for reading and selecting long text.
+                text.tabIndex = 0;
+                block.append(text);
+            } else block.append(el('p', typeof record?.message === 'string' && record.message ? record.message : statuses[record?.status] || statuses.unresolved, 'prompt-text muted'));
             container.append(block);
         }
         if (includePairAction && Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {

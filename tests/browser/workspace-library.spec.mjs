@@ -45,7 +45,7 @@ test('history displays the selected full negative beneath its positive and filte
     for(const negative of ['blurry, watermark','low quality','low contrast','']) {
         const index=data.variants.findIndex(variant=>variant.negative_text===negative);await selectVariant(page,index);
         const neg=saved(page).getByRole('region',{name:'Negative prompt',exact:true});
-        await expect(neg).toContainText(negative||'Empty negative prompt');
+        await expect(neg.locator('p.prompt-text')).toHaveText(negative||'No negative prompt (explicitly empty)');
         await expect(media(page)).toHaveCount(negative==='blurry, watermark'||negative==='low quality'?1:0);
         const positive=saved(page).getByRole('region',{name:'Positive prompt',exact:true});
         await expect(positive).toContainText('Cat portrait');
@@ -187,7 +187,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         const parentId=await cards(page).filter({has:page.getByText('Cat portrait',{exact:true})}).getAttribute('data-prompt-id');
         const recipe=await(await request.get(`/prompt_manager/library/${parentId}`)).json();
         await openHistory(page);await selectVariant(page,recipe.variants.findIndex(variant=>variant.negative_text==='blurry, watermark'));
-        const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre').textContent();
+        const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text').textContent();
         await page.locator('#workspace-main > .heading').getByRole('button',{name:'Send prompt pair to ComfyUI: Cat portrait',exact:true}).click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
@@ -211,10 +211,10 @@ test('large variant histories append bounded pages without replacing the selecte
     await expect(await request.post('/__test__/reset',{data:{native_library:true,extra_variants:41}})).toBeOK();
     await page.goto(route);await openHistory(page);
     const variants=history(page).getByRole('button',{name:/^Select negative variant \d+$/});await expect(variants).toHaveCount(40);
-    await selectVariant(page,0);const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre').textContent();
+    await selectVariant(page,0);const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text').textContent();
     await history(page).getByRole('button',{name:'Load more negative variants',exact:true}).click();await expect(variants).toHaveCount(45);
     await expect(history(page).getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
-    await expect(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(chosenNegative);
+    await expect(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText(chosenNegative);
 });
 
 async function observeLibrary(page, hold=false) {
@@ -283,7 +283,7 @@ test('Library natural rows retain long prompt content without overflow',async({p
         await expect(page.locator('#workspace-main p').filter({hasText:'One positive. Reusable negatives.'})).toHaveCount(1);
         for(const theme of ['dark','light']) {
             await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
-            await expect(page.locator('.prompt-positive h3').first()).toHaveCSS('color',theme==='dark'?'rgb(115, 221, 169)':'rgb(23, 107, 70)');
+            await expect(page.locator('.prompt-section.positive .role-label').first()).toHaveCSS('color',theme==='dark'?'rgb(115, 221, 169)':'rgb(23, 107, 70)');
         }
         await expect(page.locator('.library-card-art').first()).toHaveCSS('height',width===1600?'170px':'150px');
         await expect(page.locator('.library-card-content').first()).toHaveCSS('padding',width===1600?'18px':'15px');
@@ -443,5 +443,5 @@ test('saved choices retain curved staggered lanes and the full negative immediat
     const rows=await(await request.get('/prompt_manager/library')).json();const cat=rows.items.find(item=>item.text==='Cat portrait');
     const details=await(await request.get(`/prompt_manager/library/${cat.id}`)).json();
     const selected=details.variants[1].negative_text;
-    expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre').evaluate(node=>node.textContent)).toBe(selected);
+    expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text').evaluate(node=>node.textContent)).toBe(selected);
 });

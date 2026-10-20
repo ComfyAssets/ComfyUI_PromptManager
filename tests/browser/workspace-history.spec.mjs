@@ -128,10 +128,10 @@ test('archive delete merge and prune preserve frozen evidence without repairing 
 });
 
 test('actual restore with reused numeric owner rejects stale history and offers explicit saved recovery',async({page,request})=>{
-    const f=page.fixture;await open(page,f.detail_id);const original=await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'));
+    const f=page.fixture;await open(page,f.detail_id);const original=await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'));
     const source=await request.get('/__test__/history/reused-snapshot');await expect(source).toBeOK();await restoreSnapshot(request,await source.body());
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
-    await expect(page.locator('.library-parent-status')).toContainText('changed');expect(await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'))).toBe(original);
+    await expect(page.locator('.library-parent-status')).toContainText('changed');expect(await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(original);
     await expect(recorded(page).getByRole('button',{name:'Reload recorded history',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'Reload saved Library view',exact:true}).click();await expect(saved(page)).toContainText('Restored owner with reused numeric ID');
     expect((await request.get(`/prompt_manager/history/runs/${f.runs.shared}`)).status()).toBe(404);
@@ -199,18 +199,20 @@ test('frozen exact roles distinguish unknown, explicit empty, whitespace, mode a
     const detail=await(await request.get(`/prompt_manager/history/runs/${f.runs.shared}?epoch=${window.history_epoch}`)).json();
     const chosen=detail.contexts.find(c=>c.anchor_id==='z');
     const pos=dialog(page).getByRole('region',{name:'Positive prompt',exact:true}),neg=dialog(page).getByRole('region',{name:'Negative prompt',exact:true});
-    expect(await exact(pos.locator('pre'))).toBe(chosen.positive.raw);expect(await exact(neg.locator('pre'))).toBe(chosen.negative.raw);
+    expect(await exact(pos.locator('p.prompt-text'))).toBe(chosen.positive.raw);expect(await exact(neg.locator('p.prompt-text'))).toBe(chosen.negative.raw);
     expect(await pos.evaluate(node=>node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
-    await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();expect(await exact(neg.locator('pre'))).toBe(chosen.negative.effective);
+    await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();expect(await exact(neg.locator('p.prompt-text'))).toBe(chosen.negative.effective);
     await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
     await marker(page,f.runs.unknown).click();await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
     const unknown=dialog(page).getByRole('region',{name:'Negative prompt',exact:true});await expect(unknown.getByRole('button')).toHaveCount(0);await expect(dialog(page).getByRole('button',{name:'Send prompt pair',exact:true})).toHaveCount(0);
-    await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();expect(await exact(unknown.locator('pre'))).toBe('  \n\t ');await expect(unknown).toContainText('host_cache_output');
+    await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();expect(await exact(unknown.locator('p.prompt-text'))).toBe('  \n\t ');
+    // D22: the frozen block has no source line; each field's source stays in "Frozen field provenance".
+    await expect(unknown).not.toContainText('host_cache_output');await expect(dialog(page).locator('.recorded-provenance')).toContainText(/Effective · \w+ · host_cache_output/);
     await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
-    await marker(page,f.runs.empty).click();await expect(dialog(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('Empty negative prompt');
+    await marker(page,f.runs.empty).click();await expect(dialog(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText('No negative prompt (explicitly empty)');
     await expect(dialog(page).getByRole('button',{name:'Copy negative prompt',exact:true})).toBeVisible();await expect(dialog(page).getByRole('button',{name:'Send prompt pair',exact:true})).toBeVisible();
     await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
-    await marker(page,f.runs.whitespace).click();await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();expect(await exact(dialog(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre'))).toBe('  \n\t ');
+    await marker(page,f.runs.whitespace).click();await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();expect(await exact(dialog(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text'))).toBe('  \n\t ');
     await expect(dialog(page)).toContainText('graph_literal');await expect(dialog(page)).toContainText('Role assignment: inferred');
     await dialog(page).getByText('Frozen field provenance',{exact:true}).click();await expect(dialog(page)).toContainText('Prepend');await expect(dialog(page)).toContainText('Append');await expect(dialog(page)).toContainText('graph_semantics');
     expect(shared.matching_anchors.map(a=>a.anchor_id)).toEqual(['10','2','z']);
@@ -447,7 +449,7 @@ test('frozen Effective pair uses the shared acknowledged sender and Escape close
     });
     try {
         await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.unknown).click();await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();
-        const positive=await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'));
+        const positive=await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'));
         const send=dialog(page).getByRole('button',{name:'Send prompt pair',exact:true});await send.click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'History ComfyUI'});
         await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'History destination'});await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
@@ -466,16 +468,16 @@ test('the inline current file names its prompts apart from the frozen run fields
     await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
     await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
     const frozen=dialog(page).getByRole('region',{name:'Frozen run prompt texts',exact:true});
-    const before=await exact(frozen.getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'));
+    const before=await exact(frozen.getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'));
     await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
     await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');await expect(dialog(page)).toBeVisible();
     const current=dialog(page).getByRole('region',{name:'Current reported file',exact:true});await expect(current).toBeVisible();
-    await expect(current.getByRole('region',{name:'Current file positive prompt',exact:true}).locator('pre')).toHaveText('current file positive');
-    await expect(current.getByRole('region',{name:'Current file negative prompt',exact:true}).locator('pre')).toHaveText('current file negative');
+    await expect(current.getByRole('region',{name:'Current file positive prompt',exact:true}).locator('p.prompt-text')).toHaveText('current file positive');
+    await expect(current.getByRole('region',{name:'Current file negative prompt',exact:true}).locator('p.prompt-text')).toHaveText('current file negative');
     await expect(current.getByRole('button',{name:'Copy current file positive prompt',exact:true})).toBeVisible();
     for(const role of ['Positive','Negative'])await expect(dialog(page).getByRole('region',{name:`${role} prompt`,exact:true})).toHaveCount(1);
     await expect(current.getByRole('region',{name:/^(Positive|Negative) prompt$/})).toHaveCount(0);
-    expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('pre'))).toBe(before);
+    expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(before);
 });
 
 test('the recorded run dialog with a resolved current file has no duplicate button or region names',async({page})=>{
@@ -574,7 +576,7 @@ test('history epoch recovery reports saved-parent read failures and retries with
 
 test('changed saved-owner identity is disclosed without silently relabeling or rebinding the existing gallery',async({page,request})=>{
     const f=page.fixture;await open(page,f.detail_id);await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
-    const positive=saved(page).getByRole('region',{name:'Positive prompt',exact:true});const original=await exact(positive.locator('pre'));
+    const positive=saved(page).getByRole('region',{name:'Positive prompt',exact:true});const original=await exact(positive.locator('p.prompt-text'));
     const cards=gallery(page).locator('article[data-image-key]');await cards.first().evaluate(node=>{window.savedGalleryCard=node;});let galleryReads=0;
     page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${f.detail_id}/images`)galleryReads++;});
     const details=await(await request.get(`/prompt_manager/library/${f.detail_id}`)).json();
@@ -583,7 +585,7 @@ test('changed saved-owner identity is disclosed without silently relabeling or r
     await expect(await request.put(`/prompt_manager/prompts/${f.detail_id}`,{data:{text:'Replaced saved owner'}})).toBeOK();
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
-    await expect(page.locator('.library-parent-status')).toContainText('changed');expect(await exact(positive.locator('pre'))).toBe(original);
+    await expect(page.locator('.library-parent-status')).toContainText('changed');expect(await exact(positive.locator('p.prompt-text'))).toBe(original);
     const reload=page.getByRole('button',{name:'Reload saved Library view',exact:true});await expect(reload).toBeVisible();
     expect(await cards.first().evaluate(node=>node===window.savedGalleryCard)).toBe(true);expect(galleryReads).toBe(0);
     await reload.click();await expect(saved(page).getByRole('region',{name:'Positive prompt',exact:true})).toContainText('Replaced saved owner');
@@ -626,12 +628,12 @@ async function retainSavedSelection(page,request,fixture) {
     const index=details.variants.findIndex(variant=>variant.id===fixture.saved_pair);
     await page.getByRole('button',{name:`Select negative variant ${index+1}`,exact:true}).click();
     await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
-    const negative=await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre'));
+    const negative=await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text'));
     await gallery(page).locator('article[data-image-key]').first().evaluate(node=>{window.fix1SavedGalleryCard=node;});
     let reads=0;page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${fixture.detail_id}/images`)reads++;});
     return async()=>{
         await expect(page.getByRole('button',{name:`Select negative variant ${index+1}`,exact:true})).toHaveAttribute('aria-pressed','true');
-        expect(await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre'))).toBe(negative);
+        expect(await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text'))).toBe(negative);
         expect(await gallery(page).locator('article[data-image-key]').first().evaluate(node=>node===window.fix1SavedGalleryCard)).toBe(true);expect(reads).toBe(0);
     };
 }
@@ -702,7 +704,7 @@ test('capture-only recovery uses the changed real output capture without re-read
     const outputs=await(await outputsRead).json();expect(outputs.capture.state).toBe('conflicting');expect(outputs.retained_occurrence_count).toBe(1);expect(outputs.list_status).toBe('incomplete');
     await expect(dialog(page).locator('[data-receipt]')).toHaveCount(1);await expect(dialog(page).locator('.recorded-output-status')).toContainText('1 retained reported output · incomplete · conflicting');
     await expect(dialog(page).getByText('Output capture',{exact:true}).locator('..').locator('dd')).toHaveText('conflicting · conflicting');expect(runReads).toBe(1);expect(outputsReads).toBe(2);
-    expect(await exact(dialog(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre'))).toBe('  \n\t ');await page.keyboard.press('Escape');await retained();
+    expect(await exact(dialog(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text'))).toBe('  \n\t ');await page.keyboard.press('Escape');await retained();
 });
 
 test('completed page one stays bounded across mode changes until explicit output paging',async({page,request})=>{

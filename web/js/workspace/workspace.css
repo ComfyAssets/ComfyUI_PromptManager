@@ -139,8 +139,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .ca-tools dialog.prompt-sender { width: min(760px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 22px; border-color: var(--ca-line); border-radius: 12px; } /* PR D */
 .ca-tools dialog.prompt-sender::backdrop { background: #000b; } /* PR D */
 .ca-tools dialog.recorded-run-dialog { width: min(1100px, calc(100% - 32px)); max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); padding: 22px; border-radius: 7px; } /* PR F */
-pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max-height: none; overflow: visible; } /* PR D: prompt text becomes `p.prompt-text` */
-.ca-tools .prompt-actions .ca-icon-button { min-width: 30px; } /* PR D: the concept's 28px prompt action would shrink the toolkit icon button */
+pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max-height: none; overflow: visible; } /* Library and history rebuilds: the Archive dialog and frozen field provenance keep `pre.prompt-text` */
+.prompt-text[tabindex]:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 3px; } /* production-only: a confirmed prompt stays keyboard-reachable (#249 D22) */
 @media (pointer: coarse) {
     .ca-tools .recorded-history .history-toolbar button { min-height: 44px; } /* PR F: concept coarse buttons are 40px */
 }

@@ -16,6 +16,9 @@
 .options-status { font-size: 12px; padding-inline: 4px; }
 
 .prompt-inspector { margin-block-start: 22px; min-inline-size: 0; }
+/* The Library editor's Archive negative dialog keeps its own `section.prompt-block` (h3, `pre`, "Empty negative
+   prompt") and the recorded run's "Frozen field provenance" keeps `pre.prompt-text` until their page rebuilds;
+   shared prompt blocks are the concept's `.prompt-section` with `p.prompt-text` (#249 D22). */
 .prompt-block { border-block-start: 1px solid var(--ca-line); padding-block: 13px; min-inline-size: 0; }
 .prompt-positive { --prompt-role: #73dda9; }
 [data-ca-theme="light"] .prompt-positive { --prompt-role: #176b46; }
@@ -23,18 +26,8 @@
 [data-ca-theme="light"] .prompt-negative { --prompt-role: #b71931; }
 .prompt-block-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .prompt-block h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; margin: 0; color: var(--prompt-role); }
-.prompt-source, .prompt-empty, .prompt-block > .muted { font-size: 10px; }
-.prompt-source { margin-block: 6px 10px; }
-/* #249 D22 interim: production's prompt blocks keep their text, action row and 26px buttons until PR D renders the
-   concept prompt block and retires these three overrides. */
-.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; margin-block: 10px; }
-.prompt-text:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 3px; }
-.prompt-actions { /* #249 D22 interim (PR D) */ display: flex; flex-wrap: wrap; gap: 4px; }
-.ca-tools .prompt-actions button { /* #249 D22 interim (PR D) */ display: inline-flex; align-items: center; justify-content: center; inline-size: 26px; block-size: 26px; min-block-size: 26px; padding: 5px; }
-.prompt-actions .prompt-send-button span { display: none; }
-.prompt-actions .icon { inline-size: 14px; block-size: 14px; }
-.prompt-copy-status { font-size: 11px; margin-block-end: 0; }
-.prompt-copy-status:empty { display: none; }
+.prompt-empty, .prompt-block > .muted { font-size: 10px; }
+pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; margin-block: 10px; }
 .prompt-send-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ca-focus); }
 .prompt-send-button svg { inline-size: 16px; block-size: 16px; flex-shrink: 0; }
 .prompt-sender { background: var(--ca-surface); color: var(--ca-text); border: 1px solid var(--ca-line); border-radius: 12px; padding: 22px; inline-size: min(760px, calc(100% - 32px)); max-inline-size: none; max-block-size: calc(100dvh - 32px); overflow: auto; }
