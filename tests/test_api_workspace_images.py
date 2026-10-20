@@ -2,28 +2,47 @@
 
 import json
 import os
+import shutil
+import subprocess  # nosec B404
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image, PngImagePlugin
 
+from utils.generation_params import extract_from_records
+
 try:
     from test_api_images import ImageAPITestCase, make_png
     from open_handles import assert_closed
+    from generation_params_cases import CASES, encoder, ksampler
 except ImportError:
     from tests.test_api_images import ImageAPITestCase, make_png
     from tests.open_handles import assert_closed
+    from tests.generation_params_cases import CASES, encoder, ksampler
+
+SEED_HARNESS = (
+    Path(__file__).resolve().parent / "js" / "support" / "inspection-seed.mjs"
+)
+NODE_TIMEOUT_SECONDS = 120
 
 
 def embedded_png(path, positive, negative=""):
-    """A PNG whose API prompt graph resolves to *positive* and *negative*."""
+    """A PNG whose API prompt graph resolves to *positive* and *negative*.
+
+    The sampler has a model link, as every ComfyUI KSampler does, so the shared
+    parser (which needs one) and the server resolver both read the prompts.
+    """
     graph = {
         "1": {"class_type": "CLIPTextEncode", "inputs": {"text": positive}},
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": negative}},
         "3": {
             "class_type": "KSampler",
-            "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+            "inputs": {"positive": ["1", 0], "negative": ["2", 0], "model": ["4", 0]},
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "fixture.safetensors"},
         },
     }
     info = PngImagePlugin.PngInfo()
@@ -32,6 +51,32 @@ def embedded_png(path, positive, negative=""):
         image.save(path, pnginfo=info)
     os.utime(path, (100, 100))
     return path
+
+
+def records_png(path, records, mtime=100):
+    """A PNG carrying the given text records (None values are left out)."""
+    info = PngImagePlugin.PngInfo()
+    for key, text in records.items():
+        if text is not None:
+            info.add_text(key, text)
+    with Image.new("RGB", (4, 4)) as image:
+        image.save(path, pnginfo=info)
+    os.utime(path, (mtime, mtime))
+    return path
+
+
+def seeded_records(positive, seed):
+    """API prompt records for a one-sampler graph with *positive* and *seed*."""
+    graph = {
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "concept.safetensors"},
+        },
+        "6": encoder(positive),
+        "7": encoder("blurry"),
+        "3": ksampler(("6", 0), ("7", 0), seed=seed),
+    }
+    return {"prompt": json.dumps(graph)}
 
 
 class TestWorkspaceImages(ImageAPITestCase):
@@ -430,7 +475,6 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertEqual(library["title"], linked["title"])
         self.assertEqual(library["positive_id"], prompt)
 
-    @unittest.expectedFailure  # B2 gates text titles on the file's parsed positive.
     async def test_unconfirmed_text_title_is_withheld_on_card_and_inspector(self):
         prompt = self._save_prompt("Secret first line\nrest")
         path = self.media("plain.png")
@@ -522,6 +566,136 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertIsNone(data["images"][0]["linked"]["title"])
         self.assertIsNone(data["images"][0]["linked"]["title_source"])
         self.assertNotIn("database is gone", str(data))
+
+    async def test_items_carry_seed_from_header_records(self):
+        records_png(self.output_dir / "seeded.png", seeded_records("a fox", 42001))
+        self.media("plain.png")
+        self.media("clip.mp4")
+        self.media("broken.png").write_bytes(b"invalid")
+        _, data = await self.get()
+        seeds = {item["filename"]: item["seed"] for item in data["images"]}
+        self.assertEqual(
+            seeds,
+            {
+                "seeded.png": 42001,
+                "plain.png": None,
+                "clip.mp4": None,
+                "broken.png": None,
+            },
+        )
+
+    async def test_card_reads_each_header_once(self):
+        for index in range(3):
+            records_png(
+                self.output_dir / f"{index}.png", seeded_records("a fox", index)
+            )
+        self.media("clip.mp4")
+        with patch("PIL.Image.open", wraps=Image.open) as opened:
+            _, data = await self.get()
+        self.assertEqual(len(data["images"]), 4)
+        self.assertEqual(opened.call_count, 3)
+
+    def _seed_files(self):
+        """Concept-style one-sampler files plus every shared parser case."""
+        expected = {}
+        for i in range(2):
+            for j in range(3):
+                name = f"concept-{i}-{j}.png"
+                seed = 42001 + i * 100 + j
+                records_png(
+                    self.output_dir / name, seeded_records(f"concept {i} {j}", seed)
+                )
+                expected[name] = seed
+        # ComfyUI's randomized seeds mostly exceed 2**53, where JSON.parse rounds.
+        big = 2**63 + 12345
+        records_png(self.output_dir / "big-seed.png", seeded_records("big", big))
+        expected["big-seed.png"] = big
+        for case, records in CASES.items():
+            records_png(self.output_dir / f"case-{case}.png", records)
+        records_png(
+            self.output_dir / "a1111.png",
+            {"parameters": "a fox\nNegative prompt: blur\nSteps: 20, Seed: 9"},
+        )
+        self.media("bare.png")
+        return expected
+
+    async def _inspector_seeds(self, items):
+        node = shutil.which("node")
+        if node is None:  # pragma: no cover - CI runners and dev hosts ship Node
+            if os.environ.get("CI"):
+                self.fail("Node.js is required in CI for the seed parity check")
+            self.skipTest("Node.js is not installed")
+        bodies = []
+        for item in items:
+            response = await self.client.get(
+                f"/prompt_manager/images/inspect/{item['path']}",
+                params={"root": 0, "root_scope": item["root_scope"]},
+            )
+            self.assertEqual(response.status, 200, item["path"])
+            bodies.append({"name": item["path"], "body": await response.text()})
+        # Fixed local Node harness, no shell.
+        completed = subprocess.run(  # nosec B603
+            [node, str(SEED_HARNESS)],
+            input=json.dumps(bodies).encode("utf-8"),
+            capture_output=True,
+            timeout=NODE_TIMEOUT_SECONDS,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8"))
+        return json.loads(completed.stdout)
+
+    async def test_card_seed_equals_inspector_seed_when_both_present(self):
+        expected = self._seed_files()
+        _, data = await self.get(limit=200)
+        items = data["images"]
+        self.assertEqual(len(items), len(CASES) + len(expected) + 2)
+        inspector = await self._inspector_seeds(items)
+        both = 0
+        for item in items:
+            with self.subTest(file=item["path"]):
+                card, shown = item["seed"], inspector[item["path"]]
+                if item["path"] in expected:
+                    self.assertEqual(card, expected[item["path"]])
+                if card is None:
+                    continue
+                # The card never shows a seed the inspector does not.
+                self.assertEqual(shown, {"status": "known", "value": str(card)})
+                both += 1
+        self.assertGreaterEqual(both, len(expected) + 10)
+
+    async def test_text_title_needs_the_files_parsed_positive(self):
+        prompt = self._save_prompt("Saved words\nrest")
+        other = records_png(
+            self.output_dir / "other.png", seeded_records("Different words", 1)
+        )
+        shared = records_png(
+            self.output_dir / "shared.png", CASES["shared-prompt-pipeline"]
+        )
+        clip = self.media("clip.mp4")
+        shared_prompt = self._save_prompt(
+            extract_from_records(CASES["shared-prompt-pipeline"]["prompt"], None)[
+                "positivePrompt"
+            ]
+        )
+        for path, owner in ((other, prompt), (shared, shared_prompt), (clip, prompt)):
+            self.api.db.link_image_to_prompt(owner, str(path))
+        _, data = await self.get()
+        items = {item["filename"]: item for item in data["images"]}
+        for name in ("other.png", "clip.mp4"):
+            with self.subTest(file=name):
+                self.assertEqual(items[name]["linked"]["status"], "linked")
+                self.assertEqual(items[name]["linked"]["title_source"], "text")
+                self.assertIsNone(items[name]["linked"]["title"])
+        library = await self.inspected("other.png", items["other.png"])
+        self.assertIsNone(library["title"])
+        self.assertNotIn("Saved words", json.dumps(data))
+        # The resolver cannot decide this graph; the shared parser (and so the
+        # inspector's prompt) confirms the saved first line on both.
+        title = items["shared.png"]["linked"]["title"]
+        self.assertIsNotNone(title)
+        self.assertEqual(
+            (await self.inspected("shared.png", items["shared.png"]))["title"], title
+        )
 
 
 class TestWorkspaceCursorEncoding(unittest.TestCase):

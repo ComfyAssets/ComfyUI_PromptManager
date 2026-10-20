@@ -30,10 +30,12 @@ from .inspection_service import (
 
 try:
     from ...database.library import display_title
+    from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
 except ImportError:
     from database.library import display_title
+    from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
 
@@ -53,21 +55,40 @@ def _unavailable_link() -> dict:
     }
 
 
-def _verified_title(summary: dict | None, observed: dict) -> str | None:
-    """The inspector's Library title, withholding unconfirmed saved prompt text.
+def _verified_title(summary: dict | None, positive: str | None) -> str | None:
+    """A linked file's Library title, withholding unconfirmed saved prompt text.
 
-    A stored title is user data and always shows. A title taken from the saved
-    positive's first line shows only when the file's own resolved positive gives
-    the same title, because a saved association never replaces file evidence.
+    The one rule for the card and the inspector. A stored title is user data and
+    always shows. A title taken from the saved positive's first line shows only
+    when ``positive``, the file's own positive as the shared parser reads it from
+    the file's records, gives the same title: a saved association never replaces
+    file evidence.
     """
     if not isinstance(summary, dict) or summary.get("status") != "linked":
         return None
     title = summary.get("title")
     if summary.get("title_source") != "text":
         return title
-    side = observed.get("prompts", {}).get("positive") or {}
-    resolved = side.get("status") == "resolved"
-    return title if resolved and display_title((), side.get("text")) == title else None
+    confirmed = positive is not None and display_title((), positive) == title
+    return title if confirmed else None
+
+
+def _card_link(summary: dict, positive: str | None) -> dict:
+    """The card's link summary with an unconfirmed first-line title withheld."""
+    if summary.get("title_source") != "text":
+        return summary
+    return {**summary, "title": _verified_title(summary, positive)}
+
+
+def _inspected_positive(observed: dict) -> str | None:
+    """The positive the shared parser reads from the inspected file's records.
+
+    Videos give None, as on the card, which reads no video metadata.
+    """
+    inspection = observed.get("inspection")
+    if inspection is None or observed["file"]["media_type"] == "video":
+        return None
+    return parsed_positive(header_params(inspection.metadata))
 
 
 def _public_path(path):
@@ -1769,7 +1790,9 @@ class ImageRoutesMixin:
                     )
                 except CurrentFileChanged:
                     return None
-                observed["library"]["title"] = _verified_title(summary, observed)
+                observed["library"]["title"] = _verified_title(
+                    summary, _inspected_positive(observed)
+                )
                 return encode_inspection_response(
                     image={
                         "root_index": index,
@@ -1960,20 +1983,23 @@ class ImageRoutesMixin:
             else {}
         )
         for image in images:
-            if linked:
-                key = str(paths[(image["root_index"], image["path"])])
-                image["linked"] = summaries.get(key) or _unavailable_link()
+            path = paths[(image["root_index"], image["path"])]
             image["width"] = None
             image["height"] = None
-            if image["is_video"]:
-                continue
-            try:
-                with paths[(image["root_index"], image["path"])].open("rb") as stream:
-                    with Image.open(stream) as source:
-                        image["width"], image["height"] = source.size
-            except (OSError, ValueError, Image.DecompressionBombError):
-                # A corrupt or disappearing preview must not hide the listing.
-                continue
+            params = None
+            if not image["is_video"]:
+                try:
+                    with path.open("rb") as stream:
+                        with Image.open(stream) as source:
+                            image["width"], image["height"] = source.size
+                            params = header_params(source.info)
+                except (OSError, ValueError, Image.DecompressionBombError):
+                    # A corrupt or disappearing preview must not hide the listing.
+                    pass
+            image["seed"] = card_seed(params)
+            if linked:
+                summary = summaries.get(str(path)) or _unavailable_link()
+                image["linked"] = _card_link(summary, parsed_positive(params))
         return images
 
     def _format_output_page(self, page, *, scoped=False):
