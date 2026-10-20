@@ -6,6 +6,12 @@ const assert = require('node:assert/strict');
 const toolbarModule = import('../../web/js/workspace/toolbar.mjs');
 const dialogsModule = import('../../web/js/workspace/workspace-dialogs.mjs');
 
+function optionsCollection(list) {
+    const collection = { length: list.length, item: index => list[index] ?? null, [Symbol.iterator]: () => list[Symbol.iterator]() };
+    list.forEach((option, index) => { collection[index] = option; });
+    return Object.freeze(collection);
+}
+
 /** A minimal DOM: enough element behavior for markup, events, focus and dialogs. */
 function fakeDOM() {
     const previous = { document: global.document };
@@ -30,7 +36,8 @@ function fakeDOM() {
         get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
         set textContent(text) { this.children = []; this._text = String(text); }
         get isConnected() { return this === body || Boolean(this.parentNode?.isConnected); }
-        get options() { return this.children.filter(child => child.tagName === 'OPTION'); }
+        // Like a browser's HTMLOptionsCollection: indexed and iterable, but not an Array (no .some/.map).
+        get options() { return optionsCollection(this.children.filter(child => child.tagName === 'OPTION')); }
         append(...nodes) {
             for (const node of nodes) {
                 node.parentNode?.children.splice(node.parentNode.children.indexOf(node), 1);
@@ -84,7 +91,7 @@ function fakeDOM() {
 
 const byId = (dom, id) => dom.all(node => node.id === id)[0];
 const tags = node => node.children.map(child => child.tagName.toLowerCase());
-const optionPairs = select => select.options.map(option => [option.value, option.textContent]);
+const optionPairs = select => [...select.options].map(option => [option.value, option.textContent]);
 const modal = dom => byId(dom, 'modal');
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 const coreModule = import('../../web/js/shared/toolkit/core.js');
@@ -163,6 +170,10 @@ test('toolbar emits concept markup and order', async () => {
         toolbar.setValue({ q: 'moon', category: 'Archive', sort: 'newest' });
         assert.deepEqual([input.value, category.value, sort.value], ['moon', 'Archive', 'newest']);
         assert.deepEqual(toolbar.value(), { q: 'moon', category: 'Archive', sort: 'newest' });
+        // A still-listed selection survives a category refresh.
+        toolbar.setCategories(['Portraits', 'Archive']);
+        assert.equal(category.value, 'Archive');
+        assert.deepEqual(optionPairs(category), [['', 'All categories'], ['Portraits', 'Portraits'], ['Archive', 'Archive']]);
         // A selection that is no longer listed drops to All categories.
         toolbar.setCategories(['Portraits']);
         assert.equal(category.value, '');
