@@ -498,10 +498,15 @@ class TestLibrary(unittest.TestCase):
         offset = self.save("Offset")
         broken = self.save("Broken")
         zulu = self.save("Zulu")
+        # Parse but cannot convert to UTC: past the datetime range either way.
+        floor = self.save("Floor")
+        ceiling = self.save("Ceiling")
         with self.db.model.get_connection() as connection:
             for prompt_id, value in (
                 (legacy, "2026-10-07 18:39:06"),
                 (zulu, "2026-10-07T18:39:06Z"),
+                (floor, "0001-01-01T00:00:00+01:00"),
+                (ceiling, "9999-12-31T23:59:59-01:00"),
                 (offset, "2026-10-07T20:39:06.250+02:00"),
                 (broken, "yesterday"),
             ):
@@ -525,6 +530,11 @@ class TestLibrary(unittest.TestCase):
         )
         self.assertIsNone(items[broken]["last_used_at"])
         self.assertEqual(items[zulu]["last_used_at"], "2026-10-07T18:39:06+00:00")
+        self.assertIsNone(items[floor]["last_used_at"])
+        self.assertIsNone(items[ceiling]["last_used_at"])
+        self.assertIsNone(
+            self.db.get_library_positive(floor)["positive"]["last_used_at"]
+        )
         self.assertEqual(type(items[broken]["run_count"]), int)
         detail = self.db.get_library_positive(used)["positive"]
         self.assertEqual(detail["run_count"], 3)

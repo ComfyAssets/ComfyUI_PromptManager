@@ -468,6 +468,38 @@ class TestLibraryAPI(ImageAPITestCase):
         )
         return response, await response.json()
 
+    async def test_unconvertible_last_use_does_not_fail_list_detail_or_receipt(self):
+        positive = self._save_prompt("Cat")
+        other = self._save_prompt("Dog")
+        with self.api.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompts SET last_used_at=? WHERE id=?",
+                ("9999-12-31T23:59:59-01:00", positive),
+            )
+            connection.execute(
+                "UPDATE prompts SET last_used_at=? WHERE id=?",
+                ("0001-01-01T00:00:00+01:00", other),
+            )
+        response, listed = await self.get()
+        self.assertEqual(response.status, 200, listed)
+        self.assertEqual(
+            [item["last_used_at"] for item in listed["items"]], [None, None]
+        )
+        response, detail = await self.get(f"/{positive}")
+        self.assertEqual(response.status, 200, detail)
+        self.assertIsNone(detail["positive"]["last_used_at"])
+        response, receipt = await self.patch_parent(
+            positive,
+            {
+                "expected_epoch": detail["library_epoch"],
+                "if_match": detail["positive"]["edit_token"],
+                "metadata": {"title": "Portrait"},
+            },
+        )
+        self.assertEqual(response.status, 200, receipt)
+        self.assertEqual(receipt["positive"]["title"], "Portrait")
+        self.assertIsNone(receipt["positive"]["last_used_at"])
+
     async def test_native_parent_patch_strict_validation(self):
         from database.execution_history_schema import rotate_history_epoch
 

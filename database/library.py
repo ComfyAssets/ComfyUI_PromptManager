@@ -51,7 +51,12 @@ def utc_iso(value: object) -> str | None:
     """A stored timestamp as UTC ISO text, or None when absent or unreadable.
 
     Usage writes are already UTC ISO; a naive value (SQLite's CURRENT_TIMESTAMP
-    form) is read as UTC, and an offset is converted to UTC.
+    form) is read as UTC, and an offset is converted to UTC. One bad row must
+    not fail a whole Library read, so a value past the datetime range after
+    conversion (OverflowError) is unreadable too. Python 3.11+ fromisoformat
+    accepts more ISO forms than 3.10 (e.g. a 2-digit fraction); every form the
+    app writes (utc_now_iso, the 3.2.4 backfill, CURRENT_TIMESTAMP, Z) parses
+    the same on both, so only hand-edited values can differ by version.
     """
     if not isinstance(value, str):
         return None
@@ -60,11 +65,11 @@ def utc_iso(value: object) -> str | None:
         text = text[:-1] + "+00:00"
     try:
         stamp = datetime.datetime.fromisoformat(text)
-    except ValueError:
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+        return stamp.astimezone(datetime.timezone.utc).isoformat()
+    except (ValueError, OverflowError):
         return None
-    if stamp.tzinfo is None:
-        return stamp.replace(tzinfo=datetime.timezone.utc).isoformat()
-    return stamp.astimezone(datetime.timezone.utc).isoformat()
 
 
 _NAME = (
