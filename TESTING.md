@@ -866,9 +866,9 @@ page lifecycle recovery retain their separate behavioral tests.
 Initial production acceptance requires maintainer inspection of paired PNGs and
 geometry; never update snapshots automatically or mask content to bless a gap.
 Data-dependent text/images/counts and the clearly labeled saved/frozen/current
-distinctions are documented in the comparison helper. Broader Images card
-activation/Info/tag/favorite/select parity and shared Viewer stage/toolbar polish
-and shared role-block spacing/padding/glyph polish remain outside #209. The
+distinctions are documented in the comparison helper. The Images card select
+checkbox (#249 D8 follow-up) and tag button (#249 D9) and shared role-block
+spacing/padding/glyph polish remain outside #209. The
 responsive production Viewer keeps its toolbar in the media panel and prompt details readable rather than reproducing the concept's
 mobile toolbar collision. These are explicit remaining visual differences, not
 a whole-application or full-gallery/Viewer pixel-parity claim.
