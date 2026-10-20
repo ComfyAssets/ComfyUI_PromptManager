@@ -1200,14 +1200,18 @@ class TestWorkspaceImages(ImageAPITestCase):
             self.assertEqual(built, [added[0]])
             self.assertEqual(data["total"], len(listed))
             self.assertEqual(data["images"][0]["filename"], "new.png")
-            # Invalidation (the monitor saw new files) and a roots change drop
-            # every derived value.
+            # The monitor invalidates the gallery when it sees a new file: the
+            # next request rebuilds only that file's values, and search finds it.
             self.api.invalidate_gallery_cache()
-            self.assertEqual(self.api._workspace_listed_cache, {})
-            self.assertEqual(self.api._workspace_order_cache, {})
+            self.assertNotEqual(self.api._workspace_listed_cache, {})
+            monitored = (self.output_dir / "day-01" / "monitored.png", 9_999_999.5)
+            scans.append([monitored, *scans[-1]])
             built.clear()
-            response, data = await self.get(limit=10)
-            self.assertEqual(len(built), len(listed))
+            response, data = await self.get(limit=10, q="monitored")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(built, [monitored[0]])
+            self.assertEqual(self._names(data), ["monitored.png"])
+            # A roots change drops every derived value.
             with patch("py.config.GalleryConfig.MONITORING_DIRECTORIES", []):
                 self.assertTrue(self.api._apply_gallery_roots([str(self.output_dir)]))
             self.assertEqual(self.api._workspace_listed_cache, {})

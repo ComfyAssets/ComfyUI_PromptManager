@@ -990,7 +990,7 @@ class ImageRoutesMixin:
         The gallery cache hands out the same list object until it rescans.
         A rescan reuses the value of every unchanged ``(path, mtime)`` and,
         when nothing changed, the previous list itself, so the cached sort
-        orders stay valid. invalidate_gallery_cache drops these values.
+        orders stay valid. Only a gallery-roots change drops these values.
         """
         key = (index, str(root))
         cached = self._workspace_listed_cache.get(key)
