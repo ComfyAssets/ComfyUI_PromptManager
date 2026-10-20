@@ -27,7 +27,6 @@ __all__ = [
     "GenerationParamsError",
     "extract_generation_params",
     "extract_from_records",
-    "number_string",
     "parse_js_json",
 ]
 
@@ -201,9 +200,6 @@ def _number_string(value):
         mark = ("+" if power >= 0 else "-") + str(abs(power))
         body = (digits if count == 1 else digits[0] + "." + digits[1:]) + "e" + mark
     return sign + body
-
-
-number_string = _number_string
 
 
 def _js_string(value):
@@ -945,17 +941,14 @@ def _double_integer(text):
     return value if -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER else float(text)
 
 
-def parse_js_json(text, *, exact_integers=False):
-    """``JSON.parse(text)``, or None where it throws (or the text is ``null``).
-
-    ``exact_integers`` keeps integers beyond 2**53 exact instead of rounding
-    them as JavaScript does; every other rule is unchanged.
-    """
+def parse_js_json(text):
+    """``JSON.parse(text)``, or None where it throws (or the text is ``null``)."""
     if not isinstance(text, str):
         return None
-    integers = int if exact_integers else _double_integer
     try:
-        return json.loads(text, parse_constant=_reject_constant, parse_int=integers)
+        return json.loads(
+            text, parse_constant=_reject_constant, parse_int=_double_integer
+        )
     except (ValueError, RecursionError):
         return None
 

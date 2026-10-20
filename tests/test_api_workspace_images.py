@@ -629,14 +629,19 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertEqual(response.status, 200, data)
         items = {item["filename"]: item for item in data["images"]}
         self.assertEqual(items["ok.png"]["seed"], 5)
-        self.assertIsNone(items["evil.png"]["seed"])
-        self.assertIsNone(items["evil.png"]["linked"]["title"])
         response = await self.client.get(
             "/prompt_manager/images/inspect/evil.png",
             params={"root": 0, "root_scope": items["evil.png"]["root_scope"]},
         )
         self.assertEqual(response.status, 200, await response.text())
-        self.assertIsNone((await response.json())["library"]["title"])
+        library = (await response.json())["library"]
+        self.assertEqual(library["title"], items["evil.png"]["linked"]["title"])
+        shown = (await self._inspector_seeds([items["evil.png"]]))["evil.png"]
+        card = items["evil.png"]["seed"]
+        if card is None:
+            self.assertNotEqual(shown["status"], "known")
+        else:
+            self.assertEqual(shown, {"status": "known", "value": str(card)})
 
     async def test_library_previews_skip_card_facts(self):
         records_png(self.output_dir / "a.png", seeded_records("a fox", 5))

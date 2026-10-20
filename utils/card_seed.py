@@ -1,24 +1,24 @@
 """Workspace card facts from the metadata records a header open already loaded.
 
-The card shows what the inspector shows, so it reads the same shared parser
-(``extract_generation_params``, the Python twin of the browser parser the
-inspector fills from since #251) and nothing else: no separate seed heuristic,
-no graph resolution and no extra file reads. One parse feeds both the seed and
-the positive that confirms a first-line card title.
+The card shows what the inspector shows, so it reads exactly what the
+inspector's browser parser reads: each ``prompt``/``workflow`` record through
+the inspection projection (``project_graph``: strict JSON, the depth and node
+bounds, big integers and decimals as text), and only graphs it parsed, through
+the shared parser (``extract_generation_params``, the Python twin of the
+browser parser the inspector fills from since #251). No separate seed
+heuristic, no graph resolution and no extra file reads. One parse feeds both
+the seed and the positive that confirms a first-line card title.
 """
 
-import math
 import re
 from collections.abc import Mapping
 
 from .generation_params import (
     PLACEHOLDERS,
     GenerationParamsError,
-    extract_from_records,
     extract_generation_params,
-    number_string,
-    parse_js_json,
 )
+from .inspection_response import project_graph
 
 __all__ = ["MAX_RECORD_BYTES", "card_seed", "header_params", "parsed_positive"]
 
@@ -26,7 +26,6 @@ __all__ = ["MAX_RECORD_BYTES", "card_seed", "header_params", "parsed_positive"]
 MAX_RECORD_BYTES = 2 * 1024 * 1024
 _RECORD_KEYS = ("prompt", "workflow")
 _INTEGER = re.compile(r"-?[0-9]+\Z")
-_MAX_SAFE_INTEGER = 2**53 - 1
 
 
 def _utf8_size_over(text: str, limit: int) -> bool:
@@ -43,79 +42,51 @@ def _utf8_size_over(text: str, limit: int) -> bool:
 
 
 def header_params(info) -> dict | None:
-    """The shared parser's result for the ``prompt``/``workflow`` text in ``info``.
+    """The shared parser's result for the inspector's view of ``info``'s records.
 
     ``info`` is a Pillow ``Image.info`` (or the inspection read's metadata).
-    None when neither record is present, a record is not text or is over
-    ``MAX_RECORD_BYTES``, or the browser parser would throw on it.
+    A record the projection does not parse is left out, as the inspector
+    leaves it out. None when no record parses, a record is not text or is
+    over ``MAX_RECORD_BYTES``, or the parser cannot use the graphs.
     """
     if not isinstance(info, Mapping):
         return None
-    records = {key: info.get(key) for key in _RECORD_KEYS}
-    if all(text is None for text in records.values()):
-        return None
-    for text in records.values():
+    graphs = {}
+    for key in _RECORD_KEYS:
+        text = info.get(key)
         if text is None:
             continue
-        if not isinstance(text, str):
+        if not isinstance(text, str) or _utf8_size_over(text, MAX_RECORD_BYTES):
             return None
-        if _utf8_size_over(text, MAX_RECORD_BYTES):
-            return None
-    try:
-        params = extract_from_records(records["prompt"], records["workflow"])
-    except (GenerationParamsError, RecursionError):
-        # RecursionError: the Python parser recurses on deeply nested arrays
-        # where JavaScript does not throw; a crafted file gives no card facts.
+        graph = project_graph(text, key)
+        if graph["status"] == "parsed":
+            graphs[key] = graph["value"]
+    if not graphs:
         return None
-    return _with_exact_seed(params, records)
-
-
-def _with_exact_seed(params: dict, records: dict) -> dict:
-    """``params`` with a rounded seed replaced by the integer the file records.
-
-    ``JSON.parse`` rounds integers beyond 2**53, but the inspector reads the
-    record's own digits (its projection carries big numbers as text). ComfyUI's
-    randomized seeds are mostly that large, so the same parser is run once more
-    on an exact parse of the same records, and its seed is kept only when it is
-    the one that rounded to the parsed value. Anything else leaves the seed
-    as parsed.
-    """
-    seed = params.get("seed")
-    if not isinstance(seed, float) or not math.isfinite(seed):
-        return params
-    if abs(seed) <= _MAX_SAFE_INTEGER or not seed.is_integer():
-        return params
     try:
-        exact = extract_generation_params(
-            {
-                key: parse_js_json(text, exact_integers=True)
-                for key, text in records.items()
-                if text is not None
-            }
-        )["seed"]
+        return extract_generation_params(graphs)
     except (GenerationParamsError, RecursionError):
-        return params
-    if isinstance(exact, bool) or not isinstance(exact, int) or float(exact) != seed:
-        return params
-    return {**params, "seed": exact}
+        # Defence in depth: a parser failure gives no card facts, never a 500.
+        return None
 
 
 def card_seed(params: dict | None) -> int | None:
-    """The parsed seed as the integer the browser prints, else None.
+    """The parsed seed as an integer, else None.
 
-    A placeholder, text, boolean or non-integral number gives None. A double
-    that ``header_params`` could not make exact gives the integer whose decimal
-    form equals the browser's ``String(seed)``.
+    The projection carries integers beyond 2**53 as their exact digits, so a
+    digit string is the recorded seed (the inspector shows it too). A
+    placeholder, other text, a boolean or a decimal gives None.
     """
     if not isinstance(params, Mapping):
         return None
     value = params.get("seed")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool):
         return None
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    text = number_string(value)
-    return int(text) if _INTEGER.match(text) else None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and _INTEGER.match(value):
+        return int(value)
+    return None
 
 
 def parsed_positive(params: dict | None) -> str | None:

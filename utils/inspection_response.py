@@ -161,6 +161,21 @@ def _graph(value: object, *, workflow: bool = False) -> dict:
     return {"status": "parsed", "value": value}
 
 
+def project_graph(text: str, kind: Literal["prompt", "workflow"]) -> dict:
+    """One record's graph as the inspector projects it: ``{status, value}``.
+
+    ``status`` is ``parsed`` (``value`` is the projected graph the browser
+    parser receives), ``limited`` (past the depth or node bound) or
+    ``malformed``. Shared with the workspace card so both read one bound.
+    """
+    try:
+        return _graph(_strict_projection(text, kind=kind), workflow=kind == "workflow")
+    except _ProjectionLimit:
+        return {"status": "limited", "value": None}
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return {"status": "malformed", "value": None}
+
+
 def _metadata(inspection: "InspectionRead | None") -> dict:
     formats = (
         {}
@@ -213,16 +228,15 @@ def _metadata(inspection: "InspectionRead | None") -> dict:
                 graph["status"] = failed or "limited"
             elif formats.get(key) == "invalid":
                 graph["status"] = "malformed"
+            elif carrier is None and formats.get(key) == "reserialized-json":
+                graph["status"] = "limited"
+            elif carrier is None:
+                graph = project_graph(raw.get(key), key)
             else:
                 try:
-                    if carrier is not None:
-                        value = carrier.get(key)
-                        if isinstance(value, str):
-                            value = _strict_projection(value, kind=key)
-                    elif formats.get(key) == "reserialized-json":
-                        raise _ProjectionLimit()
-                    else:
-                        value = _strict_projection(raw[key], kind=key)
+                    value = carrier.get(key)
+                    if isinstance(value, str):
+                        value = _strict_projection(value, kind=key)
                     graph = _graph(value, workflow=key == "workflow")
                 except _ProjectionLimit:
                     graph["status"] = "limited"

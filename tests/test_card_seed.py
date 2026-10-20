@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,8 +16,11 @@ from utils.card_seed import (  # noqa: E402
 from utils.generation_params import (  # noqa: E402
     GenerationParamsError,
     extract_from_records,
-    number_string,
-    parse_js_json,
+    extract_generation_params,
+)
+from utils.inspection_response import (  # noqa: E402
+    MAX_PROJECTION_DEPTH,
+    project_graph,
 )
 
 try:
@@ -96,74 +98,64 @@ class CardSeed(unittest.TestCase):
         self.assertIsNone(header_params({"prompt": json.dumps({"a": wide})}))
         self.assertEqual(info_seed(graph(seeded(1))), 1)
 
-    def test_card_seed_deeply_nested_record_is_none(self):
-        # The Python parser recurses where JavaScript String() does not; a
-        # crafted record must give no card facts, never an exception.
-        self.assertIsNone(header_params({"workflow": nested_workflow()}))
-        self.assertIsNone(
-            header_params({**graph(seeded(1)), "workflow": nested_workflow()})
-        )
-
-    def test_exact_seed_reparse_that_recurses_keeps_the_parsed_seed(self):
-        with patch(
-            "utils.card_seed.extract_generation_params",
-            side_effect=RecursionError("deep"),
-        ):
-            params = header_params(graph(seeded(2**60 + 1)))
-        self.assertEqual(card_seed(params), 1152921504606847000)
-
-    def test_one_json_reader_keeps_integers_exact_on_request(self):
-        text = '{"seed": 9007199254740993}'
-        self.assertEqual(parse_js_json(text), {"seed": 9007199254740992.0})
+    def test_records_past_the_inspection_projection_bound_give_nothing(self):
+        # The inspector hands the browser parser only graphs its projection
+        # parsed; a deeper graph is "limited" there, so the card skips it too.
         self.assertEqual(
-            parse_js_json(text, exact_integers=True), {"seed": 9007199254740993}
+            project_graph(nested_workflow(), "workflow")["status"], "limited"
         )
-        for bad in ('{"a": NaN}', "not json", "[" * 100000):
-            with self.subTest(text=bad[:12]):
-                self.assertIsNone(parse_js_json(bad, exact_integers=True))
-        self.assertEqual(number_string(float(2**60)), "1152921504606847000")
+        self.assertIsNone(header_params({"workflow": nested_workflow()}))
+        # A limited workflow beside a parsed prompt leaves the prompt's facts.
+        both = header_params({**graph(seeded(1)), "workflow": nested_workflow()})
+        self.assertEqual(card_seed(both), 1)
+
+    def test_depth_bound_is_the_inspectors(self):
+        def deep(levels):
+            nested = "[" * levels + "1" + "]" * levels
+            extra = '{"class_type":"Note","inputs":{"v":%s}}' % nested
+            text = graph(seeded(3))["prompt"]
+            return {"prompt": text[:-1] + ',"30":' + extra + "}"}
+
+        # root object, node object, inputs object: three levels before "v".
+        inside = MAX_PROJECTION_DEPTH - 3
+        self.assertEqual(info_seed(deep(inside)), 3)
+        self.assertIsNone(header_params(deep(inside + 1)))
+
+    def test_strict_projection_rules_apply(self):
+        duplicate = '{"10": {"class_type": "KSampler", "inputs": {}}, "10": {}}'
+        self.assertEqual(project_graph(duplicate, "prompt")["status"], "malformed")
+        self.assertIsNone(header_params({"prompt": duplicate}))
 
     def test_record_size_is_utf8_bytes_at_both_bounds(self):
-        ascii_at = "x" * MAX_RECORD_BYTES
-        self.assertIsNotNone(header_params({"prompt": json.dumps(ascii_at)[1:-1]}))
-        four_byte = "\U0001f600" * (MAX_RECORD_BYTES // 4)
+        frame = '{"a":"%s"}'
+        ascii_at = frame % ("x" * (MAX_RECORD_BYTES - 8))
+        self.assertEqual(len(ascii_at), MAX_RECORD_BYTES)
+        self.assertIsNotNone(header_params({"prompt": ascii_at}))
+        four_byte = frame % ("\U0001f600" * ((MAX_RECORD_BYTES - 8) // 4))
+        self.assertLessEqual(len(four_byte.encode()), MAX_RECORD_BYTES)
         self.assertIsNotNone(header_params({"prompt": four_byte}))
-        self.assertIsNone(header_params({"prompt": four_byte + "x"}))
+        padded = four_byte + " " * (MAX_RECORD_BYTES - len(four_byte.encode()) + 1)
+        self.assertIsNone(header_params({"prompt": padded}))
 
-    def test_placeholder_and_non_number_seeds_are_none(self):
-        for value in ("123", "randomize", True, 1.5, None):
+    def test_placeholder_and_non_integer_seeds_are_none(self):
+        for value in ("randomize", " 12", True, 1.5, 7.0, 1e21, None):
             with self.subTest(seed=value):
                 self.assertIsNone(info_seed(graph(seeded(value))))
         self.assertIsNone(card_seed({"seed": "Unknown"}))
-        self.assertIsNone(card_seed({"seed": float("inf")}))
-        self.assertIsNone(card_seed({"seed": 1e21}))
-        self.assertEqual(card_seed({"seed": -3}), -3)
-        self.assertEqual(card_seed({"seed": 7.0}), 7)
+        self.assertIsNone(card_seed({"seed": 7.0}))
+        self.assertEqual(info_seed(graph(seeded(-3))), -3)
+
+    def test_digit_string_seed_is_what_the_inspector_reads(self):
+        # The projection carries big integers as text and keeps text as text;
+        # the inspector shows a digit string as the seed, and so does the card.
+        self.assertEqual(info_seed(graph(seeded("123"))), 123)
 
     def test_seed_beyond_double_precision_is_the_recorded_integer(self):
-        # JSON.parse rounds it; the inspector shows the record's own digits.
+        # JSON.parse would round it; the projection carries the record's digits.
         case = CASES["seed-beyond-double-precision"]
         rounded = extract_from_records(case["prompt"], None)["seed"]
         self.assertEqual(rounded, float(4974052037430000001))
         self.assertEqual(info_seed({"prompt": case["prompt"]}), 4974052037430000001)
-
-    def test_big_seed_stays_rounded_when_the_exact_parse_disagrees(self):
-        # Only a seed that rounds to the parsed value replaces it; otherwise the
-        # card prints the double as the browser does (String(2**60)).
-        browser = 1152921504606847000
-        self.assertEqual(card_seed({"seed": float(2**60)}), browser)
-        with patch(
-            "utils.card_seed.extract_generation_params",
-            return_value={"seed": 2**61},
-        ):
-            params = header_params(graph(seeded(2**60 + 1)))
-        self.assertEqual(card_seed(params), browser)
-        with patch(
-            "utils.card_seed.extract_generation_params",
-            side_effect=GenerationParamsError("throws"),
-        ):
-            params = header_params(graph(seeded(2**60 + 1)))
-        self.assertEqual(card_seed(params), browser)
         self.assertEqual(info_seed(graph(seeded(-(2**60) - 1))), -(2**60) - 1)
 
     def test_workflow_only_record(self):
@@ -191,24 +183,30 @@ class CardSeed(unittest.TestCase):
         self.assertIsNone(card_seed(unparsable))
         self.assertIsNone(parsed_positive(unparsable))
 
-    def test_every_shared_case_matches_the_parser(self):
+    def test_every_shared_case_reads_the_projected_graphs(self):
         for name, case in CASES.items():
             with self.subTest(case=name):
                 info = {k: v for k, v in case.items() if v is not None}
                 params = header_params(info)
-                if params is None:
+                graphs = {key: project_graph(text, key) for key, text in info.items()}
+                values = {
+                    key: graph["value"]
+                    for key, graph in graphs.items()
+                    if graph["status"] == "parsed"
+                }
+                if not values:
+                    self.assertIsNone(params)
                     continue
-                parsed = extract_from_records(case["prompt"], case["workflow"])
-                if name == "seed-beyond-double-precision":
-                    parsed = {**parsed, "seed": 4974052037430000001}
-                self.assertEqual(params, parsed)
-                positive = params["positivePrompt"]
-                usable = (
-                    isinstance(positive, str)
-                    and positive != "No prompt found"
-                    and positive.strip()
-                )
-                self.assertEqual(parsed_positive(params), positive if usable else None)
+                try:
+                    expected = extract_generation_params(values)
+                except GenerationParamsError:
+                    self.assertIsNone(params)
+                    continue
+                self.assertEqual(params, expected)
+                # Prompt text is the same as from a plain parse of the records.
+                if len(values) == len(info):
+                    raw = extract_from_records(case["prompt"], case["workflow"])
+                    self.assertEqual(params["positivePrompt"], raw["positivePrompt"])
 
 
 if __name__ == "__main__":
