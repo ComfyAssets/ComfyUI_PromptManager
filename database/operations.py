@@ -232,6 +232,32 @@ _LINK_FILTER_TAG = (
 )
 
 
+def link_filter_query(
+    q: str, category: Optional[str], tags: List[str], *, every_link: bool = False
+) -> Tuple[str, Dict[str, Any]]:
+    """The workspace filter SELECT and its named parameters (all bound).
+
+    Only code constants and enumerate indices are formatted into the SQL; see
+    PromptDatabase.get_image_link_matches for the semantics.
+    """
+    params: Dict[str, Any] = {"limit": -1}
+    hit = "1"
+    if q:
+        hit = _LINK_FILTER_HIT
+        params["pattern"] = f"%{escape_like(q)}%"
+    admitted = []
+    if category is not None:
+        admitted.append("p.category = :category")
+        params["category"] = category
+    for index, tag in enumerate(tags):
+        admitted.append(_LINK_FILTER_TAG.format(index=index))
+        params[f"tag{index}"] = tag
+    if q and not admitted and not every_link:
+        admitted.append(hit)
+    sql = _LINK_FILTER_SQL.format(hit=hit, admit=" AND ".join(admitted) or "1")
+    return sql, params
+
+
 class LinkFilterTooBroad(ValueError):
     """The linked rows a workspace filter reads exceed MAX_LINK_FILTER_ROWS."""
 
@@ -2323,21 +2349,8 @@ class PromptDatabase(
         MAX_LINK_FILTER_ROWS: LinkFilterTooBroad is raised rather than
         returning a truncated set.
         """
-        params: Dict[str, Any] = {"limit": MAX_LINK_FILTER_ROWS + 1}
-        hit = "1"
-        if q:
-            hit = _LINK_FILTER_HIT
-            params["pattern"] = f"%{escape_like(q)}%"
-        admitted = []
-        if category is not None:
-            admitted.append("p.category = :category")
-            params["category"] = category
-        for index, tag in enumerate(tags):
-            admitted.append(_LINK_FILTER_TAG.format(index=index))
-            params[f"tag{index}"] = tag
-        if q and not admitted and not every_link:
-            admitted.append(hit)
-        sql = _LINK_FILTER_SQL.format(hit=hit, admit=" AND ".join(admitted) or "1")
+        sql, params = link_filter_query(q, category, tags, every_link=every_link)
+        params["limit"] = MAX_LINK_FILTER_ROWS + 1
         with self.model.get_connection() as conn:
             rows = conn.execute(sql, params).fetchall()
         if len(rows) > MAX_LINK_FILTER_ROWS:

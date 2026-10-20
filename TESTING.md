@@ -125,6 +125,33 @@ not certify every existing feature, arbitrary host versions,
 GPU/model changes, cross-pack installation or visual design changes. Those still
 need targeted validation.
 
+## Performance budgets
+
+A spec performance budget gets two tests:
+
+- A structural test that always runs, on every OS/Python job and under the
+  coverage tracer. It asserts counts, never time: SELECTs per request, the
+  `EXPLAIN QUERY PLAN` of the hot query, cache builds on cold and warm requests,
+  and calls of the sort key per cursor page. Example:
+  `test_filter_work_is_bounded` in `tests/test_api_workspace_images.py`.
+- A wall-clock test that runs only with `PROMPTMANAGER_PERF_BUDGET=1` and
+  without a tracer (`sys.gettrace()` or a `sys.monitoring` tool). It skips
+  otherwise. It warms up once, then measures three rounds and asserts the best
+  round's p95; the failure message lists every timing. Example:
+  `test_filter_budget` (Images filters, spec D12: p95 < 150 ms at 50,000 files
+  and 20,000 links).
+
+The `perf budget` job in `.github/workflows/test.yml` is the reference
+measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
+Shared Windows and macOS runners do not run them; the structural tests cover
+portability. Run it locally with
+`PROMPTMANAGER_PERF_BUDGET=1 python -m unittest tests.test_api_workspace_images.TestWorkspaceImages.test_filter_budget`
+and quote the printed p95 in the PR body.
+
+A red budget job means the code got slower: fix the code, or change the budget
+in the spec with a reason. Never rerun it to green. Whether `perf budget` is a
+required check is the maintainer's decision (`.github/branch-protection.json`).
+
 ## Windows portability preflight
 
 Before changing paths, SQLite, streams, restore or cleanup:

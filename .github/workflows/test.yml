@@ -146,6 +146,29 @@ jobs:
           python -m coverage combine
           python -m coverage report --fail-under=85
 
+  perf-budget:
+    # The reference wall-clock measurement (TESTING.md "Performance budgets").
+    name: perf budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Workspace filter budget
+        env:
+          PROMPTMANAGER_PERF_BUDGET: "1"
+        run: python -m unittest -v tests.test_api_workspace_images.TestWorkspaceImages.test_filter_budget
+
   lint:
     name: black and flake8
     runs-on: ubuntu-latest
