@@ -1092,6 +1092,27 @@ class TestWorkspaceImages(ImageAPITestCase):
             db.link_image_to_prompt(owner, str(files["ambiguous"]))
         return files
 
+    async def test_bulk_category_change_shows_on_the_next_listing(self):
+        files = self._filter_fixtures()
+        db = self.api.db
+        night_a = db.get_prompt_id_for_image(str(files["night_a"]))
+        # Warm every listing cache (scan, orders, card facts, link reads).
+        for params in ({}, {"category": "Landscapes"}, {"category": "Night"}):
+            response, data = await self.get(**params)
+            self.assertEqual(response.status, 200, data)
+        self.assertEqual(data["total"], 3)
+        response = await self.client.post(
+            "/prompt_manager/bulk/category",
+            json={"prompt_ids": [night_a], "category": "Landscapes"},
+        )
+        self.assertEqual(response.status, 200, await response.json())
+        _, moved = await self.get(category="Landscapes")
+        self.assertEqual(self._names(moved), ["night_a.png"])
+        self.assertEqual(moved["images"][0]["linked"]["category"], "Landscapes")
+        _, night = await self.get(category="Night")
+        self.assertEqual(night["total"], 2)
+        self.assertNotIn("night_a.png", self._names(night))
+
     async def test_positive_count_counts_distinct_linked_positives(self):
         files = self._filter_fixtures()
         db = self.api.db

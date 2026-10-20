@@ -1599,8 +1599,9 @@ test('card checkboxes select images into the concept bar and Clear empties it', 
     await checkbox(second, 'same.png').check();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveAttribute('data-kept', 'yes');
-    // Set category is wired by a later task; until then it does nothing.
+    // Set category opens its dialog; Cancel keeps the selection.
     await bulkbar(page).getByRole('button', { name: 'Set category', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Categorize selected images', exact: true }).getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
     await checkbox(second, 'same.png').uncheck();
@@ -1776,4 +1777,91 @@ test('Export metadata downloads nothing when no image can be read', async ({ pag
     await expect(exportButton(page)).not.toHaveAttribute('aria-disabled', 'true');
     expect(downloads).toHaveLength(0);
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+});
+
+// #249 D8 follow-up (image selection, Task 3): Set category sets the linked positives' category (app.js simpleInput).
+const categoryButton = page => bulkbar(page).getByRole('button', { name: 'Set category', exact: true });
+const categoryDialog = page => page.getByRole('dialog', { name: 'Categorize selected images', exact: true });
+const categoryRoute = '**/prompt_manager/bulk/category';
+/** Unlink the input root's card by deleting its prompt; returns the output card's positive id. */
+async function unlinkInputCard(request) {
+    const { images } = await (await request.get('/prompt_manager/images/output?mode=workspace')).json();
+    const byKey = Object.fromEntries(images.map(image => [`${image.root_index}:${image.path}`, image]));
+    const [output, input] = [byKey['0:shared/same.png'], byKey['1:shared/same.png']];
+    expect([output.linked.status, input.linked.status]).toEqual(['linked', 'linked']);
+    await expect(await request.delete(`/prompt_manager/delete/${input.linked.positive_id}`)).toBeOK();
+    return output.linked.positive_id;
+}
+
+test('Set category applies the category to the linked positives and the category filter then matches', async ({ page, request }) => {
+    const outputPositive = await unlinkInputCard(request);
+    await page.goto(workspace);
+    await checkBoth(page);
+    const opener = categoryButton(page);
+    await opener.click();
+    const dialog = categoryDialog(page);
+    await expect(dialog).toBeVisible();
+    // The concept's simpleInput: one field and Cancel / Apply (primary).
+    await expect(dialog.locator('#modal-body > .field > label[for="action-input"]')).toHaveText('Category');
+    await expect(dialog.locator('#modal-body > .field > input#action-input')).toHaveValue('');
+    await expect(dialog.locator('#modal-body > .dialog-actions > button')).toHaveText(['Cancel', 'Apply']);
+    await expect(dialog.getByRole('button', { name: 'Apply', exact: true })).toHaveClass(/ca-primary/);
+    await expect(dialog.getByLabel('Category', { exact: true })).toBeFocused();
+    // An empty value applies nothing and keeps the dialog open.
+    const posts = [];
+    page.on('request', item => { if (item.method() === 'POST' && item.url().endsWith('/prompt_manager/bulk/category')) posts.push(item.postDataJSON()); });
+    await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel('Category', { exact: true }).fill('  Landscapes ');
+    const listings = [];
+    page.on('request', item => { if (imagePages(new URL(item.url()))) listings.push(item.url()); });
+    await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(toast(page)).toHaveText('Category set on 1 prompt. 1 selected image had no linked prompt and was skipped.');
+    expect(posts).toEqual([{ prompt_ids: [outputPositive], category: 'Landscapes' }]);
+    // The listing and the category options reload; the reload clears the selection.
+    await expect.poll(() => listings.length).toBeGreaterThan(0);
+    await expect(bulkbar(page)).toBeEmpty();
+    await expect(page.locator('#workspace-main h1')).toBeFocused();
+    await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(0);
+    const filter = page.getByRole('combobox', { name: 'Filter by category', exact: true });
+    await expect(filter.locator('option')).toContainText(['Landscapes']);
+    await filter.selectOption('Landscapes');
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '0:shared/same.png');
+});
+
+test('Set category without a linked image posts nothing and opens no dialog', async ({ page, request }) => {
+    await unlinkInputCard(request);
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    let posted = 0;
+    await page.route(categoryRoute, route => { posted += 1; return route.continue(); });
+    await checkbox(cards(page).last(), 'same.png').check();
+    await categoryButton(page).click();
+    await expect(toast(page)).toHaveText('None of the selected images has a linked prompt.');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    expect(posted).toBe(0);
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+});
+
+test('Set category reports a failure, keeps the selection and ignores a second press while it runs', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    const held = [];
+    await page.route(categoryRoute, route => { held.push(route); });
+    await categoryButton(page).click();
+    await categoryDialog(page).getByLabel('Category', { exact: true }).fill('Landscapes');
+    await categoryDialog(page).getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect.poll(() => held.length).toBe(1);
+    await expect(categoryButton(page)).toHaveAttribute('aria-disabled', 'true');
+    // Playwright waits on an aria-disabled control, so the second press is a dispatched click.
+    await categoryButton(page).dispatchEvent('click');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await held[0].fulfill({ status: 500, json: { success: false, error: 'boom' } });
+    await expect(toast(page)).toHaveText('Category could not be set. Try again.');
+    await expect(categoryButton(page)).not.toHaveAttribute('aria-disabled', 'true');
+    expect(held).toHaveLength(1);
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+    await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(2);
 });

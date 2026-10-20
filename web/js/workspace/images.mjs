@@ -11,7 +11,8 @@ import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
-import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
+import { CATEGORY_DIALOG, CATEGORY_FAILED, CATEGORY_NONE_LINKED, categoryOutcome, categoryTargets } from './images-category.mjs';
+import { openImportDialog, openInputDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
 function el(tag, text, className) {
@@ -185,13 +186,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     if (bulkbar) {
         bulkbar.id = 'bulkbar';
         bulk = el('div', undefined, 'bulkbar'); bulkCount = el('strong');
-        // Set category is wired by the next selection task; until then it does nothing.
+        const setCategory = createButton('Set category');
+        scope.listen(setCategory, 'click', () => openCategory(setCategory));
         const exportMetadata = createButton('Export metadata');
         scope.listen(exportMetadata, 'click', () => exportChecked(exportMetadata));
         const clear = createButton('Clear');
         // Clear hides the bar it sits in, so focus moves to the page heading instead of falling to the page.
         scope.listen(clear, 'click', () => { clearChecked(); focusFallback.focus({preventScroll:true}); });
-        bulk.append(bulkCount, createButton('Set category'), exportMetadata, clear);
+        bulk.append(bulkCount, setCategory, exportMetadata, clear);
         main.append(bulkbar);
     }
     const body = el('div', undefined, 'gallery-layout image-workspace');
@@ -367,7 +369,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (exporting) return;
         exporting = true;
         button.setAttribute('aria-disabled', 'true');
-        const images = state.items.filter(image => checked.has(imageKey(image)));
+        const images = checkedImages();
         const {envelopes, failed} = await collectImagesMetadata(images,
             async image => toInspectionRecord(await api.get(inspectPath(image), {signal:scope.signal}), image));
         if (scope.signal.aborted) return;
@@ -375,6 +377,46 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         button.removeAttribute('aria-disabled');
         if (envelopes.length) downloadJson(BUNDLE_FILENAME, metadataBundle(envelopes, new Date().toISOString()));
         showWorkspaceToast(exportOutcome(envelopes.length, envelopes.length + failed));
+    }
+    /**
+     * Set category (app.js bulk-category → simpleInput): images have no category, so Apply sets it on the selection's
+     * distinct linked positives, then reloads the categories and the listing, which clears the selection. With no
+     * linked image there is nothing to change: a toast says so and no dialog opens. A failure keeps the selection.
+     */
+    let categorizing = false;
+    function openCategory(button) {
+        if (categorizing) return;
+        if (!categoryTargets(checkedImages()).promptIds.length) { showWorkspaceToast(CATEGORY_NONE_LINKED); return; }
+        openInputDialog({scope, trigger:button, title:CATEGORY_DIALOG.title, label:CATEGORY_DIALOG.label,
+            action:CATEGORY_DIALOG.action, onApply:category => applyCategory(button, category)});
+    }
+    async function applyCategory(button, category) {
+        if (categorizing) return;
+        const {promptIds, skipped} = categoryTargets(checkedImages());
+        if (!promptIds.length) { showWorkspaceToast(CATEGORY_NONE_LINKED); return; }
+        categorizing = true;
+        button.setAttribute('aria-disabled', 'true');
+        let result = null;
+        try {
+            result = await api.post('/prompt_manager/bulk/category', {prompt_ids:promptIds, category}, {signal:scope.signal});
+        } catch {
+            // Reported below; the selection stays as it was.
+        }
+        if (scope.signal.aborted) return;
+        categorizing = false;
+        button.removeAttribute('aria-disabled');
+        if (!result) { showWorkspaceToast(CATEGORY_FAILED); return; }
+        const updated = Number.isSafeInteger(result.updated_count) && result.updated_count >= 0 ? result.updated_count : promptIds.length;
+        showWorkspaceToast(categoryOutcome(updated, skipped));
+        await loadCategories();
+        if (scope.signal.aborted) return;
+        const focused = document.activeElement === button;
+        reset();
+        // The reload hides the bar with the focused action in it, as Clear does: focus moves to the page heading.
+        if (focused) focusFallback.focus({preventScroll:true});
+    }
+    function checkedImages() {
+        return state.items.filter(image => checked.has(imageKey(image)));
     }
     /** A Blob, an anchor and a deferred revoke, as the concept's exportSample does. */
     function downloadJson(filename, value) {

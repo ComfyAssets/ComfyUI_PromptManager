@@ -512,7 +512,15 @@ Recorded deviations on this page (spec §8):
   `prompt-manager-images-metadata.json` (`format`, `version: 1`, `exported_at`, and the
   inspector's own "Download metadata JSON" envelopes in listing order); the button is
   `aria-disabled` and ignores a second press while it runs, the selection is kept, and
-  the toast names the unread images (none read: no download). `images selection bar matches
+  the toast names the unread images (none read: no download). Set category opens the
+  concept's `simpleInput` dialog ("Categorize selected images", `input#action-input`
+  labelled Category, Cancel / Apply) and posts the selection's distinct linked positive
+  ids to `/prompt_manager/bulk/category` (images have no category; the filter matches
+  the linked positive's). With no linked image checked it posts nothing and opens no
+  dialog; an empty value keeps the dialog open; success reloads the categories and the
+  listing (clearing the selection, focus to the heading); failure keeps the selection.
+  The route rejects anything but 1-1000 positive integer ids (deduplicated) and a
+  category that fails `validate_category`. `images selection bar matches
   the concept` compares the bar and the checked card with one card checked; the omitted
   actions flow again from the concept's own boxes, checked against the concept page with
   them removed at runtime.

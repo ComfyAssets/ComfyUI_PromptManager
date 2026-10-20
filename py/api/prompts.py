@@ -22,6 +22,25 @@ MAX_PAGE_OFFSET = 10_000_000
 # for one giant result set (and silently truncating large libraries).
 EXPORT_PAGE_SIZE = 1000
 
+# The most prompts one bulk category request may change.
+BULK_CATEGORY_MAX_PROMPTS = 1000
+
+
+def parse_bulk_prompt_ids(value, cap=BULK_CATEGORY_MAX_PROMPTS):
+    """A bulk request's ``prompt_ids``: distinct positive ints, first-seen order.
+
+    Raises ``ValueError`` unless ``value`` is a non-empty list of at most
+    ``cap`` distinct positive integers (booleans are not integers here).
+    """
+    if not isinstance(value, list) or not value:
+        raise ValueError("prompt_ids must be a non-empty list")
+    if any(type(pid) is not int or pid < 1 for pid in value):
+        raise ValueError("prompt_ids must be positive integers")
+    ids = list(dict.fromkeys(value))
+    if len(ids) > cap:
+        raise ValueError(f"At most {cap} prompts can be changed at once")
+    return ids
+
 
 def parse_page_params(query, default_limit=50, max_limit=MAX_PAGE_LIMIT):
     """Return ``(limit, offset)`` from a query mapping, clamped to safe bounds.
@@ -1145,14 +1164,29 @@ class PromptRoutesMixin:
     async def bulk_set_category(self, request):
         """Bulk set category for prompts."""
         try:
-            data = await request.json()
-            prompt_ids = data.get("prompt_ids", [])
-            category = (data.get("category") or "").strip()
-
-            if not prompt_ids:
+            try:
+                data = await request.json()
+            except ValueError:
+                return web.json_response(
+                    {"success": False, "error": "Invalid JSON body"}, status=400
+                )
+            if not isinstance(data, dict):
+                return web.json_response(
+                    {"success": False, "error": "Expected a JSON object"}, status=400
+                )
+            if not data.get("prompt_ids"):
                 return web.json_response(
                     {"success": False, "error": "No prompt IDs provided"}, status=400
                 )
+            category = data.get("category")
+            try:
+                prompt_ids = parse_bulk_prompt_ids(data["prompt_ids"])
+                validate_category(category)
+            except ValueError as ve:
+                return web.json_response(
+                    {"success": False, "error": str(ve)}, status=400
+                )
+            category = (category or "").strip()
 
             updated_count = await self._run_in_executor(
                 self.db.bulk_set_category, prompt_ids, category

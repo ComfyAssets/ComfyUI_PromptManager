@@ -10,6 +10,8 @@
  * - "Import & inspect" (a1483–1491): only the real operations, Inspect a local image and Scan an output folder →
  *   Rescan; no "Import portable recipes" (D15). Rescan shows its running state (aria-disabled "Rescanning…").
  * - "Copy prompt" (a1223–1241): the select-to-copy fallback when the clipboard is unavailable (D22).
+ * - One-value input (a1138 `simpleInput`): a "Category"-style field (`input#action-input`) and Cancel / a primary
+ *   action; used by the Images selection bar's "Set category" (#249 D8).
  *
  * Every opener takes the page `scope`: disposing it closes and removes the shell, so a dialog never outlives its page.
  */
@@ -256,4 +258,30 @@ export function openCopyFallback(text, { scope, trigger = null } = {}) {
         el('p', 'Automatic clipboard access requires a secure browser context.', 'small'),
     ], { scope, trigger, focusTarget: area });
     area.select();
+}
+
+/**
+ * The concept's `simpleInput`: one labelled `input#action-input` (starting at `value`), then Cancel and the primary
+ * `action`. The action reports the trimmed value and closes; an empty value keeps the dialog open on its field.
+ */
+export function openInputDialog({ scope, title, label, action, value = '', onApply, trigger = null }) {
+    requireScope(scope);
+    requireCallbacks({ onApply });
+    for (const [name, text] of Object.entries({ title, label, action })) {
+        if (typeof text !== 'string' || !text) throw new TypeError(`The input dialog needs a ${name}`);
+    }
+    const input = el('input');
+    input.value = typeof value === 'string' ? value : '';
+    const cancel = createButton('Cancel');
+    const apply = createButton(action, 'ca-primary');
+    cancel.addEventListener('click', () => finish());
+    apply.addEventListener('click', () => {
+        const entered = input.value.trim();
+        if (!entered) { input.focus(); return; }
+        finish();
+        onApply(entered);
+    });
+    const actions = el('div', undefined, 'dialog-actions');
+    actions.append(cancel, apply);
+    show(title, [field(label, input, 'action-input'), actions], { scope, trigger, focusTarget: input });
 }
