@@ -352,9 +352,14 @@ for (const [width, height] of [[390, 844], [1600, 1100]]) for (const layout of [
             await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toBeVisible();
             await expect(page.locator('.image-preview > header h2')).toHaveText(filename);
             await page.keyboard.press('Escape');
+            // The concept's card order: image, the D7 star (hidden in List, as the concept hides its overlays), then Inspect.
+            const star = longCard.getByRole('button', { name: `Favorite ${filename}`, exact: true });
             await longCard.locator('.image-open').focus(); await page.keyboard.press('Tab');
+            if (layout !== 'List') { await expect(star).toBeFocused(); await page.keyboard.press('Tab'); }
             await expect(longCard.getByRole('button', { name: `Inspect ${filename}`, exact: true })).toBeFocused();
-            await page.keyboard.press('Shift+Tab'); await expect(longCard.locator('.image-open')).toBeFocused();
+            await page.keyboard.press('Shift+Tab');
+            if (layout !== 'List') { await expect(star).toBeFocused(); await page.keyboard.press('Shift+Tab'); }
+            await expect(longCard.locator('.image-open')).toBeFocused();
             await page.keyboard.press('Enter'); await expect(page.locator('dialog[open]')).toHaveCount(1);
             await page.keyboard.press('Escape');
             await expect.poll(() => containedImageContent(page)).toEqual([]);

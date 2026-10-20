@@ -528,7 +528,11 @@ Favorites store (D7 = A): `PUT` and `DELETE /prompt_manager/images/favorite` wit
 root or a malformed body, and 403 for traversal, an absolute or drive path, NUL, a
 non-media name, or a key over the stored bound. PUT needs a listed file (404
 otherwise). DELETE also clears a path that is no longer listed. Send the DELETE
-body as `application/json`.
+body as `application/json` (`api.del(url, {body})` in the shared API client).
+The Images card star (#249 C5) toggles optimistically, allows one request per file
+at a time, and on any failure restores the previous state and announces it in the
+shared toast. The browser fixtures clear `image_favorites` on reset, and the
+concept fixture stars the concept's favorites (each other prompt's first image).
 
 - The table is `image_favorites(root_key, relative_path, created_at)`. `root_key`
   is the root's real path (`os.path.realpath`), case-normalized with `/`

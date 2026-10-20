@@ -56,6 +56,18 @@ function validatePage(page, cursor) {
     }
 }
 
+/** `state` with the item named by `key` patched (both frozen); the same state when no item has that key. */
+export function withItem(state, key, patch) {
+    if (!patch || typeof patch !== 'object' || 'path' in patch || 'root_index' in patch) {
+        throw new TypeError('An image patch cannot change its identity');
+    }
+    const index = state.items.findIndex(item => imageKey(item) === key);
+    if (index < 0) return state;
+    const items = [...state.items];
+    items[index] = Object.freeze({ ...items[index], ...patch });
+    return Object.freeze({ ...state, items: Object.freeze(items) });
+}
+
 /** Keep metadata for backward scrolling; the view bounds rendered media independently. */
 export function createImageStream({ api, onChange = () => {}, batchSize = 40, restore, fetchPage }) {
     if (fetchPage !== undefined && typeof fetchPage !== 'function') throw new TypeError('Invalid image page adapter');
@@ -148,6 +160,14 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         get state() { return state; },
         reset,
         loadMore,
+        /** Patch one loaded item (a favorite toggle); false when it is not loaded or the stream is gone. */
+        updateItem(key, patch) {
+            const next = withItem(state, key, patch);
+            if (disposed || next === state) return false;
+            state = next;
+            onChange(state);
+            return true;
+        },
         dispose() {
             if (disposed) return;
             disposed = true;

@@ -1,5 +1,5 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, imageKey, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
 import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
@@ -39,6 +39,11 @@ const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], 
 const SOURCES_FAILED = 'Sources and folders could not be loaded. Rescan from Import to retry.';
 const CATEGORIES_FAILED = 'Categories could not be loaded. Rescan from Import to retry.';
 const RESCAN_FAILED = 'Output folders could not be rescanned. Try Rescan again.';
+// D7 = A: the concept's star (app.js actions.favorite) against the favorites store; its toasts without the demo's
+// "in this tab". The concept has no failure copy, so a failure follows the workspace "could not be …" pattern.
+const FAVORITE_URL = '/prompt_manager/images/favorite';
+const FAVORITE_DONE = Object.freeze({true:'Added to favorites.', false:'Removed from favorites.'});
+const FAVORITE_FAILED = Object.freeze({true:'Favorite could not be added. Try again.', false:'Favorite could not be removed. Try again.'});
 // The concept card's first `.media-info` reservation and list row (image-layout.mjs); real rows are measured.
 const INITIAL_METRICS = Object.freeze({columns:1, gap:13, footerHeight:54, listHeight:97});
 
@@ -65,6 +70,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // Discovered sources and folders for "Refine this view" and the scope chip.
     let roots = [], folders = [];
     const rendered = new Map();
+    // Keys with a favorite request in flight: a second press waits for the first answer.
+    const favoritePending = new Set();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
     filters.tags = [...filters.tags];
@@ -220,8 +227,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const open = createButton('', 'image-open');
         open.setAttribute('aria-label', `Open ${image.filename}`);
         open.append(mediaElement(image, true));
-        // D7's star arrives with C5; D8 renders no selection checkbox.
-        art.append(open, el('div', undefined, 'image-overlays'));
+        // D7: the star, wherever the listing reports favorites (not on Library-embedded media); D8: no checkbox yet.
+        const overlays = el('div', undefined, 'image-overlays');
+        if (typeof image.favorite === 'boolean') {
+            const star = createButton('', 'star-button');
+            star.setAttribute('aria-label', `Favorite ${image.filename}`);
+            paintStar(star, image.favorite);
+            overlays.append(star);
+        }
+        art.append(open, overlays);
         const info = el('div', undefined, 'media-info');
         const text = el('div');
         const title = el('h3', cardTitle(image)); title.title = image.path;
@@ -237,11 +251,45 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         markSelected(card, key === selection);
         return card;
     }
+    function paintStar(button, favorite) {
+        button.textContent = favorite ? '★' : '☆';
+        button.setAttribute('aria-pressed', String(favorite));
+    }
+    function setFavorite(key, favorite) {
+        // After leaving Images the saved visit, not the disposed stream, holds the card the user comes back to.
+        if (scope.signal.aborted) {
+            if (!embedded && lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
+            return;
+        }
+        stream.updateItem(key, {favorite});
+        const button = rendered.get(key)?.querySelector('.star-button');
+        if (button) paintStar(button, favorite);
+    }
+    /** Optimistic toggle: the star changes at once and returns to its previous state if the store refuses. */
+    async function toggleFavorite(image) {
+        const key = imageKey(image);
+        if (favoritePending.has(key)) return;
+        const favorite = !image.favorite;
+        favoritePending.add(key);
+        setFavorite(key, favorite);
+        const body = {root_index: image.root_index, path: image.path};
+        try {
+            await (favorite ? api.put(FAVORITE_URL, body) : api.del(FAVORITE_URL, {body}));
+            showWorkspaceToast(FAVORITE_DONE[favorite]);
+        } catch {
+            setFavorite(key, !favorite);
+            showWorkspaceToast(FAVORITE_FAILED[favorite]);
+        } finally {
+            favoritePending.delete(key);
+        }
+    }
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
         const image = state.items.find(item => imageKey(item) === card.dataset.imageKey);
-        if (event.target.closest('.image-open')) previewImage(image);
+        if (!image) return;
+        if (event.target.closest('.star-button')) toggleFavorite(image);
+        else if (event.target.closest('.image-open')) previewImage(image);
         else if (event.target.closest('.image-card-actions button')) inspect(image);
     });
 

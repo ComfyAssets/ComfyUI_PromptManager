@@ -272,3 +272,40 @@ test('the card subtitle is W × H · EXT · Seed N with unknown parts omitted (D
     assert.equal(mediaRatio({width:1536,height:1152}),'1536/1152');
     for (const image of [{}, {width:0,height:5}, {width:5,height:NaN}, {width:Infinity,height:5}]) assert.equal(mediaRatio(image),'4/3');
 });
+
+test('updating one item replaces it immutably and later pages append after it', async () => {
+    const { createImageStream, imageKey } = await source;
+    const pages = [page([{...image('a'), favorite:false}, {...image('b'), favorite:true}], 3, 'next'), page([image('c')], 3)];
+    const states = [];
+    const stream = createImageStream({api:{get:async () => pages.shift()}, onChange:s => states.push(s), batchSize:2});
+    await stream.reset({});
+    const before = stream.state, notified = states.length;
+    assert.equal(stream.updateItem('0:a', {favorite:true}), true);
+    const after = stream.state;
+    assert.equal(states.length, notified + 1); assert.equal(states.at(-1), after);
+    assert.notEqual(after.items, before.items); assert.ok(Object.isFrozen(after.items)); assert.ok(Object.isFrozen(after.items[0]));
+    assert.equal(after.items[0].favorite, true); assert.equal(before.items[0].favorite, false);
+    assert.equal(after.items[1], before.items[1]);
+    assert.equal(after.loaded, before.loaded); assert.equal(after.cursor, before.cursor); assert.equal(after.total, before.total);
+    // Identity fields cannot be patched, and an unknown key changes nothing.
+    assert.throws(() => stream.updateItem('0:a', {path:'z'}), TypeError);
+    assert.throws(() => stream.updateItem('0:a', {root_index:1}), TypeError);
+    assert.equal(stream.updateItem('0:missing', {favorite:true}), false);
+    assert.equal(stream.state, after); assert.equal(states.length, notified + 1);
+    await stream.loadMore();
+    assert.deepEqual(stream.state.items.map(imageKey), ['0:a', '0:b', '0:c']);
+    assert.equal(stream.state.items[0].favorite, true);
+    stream.dispose();
+    assert.equal(stream.updateItem('0:b', {favorite:false}), false);
+    assert.equal(stream.state.items[1].favorite, true);
+});
+
+test('withItem patches a saved browsing state without touching the other items', async () => {
+    const { withItem } = await source;
+    const items = Object.freeze([Object.freeze({...image('a'), favorite:false}), Object.freeze({...image('b'), favorite:false})]);
+    const state = Object.freeze({items, total:2, cursor:null, hasMore:false, loading:false, error:null, loaded:2, positiveCount:null});
+    const next = withItem(state, '0:b', {favorite:true});
+    assert.ok(Object.isFrozen(next)); assert.equal(next.items[1].favorite, true); assert.equal(next.items[0], items[0]);
+    assert.equal(state.items[1].favorite, false);
+    assert.equal(withItem(state, '1:b', {favorite:true}), state);
+});

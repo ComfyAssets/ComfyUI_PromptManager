@@ -132,6 +132,7 @@ def create_app(root: Path) -> web.Application:
     ) -> None:
         with api.db.model.get_connection() as conn:
             for table in (
+                "image_favorites",
                 "image_prompt_pairs",
                 "prompt_pair_tags",
                 "prompt_pairs",

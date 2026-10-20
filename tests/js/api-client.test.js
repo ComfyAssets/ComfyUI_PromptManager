@@ -163,6 +163,19 @@ test("post, put and del send JSON bodies with the right method", async () => {
     await Promise.all([p1, p2, p3]);
 });
 
+test("del sends an optional JSON body", async () => {
+    const fetch = fakeFetch();
+    const api = createApiClient(fetch);
+    const controller = new AbortController();
+    const pending = api.del("/prompt_manager/images/favorite", { body: { root_index: 1, path: "a/b.png" }, signal: controller.signal });
+    assert.equal(fetch.calls[0].init.method, "DELETE");
+    assert.equal(fetch.calls[0].init.body, JSON.stringify({ root_index: 1, path: "a/b.png" }));
+    assert.equal(fetch.calls[0].init.headers["Content-Type"], "application/json");
+    assert.equal(fetch.calls[0].init.signal, controller.signal);
+    fetch.calls[0].resolve(jsonResponse(200, { success: true }));
+    await pending;
+});
+
 test("network failures propagate as ordinary errors", async () => {
     const fetch = fakeFetch();
     const api = createApiClient(fetch);

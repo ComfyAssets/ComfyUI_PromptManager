@@ -89,7 +89,7 @@ test('image selection is shown on the selected card', async ({ page }) => {
     await selected.click();
     await expect(cards(page).last()).toHaveClass(/\bselected\b/);
     await expect(cards(page).first()).not.toHaveClass(/\bselected\b/);
-    await expect(cards(page).locator('[aria-pressed]')).toHaveCount(0);
+    await expect(cards(page).locator('.image-card-actions [aria-pressed]')).toHaveCount(0);
 });
 
 test('closing details preview restores its trigger focus', async ({ page }) => {
@@ -1013,9 +1013,10 @@ async function cardInventory(page, concept) {
         const walk = new Function(`return (${walkSource})()`)();
         return nodes.map(card => {
             const copy = card.cloneNode(true);
-            // D7: the star arrives with C5; D8: no selection checkbox; D9: no tag button until image annotations.
-            if (concept) for (const node of copy.querySelectorAll('.image-overlays > *, [aria-label^="Tag or auto-tag "]')) node.remove();
+            // D8: no selection checkbox; D9: no tag button until image annotations. The D7 star is compared.
+            if (concept) for (const node of copy.querySelectorAll('.image-overlays > label, [aria-label^="Tag or auto-tag "]')) node.remove();
             const open = card.querySelector('.image-open'), img = open.querySelector('img');
+            const star = card.querySelector('.image-overlays > button.star-button');
             return { filename: open.getAttribute('aria-label').replace(/^Open /, ''),
                 // The concept's alt is the card title plus its demo-only " · sample illustration N" (m5).
                 alt: img.alt.replace(/ · sample illustration \d+$/, ''),
@@ -1023,6 +1024,7 @@ async function cardInventory(page, concept) {
                 title: card.querySelector('.media-info h3').textContent, subtitle: card.querySelector('.media-info p').textContent,
                 ratio: card.style.getPropertyValue('--media-ratio').replace(/\s/g, ''),
                 inspect: card.querySelector('.image-card-actions > button').getAttribute('aria-label'),
+                star: star && { text: star.textContent, pressed: star.getAttribute('aria-pressed'), label: star.getAttribute('aria-label') },
                 paths: walk(copy, `article.${[...card.classList].filter(value => value !== 'selected').sort().join('.')}`, []) };
         });
     }, { walkSource: CARD_PATHS.toString(), concept });
@@ -1044,10 +1046,11 @@ test('card matches the concept structure', async ({ page, request }) => {
         if (!reference) continue;
         compared++;
         // D10 title (the linked positive's, also for pair links), D11 "W × H · PNG · Seed N", the concept's
-        // --media-ratio, image alt and size attributes, Inspect label and markup.
+        // --media-ratio, image alt and size attributes, Inspect label, the D7 star (the fixture stars the concept's) and markup.
         expect(card, card.filename).toEqual(reference);
     }
     expect(compared).toBeGreaterThan(5);
+    expect(production.filter(card => card.star?.pressed === 'true').length).toBeGreaterThan(0);
     // D10/D20: a pair-linked file's inspector heading is the positive's title, as the concept panel's.
     const pairLinked = 'alpine_00001.png';
     expect(concept.get(pairLinked)).toBeTruthy();
@@ -1183,6 +1186,9 @@ async function zoomedGallery(page, request, { cssZoom }) {
     });
     await page.keyboard.press('ArrowDown');
     await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-open`)).toBeFocused();
+    // The concept's card order: image, the D7 star, then Inspect.
+    await page.keyboard.press('Tab');
+    await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-overlays .star-button`)).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-card-actions button`)).toBeFocused();
     await page.evaluate(() => {
@@ -1244,3 +1250,127 @@ for (const motion of ['no-preference', 'reduce']) {
         expect(await img.evaluate(n => getComputedStyle(n).transitionDuration)).toBe(motion === 'reduce' ? '0s' : '0.2s');
     });
 }
+
+// D7 = A: the concept's star (app.js mediaCard, actions.favorite) against the PR B favorites store.
+const favoriteRoute = '**/prompt_manager/images/favorite';
+const star = (card, filename) => card.getByRole('button', { name: `Favorite ${filename}`, exact: true });
+const toast = page => page.locator('#workspace-toast');
+const listedFavorites = async request => Object.fromEntries((await (await request.get('/prompt_manager/images/output?limit=40&mode=workspace')).json())
+    .images.map(image => [`${image.root_index}:${image.path}`, image.favorite]));
+async function expectStar(button, favorite) {
+    await expect(button).toHaveText(favorite ? '★' : '☆');
+    await expect(button).toHaveAttribute('aria-pressed', String(favorite));
+}
+
+test('favorite persists across reload', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
+    const sent = [];
+    page.on('request', item => {
+        if (new URL(item.url()).pathname === '/prompt_manager/images/favorite') {
+            sent.push({ method: item.method(), type: item.headers()['content-type'], body: item.postDataJSON() });
+        }
+    });
+    await page.goto(workspace);
+    const input = page.locator('article[data-image-key="1:shared/same.png"]');
+    const video = page.locator('article[data-image-key="0:clip.webm"]');
+    await expect(input).toBeVisible(); await expect(video).toBeVisible();
+    // The star sits in the concept's overlay on image and video cards alike.
+    await expect(input.locator('.media-art > .image-overlays > button.star-button')).toHaveCount(1);
+    await expect(video.locator('.media-art > .image-overlays > button.star-button')).toHaveCount(1);
+    await expectStar(star(input, 'same.png'), false);
+    await expectStar(star(video, 'clip.webm'), false);
+    const selected = await page.locator('article.selected').getAttribute('data-image-key');
+    expect(selected).not.toBe('1:shared/same.png');
+
+    await star(input, 'same.png').click();
+    await expectStar(star(input, 'same.png'), true);
+    await expect(toast(page)).toHaveText('Added to favorites.');
+    // The star neither opens the viewer nor inspects the card.
+    await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toHaveCount(0);
+    await expect(page.locator('article.selected')).toHaveAttribute('data-image-key', selected);
+    await expect(star(input, 'same.png')).toBeFocused();
+
+    // Keyboard: Enter stars the video, Space clears it again.
+    await star(video, 'clip.webm').focus();
+    await page.keyboard.press('Enter');
+    await expectStar(star(video, 'clip.webm'), true);
+    await expect(toast(page)).toHaveText('Added to favorites.');
+    await page.keyboard.press(' ');
+    await expectStar(star(video, 'clip.webm'), false);
+    await expect(toast(page)).toHaveText('Removed from favorites.');
+    await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toHaveCount(0);
+    await expect.poll(() => sent.length).toBe(3);
+    expect(sent).toEqual([
+        { method: 'PUT', type: 'application/json', body: { root_index: 1, path: 'shared/same.png' } },
+        { method: 'PUT', type: 'application/json', body: { root_index: 0, path: 'clip.webm' } },
+        { method: 'DELETE', type: 'application/json', body: { root_index: 0, path: 'clip.webm' } },
+    ]);
+    // Favorites are keyed by source: the same file name in the other root stays unstarred.
+    await expect.poll(() => listedFavorites(request)).toMatchObject({ '1:shared/same.png': true, '0:shared/same.png': false, '0:clip.webm': false });
+
+    await page.reload();
+    await expectStar(star(input, 'same.png'), true);
+    await expectStar(star(page.locator('article[data-image-key="0:shared/same.png"]'), 'same.png'), false);
+    await expectStar(star(video, 'clip.webm'), false);
+    await star(input, 'same.png').click();
+    await expectStar(star(input, 'same.png'), false);
+    await expect(toast(page)).toHaveText('Removed from favorites.');
+    await expect.poll(() => listedFavorites(request)).toMatchObject({ '1:shared/same.png': false });
+    await page.reload();
+    await expectStar(star(input, 'same.png'), false);
+
+    // Leaving Images and coming back restores the browsing state with the current star.
+    await star(input, 'same.png').click();
+    await expect(toast(page)).toHaveText('Added to favorites.');
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expectStar(star(input, 'same.png'), true);
+});
+
+test('favorite failure keeps the previous state and announces it', async ({ page, request }) => {
+    await page.goto(workspace);
+    const card = page.locator('article[data-image-key="0:shared/same.png"]');
+    const button = star(card, 'same.png');
+    await expectStar(button, false);
+    const held = [];
+    await page.route(favoriteRoute, route => { held.push(route); });
+    // Optimistic while in flight; a second press during the request sends nothing more.
+    await button.click();
+    await expectStar(button, true);
+    await button.click();
+    await expect.poll(() => held.length).toBe(1);
+    await page.waitForTimeout(150);
+    expect(held.length).toBe(1);
+    await held[0].fulfill({ status: 500, json: { success: false, error: 'Favorite update failed' } });
+    await expectStar(button, false);
+    await expect(toast(page)).toHaveText('Favorite could not be added. Try again.');
+    expect((await listedFavorites(request))['0:shared/same.png']).toBe(false);
+
+    // Removal failure keeps the star; a network failure is announced the same way.
+    await page.unroute(favoriteRoute);
+    await button.click();
+    await expectStar(button, true);
+    await expect(toast(page)).toHaveText('Added to favorites.');
+    await page.route(favoriteRoute, route => route.abort('failed'));
+    await button.click();
+    await expectStar(button, true);
+    await expect(toast(page)).toHaveText('Favorite could not be removed. Try again.');
+    await page.unroute(favoriteRoute);
+    await page.reload();
+    await expectStar(star(card, 'same.png'), true);
+    expect((await listedFavorites(request))['0:shared/same.png']).toBe(true);
+
+    // A failure that lands after leaving Images still restores the star the user comes back to, and is announced.
+    const late = [];
+    await page.route(favoriteRoute, route => { late.push(route); });
+    await star(card, 'same.png').click();
+    await expectStar(star(card, 'same.png'), false);
+    await expect.poll(() => late.length).toBe(1);
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await late[0].fulfill({ status: 500, json: { success: false, error: 'Favorite update failed' } });
+    await expect(toast(page)).toHaveText('Favorite could not be removed. Try again.');
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expectStar(star(card, 'same.png'), true);
+});

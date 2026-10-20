@@ -91,7 +91,8 @@
             post: (url, body, { signal } = {}) => request("POST", url, { body, signal }),
             put: (url, body, { signal } = {}) => request("PUT", url, { body, signal }),
             patch: (url, body, { signal } = {}) => request("PATCH", url, { body, signal }),
-            del: (url, { signal } = {}) => request("DELETE", url, { signal }),
+            // A DELETE body is optional; the favorites store names its file in one.
+            del: (url, { signal, body } = {}) => request("DELETE", url, { body, signal }),
         };
     }
 

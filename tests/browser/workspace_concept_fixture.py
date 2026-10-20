@@ -165,6 +165,7 @@ _TABLES = (
     "execution_contexts",
     "execution_prompt_snapshots",
     "execution_context_texts",
+    "image_favorites",
     "image_prompt_pairs",
     "prompt_pair_tags",
     "prompt_pairs",
@@ -174,6 +175,11 @@ _TABLES = (
     "prompt_library_state",
     "prompts",
 )
+
+
+def concept_starred(prompt_index: int, round_index: int) -> bool:
+    """The concept's favorites (app.js ``starred``): each other prompt's first image."""
+    return round_index == 0 and prompt_index % 2 == 0
 
 
 def concept_seed(prompt_index: int, round_index: int) -> int:
@@ -356,6 +362,10 @@ def seed_workspace_concept(
     folder = root / "output" / "concepts"
     folder.mkdir()
     roots = snapshot_output_roots("posix", str(root / "output"), str(root / "temp"))
+    # The API package needs the host stubs the server installs before importing it.
+    from py.api.images import _favorite_relative_key, _favorite_root_key
+
+    favorite_root = _favorite_root_key(list(api._get_all_output_dirs())[0])
     total = len(CONCEPT_PROMPTS) * CONCEPT_IMAGE_ROUNDS + extra_images
     rounds = math.ceil(total / len(CONCEPT_PROMPTS))
     now = time.time()
@@ -376,6 +386,10 @@ def seed_workspace_concept(
             image_id = db.link_image_to_prompt(owner["positive_id"], str(path))
             pair_id = owner["pair_ids"][variant]
             db.link_image_to_pair(pair_id, image_id, {"source": "concept fixture"})
+            if concept_starred(prompt_index, round_index):
+                db.set_image_favorite(
+                    favorite_root, _favorite_relative_key(f"concepts/{name}")
+                )
             context = RecipeContext(
                 "3", _snapshot(prompt.positive), _snapshot(negative), "inferred"
             )
