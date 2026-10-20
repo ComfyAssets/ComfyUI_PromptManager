@@ -413,14 +413,13 @@ test('supplemental extreme zoom grows real footers preserves the visible anchor 
     await selected.evaluate(node => scrollBy(0, node.getBoundingClientRect().top - 120));
     await page.evaluate(() => {
         const grid = document.querySelector('.image-grid'), footers = [...grid.querySelectorAll('.media-info')];
-        const nativeHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight').get;
-        const descriptors = footers.map(node => [node, Object.getOwnPropertyDescriptor(node, 'offsetHeight')]);
-        const restore = () => { for (const [node, descriptor] of descriptors) {
-            if (descriptor) Object.defineProperty(node, 'offsetHeight', descriptor); else delete node.offsetHeight;
-        } };
+        // Production measures each footer's fractional height (`getBoundingClientRect().height / scale`, #249 C7), so the
+        // probe records the visible anchor at the first measurement after the zoom, before the grid relays out.
+        const nativeRect = Element.prototype.getBoundingClientRect;
+        const restore = () => { for (const node of footers) delete node.getBoundingClientRect; };
         window.footerMeasurementProbe = { before: null, restore };
-        for (const footer of footers) Object.defineProperty(footer, 'offsetHeight', { configurable: true, get() {
-            const height = nativeHeight.call(this);
+        for (const footer of footers) Object.defineProperty(footer, 'getBoundingClientRect', { configurable: true, writable: true, value() {
+            const rect = nativeRect.call(this);
             if (document.documentElement.style.zoom === '4' && grid.style.getPropertyValue('--image-footer-height') === '54px' &&
                 Math.abs(Number.parseFloat(this.closest('.media-card').style.width) - Number.parseFloat(getComputedStyle(grid).width)) < .01) {
                 const top = visualViewport?.offsetTop || 0, bottom = top + (visualViewport?.height || innerHeight);
@@ -429,7 +428,7 @@ test('supplemental extreme zoom grows real footers preserves the visible anchor 
                     top: first.getBoundingClientRect().top - top } : null;
                 restore();
             }
-            return height;
+            return rect;
         } });
         document.documentElement.style.zoom = '4';
         const box = grid.getBoundingClientRect();
