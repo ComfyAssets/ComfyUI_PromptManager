@@ -560,7 +560,6 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         ], values:{source:filters.root, folder:filters.subfolder, media:filters.media, tags:filters.tags.join(', ')},
         onApply:applyRefinement, onClear:cleared => {
             toolbar.setValue({category:cleared.category});
-            filters.category = cleared.category;
             applyRefinement(cleared);
         }});
     }
@@ -569,10 +568,16 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const root = source === 'all' ? null : roots.find(item => String(item.index) === source);
         return [['', 'All output folders'], ...(root?.subfolders ?? folders).map(path => [path, path])];
     }
-    function applyRefinement({source, folder, media, tags}) {
+    /** Apply the dialog's values (Clear adds `category`); unchanged filters keep the loaded page, as the toolbar does. */
+    function applyRefinement({source, folder, media, tags, category = filters.category}) {
         if (recovering) return;
-        Object.assign(filters, {root:source, subfolder:folder, media,
-            tags:[...new Set(tags.split(',').map(tag => tag.trim()).filter(Boolean))]});
+        const next = {root:source, subfolder:folder, media, category,
+            tags:[...new Set(tags.split(',').map(tag => tag.trim()).filter(Boolean))]};
+        const same = Object.entries(next).every(([key, value]) => key === 'tags'
+            ? value.length === filters.tags.length && value.every((tag, index) => tag === filters.tags[index])
+            : filters[key] === value);
+        if (same) return;
+        Object.assign(filters, next);
         reset();
     }
     function setControlsDisabled(disabled) {

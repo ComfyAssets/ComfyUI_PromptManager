@@ -1485,3 +1485,48 @@ test('Refine offers only the chosen source folders', async ({ page, request }) =
     await page.getByRole('button', { name: 'Filters', exact: true }).click();
     expect(await values()).toEqual(['', 'shared']);
 });
+
+/**
+ * Record every fetch the page's code calls from now on, as `{method, path, search}`. The API client calls fetch in the
+ * same task as the action that needs it, so after a press the record already holds any request the press started.
+ */
+async function recordFetches(page) {
+    await page.evaluate(() => {
+        window.__fetches = [];
+        const original = window.fetch;
+        window.fetch = (resource, init = {}) => {
+            const url = new URL(String(resource instanceof Request ? resource.url : resource), window.location.href);
+            window.__fetches.push({ method: (init.method || 'GET').toUpperCase(), path: url.pathname, search: url.search });
+            return original.call(window, resource, init);
+        };
+    });
+    return () => page.evaluate(() => window.__fetches);
+}
+/** The listing page reads among them (the sidebar count's `limit=1` read is not one). */
+async function countImageFetches(page) {
+    const fetches = await recordFetches(page);
+    return async () => (await fetches()).filter(item => imagePages(new URL(`http://host${item.path}${item.search}`))).length;
+}
+
+// #249 final review m2: like the toolbar, an unchanged refinement reloads nothing, so the loaded cards (and with them
+// the reader's place) stay as they were.
+test('Apply or Clear without a change keeps the loaded page', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 80 } })).toBeOK();
+    await page.setViewportSize({ width: 1200, height: 700 });
+    await page.goto(workspace);
+    await expect(caption(page)).toContainText(/of 82 images/);
+    const fetches = await countImageFetches(page);
+    await cards(page).first().evaluate(card => { card.dataset.kept = 'yes'; });
+    const before = await caption(page).textContent();
+    for (const action of ['Apply filters', 'Clear filters']) {
+        await page.getByRole('button', { name: 'Filters', exact: true }).click();
+        await refineDialog(page).getByRole('button', { name: action, exact: true }).click();
+        await expect(refineDialog(page)).toBeHidden();
+        expect(await fetches()).toBe(0);
+        await expect(cards(page).first()).toHaveAttribute('data-kept', 'yes');
+        await expect(caption(page)).toHaveText(before);
+    }
+    // A real change still applies.
+    await refine(page, { Media: 'image' });
+    await expect.poll(fetches).toBe(1);
+});
