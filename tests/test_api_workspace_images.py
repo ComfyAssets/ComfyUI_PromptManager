@@ -560,8 +560,10 @@ class TestWorkspaceImages(ImageAPITestCase):
             for query in statements
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
-        # The page's link summary, and the positive count's one link read.
-        self.assertEqual(len(selects), 2, selects)
+        # The page's link summary, the positive count's one link read and
+        # the page's one favorites read.
+        self.assertEqual(len(selects), 3, selects)
+        self.assertEqual(sum("image_favorites" in q for q in selects), 1, selects)
         self.assertEqual(data["positive_count"], 1)  # six files, one prompt
 
     async def test_link_summary_runs_in_executor_and_survives_database_errors(self):
@@ -893,7 +895,8 @@ class TestWorkspaceImages(ImageAPITestCase):
             for query in statements
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
-        self.assertEqual(len(selects), 2, selects)
+        self.assertEqual(len(selects), 3, selects)
+        self.assertEqual(sum("image_favorites" in q for q in selects), 1, selects)
         _, first = await self.get(limit=2)
         statements.clear()
         with patch.object(db.model, "get_connection", side_effect=trace_connection):
@@ -904,7 +907,9 @@ class TestWorkspaceImages(ImageAPITestCase):
             for query in statements
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
-        self.assertEqual(len(selects), 1, selects)  # the page's link summary only
+        # The page's link summary and its favorites read only.
+        self.assertEqual(len(selects), 2, selects)
+        self.assertEqual(sum("image_favorites" in q for q in selects), 1, selects)
         self.assertNotIn("gi.file_path, p.rating", selects[0])
         # Without filters the listing outlives a database failure; the count
         # is then unknown rather than wrong.
@@ -1012,7 +1017,8 @@ class TestWorkspaceImages(ImageAPITestCase):
             for query in statements
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
-        self.assertEqual(len(selects), 2, selects)
+        self.assertEqual(len(selects), 3, selects)
+        self.assertEqual(sum("image_favorites" in q for q in selects), 1, selects)
 
     async def test_rating_sort_orders_linked_then_unlinked(self):
         self._filter_fixtures()

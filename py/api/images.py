@@ -440,6 +440,44 @@ async def _json_body_or_error(request):
         return None, _json_error("Invalid JSON body", 400)
 
 
+MAX_FAVORITE_PATH = 4096
+
+
+def _favorite_target(data: Mapping, roots: list[Path]):
+    """``((index, relative), None)`` for a favorite body, else ``(None, error)``.
+
+    Rejects unknown roots, traversal, absolute or drive paths and non-media
+    names before any filesystem or database access.
+    """
+    index, relative = data.get("root_index"), data.get("path")
+    if type(index) is not int or not 0 <= index < len(roots):
+        return None, bad_request("Invalid gallery root")
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or len(relative) > MAX_FAVORITE_PATH
+    ):
+        return None, bad_request("path must be a relative media path")
+    if (
+        _has_traversal(relative)
+        or "\0" in relative
+        or re.match(r"^[a-zA-Z]:", relative)
+    ):
+        return None, _forbidden()
+    if Path(relative).suffix.lower() not in MEDIA_EXTENSIONS:
+        return None, _forbidden("Only media files can be favorites")
+    return (index, relative), None
+
+
+def _listed_relative(files: list, root: Path, relative: str) -> str | None:
+    """The listing's own POSIX spelling of *relative* under *root*, or None."""
+    target = os.path.normcase(str(Path(root) / relative))
+    for path, _mtime in files:
+        if os.path.normcase(str(path)) == target:
+            return path.relative_to(root).as_posix()
+    return None
+
+
 def _iter_media_files(output_path, max_files):
     """Yield media files under *output_path* with bounded effort.
 
@@ -715,6 +753,14 @@ class ImageRoutesMixin:
         @routes.get("/prompt_manager/gallery/subfolders")
         async def get_gallery_subfolders_route(request):
             return await self.get_gallery_subfolders(request)
+
+        @routes.put("/prompt_manager/images/favorite")
+        async def set_image_favorite_route(request):
+            return await self.update_image_favorite(request, favorite=True)
+
+        @routes.delete("/prompt_manager/images/favorite")
+        async def clear_image_favorite_route(request):
+            return await self.update_image_favorite(request, favorite=False)
 
         # POST: drops the server-side listing cache and rewalks the output roots.
         @routes.post("/prompt_manager/gallery/rescan")
@@ -1968,6 +2014,66 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
+    async def update_image_favorite(self, request, *, favorite: bool):
+        """PUT/DELETE one favorite, named by ``{root_index, path}``.
+
+        A favorite is set only on a file in the root's listing; clearing also
+        accepts a well-formed path that is no longer listed, so a deleted
+        file's favorite can still be removed. Both are idempotent.
+        """
+        data, error = await _json_body_or_error(request)
+        if error is not None:
+            return error
+        roots = list(self._get_all_output_dirs())
+        target, error = _favorite_target(data, roots)
+        if error is not None:
+            return error
+        index, relative = target
+        root = roots[index]
+        try:
+            files = await self._get_gallery_files(root)
+            listed = await self._run_in_executor(
+                _listed_relative, files, root, relative
+            )
+            if listed is None and favorite:
+                return web.json_response(
+                    {"success": False, "error": "Image file not found"}, status=404
+                )
+            key = (_public_path(root), listed or Path(relative).as_posix())
+            update = (
+                self.db.set_image_favorite if favorite else self.db.clear_image_favorite
+            )
+            await self._run_in_executor(update, *key)
+        except Exception:
+            self.logger.exception("Favorite update failed")
+            return web.json_response(
+                {"success": False, "error": "Favorite update failed"}, status=500
+            )
+        return web.json_response(
+            {
+                "success": True,
+                "favorite": favorite,
+                "root_index": index,
+                "path": key[1],
+            }
+        )
+
+    def _workspace_favorites(self, images: list[dict]) -> set[tuple[str, str]]:
+        """``(root label, relative path)`` favorites among *images*."""
+        by_root: dict[str, list[str]] = {}
+        for image in images:
+            by_root.setdefault(image["root_dir"], []).append(image["path"])
+        try:
+            return {
+                (label, path)
+                for label, paths in by_root.items()
+                for path in self.db.get_image_favorites(label, paths)
+            }
+        except Exception:
+            # The listing stays usable; stars show as not favorited.
+            self.logger.warning("Image favorites could not be read")
+            return set()
+
     async def inspect_image(self, request):
         """Read prompt evidence for one explicitly rooted physical media file."""
         roots = list(self._get_all_output_dirs())
@@ -2208,7 +2314,7 @@ class ImageRoutesMixin:
     def _format_workspace_page(
         self, page: list[tuple], *, linked: bool = True
     ) -> list[dict]:
-        """Workspace descriptors; ``linked`` adds card facts (link summary, seed)."""
+        """Workspace descriptors; ``linked`` adds card facts (link, seed, favorite)."""
         images = self._format_output_page(page, scoped=True)
         paths = {
             (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry[0]
@@ -2242,6 +2348,11 @@ class ImageRoutesMixin:
             image["seed"] = card_seed(params)
             summary = summaries.get(str(path)) or _unavailable_link()
             image["linked"] = _card_link(summary, parsed_positive(params))
+        if linked:
+            # Image cards carry the star; Library previews show none.
+            favorites = self._workspace_favorites(images)
+            for image in images:
+                image["favorite"] = (image["root_dir"], image["path"]) in favorites
         return images
 
     def _format_output_page(self, page, *, scoped=False):
