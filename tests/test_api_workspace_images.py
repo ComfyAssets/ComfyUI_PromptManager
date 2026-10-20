@@ -643,6 +643,48 @@ class TestWorkspaceImages(ImageAPITestCase):
         else:
             self.assertEqual(shown, {"status": "known", "value": card})
 
+    async def test_unbounded_digit_string_seed_still_lists(self):
+        records_png(
+            self.output_dir / "huge.png", seeded_records("a fox", "9" * 5000), 200
+        )
+        records_png(self.output_dir / "ok.png", seeded_records("a fox", 5))
+        response, data = await self.get()
+        self.assertEqual(response.status, 200, data)
+        items = {item["filename"]: item for item in data["images"]}
+        self.assertIsNone(items["huge.png"]["seed"])
+        self.assertEqual(items["ok.png"]["seed"], "5")
+
+    async def test_one_cards_parse_error_spares_the_page(self):
+        prompt = self._save_prompt("a fox")
+        for name, mtime in (("bad.png", 200), ("ok.png", 100)):
+            path = records_png(
+                self.output_dir / name, seeded_records("a fox", 5), mtime
+            )
+            self.api.db.link_image_to_prompt(prompt, str(path))
+        real_parse = header_params_of_images()
+
+        def parsing(info):
+            if parsing.calls == 0:
+                parsing.calls += 1
+                raise RuntimeError("unexpected parser bug")
+            return real_parse(info)
+
+        parsing.calls = 0
+        with (
+            patch("py.api.images.header_params", side_effect=parsing),
+            self.assertLogs(self.api.logger, "WARNING") as logged,
+        ):
+            response, data = await self.get()
+        self.assertEqual(response.status, 200, data)
+        items = {item["filename"]: item for item in data["images"]}
+        self.assertIsNone(items["bad.png"]["seed"])
+        self.assertIsNone(items["bad.png"]["linked"]["title"])
+        self.assertEqual(items["bad.png"]["linked"]["status"], "linked")
+        self.assertEqual(items["ok.png"]["seed"], "5")
+        self.assertEqual(items["ok.png"]["linked"]["title"], "a fox")
+        self.assertNotIn("unexpected parser bug", json.dumps(data))
+        self.assertIn("unexpected parser bug", "\n".join(logged.output))
+
     async def test_library_previews_skip_card_facts(self):
         records_png(self.output_dir / "a.png", seeded_records("a fox", 5))
         page = await self.api._collect_output_images(

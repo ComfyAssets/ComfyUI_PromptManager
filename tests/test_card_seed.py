@@ -165,6 +165,22 @@ class CardSeed(unittest.TestCase):
                 self.assertEqual(card_seed({"seed": value}), str(value))
         self.assertEqual(card_seed({"seed": "18446744073709551616"}), str(2**64))
 
+    def test_digit_string_seed_is_bounded(self):
+        # 2**64 has 20 digits; a longer string is no seed, and an unbounded one
+        # must not reach int() (Python's int max-str-digits raises ValueError).
+        self.assertEqual(card_seed({"seed": "9" * 20}), "9" * 20)
+        self.assertEqual(card_seed({"seed": "-" + "9" * 20}), "-" + "9" * 20)
+        self.assertIsNone(card_seed({"seed": "1" * 21}))
+        self.assertIsNone(card_seed({"seed": "9" * 5000}))
+        self.assertIsNone(info_seed(graph(seeded("9" * 5000))))
+
+    def test_seed_conversion_error_gives_none(self):
+        class Huge(int):
+            def __str__(self):
+                raise ValueError("Exceeds the limit for integer string conversion")
+
+        self.assertIsNone(card_seed({"seed": Huge(5)}))
+
     def test_workflow_only_record(self):
         case = next(
             case

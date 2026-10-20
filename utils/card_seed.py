@@ -20,12 +20,21 @@ from .generation_params import (
 )
 from .inspection_response import project_graph
 
-__all__ = ["MAX_RECORD_BYTES", "card_seed", "header_params", "parsed_positive"]
+__all__ = [
+    "MAX_RECORD_BYTES",
+    "MAX_SEED_DIGITS",
+    "card_seed",
+    "header_params",
+    "parsed_positive",
+]
 
 # Each record is parsed only up to this many UTF-8 bytes; past it, nothing is read.
 MAX_RECORD_BYTES = 2 * 1024 * 1024
 _RECORD_KEYS = ("prompt", "workflow")
-_INTEGER = re.compile(r"-?[0-9]+\Z")
+# A digit-string seed has at most this many digits (2**64 has 20). Longer text
+# is no seed, and never reaches int(), whose max-str-digits guard raises.
+MAX_SEED_DIGITS = 20
+_INTEGER = re.compile(r"-?[0-9]{1,%d}\Z" % MAX_SEED_DIGITS)
 
 
 def _utf8_size_over(text: str, limit: int) -> bool:
@@ -76,18 +85,23 @@ def card_seed(params: dict | None) -> str | None:
     Always text: ``JSON.parse`` in the browser rounds a number past 2**53, and
     ComfyUI's randomized seeds are often that large. The projection carries
     integers beyond 2**53 as their exact digits, so a digit string is the
-    recorded seed (the inspector shows it too). A placeholder, other text, a
-    boolean or a decimal gives None.
+    recorded seed (the inspector shows it too), up to ``MAX_SEED_DIGITS``
+    digits. A placeholder, other or longer text, a boolean or a decimal gives
+    None.
     """
     if not isinstance(params, Mapping):
         return None
     value = params.get("seed")
     if isinstance(value, bool):
         return None
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, str) and _INTEGER.match(value):
-        return str(int(value))
+    try:
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, str) and _INTEGER.match(value):
+            return str(int(value))
+    except ValueError:
+        # Python's integer string conversion limit: no seed, never a 500.
+        return None
     return None
 
 

@@ -2351,6 +2351,23 @@ class ImageRoutesMixin:
             self.logger.warning("Workspace link summaries could not be read")
             return {}
 
+    def _card_parse(self, path: Path, records: dict | None) -> tuple:
+        """One card's ``(seed, parsed positive)``; ``(None, None)`` on any error.
+
+        One file's unexpected parse failure must not fail the whole page: its
+        card shows no seed and withholds a first-line title.
+        """
+        try:
+            params = header_params(records)
+            return card_seed(params), parsed_positive(params)
+        except Exception:
+            self.logger.warning(
+                "Workspace card facts could not be parsed for %s",
+                path.name,
+                exc_info=True,
+            )
+            return None, None
+
     def _format_workspace_page(
         self, page: list[tuple], *, linked: bool = True
     ) -> list[dict]:
@@ -2384,10 +2401,10 @@ class ImageRoutesMixin:
                 continue
             # Parsed after the handle closes, so a concurrent rename or delete
             # (which Windows refuses on open files) is not held up by it.
-            params = header_params(records)
-            image["seed"] = card_seed(params)
+            seed, positive = self._card_parse(path, records)
+            image["seed"] = seed
             summary = summaries.get(str(path)) or _unavailable_link()
-            image["linked"] = _card_link(summary, parsed_positive(params))
+            image["linked"] = _card_link(summary, positive)
         if linked:
             # Image cards carry the star; Library previews show none.
             favorites = self._workspace_favorites(page)
