@@ -277,12 +277,16 @@ test('updating one item replaces it immutably and later pages append after it', 
     const { createImageStream, imageKey } = await source;
     const pages = [page([{...image('a'), favorite:false}, {...image('b'), favorite:true}], 3, 'next'), page([image('c')], 3)];
     const states = [];
-    const stream = createImageStream({api:{get:async () => pages.shift()}, onChange:s => states.push(s), batchSize:2});
+    const hints = [];
+    const stream = createImageStream({api:{get:async () => pages.shift()}, onChange:(s, hint) => { states.push(s); hints.push(hint); }, batchSize:2});
     await stream.reset({});
     const before = stream.state, notified = states.length;
+    // Page loads carry no hint; a patch says so, so the page can repaint one card instead of laying out the collection.
+    assert.ok(hints.every(hint => hint === undefined));
     assert.equal(stream.updateItem('0:a', {favorite:true}), true);
     const after = stream.state;
     assert.equal(states.length, notified + 1); assert.equal(states.at(-1), after);
+    assert.deepEqual(hints.at(-1), {patch:'0:a'});
     assert.notEqual(after.items, before.items); assert.ok(Object.isFrozen(after.items)); assert.ok(Object.isFrozen(after.items[0]));
     assert.equal(after.items[0].favorite, true); assert.equal(before.items[0].favorite, false);
     assert.equal(after.items[1], before.items[1]);

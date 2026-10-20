@@ -165,7 +165,8 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
             const next = withItem(state, key, patch);
             if (disposed || next === state) return false;
             state = next;
-            onChange(state);
+            // The hint names the one patched item, so a page can repaint it without laying out the collection again.
+            onChange(state, {patch:key});
             return true;
         },
         dispose() {

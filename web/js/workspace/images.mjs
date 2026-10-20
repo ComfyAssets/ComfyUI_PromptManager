@@ -435,9 +435,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // The concept's end of the collection (app.js updateImageContinuation).
         return `${next.loaded ? 'You’re all caught up' : 'No matching images'} · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')}`;
     }
-    function renderState(next) {
+    function renderState(next, {patch} = {}) {
         const previous = state;
-        const changed = state?.items !== next.items;
+        // A patched item (a favorite) keeps every card's size and place; setFavorite repaints its card.
+        const changed = !patch && state?.items !== next.items;
         if (changed) {
             if (!next.items.length) itemIndexes.clear();
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
