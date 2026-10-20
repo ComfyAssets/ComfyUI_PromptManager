@@ -227,7 +227,12 @@ The shared inline and collection inspector reads the current rooted file's suppo
 embedded records, exact generation facts and recorded or inferred prompt evidence.
 `tests/browser/full-inspector.spec.mjs` covers original/metadata/workflow downloads,
 response limits, source changes, nested sending, matched dark/light and mobile
-geometry, and the loaded-collection viewer. The viewer never fetches another page
+geometry, and the loaded-collection viewer. `viewer matches the concept shell and
+toolbar order` measures the concept's `#viewer-dialog` shell, header copy, toolbar
+order and frame geometry in the concept and in production at 1600 and 390 pixels;
+its #249 D34 mapping keeps production's Download link, the appended position and
+reason lines, coarse 40px targets and the toolbar inside `.viewer-left` (Viewer.js's
+own `.viewer-toolbar` rule lifts the concept's across the dialog). The viewer never fetches another page
 or preloads all originals. Its explicit slideshow waits 3.5 seconds after image
 readiness, pauses at native video without advancing on `ended`, and resumes on a
 manually selected image only while prior intent remains. Pause/Stop, inspector

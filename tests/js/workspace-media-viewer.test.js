@@ -89,7 +89,7 @@ test('occurrence Viewer retains exact caller selection and synchronously closes 
         const media=f.walk(f.container,n=>n.tagName==='img')[0];assert.match(media.src,/\/history\/runs\/.*\/output\/current\/media\?/);assert.match(media.src,/_pm_viewer=/);assert.doesNotMatch(media.src,/root=/);
         const download=f.walk(f.container,n=>n.attributes['aria-label']==='Download original')[0];assert.equal(download.href,items[0].url);
         f.walk(f.container,n=>n.attributes['aria-label']==='Next media')[0].fire('click');assert.equal(selections.at(-1).output_node_id,'2');
-        f.walk(f.container,n=>n.attributes['aria-label']==='Close preview')[0].fire('click');assert.deepEqual(closes,[[]]);assert.equal(controller.disposed,0);
+        f.walk(f.container,n=>n.attributes['aria-label']==='Close image viewer')[0].fire('click');assert.deepEqual(closes,[[]]);assert.equal(controller.disposed,0);
         const count=selections.length;media.fire('load');controller.publish({loading:true});assert.equal(selections.length,count);
         view.dispose();view.open({items,selectedKey:'c'.repeat(64)});assert.equal(f.container.children.length,0);assert.equal(controller.disposed,0);
     } finally {view.dispose();parentScope.dispose();f.restore();}
@@ -106,7 +106,7 @@ test('slideshow stops for detail reading nested send close and parent disposal w
         const record={identity:{kind:'reported-location',key:'c'.repeat(64),path:'a.png',occurrence:items[0].occurrence,reference:items[0].reference,history_epoch:items[0].history_epoch,current_scope:items[0].current_scope},file:null,library:null,metadata:null,generation:{},prompts:{positive:{status:'resolved',text:'current'},negative:{status:'resolved',text:''}},download:{url:items[0].url,filename:'a.png'}};
         controller.publish({loading:false,error:false,record});assert.ok(f.walk(f.container,n=>n.textContent==='Current file at the reported location · identity unverified').length);
         find('Play slideshow').fire('click');const pair=f.walk(f.container,n=>n.dataset.sendRole==='pair')[0];pair.fire('click');assert.equal(sends,1);assert.ok(find('Play slideshow'));
-        find('Play slideshow').fire('click');find('Close preview').fire('click');assert.equal(closes,1);assert.equal(controller.listeners,0);media.fire('load');
+        find('Play slideshow').fire('click');find('Close image viewer').fire('click');assert.equal(closes,1);assert.equal(controller.listeners,0);media.fire('load');
         view.open({items,selectedKey:'c'.repeat(64)});media=f.walk(f.container,n=>n.tagName==='img')[0];parentScope.dispose();assert.equal(closes,1,'parent disposal suppresses onClose');assert.equal(f.container.children.length,0);media.fire('load');assert.equal(controller.disposed,0);
     } finally {view.dispose();parentScope.dispose();f.restore();}
 });
@@ -152,7 +152,7 @@ test('real inspection navigation preserves slideshow across two advances and def
         find('Play slideshow').fire('click');f.walk(f.container,n=>n.tagName==='aside')[0].fire('click',{target:retryButton});retryButton.fire('click');
         assert.ok(find('Play slideshow'),'explicit retry interaction stops intent');assert.equal(controller.state.loading,true);assert.equal(timers.size,0);
         calls.at(-1).resolve(currentInspectionEnvelope(items[2]));await new Promise(resolve=>setImmediate(resolve));
-        find('Play slideshow').fire('click');const lateTimer=[...timers.values()][0];find('Close preview').fire('click');assert.equal(closed,1);assert.equal(timers.size,0);
+        find('Play slideshow').fire('click');const lateTimer=[...timers.values()][0];find('Close image viewer').fire('click');assert.equal(closed,1);assert.equal(timers.size,0);
         lateTimer();assert.equal(selected.length,3);assert.equal(controller.state.record.identity.occurrence.output_node_id,'3','closing keeps the borrowed controller live');
         view.open({items,selectedKey:items[2].location_key});const lateMedia=image();lateMedia.fire('load');find('Play slideshow').fire('click');parentScope.dispose();assert.equal(timers.size,0);assert.equal(closed,1);lateMedia.fire('load');
         assert.equal(f.container.children.length,0);assert.equal(controller.state.record.identity.occurrence.output_node_id,'3');
@@ -173,7 +173,7 @@ test('an inline Viewer still loading its image is destroyed only after it has vi
         view.open({items,selectedKey:'c'.repeat(64)});
         const [loading] = instances, image = loading.node, removed = [];
         image.removeAttribute = key => removed.push(key);
-        f.walk(f.container,n => n.attributes['aria-label'] === 'Close preview')[0].fire('click');
+        f.walk(f.container,n => n.attributes['aria-label'] === 'Close image viewer')[0].fire('click');
         assert.equal(loading.destroyed, 0, 'not destroyed while its image view is pending');
         // Viewer.js lists only images that still have a src; the pending view needs it.
         assert.deepEqual(removed, [], 'the image keeps its src while the view is pending');
@@ -185,7 +185,37 @@ test('an inline Viewer still loading its image is destroyed only after it has vi
 
         view.open({items,selectedKey:'c'.repeat(64)});
         const shown = instances[1]; shown.viewed = true; shown.options.viewed.call(shown);
-        f.walk(f.container,n => n.attributes['aria-label'] === 'Close preview')[0].fire('click');
+        f.walk(f.container,n => n.attributes['aria-label'] === 'Close image viewer')[0].fire('click');
         assert.equal(shown.destroyed, 1, 'a viewed image is destroyed at once');
     } finally { view.dispose(); parentScope.dispose(); f.restore(); Object.assign(globalThis, globals); }
+});
+
+test('viewer renders the concept shell and toolbar order', async () => {
+    const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
+    const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d')];
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
+    try {
+        view.open({items,selectedKey:'c'.repeat(64)});
+        const [dialog] = f.container.children;
+        assert.equal(dialog.tagName,'dialog');assert.equal(dialog.id,'viewer-dialog');assert.equal(dialog.attributes['aria-labelledby'],'viewer-title');
+        assert.equal(dialog.attributes['aria-label'],undefined,'the title names the dialog');
+        const [header,layout] = dialog.children;
+        assert.equal(header.className,'dialog-header');
+        const [heading,close] = header.children, [title,subtitle] = heading.children;
+        assert.deepEqual([heading.tagName,title.tagName,title.id,title.textContent],['div','h2','viewer-title','a.png']);
+        assert.deepEqual([subtitle.tagName,subtitle.className,subtitle.textContent],['p','muted small','One viewer · image, prompts, generation data, workflow']);
+        assert.deepEqual([close.tagName,close.id,close.textContent,close.attributes['aria-label']],['button','viewer-close','×','Close image viewer']);
+        assert.equal(layout.className,'viewer-layout');
+        const [left,details] = layout.children;
+        assert.equal(left.className,'viewer-left');
+        assert.deepEqual([details.tagName,details.id,details.attributes['aria-label']],['aside','viewer-details','Image metadata']);
+        const [stage,toolbar] = left.children;
+        assert.deepEqual([stage.tagName,stage.id,toolbar.tagName,toolbar.id,toolbar.className],['div','viewer-stage','div','viewer-toolbar','viewer-toolbar']);
+        // The concept's toolbar order, then production's position status and its two reasons.
+        assert.deepEqual(toolbar.children.map(node => node.textContent.split(':')[0]),
+            ['← Previous','−','+','Fit','Rotate','Flip','Play','Download','Next →','1 of 2 loaded','Image transforms are unavailable because Viewer.js could not load.','']);
+        assert.deepEqual(toolbar.children.slice(9).map(node => [node.tagName,node.attributes.role ?? null]),[['p','status'],['p',null],['p',null]]);
+        f.walk(f.container,n => n.attributes['aria-label'] === 'Next media')[0].fire('click');
+        assert.equal(toolbar.children[9].textContent,'2 of 2 loaded: a.png');
+    } finally { view.dispose(); parentScope.dispose(); f.restore(); }
 });

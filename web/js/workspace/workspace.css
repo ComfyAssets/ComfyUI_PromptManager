@@ -97,20 +97,56 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .masonry-grid .image-open video { aspect-ratio: var(--media-ratio); object-fit: contain; }
 .list-grid .image-open video { height: 95px; aspect-ratio: auto; }
 
+/* Images viewer (#249 C6): the concept's `#viewer-dialog` shell (s1008–1058, ≤700 s1456–1474). #249 D34: real media,
+   titles and states that the concept's one demo image never shows. */
+/* #249 D34: a real title can wrap (long linked titles and filenames). Above 700px the dialog stacks its header and the
+   concept's `calc(100% - 72px)` layout in a column, so a taller header shrinks the layout instead of pushing the toolbar
+   out of view; a one-line title gives the concept's boxes. */
+@media (min-width: 701px) {
+    .ca-tools #viewer-dialog[open] { display: flex; flex-direction: column; /* D34 */ }
+}
+/* #249 D34: under 200% page zoom the concept's 94dvh outgrows the viewport; the dialog keeps within it. */
+.ca-tools #viewer-dialog { max-height: min(94dvh, 94%); /* D34 */ }
+#viewer-dialog .dialog-header > div { min-width: 0; }
+#viewer-title { overflow-wrap: anywhere; /* D34 */ }
+#viewer-dialog, #viewer-dialog::backdrop { overscroll-behavior: contain; }
+#viewer-details { overscroll-behavior: contain; /* D34 */ }
+/* #249 D34: Viewer.js's stylesheet styles every `.viewer-toolbar` (`position: absolute; bottom: 0; left: 0; right: 0`),
+   which lifts the concept's toolbar out of `.viewer-left` to span the whole dialog over the details' last lines. It stays
+   in the column under the stage, where the concept's `.viewer-left` flex column and border place it. */
+#viewer-toolbar { position: static; /* D34 */ }
+/* #249 D34: Viewer.js's own toolbar stays hidden (`toolbar: false`); the concept's `.viewer-toolbar` rule would show it. */
+.viewer-container .viewer-hide { display: none; /* D34 */ }
+/* #249 D34: the stage is focusable for arrow-key navigation; a video plays with native controls, an image without
+   Viewer.js shows itself (the concept hides it under the viewer), and a load failure covers the stage with Retry. */
+#viewer-stage:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: -2px; }
+#viewer-stage > :is(video, img:not([hidden])) { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; visibility: visible; /* D34 */ }
+.media-failure { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; background: var(--ca-field); text-align: center; font-size: 12px; }
+/* #249 D34: Download stays the original file's link, drawn as the concept's toolbar button. */
+#viewer-toolbar > .media-download { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 4px 10px; border: 1px solid var(--ca-border); border-radius: 5px; background: var(--ca-control); color: var(--ca-text); font-size: 12px; white-space: nowrap; /* D34 */ }
+#viewer-toolbar > .media-download:hover:not([aria-disabled="true"]) { background: var(--ca-hover); }
+#viewer-toolbar > [aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
+/* #249 D34: after Next → the position status and the unavailability reasons, each on its own centred line. */
+#viewer-toolbar > p { flex-basis: 100%; margin: 0; text-align: center; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (pointer: coarse) {
+    /* #249 D34: coarse pointers keep 40px square viewer targets (the concept's "−" and "+" are narrower). */
+    #viewer-dialog :is(.dialog-header > button, #viewer-toolbar > button, #viewer-toolbar > a) { min-width: 40px; min-height: 40px; /* D34 */ }
+}
+@media (max-width: 700px) {
+    #viewer-toolbar > .media-download { font-size: 10px; /* D34: as the concept's `.viewer-toolbar button` */ }
+}
+
 /* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
    that keep their own design until their page PR rebuilds them in concept markup. */
 .panel { background: var(--ca-surface); border: 1px solid var(--line); } /* PR D: Images side panel (padding and radius in images.css) becomes `.detail-panel` */
-.ca-tools dialog.image-preview { width: min(1500px, 96%); max-height: 94%; padding: 18px; overflow: hidden; } /* PR C: viewer becomes `#viewer-dialog` */
 .ca-tools dialog.prompt-sender { width: min(760px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 22px; border-color: var(--ca-line); border-radius: 12px; } /* PR D */
 .ca-tools dialog.prompt-sender::backdrop { background: #000b; } /* PR D */
 .ca-tools dialog.recorded-run-dialog { width: min(1100px, calc(100% - 32px)); max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); padding: 22px; border-radius: 7px; } /* PR F */
 pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max-height: none; overflow: visible; } /* PR D: prompt text becomes `p.prompt-text` */
-.viewer-container .viewer-hide { display: none; } /* PR C: the concept's own `.viewer-toolbar` would reveal Viewer.js's hidden toolbar */
 .ca-tools .prompt-actions .ca-icon-button { min-width: 30px; } /* PR D: the concept's 28px prompt action would shrink the toolkit icon button */
 @media (pointer: coarse) {
     .ca-tools .recorded-history .history-toolbar button { min-height: 44px; } /* PR F: concept coarse buttons are 40px */
 }
 @media (max-width: 700px) {
-    .ca-tools dialog.image-preview { overflow: auto; } /* PR C */
     .ca-tools dialog.recorded-run-dialog { padding: 16px; } /* PR F */
 }

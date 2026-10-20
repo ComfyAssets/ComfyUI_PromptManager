@@ -106,7 +106,7 @@ export async function exerciseCurrentPairSend(page, roles) {
                 apply: roles => { window.canonicalApplied.push(roles);return { targetId: target.id, values: roles }; },
             } });
         });
-        const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });
+        const viewer = page.locator('dialog#viewer-dialog');
         const send = viewer.getByRole('button', { name: 'Send prompt pair', exact: true });await send.click();
         const sender = page.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });await expect(sender).toBeVisible();
         await sender.getByRole('combobox', { name: 'ComfyUI window', exact: true }).selectOption({ label: 'Canonical ComfyUI' });

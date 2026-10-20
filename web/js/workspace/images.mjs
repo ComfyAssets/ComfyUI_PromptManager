@@ -482,7 +482,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.listen(more, 'click', pressLoad);
     scope.listen(retry, 'click', pressLoad);
     function maybeLoad() {
-        if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('.image-preview[open]')) return;
+        if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('#viewer-dialog[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();
     }
@@ -500,7 +500,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     }
     function reset() {
         mediaViewer.stopSlideshow();
-        main.querySelector('.image-preview[open]')?.close();
+        main.querySelector('#viewer-dialog[open]')?.close();
         if (!recovering) {
             inspection.clear();
             detailInspector?.dispose(); detailInspector = null;

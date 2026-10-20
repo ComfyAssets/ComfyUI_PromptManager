@@ -157,7 +157,7 @@ for (const embedded of [false, true]) {
             const key = await cards(page).last().getAttribute('data-image-key');
             const preview = page.locator(`article[data-image-key="${key}"]`).getByRole('button', { name: /^Open / });
             await preview.click();
-            const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });
+            const viewer = page.locator('dialog#viewer-dialog');
             await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
             await page.evaluate(() => window.continuationFixture.finishPage());
             await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toHaveAttribute('aria-disabled', 'false');
@@ -165,7 +165,7 @@ for (const embedded of [false, true]) {
             expect(await page.evaluate(() => ({ reads: window.continuationFixture.reads, nativeObserver: typeof IntersectionObserver, visible: document.querySelector('.infinite-continuation').getBoundingClientRect().top <= innerHeight })))
                 .toEqual({ reads: [null, 'next-0'], nativeObserver: 'function', visible: true });
             if (close === 'parent abort') await page.evaluate(() => window.continuationFixture.scope.dispose());
-            else if (close === 'Close') await viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+            else if (close === 'Close') await viewer.getByRole('button', { name: 'Close image viewer', exact: true }).click();
             else await page.keyboard.press('Escape');
             await expect(viewer).toHaveCount(0);
             if (close !== 'parent abort') {
@@ -336,7 +336,7 @@ test('large continuous collections bound the mounted cards and restore earlier i
     await page.locator(`article[data-image-key="${firstKey}"]`)
         .getByRole('button', { name: /^Open / }).click();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
-    await page.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await page.getByRole('button', { name: 'Close image viewer', exact: true }).click();
 });
 
 test('virtual gallery keyboard navigation reaches loaded endpoints and announces collection positions', async ({ page, request }) => {
@@ -379,7 +379,7 @@ test('preview uses actual Viewer.js and cleans up when closing or leaving Images
     await cards(page).last().getByRole('button', { name: 'Open same.png', exact: true }).click();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toHaveAttribute('src', /root=1/);
-    await page.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await page.getByRole('button', { name: 'Close image viewer', exact: true }).click();
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await cards(page).first().getByRole('button', { name: 'Open same.png', exact: true }).click();
     await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
@@ -416,7 +416,7 @@ test('real video media has a usable card and native playback cleans up on close 
         return !element.paused;
     });
     expect(playing).toBe(true);
-    await page.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await page.getByRole('button', { name: 'Close image viewer', exact: true }).click();
     await expect(page.locator('dialog video')).toHaveCount(0);
     expect(await page.evaluate(() => window.__previewVideo.paused && !window.__previewVideo.isConnected)).toBe(true);
     await card.getByRole('button', { name: 'Open clip.webm', exact: true }).click();
@@ -442,32 +442,32 @@ test('collection viewer ignores delayed media callbacks and keeps inspection ret
         await route.continue().catch(()=>{});
     });
     await cards(page).first().getByRole('button',{name:'Open same.png',exact:true}).click();await waiting;
-    const preview=page.getByRole('dialog',{name:'Image preview',exact:true});
+    const preview=page.locator('dialog#viewer-dialog');
     await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','true');
     await page.route('**/images/inspect/shared/same.png?*',route=>route.fulfill({status:503,json:{success:false,error:'Unavailable'}}),{times:1});
     await preview.getByRole('button',{name:'Next media',exact:true}).click();
     await expect(preview).toContainText('Could not read prompts from this file.');await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
-    await expect(preview.getByRole('group',{name:'Media controls',exact:true}).getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',/root=1&root_scope=/);
+    await expect(preview.locator('#viewer-toolbar').getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',/root=1&root_scope=/);
     await preview.getByRole('button',{name:'Rotate image 90 degrees',exact:true}).click();
     await page.evaluate(()=>{window.latestCanvas=document.querySelector('.viewer-canvas img');window.liveViewers[0].options.viewed();});release();
     expect(await page.evaluate(()=>window.liveViewers.at(-1).imageData.rotate)).toBe(90);
     await preview.getByRole('button',{name:'Retry prompt details',exact:true}).click();
     await expect(preview).toContainText('same.png');await expect(preview.getByRole('button',{name:'Retry prompt details',exact:true})).toHaveCount(0);
     expect(await page.evaluate(()=>window.latestCanvas===document.querySelector('.viewer-canvas img'))).toBe(true);
-    await page.evaluate(()=>{location.hash='/overview';});await expect(page.locator('.viewer-container,.image-preview')).toHaveCount(0);
+    await page.evaluate(()=>{location.hash='/overview';});await expect(page.locator('.viewer-container,#viewer-dialog')).toHaveCount(0);
 });
 
 test('collection viewer describes video transforms and releases native playback on navigation',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{include_video:true}})).toBeOK();await page.goto(workspace);
     await page.locator('article[data-image-key="0:clip.webm"] .image-open').click();
-    const preview=page.getByRole('dialog',{name:'Image preview',exact:true}),video=preview.locator('video');
+    const preview=page.locator('dialog#viewer-dialog'),video=preview.locator('video');
     await expect(video).toHaveJSProperty('controls',true);await expect(video).toHaveJSProperty('playsInline',true);
     const zoom=preview.getByRole('button',{name:'Zoom in',exact:true});await expect(zoom).toHaveAttribute('aria-disabled','true');await expect(zoom).toHaveAccessibleDescription('Image transforms are unavailable for video.');
-    await video.focus();const position=await preview.locator('.image-preview-position').textContent();await page.keyboard.press('ArrowRight');await expect(preview.locator('.image-preview-position')).toHaveText(position);
+    await video.focus();const position=await preview.locator('.media-position').textContent();await page.keyboard.press('ArrowRight');await expect(preview.locator('.media-position')).toHaveText(position);
     await video.evaluate(async node=>{window.previousClip=node;node.muted=true;await node.play();});
     await preview.getByRole('button',{name:'Next media',exact:true}).click();await expect(preview.locator('video')).toHaveCount(0);await expect(zoom).toHaveAttribute('aria-disabled','false');
     expect(await page.evaluate(()=>window.previousClip.paused&&!window.previousClip.isConnected&&!window.previousClip.hasAttribute('src'))).toBe(true);
-    await preview.getByRole('button',{name:'Close preview',exact:true}).click();await expect(page.locator('.image-preview')).toHaveCount(0);
+    await preview.getByRole('button',{name:'Close image viewer',exact:true}).click();await expect(page.locator('#viewer-dialog')).toHaveCount(0);
 });
 
 test('failed image requests offer retry while stale results cannot replace a newer route', async ({ page }) => {
@@ -542,7 +542,7 @@ async function staleSourceRecovery(page, request, roots) {
     await page.locator(`article[data-image-key="${key}"] .image-card-actions button`).click();expect((await stale).status()).toBe(409);
     await expect(details(page)).toContainText('The source changed. Refresh the image collection before inspecting this file.');
     await page.locator(`article[data-image-key="${key}"] .image-open`).click();
-    const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toContainText('The source changed.');
+    const viewer = page.locator('dialog#viewer-dialog');await expect(viewer).toContainText('The source changed.');
     const pages = [], inspections = [], options = [], mutations = [];
     page.on('request', request => {
         const url = new URL(request.url());
@@ -1097,7 +1097,7 @@ test('image click opens the viewer and Info selects the panel', async ({ page })
     // D19: the first load still selects the first image into the panel.
     await expect(cards(page).first()).toHaveClass(/selected/);
     await expect(details(page)).toContainText(/output/i);
-    const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });
+    const viewer = page.locator('dialog#viewer-dialog');
     const image = cards(page).nth(1).getByRole('button', { name: 'Open same.png', exact: true });
     await image.click();
     await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
@@ -1286,7 +1286,7 @@ test('favorite persists across reload', async ({ page, request }) => {
     await expectStar(star(input, 'same.png'), true);
     await expect(toast(page)).toHaveText('Added to favorites.');
     // The star neither opens the viewer nor inspects the card.
-    await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toHaveCount(0);
+    await expect(page.locator('dialog#viewer-dialog')).toHaveCount(0);
     await expect(page.locator('article.selected')).toHaveAttribute('data-image-key', selected);
     await expect(star(input, 'same.png')).toBeFocused();
 
@@ -1298,7 +1298,7 @@ test('favorite persists across reload', async ({ page, request }) => {
     await page.keyboard.press(' ');
     await expectStar(star(video, 'clip.webm'), false);
     await expect(toast(page)).toHaveText('Removed from favorites.');
-    await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toHaveCount(0);
+    await expect(page.locator('dialog#viewer-dialog')).toHaveCount(0);
     await expect.poll(() => sent.length).toBe(3);
     expect(sent).toEqual([
         { method: 'PUT', type: 'application/json', body: { root_index: 1, path: 'shared/same.png' } },

@@ -109,7 +109,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await page.locator('.library-shared-gallery .image-card-actions button').first().click();
         await expect(page.getByRole('region', { name: 'Image details', exact: true })).toContainText('canonical-alt.png');
         await page.getByRole('button', { name: 'Open full preview', exact: true }).click();
-        await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toBeVisible();await page.keyboard.press('Escape');
+        await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
         for (const [name, selector] of [['saved', '.library-surface'], ['branches', '.library-variants'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
             await captureCanonicalState(page, testInfo, `production-${name}-${width}-${theme}`, selector);
         }
@@ -122,7 +122,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         for (const name of ['Raw', 'Effective', 'Close recorded run', 'Send prompt pair']) await expect(runDialog.getByRole('button', { name, exact: true })).toBeVisible();
         await captureCanonicalState(page, testInfo, `production-run-${width}-${theme}`, '.recorded-run-dialog');
         const view = runDialog.getByRole('button', { name: 'View current file', exact: true }).first();await view.click();
-        const viewer = page.getByRole('dialog', { name: 'Image preview', exact: true });await expect(viewer).toBeVisible();
+        const viewer = page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
         await expect(viewer.getByRole('region', { name: 'Positive prompt', exact: true })).toContainText(fixture.canonical_positive);
         await expect(viewer.getByRole('region', { name: 'Negative prompt', exact: true })).toContainText(fixture.canonical_negative);
         for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt', 'Send prompt pair']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
@@ -131,7 +131,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await currentPositive.getByRole('button', { name: 'Copy positive prompt', exact: true }).click();
         await expect(currentPositive.getByRole('status')).toContainText(/Copied\.|Copy unavailable/);
         await exerciseCurrentPairSend(page, { positive: fixture.canonical_positive, negative: fixture.canonical_negative });
-        await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog.image-preview');
+        await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog#viewer-dialog');
         await page.keyboard.press('Escape');await expect(view).toBeFocused();await page.keyboard.press('Escape');await expect(run).toBeFocused();
         await compareCanonicalHistory(reference, actual, testInfo);
 
@@ -349,8 +349,8 @@ for (const [width, height] of [[390, 844], [1600, 1100]]) for (const layout of [
             await expect(page.locator('.image-details h2')).toHaveText(filename);
             const fullPreview = page.getByRole('button', { name: 'Open full preview', exact: true });
             await fullPreview.focus(); await expect(fullPreview).toBeFocused(); await page.keyboard.press('Enter');
-            await expect(page.getByRole('dialog', { name: 'Image preview', exact: true })).toBeVisible();
-            await expect(page.locator('.image-preview > header h2')).toHaveText(filename);
+            await expect(page.locator('dialog#viewer-dialog')).toBeVisible();
+            await expect(page.locator('#viewer-title')).toHaveText(filename);
             await page.keyboard.press('Escape');
             // The concept's card order: image, the D7 star (hidden in List, as the concept hides its overlays), then Inspect.
             const star = longCard.getByRole('button', { name: `Favorite ${filename}`, exact: true });

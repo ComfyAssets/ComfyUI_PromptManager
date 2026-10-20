@@ -45,10 +45,10 @@ test('collection viewer rejects stale source and sends only refreshed API eviden
         await expect(await request.post('/prompt_manager/settings',{data:{gallery_root_paths:['input','output']}})).toBeOK();
         const response=page.waitForResponse(result=>result.url().includes('/images/inspect/shared/same.png?root=0'));
         await select(page,'0:shared/same.png');const changed=await response;expect(changed.status()).toBe(409);expect((await changed.json()).code).toBe('source-changed');
-        await page.locator('article[data-image-key="0:shared/same.png"] .image-open').click();const preview=page.getByRole('dialog',{name:'Image preview',exact:true});
+        await page.locator('article[data-image-key="0:shared/same.png"] .image-open').click();const preview=page.locator('dialog#viewer-dialog');
         const message='The source changed. Refresh the image collection before inspecting this file.';
         await expect(preview).toContainText(message);await expect(preview.locator('[data-copy-role],[data-send-role],.file-inspector a[download]')).toHaveCount(0);
-        const original=preview.getByRole('group',{name:'Media controls',exact:true}).getByLabel('Download original',{exact:true});
+        const original=preview.locator('#viewer-toolbar').getByLabel('Download original',{exact:true});
         await expect(original).toHaveAttribute('aria-disabled','true');await expect(original).not.toHaveAttribute('href',/./);
         let downloads=0;page.on('download',()=>downloads++);await original.focus();await page.keyboard.press('Enter');expect(downloads).toBe(0);
         await expect(preview.getByRole('button',{name:'Retry media',exact:true})).toBeHidden();
@@ -114,9 +114,9 @@ test('sender requires explicit destination, previews full changes and acknowledg
         await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('light');
         await page.screenshot({path:testInfo.outputPath('inspector-light.png'),fullPage:true});
         await details(page).getByRole('button',{name:'Open full preview',exact:true}).click();
-        await expect(page.getByRole('dialog',{name:'Image preview',exact:true})).toBeVisible();
+        await expect(page.locator('dialog#viewer-dialog')).toBeVisible();
         await page.screenshot({path:testInfo.outputPath('viewer-prompts.png')});
-        await page.getByRole('button',{name:'Close preview',exact:true}).click();
+        await page.getByRole('button',{name:'Close image viewer',exact:true}).click();
         await page.setViewportSize({width:390,height:844});await details(page).scrollIntoViewIfNeeded();
         await page.screenshot({path:testInfo.outputPath('inspector-mobile.png')});
     } finally {await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
