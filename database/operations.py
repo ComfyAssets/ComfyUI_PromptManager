@@ -278,7 +278,9 @@ def _empty_link_summary(status: str) -> Dict[str, Any]:
 def _link_summary(row: tuple) -> Dict[str, Any]:
     if row[7] is not None:
         positive, text, category, rating = row[7], row[9], row[10], row[11]
-        titles = (row[8], row[12])
+        # The linked positive's Library title (D10/D20); the pair's own title
+        # names its negative variant, so it never titles the card.
+        titles = (row[12],)
     else:
         positive, text, category, rating = row[2], row[3], row[4], row[5]
         titles = (row[6],)

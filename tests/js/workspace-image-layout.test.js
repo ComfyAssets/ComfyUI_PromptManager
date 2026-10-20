@@ -127,7 +127,9 @@ test('masonry uses real finite proportions and falls back for invalid dimensions
 });
 
 test('a narrow gallery caps the concept columns at the smallest readable card', async () => {
-    const {layoutImages} = await source;
+    const {layoutImages, MINIMUM_CARD_WIDTH} = await source;
+    // One shared minimum: the page marks `.narrow-cards` below the same width the layout caps columns at.
+    assert.equal(MINIMUM_CARD_WIDTH, 120);
     // At 200 percent zoom the concept's 390px breakpoint still asks for two columns of a half-width grid (D3, D31).
     for (const [width, asked, columns] of [
         [990,3,3], [990,4,4], [428,3,3], [362,2,2], [190,3,1], [190,4,1], [167,2,1], [69.5,2,1], [0,2,1],

@@ -339,6 +339,11 @@ class TestLibraryAPI(ImageAPITestCase):
         relative = "nested/猫 % #.png"
         pair = self.api.db.save_prompt_pair("Cat", "Noise", title="Pair title")
         positive = self.api.db.get_prompt_pair(pair)["positive_prompt_id"]
+        with self.api.db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (positive, "Positive title"),
+            )
         path = make_png(self.output_dir / relative)
         make_png(self.output_dir / "thumbnails/nested/猫 % #_thumb.png")
         image = self.api.db.link_image_to_prompt(positive, str(path))
@@ -373,7 +378,8 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertEqual(result["library"]["metadata_scope"], "pair")
         self.assertEqual(result["library"]["pair_id"], pair)
         self.assertEqual(result["library"]["positive_id"], positive)
-        self.assertEqual(result["library"]["title"], "Pair title")
+        # D10/D20: the linked positive's title; "Pair title" names the variant.
+        self.assertEqual(result["library"]["title"], "Positive title")
 
     async def test_epoch_scoped_all_library_cursors(self):
         from database.execution_history_schema import rotate_history_epoch

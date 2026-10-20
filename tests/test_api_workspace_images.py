@@ -420,7 +420,8 @@ class TestWorkspaceImages(ImageAPITestCase):
             )
 
     def _link_fixtures(self):
-        """Linked (titled, first-line, pair, untitled pair), ambiguous and none."""
+        """Linked (titled, first-line, pair, variant-titled pair, untitled pair),
+        ambiguous and none."""
         db = self.api.db
         long_line = "lantern " * 15
         titled = self._save_prompt("Titled positive", category="Night", rating=5)
@@ -430,12 +431,20 @@ class TestWorkspaceImages(ImageAPITestCase):
                 (titled, "Stored library title"),
             )
         plain = self._save_prompt(long_line)
+        # A pair's own title names its negative variant; the card shows the
+        # linked positive's title (D10/D20), never the variant name.
         pair = db.save_prompt_pair("Pair positive", "Noise", title="Pair title")
+        with db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (db.get_prompt_pair(pair)["positive_prompt_id"], "Pair positive title"),
+            )
+        variant = db.save_prompt_pair("Variant positive", "Grain", title="Variant name")
         bare = db.save_prompt_pair("Bare pair positive\nmore", "Blur")
         first, second = self._save_prompt("Owner one"), self._save_prompt("Owner two")
         files = {
             name: self.media(f"{name}.png")
-            for name in ("titled", "pair", "ambiguous", "none")
+            for name in ("titled", "pair", "variant", "ambiguous", "none")
         }
         # First-line titles come from files whose own prompt evidence agrees.
         files["plain"] = embedded_png(self.output_dir / "plain.png", long_line)
@@ -444,7 +453,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         )
         db.link_image_to_prompt(titled, str(files["titled"]))
         db.link_image_to_prompt(plain, str(files["plain"]))
-        for name, pair_id in (("pair", pair), ("bare", bare)):
+        for name, pair_id in (("pair", pair), ("variant", variant), ("bare", bare)):
             positive = db.get_prompt_pair(pair_id)["positive_prompt_id"]
             image = db.link_image_to_prompt(positive, str(files[name]))
             db.link_image_to_pair(pair_id, image, {"source": "fixture"})
@@ -456,7 +465,13 @@ class TestWorkspaceImages(ImageAPITestCase):
             "pair": (
                 "linked",
                 db.get_prompt_pair(pair)["positive_prompt_id"],
-                "Pair title",
+                "Pair positive title",
+            ),
+            # No stored title and no file evidence: the card shows the filename.
+            "variant": (
+                "linked",
+                db.get_prompt_pair(variant)["positive_prompt_id"],
+                None,
             ),
             "bare": (
                 "linked",

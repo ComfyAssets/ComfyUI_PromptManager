@@ -2,7 +2,8 @@
 // `.media-info` row; a list row is the concept's 95px image plus that border.
 const MEDIA_RATIO = 1.33, BORDER = 2, FOOTER_HEIGHT = 54, LIST_HEIGHT = 97;
 // Bounded rendering keeps a card readable when zoom shrinks the grid below the concept's columns (D3, D31).
-const MINIMUM_CARD_WIDTH = 120, AUTOMATIC_CARD_WIDTH = 240;
+export const MINIMUM_CARD_WIDTH = 120;
+const AUTOMATIC_CARD_WIDTH = 240;
 
 /** The concept grid's own columns and gap, read from its computed style as the concept's mountMasonry does (D3). */
 export function gridMetrics(grid) {

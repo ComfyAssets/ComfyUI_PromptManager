@@ -1,6 +1,6 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
 import { createImageStream, imageKey, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
-import { layoutImages, visibleImages, gridMetrics } from './image-layout.mjs';
+import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
@@ -40,7 +40,6 @@ const SOURCES_FAILED = 'Sources and folders could not be loaded. Rescan from Imp
 const CATEGORIES_FAILED = 'Categories could not be loaded. Rescan from Import to retry.';
 const RESCAN_FAILED = 'Output folders could not be rescanned. Try Rescan again.';
 // The concept card's first `.media-info` reservation and list row (image-layout.mjs); real rows are measured.
-const NARROW_CARD_WIDTH = 120;
 const INITIAL_METRICS = Object.freeze({columns:1, gap:13, footerHeight:54, listHeight:97});
 
 let lastVisit = null;
@@ -92,7 +91,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         sorts:IMAGE_SORT_OPTIONS, value:{q:filters.q, category:filters.category, sort:filters.sort},
         onChange:value => {
             if (recovering) return;
-            Object.assign(filters, {q:value.q.trim(), category:value.category, sort:value.sort});
+            const next = {q:value.q.trim(), category:value.category, sort:value.sort};
+            // A debounced search report can land after a select change already applied the same values; reloading
+            // then would refetch the first page and drop the reader's scroll position.
+            if (Object.entries(next).every(([key, item]) => filters[key] === item)) return;
+            Object.assign(filters, next);
             reset();
         }, onFilters:openFilters});
     const toolbarControls = toolbar ? [...toolbar.element.querySelectorAll('input, select, button')] : [];
@@ -177,7 +180,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const node = el(video ? 'video' : 'img');
         node.src = resolveUrl(image.thumbnail_url || image.url);
         if (video) { node.muted = true; node.playsInline = true; node.preload = 'metadata'; }
-        else { node.alt = image.filename; node.decoding = 'async'; if (lazy) node.loading = 'lazy'; }
+        else {
+            // The concept card image: alt is the card title, with the listing's intrinsic size when known.
+            node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';
+            if ([image.width, image.height].every(value => Number.isFinite(value) && value > 0)) {
+                node.width = image.width; node.height = image.height;
+            }
+        }
         return node;
     }
     function releaseVideo(video) {
@@ -193,10 +202,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);
     }
-    /** The concept's `.media-card.selected`; Info selects into the panel, so it carries the pressed state (D19). */
+    /** The concept's `.media-card.selected` (D19); as in the concept, Info carries no pressed state. */
     function markSelected(card, selected) {
         card.classList.toggle('selected', selected);
-        card.querySelector('.image-card-actions button').setAttribute('aria-pressed', String(selected));
     }
     function previewImage(image) {
         if (!image) return;
@@ -320,7 +328,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function updateGeometry() {
         geometry = layoutImages(state.items, galleryWidth, layout, metrics);
         // Below the narrowest bounded card (extreme zoom) the info row stacks (the production overlay, #249 D31).
-        grid.classList.toggle('narrow-cards', galleryWidth < NARROW_CARD_WIDTH);
+        grid.classList.toggle('narrow-cards', galleryWidth < MINIMUM_CARD_WIDTH);
         grid.style.height = `${geometry.height}px`;
         grid.style.setProperty('--image-footer-height', `${metrics.footerHeight}px`);
     }

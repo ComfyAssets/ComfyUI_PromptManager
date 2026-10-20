@@ -441,9 +441,9 @@ and skip the parse.
   `unavailable` when the database read failed (logged, no error text). Treat
   anything but `linked` as the filename fallback. In pair scope (the image has
   exactly one distinct pair), `positive_id` is the pair's positive, and the title
-  comes from the pair title, then the positive's Library title, then the text's
-  first line. In positive scope it comes from the Library title, then the first
-  line. A first line longer than 80 code points is cut to 80 plus `…`, like
+  comes from that positive's Library title, then its text's first line, never
+  from the pair's own title, which names the negative variant (#249 D10/D20). In
+  positive scope it comes from the Library title, then the first line. A first line longer than 80 code points is cut to 80 plus `…`, like
   `library.mjs` `title()`. `title_source` is `stored`, `text` or null. `category`
   and `rating` come from the linked positive (D13), not from the pair. The title
   gate is shared with the inspector (`_verified_title`): a `stored` title always

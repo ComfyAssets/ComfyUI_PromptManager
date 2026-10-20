@@ -81,15 +81,15 @@ test('workspace defaults to the native Images collection without a hash route', 
         .getByRole('link', { name: /^Images(?:\s*[\d,]+)?$/ })).toHaveAttribute('aria-current', 'page');
 });
 
-test('image selection is announced on the selected image button', async ({ page }) => {
+test('image selection is shown on the selected card', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    // D19: Info selects into the panel, so it carries the selection state.
+    // D19: Info selects into the panel; as in the concept, the card carries `.selected` and Info has no pressed state.
     const selected = cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true });
     await selected.click();
-    await expect(selected).toHaveAttribute('aria-pressed', 'true');
-    await expect(cards(page).first().getByRole('button', { name: 'Inspect same.png', exact: true }))
-        .toHaveAttribute('aria-pressed', 'false');
+    await expect(cards(page).last()).toHaveClass(/\bselected\b/);
+    await expect(cards(page).first()).not.toHaveClass(/\bselected\b/);
+    await expect(cards(page).locator('[aria-pressed]')).toHaveCount(0);
 });
 
 test('closing details preview restores its trigger focus', async ({ page }) => {
@@ -1015,8 +1015,11 @@ async function cardInventory(page, concept) {
             const copy = card.cloneNode(true);
             // D7: the star arrives with C5; D8: no selection checkbox; D9: no tag button until image annotations.
             if (concept) for (const node of copy.querySelectorAll('.image-overlays > *, [aria-label^="Tag or auto-tag "]')) node.remove();
-            const open = card.querySelector('.image-open');
+            const open = card.querySelector('.image-open'), img = open.querySelector('img');
             return { filename: open.getAttribute('aria-label').replace(/^Open /, ''),
+                // The concept's alt is the card title plus its demo-only " · sample illustration N" (m5).
+                alt: img.alt.replace(/ · sample illustration \d+$/, ''),
+                size: [img.getAttribute('width'), img.getAttribute('height')],
                 title: card.querySelector('.media-info h3').textContent, subtitle: card.querySelector('.media-info p').textContent,
                 ratio: card.style.getPropertyValue('--media-ratio').replace(/\s/g, ''),
                 inspect: card.querySelector('.image-card-actions > button').getAttribute('aria-label'),
@@ -1035,21 +1038,26 @@ test('card matches the concept structure', async ({ page, request }) => {
     await expect(cards(page)).toHaveCount(24);
     const production = await cardInventory(page, false);
     const listed = (await (await request.get('/prompt_manager/images/output?limit=40&mode=workspace')).json()).images;
-    const linkedTitles = new Map(listed.map(image => [image.filename, image.linked]));
     let compared = 0;
     for (const card of production) {
         const reference = concept.get(card.filename);
         if (!reference) continue;
         compared++;
-        // D11 "W × H · PNG · Seed N", the concept's --media-ratio, Inspect label and markup.
-        expect({ ...card, title: null }).toEqual({ ...reference, title: null });
-        // D10: the h3 is the listing's confirmed linked title (PR B). OPEN GAP, reported in C3: for a pair-linked file
-        // PR B's title is the pair's own title (here the concept's negative name, "Quality baseline"), where the concept
-        // card shows the positive prompt's title ("Alpine observatory").
-        const linked = linkedTitles.get(card.filename);
-        expect(card.title).toBe(linked?.status === 'linked' && linked.title ? linked.title : card.filename);
+        // D10 title (the linked positive's, also for pair links), D11 "W × H · PNG · Seed N", the concept's
+        // --media-ratio, image alt and size attributes, Inspect label and markup.
+        expect(card, card.filename).toEqual(reference);
     }
     expect(compared).toBeGreaterThan(5);
+    // D10/D20: a pair-linked file's inspector heading is the positive's title, as the concept panel's.
+    const pairLinked = 'alpine_00001.png';
+    expect(concept.get(pairLinked)).toBeTruthy();
+    await page.getByRole('button', { name: `Inspect ${pairLinked}`, exact: true }).click();
+    await expect(details(page).getByRole('heading', { level: 2 })).toHaveText(concept.get(pairLinked).title);
+    await openConcept(page, 'images', 'dark');
+    await page.locator(`#image-grid [aria-label="Inspect ${pairLinked}"]`).click();
+    await expect(page.locator('#image-inspector h2')).toHaveText(concept.get(pairLinked).title);
+    await openProduction(page, 'images', 'dark');
+    await expect(cards(page)).toHaveCount(24);
     const first = cards(page).first();
     // The h3 keeps the full path; no byte size and no "Preview <file>" button remain on the card.
     for (const image of listed.slice(0, 6)) {
@@ -1107,7 +1115,7 @@ test('image click opens the viewer and Info selects the panel', async ({ page })
     await expect(viewer).toHaveCount(0);
     await expect(cards(page).nth(1)).toHaveClass(/selected/);
     await expect(cards(page).first()).not.toHaveClass(/selected/);
-    await expect(info).toHaveAttribute('aria-pressed', 'true');
+    await expect(info).not.toHaveAttribute('aria-pressed');
     await expect(details(page)).toContainText(/input/i);
     await image.focus(); await page.keyboard.press('ArrowLeft');
     await expect(cards(page).first().getByRole('button', { name: 'Open same.png', exact: true })).toBeFocused();
@@ -1142,13 +1150,15 @@ test('grid columns follow concept breakpoints', async ({ page, request }) => {
     }
 });
 
-test('bounded DOM, keyboard and scroll restoration survive at 200% zoom', async ({ page, request }) => {
+// `cssZoom` follows the suite's zoom convention (media queries keep the 1600px breakpoint); the 800px variant is a real
+// 200% browser zoom: half the CSS viewport at device scale 2, so the concept's narrower breakpoint applies too (m4).
+async function zoomedGallery(page, request, { cssZoom }) {
     await page.addInitScript(() => { window.IntersectionObserver = undefined; });
     await expect(await request.post('/__test__/reset', { data: { extra_images: 200 } })).toBeOK();
-    await page.setViewportSize({ width: 1600, height: 1100 });
+    if (cssZoom) await page.setViewportSize({ width: 1600, height: 1100 });
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(40);
-    await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+    if (cssZoom) await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     for (const loaded of [80, 120, 160, 200, 202]) {
         await more.click();
@@ -1189,5 +1199,30 @@ test('bounded DOM, keyboard and scroll restoration survive at 200% zoom', async 
     await expect(caption(page)).toContainText('202 of 202 images');
     await expect.poll(async () => Math.abs((await page.evaluate(() => window.scrollY)) - previousScroll)).toBeLessThan(240);
     await expect.poll(() => cards(page).count()).toBeLessThan(120);
-    await page.evaluate(() => { document.documentElement.style.zoom = ''; });
+    if (cssZoom) await page.evaluate(() => { document.documentElement.style.zoom = ''; });
+}
+
+test('bounded DOM, keyboard and scroll restoration survive at 200% zoom', async ({ page, request }) => {
+    await zoomedGallery(page, request, { cssZoom: true });
+});
+
+test.describe('at an 800px viewport and device scale 2', () => {
+    test.use({ viewport: { width: 800, height: 550 }, deviceScaleFactor: 2 });
+    test('bounded DOM, keyboard and scroll restoration survive at real 200% zoom', async ({ page, request }) => {
+        await zoomedGallery(page, request, { cssZoom: false });
+        // The concept's narrow breakpoint, read from the grid's own tracks.
+        expect(await page.locator('.image-grid').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(/\s+/).length)).toBe(2);
+    });
+});
+
+test('a debounced search that lands after a sort change does not reload the same page', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const reads = [];
+    page.on('request', request => { const url = new URL(request.url()); if (imagePages(url)) reads.push(url.search); });
+    // The sort change applies the typed query at once; the search debounce then reports the same values.
+    await search(page).fill('same');
+    await sortBy(page).selectOption('name');
+    await page.waitForTimeout(1000);
+    expect(reads.filter(search => new URLSearchParams(search).get('q') === 'same')).toHaveLength(1);
 });

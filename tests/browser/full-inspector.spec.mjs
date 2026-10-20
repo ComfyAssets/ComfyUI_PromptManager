@@ -1,5 +1,8 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+// D10/D20: the heading is the linked positive's title (its confirmed first line here), never the pair's
+// "Inspector recipe", which names the negative variant.
+const POSITIVE_TITLE='Inspector portrait 猫 😀';
 
 test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 test.beforeEach(async({page,browserName})=>{await startCoverage(page,browserName);page.inspectorErrors=[];page.on('pageerror',error=>page.inspectorErrors.push(error.message));});
@@ -71,7 +74,7 @@ test('inspection wire preserves exact rooted envelope', async ({ request }) => {
     expect(result.metadata.prompt_graph.value['3'].inputs.cfg).toBe('6.5');
     expect(result.metadata.record_formats).toEqual({ prompt: 'original-text', workflow: 'original-text' });
     expect(result.file).toMatchObject({ observation: 'current-file', format: 'PNG', width: 720, height: 480 });
-    expect(result.library).toMatchObject({ status: 'linked', metadata_scope: 'pair', title: 'Inspector recipe', category: 'Inspection', tags: ['fixture', 'geometric'] });
+    expect(result.library).toMatchObject({ status: 'linked', metadata_scope: 'pair', title: POSITIVE_TITLE, category: 'Inspection', tags: ['fixture', 'geometric'] });
     expect((await inspect(collision)).prompts.positive.text).toBe('Input collision');
     const gallery = await (await request.get(`/prompt_manager/library/${result.library.positive_id}/images?pair_id=${result.library.pair_id}`)).json();
     expect(gallery.images[0].root_scope).toBe(complete.root_scope);
@@ -98,7 +101,7 @@ async function downloadText(page,action) {
 
 test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);
-    await expect(panel.getByRole('heading',{name:'Inspector recipe',exact:true})).toBeVisible();await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.locator('.file-name')).toHaveText('complete.png');
+    await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.locator('.file-name')).toHaveText('complete.png');
     await expect(panel.locator('.file-evidence')).toHaveText('Workflow prompt evidence');
     expect(await panel.evaluate(node=>node.getBoundingClientRect().width)).toBe(310);
     expect(await panel.locator('.file-inspector-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
@@ -194,7 +197,7 @@ test('full inspector keeps long literal content reachable on mobile',async({page
 
 test('embedded gallery uses the same full inspector',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();const list=await(await request.get('/prompt_manager/library')).json();const id=list.items.find(item=>item.text.startsWith('Inspector portrait')).id;
-    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:'Inspector recipe',exact:true})).toBeVisible();await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel).toContainText('Recipe tags');await panel.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('.image-preview .file-inspector')).toHaveCount(1);
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel).toContainText('Recipe tags');await panel.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('.image-preview .file-inspector')).toHaveCount(1);
 });
 
 test('full inspector labels container representations and releases action URLs',async({page,request})=>{
