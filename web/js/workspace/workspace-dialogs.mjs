@@ -8,7 +8,7 @@
  *   mock-status note because every field is a real filter, and no "Prompt evidence" field because evidence is only
  *   known per file (D14). Clear also clears the toolbar category, as the concept's does; the page applies it.
  * - "Import & inspect" (a1483–1491): only the real operations, Inspect a local image and Scan an output folder →
- *   Rescan; no "Import portable recipes" (D15).
+ *   Rescan; no "Import portable recipes" (D15). Rescan shows its running state (aria-disabled "Rescanning…").
  * - "Copy prompt" (a1223–1241): the select-to-copy fallback when the clipboard is unavailable (D22).
  *
  * Every opener takes the page `scope`: disposing it closes and removes the shell, so a dialog never outlives its page.
@@ -177,6 +177,7 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
     ], { scope, trigger });
 }
 
+/** One operation row; a press on its busy (aria-disabled) action is ignored and keeps the dialog open. */
 function operation(title, description, label, onAction) {
     const row = el('div', undefined, 'operation');
     const text = el('div');
@@ -184,27 +185,40 @@ function operation(title, description, label, onAction) {
     const actions = el('div', undefined, 'row-actions');
     const action = createButton(label);
     action.addEventListener('click', () => {
+        if (action.getAttribute('aria-disabled') === 'true') return;
         finish();
         onAction();
     });
     actions.append(action);
     row.append(text, actions);
-    return row;
+    return { row, action };
 }
 
-/** "Import & inspect" with the two real operations (D15). */
-export function openImportDialog({ scope, onInspect, onRescan, trigger = null }) {
+const RESCAN_LABEL = 'Rescan';
+const RESCAN_BUSY_LABEL = 'Rescanning…';
+
+/**
+ * "Import & inspect" with the two real operations (D15). While `rescanBusy`, Rescan reads "Rescanning…" and is
+ * aria-disabled, so a second press is visibly ignored. Returns `{setRescanBusy}` for the page to end that state.
+ */
+export function openImportDialog({ scope, onInspect, onRescan, trigger = null, rescanBusy = false }) {
     requireScope(scope);
     requireCallbacks({ onInspect, onRescan });
     const list = el('div', undefined, 'operation-list');
-    list.append(
-        operation('Inspect a local image', 'Read embedded metadata before deciding to add it.', 'Open inspector', onInspect),
-        operation('Scan an output folder', 'Find files added or removed in the output folders.', 'Rescan', onRescan),
-    );
+    const inspect = operation('Inspect a local image', 'Read embedded metadata before deciding to add it.', 'Open inspector', onInspect);
+    const rescan = operation('Scan an output folder', 'Find files added or removed in the output folders.', RESCAN_LABEL, onRescan);
+    list.append(inspect.row, rescan.row);
+    function setRescanBusy(busy) {
+        rescan.action.textContent = busy ? RESCAN_BUSY_LABEL : RESCAN_LABEL;
+        if (busy) rescan.action.setAttribute('aria-disabled', 'true');
+        else rescan.action.removeAttribute('aria-disabled');
+    }
+    setRescanBusy(rescanBusy);
     show('Import & inspect', [
         el('p', 'Image inspection and output scanning have different effects. Choose the workflow you want.', 'small'),
         list,
     ], { scope, trigger });
+    return { setRescanBusy };
 }
 
 /** "Copy prompt": the text in a readonly, pre-selected textarea for a manual copy. */

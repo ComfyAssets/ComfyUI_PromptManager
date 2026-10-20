@@ -681,7 +681,8 @@ test('Import Rescan rescans cached files and preserves the collection when resca
         status: 503, json: { success: false, error: 'Rescan unavailable' },
     }), { times: 1 });
     await rescan(page);
-    await expect(page.getByRole('alert')).toContainText('could not be rescanned');
+    await expect(toast(page)).toHaveText('Rescan could not finish. Try again.');
+    await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(cards(page)).toHaveCount(2);
     await rescan(page);
     await expect(cards(page)).toHaveCount(3);
@@ -720,7 +721,7 @@ test('leaving during Rescan cancels it without replacing the next workspace', as
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     release();
     await expect(page.getByRole('heading', { name: 'Continue creating', exact: true })).toBeVisible();
-    await expect(page.getByText('Output folders could not be rescanned. Try Rescan again.', { exact: true })).toHaveCount(0);
+    await expect(toast(page)).not.toHaveText(/^Rescan (finished|could not finish)/);
 });
 
 
@@ -1405,4 +1406,32 @@ test('favorite failure keeps the previous state and announces it', async ({ page
     await page.evaluate(() => { window.location.hash = '/images'; });
     await expectStar(star(card, 'same.png'), true);
     expect((await listedFavorites(request))['0:shared/same.png']).toBe(true);
+});
+
+// #249 final review I1: the old Refresh button showed that it ran; Import → Rescan says so too, and when it ends.
+test('Import Rescan shows that it runs, ignores a second press and announces the outcome', async ({ page, request }) => {
+    const held = [];
+    await page.route('**/prompt_manager/gallery/rescan', route => { held.push(route); });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    await expect(await request.post('/__test__/add-nested-image')).toBeOK();
+    await rescan(page);
+    await expect.poll(() => held.length).toBe(1);
+    await expect(toast(page)).toHaveText('Rescanning output folders…');
+    // Reopened while the scan runs, Rescan says it is running; a press on it is ignored and keeps the dialog open.
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    const running = importDialog(page).getByRole('button', { name: 'Rescanning…', exact: true });
+    await expect(running).toHaveAttribute('aria-disabled', 'true');
+    await running.click({ force: true });
+    await expect(importDialog(page)).toBeVisible();
+    expect(held.length).toBe(1);
+    await expect(cards(page)).toHaveCount(2);
+    // The scan's own answer: every file in both fixture roots (output and input).
+    await held[0].continue();
+    await expect(toast(page)).toHaveText('Rescan finished. 3 files in 2 output folders.');
+    const idle = importDialog(page).getByRole('button', { name: 'Rescan', exact: true });
+    await expect(idle).not.toHaveAttribute('aria-disabled', 'true');
+    await page.keyboard.press('Escape');
+    await expect(cards(page)).toHaveCount(3);
+    await expect(caption(page)).toContainText('3 of 3 images');
 });

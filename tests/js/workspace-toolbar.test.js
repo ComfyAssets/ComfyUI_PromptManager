@@ -58,6 +58,7 @@ function fakeDOM() {
         }
         setAttribute(name, value) { this.attributes[name] = String(value); }
         getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; }
+        removeAttribute(name) { delete this.attributes[name]; }
         focus() { active = this; }
         select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
         showModal() { this.open = true; }
@@ -323,6 +324,34 @@ test('refine dialog round-trips values and clear resets them', async () => {
         assert.deepEqual(applied[2], { tags: '' });
         assert.equal(dom.all(node => node.id === 'modal').length, 1);
         assert.throws(() => openRefineDialog({ scope, fields: [{ key: 'evidence' }], values: {}, onApply() {}, onClear() {} }), TypeError);
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
+test('a running rescan marks Rescan busy and ignores a second press', async () => {
+    const { openImportDialog, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        const calls = [];
+        const handle = openImportDialog({ scope, rescanBusy: true, onInspect: () => calls.push('inspect'),
+            onRescan: () => calls.push('rescan') });
+        const body = byId(dom, 'modal-body');
+        const busy = button(body, 'Rescanning…');
+        assert.ok(busy, 'the busy Rescan says it is running');
+        assert.equal(busy.getAttribute('aria-disabled'), 'true');
+        busy.click();
+        assert.deepEqual(calls, []);
+        assert.equal(modal(dom).open, true, 'an ignored press keeps the dialog open');
+        handle.setRescanBusy(false);
+        assert.equal(busy.textContent, 'Rescan');
+        assert.equal(busy.getAttribute('aria-disabled'), null);
+        busy.click();
+        assert.deepEqual(calls, ['rescan']);
+        assert.equal(modal(dom).open, false);
     } finally {
         closeWorkspaceDialog();
         scope.dispose();

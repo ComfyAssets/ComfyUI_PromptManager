@@ -38,7 +38,15 @@ const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name',
 const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
 const SOURCES_FAILED = 'Sources and folders could not be loaded. Rescan from Import to retry.';
 const CATEGORIES_FAILED = 'Categories could not be loaded. Rescan from Import to retry.';
-const RESCAN_FAILED = 'Output folders could not be rescanned. Try Rescan again.';
+// Import → Rescan (D15): the concept has no rescan copy, so its toasts follow the workspace pattern. The answer
+// counts every listed file across the output roots it walked.
+const RESCAN_STARTED = 'Rescanning output folders…';
+const RESCAN_FAILED = 'Rescan could not finish. Try again.';
+function rescanFinished(result) {
+    const {total, roots} = result ?? {};
+    if (![total, roots].every(value => Number.isSafeInteger(value) && value >= 0)) return 'Rescan finished.';
+    return `Rescan finished. ${total.toLocaleString('en-US')} ${noun(total, 'file')} in ${roots.toLocaleString('en-US')} output ${noun(roots, 'folder')}.`;
+}
 // D7 = A: the concept's star (app.js actions.favorite) against the favorites store; its toasts without the demo's
 // "in this tab". The concept has no failure copy, so a failure follows the workspace "could not be …" pattern.
 const FAVORITE_URL = '/prompt_manager/images/favorite';
@@ -90,15 +98,17 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(() => main.classList.remove('images-main'));
     // The concept's Images heading (app.js renderImages): description, then Import before the shell's New prompt.
     const heading = embedded ? null : pageHeading(main);
-    let importButton = null;
+    let importButton = null, importDialog = null;
     if (heading) {
         heading.description.textContent = 'Your generations, their prompts, and the next idea.';
         importButton = createButton('');
         importButton.append(createWorkspaceIcon('upload'), el('span', 'Import'));
         heading.actions.prepend(importButton);
         scope.cleanup(() => importButton.remove());
-        scope.listen(importButton, 'click', () => openImportDialog({scope, trigger:importButton,
-            onInspect:() => { window.location.hash = '#/inspect'; }, onRescan:rescan}));
+        scope.listen(importButton, 'click', () => {
+            importDialog = openImportDialog({scope, trigger:importButton, rescanBusy:rescanning,
+                onInspect:() => { window.location.hash = '#/inspect'; }, onRescan:rescan});
+        });
     }
     // The shared concept toolbar: search (filename, linked prompt text, title and tags), category and sort (D12–D14).
     const toolbar = embedded ? null : mountToolbar(main, {scope, categories:filters.category ? [filters.category] : [],
@@ -553,23 +563,27 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         for (const control of [...toolbarControls, more, retry]) control.disabled = disabled;
         if (importButton) importButton.disabled = disabled;
     }
-    /** Import → "Scan an output folder" (D15): rescan the output roots, then reload the options and the listing. */
+    /**
+     * Import → "Scan an output folder" (D15): rescan the output roots, then reload the options and the listing. A toast
+     * says it started and how it ended; meanwhile a reopened Import dialog shows Rescan as running.
+     */
     async function rescan() {
         if (rescanning || recovering || scope.signal.aborted) return;
         rescanning = true;
         optionsRequest?.abort(); optionsRequest = null;
-        optionsStatus.hidden = true;
+        showWorkspaceToast(RESCAN_STARTED);
         try {
-            await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
+            const result = await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
             if (scope.signal.aborted) return;
             loadCategories();
             if (await loadOptions() && !scope.signal.aborted) reset();
+            if (!scope.signal.aborted) showWorkspaceToast(rescanFinished(result));
         } catch {
-            if (scope.signal.aborted) return;
-            optionsStatus.textContent = RESCAN_FAILED;
-            optionsStatus.hidden = false;
+            // A failed rescan leaves the collection and any discovery alert as they were.
+            if (!scope.signal.aborted) showWorkspaceToast(RESCAN_FAILED);
         } finally {
             rescanning = false;
+            importDialog?.setRescanBusy(false);
         }
     }
     async function refreshInspectionCollection() {
