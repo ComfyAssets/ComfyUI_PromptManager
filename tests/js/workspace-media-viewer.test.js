@@ -164,18 +164,22 @@ test('an inline Viewer still loading its image is destroyed only after it has vi
     const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c')];
     const instances = [];
     // Viewer.js's inline destroy() leaves an in-flight view running; its callback then needs a live instance.
-    f.win.Viewer = class { constructor(node,options) { this.options = options; this.destroyed = 0; this.viewed = false; instances.push(this); }
+    f.win.Viewer = class { constructor(node,options) { this.node = node; this.options = options; this.destroyed = 0; this.viewed = false; instances.push(this); }
         destroy() { this.destroyed++; } resize() {} };
     const globals = {ResizeObserver:globalThis.ResizeObserver, requestAnimationFrame:globalThis.requestAnimationFrame, cancelAnimationFrame:globalThis.cancelAnimationFrame};
     Object.assign(globalThis, {ResizeObserver:class { observe() {} disconnect() {} }, requestAnimationFrame:() => 1, cancelAnimationFrame() {}});
     const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
     try {
         view.open({items,selectedKey:'c'.repeat(64)});
-        const [loading] = instances;
+        const [loading] = instances, image = loading.node, removed = [];
+        image.removeAttribute = key => removed.push(key);
         f.walk(f.container,n => n.attributes['aria-label'] === 'Close preview')[0].fire('click');
         assert.equal(loading.destroyed, 0, 'not destroyed while its image view is pending');
+        // Viewer.js lists only images that still have a src; the pending view needs it.
+        assert.deepEqual(removed, [], 'the image keeps its src while the view is pending');
         loading.viewed = true; loading.options.viewed.call(loading);
         assert.equal(loading.destroyed, 1, 'destroyed once its pending view settles');
+        assert.deepEqual(removed, ['src'], 'the src is released after the viewer');
         loading.options.viewed.call(loading);
         assert.equal(loading.destroyed, 1, 'never destroyed twice');
 

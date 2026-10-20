@@ -129,13 +129,19 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             } else {
                 node.alt = selected.filename;node.decoding = 'async';
                 node.hidden = !!window.Viewer;
-                if (!window.Viewer) mediaLocal.listen(node,'load',() => {if (current()) session.ready(key);});
-                mediaLocal.cleanup(() => node.removeAttribute('src'));
+                // With Viewer.js the src is released after the viewer (see release below).
+                if (!window.Viewer) {
+                    mediaLocal.listen(node,'load',() => {if (current()) session.ready(key);});
+                    mediaLocal.cleanup(() => node.removeAttribute('src'));
+                }
             }
             node.src = url.href;media.append(node);
             if (!selected.is_video && window.Viewer) {
                 let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
-                const release = () => { if (released) return; released = true; clearTimeout(fallback); instance.destroy(); };
+                const release = () => {
+                    if (released) return;
+                    released = true;clearTimeout(fallback);instance.destroy();node.removeAttribute('src');
+                };
                 const scheduleFit = () => {
                     if (!current() || fitFrame) return;
                     fitFrame = requestAnimationFrame(() => {
@@ -157,7 +163,8 @@ export function createMediaViewer({container,parentScope,inspectionController,se
                 viewer = instance;mediaLocal.cleanup(() => {
                     observer.disconnect();cancelAnimationFrame(fitFrame);
                     // Inline Viewer.js keeps viewing a still-loading image after destroy(), and that view
-                    // then reads the destroyed list; destroy once the view settles, fails or times out.
+                    // rebuilds its list from images that still have a src; keep both until the view
+                    // settles, fails or times out.
                     if (viewSettled) { release(); return; }
                     node.addEventListener('error',release,{once:true});
                     fallback = setTimeout(release,PENDING_VIEW_DESTROY_MS);
