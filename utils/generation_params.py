@@ -319,14 +319,14 @@ def _strict_equal(left, right):
 def _same_value_key(value):
     """A hashable key with ``Map``/``Set`` (SameValueZero) equality."""
     if value is UNDEFINED:
-        return ("undefined",)
+        return ("undefined", None)
     if value is None:
-        return ("null",)
+        return ("null", None)
     if isinstance(value, bool):
         return ("boolean", value)
     if _is_number(value):
         return (
-            ("nan",)
+            ("nan", None)
             if isinstance(value, float) and math.isnan(value)
             else ("number", value)
         )
