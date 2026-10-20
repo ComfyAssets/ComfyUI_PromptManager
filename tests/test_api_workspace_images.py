@@ -610,6 +610,13 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertEqual(response.status, 200)
         return (await response.json())["library"]
 
+    def test_link_summary_reads_no_pair_title(self):
+        # The pair's own title names its negative variant and never titles a
+        # card (D10), so the summary query does not read it (#249 m4).
+        from database.operations import _LINK_SUMMARY_SQL
+
+        self.assertNotIn("pp.title", _LINK_SUMMARY_SQL)
+
     async def test_link_summary_uses_one_query_per_page(self):
         prompt = self._save_prompt("Paged prompt")
         for index in range(12):

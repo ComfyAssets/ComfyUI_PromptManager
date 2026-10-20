@@ -184,10 +184,12 @@ AND p.id NOT IN (SELECT prompt_id FROM live_hint_prompts)
 # parameters per path stays under SQLite's historical 999-variable limit.
 LINK_SUMMARY_BATCH = 200
 # A pair link counts only when an image has exactly one distinct pair, as in
-# get_image_prompt_info; its positive, title and metadata then describe the card.
+# get_image_prompt_info; its positive (text, Library title, category, rating)
+# then describes the card. The pair's own title names its negative variant, so
+# it is not read (D10).
 _LINK_SUMMARY_SQL = """SELECT gi.image_path, gi.file_path, gi.prompt_id,
        p.text, p.category, p.rating, ls.title,
-       pp.positive_prompt_id, pp.title, pt.text, pt.category, pt.rating, pls.title
+       pp.positive_prompt_id, pt.text, pt.category, pt.rating, pls.title
 FROM generated_images gi
 JOIN prompts p ON gi.prompt_id = p.id
 LEFT JOIN prompt_library_state ls ON ls.prompt_id = p.id
@@ -277,10 +279,9 @@ def _empty_link_summary(status: str) -> Dict[str, Any]:
 
 def _link_summary(row: tuple) -> Dict[str, Any]:
     if row[7] is not None:
-        positive, text, category, rating = row[7], row[9], row[10], row[11]
-        # The linked positive's Library title (D10/D20); the pair's own title
-        # names its negative variant, so it never titles the card.
-        titles = (row[12],)
+        positive, text, category, rating = row[7], row[8], row[9], row[10]
+        # The linked positive's Library title (D10/D20).
+        titles = (row[11],)
     else:
         positive, text, category, rating = row[2], row[3], row[4], row[5]
         titles = (row[6],)
