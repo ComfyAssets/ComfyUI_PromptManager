@@ -10,13 +10,13 @@ import readline from 'node:readline';
 
 const web = path.join(path.resolve(process.argv[2]), 'web', 'js');
 const require = createRequire(import.meta.url);
-const { extractGenerationFacts } = require(path.join(web, 'comfy-metadata.js'));
+const parser = require(path.join(web, 'comfy-metadata.js')), { extractGenerationFacts } = parser;
 const { projectInspectionPayload } = await import(pathToFileURL(path.join(web, 'workspace', 'inspection-state.mjs')).href);
 const identity = { kind: 'rooted-file', key: '0:corpus.png', root_index: 0, path: 'corpus.png', root_scope: null };
 
 function facts(line) {
     try {
-        const record = projectInspectionPayload(JSON.parse(line), identity, null, extractGenerationFacts);
+        const record = projectInspectionPayload(JSON.parse(line), identity, null, extractGenerationFacts, false, parser);
         return Object.fromEntries(Object.entries(record.generation).map(([field, fact]) => [field, { status: fact.status, reason: fact.reason ?? null }]));
     } catch (error) {
         return { error: error?.name || 'Error' };

@@ -518,3 +518,29 @@ test('recorded and saved prompts are never replaced by the workflow parse', t =>
     assert.deepEqual(record.prompts.positive, { status: 'resolved', text: 'exact\npositive', source: 'execution' });
     assert.equal(record.prompts.negative.text, 'blurry, watermark');
 });
+
+test('a definite server prompt is kept even when the legacy parser reads it differently', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const entry = image(), data = envelope(entry);
+    // The legacy parser follows ConditioningZeroOut back to the positive text node.
+    const graph = detailerPipelineGraph();
+    graph[30] = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['25', 0] } };
+    graph[5].inputs.negative = ['30', 0];
+    data.metadata.prompt_graph = { status: 'parsed', value: graph };
+    data.prompts = { positive: { status: 'ambiguous', text: null, source: null }, negative: { status: 'resolved', text: '', source: 'zeroed-conditioning' } };
+    const record = contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+    assert.deepEqual(record.prompts.negative, { status: 'resolved', text: '', source: 'zeroed-conditioning' });
+    assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
+});
+
+test('callers without the browser global pass the legacy parser explicitly', () => {
+    const parser = require('../../web/js/comfy-metadata.js');
+    const entry = image(), data = envelope(entry);
+    data.prompts = { positive: { status: 'ambiguous', text: null, source: null }, negative: { status: 'ambiguous', text: null, source: null } };
+    data.metadata.prompt_graph = { status: 'parsed', value: detailerPipelineGraph() };
+    const identity = { kind: 'rooted-file', key: '0:x', root_index: 0, path: entry.path, root_scope: scopeA };
+    const record = contract('projectInspectionPayload')(data, identity, null, extractGenerationFacts, false, parser);
+    assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
+    assert.equal(record.prompts.negative.text, 'blurry, watermark');
+});
