@@ -25,16 +25,20 @@ EXPORT_PAGE_SIZE = 1000
 # The most prompts one bulk category request may change.
 BULK_CATEGORY_MAX_PROMPTS = 1000
 
+# The largest value SQLite's INTEGER can bind; a larger id raises OverflowError.
+MAX_SQLITE_INT = 2**63 - 1
+
 
 def parse_bulk_prompt_ids(value, cap=BULK_CATEGORY_MAX_PROMPTS):
     """A bulk request's ``prompt_ids``: distinct positive ints, first-seen order.
 
     Raises ``ValueError`` unless ``value`` is a non-empty list of at most
-    ``cap`` distinct positive integers (booleans are not integers here).
+    ``cap`` distinct positive integers no larger than SQLite's INTEGER
+    (booleans are not integers here).
     """
     if not isinstance(value, list) or not value:
         raise ValueError("prompt_ids must be a non-empty list")
-    if any(type(pid) is not int or pid < 1 for pid in value):
+    if any(type(pid) is not int or not 1 <= pid <= MAX_SQLITE_INT for pid in value):
         raise ValueError("prompt_ids must be positive integers")
     ids = list(dict.fromkeys(value))
     if len(ids) > cap:

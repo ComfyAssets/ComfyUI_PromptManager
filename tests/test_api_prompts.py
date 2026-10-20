@@ -926,6 +926,9 @@ class TestBulkRoutes(RouteCoverageCase):
             [pid, 1.5],
             [True],
             [pid, None],
+            # Beyond SQLite's INTEGER range: binding it would raise OverflowError.
+            [pid, 2**63],
+            [2**64],
             list(range(1, BULK_CATEGORY_MAX_PROMPTS + 2)),
         )
         for prompt_ids in cases:
