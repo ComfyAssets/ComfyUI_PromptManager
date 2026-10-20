@@ -18,6 +18,7 @@ except ImportError:
     from tests.open_handles import assert_closed
 
 from database.image_favorites import (
+    MAX_KEY_LENGTH,
     TABLE,
     image_favorites_schema_error,
     migrate_image_favorites,
@@ -252,6 +253,29 @@ class TestImageFavoriteApi(ImageAPITestCase):
         )
         self.api.reset_gallery_roots_cache()
         self.assertEqual(self.api._favorite_listing_cache, {})
+
+    async def test_monitor_invalidation_drops_the_favorites_lookup(self):
+        make_png(self.output_dir / "a.png")
+        await self.send("PUT", {"root_index": 0, "path": "a.png"})
+        self.assertNotEqual(self.api._favorite_listing_cache, {})
+        # The image monitor's invalidation must not keep the old scan alive.
+        self.api.invalidate_gallery_cache()
+        self.assertEqual(self.api._favorite_listing_cache, {})
+        self.assertIs((await self.workspace())["a.png"]["favorite"], True)
+
+    async def test_put_rejects_a_key_beyond_the_stored_bound(self):
+        make_png(self.output_dir / "a.png")
+        too_long = "/" + "r" * MAX_KEY_LENGTH
+        with patch("py.api.images._favorite_root_key", return_value=too_long):
+            response, data = await self.send("PUT", {"root_index": 0, "path": "a.png"})
+        self.assertEqual(response.status, 403)
+        self.assertFalse(data["success"])
+        self.assertNotIn(too_long, json.dumps(data))
+        self.assertEqual(self.rows(), [])
+        # The live database still validates (a stored over-long key would
+        # fail startup and restore).
+        conn = self.api.db.model.get_connection()
+        self.assertIsNone(image_favorites_schema_error(conn))
 
     async def test_favorite_store_failure_keeps_the_listing(self):
         make_png(self.output_dir / "a.png")

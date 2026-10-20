@@ -31,12 +31,14 @@ from .inspection_service import (
 )
 
 try:
+    from ...database.image_favorites import MAX_KEY_LENGTH
     from ...database.library import display_title
     from ...database.models import normalize_image_path
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
 except ImportError:
+    from database.image_favorites import MAX_KEY_LENGTH
     from database.library import display_title
     from database.models import normalize_image_path
     from utils.card_seed import card_seed, header_params, parsed_positive
@@ -2053,10 +2055,15 @@ class ImageRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": "Image file not found"}, status=404
                 )
+            root_key = _favorite_root_key(root)
+            if favorite and max(len(root_key), len(key)) > MAX_KEY_LENGTH:
+                # A stored key past the schema bound would fail the next
+                # startup or restore validation.
+                return _forbidden("Path is too long to favorite")
             update = (
                 self.db.set_image_favorite if favorite else self.db.clear_image_favorite
             )
-            await self._run_in_executor(update, _favorite_root_key(root), key)
+            await self._run_in_executor(update, root_key, key)
         except Exception:
             self.logger.exception("Favorite update failed")
             return web.json_response(

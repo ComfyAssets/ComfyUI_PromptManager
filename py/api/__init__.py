@@ -357,16 +357,17 @@ class PromptManagerAPI(
         Called by the image monitor when new files are detected. The workspace
         keeps its per-file values, so the next request rebuilds only new or
         changed files (see ImageRoutesMixin._workspace_listed); its sort orders
-        are dropped, as the rescan replaces them anyway.
+        are dropped, as the rescan replaces them anyway, and so is the
+        favorites lookup, which holds the old scan list.
         """
         self._gallery_cache = {}
         self._workspace_order_cache = {}
+        self._favorite_listing_cache = {}
 
     def reset_gallery_roots_cache(self):
         """Drop every cached listing and derived workspace value (roots changed)."""
         self.invalidate_gallery_cache()
         self._workspace_listed_cache = {}
-        self._favorite_listing_cache = {}
 
     def add_routes(self, routes):
         """Register all API routes with the ComfyUI server.
