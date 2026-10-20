@@ -239,7 +239,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (typeof image.favorite === 'boolean') {
             const star = createButton('', 'star-button');
             star.setAttribute('aria-label', `Favorite ${image.filename}`);
-            paintStar(star, image.favorite);
+            paintStar(star, image.favorite, favoritePending.has(key));
             overlays.append(star);
         }
         art.append(open, overlays);
@@ -258,15 +258,17 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         markSelected(card, key === selection);
         return card;
     }
-    function paintStar(button, favorite) {
+    /** A star whose request is still in flight is marked busy: pressing it again does nothing until the answer. */
+    function paintStar(button, favorite, pending) {
         button.textContent = favorite ? '★' : '☆';
         button.setAttribute('aria-pressed', String(favorite));
+        if (pending) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled');
     }
     function setFavorite(key, favorite) {
         if (scope.signal.aborted) return;
         stream.updateItem(key, {favorite});
         const button = rendered.get(key)?.querySelector('.star-button');
-        if (button) paintStar(button, favorite);
+        if (button) paintStar(button, favorite, favoritePending.has(key));
     }
     // Only the Images page receives favorite answers; Library-embedded media has no star (#249 D7).
     if (!embedded) {
@@ -289,7 +291,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             // Announced below; the star returns to its previous state.
         }
         favoritePending.delete(key);
-        if (!saved) deliverFavorite(key, !favorite);
+        deliverFavorite(key, saved ? favorite : !favorite);
         showWorkspaceToast(saved ? FAVORITE_DONE[favorite] : FAVORITE_FAILED[favorite]);
     }
     scope.listen(grid, 'click', event => {
