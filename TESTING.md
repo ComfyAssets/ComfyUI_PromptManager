@@ -431,17 +431,22 @@ npm run --prefix tools/vendor test:workflows -- shell-concept.spec.mjs \
 
 `tests/browser/images-concept.spec.mjs` compares the Images page (#249 C7): heading,
 toolbar, filter row, caption, grid, the first six cards, the continuation and the panel
-box, in every layout, at both sizes, themes and motion settings. The concept is compared
-once its own Load more has loaded all 24 fixture images (it loads 12 per batch,
-production 40). Behaviors: hover zoom, the 2nd card opens the viewer titled
-"<title> · <filename>", Escape returns focus to it, Info on the 3rd card moves
-`.selected`, search "alpine", and Load more (12 in the concept, one listing page in
-production, both with the toast). `mapImagesConcept` applies D8 and D16 (follow-up
-PRs: no checkbox, no Save view), D3, D9, D10, D14, D15, D17, D29, D31 and D32; removed
-toolbar and filter-row items flow again from the concept's own boxes (`reflow`, proven
-on the concept rows first). Masonry card tops and heights may differ by one pixel (D3:
-layout arithmetic versus the browser's layout-unit snapping). Two mismatches wait for a
-ruling and are pinned on both sides: the category order and the singular count line.
+box, in Grid, List, Masonry and the Large and Compact sizes, at 1600x1100 and 390x844
+in both themes and motion settings; grid, cards and panel also at 1200x900 (2 columns,
+275px panel) and 1800x1100 (4 columns, 310px panel). The concept is compared once its
+own Load more has loaded all 24 fixture images (D37: it loads 12 per batch, production
+40); the Load more row is compared before the press in both documents. Behaviors: hover
+zoom, the 2nd card opens the viewer titled "<title> · <filename>", Escape returns focus
+to it (production only: the concept re-renders its grid and drops focus), Info on the
+3rd card moves `.selected`, searches for "alpine" and for one image, and Load more with
+its toast. `mapImagesConcept` applies D3, D8 and D16 (follow-up PRs: no checkbox, no
+Save view), D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
+sorted alphabetically). Removed toolbar and filter-row items flow again from the
+concept's own boxes (`reflow`), checked against the concept page with those items
+removed at runtime. Masonry tops and heights are compared unrounded, within one layout
+unit per card above in the column (D3). `one footer height for the collection (D3)`
+seeds two seedless files (`seedless_images` on `/__test__/concept/reset`) and asserts
+that every row reserves the tallest footer.
 
 ## Workspace data fields for the concept pages (#249)
 

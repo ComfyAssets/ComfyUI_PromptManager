@@ -16,6 +16,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from tests.browser.workspace_concept_fixture import (
     MAX_EXTRA_IMAGES as CONCEPT_MAX_EXTRA_IMAGES,
+    MAX_SEEDLESS_IMAGES as CONCEPT_MAX_SEEDLESS_IMAGES,
     seed_workspace_concept,
 )
 from tests.browser.workspace_visual_fixture import seed_workspace_visual
@@ -389,13 +390,20 @@ def create_app(root: Path) -> web.Application:
         """Seed the concept-shaped fixture (D30); only a bounded image count."""
         nonlocal history_fixture
         data = await request.json() if request.can_read_body else {}
+        limits = {
+            "extra_images": CONCEPT_MAX_EXTRA_IMAGES,
+            "seedless_images": CONCEPT_MAX_SEEDLESS_IMAGES,
+        }
         if (
             request.query
             or not isinstance(data, dict)
-            or set(data) - {"extra_images"}
-            or isinstance(data.get("extra_images", 0), bool)
-            or not isinstance(data.get("extra_images", 0), int)
-            or not 0 <= data.get("extra_images", 0) <= CONCEPT_MAX_EXTRA_IMAGES
+            or set(data) - set(limits)
+            or any(
+                isinstance(data.get(key, 0), bool)
+                or not isinstance(data.get(key, 0), int)
+                or not 0 <= data.get(key, 0) <= limit
+                for key, limit in limits.items()
+            )
         ):
             raise web.HTTPBadRequest()
         history_commands.reset()
@@ -403,7 +411,10 @@ def create_app(root: Path) -> web.Application:
         history_fixture = None
         manifest = await api._run_in_executor(
             lambda: seed_workspace_concept(
-                api, root, extra_images=data.get("extra_images", 0)
+                api,
+                root,
+                extra_images=data.get("extra_images", 0),
+                seedless_images=data.get("seedless_images", 0),
             )
         )
         return web.json_response({"success": True, **manifest})

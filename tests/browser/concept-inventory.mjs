@@ -285,17 +285,19 @@ export function measureInventory(scope) {
         const copy=info?.querySelector(':scope > div:not(.image-card-actions)'),actions=info?.querySelector('.image-card-actions');
         const h3=copy?.querySelector('h3'),p=copy?.querySelector('p');
         return {className:classes(card),ratio:card.style.getPropertyValue('--media-ratio').replace(/\s/g,''),...relative(card,grid),
+            exact:{left:rect(card).left-rect(grid).left,top:rect(card).top-rect(grid).top,height:rect(card).height},
             ...edges(card),...css(card,'boxShadow','overflow','display'),
             art:when(art,()=>({...relative(art,card),...css(art,'position')})),
             open:when(open,()=>({label:open.getAttribute('aria-label'),...relative(open,card),...edges(open),...css(open,'display','overflow')})),
             img:when(img,()=>({alt:img.alt,width:img.getAttribute('width'),height:img.getAttribute('height'),...sized(img),
                 ...css(img,'objectFit','aspectRatio','transform','transitionProperty','transitionDuration')})),
-            // An overlay item's horizontal margin may be `auto`, whose used value is only the free space beside it, so its
-            // place is recorded as its inset from the overlay's right edge instead (as the shell's pinned bottom group).
+            // An overlay item's horizontal margin may be `auto`, whose used value is the free space beside it: it is kept
+            // to the pixel, and the item's place is also recorded as its inset from the overlay's right edge.
             overlays:when(overlays,()=>!shown(overlays)?{display:getComputedStyle(overlays).display,shown:false}:({shown:true,...layout(overlays),
                 ...css(overlays,'display','pointerEvents'),...relative(overlays,card),
-                items:[...overlays.children].map(node=>{const {marginLeft,marginRight,...item}=controlOf(node,card);
-                    return item.shown?{...item,rightInset:px(rect(overlays).right-rect(node).right)}:item;})})),
+                items:[...overlays.children].map(node=>{const item=controlOf(node,card);
+                    return item.shown?{...item,marginLeft:`${px(parseFloat(item.marginLeft))}px`,marginRight:`${px(parseFloat(item.marginRight))}px`,
+                        rightInset:px(rect(overlays).right-rect(node).right)}:item;})})),
             info:when(info,()=>({...layout(info),...edges(info),...relative(info,card),
                 // The text and the actions are placed in the card (what is seen), so a centred list row compares by place.
                 // The text's heights are the unrounded flow (the same CSS lays them out alike in both documents), so lines
