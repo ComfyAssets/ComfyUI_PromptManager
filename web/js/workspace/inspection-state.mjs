@@ -163,6 +163,36 @@ function libraryFor(value) {
     return library;
 }
 
+// The legacy workflow parse (comfy-metadata.js, as of #170) also feeds the gallery and
+// admin pages; it fills any prompt or setting the server could not decide, so this page
+// never shows less than they do. Recorded and saved prompts are never replaced.
+const KEPT_PROMPT_SOURCES = ['execution', 'library', 'saved-association'];
+const LEGACY_FACTS = [['seed', 'seed'], ['steps', 'steps'], ['cfg', 'cfgScale'], ['sampler', 'sampler'], ['model', 'checkpoint']];
+
+function comfyMetadata() {
+    return globalThis.ComfyMetadata || globalThis.window?.ComfyMetadata;
+}
+
+function withWorkflowParams(record, parser = comfyMetadata()) {
+    const graph = record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null;
+    const workflow = record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null;
+    if (typeof parser?.extractGenerationParams !== 'function' || (!graph && !workflow)) return;
+    const params = parser.extractGenerationParams({ prompt: graph, workflow });
+    const found = key => typeof params[key] === 'string' || typeof params[key] === 'number' ?
+        String(params[key]) !== '' && params[key] !== parser.PLACEHOLDERS?.[key] : false;
+    const prompts = { ...record.prompts };
+    for (const [role, key] of [['positive', 'positivePrompt'], ['negative', 'negativePrompt']]) {
+        const current = prompts[role];
+        if (!found(key) || (current?.status === 'resolved' && KEPT_PROMPT_SOURCES.includes(current.source))) continue;
+        prompts[role] = { status: 'resolved', text: params[key], source: 'graph-inferred' };
+    }
+    record.prompts = prompts;
+    for (const [field, key] of LEGACY_FACTS) {
+        if (!found(key)) continue;
+        record.generation[field] = { status: 'known', value: String(params[key]), source: graph ? 'api-graph' : 'workflow', evidence: 'configuration', reason: null, sampler_id: null };
+    }
+}
+
 function unavailableFacts() {
     return Object.fromEntries(FACT_FIELDS.map(key => [key, { status: 'unresolved', value: null, source: null, evidence: null, reason: null, sampler_id: null }]));
 }
@@ -194,6 +224,7 @@ export function projectInspectionPayload(result, identity, download, extractFact
     if (typeof extractFacts !== 'function') throw new TypeError('Inspection facts parser unavailable');
     record.generation = extractFacts({ prompt_graph: record.metadata.prompt_graph, workflow_graph: record.metadata.workflow_graph,
         parameters: record.metadata.parameters, recordFormats: record.metadata.record_formats, metadataStatus: record.metadata.status, resolution });
+    withWorkflowParams(record);
     if (record.library.status === 'linked' && record.library.positive_id !== null) record.historyTarget = `#/library/${record.library.positive_id}`;
     return record;
 }
