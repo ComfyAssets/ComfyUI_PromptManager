@@ -74,6 +74,43 @@ def records_png(path, records, mtime=100):
     return path
 
 
+def png_chunk(kind, data):
+    """One PNG chunk: length, type, data and CRC."""
+    import struct
+    import zlib
+
+    return (
+        struct.pack(">I", len(data))
+        + kind
+        + data
+        + struct.pack(">I", zlib.crc32(kind + data))
+    )
+
+
+def png_with_text_chunks(path, before=(), after=(), mtime=100):
+    """A PNG with ``(keyword, text)`` tEXt chunks before and after its IDAT."""
+    import io
+
+    buffer = io.BytesIO()
+    with Image.new("RGB", (4, 4)) as image:
+        image.save(buffer, format="PNG")
+    data = buffer.getvalue()
+    idat = data.index(b"IDAT") - 4
+    iend = data.index(b"IEND") - 4
+
+    def chunks(records):
+        return b"".join(
+            png_chunk(b"tEXt", key.encode("latin-1") + b"\0" + text.encode("latin-1"))
+            for key, text in records
+        )
+
+    path.write_bytes(
+        data[:idat] + chunks(before) + data[idat:iend] + chunks(after) + data[iend:]
+    )
+    os.utime(path, (mtime, mtime))
+    return path
+
+
 def seeded_records(positive, seed):
     """API prompt records for a one-sampler graph with *positive* and *seed*."""
     graph = {
@@ -605,15 +642,54 @@ class TestWorkspaceImages(ImageAPITestCase):
         )
 
     async def test_card_reads_each_header_once(self):
+        from py.api import images
+
         for index in range(3):
             records_png(
                 self.output_dir / f"{index}.png", seeded_records("a fox", index)
             )
         self.media("clip.mp4")
-        with patch("PIL.Image.open", wraps=Image.open) as opened:
+        with (
+            patch.object(
+                images, "read_inspection_file", wraps=images.read_inspection_file
+            ) as read,
+            patch("PIL.Image.open", wraps=Image.open) as opened,
+        ):
             _, data = await self.get()
         self.assertEqual(len(data["images"]), 4)
-        self.assertEqual(opened.call_count, 3)
+        # One inspector read per PNG (dimensions and records); no decoder open.
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(opened.call_count, 0)
+
+    async def test_card_reads_png_records_as_the_inspector_does(self):
+        one, two = seeded_records("a fox", 1), seeded_records("a fox", 2)
+        # Conflicting duplicate prompt chunks: the inspector refuses the file,
+        # so the card shows no seed (Pillow alone would keep the last one).
+        png_with_text_chunks(
+            self.output_dir / "conflict.png",
+            before=[("prompt", one["prompt"]), ("prompt", two["prompt"])],
+            mtime=300,
+        )
+        # Text after IDAT: Pillow's header open misses it; the inspector reads it.
+        png_with_text_chunks(
+            self.output_dir / "late.png", after=[("prompt", one["prompt"])], mtime=200
+        )
+        png_with_text_chunks(
+            self.output_dir / "repeat.png",
+            before=[("prompt", one["prompt"]), ("prompt", one["prompt"])],
+        )
+        response, data = await self.get()
+        self.assertEqual(response.status, 200, data)
+        items = {item["filename"]: item for item in data["images"]}
+        self.assertIsNone(items["conflict.png"]["seed"])
+        self.assertEqual(
+            (items["conflict.png"]["width"], items["conflict.png"]["height"]), (4, 4)
+        )
+        self.assertEqual(items["late.png"]["seed"], "1")
+        self.assertEqual(items["repeat.png"]["seed"], "1")
+        shown = await self._inspector_seeds(data["images"])
+        self.assertNotEqual(shown["conflict.png"]["status"], "known")
+        self.assertEqual(shown["late.png"], {"status": "known", "value": "1"})
 
     async def test_deeply_nested_record_still_lists_and_inspects(self):
         nested = "[" * 900 + "1" + "]" * 900
@@ -699,18 +775,20 @@ class TestWorkspaceImages(ImageAPITestCase):
     async def test_card_facts_parse_after_the_file_is_closed(self):
         records_png(self.output_dir / "a.png", seeded_records("a fox", 5))
         streams, closed = [], []
-        real_open, real_parse = Image.open, header_params_of_images()
+        real_open, real_parse = Path.open, header_params_of_images()
 
-        def opening(stream, *args, **kwargs):
-            streams.append(stream)
-            return real_open(stream, *args, **kwargs)
+        def opening(path, *args, **kwargs):
+            stream = real_open(path, *args, **kwargs)
+            if path.name == "a.png":
+                streams.append(stream)
+            return stream
 
         def parsing(info):
-            closed.append(all(stream.closed for stream in streams))
+            closed.append(bool(streams) and all(s.closed for s in streams))
             return real_parse(info)
 
         with (
-            patch("PIL.Image.open", side_effect=opening),
+            patch.object(Path, "open", autospec=True, side_effect=opening),
             patch("py.api.images.header_params", side_effect=parsing),
         ):
             _, data = await self.get()

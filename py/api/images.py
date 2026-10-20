@@ -37,6 +37,7 @@ try:
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
+    from ...utils.prompt_inspector import MetadataReadError, read_inspection_file
 except ImportError:
     from database.image_favorites import MAX_KEY_LENGTH
     from database.library import display_title
@@ -44,11 +45,40 @@ except ImportError:
     from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
+    from utils.prompt_inspector import MetadataReadError, read_inspection_file
 
 
 IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
 # The header records the card parses (see utils.card_seed.header_params).
 _CARD_RECORDS = ("prompt", "workflow")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _card_header(path: Path) -> tuple:
+    """``(width, height, records)`` of one image card, every handle closed.
+
+    A PNG's records come from the inspector's own reader
+    (``read_inspection_file``: text after IDAT, the shared byte budgets, and
+    the refusal of conflicting duplicate prompt or workflow chunks), so the
+    card reads exactly what the inspector reads. When that reader refuses the
+    file, the card keeps its dimensions and gets no records. Other formats
+    keep Pillow's header ``info``, as the inspector's header read does.
+    Raises OSError or ValueError for a file that cannot be read at all.
+    """
+    with path.open("rb") as stream:
+        if stream.read(len(_PNG_SIGNATURE)) != _PNG_SIGNATURE:
+            stream.seek(0)
+            with Image.open(stream) as source:
+                width, height = source.size
+                return width, height, {k: source.info.get(k) for k in _CARD_RECORDS}
+    try:
+        inspection = read_inspection_file(path)
+    except MetadataReadError:
+        with path.open("rb") as stream, Image.open(stream) as source:
+            width, height = source.size
+        return width, height, None
+    records = {k: inspection.metadata.get(k) for k in _CARD_RECORDS}
+    return inspection.width, inspection.height, records
 
 
 def _unavailable_link() -> dict:
@@ -2399,10 +2429,7 @@ class ImageRoutesMixin:
             records = None
             if not image["is_video"]:
                 try:
-                    with path.open("rb") as stream:
-                        with Image.open(stream) as source:
-                            image["width"], image["height"] = source.size
-                            records = {k: source.info.get(k) for k in _CARD_RECORDS}
+                    image["width"], image["height"], records = _card_header(path)
                 except (OSError, ValueError, Image.DecompressionBombError):
                     # A corrupt or disappearing preview must not hide the listing.
                     pass

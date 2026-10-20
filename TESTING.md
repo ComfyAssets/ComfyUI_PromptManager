@@ -449,8 +449,13 @@ and skip the parse.
 - `seed`: a decimal string, or null. Always a string, because `JSON.parse` rounds
   numbers past 2**53 and ComfyUI's randomized seeds are often that large. It is
   `extract_generation_params` from `utils/generation_params.py` (the inspector's
-  legacy parser, #251), run on the `prompt`/`workflow` header records read by the
-  same open that reads the dimensions. The records go through the inspection
+  legacy parser, #251), run on the `prompt`/`workflow` records read with the
+  dimensions. A PNG is read by the inspector's own reader
+  (`utils.prompt_inspector.read_inspection_file`): text after IDAT counts, the
+  shared byte budgets apply, and a file with conflicting duplicate `prompt` or
+  `workflow` chunks gets no card seed, as the inspector refuses it (the card
+  keeps its dimensions). Other formats use Pillow's header `info`, as the
+  inspector's header read does. The records go through the inspection
   projection first (`utils/inspection_response.project_graph`), which carries
   integers past 2**53 as their exact digits, so the card and the inspector read
   the same digits. The parse runs after the file handle closes. A record over
