@@ -163,11 +163,41 @@ function libraryFor(value) {
     return library;
 }
 
+// The legacy workflow parse (comfy-metadata.js, as of #170) also feeds the gallery and
+// admin pages; it fills any prompt or setting the server could not decide, so this page
+// never shows less than they do. A definite server answer is never replaced.
+const LEGACY_FACTS = [['seed', 'seed'], ['steps', 'steps'], ['cfg', 'cfgScale'], ['sampler', 'sampler'], ['model', 'checkpoint']];
+
+function comfyMetadata() {
+    return globalThis.ComfyMetadata || globalThis.window?.ComfyMetadata;
+}
+
+function withWorkflowParams(record, parser = comfyMetadata()) {
+    const graph = record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null;
+    const workflow = record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null;
+    if (typeof parser?.extractGenerationParams !== 'function' || (!graph && !workflow)) return;
+    const params = parser.extractGenerationParams({ prompt: graph, workflow });
+    const found = key => typeof params[key] === 'string' || typeof params[key] === 'number' ?
+        String(params[key]) !== '' && params[key] !== parser.PLACEHOLDERS?.[key] : false;
+    const prompts = { ...record.prompts };
+    for (const [role, key] of [['positive', 'positivePrompt'], ['negative', 'negativePrompt']]) {
+        const current = prompts[role];
+        if (!found(key) || current?.status === 'resolved') continue;
+        prompts[role] = { status: 'resolved', text: params[key], source: 'graph-inferred' };
+    }
+    record.prompts = prompts;
+    for (const [field, key] of LEGACY_FACTS) {
+        // Only open answers are filled: a known value or a definite "not recorded" stays.
+        if (!found(key) || !['unresolved', 'ambiguous'].includes(record.generation[field]?.status)) continue;
+        record.generation[field] = { status: 'known', value: String(params[key]), source: graph ? 'api-graph' : 'workflow', evidence: 'configuration', reason: null, sampler_id: null };
+    }
+}
+
 function unavailableFacts() {
     return Object.fromEntries(FACT_FIELDS.map(key => [key, { status: 'unresolved', value: null, source: null, evidence: null, reason: null, sampler_id: null }]));
 }
 
-export function toInspectionRecord(result, image, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts) {
+export function toInspectionRecord(result, image, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts, parser = comfyMetadata()) {
     const scope = validateIdentity(image);
     if (scope !== null && (!object(result) || result.root_scope !== scope)) throw new InspectionSourceChangedError();
     if (!object(result) || result.success === false) throw new TypeError('Invalid inspection response');
@@ -177,11 +207,11 @@ export function toInspectionRecord(result, image, extractFacts = globalThis.Comf
     if ((!legacy || result.image !== undefined) && (!object(result.image) || result.image.root_index !== image.root_index || result.image.path !== image.path || result.image.filename !== image.path.split('/').at(-1))) throw new TypeError('Mismatched inspection identity');
     return projectInspectionPayload(result,
         { kind: 'rooted-file', key: imageKey(image), root_index: image.root_index, path: image.path, root_scope: scope },
-        downloadFor(image, !legacy || scope !== null), extractFacts, legacy);
+        downloadFor(image, !legacy || scope !== null), extractFacts, legacy, parser);
 }
 
 /** Shared bounded payload projection; adapters validate identity before entering here. */
-export function projectInspectionPayload(result, identity, download, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts, legacy = false) {
+export function projectInspectionPayload(result, identity, download, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts, legacy = false, parser = comfyMetadata()) {
     const record = {
         identity, file: null, prompts: promptsFor(result.prompts), library: null, metadata: null,
         generation: unavailableFacts(), historyTarget: null, download,
@@ -194,6 +224,7 @@ export function projectInspectionPayload(result, identity, download, extractFact
     if (typeof extractFacts !== 'function') throw new TypeError('Inspection facts parser unavailable');
     record.generation = extractFacts({ prompt_graph: record.metadata.prompt_graph, workflow_graph: record.metadata.workflow_graph,
         parameters: record.metadata.parameters, recordFormats: record.metadata.record_formats, metadataStatus: record.metadata.status, resolution });
+    withWorkflowParams(record, parser);
     if (record.library.status === 'linked' && record.library.positive_id !== null) record.historyTarget = `#/library/${record.library.positive_id}`;
     return record;
 }

@@ -26,9 +26,9 @@ test('inspection facts survive actual API to browser transport', async ({ page, 
     const complete = result.complete;
     expect(Object.values(complete.generation).map(fact => fact.value)).toEqual(['9007199254740993', '28', '6.5', 'dpmpp_2m', 'karras', 'fixture-model.safetensors']);
     expect(Object.values(complete.generation).every(fact => fact.source === 'api-graph' && fact.evidence === 'configuration')).toBe(true);
-    // Ambiguous branches merge per field: the differing seed is ambiguous, the shared fields known.
+    // Differing branches show what the legacy parser shows: the first sampler's seed.
     expect(Object.values(result.ambiguous.generation).map(fact => [fact.status, fact.value])).toEqual([
-        ['ambiguous', null], ['known', '28'], ['known', '6.5'], ['known', 'dpmpp_2m'], ['known', 'karras'], ['known', 'fixture-model.safetensors']]);
+        ['known', '9007199254740993'], ['known', '28'], ['known', '6.5'], ['known', 'dpmpp_2m'], ['known', 'karras'], ['known', 'fixture-model.safetensors']]);
     expect(Object.values(result.ambiguous.generation).every(fact => fact.sampler_id === null)).toBe(true);
     expect(result['workflow-only'].generation.seed).toMatchObject({ status: 'known', value: '9007199254740993', source: 'workflow', evidence: 'configuration' });
     expect(result['workflow-only'].prompts.positive.source).toBe('saved-association');

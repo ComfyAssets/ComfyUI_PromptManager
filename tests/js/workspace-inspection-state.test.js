@@ -464,3 +464,94 @@ test('rooted controller keeps legacy descriptors with ignored noncloneable field
     let pending;assert.doesNotThrow(()=>{pending=controller.select(selected);});
     requests[0].resolve(envelope());await pending;assert.equal(controller.state.record.identity.key,'0:folder/a #%.png');controller.dispose();
 });
+
+// The maintainer's standard pipeline: one PromptManager pair feeds a base pass, an
+// upscale pass and a FaceDetailer, saved by a custom saver. Text and seeds are invented.
+function detailerPipelineGraph() {
+    return {
+        1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'Base/example_model.safetensors' } },
+        5: { class_type: 'KSampler', inputs: { seed: 111, steps: 4, cfg: 1.0, sampler_name: 'lcm', scheduler: 'normal', denoise: 1.0, model: ['47', 0], positive: ['25', 0], negative: ['26', 0], latent_image: ['20', 0] } },
+        6: { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+        7: { class_type: 'PreviewImage', inputs: { images: ['6', 0] } },
+        8: { class_type: 'UpscaleModelLoader', inputs: { model_name: 'upscaler.pth' } },
+        9: { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['8', 0], image: ['6', 0] } },
+        10: { class_type: 'ImageScaleBy', inputs: { upscale_method: 'lanczos', scale_by: 0.75, image: ['9', 0] } },
+        11: { class_type: 'VAEEncode', inputs: { pixels: ['10', 0], vae: ['1', 2] } },
+        12: { class_type: 'KSampler', inputs: { seed: 222, steps: 6, cfg: 1.0, sampler_name: 'lcm', scheduler: 'normal', denoise: 0.45, model: ['47', 0], positive: ['25', 0], negative: ['26', 0], latent_image: ['11', 0] } },
+        13: { class_type: 'VAEDecode', inputs: { samples: ['12', 0], vae: ['1', 2] } },
+        17: { class_type: 'FaceDetailer', inputs: { seed: 333, steps: 4, cfg: 1.0, sampler_name: 'lcm', scheduler: 'normal', denoise: 0.4, image: ['13', 0], model: ['47', 0], clip: ['47', 1], vae: ['1', 2], positive: ['25', 0], negative: ['26', 0] } },
+        20: { class_type: 'EmptyLatentBatch', inputs: { width: 640, height: 1536, batch_size: 1 } },
+        25: { class_type: 'PromptManager', inputs: { text: 'a lighthouse at dusk, oil painting', category: '', tags: '', search_text: '', prepend_text: '', append_text: '', clip: ['47', 1] } },
+        26: { class_type: 'PromptManager', inputs: { text: 'blurry, watermark', category: '', tags: '', search_text: '', prepend_text: '', append_text: '', clip: ['47', 1] } },
+        47: { class_type: 'Lora Loader (LoraManager)', inputs: { text: '', model: ['1', 0], clip: ['1', 1] } },
+        48: { class_type: 'KikoSaveImage', inputs: { filename_prefix: ['49', 0], format: 'PNG', images: ['17', 0] } },
+        49: { class_type: 'KikoProjectFilePath', inputs: { project_name: 'example', filename: 'image' } },
+    };
+}
+
+test('workflow prompts and settings match the legacy parser when the server cannot decide', t => {
+    const parser = require('../../web/js/comfy-metadata.js'), { extractGenerationParams } = parser;
+    globalThis.ComfyMetadata = parser;
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const entry = image(), data = envelope(entry);
+    data.prompts = { positive: { status: 'ambiguous', text: null, source: null }, negative: { status: 'ambiguous', text: null, source: null } };
+    data.metadata.prompt_graph = { status: 'parsed', value: detailerPipelineGraph() };
+    data.resolution = { state: 'ambiguous', sampler_id: null, reason: 'Multiple sampler branches' };
+    const record = contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+    const legacy = extractGenerationParams({ prompt: detailerPipelineGraph() });
+    assert.deepEqual(record.prompts.positive, { status: 'resolved', text: legacy.positivePrompt, source: 'graph-inferred' });
+    assert.deepEqual(record.prompts.negative, { status: 'resolved', text: legacy.negativePrompt, source: 'graph-inferred' });
+    assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
+    assert.equal(record.prompts.negative.text, 'blurry, watermark');
+    for (const [field, key] of [['seed', 'seed'], ['steps', 'steps'], ['cfg', 'cfgScale'], ['sampler', 'sampler'], ['model', 'checkpoint']]) {
+        assert.equal(record.generation[field].status, 'known', field);
+        assert.equal(record.generation[field].value, String(legacy[key]), field);
+    }
+});
+
+test('recorded and saved prompts are never replaced by the workflow parse', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const entry = image(), data = envelope(entry);
+    data.metadata.prompt_graph = { status: 'parsed', value: detailerPipelineGraph() };
+    const record = contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+    assert.deepEqual(record.prompts.positive, { status: 'resolved', text: 'exact\npositive', source: 'execution' });
+    assert.equal(record.prompts.negative.text, 'blurry, watermark');
+});
+
+test('a definite server prompt is kept even when the legacy parser reads it differently', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const entry = image(), data = envelope(entry);
+    // The legacy parser follows ConditioningZeroOut back to the positive text node.
+    const graph = detailerPipelineGraph();
+    graph[30] = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['25', 0] } };
+    graph[5].inputs.negative = ['30', 0];
+    data.metadata.prompt_graph = { status: 'parsed', value: graph };
+    data.prompts = { positive: { status: 'ambiguous', text: null, source: null }, negative: { status: 'resolved', text: '', source: 'zeroed-conditioning' } };
+    const record = contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+    assert.deepEqual(record.prompts.negative, { status: 'resolved', text: '', source: 'zeroed-conditioning' });
+    assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
+});
+
+test('callers without the browser global pass the legacy parser explicitly', () => {
+    const parser = require('../../web/js/comfy-metadata.js');
+    const entry = image(), data = envelope(entry);
+    data.prompts = { positive: { status: 'ambiguous', text: null, source: null }, negative: { status: 'ambiguous', text: null, source: null } };
+    data.metadata.prompt_graph = { status: 'parsed', value: detailerPipelineGraph() };
+    const identity = { kind: 'rooted-file', key: '0:x', root_index: 0, path: entry.path, root_scope: scopeA };
+    const record = contract('projectInspectionPayload')(data, identity, null, extractGenerationFacts, false, parser);
+    assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
+    assert.equal(record.prompts.negative.text, 'blurry, watermark');
+});
+
+test('a setting the file does not record is never filled from the legacy parse', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const entry = image(), data = envelope(entry);
+    data.metadata.prompt_graph = { status: 'parsed', value: detailerPipelineGraph() };
+    const extract = input => ({ ...extractGenerationFacts(input), cfg: { status: 'not-recorded', value: null, source: null, evidence: null, reason: null, sampler_id: null } });
+    const record = contract('toInspectionRecord')(data, entry, extract);
+    assert.equal(record.generation.cfg.status, 'not-recorded');
+    assert.equal(record.generation.cfg.value, null);
+});
