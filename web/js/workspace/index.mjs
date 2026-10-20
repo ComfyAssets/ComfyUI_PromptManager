@@ -1,6 +1,7 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts } from './state.mjs';
+import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts,
+    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
 import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
@@ -59,21 +60,26 @@ function mountWorkspace() {
     // D28: System, then the production Overview hub, in the concept's tools-and-system group.
     systemNav.replaceChildren(...navLinks([['system', 'settings'], ['overview', 'overview']]));
     const sidebar = document.querySelector('aside.sidebar');
-    let countsRequest;
-    function refreshCounts() {
-        countsRequest?.abort();
-        const request = countsRequest = new AbortController();
-        // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
-        loadNavCounts(api, request.signal, (id, count) => {
-            if (request.signal.aborted) return;
-            const link = primaryNav.querySelector(`[data-route="${id}"]`);
-            link?.querySelector('.nav-count')?.remove();
-            if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
-        });
+    // One read per count, so a write that refreshes Library and Tags never supersedes an Images read in flight.
+    const countRequests = new Map();
+    function refreshCounts(ids) {
+        for (const id of ids) {
+            countRequests.get(id)?.abort();
+            const request = new AbortController();
+            countRequests.set(id, request);
+            // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
+            loadNavCounts(api, request.signal, (_, count) => {
+                if (request.signal.aborted) return;
+                const link = primaryNav.querySelector(`[data-route="${id}"]`);
+                link?.querySelector('.nav-count')?.remove();
+                if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+            }, [id]);
+        }
     }
-    scope.cleanup(() => countsRequest?.abort());
-    scope.cleanup(onLibraryWrite(refreshCounts));
-    refreshCounts();
+    scope.cleanup(() => { for (const request of countRequests.values()) request.abort(); });
+    // A confirmed Library or vocabulary write cannot change the Images count, so only Library and Tags are re-read.
+    scope.cleanup(onLibraryWrite(() => refreshCounts(LIBRARY_WRITE_COUNTS)));
+    refreshCounts(NAV_COUNT_ROUTES);
     let viewScope;
     let firstRender = true;
     scope.cleanup(() => viewScope?.dispose());

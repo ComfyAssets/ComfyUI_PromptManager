@@ -61,13 +61,20 @@ export function summarizeNavCounts(pages = {}) {
  * Read the three counts; a failed read yields null for its route only. `onCount(id, count)` runs as each read
  * settles, so a slow listing (the Images output scan) never holds back the cheap Library and Tags counts.
  */
-export async function loadNavCounts(api, signal, onCount = () => {}) {
+/** The WORKSPACE routes that carry a count. */
+export const NAV_COUNT_ROUTES = Object.freeze(NAV_COUNT_SOURCES.map(([id]) => id));
+
+/** The counts a confirmed Library or vocabulary write can change; the Images listing cannot. */
+export const LIBRARY_WRITE_COUNTS = Object.freeze(['library', 'tags']);
+
+/** Read the given WORKSPACE counts (all by default), reporting each as its own read settles. */
+export async function loadNavCounts(api, signal, onCount = () => {}, ids = NAV_COUNT_ROUTES) {
     const pages = {};
-    await Promise.all(NAV_COUNT_SOURCES.map(async ([id, url]) => {
+    await Promise.all(NAV_COUNT_SOURCES.filter(([id]) => ids.includes(id)).map(async ([id, url]) => {
         try { pages[id] = await api.get(url, { signal }); } catch { pages[id] = undefined; }
         onCount(id, summarizeNavCounts(pages).get(id));
     }));
-    return summarizeNavCounts(pages);
+    return new Map([...summarizeNavCounts(pages)].filter(([id]) => ids.includes(id)));
 }
 
 export function mountRouter(win, onRoute) {

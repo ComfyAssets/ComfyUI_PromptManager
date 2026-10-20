@@ -131,3 +131,19 @@ test('nav counts issue three bounded requests and drop only the failed count', a
     assert.equal(urls[0].searchParams.get('mode'), 'workspace');
     assert.ok(calls.every(([, used]) => used === signal));
 });
+
+test('a Library or vocabulary write re-reads only the Library and Tags counts', async () => {
+    const { loadNavCounts, LIBRARY_WRITE_COUNTS } = await source;
+    assert.deepEqual([...LIBRARY_WRITE_COUNTS], ['library', 'tags']);
+    assert.ok(Object.isFrozen(LIBRARY_WRITE_COUNTS));
+    const calls = [];
+    const api = {get: async url => {
+        calls.push(new URL(url, 'http://host').pathname);
+        return {success: true, total: url.startsWith('/prompt_manager/library') ? 4 : 9};
+    }};
+    const settled = [];
+    const counts = await loadNavCounts(api, new AbortController().signal, (id, count) => settled.push([id, count]), LIBRARY_WRITE_COUNTS);
+    assert.deepEqual(calls, ['/prompt_manager/library', '/prompt_manager/vocabulary/tags']);
+    assert.deepEqual(settled.sort(), [['library', 4], ['tags', 9]]);
+    assert.deepEqual([...counts], [['library', 4], ['tags', 9]]);
+});

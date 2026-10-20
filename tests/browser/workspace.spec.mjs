@@ -539,6 +539,8 @@ test('counts refresh after a confirmed editor save', async ({ page, request }) =
     await expect(navCount(page, 'library')).toHaveText(String(after.library));
     await expect(navCount(page, 'tags')).toHaveText(String(after.tags));
     expect(reads.filter(path => path === '/prompt_manager/library').length).toBeGreaterThanOrEqual(1);
+    // A Library write cannot change the Images count, so the Images listing is not read again.
+    expect(reads.filter(path => path === '/prompt_manager/images/output')).toEqual([]);
 });
 
 test('a superseded count read never lands and a failed refresh removes the stale count', async ({ page, request }) => {
