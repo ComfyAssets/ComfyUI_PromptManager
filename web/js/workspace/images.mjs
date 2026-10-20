@@ -337,7 +337,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // Natural footer measurements and absolute reservations share unzoomed CSS units. The fractional height, as the
         // concept's own flow lays it out: `offsetHeight` rounds a wrapped 67.5px row up and adds half a pixel per row.
         const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.media-info').getBoundingClientRect().height / scale));
-        if (footerHeight > metrics.footerHeight) {
+        // A small epsilon: under zoom `rect / scale` carries float noise that must not relayout and scroll for nothing.
+        if (footerHeight > metrics.footerHeight + 0.01) {
             const anchor = indexes.find(index => geometry.positions[index].y + geometry.positions[index].height >= top && geometry.positions[index].y <= top + viewportHeight);
             const anchorTop = anchor === undefined ? 0 : geometry.positions[anchor].y;
             metrics = {...metrics, footerHeight, listHeight: Math.max(metrics.listHeight, footerHeight + 2)};
