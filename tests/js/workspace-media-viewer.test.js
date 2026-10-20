@@ -211,6 +211,13 @@ test('viewer renders the concept shell and toolbar order', async () => {
         assert.deepEqual([details.tagName,details.id,details.attributes['aria-label']],['aside','viewer-details','Image metadata']);
         const [stage,toolbar] = left.children;
         assert.deepEqual([stage.tagName,stage.id,toolbar.tagName,toolbar.id,toolbar.className],['div','viewer-stage','div','viewer-toolbar','viewer-toolbar']);
+        // #249 D34 #8: the toolbar keeps production's named group (the concept's has no role; adding one is invisible).
+        assert.deepEqual([toolbar.attributes.role,toolbar.attributes['aria-label']],['group','Media controls']);
+        // With more than one loaded item, Previous/Next are enabled and not described by the position line.
+        for (const label of ['Previous media','Next media']) {
+            const [node] = f.walk(f.container,n => n.attributes['aria-label'] === label);
+            assert.deepEqual([node.attributes['aria-disabled'],node.attributes['aria-describedby']],['false',undefined],label);
+        }
         // The concept's toolbar order, then production's position status and its two reasons.
         assert.deepEqual(toolbar.children.map(node => node.textContent.split(':')[0]),
             ['← Previous','−','+','Fit','Rotate','Flip','Play','Download','Next →','1 of 2 loaded','Image transforms are unavailable because Viewer.js could not load.','']);

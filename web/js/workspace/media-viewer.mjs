@@ -57,6 +57,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
         const error = element('p',undefined,'Media could not be loaded. Retry this file.');
         const retry = createButton('Retry media');failure.append(error,retry);failure.hidden = true;stage.append(failure);
         const controls = element('div','viewer-toolbar');controls.id = 'viewer-toolbar';
+        controls.setAttribute('role','group');controls.setAttribute('aria-label','Media controls');
         function button(label,text,action) {
             const node = createButton(text);node.setAttribute('aria-label',label);
             local.listen(node,'click',() => { if (node.getAttribute('aria-disabled') !== 'true') action(); });
@@ -187,7 +188,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
             }
             for (const node of [previous,next]) {
                 node.setAttribute('aria-disabled',String(state.total === 1));
-                if (state.total === 1) {node.setAttribute('aria-describedby',position.id);}
+                if (state.total === 1) node.setAttribute('aria-describedby',position.id);else node.removeAttribute('aria-describedby');
             }
             const action = state.phase === 'paused-video' ? 'Stop' : state.requested ? 'Pause' : 'Play';
             slideshow.textContent = action;slideshow.setAttribute('aria-label',`${action} slideshow`);
