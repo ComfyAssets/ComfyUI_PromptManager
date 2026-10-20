@@ -123,7 +123,8 @@ main.library-main { --library-negative: #ff8c98; }
     .history-run-marker[aria-pressed="true"] { outline-color: Highlight; }
 }
 
-/* Panel actions follow the concept (style.css 294-300, 540-549); the page heading is the concept's own (Task A5). */
+/* Panel actions follow the concept (style.css 294-300, 540-549); the page heading is the concept's own (Task A5).
+   These .row-actions rules restyle the concept's own selector and are retired in PR E (library cards). */
 .library-main .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ca-tools .library-main .row-actions button { min-block-size: 32px; font-size: 12px; max-inline-size: 100%; white-space: normal; }
 .library-main .library-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-block-end: 12px; }

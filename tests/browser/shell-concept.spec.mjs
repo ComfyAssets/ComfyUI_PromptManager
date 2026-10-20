@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,focusRingOf,hoverStateOf} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,focusRingOf,hoverStateOf,mutate} from './concept-inventory.mjs';
 
 // Task A6 of #249: the production shell (sidebar, topbar, heading, footer) against the immutable concept, with the
 // concept-shaped real fixture so the sidebar counts are the concept's own (24 images, 6 prompts, 15 tags). Both themes,
@@ -114,6 +114,12 @@ function compare(route,reference,actual) {
     ];
 }
 
+/** The comparison as a gate: throws, naming every differing path, unless production equals the mapped concept. */
+function assertShellMatches(route,reference,actual) {
+    const diff=compare(route,reference,actual);
+    if(diff.length)throw new Error(`the shell differs from the concept at ${diff.map(item=>item.path).join(', ')}`);
+}
+
 /** Keyboard focus rings on the first WORKSPACE nav link and the first heading button. */
 async function ringsOf(page,mainSelector) {
     // Any key press makes the next programmatic focus keyboard-modal (`:focus-visible`); WebKit does not Tab to links.
@@ -217,4 +223,30 @@ test('the concept fixture renders the concept inspector facts',async({page})=>{
     expect(pairs).toEqual({Seed:'42001',Steps:'28',CFG:'6.5',Sampler:'dpmpp_2m',Scheduler:'karras',Model:'illustrative-model.safetensors'});
     // D21 maps execution evidence to "Execution recorded" in PR D; today's panel names the same source this way.
     await expect(page.locator('#workspace-main').getByText('Execution prompt evidence',{exact:true})).toBeVisible();
+});
+
+// Task A7: the comparison is only worth something if it notices a change. One CSS mutation (a nav-row height the
+// concept never uses) and one DOM mutation (the breadcrumbs removed) are applied to production after an exact match,
+// and each must make the comparison fail with the path of what changed.
+for(const [width,height] of SIZES)test(`shell comparison detects mutations ${width}x${height}`,async({page})=>{
+    await page.setViewportSize({width,height});
+    await openConcept(page,'tags','dark');await page.mouse.move(0,0);
+    const reference=await inventoryOf(page,'#main');
+    await openProduction(page,'tags','dark');await page.mouse.move(0,0);
+    const measure=()=>inventoryOf(page,'#workspace-main');
+    const clean=await measure();
+    assertShellMatches('tags',reference,clean);
+
+    const restoreCss=await mutate(page,{css:'.sidebar nav a { min-height: 30px }'});
+    const cssMutated=await measure();
+    expect(()=>assertShellMatches('tags',reference,cssMutated)).toThrow(/navs\.0\.rows\.0\.minHeight/);
+    expect(()=>assertShellMatches('tags',reference,cssMutated)).toThrow(/navs\.0\.rows\.0\.height/);
+    await restoreCss();
+    assertShellMatches('tags',reference,await measure());
+
+    await mutate(page,{remove:['.breadcrumbs']});
+    const domMutated=await measure();
+    expect(domMutated.chrome.breadcrumbs).toBeNull();
+    // The missing section is reported by its own path (A6: absent sections become null), not by a measuring error.
+    expect(()=>assertShellMatches('tags',reference,domMutated)).toThrow(/(at |, )chrome\.breadcrumbs(,|$)/);
 });

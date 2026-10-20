@@ -57,7 +57,7 @@ test('overlay lint requires a decision marker on concept selectors', () => {
 
 test('overlay rules on concept selectors carry a decision marker', () => {
     const overlay = join(root, 'web/js/workspace/workspace.css');
-    if (!existsSync(overlay)) return;
+    assert.ok(existsSync(overlay), 'web/js/workspace/workspace.css is missing');
     const { violations } = lintOverlay(readFileSync(concept, 'utf8'), readFileSync(overlay, 'utf8'));
     assert.deepEqual(violations, []);
 });

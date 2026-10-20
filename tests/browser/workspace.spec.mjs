@@ -663,11 +663,17 @@ test('the ComfyUI link points to the root of a non-standard proxy mount', async 
 test('a resolver failure for the ComfyUI link never stops the shell from mounting', async ({ page }) => {
     await serveUnderProxyMount(page);
     // Wrap the shared client as it loads so only the topbar's canvas-root lookup throws (the sender reads the same root).
+    // Every engine's stack names the calling module's URL; each injected failure is counted so a renamed module or a
+    // changed call site fails this test on the count instead of silently testing nothing.
     await page.addInitScript(() => {
         let client;
+        window.__resolverFailures = { injected: 0 };
         Object.defineProperty(window, 'ApiClient', { configurable: true, get: () => client, set(value) {
             client = { ...value, resolveUrl: (url, ...rest) => {
-                if (url === '/prompt_manager/' && /topbar\.mjs/.test(new Error().stack)) throw new Error('resolver unavailable');
+                if (url === '/prompt_manager/' && /\/workspace\/topbar\.mjs\b/.test(String(new Error().stack))) {
+                    window.__resolverFailures.injected += 1;
+                    throw new Error('resolver unavailable');
+                }
                 return value.resolveUrl(url, ...rest);
             } };
         } });
@@ -677,6 +683,7 @@ test('a resolver failure for the ComfyUI link never stops the shell from mountin
     await page.goto(`${PROXY_MOUNT}${workspace}#/overview`);
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     await expect(sidebarLinks(page)).toHaveCount(routes.length);
+    expect(await page.evaluate(() => window.__resolverFailures.injected), 'the topbar lookup was the one that failed').toBe(1);
     expect(warnings.filter(text => text.includes('the ComfyUI link falls back to the page mount'))).toHaveLength(1);
     await expect(page.getByRole('link', { name: 'ComfyUI', exact: true })).toHaveAttribute('href', `${PROXY_MOUNT}/`);
     await sidebarLink(page, 'Prompt library').click();

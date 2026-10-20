@@ -57,6 +57,37 @@ export async function hoverStateOf(page,locator) {
 }
 
 /**
+ * Mutate the open page so a comparison can be shown to notice a change (the A7 mutation check): `css` is appended as
+ * the last stylesheet, so it wins over equally specific concept rules, and every element matching a `remove` selector
+ * is detached. Returns an async undo that restores the stylesheet and the removed elements in place.
+ */
+export async function mutate(page,{css=null,remove=[]}={}) {
+    const token=await page.evaluate(({css,remove})=>{
+        const token=`mutation-${Math.random().toString(36).slice(2)}`;
+        const undo=[];
+        if(css) {
+            const style=document.createElement('style');style.dataset.mutation=token;style.textContent=css;
+            document.head.append(style);undo.push(()=>style.remove());
+        }
+        for(const selector of remove) {
+            const nodes=[...document.querySelectorAll(selector)];
+            if(!nodes.length)throw new Error(`mutate: nothing matches ${selector}`);
+            for(const node of nodes) {
+                const parent=node.parentNode,next=node.nextSibling;
+                node.remove();undo.push(()=>parent.insertBefore(node,next));
+            }
+        }
+        (window.__conceptMutations??=new Map()).set(token,undo);
+        return token;
+    },{css,remove});
+    return ()=>page.evaluate(token=>{
+        const undo=window.__conceptMutations?.get(token);
+        if(!undo)throw new Error('mutate: this mutation was already undone or the page reloaded');
+        undo.reverse().forEach(step=>step());window.__conceptMutations.delete(token);
+    },token);
+}
+
+/**
  * Inventory sections: {chrome, heading, toolbar, filterRow, caption, grid, cards, panel, library, history,
  * noPageScroll}. A section is null when its element is absent. Sections whose page PR has not landed yet
  * (toolbar … history, PRs C–F) are null until that PR adds its measurer here.
