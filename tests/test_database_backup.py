@@ -428,6 +428,72 @@ class TestRestoreFromFile(BackupTestCase):
             PromptModel.verify_database_file(dst, require_library_state=True)[0]
         )
 
+    def test_restore_old_backup_without_favorites(self):
+        self.db.set_image_favorite("output", "live.png")
+        src = self._make_source_db(["predates favorites"])
+        with closing(sqlite3.connect(src)) as conn:
+            conn.execute("DROP TABLE image_favorites")
+            conn.commit()
+        self.assertTrue(PromptModel.verify_database_file(src)[0])
+
+        self.db.model.restore_from_file(src)
+
+        self.assertEqual(_texts(self.path), ["predates favorites"])
+        self.assertEqual(self.db.get_image_favorites("output", ["live.png"]), set())
+        self.assertTrue(self.db.set_image_favorite("output", "new.png"))
+        ok, reason = PromptModel.verify_database_file(
+            self.path, require_library_state=True
+        )
+        self.assertTrue(ok, reason)
+        with closing(sqlite3.connect(src)) as conn:  # the source is untouched
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='image_favorites'"
+                ).fetchone()
+            )
+
+    def test_restore_preserves_favorites_and_closes_handles(self):
+        self.db.set_image_favorite("output", "live.png")
+        with tempfile.TemporaryDirectory() as directory:
+            src_path = os.path.join(directory, "source.db")
+            src = PromptDatabase(src_path)
+            try:
+                self._save(src, "with favorites")
+                src.set_image_favorite("output", "sub/kept.png")
+                src.set_image_favorite("extra/root", "kept.png")
+            finally:
+                src.close_all()
+            # The favorites still sit in the WAL; a backup must carry them.
+            backup = os.path.join(directory, "backup.db")
+            reopened = PromptDatabase(src_path)
+            try:
+                self.assertTrue(reopened.model.backup_database(backup))
+            finally:
+                reopened.close_all()
+
+            self.db.model.restore_from_file(backup)
+
+            self.assertEqual(
+                self.db.get_image_favorites("output", ["sub/kept.png", "live.png"]),
+                {"sub/kept.png"},
+            )
+            self.assertEqual(
+                self.db.get_image_favorites("extra/root", ["kept.png"]), {"kept.png"}
+            )
+            PromptModel.close_all_instances()
+            # Windows refuses to delete a file a restore left open.
+            assert_closed(self, directory)
+        backups = list(Path(self.tmpdir).glob("prompts.db.backup_*"))
+        self.assertEqual(len(backups), 1)
+        with closing(sqlite3.connect(str(backups[0]))) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT root_key, relative_path FROM image_favorites"
+                ).fetchall(),
+                [("output", "live.png")],
+            )
+        assert_closed(self, str(backups[0]))
+
     def test_restore_without_a_live_database_returns_empty_backup_path(self):
         src = self._make_source_db(["fresh"])
         self.db.close_all()

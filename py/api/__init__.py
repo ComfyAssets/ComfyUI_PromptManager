@@ -283,6 +283,16 @@ class PromptManagerAPI(
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
         self._gallery_cache_ttl = 30  # Cache TTL in seconds
+        # Workspace listing values and sort orders derived from a cached scan
+        # (py/api/images.py _workspace_listed/_workspace_orders).
+        self._workspace_listed_cache = {}
+        self._workspace_order_cache = {}
+        # Card facts (dimensions, seed, positive title) per root and
+        # (path, mtime), kept and pruned with the per-file values
+        # (py/api/images.py _card_facts).
+        self._workspace_card_cache = {}
+        # Favorite keys of each root's cached scan (images._favorite_listing).
+        self._favorite_listing_cache = {}
         # Single-flight locks for long jobs, keyed by job family; see
         # _acquire_long_job(). Created lazily so no lock binds to an event
         # loop before the server's loop exists.
@@ -348,9 +358,22 @@ class PromptManagerAPI(
     def invalidate_gallery_cache(self):
         """Invalidate the cached gallery file listing.
 
-        Called by the image monitor when new files are detected.
+        Called by the image monitor when new files are detected. The workspace
+        keeps its per-file values and card facts, so the next request rebuilds
+        only new or changed files (see ImageRoutesMixin._workspace_listed and
+        _card_facts); its sort orders
+        are dropped, as the rescan replaces them anyway, and so is the
+        favorites lookup, which holds the old scan list.
         """
         self._gallery_cache = {}
+        self._workspace_order_cache = {}
+        self._favorite_listing_cache = {}
+
+    def reset_gallery_roots_cache(self):
+        """Drop every cached listing and derived workspace value (roots changed)."""
+        self.invalidate_gallery_cache()
+        self._workspace_listed_cache = {}
+        self._workspace_card_cache = {}
 
     def add_routes(self, routes):
         """Register all API routes with the ComfyUI server.

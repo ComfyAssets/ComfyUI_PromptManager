@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional, Set, Tuple
 
 from .library_schema import library_schema_error, migrate_library_state
+from .image_favorites import image_favorites_schema_error, migrate_image_favorites
 from .execution_history_schema import (
     history_schema_error,
     migrate_execution_history,
@@ -298,6 +299,7 @@ class PromptModel:
         self._migrate_prompt_pairs(conn)
         migrate_execution_history(conn)
         migrate_library_state(conn)
+        migrate_image_favorites(conn)
 
     def _migrate_prompt_pairs(self, conn: sqlite3.Connection) -> None:
         conn.execute("SAVEPOINT prompt_pair_schema")
@@ -1016,6 +1018,9 @@ class PromptModel:
 
         Args:
             path: File to inspect
+            require_library_state: Also require the tables every current
+                database has (Library state and image favorites), as a
+                migrated restore stage must; old backups may lack them.
 
         Returns:
             (ok, reason): reason is "ok" when the file is acceptable, otherwise
@@ -1070,6 +1075,11 @@ class PromptModel:
             )
             if library_error:
                 return False, library_error
+            favorites_error = image_favorites_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if favorites_error:
+                return False, favorites_error
             return True, "ok"
         except sqlite3.Error as e:
             return False, f"Invalid SQLite database: {e}"

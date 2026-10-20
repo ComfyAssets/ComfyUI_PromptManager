@@ -233,7 +233,9 @@ class LibraryRoutesMixin:
             self.add_library_negative
         )
 
-    def _library_media(self, records: list[dict], roots: list[Path]) -> list[dict]:
+    def _library_media(
+        self, records: list[dict], roots: list[Path], *, linked: bool = True
+    ) -> list[dict]:
         page = []
         for record in records:
             try:
@@ -251,7 +253,7 @@ class LibraryRoutesMixin:
                         break
             except (OSError, ValueError, RuntimeError):
                 continue
-        return self._format_workspace_page(page)
+        return self._format_workspace_page(page, linked=linked)
 
     @pair_response
     async def get_library_options(self, request: web.Request) -> web.Response:
@@ -296,7 +298,10 @@ class LibraryRoutesMixin:
 
         def previews() -> None:
             for parent in result["items"]:
-                parent["previews"] = self._library_media(records[parent["id"]], roots)
+                # Previews belong to their parent; a per-parent link read is N+1.
+                parent["previews"] = self._library_media(
+                    records[parent["id"]], roots, linked=False
+                )
 
         await self._run_in_executor(previews)
         return web.json_response({"success": True, **result})

@@ -125,6 +125,37 @@ not certify every existing feature, arbitrary host versions,
 GPU/model changes, cross-pack installation or visual design changes. Those still
 need targeted validation.
 
+## Performance budgets
+
+A spec performance budget gets two tests:
+
+- A structural test that always runs, on every OS/Python job and under the
+  coverage tracer. It asserts counts, never time: SELECTs per request, the
+  `EXPLAIN QUERY PLAN` of the hot query, cache builds on cold and warm requests,
+  and calls of the sort key per cursor page. Example:
+  `test_filter_work_is_bounded` in `tests/test_api_workspace_images.py`.
+- A wall-clock test that runs only with `PROMPTMANAGER_PERF_BUDGET=1` and
+  without a tracer (`sys.gettrace()` or a `sys.monitoring` tool). It skips
+  otherwise. It warms up once, then measures three rounds and asserts the best
+  round's p95; the failure message lists every timing. Example:
+  `test_filter_budget` (Images filters, spec D12: p95 < 150 ms at 50,000 files
+  and 20,000 links).
+
+The `perf budget` job in `.github/workflows/test.yml` is the reference
+measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
+It runs on every push to `main` and on `workflow_dispatch`, never on pull
+requests, because shared-runner timing must not block a merge. Dispatch it on a
+branch to measure before merging.
+Shared Windows and macOS runners do not run them; the structural tests cover
+portability. Run it locally with
+`PROMPTMANAGER_PERF_BUDGET=1 python -m unittest tests.test_api_workspace_images.TestWorkspaceImages.test_filter_budget`
+and quote the printed p95 in the PR body.
+
+A red `perf budget` run on `main` means the code got slower: fix the code (or
+change the budget in the spec with a reason) in a follow-up PR. Never rerun it to
+green. It is not a required check, and it cannot be one while it skips pull
+requests (`.github/branch-protection.json`).
+
 ## Windows portability preflight
 
 Before changing paths, SQLite, streams, restore or cleanup:
@@ -391,6 +422,141 @@ npm test --prefix tools/vendor
 npm run --prefix tools/vendor test:workflows -- shell-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
+
+## Workspace data fields for the concept pages (#249)
+
+These fields are additive. The legacy `/prompt_manager/images/output` listing (no
+`mode=workspace`) and the legacy pages do not change, and existing workspace pages
+ignore the new keys.
+
+Workspace image items (`/prompt_manager/images/output?mode=workspace`, and Library
+image galleries) gain three card facts. Library list previews carry none of them
+and skip the parse.
+
+- `linked: {status, positive_id, title, title_source, category, rating}`. One
+  `get_image_link_summaries` SELECT per 200 paths, matched exactly as the
+  inspection route matches (exact or normalized `file_path`, no basename
+  fallback). `status` is `linked`, `ambiguous` (several owners), `none`, or
+  `unavailable` when the database read failed (logged, no error text). Treat
+  anything but `linked` as the filename fallback. In pair scope (the image has
+  exactly one distinct pair), `positive_id` is the pair's positive, and the title
+  comes from the pair title, then the positive's Library title, then the text's
+  first line. In positive scope it comes from the Library title, then the first
+  line. A first line longer than 80 code points is cut to 80 plus `…`, like
+  `library.mjs` `title()`. `title_source` is `stored`, `text` or null. `category`
+  and `rating` come from the linked positive (D13), not from the pair. The title
+  gate is shared with the inspector (`_verified_title`): a `stored` title always
+  shows. A `text` title shows only when the file's own positive, parsed from its
+  records by the shared parser, gives the same display title. Otherwise the title
+  is null on the card and in the inspector header. Videos and unreadable files
+  have no parsed positive, so their `text` titles are withheld.
+- `seed`: a decimal string, or null. Always a string, because `JSON.parse` rounds
+  numbers past 2**53 and ComfyUI's randomized seeds are often that large. It is
+  `extract_generation_params` from `utils/generation_params.py` (the inspector's
+  legacy parser, #251), run on the `prompt`/`workflow` records read with the
+  dimensions. A PNG is read by the inspector's own reader
+  (`utils.prompt_inspector.read_inspection_file`): text after IDAT counts, the
+  shared byte budgets apply, and a file with conflicting duplicate `prompt` or
+  `workflow` chunks gets no card seed, as the inspector refuses it (the card
+  keeps its dimensions). Other formats use Pillow's header `info`, as the
+  inspector's header read does. The records go through the inspection
+  projection first (`utils/inspection_response.project_graph`), which carries
+  integers past 2**53 as their exact digits, so the card and the inspector read
+  the same digits. The parse runs after the file handle closes. A record over
+  2 MiB (UTF-8), a parser error, a recursion error, a placeholder, or a
+  non-integral, boolean or non-finite seed gives null. A card never shows a seed
+  that differs from the inspector's
+  (`test_card_seed_equals_inspector_seed_when_both_present`, which `JSON.parse`s
+  the listing in Node and compares `String(seed)` with the inspector's seed,
+  including one past 2**53). The card shows no seed for A1111 `parameters` files
+  or for a BasicGuider custom sampler, where the inspector does.
+- Header facts are cached. Dimensions, `seed` and the parsed positive's display
+  title are read once per `(path, mtime)` of the current gallery scan and kept
+  beside the scan's per-file values. A monitor invalidation or TTL rescan keeps
+  the facts of unchanged files and drops the rest, and a roots change drops them
+  all. A header that could not be read is not stored. Links and favorites are
+  never cached (`test_warm_page_reuses_card_facts_per_scan`: a warm page reads
+  and parses no header). Measured cold cost is about 3.4 ms per 50 KB record set
+  and 25 ms per 400 KB workflow.
+- `favorite: bool`. One favorites SELECT per root per page. A read failure logs a
+  warning and shows false.
+
+Filters (`mode=workspace`; anything invalid is 400 "Invalid gallery filters"):
+
+- `q` (at most 500 characters). An entry passes when the case-folded relative path
+  contains it, or when its linked positive's text, Library title, a tag name, or
+  its pair title contains it (SQLite `LIKE` with escaping, ASCII case folding
+  only). Search does not apply the card title gate, and does not search pair tags.
+- `category` (exact and case-sensitive, at most 200 characters, stripped; blank
+  means none) and `tags` (a comma list, blanks dropped, order-free, AND, at most 30
+  tags of at most 200 characters) admit linked images only, through the linked
+  positive.
+- Ambiguous files never match a linked filter, and they rank as unlinked.
+- `sort` is `newest | oldest | name | name-desc | rating`. `rating` orders by
+  rating 5 to 1, then linked but unrated, then unlinked and ambiguous; ties break
+  newest first. A signed cursor covers every filter and the sort, so reusing it
+  with a change is 400.
+- One link read (`get_image_link_matches`, streamed and bounded to the listed
+  paths) serves the filters, the rating sort and the count.
+
+`positive_count` is the number of distinct linked positives over the full matching
+set, not the page:
+
+- Present on every first page, and on every page of a filtered (`q`, `category`,
+  `tags`) or `sort=rating` listing.
+- Absent on a plain listing's cursor pages, which read no links. The frontend
+  keeps the first page's value.
+- Null when a plain first page's link read failed. The listing still returns 200,
+  and consumers then hide "· K positive prompts". A `q` search alone also
+  survives the failure: it matches filenames only, as before linked search, and
+  every page's count is null (logged with the traceback). A failure under
+  `category`, `tags` or the rating sort stays a safe 500.
+
+Library parents (list, detail and command receipts) gain `run_count` (an int; the
+D23 migration estimate for rows from before 3.2.4) and `last_used_at`, a UTC ISO
+string. A naive value reads as UTC, and an unreadable or out-of-range value is
+null. The edit token ignores both. `variant_total` has two meanings. On the list
+response it counts the active variants over all filtered parents (the same
+snapshot as `total`, the same on every cursor page). On the detail response it
+counts one positive's variants in the chosen archive scope. The Library caption
+reads it from the list state.
+
+Favorites store (D7 = A): `PUT` and `DELETE /prompt_manager/images/favorite` with
+`{root_index, path}`. Both are idempotent and answer
+`{success, favorite, root_index, path}`. The boundary returns 400 for an unknown
+root or a malformed body, and 403 for traversal, an absolute or drive path, NUL, a
+non-media name, or a key over the stored bound. PUT needs a listed file (404
+otherwise). DELETE also clears a path that is no longer listed. Send the DELETE
+body as `application/json`.
+
+- The table is `image_favorites(root_key, relative_path, created_at)`. `root_key`
+  is the root's real path (`os.path.realpath`), case-normalized with `/`
+  separators. It is stored server-side only and never returned. Folder labels are
+  not unique across roots, so they are not used as keys.
+- `relative_path` is `normcase(path)` with `/`. On Windows a case-only rename
+  keeps the star. On POSIX the key is the exact spelling, so `A.png` and `a.png`
+  stay separate (tests swap in `ntpath` through `py.api.images._path_flavor`).
+  Moving the install or changing a root's real path orphans its rows, which are
+  harmless and never shown.
+- Schema validation (`image_favorites_schema_error`) runs at startup and on
+  restore. Old backups without the table restore, and backup plus restore keeps
+  WAL-resident favorites and closes every handle (`tests/test_database_backup.py`).
+
+Budgets: `test_filter_work_is_bounded` always runs. It asserts that a plain first
+page makes 1 link SELECT and a plain cursor page none, that every filter shape
+makes exactly 1, the covering-index plan, and that the per-file values are built
+once per scan and only for new files after a monitor invalidation. The opt-in
+`test_filter_budget` (`PROMPTMANAGER_PERF_BUDGET=1`, the `perf budget` job) times
+the D12 p95 < 150 ms budget; see "Performance budgets".
+
+```sh
+python -m unittest tests.test_api_workspace_images tests.test_card_seed \
+  tests.test_image_favorites tests.test_library tests.test_api_library \
+  tests.test_database_backup -q
+```
+
+Installing these fields needs a maintainer ComfyUI restart (Python, routes and
+schema). Automated tests use disposable databases and output folders.
 
 ## Prompt sending and cross-pack compatibility
 

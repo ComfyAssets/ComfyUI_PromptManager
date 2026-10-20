@@ -897,7 +897,7 @@ class AdminRoutesMixin:
             return False
         GalleryConfig.MONITORING_DIRECTORIES = roots
         self._cached_output_dir = None
-        self._gallery_cache = {}
+        self.reset_gallery_roots_cache()
         return True
 
     def _persist_settings(self):

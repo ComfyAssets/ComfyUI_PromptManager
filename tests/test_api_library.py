@@ -188,6 +188,10 @@ class TestLibraryAPI(ImageAPITestCase):
     async def test_maximum_parent_page_uses_bounded_sql_queries_for_previews(self):
         for index in range(200):
             positive = self._save_prompt(f"Parent {index}", tags=[f"tag {index}"])
+            if index % 3 == 0:
+                self.api.db.save_prompt_pair(f"Parent {index}", f"Negative {index}")
+            if index % 4 == 0:
+                self.api.db.record_prompt_use(positive, times=index + 1)
             make_png(self.output_dir / f"{index}.png")
             self.api.db.link_image_to_prompt(
                 positive, str(self.output_dir / f"{index}.png")
@@ -230,6 +234,32 @@ class TestLibraryAPI(ImageAPITestCase):
                 and len(item["previews"]) == 1
                 and len(item["edit_token"]) == 64
                 for item in result["items"]
+            )
+        )
+        # Usage fields and the variant total ride on the same five SELECTs.
+        self.assertEqual(result["variant_total"], 67)
+        self.assertEqual(
+            result["variant_total"],
+            sum(item["variant_count"] for item in result["items"]),
+        )
+        used = {
+            int(item["text"].split()[-1]): item
+            for item in result["items"]
+            if item["last_used_at"] is not None
+        }
+        self.assertEqual(sorted(used), list(range(0, 200, 4)))
+        self.assertTrue(
+            all(
+                item["run_count"] == index + 1
+                and item["last_used_at"].endswith("+00:00")
+                for index, item in used.items()
+            )
+        )
+        self.assertTrue(
+            all(
+                type(item["run_count"]) is int
+                for item in result["items"]
+                if item["last_used_at"] is None
             )
         )
 
@@ -437,6 +467,38 @@ class TestLibraryAPI(ImageAPITestCase):
             data=data,
         )
         return response, await response.json()
+
+    async def test_unconvertible_last_use_does_not_fail_list_detail_or_receipt(self):
+        positive = self._save_prompt("Cat")
+        other = self._save_prompt("Dog")
+        with self.api.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompts SET last_used_at=? WHERE id=?",
+                ("9999-12-31T23:59:59-01:00", positive),
+            )
+            connection.execute(
+                "UPDATE prompts SET last_used_at=? WHERE id=?",
+                ("0001-01-01T00:00:00+01:00", other),
+            )
+        response, listed = await self.get()
+        self.assertEqual(response.status, 200, listed)
+        self.assertEqual(
+            [item["last_used_at"] for item in listed["items"]], [None, None]
+        )
+        response, detail = await self.get(f"/{positive}")
+        self.assertEqual(response.status, 200, detail)
+        self.assertIsNone(detail["positive"]["last_used_at"])
+        response, receipt = await self.patch_parent(
+            positive,
+            {
+                "expected_epoch": detail["library_epoch"],
+                "if_match": detail["positive"]["edit_token"],
+                "metadata": {"title": "Portrait"},
+            },
+        )
+        self.assertEqual(response.status, 200, receipt)
+        self.assertEqual(receipt["positive"]["title"], "Portrait")
+        self.assertIsNone(receipt["positive"]["last_used_at"])
 
     async def test_native_parent_patch_strict_validation(self):
         from database.execution_history_schema import rotate_history_epoch

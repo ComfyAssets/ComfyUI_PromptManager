@@ -11,8 +11,10 @@ import re
 import threading
 import time as _time
 import urllib.parse
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping
 from pathlib import Path
+from typing import NamedTuple
 
 from aiohttp import web
 from PIL import Image, UnidentifiedImageError
@@ -29,14 +31,123 @@ from .inspection_service import (
 )
 
 try:
+    from ...database.image_favorites import MAX_KEY_LENGTH
+    from ...database.library import display_title
+    from ...database.models import normalize_image_path
+    from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
+    from ...utils.prompt_inspector import MetadataReadError, read_inspection_file
 except ImportError:
+    from database.image_favorites import MAX_KEY_LENGTH
+    from database.library import display_title
+    from database.models import normalize_image_path
+    from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
+    from utils.prompt_inspector import MetadataReadError, read_inspection_file
 
 
 IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
+# The header records the card parses (see utils.card_seed.header_params).
+_CARD_RECORDS = ("prompt", "workflow")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _card_header(path: Path) -> tuple:
+    """``(width, height, records)`` of one image card, every handle closed.
+
+    A PNG's records come from the inspector's own reader
+    (``read_inspection_file``: text after IDAT, the shared byte budgets, and
+    the refusal of conflicting duplicate prompt or workflow chunks), so the
+    card reads exactly what the inspector reads. When that reader refuses the
+    file, the card keeps its dimensions and gets no records. Other formats
+    keep Pillow's header ``info``, as the inspector's header read does.
+    Raises OSError or ValueError for a file that cannot be read at all.
+    """
+    with path.open("rb") as stream:
+        if stream.read(len(_PNG_SIGNATURE)) != _PNG_SIGNATURE:
+            stream.seek(0)
+            with Image.open(stream) as source:
+                width, height = source.size
+                return width, height, {k: source.info.get(k) for k in _CARD_RECORDS}
+    try:
+        inspection = read_inspection_file(path)
+    except MetadataReadError:
+        with path.open("rb") as stream, Image.open(stream) as source:
+            width, height = source.size
+        return width, height, None
+    records = {k: inspection.metadata.get(k) for k in _CARD_RECORDS}
+    return inspection.width, inspection.height, records
+
+
+class _CardFacts(NamedTuple):
+    """One image file's card facts, derived from its header alone.
+
+    Cached per gallery scan by ``(path, mtime)`` (see ``_card_facts``); links
+    and favorites are read fresh on every page.
+    """
+
+    width: int | None
+    height: int | None
+    seed: str | None
+    positive_title: str | None  # _positive_title of the parsed positive
+
+
+_NO_CARD_FACTS = _CardFacts(None, None, None, None)
+
+
+def _unavailable_link() -> dict:
+    """A card link summary when the database could not be read."""
+    return {
+        "status": "unavailable",
+        "positive_id": None,
+        "title": None,
+        "title_source": None,
+        "category": None,
+        "rating": None,
+    }
+
+
+def _positive_title(positive: str | None) -> str | None:
+    """The display title of a file's parsed positive (None without one)."""
+    return None if positive is None else display_title((), positive)
+
+
+def _verified_title(summary: dict | None, positive_title: str | None) -> str | None:
+    """A linked file's Library title, withholding unconfirmed saved prompt text.
+
+    The one rule for the card and the inspector. A stored title is user data and
+    always shows. A title taken from the saved positive's first line shows only
+    when ``positive_title`` (``_positive_title`` of the file's own positive as
+    the shared parser reads it from the file's records) is the same title: a
+    saved association never replaces file evidence.
+    """
+    if not isinstance(summary, dict) or summary.get("status") != "linked":
+        return None
+    title = summary.get("title")
+    if summary.get("title_source") != "text":
+        return title
+    confirmed = positive_title is not None and positive_title == title
+    return title if confirmed else None
+
+
+def _card_link(summary: dict, positive_title: str | None) -> dict:
+    """The card's link summary with an unconfirmed first-line title withheld."""
+    if summary.get("title_source") != "text":
+        return summary
+    return {**summary, "title": _verified_title(summary, positive_title)}
+
+
+def _inspected_positive(observed: dict) -> str | None:
+    """The positive the shared parser reads from the inspected file's records.
+
+    Videos give None, as on the card, which reads no video metadata.
+    """
+    inspection = observed.get("inspection")
+    if inspection is None or observed["file"]["media_type"] == "video":
+        return None
+    return parsed_positive(header_params(inspection.metadata))
 
 
 def _public_path(path):
@@ -238,14 +349,66 @@ def _workspace_root(query: dict, roots: list[Path]) -> int | None:
     return index
 
 
+WORKSPACE_ORDERS = ("newest", "oldest", "name", "name-desc", "rating")
+# Library-compatible bounds on the linked-positive filters (database/library.py).
+MAX_FILTER_CATEGORY = 200
+MAX_FILTER_TAGS = 30
+MAX_FILTER_TAG = 200
+
+
+class _Listed(NamedTuple):
+    """One listed file plus the derived values every filter and sort reads.
+
+    Built once per gallery scan (see ``_workspace_orders``); the first four
+    fields are the ``(path, mtime, root, index)`` entry the page formatter takes.
+    """
+
+    path: Path
+    mtime: float
+    root: Path
+    index: int
+    folded: str  # relative POSIX path, case-folded (filename search)
+    folder: str  # str(relative.parent), native separators (subfolder filter)
+    name: str  # case-folded basename (name sorts)
+    tie: str  # sha256 of the relative POSIX path (bounded tie-break)
+    video: bool
+    normalized: str  # normalize_image_path, compared with linked rows
+
+
+def _listed(path: Path, mtime: float, root: Path, index: int) -> _Listed:
+    text, prefix = str(path), os.path.join(str(root), "")
+    relative = (
+        text[len(prefix) :] if text.startswith(prefix) else str(path.relative_to(root))
+    )
+    posix = relative if os.sep == "/" else relative.replace(os.sep, "/")
+    name = relative.rpartition(os.sep)[2]
+    return _Listed(
+        path,
+        mtime,
+        root,
+        index,
+        posix.casefold(),
+        os.path.dirname(relative) or ".",
+        name.casefold(),
+        hashlib.sha256(posix.encode("utf-8")).hexdigest(),
+        os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS,
+        normalize_image_path(text),
+    )
+
+
 def _workspace_key(entry: tuple, order: str) -> tuple:
-    path, mtime, root, index = entry
-    relative = path.relative_to(root).as_posix()
-    tie = hashlib.sha256(relative.encode("utf-8")).hexdigest()
-    name = path.name.casefold()
+    """The keyset sort key of *entry* (a _Listed or a 4-tuple entry)."""
+    if not isinstance(entry, _Listed):
+        entry = _listed(*entry)
     if order in ("name", "name-desc"):
-        return (name, tie, index, mtime)
-    return ((-mtime if order == "newest" else mtime), name, tie, index)
+        return (entry.name, entry.tie, entry.index, entry.mtime)
+    mtime = -entry.mtime if order in ("newest", "rating") else entry.mtime
+    return (mtime, entry.name, entry.tie, entry.index)
+
+
+def _rated_key(entry: _Listed, rank: int) -> tuple:
+    """Highest rated: rating 5..1, linked unrated (0), unlinked (-1); then newest."""
+    return (-rank, *_workspace_key(entry, "rating"))
 
 
 def _workspace_cursor(key: tuple, scope: str) -> str:
@@ -276,6 +439,8 @@ def _workspace_cursor_key(token: str, scope: str, order: str) -> tuple:
             if order in ("name", "name-desc")
             else ((float, int), str, str, int)
         )
+        if order == "rating":
+            types = (int, *types)
         if len(key) != len(types) or not all(
             type(value) in (kind if isinstance(kind, tuple) else (kind,))
             for value, kind in zip(key, types)
@@ -326,6 +491,57 @@ async def _json_body_or_error(request):
         return None, _json_error("Request body too large", 413)
     except (ValueError, UnicodeDecodeError):
         return None, _json_error("Invalid JSON body", 400)
+
+
+MAX_FAVORITE_PATH = 4096
+
+
+def _favorite_target(data: Mapping, roots: list[Path]):
+    """``((index, relative), None)`` for a favorite body, else ``(None, error)``.
+
+    Rejects unknown roots, traversal, absolute or drive paths and non-media
+    names before any filesystem or database access.
+    """
+    index, relative = data.get("root_index"), data.get("path")
+    if type(index) is not int or not 0 <= index < len(roots):
+        return None, bad_request("Invalid gallery root")
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or len(relative) > MAX_FAVORITE_PATH
+    ):
+        return None, bad_request("path must be a relative media path")
+    if (
+        _has_traversal(relative)
+        or "\0" in relative
+        or re.match(r"^[a-zA-Z]:", relative)
+    ):
+        return None, _forbidden()
+    if Path(relative).suffix.lower() not in MEDIA_EXTENSIONS:
+        return None, _forbidden("Only media files can be favorites")
+    return (index, relative), None
+
+
+# The path module whose case rules key favorites (tests swap in ntpath).
+_path_flavor = os.path
+
+
+def _favorite_relative_key(relative: str) -> str:
+    """Case-normalized POSIX key of a root-relative path.
+
+    Lowercased with "/" separators where the platform folds case (Windows),
+    identity on POSIX, so a case-only rename keeps its favorite on Windows
+    and distinct Linux files stay distinct.
+    """
+    return _path_flavor.normcase(relative).replace(_path_flavor.sep, "/")
+
+
+def _favorite_root_key(root) -> str:
+    """Server-side identity of a gallery root: its real, case-normalized path.
+
+    Never sent in a response; folder names alone are not unique across roots.
+    """
+    return _favorite_relative_key(os.path.realpath(str(root)))
 
 
 def _iter_media_files(output_path, max_files):
@@ -405,6 +621,87 @@ def _output_image_entry(
     if root_scope is not None:
         entry["root_scope"] = root_scope
     return entry
+
+
+def _workspace_filters(query: Mapping) -> dict:
+    """Validate the workspace listing's filter and sort parameters.
+
+    ``q`` (at most 500 characters) matches the relative path, case-folded, and
+    the linked positive's text, title and tag names. ``category`` is exact,
+    ``tags`` is a comma list that must all be present, ``sort=rating`` ranks by
+    the linked positive. Raises ValueError for any unknown or oversized value.
+    """
+    text = query.get("q", "").strip()
+    folded = text.casefold()
+    media = query.get("media", "all")
+    order = query.get("sort", "newest")
+    folder = query.get("subfolder", "").strip().replace("\\", "/")
+    category = query.get("category", "").strip() or None
+    tags = sorted(
+        {tag.strip() for tag in query.get("tags", "").split(",") if tag.strip()}
+    )
+    if (
+        len(text) > 500
+        or len(folded) > 500
+        or media not in ("all", "image", "video")
+        or order not in WORKSPACE_ORDERS
+        or (category is not None and len(category) > MAX_FILTER_CATEGORY)
+        or len(tags) > MAX_FILTER_TAGS
+        or any(len(tag) > MAX_FILTER_TAG for tag in tags)
+    ):
+        raise ValueError("Invalid gallery filters")
+    if folder and (_has_traversal(folder) or len(folder) > 1024):
+        raise ValueError("Invalid gallery folder")
+    return {
+        "text": text,
+        "query": folded,
+        "media": media,
+        "order": order,
+        "folder": folder,
+        "category": category,
+        "tags": tags,
+    }
+
+
+# A plain listing's cursor page leaves positive_count out (see
+# _select_workspace_page); None instead means the count could not be read.
+_COUNT_OMITTED = object()
+
+
+def _filtered_page(
+    entries: list, start: int, size: int, filters: dict, links: dict | None
+) -> tuple[int, list, int | None]:
+    """Count the *entries* the filters admit and take *size* from *start* on.
+
+    *links* maps normalized paths to (hit, rating, positive id) for every
+    unambiguously linked image (see PromptDatabase.get_image_link_matches); a
+    category or tag filter admits only those, and ``q`` admits a filename match
+    or a linked-positive hit. Returns the total, the page and the number of
+    distinct linked positives among all admitted entries (None without links).
+    """
+    query, media, folder = filters["query"], filters["media"], filters["folder"]
+    members_only = filters["category"] is not None or bool(filters["tags"])
+    native_folder = folder.replace("/", os.sep)
+    nested = native_folder + os.sep
+    total, page, positives = 0, [], set()
+    for position, entry in enumerate(entries):
+        if folder and not (
+            entry.folder == native_folder or entry.folder.startswith(nested)
+        ):
+            continue
+        if media != "all" and (media == "video") != entry.video:
+            continue
+        match = None if links is None else links.get(entry.normalized)
+        if members_only and match is None:
+            continue
+        if query and query not in entry.folded and not (match and match[0]):
+            continue
+        total += 1
+        if match is not None:
+            positives.add(match[2])
+        if position >= start and len(page) < size:
+            page.append(entry)
+    return total, page, None if links is None else len(positives)
 
 
 def _in_subfolder(rel_dir, subfolder):
@@ -522,6 +819,14 @@ class ImageRoutesMixin:
         @routes.get("/prompt_manager/gallery/subfolders")
         async def get_gallery_subfolders_route(request):
             return await self.get_gallery_subfolders(request)
+
+        @routes.put("/prompt_manager/images/favorite")
+        async def set_image_favorite_route(request):
+            return await self.update_image_favorite(request, favorite=True)
+
+        @routes.delete("/prompt_manager/images/favorite")
+        async def clear_image_favorite_route(request):
+            return await self.update_image_favorite(request, favorite=False)
 
         # POST: drops the server-side listing cache and rewalks the output roots.
         @routes.post("/prompt_manager/gallery/rescan")
@@ -756,32 +1061,26 @@ class ImageRoutesMixin:
             return bad_request("limit and offset must be integers")
         try:
             root_index = _workspace_root(request.query, output_dirs)
-            query = request.query.get("q", "").strip().casefold()
-            media = request.query.get("media", "all")
-            order = request.query.get("sort", "newest")
-            folder = request.query.get("subfolder", "").strip().replace("\\", "/")
-            if (
-                len(query) > 500
-                or media not in ("all", "image", "video")
-                or order not in ("newest", "oldest", "name", "name-desc")
-            ):
-                raise ValueError("Invalid gallery filters")
-            if folder and (_has_traversal(folder) or len(folder) > 1024):
-                raise ValueError("Invalid gallery folder")
+            filters = _workspace_filters(request.query)
             scope = hashlib.sha256(
                 json.dumps(
                     [
-                        query,
-                        media,
-                        order,
-                        folder,
+                        filters["query"],
+                        filters["text"],
+                        filters["media"],
+                        filters["order"],
+                        filters["folder"],
                         root_index,
                         [str(root) for root in output_dirs],
+                        filters["category"],
+                        filters["tags"],
                     ]
                 ).encode()
             ).hexdigest()
             token = request.query.get("cursor")
-            after = _workspace_cursor_key(token, scope, order) if token else None
+            after = (
+                _workspace_cursor_key(token, scope, filters["order"]) if token else None
+            )
         except ValueError as exc:
             return bad_request(str(exc))
 
@@ -790,75 +1089,193 @@ class ImageRoutesMixin:
             for index, root in enumerate(output_dirs)
             if root_index is None or index == root_index
         ]
-        page, total, has_more, next_cursor = await self._run_in_executor(
-            self._select_workspace_page,
-            listings,
-            folder,
-            query,
-            media,
-            order,
-            after,
-            limit,
-            scope,
+        page, total, has_more, next_cursor, positive_count = (
+            await self._run_in_executor(
+                self._select_workspace_page, listings, filters, after, limit, scope
+            )
         )
         images = await self._run_in_executor(self._format_workspace_page, page)
-        return web.json_response(
-            {
-                "success": True,
-                "images": images,
-                "total": total,
-                "limit": limit,
-                "has_more": has_more,
-                "next_cursor": next_cursor,
-            }
-        )
+        result = {
+            "success": True,
+            "images": images,
+            "total": total,
+            "positive_count": positive_count,
+            "limit": limit,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+        if positive_count is _COUNT_OMITTED:
+            del result["positive_count"]
+        return web.json_response(result)
 
-    @staticmethod
+    def _workspace_listed(self, index: int, root: Path, files: list) -> list:
+        """The _Listed values of one root's scan, rebuilt only where it changed.
+
+        The gallery cache hands out the same list object until it rescans.
+        A rescan reuses the value of every unchanged ``(path, mtime)`` and,
+        when nothing changed, the previous list itself, so the cached sort
+        orders stay valid. Only a gallery-roots change drops these values.
+        """
+        key = (index, str(root))
+        cached = self._workspace_listed_cache.get(key)
+        if cached is not None and cached[0] is files:
+            return cached[1]
+        previous = cached[2] if cached is not None else {}
+        listed = []
+        for path, mtime in files:
+            entry = previous.get((path, mtime))
+            listed.append(entry or _listed(path, mtime, root, index))
+        if (
+            cached is not None
+            and len(listed) == len(cached[1])
+            and all(new is old for new, old in zip(listed, cached[1]))
+        ):
+            listed, lookup = cached[1], previous
+        else:
+            lookup = {(entry.path, entry.mtime): entry for entry in listed}
+            # Card facts follow the per-file values: keep unchanged files only.
+            cards = self._workspace_card_cache.get(key)
+            if cards:
+                self._workspace_card_cache[key] = {
+                    file: facts for file, facts in cards.items() if file in lookup
+                }
+        self._workspace_listed_cache[key] = (files, listed, lookup)
+        return listed
+
+    def _workspace_orders(self, listings: list[tuple]) -> dict:
+        """The selected roots' files in newest order, plus lazily added orders."""
+        parts = tuple(
+            self._workspace_listed(index, root, files)
+            for index, root, files in listings
+        )
+        key = tuple((index, str(root)) for index, root, _files in listings)
+        cached = self._workspace_order_cache.get(key)
+        if cached is not None and all(
+            old is new for old, new in zip(cached[0], parts, strict=True)
+        ):
+            return cached[1]
+        newest = sorted(
+            (entry for part in parts for entry in part),
+            key=lambda entry: _workspace_key(entry, "newest"),
+        )
+        orders = {"newest": newest}
+        self._workspace_order_cache[key] = (parts, orders)
+        return orders
+
+    def _workspace_wanted(self, listings: list[tuple]) -> frozenset:
+        """The selected listing's normalized paths (cached with its orders)."""
+        orders = self._workspace_orders(listings)
+        if "wanted" not in orders:
+            orders["wanted"] = frozenset(entry.normalized for entry in orders["newest"])
+        return orders["wanted"]
+
+    def _workspace_order(self, listings: list[tuple], order: str) -> list:
+        """The listing sorted by a filesystem order (built lazily, cached)."""
+        orders = self._workspace_orders(listings)
+        if order not in orders:
+            if order == "name-desc":
+                orders[order] = self._workspace_order(listings, "name")[::-1]
+            else:
+                orders[order] = sorted(
+                    orders["newest"], key=lambda entry: _workspace_key(entry, order)
+                )
+        return orders[order]
+
     def _select_workspace_page(
+        self,
         listings: list[tuple],
-        folder: str,
-        query: str,
-        media: str,
-        order: str,
+        filters: dict,
         after: tuple | None,
         limit: int,
         scope: str,
     ) -> tuple:
-        entries = []
-        for index, root, files in listings:
-            for path, mtime in files:
-                relative = path.relative_to(root)
-                if folder and not _in_subfolder(
-                    str(relative.parent), folder.replace("/", os.sep)
-                ):
-                    continue
-                if query and query not in relative.as_posix().casefold():
-                    continue
-                kind = "video" if path.suffix.lower() in VIDEO_EXTENSIONS else "image"
-                if media != "all" and media != kind:
-                    continue
-                entries.append((path, mtime, root, index))
-        total = len(entries)
-        reverse = order == "name-desc"
-        entries.sort(key=lambda entry: _workspace_key(entry, order), reverse=reverse)
-        if after is not None:
-            entries = [
-                entry
-                for entry in entries
-                if (
-                    _workspace_key(entry, order) < after
-                    if reverse
-                    else _workspace_key(entry, order) > after
-                )
-            ]
-        page = entries[:limit]
-        has_more = len(entries) > limit
-        next_cursor = (
-            _workspace_cursor(_workspace_key(page[-1], order), scope)
-            if has_more
-            else None
+        """One keyset page of the filtered listing (blocking; run in executor).
+
+        One SELECT (get_image_link_matches) reads every linked positive of the
+        listing: the filters, the rating sort and the positive count share it.
+        A plain listing (no ``q``, category, tags or rating sort) reads it only
+        for its first page; its cursor pages read no links and the returned
+        count is _COUNT_OMITTED, so the response leaves ``positive_count`` out
+        and the frontend keeps the first page's value. On that plain first
+        page a failed read leaves the listing usable and the count unknown
+        (None); so does a failed read under ``q`` alone, whose search then
+        matches filenames only (as before the linked search existed).
+        """
+        order, category, tags = filters["order"], filters["category"], filters["tags"]
+        needed = (
+            bool(filters["query"])
+            or category is not None
+            or bool(tags)
+            or order == "rating"
         )
-        return page, total, has_more, next_cursor
+        links = None
+        if needed or after is None:
+            try:
+                links = self.db.get_image_link_matches(
+                    filters["text"],
+                    category,
+                    tags,
+                    every_link=True,
+                    wanted=self._workspace_wanted(listings),
+                )
+            except Exception:
+                # Category, tags and the rating sort cannot be served without
+                # the links. A plain listing and a filename search can: the
+                # search then matches filenames only, and the count is None.
+                if category is not None or tags or order == "rating":
+                    raise
+                self.logger.warning(
+                    "Workspace prompt links could not be read; %s",
+                    (
+                        "searching filenames only"
+                        if filters["query"]
+                        else "positive count unknown"
+                    ),
+                    exc_info=True,
+                )
+        if order == "rating":
+
+            def rank(entry):
+                match = links.get(entry.normalized)
+                return -1 if match is None else (match[1] or 0)
+
+            # Stable: within one rank the newest order (the tie-break) stays.
+            entries = sorted(
+                self._workspace_order(listings, "newest"),
+                key=lambda entry: -rank(entry),
+            )
+
+            def key(entry):
+                return _rated_key(entry, rank(entry))
+
+        else:
+            entries = self._workspace_order(listings, order)
+
+            def key(entry):
+                return _workspace_key(entry, order)
+
+        start = 0
+        if after is not None:
+            if order == "name-desc":
+                ascending = self._workspace_order(listings, "name")
+                start = len(entries) - bisect_left(ascending, after, key=key)
+            else:
+                start = bisect_right(entries, after, key=key)
+        total, page, positive_count = _filtered_page(
+            entries, start, limit + 1, filters, links
+        )
+        if not needed and after is not None:
+            positive_count = _COUNT_OMITTED
+        has_more = len(page) > limit
+        page = page[:limit]
+        next_cursor = _workspace_cursor(key(page[-1]), scope) if has_more else None
+        return (
+            [(entry.path, entry.mtime, entry.root, entry.index) for entry in page],
+            total,
+            has_more,
+            next_cursor,
+            positive_count,
+        )
 
     async def serve_image(self, request):
         """Serve the actual image file using streamed FileResponse."""
@@ -1679,6 +2096,91 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
+    async def update_image_favorite(self, request, *, favorite: bool):
+        """PUT/DELETE one favorite, named by ``{root_index, path}``.
+
+        A favorite is set only on a file in the root's listing; clearing also
+        accepts a well-formed path that is no longer listed, so a deleted
+        file's favorite can still be removed. Both are idempotent.
+        """
+        data, error = await _json_body_or_error(request)
+        if error is not None:
+            return error
+        roots = list(self._get_all_output_dirs())
+        target, error = _favorite_target(data, roots)
+        if error is not None:
+            return error
+        index, relative = target
+        root = roots[index]
+        relative = Path(relative).as_posix()
+        try:
+            files = await self._get_gallery_files(root)
+            listing = await self._run_in_executor(self._favorite_listing, root, files)
+            key = _favorite_relative_key(relative)
+            listed = listing.get(key)
+            if listed is None and favorite:
+                return web.json_response(
+                    {"success": False, "error": "Image file not found"}, status=404
+                )
+            root_key = _favorite_root_key(root)
+            if favorite and max(len(root_key), len(key)) > MAX_KEY_LENGTH:
+                # A stored key past the schema bound would fail the next
+                # startup or restore validation.
+                return _forbidden("Path is too long to favorite")
+            update = (
+                self.db.set_image_favorite if favorite else self.db.clear_image_favorite
+            )
+            await self._run_in_executor(update, root_key, key)
+        except Exception:
+            self.logger.exception("Favorite update failed")
+            return web.json_response(
+                {"success": False, "error": "Favorite update failed"}, status=500
+            )
+        return web.json_response(
+            {
+                "success": True,
+                "favorite": favorite,
+                "root_index": index,
+                "path": listed or relative,
+            }
+        )
+
+    def _favorite_listing(self, root: Path, files: list) -> dict[str, str]:
+        """``{relative key: listing POSIX spelling}`` for one root's scan.
+
+        Built once per scan (the gallery cache hands out the same list until
+        it rescans), so a toggle is a dictionary lookup.
+        """
+        cache_key = str(root)
+        cached = self._favorite_listing_cache.get(cache_key)
+        if cached is not None and cached[0] is files:
+            return cached[1]
+        listing = {}
+        for path, _mtime in files:
+            posix = path.relative_to(root).as_posix()
+            listing.setdefault(_favorite_relative_key(posix), posix)
+        self._favorite_listing_cache[cache_key] = (files, listing)
+        return listing
+
+    def _workspace_favorites(self, page: list[tuple]) -> set[tuple[int, str]]:
+        """``(root index, listing path)`` of the favorites among *page* entries."""
+        by_root: dict[tuple[int, Path], dict[str, str]] = {}
+        for path, _mtime, root, index in page:
+            posix = path.relative_to(root).as_posix()
+            by_root.setdefault((index, root), {})[_favorite_relative_key(posix)] = posix
+        try:
+            found = set()
+            for (index, root), keys in by_root.items():
+                for key in self.db.get_image_favorites(
+                    _favorite_root_key(root), list(keys)
+                ):
+                    found.add((index, keys[key]))
+            return found
+        except Exception:
+            # The listing stays usable; stars show as not favorited.
+            self.logger.warning("Image favorites could not be read")
+            return set()
+
     async def inspect_image(self, request):
         """Read prompt evidence for one explicitly rooted physical media file."""
         roots = list(self._get_all_output_dirs())
@@ -1712,7 +2214,7 @@ class ImageRoutesMixin:
         try:
 
             def inspect() -> bytes | None:
-                saved, unavailable = None, False
+                saved, unavailable, summary = None, False, None
                 try:
                     saved = self.db.get_image_prompt_info(
                         str(path), False, report_ambiguity=True
@@ -1720,6 +2222,13 @@ class ImageRoutesMixin:
                 except Exception:
                     unavailable = True
                     self.logger.warning("Saved inspection display could not be read")
+                if saved and saved.get("association_status") != "ambiguous":
+                    try:
+                        summary = self.db.get_image_link_summaries([str(path)], False)
+                        summary = summary[str(path)]
+                    except Exception:
+                        # The link stays known; only its title is withheld.
+                        self.logger.warning("Inspection link title could not be read")
                 try:
                     observed = inspect_current_file(
                         path,
@@ -1731,6 +2240,9 @@ class ImageRoutesMixin:
                     )
                 except CurrentFileChanged:
                     return None
+                observed["library"]["title"] = _verified_title(
+                    summary, _positive_title(_inspected_positive(observed))
+                )
                 return encode_inspection_response(
                     image={
                         "root_index": index,
@@ -1764,6 +2276,7 @@ class ImageRoutesMixin:
             )
 
     def _inspection_library(self, saved: dict | None, *, unavailable: bool) -> dict:
+        """The inspector's Library facts; the route sets the title afterwards."""
         result = {
             "status": "unavailable" if unavailable else "none",
             "scope": "saved-library",
@@ -1785,7 +2298,6 @@ class ImageRoutesMixin:
                 status="linked",
                 positive_id=pair.get("positive_prompt_id"),
                 pair_id=pair.get("id"),
-                title=pair.get("title"),
                 category=pair.get("category"),
                 tags=pair.get("tags"),
                 metadata_scope="pair",
@@ -1897,24 +2409,106 @@ class ImageRoutesMixin:
             if _in_subfolder(str(entry[0].relative_to(entry[2]).parent), subfolder)
         ]
 
-    def _format_workspace_page(self, page: list[tuple]) -> list[dict]:
+    def _workspace_link_summaries(self, paths: list[str]) -> dict[str, dict]:
+        """Card link summaries, matched exactly as the inspection route does."""
+        try:
+            return self.db.get_image_link_summaries(paths, False)
+        except Exception:
+            # The listing stays usable; cards fall back to their filenames.
+            self.logger.warning("Workspace link summaries could not be read")
+            return {}
+
+    def _card_parse(self, path: Path, records: dict | None) -> tuple:
+        """One card's ``(seed, positive title)``; ``(None, None)`` on any error.
+
+        One file's unexpected parse failure must not fail the whole page: its
+        card shows no seed and withholds a first-line title.
+        """
+        try:
+            params = header_params(records)
+            return card_seed(params), _positive_title(parsed_positive(params))
+        except Exception:
+            self.logger.warning(
+                "Workspace card facts could not be parsed for %s",
+                path.name,
+                exc_info=True,
+            )
+            return None, None
+
+    def _read_card_facts(self, path: Path, *, parse: bool) -> _CardFacts | None:
+        """Read one image's header; ``parse`` adds the seed and positive title.
+
+        None when the file cannot be read at all (corrupt, locked, vanishing).
+        """
+        try:
+            width, height, records = _card_header(path)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            # A corrupt or disappearing preview must not hide the listing.
+            return None
+        if not parse:
+            return _CardFacts(width, height, None, None)
+        # Parsed after the handle closes, so a concurrent rename or delete
+        # (which Windows refuses on open files) is not held up by it.
+        return _CardFacts(width, height, *self._card_parse(path, records))
+
+    def _card_facts(self, entry: tuple, *, parse: bool) -> _CardFacts:
+        """One listed image's card facts, read once per ``(path, mtime)``.
+
+        Kept beside the scan's per-file values (``_workspace_listed``) and
+        invalidated the same way: a rescan keeps the facts of unchanged files
+        and drops the rest, and a roots change drops them all. Only files of
+        the current scan are stored, so the cache is bounded by the listing.
+        """
+        path, mtime, root, index = entry[:4]
+        root_key, key = (index, str(root)), (path, mtime)
+        cached = self._workspace_card_cache.get(root_key, {}).get(key)
+        if cached is not None:
+            return cached
+        facts = self._read_card_facts(path, parse=parse)
+        if facts is None:
+            # Not stored: a locked or half-written file may read next time.
+            return _NO_CARD_FACTS
+        listed = self._workspace_listed_cache.get(root_key)
+        if parse and listed is not None and key in listed[2]:
+            self._workspace_card_cache.setdefault(root_key, {})[key] = facts
+        return facts
+
+    def _format_workspace_page(
+        self, page: list[tuple], *, linked: bool = True
+    ) -> list[dict]:
+        """Workspace descriptors; ``linked`` adds card facts (link, seed, favorite)."""
         images = self._format_output_page(page, scoped=True)
-        paths = {
-            (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry[0]
+        entries = {
+            (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry
             for entry in page
         }
+        summaries = (
+            self._workspace_link_summaries(
+                [str(entry[0]) for entry in entries.values()]
+            )
+            if linked
+            else {}
+        )
         for image in images:
-            image["width"] = None
-            image["height"] = None
-            if image["is_video"]:
+            entry = entries[(image["root_index"], image["path"])]
+            # Videos: the card reads no video metadata. Library previews show
+            # no card facts, so they skip the parse (``parse=linked``).
+            facts = (
+                _NO_CARD_FACTS
+                if image["is_video"]
+                else self._card_facts(entry, parse=linked)
+            )
+            image["width"], image["height"] = facts.width, facts.height
+            if not linked:
                 continue
-            try:
-                with paths[(image["root_index"], image["path"])].open("rb") as stream:
-                    with Image.open(stream) as source:
-                        image["width"], image["height"] = source.size
-            except (OSError, ValueError, Image.DecompressionBombError):
-                # A corrupt or disappearing preview must not hide the listing.
-                continue
+            image["seed"] = facts.seed
+            summary = summaries.get(str(entry[0])) or _unavailable_link()
+            image["linked"] = _card_link(summary, facts.positive_title)
+        if linked:
+            # Image cards carry the star; Library previews show none.
+            favorites = self._workspace_favorites(page)
+            for image in images:
+                image["favorite"] = (image["root_index"], image["path"]) in favorites
         return images
 
     def _format_output_page(self, page, *, scoped=False):

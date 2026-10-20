@@ -28,7 +28,14 @@ function el(tag,text,className) {
     const node=document.createElement(tag);if(text!==undefined) node.textContent=text;if(className) node.className=className;return node;
 }
 function link(text,href,className) {const node=el('a',text,className);node.href=href;return node;}
-function title(text) {const first=text.split('\n')[0].trim();return first.length>80?`${first.slice(0,80)}…`:first;}
+// Cut at 80 UTF-16 units, never inside a surrogate pair (database/library.py titled() matches).
+export function libraryTitle(text) {
+    const first=text.split('\n')[0].trim();
+    if (first.length<=80) return first;
+    const cut=first.slice(0,80);
+    return `${/[\uD800-\uDBFF]$/.test(cut)?cut.slice(0,-1):cut}…`;
+}
+const title=libraryTitle;
 /** The full stored title; the first-line fallback only when it is blank. */
 function displayTitle(positive) {return typeof positive.title==='string' && positive.title.trim()?positive.title:title(positive.text);}
 function focusHeading(main) {const heading=main.querySelector('h1');if(!heading)return;heading.tabIndex=-1;heading.focus();}

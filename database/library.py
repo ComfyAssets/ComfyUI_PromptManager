@@ -1,5 +1,6 @@
 """Read-only positive-parent views over existing prompt and pair tables."""
 
+import datetime
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,10 +14,79 @@ _ELIGIBLE = """(EXISTS(SELECT 1 FROM prompt_pairs ep WHERE ep.positive_prompt_id
 _FROM = "prompts p LEFT JOIN prompt_library_state ls ON ls.prompt_id=p.id"
 # The characters JavaScript's String.prototype.trim() removes, so a title the
 # display treats as blank also falls back to the prompt text for name sorting.
-_BLANK = (
-    "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,"
-    "8200,8201,8202,8232,8233,8239,8287,12288,65279)"
-)
+_TRIM_CODES = (9, 10, 11, 12, 13, 32, 160, 5760, *range(8192, 8203))
+_TRIM_CODES += (8232, 8233, 8239, 8287, 12288, 65279)
+_BLANK = f"char({','.join(map(str, _TRIM_CODES))})"
+_JS_TRIM = "".join(map(chr, _TRIM_CODES))
+# The Library's display title: a stored title, else the prompt's first line.
+DISPLAY_TITLE_LIMIT = 80
+
+
+def _utf16_units(text: str) -> int:
+    """JavaScript ``length``: characters beyond the BMP count as two units."""
+    return len(text) + sum(1 for ch in text if ord(ch) > 0xFFFF)
+
+
+def _utf16_prefix(text: str, units: int) -> str:
+    """The longest prefix within ``units`` UTF-16 units, never splitting a pair."""
+    used = 0
+    for index, ch in enumerate(text):
+        used += 2 if ord(ch) > 0xFFFF else 1
+        if used > units:
+            return text[:index]
+    return text
+
+
+def titled(stored_titles: tuple, text: object) -> tuple[str | None, str | None]:
+    """Return ``(title, source)``: a stored title, else the text's first line.
+
+    ``source`` is ``"stored"`` for the first non-blank stored title (blank as
+    in JavaScript's trim, like the Library view), ``"text"`` for the first line,
+    and None when both are empty. The first line is trimmed and, past
+    DISPLAY_TITLE_LIMIT UTF-16 units, cut with an ellipsis like the Library's
+    ``libraryTitle()`` (never inside a surrogate pair).
+    """
+    for title in stored_titles:
+        if isinstance(title, str) and title.strip(_JS_TRIM):
+            return title, "stored"
+    if not isinstance(text, str):
+        return None, None
+    first = text.split("\n")[0].strip(_JS_TRIM)
+    if _utf16_units(first) > DISPLAY_TITLE_LIMIT:
+        first = _utf16_prefix(first, DISPLAY_TITLE_LIMIT) + "\u2026"
+    return (first, "text") if first else (None, None)
+
+
+def display_title(stored_titles: tuple, text: object) -> str | None:
+    """The Library display title of ``titled``, without its source."""
+    return titled(stored_titles, text)[0]
+
+
+def utc_iso(value: object) -> str | None:
+    """A stored timestamp as UTC ISO text, or None when absent or unreadable.
+
+    Usage writes are already UTC ISO; a naive value (SQLite's CURRENT_TIMESTAMP
+    form) is read as UTC, and an offset is converted to UTC. One bad row must
+    not fail a whole Library read, so a value past the datetime range after
+    conversion (OverflowError) is unreadable too. Python 3.11+ fromisoformat
+    accepts more ISO forms than 3.10 (e.g. a 2-digit fraction); every form the
+    app writes (utc_now_iso, the 3.2.4 backfill, CURRENT_TIMESTAMP, Z) parses
+    the same on both, so only hand-edited values can differ by version.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        stamp = datetime.datetime.fromisoformat(text)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+        return stamp.astimezone(datetime.timezone.utc).isoformat()
+    except (ValueError, OverflowError):
+        return None
+
+
 _NAME = (
     f"LOWER(CASE WHEN TRIM(COALESCE(ls.title,''),{_BLANK})!='' "
     "THEN ls.title ELSE p.text END)"
@@ -145,6 +215,7 @@ class LibraryOperations:
     ) -> list[dict]:
         rows = conn.execute(
             "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes,p.created_at,"
+            "p.run_count,p.last_used_at,"
             + (f"{sort_expression} AS _sort," if sort_expression else "")
             + "(SELECT COUNT(*) FROM prompt_pairs v WHERE v.positive_prompt_id=p.id "
             "AND v.archived=0) AS variant_count,"
@@ -165,6 +236,9 @@ class LibraryOperations:
             ):
                 by_id[row["prompt_id"]]["tags"].append(row["name"])
         for row in result:
+            # Usage is shown, never compared: the token hashes owner fields only.
+            row["run_count"] = row["run_count"] if type(row["run_count"]) is int else 0
+            row["last_used_at"] = utc_iso(row["last_used_at"])
             row["edit_token"] = library_edit_token(epoch, row)
         return result
 
@@ -196,9 +270,15 @@ class LibraryOperations:
             ceiling = after["ceiling"]
         where += " AND p.id<=?"
         params.append(ceiling)
-        total = conn.execute(
-            "SELECT COUNT(*) FROM " + _FROM + " WHERE " + where, params
-        ).fetchone()[0]
+        # One SELECT counts the filtered parents and their active variants.
+        total, variant_total = conn.execute(
+            "SELECT COUNT(*),COALESCE(SUM((SELECT COUNT(*) FROM prompt_pairs v "
+            "WHERE v.positive_prompt_id=p.id AND v.archived=0)),0) FROM "
+            + _FROM
+            + " WHERE "
+            + where,
+            params,
+        ).fetchone()
         expression, direction = _ORDERS[sort]
         if after is not None:
             operator = ">" if direction == "ASC" else "<"
@@ -230,6 +310,7 @@ class LibraryOperations:
             "library_epoch": epoch,
             "items": rows,
             "total": total,
+            "variant_total": variant_total,
             "has_more": has_more,
             "next_key": next_key,
         }

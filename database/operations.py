@@ -6,11 +6,12 @@ import sqlite3
 import json
 import datetime
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set, Tuple
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
-from .library import LibraryOperations
+from .library import LibraryOperations, titled
+from .image_favorites import ImageFavoriteOperations
 from .library_commands import LibraryCommandOperations
 from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
@@ -179,6 +180,119 @@ AND p.id NOT IN (SELECT prompt_id FROM live_hint_prompts)
 """
 
 
+# One SELECT reads the link summaries of at most this many paths: three bound
+# parameters per path stays under SQLite's historical 999-variable limit.
+LINK_SUMMARY_BATCH = 200
+# A pair link counts only when an image has exactly one distinct pair, as in
+# get_image_prompt_info; its positive, title and metadata then describe the card.
+_LINK_SUMMARY_SQL = """SELECT gi.image_path, gi.file_path, gi.prompt_id,
+       p.text, p.category, p.rating, ls.title,
+       pp.positive_prompt_id, pp.title, pt.text, pt.category, pt.rating, pls.title
+FROM generated_images gi
+JOIN prompts p ON gi.prompt_id = p.id
+LEFT JOIN prompt_library_state ls ON ls.prompt_id = p.id
+LEFT JOIN prompt_pairs pp ON pp.id = (
+    SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
+    FROM image_prompt_pairs ip WHERE ip.image_id = gi.id)
+LEFT JOIN prompts pt ON pt.id = pp.positive_prompt_id
+LEFT JOIN prompt_library_state pls ON pls.prompt_id = pp.positive_prompt_id
+WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
+# One image row describes a card only when no other row claims the same file
+# (as in get_image_link_summaries, several rows are ambiguous). The pair scope
+# and the linked positive follow _LINK_SUMMARY_SQL; category, rating, tags and
+# the searchable text and titles come from that positive (spec D12/D13). Every
+# writer since the 3.2.4 migration stores file_path, so it is the path key.
+# The prompt-level conditions are uncorrelated IN sets SQLite builds once, and
+# the CASE evaluates the per-row ambiguity probe only for admitted rows.
+_LINK_FILTER_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id
+FROM generated_images gi
+LEFT JOIN prompt_pairs pp ON pp.id = (
+    SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
+    FROM image_prompt_pairs ip WHERE ip.image_id = gi.id)
+JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
+WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
+    SELECT 1 FROM generated_images other
+    WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END"""
+# The positive's text, its Library title or one of its tag names, or the pair
+# title, contains :pattern (LIKE, so ASCII case is ignored as in Library search).
+_LINK_FILTER_HIT = """(p.id IN (
+    SELECT hp.id FROM prompts hp
+    LEFT JOIN prompt_library_state hls ON hls.prompt_id = hp.id
+    WHERE hp.text LIKE :pattern ESCAPE '\\' OR hls.title LIKE :pattern ESCAPE '\\'
+    OR hp.id IN (SELECT ht.prompt_id FROM prompt_tags ht JOIN tags hn
+                 ON hn.id = ht.tag_id WHERE hn.name LIKE :pattern ESCAPE '\\'))
+  OR pp.title LIKE :pattern ESCAPE '\\')"""
+_LINK_FILTER_TAG = (
+    "p.id IN (SELECT ft.prompt_id FROM prompt_tags ft JOIN tags fn "
+    "ON fn.id = ft.tag_id WHERE fn.name = :tag{index})"
+)
+
+
+def link_filter_query(
+    q: str, category: Optional[str], tags: List[str], *, every_link: bool = False
+) -> Tuple[str, Dict[str, Any]]:
+    """The workspace filter SELECT and its named parameters (all bound).
+
+    Only code constants and enumerate indices are formatted into the SQL; see
+    PromptDatabase.get_image_link_matches for the semantics.
+    """
+    params: Dict[str, Any] = {}
+    hit = "1"
+    if q:
+        hit = _LINK_FILTER_HIT
+        params["pattern"] = f"%{escape_like(q)}%"
+    admitted = []
+    if category is not None:
+        admitted.append("p.category = :category")
+        params["category"] = category
+    for index, tag in enumerate(tags):
+        admitted.append(_LINK_FILTER_TAG.format(index=index))
+        params[f"tag{index}"] = tag
+    if q and not admitted and not every_link:
+        admitted.append(hit)
+    sql = _LINK_FILTER_SQL.format(hit=hit, admit=" AND ".join(admitted) or "1")
+    return sql, params
+
+
+_ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _like_suffix(value: object, suffix: str) -> bool:
+    """Python form of SQLite's ``value LIKE '%' || suffix``: ASCII-only case."""
+    return isinstance(value, str) and value.translate(_ASCII_FOLD).endswith(
+        suffix.translate(_ASCII_FOLD)
+    )
+
+
+def _empty_link_summary(status: str) -> Dict[str, Any]:
+    return {
+        "status": status,
+        "positive_id": None,
+        "title": None,
+        "title_source": None,
+        "category": None,
+        "rating": None,
+    }
+
+
+def _link_summary(row: tuple) -> Dict[str, Any]:
+    if row[7] is not None:
+        positive, text, category, rating = row[7], row[9], row[10], row[11]
+        titles = (row[8], row[12])
+    else:
+        positive, text, category, rating = row[2], row[3], row[4], row[5]
+        titles = (row[6],)
+    title, source = titled(titles, text)
+    return {
+        "status": "linked",
+        "positive_id": positive,
+        "title": title,
+        "title_source": source,
+        "category": category,
+        "rating": rating,
+    }
+
+
 class PromptDatabase(
     PairOperations,
     LibraryOperations,
@@ -188,6 +302,7 @@ class PromptDatabase(
     ExecutionContextOperations,
     ExecutionOutputOperations,
     HistoryReadOperations,
+    ImageFavoriteOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -2159,6 +2274,100 @@ class PromptDatabase(
                 "generation_time": row[7],
                 "parameters": row[8] if len(row) > 8 else None,
             }
+
+    def get_image_link_summaries(
+        self, paths: List[str], allow_filename_fallback: bool = True
+    ) -> Dict[str, Dict[str, Any]]:
+        """Summarize each path's linked saved positive for an image card.
+
+        Matching equals get_image_prompt_info: exact image_path or normalized
+        file_path rows win; otherwise, with the fallback, rows whose image_path
+        ends with the basename. One match is linked, several are ambiguous.
+        One SELECT reads up to LINK_SUMMARY_BATCH paths.
+        """
+        unique = list(dict.fromkeys(paths))
+        summaries: Dict[str, Dict[str, Any]] = {}
+        for start in range(0, len(unique), LINK_SUMMARY_BATCH):
+            batch = unique[start : start + LINK_SUMMARY_BATCH]
+            summaries.update(self._link_summary_batch(batch, allow_filename_fallback))
+        return summaries
+
+    def _link_summary_batch(
+        self, paths: List[str], allow_filename_fallback: bool
+    ) -> Dict[str, Dict[str, Any]]:
+        normalized = {path: normalize_image_path(path) for path in paths}
+        basenames = {path: os.path.basename(path) for path in paths}
+        marks = ",".join("?" for _ in paths)
+        params: List[Any] = [*paths, *normalized.values()]
+        fallback = ""
+        if allow_filename_fallback:
+            fallback = "".join(" OR gi.image_path LIKE ? ESCAPE '\\'" for _ in paths)
+            params.extend(f"%{escape_like(basenames[path])}" for path in paths)
+        sql = _LINK_SUMMARY_SQL.format(marks=marks, fallback=fallback)
+        with self.model.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        summaries = {}
+        for path in paths:
+            exact = [
+                row for row in rows if row[0] == path or row[1] == normalized[path]
+            ]
+            matches = exact or (
+                [row for row in rows if _like_suffix(row[0], basenames[path])]
+                if allow_filename_fallback
+                else []
+            )
+            if len(matches) == 1:
+                summaries[path] = _link_summary(matches[0])
+            else:
+                summaries[path] = _empty_link_summary(
+                    "ambiguous" if matches else "none"
+                )
+        return summaries
+
+    def get_image_link_matches(
+        self,
+        q: str,
+        category: Optional[str],
+        tags: List[str],
+        *,
+        every_link: bool = False,
+        wanted: Optional[Set[str]] = None,
+    ) -> Dict[str, Tuple[bool, Optional[int], int]]:
+        """Map normalized paths of unambiguously linked images to
+        (hit, rating, positive id).
+
+        Rows are limited to images whose linked positive has *category* and
+        every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
+        the positive's text, Library title or a tag name, or in the pair title.
+        Without category or tags only hits are returned, unless *every_link*
+        asks for every linked image (the rating sort and the positive count).
+        The positive id is the card's linked positive. One SELECT whose rows
+        are streamed; with *wanted* (the listing's normalized paths) only those
+        paths are kept, so memory is bounded by the listing, not the database.
+        """
+        sql, params = link_filter_query(q, category, tags, every_link=every_link)
+        matches: Dict[str, Tuple[bool, Optional[int], int]] = {}
+        with self.model.get_connection() as conn:
+            for path, rating, matched, positive in conn.execute(sql, params):
+                if wanted is None or path in wanted:
+                    matches[path] = (bool(matched), rating, positive)
+        return matches
+
+    def get_image_paths_matching(
+        self, q: str, category: Optional[str], tags: List[str]
+    ) -> Set[str]:
+        """Normalized paths whose linked positive matches *q*, *category* and *tags*.
+
+        See get_image_link_matches; an empty *q* matches every linked image
+        the category and tags admit.
+        """
+        return {
+            path
+            for path, (hit, _rating, _positive) in self.get_image_link_matches(
+                q, category, tags
+            ).items()
+            if hit or not q
+        }
 
     def get_prompt_id_for_image(self, image_path: str) -> Optional[int]:
         """Return the prompt_id linked to an image, or None."""
