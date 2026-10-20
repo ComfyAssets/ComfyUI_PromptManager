@@ -1,0 +1,432 @@
+// The shared concept toolbar and dialogs (#249 C1): concept app.js toolbar() a347–360, "Refine this view"
+// a1348–1364, "Import & inspect" a1483–1491 (D15) and the "Copy prompt" fallback a1223–1241.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const toolbarModule = import('../../web/js/workspace/toolbar.mjs');
+const dialogsModule = import('../../web/js/workspace/workspace-dialogs.mjs');
+
+/** A minimal DOM: enough element behavior for markup, events, focus and dialogs. */
+function fakeDOM() {
+    const previous = { document: global.document };
+    let active = null;
+    class Element extends EventTarget {
+        constructor(tag) {
+            super();
+            this.tagName = tag.toUpperCase();
+            this.children = [];
+            this.attributes = {};
+            this.parentNode = null;
+            this.className = '';
+            this.id = '';
+            this.value = '';
+            this.disabled = false;
+            this.open = false;
+            this.selected = false;
+            this.selectionStart = 0;
+            this.selectionEnd = 0;
+            this._text = '';
+        }
+        get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
+        set textContent(text) { this.children = []; this._text = String(text); }
+        get isConnected() { return this === body || Boolean(this.parentNode?.isConnected); }
+        get options() { return this.children.filter(child => child.tagName === 'OPTION'); }
+        append(...nodes) {
+            for (const node of nodes) {
+                node.parentNode?.children.splice(node.parentNode.children.indexOf(node), 1);
+                node.parentNode = this;
+                this.children.push(node);
+            }
+        }
+        replaceChildren(...nodes) {
+            for (const child of this.children) child.parentNode = null;
+            this.children = [];
+            this._text = '';
+            this.append(...nodes);
+        }
+        remove() {
+            if (!this.parentNode) return;
+            this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1);
+            this.parentNode = null;
+        }
+        setAttribute(name, value) { this.attributes[name] = String(value); }
+        getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; }
+        focus() { active = this; }
+        select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
+        showModal() { this.open = true; }
+        close() {
+            if (!this.open) return;
+            this.open = false;
+            this.dispatchEvent(new Event('close'));
+        }
+        click() { this.dispatchEvent(new Event('click', { cancelable: true })); }
+    }
+    const body = new Element('body');
+    global.document = {
+        body,
+        get activeElement() { return active ?? body; },
+        createElement: tag => new Element(tag),
+        createElementNS: (namespace, tag) => new Element(tag),
+    };
+    const all = (root, predicate, found = []) => {
+        if (predicate(root)) found.push(root);
+        for (const child of root.children) all(child, predicate, found);
+        return found;
+    };
+    return {
+        body, Element,
+        all: predicate => all(body, predicate),
+        find: (root, predicate) => all(root, predicate)[0],
+        restore() { Object.assign(global, previous); },
+    };
+}
+
+const byId = (dom, id) => dom.all(node => node.id === id)[0];
+const tags = node => node.children.map(child => child.tagName.toLowerCase());
+const optionPairs = select => select.options.map(option => [option.value, option.textContent]);
+const modal = dom => byId(dom, 'modal');
+const button = (root, text) => {
+    const found = [];
+    const walk = node => {
+        if (node.tagName === 'BUTTON' && node.textContent === text) found.push(node);
+        node.children.forEach(walk);
+    };
+    walk(root);
+    return found[0];
+};
+
+test('toolbar emits concept markup and order', async () => {
+    const { mountToolbar } = await toolbarModule;
+    const { createScope } = await import('../../web/js/shared/toolkit/core.js');
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        const container = new dom.Element('div');
+        dom.body.append(container);
+        const changes = [];
+        const filters = [];
+        const toolbar = mountToolbar(container, {
+            scope, categories: ['Portraits', 'Landscapes'],
+            sorts: [['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated']],
+            value: { q: 'castle', category: 'Landscapes', sort: 'name' },
+            onChange: value => changes.push(value), onFilters: trigger => filters.push(trigger),
+        });
+        const root = container.children[0];
+        assert.equal(toolbar.element, root);
+        assert.equal(root.tagName, 'SEARCH');
+        assert.equal(root.className, 'toolbar');
+        assert.deepEqual(tags(root), ['label', 'select', 'select', 'button']);
+
+        const [label, category, sort, filtersButton] = root.children;
+        assert.equal(label.className, 'search-field');
+        assert.equal(label.htmlFor, 'search');
+        assert.deepEqual(tags(label), ['svg', 'input']);
+        assert.equal(label.children[0].getAttribute('class'), 'icon');
+        assert.equal(label.children[0].getAttribute('aria-hidden'), 'true');
+        const input = label.children[1];
+        assert.equal(input.id, 'search');
+        assert.equal(input.type, 'search');
+        assert.equal(input.placeholder, 'Search prompts, tags, filenames…');
+        assert.equal(input.getAttribute('aria-label'), 'Search workspace');
+        assert.equal(input.value, 'castle');
+
+        assert.equal(category.id, 'category-filter');
+        assert.equal(category.getAttribute('aria-label'), 'Filter by category');
+        assert.deepEqual(optionPairs(category), [['', 'All categories'], ['Portraits', 'Portraits'], ['Landscapes', 'Landscapes']]);
+        assert.equal(category.value, 'Landscapes');
+        assert.equal(sort.id, 'sort');
+        assert.equal(sort.getAttribute('aria-label'), 'Sort results');
+        assert.equal(sort.value, 'name');
+
+        // D16: no Save view until saved views are persisted.
+        assert.equal(button(root, 'Save view'), undefined);
+        assert.equal(filtersButton.textContent, 'Filters');
+        assert.equal(filtersButton.type, 'button');
+        filtersButton.click();
+        assert.deepEqual(filters, [filtersButton]);
+
+        category.value = '';
+        category.dispatchEvent(new Event('change'));
+        sort.value = 'rating';
+        sort.dispatchEvent(new Event('change'));
+        assert.deepEqual(changes, [
+            { q: 'castle', category: '', sort: 'name' },
+            { q: 'castle', category: '', sort: 'rating' },
+        ]);
+
+        // Categories refresh without dropping a still-listed selection.
+        toolbar.setCategories(['Archive']);
+        assert.deepEqual(optionPairs(category), [['', 'All categories'], ['Archive', 'Archive']]);
+        toolbar.setValue({ q: 'moon', category: 'Archive', sort: 'newest' });
+        assert.deepEqual([input.value, category.value, sort.value], ['moon', 'Archive', 'newest']);
+        assert.deepEqual(toolbar.value(), { q: 'moon', category: 'Archive', sort: 'newest' });
+    } finally {
+        scope.dispose();
+        dom.restore();
+    }
+});
+
+test('toolbar search uses a debounced onChange that stops with its scope', async () => {
+    const { mountToolbar, SEARCH_DELAY } = await toolbarModule;
+    const { createScope } = await import('../../web/js/shared/toolkit/core.js');
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        const container = new dom.Element('div');
+        const changes = [];
+        mountToolbar(container, { scope, categories: [], sorts: [['newest', 'Recently added']],
+            value: { q: '', category: '', sort: 'newest' }, onChange: value => changes.push(value), onFilters() {} });
+        const input = container.children[0].children[0].children[1];
+        assert.equal(input.id, 'search');
+        for (const text of ['c', 'ca', 'cat']) {
+            input.value = text;
+            input.dispatchEvent(new Event('input'));
+        }
+        assert.deepEqual(changes, []);
+        await new Promise(resolve => setTimeout(resolve, SEARCH_DELAY + 30));
+        assert.deepEqual(changes, [{ q: 'cat', category: '', sort: 'newest' }]);
+        input.value = 'dog';
+        input.dispatchEvent(new Event('input'));
+        scope.dispose();
+        await new Promise(resolve => setTimeout(resolve, SEARCH_DELAY + 30));
+        assert.equal(changes.length, 1);
+        assert.equal(container.children.length, 0);
+    } finally {
+        scope.dispose();
+        dom.restore();
+    }
+});
+
+test('sort lists concept options first', async () => {
+    const { mountToolbar, orderSorts } = await toolbarModule;
+    const { createScope } = await import('../../web/js/shared/toolkit/core.js');
+    // D14: the concept's three, in the concept's order, then the page's appended options in their own order.
+    const given = [['newest', 'Recently added'], ['oldest', 'Oldest first'], ['name-desc', 'Filename Z–A'],
+        ['rating', 'Highest rated'], ['name', 'Name A–Z']];
+    assert.deepEqual(orderSorts(given), [['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated'],
+        ['oldest', 'Oldest first'], ['name-desc', 'Filename Z–A']]);
+    // A page without a concept option keeps the ones it has, concept first.
+    assert.deepEqual(orderSorts([['oldest', 'Oldest first'], ['newest', 'Recently added']]),
+        [['newest', 'Recently added'], ['oldest', 'Oldest first']]);
+    assert.throws(() => orderSorts([]), TypeError);
+    assert.throws(() => orderSorts([['newest']]), TypeError);
+
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        const container = new dom.Element('div');
+        mountToolbar(container, { scope, categories: [], sorts: given, value: { q: '', category: '', sort: 'oldest' },
+            onChange() {}, onFilters() {} });
+        const sort = container.children[0].children[2];
+        assert.deepEqual(optionPairs(sort).map(([, label]) => label),
+            ['Recently added', 'Name A–Z', 'Highest rated', 'Oldest first', 'Filename Z–A']);
+        assert.equal(sort.value, 'oldest');
+    } finally {
+        scope.dispose();
+        dom.restore();
+    }
+});
+
+const REFINE_FIELDS = [
+    { key: 'source', options: [['all', 'All sources'], ['0', 'output'], ['1', 'archive']] },
+    { key: 'folder', options: [['', 'All output folders'], ['portraits', 'portraits']] },
+    { key: 'media', options: [['all', 'All media'], ['image', 'Images'], ['video', 'Videos']] },
+    { key: 'tags' },
+];
+
+test('refine dialog round-trips values and clear resets them', async () => {
+    const { openRefineDialog, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    try {
+        const trigger = new dom.Element('button');
+        dom.body.append(trigger);
+        const applied = [];
+        const cleared = [];
+        const values = { source: '1', folder: 'portraits', media: 'video', tags: 'cinematic' };
+        openRefineDialog({ fields: REFINE_FIELDS, values, trigger,
+            onApply: value => applied.push(value), onClear: value => cleared.push(value) });
+        const dialog = modal(dom);
+        assert.equal(dialog.open, true);
+        assert.equal(byId(dom, 'modal-title').textContent, 'Refine this view');
+        const body = byId(dom, 'modal-body');
+        const fields = body.children.filter(child => child.className === 'field');
+        assert.deepEqual(fields.map(field => field.children[0].textContent), ['Source', 'Folder', 'Media', 'Tags']);
+        assert.deepEqual(fields.map(field => field.children[0].htmlFor), ['filter-source', 'filter-folder', 'filter-media', 'filter-tags']);
+        assert.deepEqual(fields.map(field => field.children[1].id), ['filter-source', 'filter-folder', 'filter-media', 'filter-tags']);
+        const [source, folder, media, tagsInput] = fields.map(field => field.children[1]);
+        assert.deepEqual(optionPairs(source), REFINE_FIELDS[0].options);
+        assert.deepEqual([source.value, folder.value, media.value, tagsInput.value], ['1', 'portraits', 'video', 'cinematic']);
+        assert.equal(tagsInput.placeholder, 'e.g. cinematic');
+        assert.deepEqual(tags(body), ['div', 'div', 'div', 'div', 'p', 'div']);
+        assert.equal(body.children[4].className, 'small');
+        assert.ok(body.children[4].textContent.length > 0);
+        const actions = body.children[5];
+        assert.equal(actions.className, 'dialog-actions');
+        assert.deepEqual(actions.children.map(child => [child.textContent, child.className]),
+            [['Clear filters', ''], ['Apply filters', 'ca-primary']]);
+
+        // Apply returns the values as edited and leaves the caller's object alone.
+        media.value = 'image';
+        tagsInput.value = '  moody ';
+        button(body, 'Apply filters').click();
+        assert.deepEqual(applied, [{ source: '1', folder: 'portraits', media: 'image', tags: 'moody' }]);
+        assert.equal(values.media, 'video');
+        assert.equal(dialog.open, false);
+        assert.equal(trigger.isConnected && document.activeElement, trigger);
+
+        // Reopening with the applied values shows them again (a round trip).
+        openRefineDialog({ fields: REFINE_FIELDS, values: applied[0], trigger, onApply: value => applied.push(value), onClear() {} });
+        button(byId(dom, 'modal-body'), 'Apply filters').click();
+        assert.deepEqual(applied[1], applied[0]);
+
+        // Clear resets every field to its first option (Tags to empty) and reports that.
+        openRefineDialog({ fields: REFINE_FIELDS, values: applied[0], trigger, onApply: value => applied.push(value),
+            onClear: value => cleared.push(value) });
+        const reopened = byId(dom, 'modal-body');
+        button(reopened, 'Clear filters').click();
+        assert.deepEqual(cleared, [{ source: 'all', folder: '', media: 'all', tags: '' }]);
+        assert.equal(applied.length, 2);
+        assert.equal(modal(dom).open, false);
+
+        // A page offers only its own fields; the modal is the one shared shell.
+        openRefineDialog({ fields: [{ key: 'tags' }], values: {}, onApply: value => applied.push(value), onClear() {} });
+        const only = byId(dom, 'modal-body').children.filter(child => child.className === 'field');
+        assert.deepEqual(only.map(field => field.children[0].textContent), ['Tags']);
+        button(byId(dom, 'modal-body'), 'Apply filters').click();
+        assert.deepEqual(applied[2], { tags: '' });
+        assert.equal(dom.all(node => node.id === 'modal').length, 1);
+        assert.throws(() => openRefineDialog({ fields: [{ key: 'evidence' }], values: {}, onApply() {}, onClear() {} }), TypeError);
+    } finally {
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
+test('import dialog lists only real operations', async () => {
+    const { openImportDialog, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    try {
+        const calls = [];
+        openImportDialog({ onInspect: () => calls.push('inspect'), onRescan: () => calls.push('rescan') });
+        assert.equal(byId(dom, 'modal-title').textContent, 'Import & inspect');
+        const body = byId(dom, 'modal-body');
+        assert.deepEqual(tags(body), ['p', 'div']);
+        assert.equal(body.children[0].className, 'small');
+        const list = body.children[1];
+        assert.equal(list.className, 'operation-list');
+        const rows = list.children.map(row => {
+            assert.equal(row.className, 'operation');
+            const [text, actions] = row.children;
+            assert.deepEqual(tags(text), ['h3', 'p']);
+            assert.equal(actions.className, 'row-actions');
+            return [text.children[0].textContent, text.children[1].textContent, actions.children[0].textContent];
+        });
+        // D15: no "Import portable recipes" until import exists; Rescan finds added or removed files.
+        assert.deepEqual(rows, [
+            ['Inspect a local image', 'Read embedded metadata before deciding to add it.', 'Open inspector'],
+            ['Scan an output folder', 'Find files added or removed in the output folders.', 'Rescan'],
+        ]);
+        assert.doesNotMatch(body.textContent, /recipe|portable|sample/i);
+
+        button(body, 'Rescan').click();
+        assert.deepEqual(calls, ['rescan']);
+        assert.equal(modal(dom).open, false);
+        openImportDialog({ onInspect: () => calls.push('inspect'), onRescan: () => calls.push('rescan') });
+        button(byId(dom, 'modal-body'), 'Open inspector').click();
+        assert.deepEqual(calls, ['rescan', 'inspect']);
+        assert.equal(modal(dom).open, false);
+    } finally {
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
+test('copy fallback selects the text', async () => {
+    const { openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    try {
+        const text = '<b>a castle</b>, "moonlight" & fog';
+        openCopyFallback(text);
+        assert.equal(byId(dom, 'modal-title').textContent, 'Copy prompt');
+        const body = byId(dom, 'modal-body');
+        assert.deepEqual(tags(body), ['div', 'p']);
+        const [field, note] = body.children;
+        assert.equal(field.className, 'field');
+        const [label, area] = field.children;
+        assert.equal(label.textContent, 'Select and copy this text');
+        assert.equal(label.htmlFor, 'copy-text');
+        assert.equal(area.tagName, 'TEXTAREA');
+        assert.equal(area.id, 'copy-text');
+        assert.equal(area.readOnly, true);
+        assert.equal(area.value, text);
+        assert.deepEqual([area.selectionStart, area.selectionEnd], [0, text.length]);
+        assert.equal(document.activeElement, area);
+        assert.equal(note.className, 'small');
+        assert.equal(note.textContent, 'Automatic clipboard access requires a secure browser context.');
+        assert.throws(() => openCopyFallback(42), TypeError);
+    } finally {
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
+test('dialogs restore focus to the trigger on Escape', async () => {
+    const { openRefineDialog, openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    try {
+        const opens = [
+            trigger => openRefineDialog({ fields: [{ key: 'tags' }], values: {}, trigger, onApply() {}, onClear() {} }),
+            trigger => openImportDialog({ trigger, onInspect() {}, onRescan() {} }),
+            trigger => openCopyFallback('text', { trigger }),
+        ];
+        for (const open of opens) {
+            const trigger = new dom.Element('button');
+            dom.body.append(trigger);
+            open(trigger);
+            const dialog = modal(dom);
+            assert.equal(dialog.open, true);
+            assert.equal(dialog.getAttribute('aria-labelledby'), 'modal-title');
+            const header = dialog.children[0];
+            assert.equal(header.className, 'dialog-header');
+            assert.deepEqual(tags(header), ['h2', 'button']);
+            const close = header.children[1];
+            assert.equal(close.id, 'modal-close');
+            assert.equal(close.textContent, '×');
+            assert.equal(close.getAttribute('aria-label'), 'Close dialog');
+            assert.notEqual(document.activeElement, trigger);
+            // Escape fires `cancel` on a modal dialog.
+            const escape = new Event('cancel', { cancelable: true });
+            dialog.dispatchEvent(escape);
+            assert.equal(dialog.open, false);
+            assert.equal(document.activeElement, trigger);
+        }
+
+        // × closes and restores focus too; a removed trigger leaves focus alone.
+        const trigger = new dom.Element('button');
+        dom.body.append(trigger);
+        openImportDialog({ trigger, onInspect() {}, onRescan() {} });
+        byId(dom, 'modal-close').click();
+        assert.equal(modal(dom).open, false);
+        assert.equal(document.activeElement, trigger);
+        openImportDialog({ trigger, onInspect() {}, onRescan() {} });
+        trigger.remove();
+        const close = byId(dom, 'modal-close');
+        close.click();
+        assert.notEqual(document.activeElement, trigger);
+
+        // Opening over an open dialog swaps its content and keeps the first trigger; dispose removes the shell.
+        const first = new dom.Element('button');
+        dom.body.append(first);
+        openImportDialog({ trigger: first, onInspect() {}, onRescan() {} });
+        openCopyFallback('swap');
+        assert.equal(byId(dom, 'modal-title').textContent, 'Copy prompt');
+        modal(dom).dispatchEvent(new Event('cancel', { cancelable: true }));
+        assert.equal(document.activeElement, first);
+        openImportDialog({ trigger: first, onInspect() {}, onRescan() {} });
+        closeWorkspaceDialog();
+        assert.equal(modal(dom), undefined);
+    } finally {
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
