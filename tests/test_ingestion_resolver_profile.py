@@ -8,6 +8,7 @@ leaves it unresolved, while the inspection profile resolves it.
 
 import logging
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from utils import prompt_pair_resolver as resolver
@@ -72,12 +73,19 @@ class TestIngestionKeepsDefaultProfile(unittest.TestCase):
 
         mixin = admin.AdminRoutesMixin.__new__(admin.AdminRoutesMixin)
         mixin.db = Mock()
+        mixin.db.get_prompt_by_hash.return_value = None
+        mixin.db.save_prompt.return_value = 7
         spy = _Spy()
         with patch.object(admin, "resolve_prompt_pair", spy):
-            status = mixin._ingest_scanned_file("/out/f03.png", _f03_metadata())
-        self.assertEqual(status, "unresolved")
+            status = mixin._ingest_scanned_file(Path("/out/f03.png"), _f03_metadata())
         spy.assert_default_and_gated(self)
-        mixin.db.assert_not_called()
+        # The resolver leaves f03 unresolved; the scan links the prompt the
+        # browser parser traces, as the inspector shows it.
+        self.assertEqual(status, "added")
+        self.assertEqual(
+            mixin.db.save_prompt.call_args.args[0], "a red fox in snow, detailed fur"
+        )
+        mixin.db.link_image_to_prompt.assert_called_once()
 
 
 if __name__ == "__main__":
