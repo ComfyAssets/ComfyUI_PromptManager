@@ -143,14 +143,18 @@ A spec performance budget gets two tests:
 
 The `perf budget` job in `.github/workflows/test.yml` is the reference
 measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
+It runs on every push to `main` and on `workflow_dispatch`, never on pull
+requests, because shared-runner timing must not block a merge. Dispatch it on a
+branch to measure before merging.
 Shared Windows and macOS runners do not run them; the structural tests cover
 portability. Run it locally with
 `PROMPTMANAGER_PERF_BUDGET=1 python -m unittest tests.test_api_workspace_images.TestWorkspaceImages.test_filter_budget`
 and quote the printed p95 in the PR body.
 
-A red budget job means the code got slower: fix the code, or change the budget
-in the spec with a reason. Never rerun it to green. Whether `perf budget` is a
-required check is the maintainer's decision (`.github/branch-protection.json`).
+A red `perf budget` run on `main` means the code got slower: fix the code (or
+change the budget in the spec with a reason) in a follow-up PR. Never rerun it to
+green. It is not a required check, and it cannot be one while it skips pull
+requests (`.github/branch-protection.json`).
 
 ## Windows portability preflight
 

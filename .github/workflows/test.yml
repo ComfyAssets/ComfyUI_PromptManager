@@ -8,6 +8,7 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 # Superseded PR pushes cancel their older run. Every main push gets its own
 # group (run_id), so no main commit's run is ever cancelled or dropped as pending.
@@ -148,7 +149,10 @@ jobs:
 
   perf-budget:
     # The reference wall-clock measurement (TESTING.md "Performance budgets").
+    # Shared-runner timing varies, so it never gates a pull request: it runs on
+    # each push to main and on demand. A red run on main means fix the code.
     name: perf budget
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
