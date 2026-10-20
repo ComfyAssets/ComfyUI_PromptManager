@@ -213,15 +213,15 @@ JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
 WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
     SELECT 1 FROM generated_images other
     WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END"""
-# The positive's text, its Library title or one of its tag names, or the pair
-# title, contains :pattern (LIKE, so ASCII case is ignored as in Library search).
-_LINK_FILTER_HIT = """(p.id IN (
+# The positive's text, its Library title or one of its tag names contains
+# :pattern (LIKE, so ASCII case is ignored as in Library search). A pair's own
+# title names its negative variant and is never searched (#249 D12).
+_LINK_FILTER_HIT = """p.id IN (
     SELECT hp.id FROM prompts hp
     LEFT JOIN prompt_library_state hls ON hls.prompt_id = hp.id
     WHERE hp.text LIKE :pattern ESCAPE '\\' OR hls.title LIKE :pattern ESCAPE '\\'
     OR hp.id IN (SELECT ht.prompt_id FROM prompt_tags ht JOIN tags hn
-                 ON hn.id = ht.tag_id WHERE hn.name LIKE :pattern ESCAPE '\\'))
-  OR pp.title LIKE :pattern ESCAPE '\\')"""
+                 ON hn.id = ht.tag_id WHERE hn.name LIKE :pattern ESCAPE '\\'))"""
 _LINK_FILTER_TAG = (
     "p.id IN (SELECT ft.prompt_id FROM prompt_tags ft JOIN tags fn "
     "ON fn.id = ft.tag_id WHERE fn.name = :tag{index})"
@@ -2340,7 +2340,8 @@ class PromptDatabase(
 
         Rows are limited to images whose linked positive has *category* and
         every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
-        the positive's text, Library title or a tag name, or in the pair title.
+        the positive's text, Library title or a tag name; a pair's own title
+        names its negative variant and is not searched.
         Without category or tags only hits are returned, unless *every_link*
         asks for every linked image (the rating sort and the positive count).
         The positive id is the card's linked positive. One SELECT whose rows

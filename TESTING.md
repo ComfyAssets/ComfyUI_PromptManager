@@ -509,9 +509,11 @@ and skip the parse.
 Filters (`mode=workspace`; anything invalid is 400 "Invalid gallery filters"):
 
 - `q` (at most 500 characters). An entry passes when the case-folded relative path
-  contains it, or when its linked positive's text, Library title, a tag name, or
-  its pair title contains it (SQLite `LIKE` with escaping, ASCII case folding
-  only). Search does not apply the card title gate, and does not search pair tags.
+  contains it, or when its linked positive's text, Library title or a tag name
+  contains it (SQLite `LIKE` with escaping, ASCII case folding only). A pair's own
+  title names its negative variant, so it is not searched (#249 D12): a variant
+  name alone matches nothing. Search does not apply the card title gate, and does
+  not search pair tags.
 - `category` (exact and case-sensitive, at most 200 characters, stripped; blank
   means none) and `tags` (a comma list, blanks dropped, order-free, AND, at most 30
   tags of at most 200 characters) admit linked images only, through the linked

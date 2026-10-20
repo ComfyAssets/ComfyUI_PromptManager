@@ -1068,8 +1068,9 @@ class TestWorkspaceImages(ImageAPITestCase):
         cases = (
             # Six unambiguous positives; the ambiguous file and unlinked count none.
             ({}, 10, 6),
-            # Text, title, tag, pair title (its positive) and the filename match.
-            ({"q": "ZEBRA"}, 6, 4),
+            # Text, stored title, tag and the filename match (never a pair's
+            # own variant title, D12).
+            ({"q": "ZEBRA"}, 5, 3),
             ({"category": "Night"}, 4, 3),
             ({"tags": "a,b"}, 3, 2),
             ({"q": "plain_unlinked"}, 1, 0),
@@ -1200,18 +1201,24 @@ class TestWorkspaceImages(ImageAPITestCase):
 
         files = self._filter_fixtures()
         _, data = await self.get(q="ZEBRA", sort="name")
-        # Text, stored title, tag, pair title and filename; never an ambiguous link.
+        # Text, stored title, tag and filename; never an ambiguous link.
         self.assertEqual(
             self._names(data),
             [
                 "day_ab.png",
                 "night_ab.png",
-                "paired.png",
                 "titled.png",
                 "zebra_unlinked.png",
             ],
         )
-        self.assertEqual(data["total"], 5)
+        self.assertEqual(data["total"], 4)
+        # D12: a pair's own title names its negative variant, so the variant
+        # name alone matches nothing; the linked positive's text still does.
+        _, data = await self.get(q="Zebra pair")
+        self.assertEqual(self._names(data), [])
+        self.assertEqual(data["total"], 0)
+        _, data = await self.get(q="pair positive")
+        self.assertEqual(self._names(data), ["paired.png"])
         _, data = await self.get(q="0% w")
         self.assertEqual(self._names(data), ["percent.png"])
         _, data = await self.get(q="%")
@@ -1222,7 +1229,7 @@ class TestWorkspaceImages(ImageAPITestCase):
             self.api.db.get_image_paths_matching("zebra", None, []),
             {
                 normalize_image_path(str(files[name]))
-                for name in ("night_ab", "day_ab", "titled", "paired")
+                for name in ("night_ab", "day_ab", "titled")
             },
         )
 
