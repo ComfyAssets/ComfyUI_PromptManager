@@ -419,6 +419,121 @@ npm run --prefix tools/vendor test:workflows -- shell-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 
+## Workspace data fields for the concept pages (#249)
+
+These fields are additive. The legacy `/prompt_manager/images/output` listing (no
+`mode=workspace`) and the legacy pages do not change, and existing workspace pages
+ignore the new keys.
+
+Workspace image items (`/prompt_manager/images/output?mode=workspace`, and Library
+image galleries) gain three card facts. Library list previews carry none of them
+and skip the parse.
+
+- `linked: {status, positive_id, title, title_source, category, rating}`. One
+  `get_image_link_summaries` SELECT per 200 paths, matched exactly as the
+  inspection route matches (exact or normalized `file_path`, no basename
+  fallback). `status` is `linked`, `ambiguous` (several owners), `none`, or
+  `unavailable` when the database read failed (logged, no error text). Treat
+  anything but `linked` as the filename fallback. In pair scope (the image has
+  exactly one distinct pair), `positive_id` is the pair's positive, and the title
+  comes from the pair title, then the positive's Library title, then the text's
+  first line. In positive scope it comes from the Library title, then the first
+  line. A first line longer than 80 code points is cut to 80 plus `…`, like
+  `library.mjs` `title()`. `title_source` is `stored`, `text` or null. `category`
+  and `rating` come from the linked positive (D13), not from the pair. The title
+  gate is shared with the inspector (`_verified_title`): a `stored` title always
+  shows. A `text` title shows only when the file's own positive, parsed from its
+  records by the shared parser, gives the same display title. Otherwise the title
+  is null on the card and in the inspector header. Videos and unreadable files
+  have no parsed positive, so their `text` titles are withheld.
+- `seed`: `extract_generation_params` from `utils/generation_params.py` (the
+  inspector's legacy parser, #251), run on the `prompt`/`workflow` header records
+  read by the same open that reads the dimensions. The parse runs after the file
+  handle closes. A record over 2 MiB (UTF-8), a parser error, a recursion error, a
+  placeholder, or a non-integral, boolean or non-finite seed gives null. A seed
+  past 2**53 is re-read exactly from the same records and kept only if it rounds
+  to the parsed double. A card never shows a seed that differs from the
+  inspector's (`test_card_seed_equals_inspector_seed_when_both_present`). The card
+  shows no seed for A1111 `parameters` files or for a BasicGuider custom sampler,
+  where the inspector does.
+- `favorite: bool`. One favorites SELECT per root per page. A read failure logs a
+  warning and shows false.
+
+Filters (`mode=workspace`; anything invalid is 400 "Invalid gallery filters"):
+
+- `q` (at most 500 characters). An entry passes when the case-folded relative path
+  contains it, or when its linked positive's text, Library title, a tag name, or
+  its pair title contains it (SQLite `LIKE` with escaping, ASCII case folding
+  only). Search does not apply the card title gate, and does not search pair tags.
+- `category` (exact and case-sensitive, at most 200 characters, stripped; blank
+  means none) and `tags` (a comma list, blanks dropped, order-free, AND, at most 30
+  tags of at most 200 characters) admit linked images only, through the linked
+  positive.
+- Ambiguous files never match a linked filter, and they rank as unlinked.
+- `sort` is `newest | oldest | name | name-desc | rating`. `rating` orders by
+  rating 5 to 1, then linked but unrated, then unlinked and ambiguous; ties break
+  newest first. A signed cursor covers every filter and the sort, so reusing it
+  with a change is 400.
+- One link read (`get_image_link_matches`, streamed and bounded to the listed
+  paths) serves the filters, the rating sort and the count.
+
+`positive_count` is the number of distinct linked positives over the full matching
+set, not the page:
+
+- Present on every first page, and on every page of a filtered (`q`, `category`,
+  `tags`) or `sort=rating` listing.
+- Absent on a plain listing's cursor pages, which read no links. The frontend
+  keeps the first page's value.
+- Null when a plain first page's link read failed. The listing still returns 200,
+  and consumers then hide "· K positive prompts". A failure under a filter or
+  the rating sort stays a safe 500.
+
+Library parents (list, detail and command receipts) gain `run_count` (an int; the
+D23 migration estimate for rows from before 3.2.4) and `last_used_at`, a UTC ISO
+string. A naive value reads as UTC, and an unreadable or out-of-range value is
+null. The edit token ignores both. `variant_total` has two meanings. On the list
+response it counts the active variants over all filtered parents (the same
+snapshot as `total`, the same on every cursor page). On the detail response it
+counts one positive's variants in the chosen archive scope. The Library caption
+reads it from the list state.
+
+Favorites store (D7 = A): `PUT` and `DELETE /prompt_manager/images/favorite` with
+`{root_index, path}`. Both are idempotent and answer
+`{success, favorite, root_index, path}`. The boundary returns 400 for an unknown
+root or a malformed body, and 403 for traversal, an absolute or drive path, NUL, a
+non-media name, or a key over the stored bound. PUT needs a listed file (404
+otherwise). DELETE also clears a path that is no longer listed. Send the DELETE
+body as `application/json`.
+
+- The table is `image_favorites(root_key, relative_path, created_at)`. `root_key`
+  is the root's real path (`os.path.realpath`), case-normalized with `/`
+  separators. It is stored server-side only and never returned. Folder labels are
+  not unique across roots, so they are not used as keys.
+- `relative_path` is `normcase(path)` with `/`. On Windows a case-only rename
+  keeps the star. On POSIX the key is the exact spelling, so `A.png` and `a.png`
+  stay separate (tests swap in `ntpath` through `py.api.images._path_flavor`).
+  Moving the install or changing a root's real path orphans its rows, which are
+  harmless and never shown.
+- Schema validation (`image_favorites_schema_error`) runs at startup and on
+  restore. Old backups without the table restore, and backup plus restore keeps
+  WAL-resident favorites and closes every handle (`tests/test_database_backup.py`).
+
+Budgets: `test_filter_work_is_bounded` always runs. It asserts that a plain first
+page makes 1 link SELECT and a plain cursor page none, that every filter shape
+makes exactly 1, the covering-index plan, and that the per-file values are built
+once per scan and only for new files after a monitor invalidation. The opt-in
+`test_filter_budget` (`PROMPTMANAGER_PERF_BUDGET=1`, the `perf budget` job) times
+the D12 p95 < 150 ms budget; see "Performance budgets".
+
+```sh
+python -m unittest tests.test_api_workspace_images tests.test_card_seed \
+  tests.test_image_favorites tests.test_library tests.test_api_library \
+  tests.test_database_backup -q
+```
+
+Installing these fields needs a maintainer ComfyUI restart (Python, routes and
+schema). Automated tests use disposable databases and output folders.
+
 ## Prompt sending and cross-pack compatibility
 
 `tests/js/prompt-bridge-contracts.test.js` runs the Toolkit's shared protocol
