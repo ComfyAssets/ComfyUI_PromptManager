@@ -532,7 +532,7 @@ def _workspace_filters(query: Mapping) -> dict:
     media = query.get("media", "all")
     order = query.get("sort", "newest")
     folder = query.get("subfolder", "").strip().replace("\\", "/")
-    category = query.get("category") or None
+    category = query.get("category", "").strip() or None
     tags = sorted(
         {tag.strip() for tag in query.get("tags", "").split(",") if tag.strip()}
     )
@@ -985,17 +985,31 @@ class ImageRoutesMixin:
         )
 
     def _workspace_listed(self, index: int, root: Path, files: list) -> list:
-        """The _Listed values of one root's scan, built once per scan.
+        """The _Listed values of one root's scan, rebuilt only where it changed.
 
-        The gallery cache hands out the same list object until it rescans, so
-        the values are reused while the scan is still that same object.
+        The gallery cache hands out the same list object until it rescans.
+        A rescan reuses the value of every unchanged ``(path, mtime)`` and,
+        when nothing changed, the previous list itself, so the cached sort
+        orders stay valid. invalidate_gallery_cache drops these values.
         """
         key = (index, str(root))
         cached = self._workspace_listed_cache.get(key)
         if cached is not None and cached[0] is files:
             return cached[1]
-        listed = [_listed(path, mtime, root, index) for path, mtime in files]
-        self._workspace_listed_cache[key] = (files, listed)
+        previous = cached[2] if cached is not None else {}
+        listed = []
+        for path, mtime in files:
+            entry = previous.get((path, mtime))
+            listed.append(entry or _listed(path, mtime, root, index))
+        if (
+            cached is not None
+            and len(listed) == len(cached[1])
+            and all(new is old for new, old in zip(listed, cached[1]))
+        ):
+            listed, lookup = cached[1], previous
+        else:
+            lookup = {(entry.path, entry.mtime): entry for entry in listed}
+        self._workspace_listed_cache[key] = (files, listed, lookup)
         return listed
 
     def _workspace_orders(self, listings: list[tuple]) -> dict:

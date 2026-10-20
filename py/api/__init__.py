@@ -352,9 +352,12 @@ class PromptManagerAPI(
     def invalidate_gallery_cache(self):
         """Invalidate the cached gallery file listing.
 
-        Called by the image monitor when new files are detected.
+        Called by the image monitor when new files are detected. The workspace
+        values derived from a scan are dropped with it.
         """
         self._gallery_cache = {}
+        self._workspace_listed_cache = {}
+        self._workspace_order_cache = {}
 
     def add_routes(self, routes):
         """Register all API routes with the ComfyUI server.

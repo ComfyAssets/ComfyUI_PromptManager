@@ -870,6 +870,8 @@ class TestWorkspaceImages(ImageAPITestCase):
             ({"category": "Night", "q": "paired"}, ["paired.png"]),
             ({"category": "Day", "q": "zebra"}, ["day_ab.png", "titled.png"]),
             ({"category": ""}, None),
+            ({"category": "  Night "}, ["night_ab.png", "night_a.png", "paired.png"]),
+            ({"category": "   "}, None),
         )
         _, everything = await self.get(sort="name")
         for params, expected in cases:
@@ -1183,14 +1185,33 @@ class TestWorkspaceImages(ImageAPITestCase):
                     self.assertEqual(response.status, 200)
                     self.assertEqual(len(page["images"]), 10)
                     self.assertLessEqual(len(keyed), bound)
-            # A rescan returns a new list: only then is anything rebuilt.
+            key = ((0, str(self.output_dir)),)
+            # A TTL rescan that found the same files rebuilds nothing.
             built.clear()
-            scans.append(list(listed[1:]))
-            self.api.invalidate_gallery_cache()
+            scans.append(list(listed))
             response, data = await self.get(limit=10)
             self.assertEqual(response.status, 200)
-            self.assertEqual(data["total"], len(listed) - 1)
-            self.assertLessEqual(len(built), len(listed))
+            self.assertEqual(built, [])
+            self.assertIs(self.api._workspace_order_cache[key][1]["newest"], newest)
+            # One changed file is the only one rebuilt.
+            added = (self.output_dir / "day-00" / "new.png", 9_999_999.0)
+            scans.append([added, *listed[1:]])
+            response, data = await self.get(limit=10)
+            self.assertEqual(built, [added[0]])
+            self.assertEqual(data["total"], len(listed))
+            self.assertEqual(data["images"][0]["filename"], "new.png")
+            # Invalidation (the monitor saw new files) and a roots change drop
+            # every derived value.
+            self.api.invalidate_gallery_cache()
+            self.assertEqual(self.api._workspace_listed_cache, {})
+            self.assertEqual(self.api._workspace_order_cache, {})
+            built.clear()
+            response, data = await self.get(limit=10)
+            self.assertEqual(len(built), len(listed))
+            with patch("py.config.GalleryConfig.MONITORING_DIRECTORIES", []):
+                self.assertTrue(self.api._apply_gallery_roots([str(self.output_dir)]))
+            self.assertEqual(self.api._workspace_listed_cache, {})
+            self.assertEqual(self.api._workspace_order_cache, {})
         # The per-row ambiguity probe is an index search, never a scan.
         sql, params = link_filter_query("lantern", "cat-3", ["tag-1"], every_link=True)
         with self.api.db.model.get_connection() as conn:
