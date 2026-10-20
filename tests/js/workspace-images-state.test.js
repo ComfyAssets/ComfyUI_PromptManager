@@ -223,12 +223,14 @@ test('the count line reads N of M images and K positive prompts only when known'
     assert.equal(countLine({loaded:1200,total:3400,positiveCount:0}),'1,200 of 3,400 images · 0 positive prompts');
 });
 
-test('the caption date names the newest result day under a date sort only', async () => {
+test('the caption date names the newest result day under Newest first only', async () => {
     const {captionDate}=await source;
     const now=new Date(2026,9,17,15,0);
     const at=(...parts)=>({modified_time:new Date(...parts).getTime()/1000});
     assert.equal(captionDate([at(2026,9,17,9),at(2026,9,10)],'newest',now),'Today · October 17');
-    assert.equal(captionDate([at(2026,9,10),at(2026,9,16,23)],'oldest',now),'Yesterday · October 16');
+    assert.equal(captionDate([at(2026,9,16,23),at(2026,9,10)],'newest',now),'Yesterday · October 16');
+    // D17 ruling: only under Newest first; Oldest first hides the date too.
+    assert.equal(captionDate([at(2026,9,10),at(2026,9,16,23)],'oldest',now),'');
     assert.equal(captionDate([at(2026,9,13)],'newest',now),'Tuesday · October 13');
     assert.equal(captionDate([at(2025,2,3)],'newest',now),'Monday · March 3, 2025');
     for(const sort of ['name','name-desc','rating']) assert.equal(captionDate([at(2026,9,17)],sort,now),'');

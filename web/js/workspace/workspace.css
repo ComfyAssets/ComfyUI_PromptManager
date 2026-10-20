@@ -59,9 +59,11 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .infinite-continuation button[aria-disabled="true"] { opacity: .55; cursor: wait; }
 /* #249 D14: the scope chip names real sources and folders, which can be far longer than "All output folders". */
 .filter-row span.chip { max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
-/* #249 D31: at extreme zoom the 390px shell is narrower than the concept's three layout buttons; they wrap instead of
+/* #249 D32: at extreme zoom the 390px shell is narrower than the concept's three layout buttons; they wrap instead of
    scrolling the page sideways (they never wrap while they fit). */
 .segmented { flex-wrap: wrap; max-width: 100%; }
+/* #249 D32: likewise the continuation's text and Load more wrap instead of pushing the button out of the column. */
+.infinite-continuation { flex-wrap: wrap; }
 
 /* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
    that keep their own design until their page PR rebuilds them in concept markup. */

@@ -81,6 +81,13 @@ test('all shell destinations deep-link, reload and expose working existing appli
         await page.reload();
         await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
     }
+    // D29: the legacy image gallery is reached from Overview's tool card, not from Images.
+    await page.goto(`${workspace}#/overview`);
+    const gallery = page.locator('#workspace-main').getByRole('link', { name: 'Open existing image gallery', exact: true });
+    await expect(gallery).toHaveAttribute('href', '/prompt_manager/gallery');
+    await expect(await request.get('/prompt_manager/gallery')).toBeOK();
+    await gallery.click();
+    await expect(page).toHaveURL(/\/prompt_manager\/gallery$/);
 });
 
 test('keyboard navigation, browser history and unknown routes remain usable', async ({ page }) => {

@@ -11,7 +11,7 @@ import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
 import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
-import { showWorkspaceToast } from './library-editor.mjs';
+import { showWorkspaceToast } from './toast.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -152,7 +152,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const more = createButton('Load more images');
     const retry = createButton('Retry');
     continuation.append(message, more, retry);
-    collection.append(caption, grid, continuation);
+    // The concept's empty collection (app.js updateImages), beside the grid because the grid only holds positioned cards.
+    const empty = el('div', 'No matching images. Try another search or category.', 'empty');
+    empty.hidden = true;
+    collection.append(caption, grid);
+    if (!embedded) collection.append(empty);
+    collection.append(continuation);
+    // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).
+    let focusAfterLoad = null;
     const details = el('section', undefined, 'image-details panel');
     details.setAttribute('aria-label', 'Image details');
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
@@ -272,7 +279,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         card.setAttribute('aria-posinset', String(index + 1)); card.setAttribute('aria-setsize', String(state.total));
         Object.assign(card.style, { left: `${position.x}px`, top: `${position.y}px`, width: `${position.width}px`, height: `${position.height}px` });
     }
-    function focusImage(index, preview = false) {
+    function focusImage(index, preview = false, {scroll = true} = {}) {
         if (index < 0 || index >= state.items.length) return;
         const image = state.items[index], key = imageKey(image);
         let card = rendered.get(key);
@@ -281,7 +288,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             grid.insertBefore(card, [...grid.children].find(child => Number(child.dataset.index) > index) || null);
         }
         card.querySelector(preview ? '.image-card-footer button' : '.image-open').focus({ preventScroll: true });
-        card.scrollIntoView({ block: 'nearest' });
+        if (scroll) card.scrollIntoView({ block: 'nearest' });
         cancelAnimationFrame(frame); frame = 0;
         renderVisible();
     }
@@ -357,7 +364,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} ${noun(next.total, 'linked image')}` : countLine(next);
+        count.textContent = embedded ? `${next.loaded.toLocaleString('en-US')} loaded · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'linked image')}` : countLine(next);
         if (!embedded) {
             captionDay.textContent = captionDate(next.items, filters.sort);
             captionDay.hidden = !captionDay.textContent;
@@ -373,6 +380,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
+        if (!embedded) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
+        if (focusAfterLoad !== null && !next.loading) settleLoadFocus(next);
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
     }
@@ -381,8 +390,29 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         stream.dispose();
         for (const video of body.querySelectorAll('video')) releaseVideo(video);
     });
-    scope.listen(more, 'click', () => { if (!recovering) stream.loadMore(); });
-    scope.listen(retry, 'click', () => { if (!recovering) stream.loadMore(); });
+    function pressLoad() {
+        if (recovering || state?.loading) return;
+        focusAfterLoad = state?.loaded ?? 0;
+        stream.loadMore();
+    }
+    /** The concept focuses the first appended image; focus never stays on a control that just hid. */
+    function settleLoadFocus(next) {
+        const first = focusAfterLoad;
+        focusAfterLoad = null;
+        const active = document.activeElement;
+        // Only while focus is still on the pressed control: a viewer or another control the user moved to keeps it.
+        const stranded = !active || active === document.body || active === more || active === retry;
+        if (!stranded) return;
+        if (next.error) { retry.focus(); return; }
+        // Without scrolling: the visible cards keep their place (bounded-DOM anchor); the next arrow key reveals it.
+        if (next.loaded > first) focusImage(first, false, {scroll:false});
+        else if (more.hidden) {
+            if (next.loaded) focusImage(next.loaded - 1, false, {scroll:false});
+            else focusFallback.focus({preventScroll:true});
+        }
+    }
+    scope.listen(more, 'click', pressLoad);
+    scope.listen(retry, 'click', pressLoad);
     function maybeLoad() {
         if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('.image-preview[open]')) return;
         const bounds = continuation.getBoundingClientRect();
@@ -409,6 +439,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
         }
         selection = null;
+        focusAfterLoad = null;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         updateScope();
         stream.reset(filters, {load:!recovering});
@@ -418,7 +449,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (recovering) return;
         openRefineDialog({scope, trigger, fields:[
             {key:'source', options:[['all', 'All sources'], ...roots.map(root => [String(root.index), root.label])]},
-            {key:'folder', options:[['', 'All folders'], ...folders.map(path => [path, path])]},
+            {key:'folder', options:[['', 'All output folders'], ...folders.map(path => [path, path])]},
             {key:'media', options:MEDIA_OPTIONS},
             {key:'tags'},
         ], values:{source:filters.root, folder:filters.subfolder, media:filters.media, tags:filters.tags.join(', ')},

@@ -491,7 +491,11 @@ test('supplemental wrapped real footer reservation survives append without movin
     });
     try {
         const more = page.getByRole('button', { name: 'Load more images', exact: true });
-        await more.click(); await expect.poll(() => pending).toBe(true);
+        // At 4x zoom the concept continuation (copy + Load more) fills the viewport, so keep the last cards in view and
+        // press Load more from the keyboard without scrolling to it.
+        await cards.last().scrollIntoViewIfNeeded();
+        await more.evaluate(node => node.focus({ preventScroll: true })); await page.keyboard.press('Enter');
+        await expect.poll(() => pending).toBe(true);
         const anchor = await cards.evaluateAll(nodes => {
             const top = visualViewport?.offsetTop || 0, bottom = top + (visualViewport?.height || innerHeight);
             const node = nodes.find(node => { const box = node.getBoundingClientRect(); return box.bottom > top && box.top < bottom; });
@@ -502,7 +506,8 @@ test('supplemental wrapped real footer reservation survives append without movin
         await expect(cards).toHaveCount(80);
         await expect.poll(async () => Math.abs(await page.locator(`article[data-image-key="${anchor.key}"]`).evaluate(node => node.getBoundingClientRect().top - (visualViewport?.offsetTop || 0)) - anchor.top)).toBeLessThanOrEqual(1);
         await expect(page.locator(`article[data-image-key="${selectedKey}"]`)).toHaveClass(/selected/);
-        await expect(more).toBeFocused();
+        // The concept focuses the first appended image after a Load more button press.
+        await expect(page.locator('article[aria-posinset="41"] .image-open')).toBeFocused();
         await expect.poll(() => containedImageContent(page)).toEqual([]);
     } finally { release(); }
 });

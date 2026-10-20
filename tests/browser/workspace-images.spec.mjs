@@ -286,11 +286,14 @@ test('continuous loading appends without replacing cards or losing selected deta
     await expect(cards(page).first()).toHaveAttribute('data-preserved', 'yes');
     await expect(cards(page).first()).toHaveAttribute('data-image-key', selected);
     await expect(details(page)).toBeVisible();
-    await expect(more).toBeFocused();
+    // The concept (app.js loadMoreImages) focuses the first appended image after a Load more button press.
+    await expect(page.locator('article[aria-posinset="41"] .image-open')).toBeFocused();
+    await more.focus();
     await page.keyboard.press('Enter');
     await expect(cards(page)).toHaveCount(102);
     expect(new Set(await cards(page).evaluateAll(elements => elements.map(element => element.dataset.imageKey))).size).toBe(102);
     await expect(more).toBeHidden();
+    await expect(page.locator('article[aria-posinset="81"] .image-open')).toBeFocused();
     await expect(page.getByRole('button', { name: /next page|previous page/i })).toHaveCount(0);
 });
 
@@ -686,6 +689,8 @@ test('folder discovery offers ancestors that filter nested images', async ({ pag
     await expect(cards(page)).toHaveCount(3);
     await page.getByRole('button', { name: 'Filters', exact: true }).click();
     await expect(refineDialog(page).getByLabel('Folder', { exact: true }).locator('option[value="project"]')).toHaveCount(1);
+    // The concept's Folder default.
+    await expect(refineDialog(page).getByLabel('Folder', { exact: true }).locator('option').first()).toHaveText('All output folders');
     await page.keyboard.press('Escape');
     await refine(page, { Folder: 'project' });
     await expect(cards(page)).toHaveCount(1);
@@ -929,4 +934,54 @@ test('Load more toast reports the new total', async ({ page, request }) => {
     await search(page).fill('no-such-image');
     await expect(cards(page)).toHaveCount(0);
     await expect(page.locator('.infinite-continuation p.small')).toHaveText('No matching images · 0 images');
+});
+
+test('Load more focus never falls to the page when the last page hides the button', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 100 } })).toBeOK();
+    // The last page repeats already listed files: nothing new to focus, and Load more disappears.
+    await page.route(url => imagePages(url) && url.searchParams.has('cursor'), async route => {
+        const response = await route.fetch();
+        const json = await response.json();
+        await route.fulfill({ response, json: { ...json, images: [], has_more: false, next_cursor: null } });
+    });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(40);
+    const more = page.getByRole('button', { name: 'Load more images', exact: true });
+    await more.focus();
+    await page.keyboard.press('Enter');
+    await expect(more).toBeHidden();
+    await expect(page.locator('article[aria-posinset="40"] .image-open')).toBeFocused();
+    expect(await page.evaluate(() => document.activeElement !== document.body)).toBe(true);
+});
+
+test('a search with no match shows the concept empty state', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const empty = page.locator('.gallery-body > .empty');
+    await expect(empty).toBeHidden();
+    await search(page).fill('no-such-image');
+    await expect(cards(page)).toHaveCount(0);
+    await expect(empty).toBeVisible();
+    await expect(empty).toHaveText('No matching images. Try another search or category.');
+    await search(page).fill('');
+    await expect(cards(page)).toHaveCount(2);
+    await expect(empty).toBeHidden();
+});
+
+test('a Load more that finishes after focus moved on leaves focus where the user put it', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 100 } })).toBeOK();
+    let release, arrived;
+    const held = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { arrived = resolve; });
+    await page.route(url => imagePages(url) && url.searchParams.has('cursor'), async route => { arrived(); await held; await route.continue(); }, { times: 1 });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(40);
+    await page.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await started;
+    await search(page).focus();
+    release();
+    await expect(cards(page)).toHaveCount(80);
+    await expect(search(page)).toBeFocused();
 });

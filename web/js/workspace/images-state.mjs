@@ -7,7 +7,6 @@ export function imageKey(image) {
 
 /** The workspace listing's sorts: the concept's Recently added, Name A–Z and Highest rated, plus Oldest and Z–A (D14). */
 export const IMAGE_SORTS = Object.freeze(['newest', 'oldest', 'name', 'name-desc', 'rating']);
-const DATE_SORTS = new Set(['newest', 'oldest']);
 
 const isCount = value => Number.isSafeInteger(value) && value >= 0;
 
@@ -168,11 +167,11 @@ const DAY_MS = 86400000;
 const startOfDay = date => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 
 /**
- * D17: the caption's right-hand date, "<Today|Yesterday|weekday> · <Month D>" of the newest loaded result under a
- * date sort, and '' under name or rating sorts. A day outside the current year adds the year so it stays unambiguous.
+ * D17: the caption's right-hand date, "<Today|Yesterday|weekday> · <Month D>" of the newest result under Newest first,
+ * with ", YYYY" outside the current year; '' under Oldest first and the name or rating sorts.
  */
 export function captionDate(items, sort, now = new Date()) {
-    if (!DATE_SORTS.has(sort)) return '';
+    if (sort !== 'newest') return '';
     const newest = items.reduce((latest, item) => Number.isFinite(item.modified_time) ? Math.max(latest, item.modified_time) : latest, -Infinity);
     if (!Number.isFinite(newest)) return '';
     const date = new Date(newest * 1000);
