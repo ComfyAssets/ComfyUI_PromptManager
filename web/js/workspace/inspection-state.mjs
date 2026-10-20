@@ -187,7 +187,8 @@ function withWorkflowParams(record, parser = comfyMetadata()) {
     }
     record.prompts = prompts;
     for (const [field, key] of LEGACY_FACTS) {
-        if (!found(key) || record.generation[field]?.status === 'known') continue;
+        // Only open answers are filled: a known value or a definite "not recorded" stays.
+        if (!found(key) || !['unresolved', 'ambiguous'].includes(record.generation[field]?.status)) continue;
         record.generation[field] = { status: 'known', value: String(params[key]), source: graph ? 'api-graph' : 'workflow', evidence: 'configuration', reason: null, sampler_id: null };
     }
 }

@@ -544,3 +544,14 @@ test('callers without the browser global pass the legacy parser explicitly', () 
     assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
     assert.equal(record.prompts.negative.text, 'blurry, watermark');
 });
+
+test('a setting the file does not record is never filled from the legacy parse', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const entry = image(), data = envelope(entry);
+    data.metadata.prompt_graph = { status: 'parsed', value: detailerPipelineGraph() };
+    const extract = input => ({ ...extractGenerationFacts(input), cfg: { status: 'not-recorded', value: null, source: null, evidence: null, reason: null, sampler_id: null } });
+    const record = contract('toInspectionRecord')(data, entry, extract);
+    assert.equal(record.generation.cfg.status, 'not-recorded');
+    assert.equal(record.generation.cfg.value, null);
+});
