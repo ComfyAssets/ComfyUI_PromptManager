@@ -487,6 +487,105 @@ class TestLibrary(unittest.TestCase):
         rotate_history_epoch(self.db.model.get_connection())
         self.assertNotEqual(token(), before)
 
+    def test_library_items_expose_run_count_and_last_used(self):
+        import datetime
+
+        used = self.save("Used")
+        never = self.save("Never")
+        self.assertTrue(self.db.record_prompt_use(used))
+        self.assertTrue(self.db.record_prompt_use(used, times=2))
+        legacy = self.save("Legacy naive")
+        offset = self.save("Offset")
+        broken = self.save("Broken")
+        zulu = self.save("Zulu")
+        with self.db.model.get_connection() as connection:
+            for prompt_id, value in (
+                (legacy, "2026-10-07 18:39:06"),
+                (zulu, "2026-10-07T18:39:06Z"),
+                (offset, "2026-10-07T20:39:06.250+02:00"),
+                (broken, "yesterday"),
+            ):
+                connection.execute(
+                    "UPDATE prompts SET last_used_at=?,run_count=1 WHERE id=?",
+                    (value, prompt_id),
+                )
+        items = {row["id"]: row for row in self.db.list_library()["items"]}
+        self.assertEqual(items[used]["run_count"], 3)
+        stamp = datetime.datetime.fromisoformat(items[used]["last_used_at"])
+        self.assertEqual(stamp.utcoffset(), datetime.timedelta(0))
+        self.assertLess(
+            abs(datetime.datetime.now(datetime.timezone.utc) - stamp),
+            datetime.timedelta(minutes=5),
+        )
+        self.assertEqual(items[never]["run_count"], 0)
+        self.assertIsNone(items[never]["last_used_at"])
+        self.assertEqual(items[legacy]["last_used_at"], "2026-10-07T18:39:06+00:00")
+        self.assertEqual(
+            items[offset]["last_used_at"], "2026-10-07T18:39:06.250000+00:00"
+        )
+        self.assertIsNone(items[broken]["last_used_at"])
+        self.assertEqual(items[zulu]["last_used_at"], "2026-10-07T18:39:06+00:00")
+        self.assertEqual(type(items[broken]["run_count"]), int)
+        detail = self.db.get_library_positive(used)["positive"]
+        self.assertEqual(detail["run_count"], 3)
+        self.assertEqual(detail["last_used_at"], items[used]["last_used_at"])
+
+    def test_variant_total_matches_filtered_cards(self):
+        archived = self.db.save_prompt_pair("Cat", "Blur", category="A")
+        self.db.save_prompt_pair("Cat", "Noise", category="A")
+        self.db.save_prompt_pair("Cat", "Grain", category="B")
+        self.db.archive_prompt_pair(archived)
+        self.db.save_prompt_pair("Dog", "Blur", category="B")
+        self.save("Legacy")
+        everything = self.db.list_library()
+        self.assertEqual(everything["variant_total"], 3)
+        self.assertEqual(
+            everything["variant_total"],
+            sum(row["variant_count"] for row in everything["items"]),
+        )
+        cats = self.db.list_library(text="Cat")
+        self.assertEqual(
+            (cats["total"], cats["variant_total"]),
+            (1, 2),
+        )
+        self.assertEqual(self.db.list_library(category="B")["variant_total"], 3)
+        self.assertEqual(self.db.list_library(text="nothing")["variant_total"], 0)
+        first = self.db.list_library(limit=1)
+        self.assertEqual(first["variant_total"], 3)
+        # A later parent is past the cursor's ceiling, like the total.
+        self.db.save_prompt_pair("Bird", "Blur")
+        second = self.db.list_library(limit=1, after=first["next_key"])
+        self.assertEqual(
+            (second["total"], second["variant_total"]),
+            (first["total"], 3),
+        )
+
+    def test_edit_token_unchanged_by_usage_fields(self):
+        positive = self.save("Cat", category="A", tags=["a"], rating=3)
+
+        def parent():
+            return self.db.get_library_positive(positive)["positive"]
+
+        before = parent()
+        listed = self.db.list_library()["items"][0]
+        self.assertEqual(listed["edit_token"], before["edit_token"])
+        self.db.record_prompt_use(positive, times=4)
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompts SET last_used_at='2001-01-01T00:00:00+00:00' "
+                "WHERE id=?",
+                (positive,),
+            )
+        after = parent()
+        self.assertNotEqual(
+            (after["run_count"], after["last_used_at"]),
+            (before["run_count"], before["last_used_at"]),
+        )
+        self.assertEqual(after["edit_token"], before["edit_token"])
+        self.assertEqual(
+            self.db.list_library()["items"][0]["edit_token"], before["edit_token"]
+        )
+
     def test_library_snapshot_reads_epoch_and_ceiling_in_one_select_and_ends(self):
         self.save("Cat")
         connection = self.db.model.get_connection()

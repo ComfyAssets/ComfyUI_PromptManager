@@ -560,7 +560,9 @@ class TestWorkspaceImages(ImageAPITestCase):
             for query in statements
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
-        self.assertEqual(len(selects), 1, selects)
+        # The page's link summary, and the positive count's one link read.
+        self.assertEqual(len(selects), 2, selects)
+        self.assertEqual(data["positive_count"], 1)  # six files, one prompt
 
     async def test_link_summary_runs_in_executor_and_survives_database_errors(self):
         import threading
@@ -827,6 +829,79 @@ class TestWorkspaceImages(ImageAPITestCase):
             db.link_image_to_prompt(owner, str(files["ambiguous"]))
         return files
 
+    async def test_positive_count_counts_distinct_linked_positives(self):
+        files = self._filter_fixtures()
+        db = self.api.db
+        night_ab = db.get_prompt_id_for_image(str(files["night_ab"]))
+        # A second file of one positive still counts that positive once.
+        again = self.media("again.png", mtime=50)
+        db.link_image_to_prompt(night_ab, str(again))
+        cases = (
+            # Six unambiguous positives; the ambiguous file and unlinked count none.
+            ({}, 10, 6),
+            # Text, title, tag, pair title (its positive) and the filename match.
+            ({"q": "ZEBRA"}, 6, 4),
+            ({"category": "Night"}, 4, 3),
+            ({"tags": "a,b"}, 3, 2),
+            ({"q": "plain_unlinked"}, 1, 0),
+            ({"media": "video"}, 0, 0),
+            ({"sort": "rating"}, 10, 6),
+            ({"sort": "name", "category": "Day"}, 3, 3),
+        )
+        for params, total, positives in cases:
+            with self.subTest(**params):
+                response, data = await self.get(**params)
+                self.assertEqual(response.status, 200, data)
+                self.assertEqual(data["total"], total)
+                self.assertEqual(data["positive_count"], positives)
+        # The count covers the whole matching set, on every cursor page.
+        response, first = await self.get(limit=2, q="ZEBRA")
+        self.assertEqual(first["positive_count"], 4)
+        response, second = await self.get(
+            limit=2, q="ZEBRA", cursor=first["next_cursor"]
+        )
+        self.assertEqual(response.status, 200, second)
+        self.assertEqual(second["positive_count"], 4)
+        # One SELECT counts the positives; the page's link summary is the other.
+        statements = []
+        original = db.model.get_connection
+
+        def trace_connection():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(db.model, "get_connection", side_effect=trace_connection):
+            response, data = await self.get()
+        self.assertEqual(response.status, 200)
+        selects = [
+            query
+            for query in statements
+            if query.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        self.assertEqual(len(selects), 2, selects)
+        # Without filters the listing outlives a database failure; the count
+        # is then unknown rather than wrong.
+        with patch.object(
+            db, "get_image_link_matches", side_effect=RuntimeError("database gone")
+        ):
+            response, data = await self.get()
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(data["total"], 10)
+        self.assertIsNone(data["positive_count"])
+        self.assertNotIn("database gone", json.dumps(data))
+        # A filter or the rating sort needs the read, so its failure is an error.
+        for params in ({"q": "zebra"}, {"category": "Night"}, {"sort": "rating"}):
+            with (
+                self.subTest(failing=params),
+                patch.object(
+                    db, "get_image_link_matches", side_effect=RuntimeError("gone")
+                ),
+            ):
+                response, data = await self.get(**params)
+                self.assertEqual(response.status, 500, data)
+                self.assertNotIn("images", data)
+
     async def test_search_matches_filename_prompt_text_and_tags(self):
         from database.models import normalize_image_path
 
@@ -1026,13 +1101,18 @@ class TestWorkspaceImages(ImageAPITestCase):
             self._names(data), ["night_a.png", "night_ab.png", "paired.png"]
         )
         wanted = {normalize_image_path(str(files["night_ab"])), "/elsewhere/7.png"}
+        elsewhere = self.api.db.get_prompt_id_for_image("/elsewhere/7.png")
         self.assertEqual(
             self.api.db.get_image_link_matches(
                 "", "Night", [], every_link=True, wanted=wanted
             ),
             {
-                normalize_image_path(str(files["night_ab"])): (True, 5),
-                "/elsewhere/7.png": (True, 5),
+                normalize_image_path(str(files["night_ab"])): (
+                    True,
+                    5,
+                    self.api.db.get_prompt_id_for_image(str(files["night_ab"])),
+                ),
+                "/elsewhere/7.png": (True, 5, elsewhere),
             },
         )
 
@@ -1157,7 +1237,8 @@ class TestWorkspaceImages(ImageAPITestCase):
             response, _ = await self.get(limit=10)
             self.assertEqual(response.status, 200)
             self.assertEqual(len(built), len(listed))
-            self.assertEqual(selects(), [])  # no filter, no SELECT
+            # No filter still reads the linked positives once, for the count.
+            self.assertEqual(len(selects()), 1)
             newest = self.api._workspace_order_cache[((0, str(self.output_dir)),)]
             newest = newest[1]["newest"]
             for params in self._BUDGET_REQUESTS:

@@ -561,18 +561,20 @@ def _workspace_filters(query: Mapping) -> dict:
 
 def _filtered_page(
     entries: list, start: int, size: int, filters: dict, links: dict | None
-) -> tuple[int, list]:
+) -> tuple[int, list, int | None]:
     """Count the *entries* the filters admit and take *size* from *start* on.
 
-    *links* maps normalized paths to (hit, rating) for linked images (see
-    PromptDatabase.get_image_link_matches); a category or tag filter admits
-    only those, and ``q`` admits a filename match or a linked-positive hit.
+    *links* maps normalized paths to (hit, rating, positive id) for every
+    unambiguously linked image (see PromptDatabase.get_image_link_matches); a
+    category or tag filter admits only those, and ``q`` admits a filename match
+    or a linked-positive hit. Returns the total, the page and the number of
+    distinct linked positives among all admitted entries (None without links).
     """
     query, media, folder = filters["query"], filters["media"], filters["folder"]
     members_only = filters["category"] is not None or bool(filters["tags"])
     native_folder = folder.replace("/", os.sep)
     nested = native_folder + os.sep
-    total, page = 0, []
+    total, page, positives = 0, [], set()
     for position, entry in enumerate(entries):
         if folder and not (
             entry.folder == native_folder or entry.folder.startswith(nested)
@@ -580,16 +582,17 @@ def _filtered_page(
             continue
         if media != "all" and (media == "video") != entry.video:
             continue
-        if links is not None and (members_only or query):
-            match = links.get(entry.normalized)
-            if members_only and match is None:
-                continue
-            if query and query not in entry.folded and not (match and match[0]):
-                continue
+        match = None if links is None else links.get(entry.normalized)
+        if members_only and match is None:
+            continue
+        if query and query not in entry.folded and not (match and match[0]):
+            continue
         total += 1
+        if match is not None:
+            positives.add(match[2])
         if position >= start and len(page) < size:
             page.append(entry)
-    return total, page
+    return total, page, None if links is None else len(positives)
 
 
 def _in_subfolder(rel_dir, subfolder):
@@ -969,8 +972,10 @@ class ImageRoutesMixin:
             for index, root in enumerate(output_dirs)
             if root_index is None or index == root_index
         ]
-        page, total, has_more, next_cursor = await self._run_in_executor(
-            self._select_workspace_page, listings, filters, after, limit, scope
+        page, total, has_more, next_cursor, positive_count = (
+            await self._run_in_executor(
+                self._select_workspace_page, listings, filters, after, limit, scope
+            )
         )
         images = await self._run_in_executor(self._format_workspace_page, page)
         return web.json_response(
@@ -978,6 +983,7 @@ class ImageRoutesMixin:
                 "success": True,
                 "images": images,
                 "total": total,
+                "positive_count": positive_count,
                 "limit": limit,
                 "has_more": has_more,
                 "next_cursor": next_cursor,
@@ -1061,19 +1067,26 @@ class ImageRoutesMixin:
     ) -> tuple:
         """One keyset page of the filtered listing (blocking; run in executor).
 
-        At most one SELECT (get_image_link_matches) when ``q``, a category,
-        tags or the rating sort need the linked positives.
+        One SELECT (get_image_link_matches) reads every linked positive of the
+        listing: the filters, the rating sort and the positive count share it.
+        Without a filter that needs it, a failed read leaves the listing
+        usable and the positive count unknown (None).
         """
         order, category, tags = filters["order"], filters["category"], filters["tags"]
-        links = None
-        if filters["query"] or category is not None or tags or order == "rating":
+        needed = bool(filters["query"]) or category is not None or bool(tags)
+        try:
             links = self.db.get_image_link_matches(
                 filters["text"],
                 category,
                 tags,
-                every_link=order == "rating",
+                every_link=True,
                 wanted=self._workspace_wanted(listings),
             )
+        except Exception:
+            if needed or order == "rating":
+                raise
+            self.logger.warning("Workspace positive count could not be read")
+            links = None
         if order == "rating":
 
             def rank(entry):
@@ -1102,7 +1115,9 @@ class ImageRoutesMixin:
                 start = len(entries) - bisect_left(ascending, after, key=key)
             else:
                 start = bisect_right(entries, after, key=key)
-        total, page = _filtered_page(entries, start, limit + 1, filters, links)
+        total, page, positive_count = _filtered_page(
+            entries, start, limit + 1, filters, links
+        )
         has_more = len(page) > limit
         page = page[:limit]
         next_cursor = _workspace_cursor(key(page[-1]), scope) if has_more else None
@@ -1111,6 +1126,7 @@ class ImageRoutesMixin:
             total,
             has_more,
             next_cursor,
+            positive_count,
         )
 
     async def serve_image(self, request):

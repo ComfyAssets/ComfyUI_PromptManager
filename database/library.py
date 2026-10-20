@@ -1,5 +1,6 @@
 """Read-only positive-parent views over existing prompt and pair tables."""
 
+import datetime
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -44,6 +45,26 @@ def titled(stored_titles: tuple, text: object) -> tuple[str | None, str | None]:
 def display_title(stored_titles: tuple, text: object) -> str | None:
     """The Library display title of ``titled``, without its source."""
     return titled(stored_titles, text)[0]
+
+
+def utc_iso(value: object) -> str | None:
+    """A stored timestamp as UTC ISO text, or None when absent or unreadable.
+
+    Usage writes are already UTC ISO; a naive value (SQLite's CURRENT_TIMESTAMP
+    form) is read as UTC, and an offset is converted to UTC.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        stamp = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=datetime.timezone.utc).isoformat()
+    return stamp.astimezone(datetime.timezone.utc).isoformat()
 
 
 _NAME = (
@@ -174,6 +195,7 @@ class LibraryOperations:
     ) -> list[dict]:
         rows = conn.execute(
             "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes,p.created_at,"
+            "p.run_count,p.last_used_at,"
             + (f"{sort_expression} AS _sort," if sort_expression else "")
             + "(SELECT COUNT(*) FROM prompt_pairs v WHERE v.positive_prompt_id=p.id "
             "AND v.archived=0) AS variant_count,"
@@ -194,6 +216,9 @@ class LibraryOperations:
             ):
                 by_id[row["prompt_id"]]["tags"].append(row["name"])
         for row in result:
+            # Usage is shown, never compared: the token hashes owner fields only.
+            row["run_count"] = row["run_count"] if type(row["run_count"]) is int else 0
+            row["last_used_at"] = utc_iso(row["last_used_at"])
             row["edit_token"] = library_edit_token(epoch, row)
         return result
 
@@ -225,9 +250,15 @@ class LibraryOperations:
             ceiling = after["ceiling"]
         where += " AND p.id<=?"
         params.append(ceiling)
-        total = conn.execute(
-            "SELECT COUNT(*) FROM " + _FROM + " WHERE " + where, params
-        ).fetchone()[0]
+        # One SELECT counts the filtered parents and their active variants.
+        total, variant_total = conn.execute(
+            "SELECT COUNT(*),COALESCE(SUM((SELECT COUNT(*) FROM prompt_pairs v "
+            "WHERE v.positive_prompt_id=p.id AND v.archived=0)),0) FROM "
+            + _FROM
+            + " WHERE "
+            + where,
+            params,
+        ).fetchone()
         expression, direction = _ORDERS[sort]
         if after is not None:
             operator = ">" if direction == "ASC" else "<"
@@ -259,6 +290,7 @@ class LibraryOperations:
             "library_epoch": epoch,
             "items": rows,
             "total": total,
+            "variant_total": variant_total,
             "has_more": has_more,
             "next_key": next_key,
         }

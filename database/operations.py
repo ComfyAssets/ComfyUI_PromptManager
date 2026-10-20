@@ -203,7 +203,7 @@ WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
 # writer since the 3.2.4 migration stores file_path, so it is the path key.
 # The prompt-level conditions are uncorrelated IN sets SQLite builds once, and
 # the CASE evaluates the per-row ambiguity probe only for admitted rows.
-_LINK_FILTER_SQL = """SELECT gi.file_path, p.rating, {hit}
+_LINK_FILTER_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id
 FROM generated_images gi
 LEFT JOIN prompt_pairs pp ON pp.id = (
     SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
@@ -2330,23 +2330,25 @@ class PromptDatabase(
         *,
         every_link: bool = False,
         wanted: Optional[Set[str]] = None,
-    ) -> Dict[str, Tuple[bool, Optional[int]]]:
-        """Map normalized paths of unambiguously linked images to (hit, rating).
+    ) -> Dict[str, Tuple[bool, Optional[int], int]]:
+        """Map normalized paths of unambiguously linked images to
+        (hit, rating, positive id).
 
         Rows are limited to images whose linked positive has *category* and
         every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
         the positive's text, Library title or a tag name, or in the pair title.
         Without category or tags only hits are returned, unless *every_link*
-        asks for every linked image (the rating sort). One SELECT whose rows
+        asks for every linked image (the rating sort and the positive count).
+        The positive id is the card's linked positive. One SELECT whose rows
         are streamed; with *wanted* (the listing's normalized paths) only those
         paths are kept, so memory is bounded by the listing, not the database.
         """
         sql, params = link_filter_query(q, category, tags, every_link=every_link)
-        matches: Dict[str, Tuple[bool, Optional[int]]] = {}
+        matches: Dict[str, Tuple[bool, Optional[int], int]] = {}
         with self.model.get_connection() as conn:
-            for path, rating, matched in conn.execute(sql, params):
+            for path, rating, matched, positive in conn.execute(sql, params):
                 if wanted is None or path in wanted:
-                    matches[path] = (bool(matched), rating)
+                    matches[path] = (bool(matched), rating, positive)
         return matches
 
     def get_image_paths_matching(
@@ -2359,7 +2361,7 @@ class PromptDatabase(
         """
         return {
             path
-            for path, (hit, _rating) in self.get_image_link_matches(
+            for path, (hit, _rating, _positive) in self.get_image_link_matches(
                 q, category, tags
             ).items()
             if hit or not q

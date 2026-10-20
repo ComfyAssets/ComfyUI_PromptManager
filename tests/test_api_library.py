@@ -188,6 +188,10 @@ class TestLibraryAPI(ImageAPITestCase):
     async def test_maximum_parent_page_uses_bounded_sql_queries_for_previews(self):
         for index in range(200):
             positive = self._save_prompt(f"Parent {index}", tags=[f"tag {index}"])
+            if index % 3 == 0:
+                self.api.db.save_prompt_pair(f"Parent {index}", f"Negative {index}")
+            if index % 4 == 0:
+                self.api.db.record_prompt_use(positive, times=index + 1)
             make_png(self.output_dir / f"{index}.png")
             self.api.db.link_image_to_prompt(
                 positive, str(self.output_dir / f"{index}.png")
@@ -230,6 +234,32 @@ class TestLibraryAPI(ImageAPITestCase):
                 and len(item["previews"]) == 1
                 and len(item["edit_token"]) == 64
                 for item in result["items"]
+            )
+        )
+        # Usage fields and the variant total ride on the same five SELECTs.
+        self.assertEqual(result["variant_total"], 67)
+        self.assertEqual(
+            result["variant_total"],
+            sum(item["variant_count"] for item in result["items"]),
+        )
+        used = {
+            int(item["text"].split()[-1]): item
+            for item in result["items"]
+            if item["last_used_at"] is not None
+        }
+        self.assertEqual(sorted(used), list(range(0, 200, 4)))
+        self.assertTrue(
+            all(
+                item["run_count"] == index + 1
+                and item["last_used_at"].endswith("+00:00")
+                for index, item in used.items()
+            )
+        )
+        self.assertTrue(
+            all(
+                type(item["run_count"]) is int
+                for item in result["items"]
+                if item["last_used_at"] is None
             )
         )
 
