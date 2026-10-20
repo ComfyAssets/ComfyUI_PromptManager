@@ -429,6 +429,20 @@ npm run --prefix tools/vendor test:workflows -- shell-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 
+`tests/browser/images-concept.spec.mjs` compares the Images page (#249 C7): heading,
+toolbar, filter row, caption, grid, the first six cards, the continuation and the panel
+box, in every layout, at both sizes, themes and motion settings. The concept is compared
+once its own Load more has loaded all 24 fixture images (it loads 12 per batch,
+production 40). Behaviors: hover zoom, the 2nd card opens the viewer titled
+"<title> · <filename>", Escape returns focus to it, Info on the 3rd card moves
+`.selected`, search "alpine", and Load more (12 in the concept, one listing page in
+production, both with the toast). `mapImagesConcept` applies D8 and D16 (follow-up
+PRs: no checkbox, no Save view), D3, D9, D10, D14, D15, D17, D29, D31 and D32; removed
+toolbar and filter-row items flow again from the concept's own boxes (`reflow`, proven
+on the concept rows first). Masonry card tops and heights may differ by one pixel (D3:
+layout arithmetic versus the browser's layout-unit snapping). Two mismatches wait for a
+ruling and are pinned on both sides: the category order and the singular count line.
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no

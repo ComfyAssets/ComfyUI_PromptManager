@@ -430,6 +430,8 @@ def seed_workspace_concept(
     api.invalidate_gallery_cache()
     return {
         "epoch": epoch,
+        # The newest file's mtime (epoch seconds), for the D17 caption date.
+        "newest_modified": now - 60,
         "prompts": prompts,
         "images": images,
         "runs": runs,

@@ -164,6 +164,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const grid = el('div', undefined, 'image-grid');
     grid.setAttribute('role', 'list'); grid.setAttribute('aria-label', 'Image collection');
     const continuation = el('div', undefined, 'infinite-continuation');
+    // The concept's ids (app.js renderImages); the Library-embedded gallery has its own page around it.
+    if (!embedded) { grid.id = 'image-grid'; continuation.id = 'gallery-continuation'; }
     const message = el('p', '', 'small');
     const more = createButton('Load more images');
     const retry = createButton('Retry');
@@ -332,8 +334,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (previous ? previous.nextElementSibling !== card : grid.firstElementChild !== card) grid.insertBefore(card, previous ? previous.nextElementSibling : grid.firstChild);
             previous = card;
         }
-        // Natural footer measurements and absolute reservations share unzoomed CSS units.
-        const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.media-info').offsetHeight));
+        // Natural footer measurements and absolute reservations share unzoomed CSS units. The fractional height, as the
+        // concept's own flow lays it out: `offsetHeight` rounds a wrapped 67.5px row up and adds half a pixel per row.
+        const footerHeight = Math.max(metrics.footerHeight, ...[...rendered.values()].map(card => card.querySelector('.media-info').getBoundingClientRect().height / scale));
         if (footerHeight > metrics.footerHeight) {
             const anchor = indexes.find(index => geometry.positions[index].y + geometry.positions[index].height >= top && geometry.positions[index].y <= top + viewportHeight);
             const anchorTop = anchor === undefined ? 0 : geometry.positions[anchor].y;
