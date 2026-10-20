@@ -17,6 +17,14 @@ def graph(positive="cat", negative="blur"):
     }
 
 
+def sampled_graph(positive="cat", negative="blur"):
+    """A KSampler with a model link, as real workflows have."""
+    g = graph(positive, negative)
+    g["4"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m"}}
+    g["3"]["inputs"]["model"] = ["4", 0]
+    return g
+
+
 class TestPairScan(AdminAPITestCase):
     def test_pair_scan_repeated_is_unchanged_and_empty_negative_is_supported(self):
         path = self.output_dir / "pair.png"
@@ -28,16 +36,66 @@ class TestPairScan(AdminAPITestCase):
         self.assertEqual(pairs[0]["negative_text"], "")
         self.assertEqual(pairs[0]["run_count"], 0)
 
-    def test_ambiguous_sampler_scan_does_not_save_a_guess(self):
-        g = graph()
-        g["4"] = {**g["3"]}
-        meta = {"prompt": json.dumps(g)}
-        self.assertEqual(
-            self.api._ingest_scanned_file(self.output_dir / "multi.png", meta),
-            "ambiguous",
-        )
+    def _scanned(self, name, prompt_graph):
+        meta = {"prompt": json.dumps(prompt_graph)}
+        return self.api._ingest_scanned_file(self.output_dir / name, meta)
+
+    def _texts(self):
+        return [p["text"] for p in self.api.db.get_recent_prompts()["prompts"]]
+
+    def test_samplers_sharing_one_prompt_link_that_prompt(self):
+        g = sampled_graph()
+        g["5"] = {**g["3"]}
+        self.assertEqual(self._scanned("multi.png", g), "added")
+        self.assertEqual(self._texts(), ["cat"])
+
+    def test_samplers_with_different_prompts_link_the_first_sampler_prompt(self):
+        # The prompt the inspector and the legacy panels show for this file.
+        g = sampled_graph()
+        g["6"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "dog"}}
+        g["12"] = {**g["3"], "inputs": {**g["3"]["inputs"], "positive": ["6", 0]}}
+        self.assertEqual(self._scanned("different.png", g), "added")
+        self.assertEqual(self._texts(), ["cat"])
+
+    def test_an_unsupported_pass_through_still_links_the_traced_prompt(self):
+        g = sampled_graph()
+        g["7"] = {
+            "class_type": "MyConditioningTweak",
+            "inputs": {"conditioning": ["1", 0]},
+        }
+        g["3"]["inputs"]["positive"] = ["7", 0]
+        g["5"] = {**g["3"]}
+        self.assertEqual(self._scanned("tweak.png", g), "added")
+        self.assertEqual(self._texts(), ["cat"])
+
+    def test_a_graph_without_a_traceable_prompt_saves_nothing(self):
+        g = sampled_graph()
+        g["5"] = {**g["3"]}
+        for sampler in ("3", "5"):
+            g[sampler]["inputs"]["positive"] = ["9", 0]
+        g["9"] = {
+            "class_type": "BasicGuider",
+            "inputs": {"width": 2048, "height": 2048},
+        }
+        self.assertEqual(self._scanned("untraceable.png", g), "ambiguous")
         self.assertEqual(self.api.db.list_prompt_pairs()["total"], 0)
-        self.assertEqual(self.api.db.get_recent_prompts()["prompts"], [])
+        self.assertEqual(self._texts(), [])
+
+    def test_numeric_widgets_are_never_stored_as_a_prompt(self):
+        # The pre-redesign scan stored "2048" from a resolution widget here.
+        g = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": ["8", 0]}},
+            "8": {"class_type": "DisplayText", "inputs": {"text_size": 2048}},
+            "3": {
+                "class_type": "SamplerCustomAdvanced",
+                "inputs": {"guider": ["4", 0], "sigmas": ["5", 0]},
+            },
+            "4": {"class_type": "BasicGuider", "inputs": {"conditioning": ["1", 0]}},
+        }
+        self.assertIn(
+            self._scanned("numbers.png", g), ("ambiguous", "unresolved", "found")
+        )
+        self.assertEqual(self._texts(), [])
 
     def test_batch_exposes_pair_counts_and_actual_unchanged_status(self):
         meta = {"parameters": "cat\nNegative prompt: blur\nSteps: 20, Sampler: Euler"}

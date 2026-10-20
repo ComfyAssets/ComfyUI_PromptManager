@@ -27,10 +27,22 @@ except ImportError:
 try:
     from ...database.operations import PromptDatabase
     from ...database.pair_ingestion import ingest_resolved_pair
+    from ...utils.generation_params import (
+        PLACEHOLDERS,
+        GenerationParamsError,
+        extract_generation_params,
+        parse_js_json,
+    )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
 except ImportError:
     from database.operations import PromptDatabase
     from database.pair_ingestion import ingest_resolved_pair
+    from utils.generation_params import (
+        PLACEHOLDERS,
+        GenerationParamsError,
+        extract_generation_params,
+        parse_js_json,
+    )
     from utils.prompt_pair_resolver import resolve_prompt_pair
 
 
@@ -1511,6 +1523,21 @@ class AdminRoutesMixin:
                 counts["pair_links_added"] += outcome.get("links_added", 0)
         return counts
 
+    @staticmethod
+    def _graph_prompt_text(metadata):
+        """The positive prompt the browser parser traces from the graphs, or None."""
+        records = {}
+        for key in ("prompt", "workflow"):
+            value = metadata.get(key)
+            records[key] = parse_js_json(value) if isinstance(value, str) else value
+        try:
+            positive = extract_generation_params(records)["positivePrompt"]
+        except GenerationParamsError:
+            return None
+        if not isinstance(positive, str) or positive == PLACEHOLDERS["positivePrompt"]:
+            return None
+        return positive.strip() or None
+
     def _ingest_scanned_file(self, media_file, metadata, detailed=False):
         """Enrich exact pairs; retain legacy positive-only import for absent pairs."""
         if not metadata:
@@ -1531,23 +1558,32 @@ class AdminRoutesMixin:
                 self.db, str(media_file), canonical, resolution
             )
             return result if detailed else result["status"]
-        if resolution["state"] == "ambiguous":
-            return "ambiguous"
-        if resolution["state"] == "unresolved":
-            if canonical.get("prompt") or not isinstance(
-                canonical.get("parameters"), str
-            ):
+        if canonical.get("prompt") and resolution["state"] in (
+            "ambiguous",
+            "unresolved",
+        ):
+            # The resolver could not decide: link the prompt the inspector and the
+            # legacy pages show for this file (the browser parser, in Python).
+            # Graphs without a recognized sampler keep the legacy extractor below.
+            prompt_text = self._graph_prompt_text(metadata)
+            if not prompt_text:
                 return resolution["state"]
-        parsed = self._parse_comfyui_prompt(metadata)
-        if not (parsed.get("prompt") or parsed.get("parameters")):
-            return None
-
-        prompt_text = self._extract_readable_prompt(parsed)
-        if prompt_text is not None and not isinstance(prompt_text, str):
-            prompt_text = str(prompt_text)
-        if not (prompt_text and prompt_text.strip()):
-            return "found"
-        prompt_text = prompt_text.strip()
+        elif resolution["state"] == "ambiguous":
+            return "ambiguous"
+        elif resolution["state"] == "unresolved" and not isinstance(
+            canonical.get("parameters"), str
+        ):
+            return resolution["state"]
+        else:
+            parsed = self._parse_comfyui_prompt(metadata)
+            if not (parsed.get("prompt") or parsed.get("parameters")):
+                return None
+            prompt_text = self._extract_readable_prompt(parsed)
+            if prompt_text is not None and not isinstance(prompt_text, str):
+                prompt_text = str(prompt_text)
+            if not (prompt_text and prompt_text.strip()):
+                return "found"
+            prompt_text = prompt_text.strip()
 
         prompt_hash = generate_prompt_hash(prompt_text)
         existing = self.db.get_prompt_by_hash(prompt_hash)
