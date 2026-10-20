@@ -57,7 +57,8 @@ function fakeDOM() {
         close() {
             if (!this.open) return;
             this.open = false;
-            this.dispatchEvent(new Event('close'));
+            // Browsers queue the close event as a later task.
+            setTimeout(() => this.dispatchEvent(new Event('close')), 0);
         }
         click() { this.dispatchEvent(new Event('click', { cancelable: true })); }
     }
@@ -85,6 +86,8 @@ const byId = (dom, id) => dom.all(node => node.id === id)[0];
 const tags = node => node.children.map(child => child.tagName.toLowerCase());
 const optionPairs = select => select.options.map(option => [option.value, option.textContent]);
 const modal = dom => byId(dom, 'modal');
+const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+const coreModule = import('../../web/js/shared/toolkit/core.js');
 const button = (root, text) => {
     const found = [];
     const walk = node => {
@@ -160,6 +163,14 @@ test('toolbar emits concept markup and order', async () => {
         toolbar.setValue({ q: 'moon', category: 'Archive', sort: 'newest' });
         assert.deepEqual([input.value, category.value, sort.value], ['moon', 'Archive', 'newest']);
         assert.deepEqual(toolbar.value(), { q: 'moon', category: 'Archive', sort: 'newest' });
+        // A selection that is no longer listed drops to All categories.
+        toolbar.setCategories(['Portraits']);
+        assert.equal(category.value, '');
+        // An unknown sort falls back to the first option instead of an empty select.
+        toolbar.setValue({ sort: 'bogus' });
+        assert.equal(sort.value, 'newest');
+        assert.throws(() => mountToolbar(container, { categories: [], sorts: [['newest', 'Recently added']],
+            onChange() {}, onFilters() {} }), TypeError);
     } finally {
         scope.dispose();
         dom.restore();
@@ -208,6 +219,9 @@ test('sort lists concept options first', async () => {
     // A page without a concept option keeps the ones it has, concept first.
     assert.deepEqual(orderSorts([['oldest', 'Oldest first'], ['newest', 'Recently added']]),
         [['newest', 'Recently added'], ['oldest', 'Oldest first']]);
+    // Matching is by the concept's exact labels (en dash): a variant label is an appended option.
+    assert.deepEqual(orderSorts([['name', 'Name A-Z'], ['newest', 'Recently added']]),
+        [['newest', 'Recently added'], ['name', 'Name A-Z']]);
     assert.throws(() => orderSorts([]), TypeError);
     assert.throws(() => orderSorts([['newest']]), TypeError);
 
@@ -237,13 +251,14 @@ const REFINE_FIELDS = [
 test('refine dialog round-trips values and clear resets them', async () => {
     const { openRefineDialog, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
     try {
         const trigger = new dom.Element('button');
         dom.body.append(trigger);
         const applied = [];
         const cleared = [];
         const values = { source: '1', folder: 'portraits', media: 'video', tags: 'cinematic' };
-        openRefineDialog({ fields: REFINE_FIELDS, values, trigger,
+        openRefineDialog({ scope, fields: REFINE_FIELDS, values, trigger,
             onApply: value => applied.push(value), onClear: value => cleared.push(value) });
         const dialog = modal(dom);
         assert.equal(dialog.open, true);
@@ -257,10 +272,10 @@ test('refine dialog round-trips values and clear resets them', async () => {
         assert.deepEqual(optionPairs(source), REFINE_FIELDS[0].options);
         assert.deepEqual([source.value, folder.value, media.value, tagsInput.value], ['1', 'portraits', 'video', 'cinematic']);
         assert.equal(tagsInput.placeholder, 'e.g. cinematic');
-        assert.deepEqual(tags(body), ['div', 'div', 'div', 'div', 'p', 'div']);
-        assert.equal(body.children[4].className, 'small');
-        assert.ok(body.children[4].textContent.length > 0);
-        const actions = body.children[5];
+        // D14: no mock-status note, because every field is a real filter.
+        assert.deepEqual(tags(body), ['div', 'div', 'div', 'div', 'div']);
+        assert.equal(body.children.some(child => child.tagName === 'P'), false);
+        const actions = body.children[4];
         assert.equal(actions.className, 'dialog-actions');
         assert.deepEqual(actions.children.map(child => [child.textContent, child.className]),
             [['Clear filters', ''], ['Apply filters', 'ca-primary']]);
@@ -275,29 +290,31 @@ test('refine dialog round-trips values and clear resets them', async () => {
         assert.equal(trigger.isConnected && document.activeElement, trigger);
 
         // Reopening with the applied values shows them again (a round trip).
-        openRefineDialog({ fields: REFINE_FIELDS, values: applied[0], trigger, onApply: value => applied.push(value), onClear() {} });
+        openRefineDialog({ scope, fields: REFINE_FIELDS, values: applied[0], trigger, onApply: value => applied.push(value), onClear() {} });
         button(byId(dom, 'modal-body'), 'Apply filters').click();
         assert.deepEqual(applied[1], applied[0]);
 
         // Clear resets every field to its first option (Tags to empty) and reports that.
-        openRefineDialog({ fields: REFINE_FIELDS, values: applied[0], trigger, onApply: value => applied.push(value),
+        openRefineDialog({ scope, fields: REFINE_FIELDS, values: applied[0], trigger, onApply: value => applied.push(value),
             onClear: value => cleared.push(value) });
         const reopened = byId(dom, 'modal-body');
         button(reopened, 'Clear filters').click();
-        assert.deepEqual(cleared, [{ source: 'all', folder: '', media: 'all', tags: '' }]);
+        // The concept's Clear also clears the toolbar category; the page applies `category`.
+        assert.deepEqual(cleared, [{ source: 'all', folder: '', media: 'all', tags: '', category: '' }]);
         assert.equal(applied.length, 2);
         assert.equal(modal(dom).open, false);
 
         // A page offers only its own fields; the modal is the one shared shell.
-        openRefineDialog({ fields: [{ key: 'tags' }], values: {}, onApply: value => applied.push(value), onClear() {} });
+        openRefineDialog({ scope, fields: [{ key: 'tags' }], values: {}, onApply: value => applied.push(value), onClear() {} });
         const only = byId(dom, 'modal-body').children.filter(child => child.className === 'field');
         assert.deepEqual(only.map(field => field.children[0].textContent), ['Tags']);
         button(byId(dom, 'modal-body'), 'Apply filters').click();
         assert.deepEqual(applied[2], { tags: '' });
         assert.equal(dom.all(node => node.id === 'modal').length, 1);
-        assert.throws(() => openRefineDialog({ fields: [{ key: 'evidence' }], values: {}, onApply() {}, onClear() {} }), TypeError);
+        assert.throws(() => openRefineDialog({ scope, fields: [{ key: 'evidence' }], values: {}, onApply() {}, onClear() {} }), TypeError);
     } finally {
         closeWorkspaceDialog();
+        scope.dispose();
         dom.restore();
     }
 });
@@ -305,9 +322,10 @@ test('refine dialog round-trips values and clear resets them', async () => {
 test('import dialog lists only real operations', async () => {
     const { openImportDialog, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
     try {
         const calls = [];
-        openImportDialog({ onInspect: () => calls.push('inspect'), onRescan: () => calls.push('rescan') });
+        openImportDialog({ scope, onInspect: () => calls.push('inspect'), onRescan: () => calls.push('rescan') });
         assert.equal(byId(dom, 'modal-title').textContent, 'Import & inspect');
         const body = byId(dom, 'modal-body');
         assert.deepEqual(tags(body), ['p', 'div']);
@@ -331,12 +349,13 @@ test('import dialog lists only real operations', async () => {
         button(body, 'Rescan').click();
         assert.deepEqual(calls, ['rescan']);
         assert.equal(modal(dom).open, false);
-        openImportDialog({ onInspect: () => calls.push('inspect'), onRescan: () => calls.push('rescan') });
+        openImportDialog({ scope, onInspect: () => calls.push('inspect'), onRescan: () => calls.push('rescan') });
         button(byId(dom, 'modal-body'), 'Open inspector').click();
         assert.deepEqual(calls, ['rescan', 'inspect']);
         assert.equal(modal(dom).open, false);
     } finally {
         closeWorkspaceDialog();
+        scope.dispose();
         dom.restore();
     }
 });
@@ -344,9 +363,10 @@ test('import dialog lists only real operations', async () => {
 test('copy fallback selects the text', async () => {
     const { openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
     try {
         const text = '<b>a castle</b>, "moonlight" & fog';
-        openCopyFallback(text);
+        openCopyFallback(text, { scope });
         assert.equal(byId(dom, 'modal-title').textContent, 'Copy prompt');
         const body = byId(dom, 'modal-body');
         assert.deepEqual(tags(body), ['div', 'p']);
@@ -363,9 +383,10 @@ test('copy fallback selects the text', async () => {
         assert.equal(document.activeElement, area);
         assert.equal(note.className, 'small');
         assert.equal(note.textContent, 'Automatic clipboard access requires a secure browser context.');
-        assert.throws(() => openCopyFallback(42), TypeError);
+        assert.throws(() => openCopyFallback(42, { scope }), TypeError);
     } finally {
         closeWorkspaceDialog();
+        scope.dispose();
         dom.restore();
     }
 });
@@ -373,11 +394,12 @@ test('copy fallback selects the text', async () => {
 test('dialogs restore focus to the trigger on Escape', async () => {
     const { openRefineDialog, openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
     try {
         const opens = [
-            trigger => openRefineDialog({ fields: [{ key: 'tags' }], values: {}, trigger, onApply() {}, onClear() {} }),
-            trigger => openImportDialog({ trigger, onInspect() {}, onRescan() {} }),
-            trigger => openCopyFallback('text', { trigger }),
+            trigger => openRefineDialog({ scope, fields: [{ key: 'tags' }], values: {}, trigger, onApply() {}, onClear() {} }),
+            trigger => openImportDialog({ scope, trigger, onInspect() {}, onRescan() {} }),
+            trigger => openCopyFallback('text', { trigger, scope }),
         ];
         for (const open of opens) {
             const trigger = new dom.Element('button');
@@ -404,11 +426,11 @@ test('dialogs restore focus to the trigger on Escape', async () => {
         // × closes and restores focus too; a removed trigger leaves focus alone.
         const trigger = new dom.Element('button');
         dom.body.append(trigger);
-        openImportDialog({ trigger, onInspect() {}, onRescan() {} });
+        openImportDialog({ scope, trigger, onInspect() {}, onRescan() {} });
         byId(dom, 'modal-close').click();
         assert.equal(modal(dom).open, false);
         assert.equal(document.activeElement, trigger);
-        openImportDialog({ trigger, onInspect() {}, onRescan() {} });
+        openImportDialog({ scope, trigger, onInspect() {}, onRescan() {} });
         trigger.remove();
         const close = byId(dom, 'modal-close');
         close.click();
@@ -417,16 +439,97 @@ test('dialogs restore focus to the trigger on Escape', async () => {
         // Opening over an open dialog swaps its content and keeps the first trigger; dispose removes the shell.
         const first = new dom.Element('button');
         dom.body.append(first);
-        openImportDialog({ trigger: first, onInspect() {}, onRescan() {} });
-        openCopyFallback('swap');
+        openImportDialog({ scope, trigger: first, onInspect() {}, onRescan() {} });
+        openCopyFallback('swap', { scope });
         assert.equal(byId(dom, 'modal-title').textContent, 'Copy prompt');
         modal(dom).dispatchEvent(new Event('cancel', { cancelable: true }));
         assert.equal(document.activeElement, first);
-        openImportDialog({ trigger: first, onInspect() {}, onRescan() {} });
+        openImportDialog({ scope, trigger: first, onInspect() {}, onRescan() {} });
         closeWorkspaceDialog();
+        assert.equal(modal(dom), undefined);
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
+test('an action may open the next dialog without the late close event closing it', async () => {
+    const { openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        const first = new dom.Element('button');
+        const second = new dom.Element('button');
+        dom.body.append(first, second);
+        openImportDialog({ scope, trigger: first, onInspect() {},
+            onRescan: () => openCopyFallback('next', { scope, trigger: second }) });
+        button(byId(dom, 'modal-body'), 'Rescan').click();
+        await tick();
+        assert.equal(modal(dom).open, true);
+        assert.equal(byId(dom, 'modal-title').textContent, 'Copy prompt');
+        assert.equal(document.activeElement, byId(dom, 'copy-text'));
+        // Its own Escape still restores focus to its own trigger.
+        modal(dom).dispatchEvent(new Event('cancel', { cancelable: true }));
+        await tick();
+        assert.equal(document.activeElement, second);
+        // Replacing the shell ignores the old shell's late close event too.
+        openImportDialog({ scope, trigger: first, onInspect() {}, onRescan() {} });
+        closeWorkspaceDialog();
+        openImportDialog({ scope, trigger: second, onInspect() {}, onRescan() {} });
+        await tick();
+        assert.equal(modal(dom).open, true);
+        assert.equal(byId(dom, 'modal-title').textContent, 'Import & inspect');
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
+test('dialogs need the page scope and close with it', async () => {
+    const { openRefineDialog, openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
+    const { createScope } = await coreModule;
+    const dom = fakeDOM();
+    try {
+        assert.throws(() => openImportDialog({ onInspect() {}, onRescan() {} }), /page scope/);
+        assert.throws(() => openRefineDialog({ fields: [], onApply() {}, onClear() {} }), /page scope/);
+        assert.throws(() => openCopyFallback('text'), /page scope/);
+        const scope = createScope();
+        assert.throws(() => openImportDialog({ scope, onInspect() {} }), TypeError);
+        assert.throws(() => openRefineDialog({ scope, fields: [], onApply() {} }), TypeError);
+        assert.equal(modal(dom), undefined);
+
+        // Disposing the page scope closes and removes the shell, however often the page opened it.
+        const trigger = new dom.Element('button');
+        dom.body.append(trigger);
+        openImportDialog({ scope, trigger, onInspect() {}, onRescan() {} });
+        openCopyFallback('again', { scope });
+        scope.dispose();
+        assert.equal(modal(dom), undefined);
+        assert.equal(document.activeElement, trigger);
+
+        // An old page's scope never closes the next page's dialog.
+        const older = createScope();
+        const newer = createScope();
+        openImportDialog({ scope: older, onInspect() {}, onRescan() {} });
+        openCopyFallback('next page', { scope: newer });
+        older.dispose();
+        assert.equal(modal(dom).open, true);
+        newer.dispose();
         assert.equal(modal(dom), undefined);
     } finally {
         closeWorkspaceDialog();
         dom.restore();
     }
+});
+
+test('every route change closes the shared workspace dialog', async () => {
+    const { readFile } = require('node:fs/promises');
+    const path = require('node:path');
+    const source = await readFile(path.join(__dirname, '../../web/js/workspace/index.mjs'), 'utf8');
+    assert.match(source, /import \{[^}]*\bcloseWorkspaceDialog\b[^}]*\} from '\.\/workspace-dialogs\.mjs';/);
+    const render = source.slice(source.indexOf('function render(route) {'));
+    const body = render.slice(0, render.indexOf('viewScope = createScope();'));
+    assert.match(body, /closeWorkspaceDialog\(\);/, 'render closes the dialog before the next page mounts');
 });

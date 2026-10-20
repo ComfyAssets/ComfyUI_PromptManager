@@ -10,7 +10,8 @@ import { createWorkspaceIcon } from './icons.mjs';
 /** The search waits this long after the last keystroke before it reports a change. */
 export const SEARCH_DELAY = 250;
 
-// The concept's sort labels, in the concept's order.
+// The concept's sort labels, in the concept's order. Matching is by exact label (note the en dash in "Name A–Z"); any
+// other label is one of the page's appended options.
 const CONCEPT_SORT_LABELS = Object.freeze(['Recently added', 'Name A–Z', 'Highest rated']);
 
 const isText = value => typeof value === 'string';
@@ -51,6 +52,9 @@ function categoryOptions(categories) {
  * The toolbar leaves `container` when `scope` is disposed. Returns `{element, value, setValue, setCategories}`.
  */
 export function mountToolbar(container, { scope, categories = [], sorts, value = {}, onChange, onFilters }) {
+    if (typeof scope?.listen !== 'function' || typeof scope.debounce !== 'function' || typeof scope.cleanup !== 'function') {
+        throw new TypeError('The toolbar needs the page scope');
+    }
     if (typeof onChange !== 'function' || typeof onFilters !== 'function') {
         throw new TypeError('The toolbar needs onChange and onFilters');
     }
@@ -84,7 +88,7 @@ export function mountToolbar(container, { scope, categories = [], sorts, value =
     function setValue(next) {
         if (isText(next?.q)) search.value = next.q;
         if (isText(next?.category)) category.value = next.category;
-        if (isText(next?.sort)) sort.value = next.sort;
+        if (isText(next?.sort)) sort.value = sort.options.some(node => node.value === next.sort) ? next.sort : sort.options[0].value;
     }
     function setCategories(next) {
         const selected = category.value;

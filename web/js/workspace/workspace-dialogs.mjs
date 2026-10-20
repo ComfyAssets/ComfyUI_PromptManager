@@ -4,17 +4,19 @@
  * swaps its content, as the concept's `dialog()` does. Closing, by ×, Escape or an action, returns focus to the
  * control that opened it.
  *
- * - "Refine this view" (a1348–1364): Source / Folder / Media / Tags, each optional per page; "Apply filters" because
- *   every field is a real filter, and no "Prompt evidence" field because evidence is only known per file (D14).
+ * - "Refine this view" (a1348–1364): Source / Folder / Media / Tags, each optional per page; "Apply filters" and no
+ *   mock-status note because every field is a real filter, and no "Prompt evidence" field because evidence is only
+ *   known per file (D14). Clear also clears the toolbar category, as the concept's does; the page applies it.
  * - "Import & inspect" (a1483–1491): only the real operations, Inspect a local image and Scan an output folder →
  *   Rescan; no "Import portable recipes" (D15).
  * - "Copy prompt" (a1223–1241): the select-to-copy fallback when the clipboard is unavailable (D22).
+ *
+ * Every opener takes the page `scope`: disposing it closes and removes the shell, so a dialog never outlives its page.
  */
 import { createButton } from '../shared/toolkit/core.js';
 
 const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags' });
 const FIELD_ORDER = Object.keys(FIELD_LABELS);
-const REFINE_NOTE = 'These filters apply to this view and combine with the search and category above.';
 
 let shell = null;
 let session = null;
@@ -54,8 +56,11 @@ function createShell() {
         event.preventDefault();
         finish();
     });
-    // A browser may still close a modal on its own; that is a dismissal too.
-    dialog.addEventListener('close', () => finish());
+    // A browser may still close a modal on its own; that is a dismissal too. `close` arrives as a later task, so it
+    // is ignored once this shell was reopened or replaced.
+    dialog.addEventListener('close', () => {
+        if (shell?.dialog === dialog && !dialog.open) finish();
+    });
     return { dialog, title, body, close };
 }
 
@@ -68,10 +73,33 @@ function finish() {
     if (trigger?.isConnected) trigger.focus();
 }
 
-function show(heading, nodes, trigger, focusTarget) {
+const boundScopes = new WeakSet();
+
+function requireScope(scope) {
+    if (typeof scope?.cleanup !== 'function') throw new TypeError('Workspace dialogs need the page scope');
+}
+
+function requireCallbacks(callbacks) {
+    for (const [name, callback] of Object.entries(callbacks)) {
+        if (typeof callback !== 'function') throw new TypeError(`The dialog needs ${name}`);
+    }
+}
+
+/** Disposing a page scope closes the shell unless a newer page's dialog is open in it. */
+function bindScope(scope) {
+    if (boundScopes.has(scope)) return;
+    boundScopes.add(scope);
+    scope.cleanup(() => {
+        boundScopes.delete(scope);
+        if (!session || session.scope === scope) closeWorkspaceDialog();
+    });
+}
+
+function show(heading, nodes, { scope, trigger, focusTarget }) {
     shell ??= createShell();
     if (!shell.dialog.isConnected) document.body.append(shell.dialog);
-    session = { trigger: trigger ?? session?.trigger ?? null };
+    bindScope(scope);
+    session = { scope, trigger: trigger ?? session?.trigger ?? null };
     shell.title.textContent = heading;
     shell.body.replaceChildren(...nodes);
     if (!shell.dialog.open) shell.dialog.showModal();
@@ -103,9 +131,11 @@ function selectControl(key, options) {
  * "Refine this view". `fields` lists the page's filters in any subset of Source, Folder, Media and Tags, as
  * `{key, options}` with `[value, label]` options for the selects (the first is the cleared value) and no options for
  * Tags. `values` holds the current value per key. Apply reports the edited values; Clear resets every field and
- * reports the cleared values. Both close the dialog first.
+ * reports the cleared values plus `category: ''`, so the page clears its toolbar category too. Both close first.
  */
-export function openRefineDialog({ fields, values = {}, onApply, onClear, trigger = null, note = REFINE_NOTE }) {
+export function openRefineDialog({ scope, fields, values = {}, onApply, onClear, trigger = null }) {
+    requireScope(scope);
+    requireCallbacks({ onApply, onClear });
     if (!Array.isArray(fields) || fields.some(item => !FIELD_ORDER.includes(item?.key))) {
         throw new TypeError('Refine fields are source, folder, media and tags');
     }
@@ -132,7 +162,7 @@ export function openRefineDialog({ fields, values = {}, onApply, onClear, trigge
         for (const { control, cleared } of controls) control.value = cleared;
         const reset = read();
         finish();
-        onClear(reset);
+        onClear({ ...reset, category: '' });
     });
     apply.addEventListener('click', () => {
         const applied = read();
@@ -143,9 +173,8 @@ export function openRefineDialog({ fields, values = {}, onApply, onClear, trigge
     actions.append(clear, apply);
     show('Refine this view', [
         ...controls.map(({ key, control }) => field(FIELD_LABELS[key], control, `filter-${key}`)),
-        el('p', note, 'small'),
         actions,
-    ], trigger);
+    ], { scope, trigger });
 }
 
 function operation(title, description, label, onAction) {
@@ -164,7 +193,9 @@ function operation(title, description, label, onAction) {
 }
 
 /** "Import & inspect" with the two real operations (D15). */
-export function openImportDialog({ onInspect, onRescan, trigger = null }) {
+export function openImportDialog({ scope, onInspect, onRescan, trigger = null }) {
+    requireScope(scope);
+    requireCallbacks({ onInspect, onRescan });
     const list = el('div', undefined, 'operation-list');
     list.append(
         operation('Inspect a local image', 'Read embedded metadata before deciding to add it.', 'Open inspector', onInspect),
@@ -173,11 +204,12 @@ export function openImportDialog({ onInspect, onRescan, trigger = null }) {
     show('Import & inspect', [
         el('p', 'Image inspection and output scanning have different effects. Choose the workflow you want.', 'small'),
         list,
-    ], trigger);
+    ], { scope, trigger });
 }
 
 /** "Copy prompt": the text in a readonly, pre-selected textarea for a manual copy. */
-export function openCopyFallback(text, { trigger = null } = {}) {
+export function openCopyFallback(text, { scope, trigger = null } = {}) {
+    requireScope(scope);
     if (typeof text !== 'string') throw new TypeError('Copy text must be a string');
     const area = el('textarea');
     area.readOnly = true;
@@ -185,6 +217,6 @@ export function openCopyFallback(text, { trigger = null } = {}) {
     show('Copy prompt', [
         field('Select and copy this text', area, 'copy-text'),
         el('p', 'Automatic clipboard access requires a secure browser context.', 'small'),
-    ], trigger, area);
+    ], { scope, trigger, focusTarget: area });
     area.select();
 }
