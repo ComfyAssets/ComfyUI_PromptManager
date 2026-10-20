@@ -1141,7 +1141,8 @@ class ImageRoutesMixin:
         count is _COUNT_OMITTED, so the response leaves ``positive_count`` out
         and the frontend keeps the first page's value. On that plain first
         page a failed read leaves the listing usable and the count unknown
-        (None).
+        (None); so does a failed read under ``q`` alone, whose search then
+        matches filenames only (as before the linked search existed).
         """
         order, category, tags = filters["order"], filters["category"], filters["tags"]
         needed = (
@@ -1161,10 +1162,19 @@ class ImageRoutesMixin:
                     wanted=self._workspace_wanted(listings),
                 )
             except Exception:
-                if needed:
+                # Category, tags and the rating sort cannot be served without
+                # the links. A plain listing and a filename search can: the
+                # search then matches filenames only, and the count is None.
+                if category is not None or tags or order == "rating":
                     raise
                 self.logger.warning(
-                    "Workspace positive count could not be read", exc_info=True
+                    "Workspace prompt links could not be read; %s",
+                    (
+                        "searching filenames only"
+                        if filters["query"]
+                        else "positive count unknown"
+                    ),
+                    exc_info=True,
                 )
         if order == "rating":
 

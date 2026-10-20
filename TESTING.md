@@ -490,8 +490,10 @@ set, not the page:
 - Absent on a plain listing's cursor pages, which read no links. The frontend
   keeps the first page's value.
 - Null when a plain first page's link read failed. The listing still returns 200,
-  and consumers then hide "· K positive prompts". A failure under a filter or
-  the rating sort stays a safe 500.
+  and consumers then hide "· K positive prompts". A `q` search alone also
+  survives the failure: it matches filenames only, as before linked search, and
+  every page's count is null (logged with the traceback). A failure under
+  `category`, `tags` or the rating sort stays a safe 500.
 
 Library parents (list, detail and command receipts) gain `run_count` (an int; the
 D23 migration estimate for rows from before 3.2.4) and `last_used_at`, a UTC ISO

@@ -988,8 +988,14 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertEqual(data["total"], 10)
         self.assertIsNone(data["positive_count"])
         self.assertNotIn("database gone", json.dumps(data))
-        # A filter or the rating sort needs the read, so its failure is an error.
-        for params in ({"q": "zebra"}, {"category": "Night"}, {"sort": "rating"}):
+        # A linked filter or the rating sort needs the read, so its failure is
+        # an error (filename-only search survives it, see below).
+        for params in (
+            {"category": "Night"},
+            {"tags": "a"},
+            {"q": "zebra", "category": "Night"},
+            {"sort": "rating"},
+        ):
             with (
                 self.subTest(failing=params),
                 patch.object(
@@ -999,6 +1005,35 @@ class TestWorkspaceImages(ImageAPITestCase):
                 response, data = await self.get(**params)
                 self.assertEqual(response.status, 500, data)
                 self.assertNotIn("images", data)
+
+    async def test_filename_search_survives_a_database_failure(self):
+        for name, mtime in (("zebra-1.png", 300), ("zebra-2.png", 200)):
+            self.media(name, mtime)
+        self.media("other.png", 100)
+        with (
+            patch.object(
+                self.api.db,
+                "get_image_link_matches",
+                side_effect=RuntimeError("database gone"),
+            ),
+            self.assertLogs(self.api.logger, "WARNING") as logged,
+        ):
+            response, first = await self.get(q="ZEBRA", limit=1)
+            self.assertEqual(response.status, 200, first)
+            response, second = await self.get(
+                q="ZEBRA", limit=1, cursor=first["next_cursor"]
+            )
+        self.assertEqual(response.status, 200, second)
+        # Filename matches only; the count of linked positives is unknown.
+        self.assertEqual(self._names(first), ["zebra-1.png"])
+        self.assertEqual(self._names(second), ["zebra-2.png"])
+        for page in (first, second):
+            self.assertEqual(page["total"], 2)
+            self.assertIsNone(page["positive_count"])
+            self.assertNotIn("database gone", json.dumps(page))
+        self.assertTrue(
+            all(record.exc_info for record in logged.records), logged.output
+        )
 
     async def test_search_matches_filename_prompt_text_and_tags(self):
         from database.models import normalize_image_path
