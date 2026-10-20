@@ -24,10 +24,15 @@ from uuid import UUID, uuid5
 from PIL import Image, ImageDraw
 from PIL.PngImagePlugin import PngInfo
 
-from tests.browser.workspace_history_fixture import _snapshot
-from utils.execution_contexts import ContextBundle, RecipeContext
+from utils.execution_contexts import (
+    ContextBundle,
+    PromptSnapshot,
+    RecipeContext,
+    TextEvidence,
+)
 from utils.execution_history_events import make_finish, make_start
 from utils.execution_outputs import OutputBundle, OutputReference, snapshot_output_roots
+from utils.pair_execution import EXECUTION_KEY
 
 if TYPE_CHECKING:
     from py.api import PromptManagerAPI
@@ -147,6 +152,8 @@ CONCEPT_DIMENSIONS = (
 )
 CONCEPT_IMAGE_ROUNDS = 4
 CONCEPT_RUN_COUNT = 4
+# The concept's Model fact (app.js:408).
+CONCEPT_MODEL = "illustrative-model.safetensors"
 MAX_EXTRA_IMAGES = 120
 SESSION = "5c1f9a7e-3f0b-4a55-9d0e-2b8c4f6a7d10"
 _TABLES = (
@@ -180,48 +187,91 @@ def concept_filename(prompt: ConceptPrompt, round_index: int) -> str:
 
 
 def _graph(positive: str, negative: str, seed: int) -> dict:
-    """A ComfyUI API prompt with one sampler, so the seed is unambiguous."""
+    """A ComfyUI API prompt with the concept's facts (app.js:406-408).
+
+    The recipe is a Prompt Manager pair node, so with its embedded execution record
+    the inspector reports both roles as execution evidence, which the panel badges
+    "Execution recorded" (D21). One sampler keeps the seed unambiguous.
+    """
     return {
-        "1": {"class_type": "CLIPTextEncode", "inputs": {"text": positive}},
-        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": negative}},
+        "1": {
+            "class_type": "PromptManagerPair",
+            "inputs": {"text": positive, "negative_text": negative, "clip": ["2", 1]},
+        },
+        "2": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": CONCEPT_MODEL},
+        },
         "3": {
             "class_type": "KSampler",
             "inputs": {
+                "model": ["2", 0],
                 "positive": ["1", 0],
-                "negative": ["2", 0],
+                "negative": ["1", 1],
                 "seed": seed,
                 "steps": 28,
                 "cfg": 6.5,
-                "sampler_name": "euler",
-                "scheduler": "normal",
+                "sampler_name": "dpmpp_2m",
+                "scheduler": "karras",
             },
         },
         "4": {"class_type": "SaveImage", "inputs": {"images": ["3", 0]}},
     }
 
 
-def _write_png(
-    path: Path, prompt: ConceptPrompt, size: tuple[int, int], graph: dict
-) -> None:
-    """An original flat artwork in the prompt's concept palette."""
-    width, height = size
+def _execution_record(positive: str, negative: str) -> dict:
+    """The pair node's embedded execution evidence (utils/pair_execution.py)."""
+    record = {
+        "text": positive,
+        "negative_text": negative,
+        "positive_text": positive,
+        "negative_effective_text": negative,
+        "prepend_text": "",
+        "append_text": "",
+    }
+    return {"version": 1, "nodes": {"1": {"records": [record]}}}
+
+
+def _snapshot(text: str) -> PromptSnapshot:
+    """A recorded prompt snapshot whose raw and effective texts are ``text``."""
+
+    def known(value: str) -> TextEvidence:
+        return TextEvidence(value, "recorded", "runtime_return", None)
+
+    return PromptSnapshot(known(text), known(text), known(""), known(""))
+
+
+def write_concept_png(path: Path, prompt_index: int, round_index: int) -> dict:
+    """Write the concept's sample image ``round_index`` of prompt ``prompt_index``.
+
+    Returns its facts: variant, negative, seed and dimensions.
+    """
+    prompt = CONCEPT_PROMPTS[prompt_index]
+    index = round_index * len(CONCEPT_PROMPTS) + prompt_index
+    variant = round_index % len(prompt.negatives)
+    negative = prompt.negatives[variant][1]
+    seed = concept_seed(prompt_index, round_index)
+    width, height = size = CONCEPT_DIMENSIONS[index % len(CONCEPT_DIMENSIONS)]
     sky, ground, light = prompt.color
     info = PngInfo()
-    info.add_text("prompt", json.dumps(graph))
+    info.add_text("prompt", json.dumps(_graph(prompt.positive, negative, seed)))
+    info.add_text(
+        EXECUTION_KEY, json.dumps(_execution_record(prompt.positive, negative))
+    )
     with Image.new("RGB", size, sky) as image:
         draw = ImageDraw.Draw(image)
         draw.rectangle((0, height * 2 // 3, width, height), fill=ground)
         radius = min(width, height) // 9
-        draw.ellipse(
-            (
-                width * 2 // 3,
-                height // 6,
-                width * 2 // 3 + radius,
-                height // 6 + radius,
-            ),
-            fill=light,
-        )
+        left, top = width * 2 // 3, height // 6
+        draw.ellipse((left, top, left + radius, top + radius), fill=light)
         image.save(path, pnginfo=info)
+    return {
+        "variant": variant,
+        "negative": negative,
+        "seed": seed,
+        "width": width,
+        "height": height,
+    }
 
 
 def _clear(api: PromptManagerAPI, root: Path) -> None:
@@ -315,13 +365,10 @@ def seed_workspace_concept(
             index = round_index * len(CONCEPT_PROMPTS) + prompt_index
             if index >= total:
                 break
-            variant = round_index % len(prompt.negatives)
-            seed = concept_seed(prompt_index, round_index)
             name = concept_filename(prompt, round_index)
             path = folder / name
-            negative = prompt.negatives[variant][1]
-            size = CONCEPT_DIMENSIONS[index % len(CONCEPT_DIMENSIONS)]
-            _write_png(path, prompt, size, _graph(prompt.positive, negative, seed))
+            facts = write_concept_png(path, prompt_index, round_index)
+            variant, negative, seed = facts["variant"], facts["negative"], facts["seed"]
             # The concept lists images newest first in this order.
             stamp = now - 60 - index * 60
             os.utime(path, (stamp, stamp))
@@ -353,8 +400,8 @@ def seed_workspace_concept(
                     "prompt": prompt.id,
                     "variant": variant,
                     "seed": seed,
-                    "width": size[0],
-                    "height": size[1],
+                    "width": facts["width"],
+                    "height": facts["height"],
                 }
             )
     with db.model.get_connection() as conn:
