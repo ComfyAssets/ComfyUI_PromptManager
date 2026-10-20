@@ -364,13 +364,14 @@ selector, so a narrower selector over a concept rule (for example
 leftovers such as `library.css` `.row-actions`, name the PR that retires them, by
 convention.
 
-The lint covers `workspace.css` only. The page stylesheets that load before it
-(`images.css`, `library.css`, `inspector.css`) are not linted yet, and `images.css`
-still has unmarked concept-selector overrides (`.prompt-text`, `.prompt-actions`,
-`.ca-tools .prompt-actions button`; its `.image-grid` rule moved to the overlay
-as `#249 D3` in C3). PRs C and D retire those
-sheets: each one runs `lintOverlay` over every page sheet it keeps, and adds that
-sheet to the real-file lint test.
+The lint also runs over every page stylesheet that loads before the overlay and is
+still kept (`images.css`, `library.css`, `inspector.css`; test `kept page stylesheets
+mark their concept-selector overrides`). After PR C, `images.css` holds only the side
+panel, the prompt blocks and the prompt sender, which PR D moves to the concept panel
+and deletes with the file. Its three remaining concept-selector overrides
+(`.prompt-text`, `.prompt-actions`, `.ca-tools .prompt-actions button`) are marked
+`#249 D22 interim` until then, and `images.css keeps no retired Images page rules`
+keeps the replaced card, grid, filter, toolbar, preview and facts rules out.
 
 **Comparison method.** Production must equal the concept except for the recorded
 deviations in the #249 design (spec §8, D-numbers). It is never compared against
@@ -447,6 +448,99 @@ removed at runtime. Masonry tops and heights are compared unrounded, within one 
 unit per card above in the column (D3). `one footer height for the collection (D3)`
 seeds two seedless files (`seedless_images` on `/__test__/concept/reset`) and asserts
 that every row reserves the tallest footer.
+
+### Images page controls and recorded deviations (#249 PR C)
+
+The Images page renders the concept's DOM with real data. Its controls, top to bottom:
+
+- **Heading**: "Images" / "Your generations, their prompts, and the next idea.",
+  `Import` (opens "Import & inspect") and the shell's `New prompt`.
+- **Toolbar** (`toolbar.mjs`, shared with the Library in PR E): `#search` "Search
+  prompts, tags, filenames…" (debounced 250 ms; filename, linked positive text and
+  Library title, and tag names), `#category-filter` "All categories" plus the
+  Library's categories, `#sort` (Recently added, Name A–Z, Highest rated, then Oldest
+  first and Name Z–A), and `Filters` (opens "Refine this view").
+- **Filter row**: Grid / List / Masonry (`.segmented`, group "Image layout"),
+  "Thumbnail size" Comfortable / Large / Compact, the scope chip ("All output folders"
+  or "<source> · <folder>"), and "Group by positive prompt →" (goes to the Library).
+- **Caption**: "N of M images · K positive prompts" (`#result-count`) and, under
+  Recently added only, the newest result's day.
+- **Grid** (`#image-grid`): concept media cards. The image opens the viewer
+  (click, Enter, Space); Info selects the card into the side panel; the star toggles
+  the favorite; arrows, Home and End move between cards. Bounded rendering keeps the
+  DOM small, and returning to Images restores filters, layout, size, selection and
+  scroll.
+- **Continuation** (`#gallery-continuation`): scrolling near it loads the next page;
+  `Load more images` and `Retry` do the same by hand, with a toast per batch.
+- **Viewer** (`dialog#viewer-dialog`): "<title> · <filename>", the concept toolbar
+  (a "Media controls" group), the shared file inspector beside the stage, and Escape
+  returns focus to the opening image.
+
+How the earlier workspace Images filters moved (old → new). The legacy `/gallery`,
+`/admin` and `/metadata` pages are unchanged.
+
+| Before PR C | Now |
+| --- | --- |
+| "Search filenames" (filename or folder) | toolbar search, which also matches linked prompt text, title and tags (D12) |
+| Source | "Refine this view" → Source (D14); shown in the scope chip |
+| Folder | "Refine this view" → Folder (D14); shown in the scope chip |
+| Media (All media / Images / Videos) | "Refine this view" → Media (D14) |
+| Sort: Newest first / Oldest first / Filename A–Z / Filename Z–A | toolbar sort: Recently added / Oldest first / Name A–Z / Name Z–A, plus Highest rated (D13, D14) |
+| (none) | toolbar category and "Refine this view" → Tags, through the linked positive (D13, D14) |
+| Refresh | Import → "Scan an output folder" → Rescan (D15) |
+| Grid / List / Masonry, Comfortable / Large / Compact | the same choices in the concept filter row |
+| Card image → side panel; preview icon → viewer | image → viewer; Info → side panel (D19) |
+| "All images" heading and count | the concept caption and count line (D17, D35) |
+
+Recorded deviations on this page (spec §8):
+- **D3**: bounded rendering stays. Every grid row reserves the tallest measured card
+  footer, masonry tops may differ by sub-pixel snapping (at most one layout unit per
+  card above in the column), and a List row's info takes its natural height, centred
+  beside the 160×95 art.
+- **D5**, **D29**: no Activity button and no prototype copy (shell).
+- **D7**: the star is a real persisted favorite with "Added to favorites." /
+  "Removed from favorites." and a rollback toast on failure.
+- **D8 (follow-up)**: no select checkbox or bulk bar in PR C; a follow-up PR adds them
+  with real actions and removes the interim `.image-overlays > .star-button:only-child`
+  rule that keeps the star top-right.
+- **D9**: no Tag button until the image-annotations slice.
+- **D10**: the card title is the linked positive's display title, else the filename;
+  the `h3` keeps the relative path in `title`.
+- **D11**: the subtitle is "W × H · EXT · Seed N" with unknown parts omitted.
+- **D14**: Source, Folder, Media and Tags live in "Refine this view" (no "Prompt
+  evidence" field, no scope note); the primary action reads "Apply filters"; extra
+  sorts come after the concept's three; long folder names wrap inside the scope chip.
+- **D15**: Import offers "Inspect a local image" (`#/inspect`) and "Scan an output
+  folder" (Rescan, `/gallery/rescan`); no "Import portable recipes".
+- **D16 (follow-up)**: no Save view in PR C; a follow-up PR adds real saved views.
+- **D17**: the caption date is the newest result's day under Recently added (", YYYY"
+  outside the current year), hidden under every other sort.
+- **D18**: the concept hover zoom, with no sticky zoom on hover-less (touch) devices.
+- **D32**: the layout control may wrap, so the filter and continuation rows never
+  overflow at 390px and 200% zoom.
+- **D33**: after Load more or Retry, focus moves to the first new image without
+  scrolling, and only while focus is still on the pressed control or `body`.
+- **D34**: the viewer keeps its toolbar under the stage in `.viewer-left`, a flex
+  column above 700px, `max-height: min(94dvh, 94%)`, the "Download original" link,
+  the appended position and reason lines, full-stage video and failure overlay,
+  40×40 coarse targets, production's control names and "Media controls" group, and
+  `overscroll-behavior: contain`.
+- **D35**: counts pluralize ("1 positive prompt", "1 image", "1 more image loaded").
+- **D36**: the category list is the Library's, sorted alphabetically.
+- **D37**: production loads 40 images per page (the concept 12), so the continuation
+  and toast use 40; after Escape production returns focus to the opening image.
+
+Manual check (quick), after a browser refresh on Images: hover an image (it zooms);
+click it (the viewer reads "<title> · <filename>"; Escape closes it); press a card's
+Info (the side panel changes); search a word from a prompt (matching images remain);
+open Filters (Source, Folder and Media are there); Import → Rescan picks up a newly
+saved file.
+
+```sh
+npm run --prefix tools/vendor test:workflows -- images-concept.spec.mjs \
+  workspace-images.spec.mjs full-inspector.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+```
 
 ## Workspace data fields for the concept pages (#249)
 
