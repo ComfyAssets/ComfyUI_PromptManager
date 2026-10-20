@@ -1435,3 +1435,26 @@ test('Import Rescan shows that it runs, ignores a second press and announces the
     await expect(cards(page)).toHaveCount(3);
     await expect(caption(page)).toContainText('3 of 3 images');
 });
+
+// #249 final review I2: a polite live region re-announces replaced text, so an unchanged status is never rewritten.
+test('a star press leaves the continuation status, count and caption date untouched', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    await expect(page.locator('#gallery-continuation p')).toHaveText(/caught up/);
+    await expect(caption(page).locator('span').nth(1)).toBeVisible();
+    await page.evaluate(() => {
+        window.__statusMutations = [];
+        const observer = new MutationObserver(records => {
+            window.__statusMutations.push(...records.map(record => `${record.type}:${record.target.nodeName}`));
+        });
+        for (const node of [document.querySelector('#gallery-continuation p'), document.querySelector('#result-count'),
+            document.querySelector('.section-caption > span:nth-child(2)')]) {
+            observer.observe(node, { childList: true, characterData: true, subtree: true, attributes: true });
+        }
+    });
+    const card = page.locator('article[data-image-key="0:shared/same.png"]');
+    await star(card, 'same.png').click();
+    await expectStar(star(card, 'same.png'), true);
+    await expect(toast(page)).toHaveText('Added to favorites.');
+    expect(await page.evaluate(() => window.__statusMutations)).toEqual([]);
+});

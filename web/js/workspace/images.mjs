@@ -20,6 +20,17 @@ function el(tag, text, className) {
     return element;
 }
 
+/**
+ * Live regions re-announce replaced text even when it is the same, and a patched publish (a favorite) repeats the
+ * same status: write text and attributes only when they change.
+ */
+function setText(element, text) {
+    if (element.textContent !== text) element.textContent = text;
+}
+function setAttr(element, name, value) {
+    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
 function selectOf(id, options, value) {
     const select = el('select');
     select.id = id;
@@ -458,10 +469,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        count.textContent = embedded ? `${next.loaded.toLocaleString('en-US')} loaded · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'linked image')}` : countLine(next);
+        setText(count, embedded ? `${next.loaded.toLocaleString('en-US')} loaded · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'linked image')}` : countLine(next));
         if (!embedded) {
-            captionDay.textContent = captionDate(next.items, filters.sort);
-            captionDay.hidden = !captionDay.textContent;
+            setText(captionDay, captionDate(next.items, filters.sort));
+            if (captionDay.hidden !== !captionDay.textContent) captionDay.hidden = !captionDay.textContent;
         }
         if (changed) updateLayout();
         // The concept's Load more toast (app.js loadMoreImages) for every batch appended to a loaded collection.
@@ -469,8 +480,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             const added = next.loaded - previous.loaded;
             showWorkspaceToast(`${added.toLocaleString('en-US')} more ${noun(added, 'image')} loaded. ${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')}.`);
         }
-        message.textContent = continuationText(next);
-        if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');
+        setText(message, continuationText(next));
+        setAttr(message, 'role', next.error ? 'alert' : 'status');
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
