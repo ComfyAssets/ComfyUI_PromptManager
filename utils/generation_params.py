@@ -217,8 +217,31 @@ def _js_string(value):
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return ",".join("" if _nullish(item) else _js_string(item) for item in value)
+        return _array_string(value)
     return "[object Object]"
+
+
+def _array_string(value):
+    """``String(array)``: ``join(",")`` applied to nested arrays, on an explicit stack.
+
+    null and undefined elements join as "". A crafted file can nest arrays far
+    deeper than the Python stack allows, so this never recurses.
+    """
+    out = []
+    stack = [(value, 0)]
+    while stack:
+        items, index = stack.pop()
+        if index == len(items):
+            continue
+        if index:
+            out.append(",")
+        stack.append((items, index + 1))
+        item = items[index]
+        if isinstance(item, list):
+            stack.append((item, 0))
+        elif not _nullish(item):
+            out.append(_js_string(item))
+    return "".join(out)
 
 
 def _key(value):

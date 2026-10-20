@@ -176,6 +176,12 @@ class StaysBounded(unittest.TestCase):
         self.assertEqual(result["negativePrompt"], "t")
 
 
+class DeeplyNestedValues(unittest.TestCase):
+    def test_deeply_nested_values_do_not_exhaust_the_python_stack(self):
+        result = run("deeply-nested-values")
+        self.assertEqual(result["positivePrompt"], "nested neighbours")
+
+
 class Placeholders(unittest.TestCase):
     def test_blank_text_is_a_placeholder_and_zero_seed_is_kept(self):
         result = run("blank-text-and-zero-seed")
