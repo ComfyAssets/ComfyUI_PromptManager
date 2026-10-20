@@ -13,10 +13,29 @@ _ELIGIBLE = """(EXISTS(SELECT 1 FROM prompt_pairs ep WHERE ep.positive_prompt_id
 _FROM = "prompts p LEFT JOIN prompt_library_state ls ON ls.prompt_id=p.id"
 # The characters JavaScript's String.prototype.trim() removes, so a title the
 # display treats as blank also falls back to the prompt text for name sorting.
-_BLANK = (
-    "char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,"
-    "8200,8201,8202,8232,8233,8239,8287,12288,65279)"
-)
+_TRIM_CODES = (9, 10, 11, 12, 13, 32, 160, 5760, *range(8192, 8203))
+_TRIM_CODES += (8232, 8233, 8239, 8287, 12288, 65279)
+_BLANK = f"char({','.join(map(str, _TRIM_CODES))})"
+_JS_TRIM = "".join(map(chr, _TRIM_CODES))
+# The Library's display title: a stored title, else the prompt's first line.
+DISPLAY_TITLE_LIMIT = 80
+
+
+def display_title(stored_titles: tuple, text: object) -> str | None:
+    """Return the first non-blank stored title, else the text's first line.
+
+    Blank follows JavaScript's trim, as in the Library view; the first line is
+    trimmed and cut to DISPLAY_TITLE_LIMIT characters. None when both are empty.
+    """
+    for title in stored_titles:
+        if isinstance(title, str) and title.strip(_JS_TRIM):
+            return title
+    if not isinstance(text, str):
+        return None
+    first = text.split("\n")[0].strip(_JS_TRIM)[:DISPLAY_TITLE_LIMIT]
+    return first or None
+
+
 _NAME = (
     f"LOWER(CASE WHEN TRIM(COALESCE(ls.title,''),{_BLANK})!='' "
     "THEN ls.title ELSE p.text END)"

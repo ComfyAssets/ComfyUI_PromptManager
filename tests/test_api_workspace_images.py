@@ -1,9 +1,12 @@
 """Opt-in workspace gallery contracts against disposable SQLite and media."""
 
+import json
 import os
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+from PIL import Image, PngImagePlugin
 
 try:
     from test_api_images import ImageAPITestCase, make_png
@@ -11,6 +14,24 @@ try:
 except ImportError:
     from tests.test_api_images import ImageAPITestCase, make_png
     from tests.open_handles import assert_closed
+
+
+def embedded_png(path, positive, negative=""):
+    """A PNG whose API prompt graph resolves to *positive* and *negative*."""
+    graph = {
+        "1": {"class_type": "CLIPTextEncode", "inputs": {"text": positive}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": negative}},
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+        },
+    }
+    info = PngImagePlugin.PngInfo()
+    info.add_text("prompt", json.dumps(graph))
+    with Image.new("RGB", (4, 4)) as image:
+        image.save(path, pnginfo=info)
+    os.utime(path, (100, 100))
+    return path
 
 
 class TestWorkspaceImages(ImageAPITestCase):
@@ -299,6 +320,156 @@ class TestWorkspaceImages(ImageAPITestCase):
                     "filename": "猫 % #.png",
                 },
             )
+
+    def _link_fixtures(self):
+        """Linked (titled, first-line, pair, untitled pair), ambiguous and none."""
+        db = self.api.db
+        long_line = "lantern " * 15
+        titled = self._save_prompt("Titled positive", category="Night", rating=5)
+        with db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (titled, "Stored library title"),
+            )
+        plain = self._save_prompt(long_line)
+        pair = db.save_prompt_pair("Pair positive", "Noise", title="Pair title")
+        bare = db.save_prompt_pair("Bare pair positive\nmore", "Blur")
+        first, second = self._save_prompt("Owner one"), self._save_prompt("Owner two")
+        files = {
+            name: self.media(f"{name}.png")
+            for name in ("titled", "pair", "ambiguous", "none")
+        }
+        # First-line titles come from files whose own prompt evidence agrees.
+        files["plain"] = embedded_png(self.output_dir / "plain.png", long_line)
+        files["bare"] = embedded_png(
+            self.output_dir / "bare.png", "Bare pair positive\nmore", "Blur"
+        )
+        db.link_image_to_prompt(titled, str(files["titled"]))
+        db.link_image_to_prompt(plain, str(files["plain"]))
+        for name, pair_id in (("pair", pair), ("bare", bare)):
+            positive = db.get_prompt_pair(pair_id)["positive_prompt_id"]
+            image = db.link_image_to_prompt(positive, str(files[name]))
+            db.link_image_to_pair(pair_id, image, {"source": "fixture"})
+        db.link_image_to_prompt(first, str(files["ambiguous"]))
+        db.link_image_to_prompt(second, str(files["ambiguous"]))
+        return {
+            "titled": ("linked", titled, "Stored library title"),
+            "plain": ("linked", plain, long_line.strip()[:80]),
+            "pair": (
+                "linked",
+                db.get_prompt_pair(pair)["positive_prompt_id"],
+                "Pair title",
+            ),
+            "bare": (
+                "linked",
+                db.get_prompt_pair(bare)["positive_prompt_id"],
+                "Bare pair positive",
+            ),
+            "ambiguous": ("ambiguous", None, None),
+            "none": ("none", None, None),
+        }
+
+    async def test_workspace_items_carry_link_summary_matching_inspection(self):
+        expected = self._link_fixtures()
+        _, data = await self.get(limit=50)
+        items = {Path(item["filename"]).stem: item for item in data["images"]}
+        self.assertEqual(set(items), set(expected))
+        for name, (status, positive_id, title) in expected.items():
+            with self.subTest(file=name):
+                linked = items[name]["linked"]
+                self.assertEqual(
+                    set(linked),
+                    {"status", "positive_id", "title", "category", "rating"},
+                )
+                self.assertEqual(
+                    (linked["status"], linked["positive_id"], linked["title"]),
+                    (status, positive_id, title),
+                )
+                response = await self.client.get(
+                    f"/prompt_manager/images/inspect/{name}.png",
+                    params={"root": 0, "root_scope": items[name]["root_scope"]},
+                )
+                self.assertEqual(response.status, 200)
+                library = (await response.json())["library"]
+                self.assertEqual(
+                    (library["status"], library["positive_id"], library["title"]),
+                    (linked["status"], linked["positive_id"], linked["title"]),
+                )
+        self.assertEqual(
+            (
+                items["titled"]["linked"]["category"],
+                items["titled"]["linked"]["rating"],
+            ),
+            ("Night", 5),
+        )
+
+    async def test_unverified_first_line_title_stays_out_of_inspection(self):
+        prompt = self._save_prompt("Secret first line\nrest")
+        path = self.media("plain.png")
+        self.api.db.link_image_to_prompt(prompt, str(path))
+        _, data = await self.get()
+        item = data["images"][0]
+        self.assertEqual(item["linked"]["title"], "Secret first line")
+        response = await self.client.get(
+            "/prompt_manager/images/inspect/plain.png",
+            params={"root": 0, "root_scope": item["root_scope"]},
+        )
+        body = await response.json()
+        self.assertEqual(body["library"]["status"], "linked")
+        self.assertEqual(body["library"]["positive_id"], prompt)
+        self.assertIsNone(body["library"]["title"])
+        self.assertNotIn("Secret first line", json.dumps(body))
+
+    async def test_link_summary_uses_one_query_per_page(self):
+        prompt = self._save_prompt("Paged prompt")
+        for index in range(12):
+            path = self.media(f"{index:02}.png", mtime=100 + index)
+            if index % 2:
+                self.api.db.link_image_to_prompt(prompt, str(path))
+        statements = []
+        original = self.api.db.model.get_connection
+
+        def trace_connection():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(
+            self.api.db.model, "get_connection", side_effect=trace_connection
+        ):
+            response, data = await self.get(limit=12)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(data["images"]), 12)
+        self.assertEqual(
+            sorted(item["linked"]["status"] for item in data["images"]),
+            ["linked"] * 6 + ["none"] * 6,
+        )
+        selects = [
+            query
+            for query in statements
+            if query.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        self.assertEqual(len(selects), 1, selects)
+
+    async def test_link_summary_runs_in_executor_and_survives_database_errors(self):
+        import threading
+
+        self.media("a.png")
+        event_thread = threading.get_ident()
+        threads = []
+
+        def broken(paths, allow_filename_fallback=True):
+            threads.append(threading.get_ident())
+            raise RuntimeError("database is gone")
+
+        with patch.object(self.api.db, "get_image_link_summaries", side_effect=broken):
+            response, data = await self.get()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(threads)
+        self.assertNotEqual(threads[0], event_thread)
+        self.assertEqual(data["images"][0]["linked"]["status"], "unavailable")
+        self.assertIsNone(data["images"][0]["linked"]["title"])
+        self.assertNotIn("database is gone", str(data))
 
 
 class TestWorkspaceCursorEncoding(unittest.TestCase):

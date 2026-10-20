@@ -29,14 +29,45 @@ from .inspection_service import (
 )
 
 try:
+    from ...database.library import display_title
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
 except ImportError:
+    from database.library import display_title
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
 
 
 IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
+
+
+def _unavailable_link() -> dict:
+    """A card link summary when the database could not be read."""
+    return {
+        "status": "unavailable",
+        "positive_id": None,
+        "title": None,
+        "category": None,
+        "rating": None,
+    }
+
+
+def _verified_title(saved: dict | None, title: str | None, observed: dict):
+    """The inspector's Library title, withholding unverified saved prompt text.
+
+    A stored title is always shown. A title taken from the saved positive's
+    first line is shown only when the file's own resolved positive gives the
+    same title, because a saved association never replaces file evidence.
+    """
+    if title is None or not isinstance(saved, dict):
+        return title
+    pair = saved.get("pair")
+    text = pair.get("positive_text") if isinstance(pair, dict) else saved.get("text")
+    if title != display_title((), text):
+        return title
+    side = observed.get("prompts", {}).get("positive") or {}
+    resolved = side.get("status") == "resolved"
+    return title if resolved and display_title((), side.get("text")) == title else None
 
 
 def _public_path(path):
@@ -1712,11 +1743,14 @@ class ImageRoutesMixin:
         try:
 
             def inspect() -> bytes | None:
-                saved, unavailable = None, False
+                saved, unavailable, title = None, False, None
                 try:
                     saved = self.db.get_image_prompt_info(
                         str(path), False, report_ambiguity=True
                     )
+                    if saved and saved.get("association_status") != "ambiguous":
+                        summary = self.db.get_image_link_summaries([str(path)], False)
+                        title = summary[str(path)]["title"]
                 except Exception:
                     unavailable = True
                     self.logger.warning("Saved inspection display could not be read")
@@ -1726,11 +1760,12 @@ class ImageRoutesMixin:
                         source_label=_public_path(roots[index]),
                         saved=saved,
                         library=self._inspection_library(
-                            saved, unavailable=unavailable
+                            saved, unavailable=unavailable, title=title
                         ),
                     )
                 except CurrentFileChanged:
                     return None
+                observed["library"]["title"] = _verified_title(saved, title, observed)
                 return encode_inspection_response(
                     image={
                         "root_index": index,
@@ -1763,7 +1798,10 @@ class ImageRoutesMixin:
                 {"success": False, "error": "Prompt inspection failed"}, status=500
             )
 
-    def _inspection_library(self, saved: dict | None, *, unavailable: bool) -> dict:
+    def _inspection_library(
+        self, saved: dict | None, *, unavailable: bool, title: str | None = None
+    ) -> dict:
+        """The inspector's Library facts; ``title`` is the card's display title."""
         result = {
             "status": "unavailable" if unavailable else "none",
             "scope": "saved-library",
@@ -1785,7 +1823,7 @@ class ImageRoutesMixin:
                 status="linked",
                 positive_id=pair.get("positive_prompt_id"),
                 pair_id=pair.get("id"),
-                title=pair.get("title"),
+                title=title,
                 category=pair.get("category"),
                 tags=pair.get("tags"),
                 metadata_scope="pair",
@@ -1794,6 +1832,7 @@ class ImageRoutesMixin:
             result.update(
                 status="linked",
                 positive_id=saved.get("prompt_id"),
+                title=title,
                 category=saved.get("category"),
                 tags=saved.get("tags"),
                 metadata_scope="positive",
@@ -1897,13 +1936,33 @@ class ImageRoutesMixin:
             if _in_subfolder(str(entry[0].relative_to(entry[2]).parent), subfolder)
         ]
 
-    def _format_workspace_page(self, page: list[tuple]) -> list[dict]:
+    def _workspace_link_summaries(self, paths: list[str]) -> dict[str, dict]:
+        """Card link summaries, matched exactly as the inspection route does."""
+        try:
+            return self.db.get_image_link_summaries(paths, False)
+        except Exception:
+            # The listing stays usable; cards fall back to their filenames.
+            self.logger.warning("Workspace link summaries could not be read")
+            return {}
+
+    def _format_workspace_page(
+        self, page: list[tuple], *, linked: bool = True
+    ) -> list[dict]:
+        """Workspace descriptors; ``linked`` adds each file's link summary."""
         images = self._format_output_page(page, scoped=True)
         paths = {
             (entry[3], entry[0].relative_to(entry[2]).as_posix()): entry[0]
             for entry in page
         }
+        summaries = (
+            self._workspace_link_summaries([str(path) for path in paths.values()])
+            if linked
+            else {}
+        )
         for image in images:
+            if linked:
+                key = str(paths[(image["root_index"], image["path"])])
+                image["linked"] = summaries.get(key) or _unavailable_link()
             image["width"] = None
             image["height"] = None
             if image["is_video"]:

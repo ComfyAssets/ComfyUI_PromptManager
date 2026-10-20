@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
-from .library import LibraryOperations
+from .library import LibraryOperations, display_title
 from .library_commands import LibraryCommandOperations
 from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
@@ -177,6 +177,59 @@ AND NOT EXISTS (
 )
 AND p.id NOT IN (SELECT prompt_id FROM live_hint_prompts)
 """
+
+
+# One SELECT reads the link summaries of at most this many paths: three bound
+# parameters per path stays under SQLite's historical 999-variable limit.
+LINK_SUMMARY_BATCH = 200
+# A pair link counts only when an image has exactly one distinct pair, as in
+# get_image_prompt_info; its positive, title and metadata then describe the card.
+_LINK_SUMMARY_SQL = """SELECT gi.image_path, gi.file_path, gi.prompt_id,
+       p.text, p.category, p.rating, ls.title,
+       pp.positive_prompt_id, pp.title, pt.text, pt.category, pt.rating, pls.title
+FROM generated_images gi
+JOIN prompts p ON gi.prompt_id = p.id
+LEFT JOIN prompt_library_state ls ON ls.prompt_id = p.id
+LEFT JOIN prompt_pairs pp ON pp.id = (
+    SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
+    FROM image_prompt_pairs ip WHERE ip.image_id = gi.id)
+LEFT JOIN prompts pt ON pt.id = pp.positive_prompt_id
+LEFT JOIN prompt_library_state pls ON pls.prompt_id = pp.positive_prompt_id
+WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
+_ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _like_suffix(value: object, suffix: str) -> bool:
+    """Python form of SQLite's ``value LIKE '%' || suffix``: ASCII-only case."""
+    return isinstance(value, str) and value.translate(_ASCII_FOLD).endswith(
+        suffix.translate(_ASCII_FOLD)
+    )
+
+
+def _empty_link_summary(status: str) -> Dict[str, Any]:
+    return {
+        "status": status,
+        "positive_id": None,
+        "title": None,
+        "category": None,
+        "rating": None,
+    }
+
+
+def _link_summary(row: tuple) -> Dict[str, Any]:
+    if row[7] is not None:
+        positive, text, category, rating = row[7], row[9], row[10], row[11]
+        titles = (row[8], row[12])
+    else:
+        positive, text, category, rating = row[2], row[3], row[4], row[5]
+        titles = (row[6],)
+    return {
+        "status": "linked",
+        "positive_id": positive,
+        "title": display_title(titles, text),
+        "category": category,
+        "rating": rating,
+    }
 
 
 class PromptDatabase(
@@ -2159,6 +2212,55 @@ class PromptDatabase(
                 "generation_time": row[7],
                 "parameters": row[8] if len(row) > 8 else None,
             }
+
+    def get_image_link_summaries(
+        self, paths: List[str], allow_filename_fallback: bool = True
+    ) -> Dict[str, Dict[str, Any]]:
+        """Summarize each path's linked saved positive for an image card.
+
+        Matching equals get_image_prompt_info: exact image_path or normalized
+        file_path rows win; otherwise, with the fallback, rows whose image_path
+        ends with the basename. One match is linked, several are ambiguous.
+        One SELECT reads up to LINK_SUMMARY_BATCH paths.
+        """
+        unique = list(dict.fromkeys(paths))
+        summaries: Dict[str, Dict[str, Any]] = {}
+        for start in range(0, len(unique), LINK_SUMMARY_BATCH):
+            batch = unique[start : start + LINK_SUMMARY_BATCH]
+            summaries.update(self._link_summary_batch(batch, allow_filename_fallback))
+        return summaries
+
+    def _link_summary_batch(
+        self, paths: List[str], allow_filename_fallback: bool
+    ) -> Dict[str, Dict[str, Any]]:
+        normalized = {path: normalize_image_path(path) for path in paths}
+        basenames = {path: os.path.basename(path) for path in paths}
+        marks = ",".join("?" for _ in paths)
+        params: List[Any] = [*paths, *normalized.values()]
+        fallback = ""
+        if allow_filename_fallback:
+            fallback = "".join(" OR gi.image_path LIKE ? ESCAPE '\\'" for _ in paths)
+            params.extend(f"%{escape_like(basenames[path])}" for path in paths)
+        sql = _LINK_SUMMARY_SQL.format(marks=marks, fallback=fallback)
+        with self.model.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        summaries = {}
+        for path in paths:
+            exact = [
+                row for row in rows if row[0] == path or row[1] == normalized[path]
+            ]
+            matches = exact or (
+                [row for row in rows if _like_suffix(row[0], basenames[path])]
+                if allow_filename_fallback
+                else []
+            )
+            if len(matches) == 1:
+                summaries[path] = _link_summary(matches[0])
+            else:
+                summaries[path] = _empty_link_summary(
+                    "ambiguous" if matches else "none"
+                )
+        return summaries
 
     def get_prompt_id_for_image(self, image_path: str) -> Optional[int]:
         """Return the prompt_id linked to an image, or None."""

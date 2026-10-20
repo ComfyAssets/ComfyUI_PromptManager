@@ -1432,3 +1432,151 @@ class TestImagePaging(DatabaseTestCase):
         self.assertEqual(len(second), 2)
         self.assertNotEqual({img["id"] for img in first}, {img["id"] for img in second})
         self.assertEqual(len(self.db.search_images_by_prompt("paged")), 5)
+
+
+class TestImageLinkSummaries(DatabaseTestCase):
+    """Batched card summaries follow get_image_prompt_info's matching rules."""
+
+    def _statements(self, call):
+        statements = []
+        original = self.db.model.get_connection
+
+        def traced():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        try:
+            with patch.object(self.db.model, "get_connection", side_effect=traced):
+                result = call()
+        finally:
+            original().set_trace_callback(None)
+        selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+        return result, selects
+
+    def test_summary_status_matches_image_prompt_info_for_every_rule(self):
+        owner = self._save("Owner prompt\nsecond line", category="Cat", rating=4)
+        rival = self._save("Rival prompt")
+        exact = os.path.join("out", "one", "same.png")
+        other = os.path.join("out", "two", "same.png")
+        unique = os.path.join("out", "three", "unique.png")
+        shared = os.path.join("out", "shared.png")
+        self.db.link_image_to_prompt(owner, exact)
+        self.db.link_image_to_prompt(rival, other)
+        self.db.link_image_to_prompt(owner, unique)
+        self.db.link_image_to_prompt(owner, shared)
+        self.db.link_image_to_prompt(rival, shared)
+        probes = [
+            exact,
+            os.path.join("out", "x", "..", "one", "same.png"),
+            os.path.join("elsewhere", "same.png"),
+            os.path.join("elsewhere", "unique.png"),
+            shared,
+            "missing.png",
+        ]
+        for fallback in (True, False):
+            summaries = self.db.get_image_link_summaries(probes, fallback)
+            self.assertEqual(set(summaries), set(probes))
+            for probe in probes:
+                with self.subTest(probe=probe, fallback=fallback):
+                    info = self.db.get_image_prompt_info(
+                        probe, fallback, report_ambiguity=True
+                    )
+                    summary = summaries[probe]
+                    if info is None:
+                        expected = "none"
+                    elif info.get("association_status") == "ambiguous":
+                        expected = "ambiguous"
+                    else:
+                        expected = "linked"
+                    self.assertEqual(summary["status"], expected)
+                    if expected == "linked":
+                        self.assertEqual(summary["positive_id"], info["prompt_id"])
+                    else:
+                        self.assertEqual(
+                            summary,
+                            {
+                                "status": expected,
+                                "positive_id": None,
+                                "title": None,
+                                "category": None,
+                                "rating": None,
+                            },
+                        )
+        linked = self.db.get_image_link_summaries([unique])[unique]
+        self.assertEqual(
+            linked,
+            {
+                "status": "linked",
+                "positive_id": owner,
+                "title": "Owner prompt",
+                "category": "Cat",
+                "rating": 4,
+            },
+        )
+
+    def test_summary_title_prefers_stored_title_then_first_line(self):
+        long_line = "word " * 30
+        titled = self._save("Untitled text")
+        plain = self._save(f"  {long_line}\nsecond")
+        blank = self._save("Blank title text")
+        with self.db.model.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                [(titled, "Stored title"), (blank, " \u3000 ")],
+            )
+        paths = {}
+        for name, prompt in (("titled", titled), ("plain", plain), ("blank", blank)):
+            paths[name] = os.path.join("out", f"{name}.png")
+            self.db.link_image_to_prompt(prompt, paths[name])
+        summaries = self.db.get_image_link_summaries(list(paths.values()))
+        self.assertEqual(summaries[paths["titled"]]["title"], "Stored title")
+        self.assertEqual(summaries[paths["plain"]]["title"], long_line.strip()[:80])
+        self.assertLessEqual(len(summaries[paths["plain"]]["title"]), 80)
+        self.assertEqual(summaries[paths["blank"]]["title"], "Blank title text")
+
+    def test_summary_uses_one_select_per_200_paths(self):
+        prompt = self._save("Batch")
+        paths = [os.path.join("out", f"{index}.png") for index in range(201)]
+        for path in paths[:5]:
+            self.db.link_image_to_prompt(prompt, path)
+        result, selects = self._statements(
+            lambda: self.db.get_image_link_summaries(paths[:200])
+        )
+        self.assertEqual(len(selects), 1)
+        self.assertEqual(len(result), 200)
+        self.assertEqual(
+            [result[path]["status"] for path in paths[:6]], ["linked"] * 5 + ["none"]
+        )
+        _, selects = self._statements(lambda: self.db.get_image_link_summaries(paths))
+        self.assertEqual(len(selects), 2)
+        _, selects = self._statements(lambda: self.db.get_image_link_summaries([]))
+        self.assertEqual(selects, [])
+
+    def test_windows_style_paths_normalize(self):
+        import ntpath
+
+        def windows_normalize(path):
+            return ntpath.normcase(ntpath.normpath(path))
+
+        prompt = self._save("Windows prompt")
+        stored = r"C:\ComfyUI\Output\Sub\Image.PNG"
+        with patch("database.operations.normalize_image_path", windows_normalize):
+            self.db.link_image_to_prompt(prompt, stored)
+            probes = [
+                stored,
+                r"c:\comfyui\output\SUB\image.png",
+                r"C:\ComfyUI\Output\x\..\Sub\Image.PNG",
+                "C:/ComfyUI/Output/Sub/Image.PNG",
+                r"D:\ComfyUI\Output\Sub\Other.png",
+            ]
+            summaries = self.db.get_image_link_summaries(probes, False)
+            for probe in probes:
+                with self.subTest(probe=probe):
+                    info = self.db.get_image_prompt_info(probe, False)
+                    expected = "linked" if info else "none"
+                    self.assertEqual(summaries[probe]["status"], expected)
+        self.assertEqual(
+            [summaries[probe]["status"] for probe in probes],
+            ["linked"] * 4 + ["none"],
+        )
