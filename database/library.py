@@ -21,19 +21,29 @@ _JS_TRIM = "".join(map(chr, _TRIM_CODES))
 DISPLAY_TITLE_LIMIT = 80
 
 
-def display_title(stored_titles: tuple, text: object) -> str | None:
-    """Return the first non-blank stored title, else the text's first line.
+def titled(stored_titles: tuple, text: object) -> tuple[str | None, str | None]:
+    """Return ``(title, source)``: a stored title, else the text's first line.
 
-    Blank follows JavaScript's trim, as in the Library view; the first line is
-    trimmed and cut to DISPLAY_TITLE_LIMIT characters. None when both are empty.
+    ``source`` is ``"stored"`` for the first non-blank stored title (blank as
+    in JavaScript's trim, like the Library view), ``"text"`` for the first line,
+    and None when both are empty. The first line is trimmed and, past
+    DISPLAY_TITLE_LIMIT characters, cut with an ellipsis like the Library's
+    ``title()``.
     """
     for title in stored_titles:
         if isinstance(title, str) and title.strip(_JS_TRIM):
-            return title
+            return title, "stored"
     if not isinstance(text, str):
-        return None
-    first = text.split("\n")[0].strip(_JS_TRIM)[:DISPLAY_TITLE_LIMIT]
-    return first or None
+        return None, None
+    first = text.split("\n")[0].strip(_JS_TRIM)
+    if len(first) > DISPLAY_TITLE_LIMIT:
+        first = first[:DISPLAY_TITLE_LIMIT] + "\u2026"
+    return (first, "text") if first else (None, None)
+
+
+def display_title(stored_titles: tuple, text: object) -> str | None:
+    """The Library display title of ``titled``, without its source."""
+    return titled(stored_titles, text)[0]
 
 
 _NAME = (

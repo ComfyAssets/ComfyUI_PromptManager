@@ -47,23 +47,23 @@ def _unavailable_link() -> dict:
         "status": "unavailable",
         "positive_id": None,
         "title": None,
+        "title_source": None,
         "category": None,
         "rating": None,
     }
 
 
-def _verified_title(saved: dict | None, title: str | None, observed: dict):
-    """The inspector's Library title, withholding unverified saved prompt text.
+def _verified_title(summary: dict | None, observed: dict) -> str | None:
+    """The inspector's Library title, withholding unconfirmed saved prompt text.
 
-    A stored title is always shown. A title taken from the saved positive's
-    first line is shown only when the file's own resolved positive gives the
-    same title, because a saved association never replaces file evidence.
+    A stored title is user data and always shows. A title taken from the saved
+    positive's first line shows only when the file's own resolved positive gives
+    the same title, because a saved association never replaces file evidence.
     """
-    if title is None or not isinstance(saved, dict):
-        return title
-    pair = saved.get("pair")
-    text = pair.get("positive_text") if isinstance(pair, dict) else saved.get("text")
-    if title != display_title((), text):
+    if not isinstance(summary, dict) or summary.get("status") != "linked":
+        return None
+    title = summary.get("title")
+    if summary.get("title_source") != "text":
         return title
     side = observed.get("prompts", {}).get("positive") or {}
     resolved = side.get("status") == "resolved"
@@ -1743,29 +1743,33 @@ class ImageRoutesMixin:
         try:
 
             def inspect() -> bytes | None:
-                saved, unavailable, title = None, False, None
+                saved, unavailable, summary = None, False, None
                 try:
                     saved = self.db.get_image_prompt_info(
                         str(path), False, report_ambiguity=True
                     )
-                    if saved and saved.get("association_status") != "ambiguous":
-                        summary = self.db.get_image_link_summaries([str(path)], False)
-                        title = summary[str(path)]["title"]
                 except Exception:
                     unavailable = True
                     self.logger.warning("Saved inspection display could not be read")
+                if saved and saved.get("association_status") != "ambiguous":
+                    try:
+                        summary = self.db.get_image_link_summaries([str(path)], False)
+                        summary = summary[str(path)]
+                    except Exception:
+                        # The link stays known; only its title is withheld.
+                        self.logger.warning("Inspection link title could not be read")
                 try:
                     observed = inspect_current_file(
                         path,
                         source_label=_public_path(roots[index]),
                         saved=saved,
                         library=self._inspection_library(
-                            saved, unavailable=unavailable, title=title
+                            saved, unavailable=unavailable
                         ),
                     )
                 except CurrentFileChanged:
                     return None
-                observed["library"]["title"] = _verified_title(saved, title, observed)
+                observed["library"]["title"] = _verified_title(summary, observed)
                 return encode_inspection_response(
                     image={
                         "root_index": index,
@@ -1798,10 +1802,8 @@ class ImageRoutesMixin:
                 {"success": False, "error": "Prompt inspection failed"}, status=500
             )
 
-    def _inspection_library(
-        self, saved: dict | None, *, unavailable: bool, title: str | None = None
-    ) -> dict:
-        """The inspector's Library facts; ``title`` is the card's display title."""
+    def _inspection_library(self, saved: dict | None, *, unavailable: bool) -> dict:
+        """The inspector's Library facts; the route sets the title afterwards."""
         result = {
             "status": "unavailable" if unavailable else "none",
             "scope": "saved-library",
@@ -1823,7 +1825,6 @@ class ImageRoutesMixin:
                 status="linked",
                 positive_id=pair.get("positive_prompt_id"),
                 pair_id=pair.get("id"),
-                title=title,
                 category=pair.get("category"),
                 tags=pair.get("tags"),
                 metadata_scope="pair",
@@ -1832,7 +1833,6 @@ class ImageRoutesMixin:
             result.update(
                 status="linked",
                 positive_id=saved.get("prompt_id"),
-                title=title,
                 category=saved.get("category"),
                 tags=saved.get("tags"),
                 metadata_scope="positive",

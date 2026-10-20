@@ -354,7 +354,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         db.link_image_to_prompt(second, str(files["ambiguous"]))
         return {
             "titled": ("linked", titled, "Stored library title"),
-            "plain": ("linked", plain, long_line.strip()[:80]),
+            "plain": ("linked", plain, long_line.strip()[:80] + "\u2026"),
             "pair": (
                 "linked",
                 db.get_prompt_pair(pair)["positive_prompt_id"],
@@ -379,7 +379,14 @@ class TestWorkspaceImages(ImageAPITestCase):
                 linked = items[name]["linked"]
                 self.assertEqual(
                     set(linked),
-                    {"status", "positive_id", "title", "category", "rating"},
+                    {
+                        "status",
+                        "positive_id",
+                        "title",
+                        "title_source",
+                        "category",
+                        "rating",
+                    },
                 )
                 self.assertEqual(
                     (linked["status"], linked["positive_id"], linked["title"]),
@@ -403,22 +410,66 @@ class TestWorkspaceImages(ImageAPITestCase):
             ("Night", 5),
         )
 
-    async def test_unverified_first_line_title_stays_out_of_inspection(self):
+    async def test_stored_title_shows_on_card_and_inspector_without_evidence(self):
+        # A stored title is user data: shown on both, even when it equals the
+        # first line and the file carries no prompt metadata.
+        prompt = self._save_prompt("Same words\nrest")
+        with self.api.db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (prompt, "Same words"),
+            )
+        path = self.media("stored.png")
+        self.api.db.link_image_to_prompt(prompt, str(path))
+        _, data = await self.get()
+        linked = data["images"][0]["linked"]
+        self.assertEqual(
+            (linked["title"], linked["title_source"]), ("Same words", "stored")
+        )
+        library = await self.inspected("stored.png", data["images"][0])
+        self.assertEqual(library["title"], linked["title"])
+        self.assertEqual(library["positive_id"], prompt)
+
+    @unittest.expectedFailure  # B2 gates text titles on the file's parsed positive.
+    async def test_unconfirmed_text_title_is_withheld_on_card_and_inspector(self):
         prompt = self._save_prompt("Secret first line\nrest")
         path = self.media("plain.png")
         self.api.db.link_image_to_prompt(prompt, str(path))
         _, data = await self.get()
         item = data["images"][0]
-        self.assertEqual(item["linked"]["title"], "Secret first line")
         response = await self.client.get(
             "/prompt_manager/images/inspect/plain.png",
             params={"root": 0, "root_scope": item["root_scope"]},
         )
         body = await response.json()
-        self.assertEqual(body["library"]["status"], "linked")
         self.assertEqual(body["library"]["positive_id"], prompt)
         self.assertIsNone(body["library"]["title"])
         self.assertNotIn("Secret first line", json.dumps(body))
+        self.assertIsNone(item["linked"]["title"])
+        self.assertNotIn("Secret first line", json.dumps(data))
+
+    async def test_summary_failure_keeps_inspector_link(self):
+        prompt = self._save_prompt("Readable link")
+        path = self.media("a.png")
+        self.api.db.link_image_to_prompt(prompt, str(path))
+        _, data = await self.get()
+        with patch.object(
+            self.api.db,
+            "get_image_link_summaries",
+            side_effect=RuntimeError("summary gone"),
+        ):
+            library = await self.inspected("a.png", data["images"][0])
+        self.assertEqual(library["status"], "linked")
+        self.assertEqual(library["positive_id"], prompt)
+        self.assertIsNone(library["title"])
+
+    async def inspected(self, name, item):
+        response = await self.client.get(
+            f"/prompt_manager/images/inspect/{name}",
+            params={"root": 0, "root_scope": item["root_scope"]},
+        )
+        self.assertEqual(response.status, 200)
+        return (await response.json())["library"]
 
     async def test_link_summary_uses_one_query_per_page(self):
         prompt = self._save_prompt("Paged prompt")
@@ -469,6 +520,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertNotEqual(threads[0], event_thread)
         self.assertEqual(data["images"][0]["linked"]["status"], "unavailable")
         self.assertIsNone(data["images"][0]["linked"]["title"])
+        self.assertIsNone(data["images"][0]["linked"]["title_source"])
         self.assertNotIn("database is gone", str(data))
 
 

@@ -1499,6 +1499,7 @@ class TestImageLinkSummaries(DatabaseTestCase):
                                 "status": expected,
                                 "positive_id": None,
                                 "title": None,
+                                "title_source": None,
                                 "category": None,
                                 "rating": None,
                             },
@@ -1510,6 +1511,7 @@ class TestImageLinkSummaries(DatabaseTestCase):
                 "status": "linked",
                 "positive_id": owner,
                 "title": "Owner prompt",
+                "title_source": "text",
                 "category": "Cat",
                 "rating": 4,
             },
@@ -1530,10 +1532,24 @@ class TestImageLinkSummaries(DatabaseTestCase):
             paths[name] = os.path.join("out", f"{name}.png")
             self.db.link_image_to_prompt(prompt, paths[name])
         summaries = self.db.get_image_link_summaries(list(paths.values()))
-        self.assertEqual(summaries[paths["titled"]]["title"], "Stored title")
-        self.assertEqual(summaries[paths["plain"]]["title"], long_line.strip()[:80])
-        self.assertLessEqual(len(summaries[paths["plain"]]["title"]), 80)
-        self.assertEqual(summaries[paths["blank"]]["title"], "Blank title text")
+        sources = {
+            name: (summaries[path]["title"], summaries[path]["title_source"])
+            for name, path in paths.items()
+        }
+        self.assertEqual(sources["titled"], ("Stored title", "stored"))
+        # Cut like the Library's title(): 80 characters, then an ellipsis.
+        self.assertEqual(sources["plain"], (long_line.strip()[:80] + "\u2026", "text"))
+        self.assertEqual(sources["blank"], ("Blank title text", "text"))
+
+    def test_display_title_matches_library_title_cut(self):
+        from database.library import display_title
+
+        exact = "x" * 80
+        self.assertEqual(display_title((), exact), exact)
+        self.assertEqual(display_title((), exact + "y"), exact + "\u2026")
+        self.assertEqual(display_title((), "  short  \nnext"), "short")
+        self.assertIsNone(display_title((" ",), " \n"))
+        self.assertEqual(display_title(("Kept  ",), "text"), "Kept  ")
 
     def test_summary_uses_one_select_per_200_paths(self):
         prompt = self._save("Batch")

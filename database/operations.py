@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
-from .library import LibraryOperations, display_title
+from .library import LibraryOperations, titled
 from .library_commands import LibraryCommandOperations
 from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
@@ -211,6 +211,7 @@ def _empty_link_summary(status: str) -> Dict[str, Any]:
         "status": status,
         "positive_id": None,
         "title": None,
+        "title_source": None,
         "category": None,
         "rating": None,
     }
@@ -223,10 +224,12 @@ def _link_summary(row: tuple) -> Dict[str, Any]:
     else:
         positive, text, category, rating = row[2], row[3], row[4], row[5]
         titles = (row[6],)
+    title, source = titled(titles, text)
     return {
         "status": "linked",
         "positive_id": positive,
-        "title": display_title(titles, text),
+        "title": title,
+        "title_source": source,
         "category": category,
         "rating": rating,
     }
