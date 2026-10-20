@@ -43,8 +43,8 @@ test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);
 test('tags route renders the concept composition without a legacy handoff',async({page})=>{
     await page.goto(route);
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Tags & categories');
-    await expect(main(page).locator('.workspace-heading-copy > p')).toHaveText('Organize once. Reuse everywhere.');
-    const actions=main(page).locator('.workspace-heading .heading-actions button');
+    await expect(main(page).locator(':scope > .heading p.muted')).toHaveText('Organize once. Reuse everywhere.');
+    const actions=main(page).locator(':scope > .heading > .heading-actions button');
     await expect(actions).toHaveText(['+ Create tag']);
     await expect(actions.first()).not.toHaveClass(/ca-primary/);
     await expect(main(page).getByRole('button',{name:'Auto-tag images'})).toHaveCount(0);
@@ -89,7 +89,7 @@ test('category Browse sets only the category constraint',async({page})=>{
     await page.goto('/prompt_manager/workspace#/library');
     const search=page.getByRole('searchbox',{name:'Search prompts',exact:true});
     await search.fill('observatory');await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Tags & categories',exact:true}).click();
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Tags & categories(?:\s*[\d,]+)?$/}).click();
     const row=categoryRow(page,'Landscapes');await expect(row.locator('p')).toHaveText('3 positive prompts');
     await row.getByRole('button',{name:'Browse',exact:true}).click();
     await expectLibrary(page,{category:'Landscapes',count:3});
@@ -127,7 +127,8 @@ test('long vocabularies append and Load more is keyboard reachable',async({page,
 
 test('read failure shows inline error with Retry and no zero counts',async({page})=>{
     let failures=0;
-    await page.route('**/prompt_manager/vocabulary/tags?*',route=>{
+    // Tag list pages only: the sidebar's Tags count is its own `limit=1` read.
+    await page.route(url=>url.pathname==='/prompt_manager/vocabulary/tags' && url.searchParams.get('limit')!=='1',route=>{
         if(failures++) return route.continue();
         return route.fulfill({status:500,json:{success:false,error:'Database is unavailable'}});
     });
@@ -149,7 +150,7 @@ test('breadcrumb and document title are Tags',async({page})=>{
     await page.goto(route);
     await expect(page.locator('#workspace-breadcrumb')).toHaveText('Tags');
     await expect(page).toHaveTitle('Tags · Prompt Manager');
-    await expect(page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Tags & categories',exact:true})).toHaveAttribute('aria-current','page');
+    await expect(page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Tags & categories(?:\s*[\d,]+)?$/})).toHaveAttribute('aria-current','page');
     await page.reload();
     await expect(page.locator('#workspace-breadcrumb')).toHaveText('Tags');
     await page.goto('/prompt_manager/workspace#/library');
@@ -161,7 +162,8 @@ test('route disposal aborts requests and removes observers',async({page})=>{
     await page.addInitScript(()=>{
         window.__vocabularySignals=[];window.__vocabularyObservers=[];
         const fetch=window.fetch;
-        window.fetch=(input,init={})=>{if(String(input).includes('/vocabulary/') && init.signal) window.__vocabularySignals.push(init.signal);return fetch(input,init);};
+        // The page's own reads; the sidebar's `limit=1` Tags count belongs to the shell.
+        window.fetch=(input,init={})=>{if(String(input).includes('/vocabulary/') && !/[?&]limit=1(?:&|$)/.test(String(input)) && init.signal) window.__vocabularySignals.push(init.signal);return fetch(input,init);};
         const Observer=window.IntersectionObserver;
         window.IntersectionObserver=class extends Observer {
             constructor(...args) {super(...args);this.record={targets:[],disconnected:false};window.__vocabularyObservers.push(this.record);}
@@ -175,7 +177,7 @@ test('route disposal aborts requests and removes observers',async({page})=>{
     await expect.poll(()=>page.evaluate(()=>window.__vocabularySignals.length)).toBe(2);
     expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>name.includes('vocabulary-continuation'))).length)).toBe(2);
     await expect(main(page).getByText('Loading…',{exact:true})).toHaveCount(2);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Prompt library',exact:true}).click();
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Prompt library(?:\s*[\d,]+)?$/}).click();
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Prompt library');
     expect(await page.evaluate(()=>window.__vocabularySignals.map(signal=>signal.aborted))).toEqual([true,true]);
     expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>name.includes('vocabulary-continuation'))).map(item=>item.disconnected))).toEqual([true,true]);
@@ -193,10 +195,10 @@ test('390px layout stacks without horizontal page scroll; table scrolls locally'
     expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
     const layout=await main(page).evaluate(node=>{
         const grid=node.querySelector('.two-col'),[left,right]=grid.querySelectorAll(':scope > .surface'),wrap=node.querySelector('.table-wrap');
-        const heading=node.querySelector('.workspace-heading'),operation=node.querySelector('.operation');
+        const heading=node.querySelector(':scope > .heading'),operation=node.querySelector('.operation');
         return {tracks:getComputedStyle(grid).gridTemplateColumns.split(' ').length,stacked:right.getBoundingClientRect().top>=left.getBoundingClientRect().bottom,
             overflow:getComputedStyle(wrap).overflowX,heading:getComputedStyle(heading).flexDirection,operation:getComputedStyle(operation).flexDirection,
-            actions:node.querySelector('.workspace-heading .heading-actions').getBoundingClientRect().width===heading.getBoundingClientRect().width};
+            actions:node.querySelector(':scope > .heading > .heading-actions').getBoundingClientRect().width===heading.getBoundingClientRect().width};
     });
     expect(layout).toEqual({tracks:1,stacked:true,overflow:'auto',heading:'column',operation:'column',actions:true});
 });
@@ -482,7 +484,8 @@ test('lost response is outcome-unknown',async({page,request})=>{
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
 });
 
-const nav=(page,name)=>page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name,exact:true});
+// Concept nav links end in their real `.nav-count` once it loads.
+const nav=(page,name)=>page.locator('aside.sidebar nav').getByRole('link',{name:new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\s*[\\d,]+)?$`)});
 const chips=(page,name)=>main(page).locator('article[data-prompt-id] .library-chip').filter({hasText:new RegExp(`^${name}$`)});
 /** Visit the Library so its shelf is cached, then open Rename on blue_hour and start a rename whose PATCH is held. */
 async function heldRename(page) {
@@ -666,10 +669,10 @@ async function openConceptTags(page,theme,motion) {
 async function openProductionTags(page,theme,motion) {
     await page.emulateMedia({reducedMotion:motion});
     await page.goto('about:blank');await page.goto(route);
-    await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     await expect(rows(page)).toHaveCount(manifest.tags.length);await expect(categoryRow(page,'Landscapes')).toHaveCount(1);
 }
-const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf,production);
+const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf);
 /** Breadcrumb, document title (D7: "Tags", only the concept suffix differs) and the keyboard focus ring on a row action. */
 async function chromeOf(page,production) {
     const scope=page.locator(production?'#workspace-main':'#main');
@@ -790,4 +793,30 @@ test('mutation check: the comparison reports a changed surface padding and a cha
     expect(dialogPaths).toContain('actions.buttons.length');
     expect(dialogPaths).toContain('fields.0.control.color');
     await page.keyboard.press('Escape');
+});
+
+// Task A2: the workspace loads the verbatim concept stylesheet as its base and one overlay last; the screen and its
+// dialogs must stay equal to the concept with the retired vocabulary and editor sheets gone.
+const CONCEPT_BASE=['js/shared/toolkit/controls.css','lib/viewerjs/viewer.min.css','js/workspace/concept.css',
+    'js/workspace/images.css','js/workspace/library.css','js/workspace/inspector.css','js/workspace/workspace.css'];
+const loadedSheets=page=>page.evaluate(()=>[...document.styleSheets].filter(sheet=>sheet.href).map(sheet=>new URL(sheet.href).pathname.replace(/^\/prompt_manager\//,'')));
+for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`concept base keeps the tags screen and editor dialogs equal to the concept ${width} ${theme}`,async({page})=>{
+    await page.setViewportSize({width,height});
+    const donors=await conceptDonors(page,theme);
+    // Park the pointer: donor clicks leave it over a heading or row button, and a hover background is not compared.
+    await openConceptTags(page,theme,'no-preference');await page.mouse.move(0,0);const reference=await pageOf(page,false);
+    const dialogs={};
+    for(const mode of Object.keys(conceptDialogs)) {
+        await openConceptTags(page,theme,'no-preference');await conceptDialogs[mode](page);
+        await expect(page.locator('#modal')).toBeVisible();dialogs[mode]=await page.locator('#modal').evaluate(inventoryOf);
+    }
+    await openProductionTags(page,theme,'no-preference');await page.mouse.move(0,0);
+    expect(await loadedSheets(page)).toEqual(CONCEPT_BASE);
+    const {diff,extra}=comparePage(reference,await pageOf(page,true));
+    expect(diff).toEqual([]);expect(extra).toEqual(fixtureOnly());
+    for(const mode of Object.keys(productionDialogs)) {
+        const box=await productionDialogs[mode](page);
+        expect(diffInventory(mapVocabularyDialog(mode,dialogs[mode],donors),await box.evaluate(inventoryOf)),`${mode} dialog`).toEqual([]);
+        await page.keyboard.press('Escape');await expect(box).toHaveCount(0);
+    }
 });

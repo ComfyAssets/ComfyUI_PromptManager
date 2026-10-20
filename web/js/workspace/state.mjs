@@ -42,6 +42,41 @@ export function summarizeStats(stats) {
         });
 }
 
+// The sidebar's real counts (D27): one bounded `limit=1` read each, whose `total` is the count.
+const NAV_COUNT_SOURCES = Object.freeze([
+    ['images', '/prompt_manager/images/output?mode=workspace&limit=1'],
+    ['library', '/prompt_manager/library?limit=1'],
+    ['tags', '/prompt_manager/vocabulary/tags?limit=1'],
+]);
+
+/** Route id -> count for the WORKSPACE links; null when a page is missing or its total is not a count. */
+export function summarizeNavCounts(pages = {}) {
+    return new Map(NAV_COUNT_SOURCES.map(([id]) => {
+        const total = pages?.[id]?.total;
+        return [id, Number.isSafeInteger(total) && total >= 0 ? total : null];
+    }));
+}
+
+/**
+ * Read the three counts; a failed read yields null for its route only. `onCount(id, count)` runs as each read
+ * settles, so a slow listing (the Images output scan) never holds back the cheap Library and Tags counts.
+ */
+/** The WORKSPACE routes that carry a count. */
+export const NAV_COUNT_ROUTES = Object.freeze(NAV_COUNT_SOURCES.map(([id]) => id));
+
+/** The counts a confirmed Library or vocabulary write can change; the Images listing cannot. */
+export const LIBRARY_WRITE_COUNTS = Object.freeze(['library', 'tags']);
+
+/** Read the given WORKSPACE counts (all by default), reporting each as its own read settles. */
+export async function loadNavCounts(api, signal, onCount = () => {}, ids = NAV_COUNT_ROUTES) {
+    const pages = {};
+    await Promise.all(NAV_COUNT_SOURCES.filter(([id]) => ids.includes(id)).map(async ([id, url]) => {
+        try { pages[id] = await api.get(url, { signal }); } catch { pages[id] = undefined; }
+        onCount(id, summarizeNavCounts(pages).get(id));
+    }));
+    return new Map([...summarizeNavCounts(pages)].filter(([id]) => ids.includes(id)));
+}
+
 export function mountRouter(win, onRoute) {
     let current;
     const update = () => {

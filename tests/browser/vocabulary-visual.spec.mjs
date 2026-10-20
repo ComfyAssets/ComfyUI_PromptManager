@@ -19,7 +19,7 @@ const categoryOperation=(page,name)=>main(page).locator('.operation').filter({ha
 async function seed(request,data={}) {const response=await request.post('/__test__/vocabulary/reset',{data});await expect(response).toBeOK();return response.json();}
 async function open(page,theme,count) {
     await page.goto('about:blank');await page.goto(route);
-    await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     if(count!==undefined)await expect(rows(page)).toHaveCount(count);
 }
 async function openDialog(page,trigger) {await trigger.click();await expect(dialog(page)).toBeVisible();return dialog(page);}

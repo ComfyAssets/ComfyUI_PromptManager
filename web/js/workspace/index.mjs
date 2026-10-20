@@ -1,11 +1,14 @@
 import '../api-client.js';
-import { createButton, createField, createScope, createSelect } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, isHandoff } from './state.mjs';
+import { createButton, createScope } from '../shared/toolkit/core.js';
+import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts,
+    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages } from './images.mjs';
-import { mountLibrary, mountNewPromptAction } from './library.mjs';
+import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
+import { bindCanvasLink, canvasHref } from './topbar.mjs';
+import { renderHeading } from './heading.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -26,61 +29,80 @@ function mountWorkspace() {
     const scope = createScope();
     const api = createApiClient();
     const main = document.getElementById('workspace-main');
-    const nav = document.querySelector('nav[aria-label="Workspace"]');
-    const appearance = document.getElementById('appearance-control');
+    const primaryNav = document.getElementById('primary-nav');
+    const systemNav = document.getElementById('system-nav');
     scope.listen(document.querySelector('.skip'), 'click', event => {
         event.preventDefault();
         main.focus();
     });
+    // D4: the concept's Theme select; "System" keeps following ComfyUI, then the OS.
     const theme = mountWorkspaceTheme({ root: document.body, scope });
-    const preference = createSelect([['follow', 'Follow ComfyUI'], ['light', 'Light'], ['dark', 'Dark']], '');
+    const preference = document.getElementById('theme');
     preference.value = theme.preference;
-    const appearanceField = createField('Appearance', preference, 'workspace-appearance');
-    appearanceField.classList.add('workspace-appearance');
-    appearance.replaceChildren(appearanceField);
     scope.listen(preference, 'change', () => theme.setPreference(preference.value));
-    const icons = { images: 'images', library: 'library', tags: 'tags', inspect: 'upload', overview: 'overview', system: 'settings' };
-    const groups = [['primary', 'WORKSPACE', ['images', 'library', 'tags', 'inspect']], ['tools', 'TOOLS', ['overview', 'system']]];
-    nav.replaceChildren(...groups.map(([name, label, ids]) => {
-        const group = element('div', undefined, `workspace-nav-${name}`);
-        group.append(element('p', label, 'sidebar-label'));
-        for (const id of ids) {
-            const route = routes.find(item => item.id === id);
-            const link = element('a');
-            link.append(createWorkspaceIcon(icons[id]), element('span', route.label));
-            link.href = `#/${route.id}`;
-            link.dataset.route = route.id;
-            group.append(link);
-        }
-        return group;
+    // D6: ComfyUI ↗ opens the canvas; on Images with a resolved selection it sends that pair (D5: no Activity).
+    let images = null;
+    scope.cleanup(bindCanvasLink(document.querySelector('.topbar .canvas-link'), {
+        href: canvasHref(resolveUrl, window.location.pathname),
+        getSelectedPair: () => images?.selectedPair?.() ?? null,
+        sender: {open: (roles, trigger) => images?.sender.open(roles, trigger)},
     }));
+    // The concept's nav(): icon, label text, then a `.nav-count` only for a loaded real count.
+    const navLinks = ids => ids.map(([id, icon]) => {
+        const route = routes.find(item => item.id === id);
+        const link = element('a');
+        link.append(createWorkspaceIcon(icon), document.createTextNode(route.label));
+        link.href = `#/${route.id}`;
+        link.dataset.route = route.id;
+        return link;
+    });
+    primaryNav.replaceChildren(...navLinks([['images', 'images'], ['library', 'library'], ['tags', 'tags'], ['inspect', 'upload']]));
+    // D28: System, then the production Overview hub, in the concept's tools-and-system group.
+    systemNav.replaceChildren(...navLinks([['system', 'settings'], ['overview', 'overview']]));
+    const sidebar = document.querySelector('aside.sidebar');
+    // One read per count, so a write that refreshes Library and Tags never supersedes an Images read in flight.
+    const countRequests = new Map();
+    function refreshCounts(ids) {
+        for (const id of ids) {
+            countRequests.get(id)?.abort();
+            const request = new AbortController();
+            countRequests.set(id, request);
+            // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
+            loadNavCounts(api, request.signal, (_, count) => {
+                if (request.signal.aborted) return;
+                const link = primaryNav.querySelector(`[data-route="${id}"]`);
+                link?.querySelector('.nav-count')?.remove();
+                if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+            }, [id]);
+        }
+    }
+    scope.cleanup(() => { for (const request of countRequests.values()) request.abort(); });
+    // A confirmed Library or vocabulary write cannot change the Images count, so only Library and Tags are re-read.
+    scope.cleanup(onLibraryWrite(() => refreshCounts(LIBRARY_WRITE_COUNTS)));
+    refreshCounts(NAV_COUNT_ROUTES);
     let viewScope;
     let firstRender = true;
     scope.cleanup(() => viewScope?.dispose());
 
     function render(route) {
         viewScope?.dispose();
+        images = null;
         viewScope = createScope();
         const view = viewScope;
-        for (const link of nav.querySelectorAll('[data-route]')) {
+        for (const link of sidebar.querySelectorAll('nav [data-route]')) {
             if (link.dataset.route === route.id) link.setAttribute('aria-current', 'page');
             else link.removeAttribute('aria-current');
         }
         document.title = `${routeTitle(route)} · Prompt Manager`;
-        const heading = element('h1', route.label);
-        // Focus target after a save, as the concept's page title.
-        heading.tabIndex = -1;
-        const headingCopy = element('div', undefined, 'workspace-heading-copy');
-        headingCopy.append(heading);
-        const headingRegion = element('header', undefined, 'workspace-heading');
-        headingRegion.append(headingCopy);
-        main.replaceChildren(headingRegion);
-        if (!firstRender) main.focus();
+        // The concept's heading(); each view fills its description and actions.
+        // The concept focuses its page title on a hashchange navigation (app.js 1168); the skip link focuses `main`.
+        const { description, h1 } = renderHeading(main, { title: route.label });
+        if (!firstRender) h1.focus();
         firstRender = false;
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
         if (route.id === 'images') {
             mountNewPromptAction(main, api, view);
-            mountImages(main, api, view);
+            images = mountImages(main, api, view);
             return;
         }
         if (route.id === 'library') {
@@ -92,24 +114,24 @@ function mountWorkspace() {
             return;
         }
         if (isHandoff(route)) {
-            headingCopy.append(element('p', route.description, 'intro'));
-            const panel = element('section', undefined, 'panel handoff');
+            description.textContent = route.description;
+            const panel = element('section', undefined, 'surface handoff');
             panel.append(element('h2', 'Your current tools are ready'),
                 element('p', 'This workspace is being introduced in stages. Continue in the existing tool with your saved data.'),
                 legacyLink(route));
             main.append(panel);
             return;
         }
-        headingCopy.append(element('p', 'A home for your prompts, images and creative history.', 'intro'));
+        description.textContent = 'A home for your prompts, images and creative history.';
         const stats = element('section', undefined, 'overview-stats');
         stats.setAttribute('aria-label', 'Library statistics');
         main.append(stats);
-        const tools = element('section', undefined, 'panel');
+        const tools = element('section', undefined, 'surface');
         tools.append(element('h2', 'Continue creating'), element('p', 'Your existing tools remain available while the new workspaces take shape.'));
         const cards = element('div', undefined, 'tool-grid');
         for (const target of routes.filter(item => item.href)) {
             const card = element('article', undefined, 'tool-card');
-            card.append(element('h3', target.label), element('p', target.description), legacyLink(target));
+            card.append(element('h3', target.label), element('p', target.description, 'small'), legacyLink(target));
             cards.append(card);
         }
         tools.append(cards);
@@ -124,7 +146,7 @@ function mountWorkspace() {
                 const values = summarizeStats(result.stats);
                 const list = element('dl', undefined, 'stat-grid');
                 for (const [label, count] of values) {
-                    const stat = element('div', undefined, 'panel stat');
+                    const stat = element('div', undefined, 'stat');
                     stat.append(element('dt', label), element('dd', count.toLocaleString()));
                     list.append(stat);
                 }

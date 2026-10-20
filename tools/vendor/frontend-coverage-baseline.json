@@ -161,6 +161,12 @@
     "functions": 88,
     "statements": 95
   },
+  "workspace/heading.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/history-media.mjs": {
     "lines": 98,
     "branches": 86,
@@ -205,7 +211,7 @@
   },
   "workspace/index.mjs": {
     "lines": 98,
-    "branches": 95,
+    "branches": 96,
     "functions": 98,
     "statements": 98
   },
@@ -291,6 +297,12 @@
     "lines": 98,
     "branches": 93,
     "functions": 98,
+    "statements": 98
+  },
+  "workspace/topbar.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 83,
     "statements": 98
   },
   "workspace/viewer-state.mjs": {

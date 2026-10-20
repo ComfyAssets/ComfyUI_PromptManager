@@ -305,6 +305,93 @@ Use the disposable fixture and managed-host prerequisites above. A maintainer
 live check needs a ComfyUI restart after adding the Python route, then opening
 `/prompt_manager/workspace`; the mockup preview server is a separate design tool.
 
+### Concept shell and comparison method (#249)
+
+**CSS base and drift check.** `web/js/workspace/concept.css` is a byte-identical copy
+of the approved concept's `docs/concepts/workspace/style.css`. Never edit the copy;
+it is only rewritten from the concept with `npm run --prefix tools/vendor sync:concept`.
+`npm run --prefix tools/vendor check` runs `sync-concept-css.mjs --check`, which fails
+on a missing copy or names the first differing byte. `workspace.html` loads, in order,
+the toolkit controls, Viewer.js, `concept.css`, the page stylesheets that their own
+PRs retire, and the production overlay `workspace.css` last.
+`tests/vendor/concept-css.test.mjs` asserts that order, the drift check, and that no
+other page or canvas script loads workspace CSS.
+
+**Overlay decision-marker lint.** `lintOverlay` in `tools/vendor/sync-concept-css.mjs`
+fails any `workspace.css` rule whose selector is also a concept selector unless the
+rule carries a `/* D<n> */` comment, before its selector or inside its block. The
+D-number must be one of this spec's (#249): a comment that cites any other issue, such
+as `D5 (#245)`, is that issue's ruling and is not a marker, so write `#245 decision 5`
+for those. The lint test fails if `workspace.css` is missing. The match is by exact
+selector, so a narrower selector over a concept rule (for example
+`.ca-tools dialog.prompt-sender`) passes the lint. Such rules, and the page-stylesheet
+leftovers such as `library.css` `.row-actions`, name the PR that retires them, by
+convention.
+
+The lint covers `workspace.css` only. The page stylesheets that load before it
+(`images.css`, `library.css`, `inspector.css`) are not linted yet, and `images.css`
+still has unmarked concept-selector overrides (`.image-grid`, `.prompt-text`,
+`.prompt-actions`, `.ca-tools .prompt-actions button`). PRs C and D retire those
+sheets: each one runs `lintOverlay` over every page sheet it keeps, and adds that
+sheet to the real-file lint test.
+
+**Comparison method.** Production must equal the concept except for the recorded
+deviations in the #249 design (spec §8, D-numbers). It is never compared against
+blessed production screenshots.
+- The fixture is `tests/browser/workspace_concept_fixture.py`, reset through
+  `POST /__test__/concept/reset`. It holds the concept's six prompts and pairs, and
+  24 PNGs with real links, runs and the concept's inspector facts. The sidebar counts
+  are therefore the concept's own: 24, 6 and 15.
+- The shared inventory is `tests/browser/concept-inventory.mjs`. One self-contained
+  in-page measurer runs the same concept selectors in the immutable concept
+  (`/__test__/canonical/workspace`) and in production. An absent element becomes
+  `null`, so the diff names its path (for example `chrome.breadcrumbs`) instead of
+  failing the measurement.
+- Each page's `map<Page>Concept(reference)` applies only the recorded deviations, each
+  commented with its D-number. `diffInventory` must then report nothing.
+- Sizes, offsets and heights that follow from a removed element are derived from the
+  concept's own measurements, never copied from production.
+- `mutate(page, {css, remove})` appends a stylesheet and detaches elements, and returns
+  an undo. Each comparison has a mutation check proving it fails. For the shell, a
+  `.sidebar nav a { min-height: 30px }` rule must fail at `chrome.navs.0.rows.0.minHeight`
+  and `.height`, and removing `.breadcrumbs` must fail at `chrome.breadcrumbs`.
+- Paired concept/production captures are attached as test artifacts. There are no PNG
+  baselines.
+
+`tests/browser/shell-concept.spec.mjs` compares the shell: the sidebar, topbar, page
+heading and footer, at 1600x1100 and 390x844, in dark and light, under normal and
+reduced motion, on Images, Prompt library and Tags. The heading is compared in full on
+Tags; on Images and Library only its frame and h1 are compared, because their copy and
+actions belong to their own PRs. The spec also compares the hover state of the first
+non-current nav row, the Theme select and the ComfyUI link, and the keyboard rings of
+the first nav link and heading button.
+
+Recorded shell deviations:
+- **D4**: a "Theme" select with Dark, Light and System. System follows the ComfyUI
+  palette, then the OS.
+- **D5**: no Activity button or Activity row until an activity center exists.
+- **D28**: no SAVED VIEWS or COLLECTIONS, and no Design review. The bottom nav is
+  System plus the production Overview hub (its own outline home glyph, not the concept's
+  `activity` pulse, and no count).
+  The connection reads "Your library, on your server" with a neutral muted dot.
+- **D29**: no prototype copy. There is no "Interactive concept" badge and no
+  "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
+  library.", and the title has no " concept" suffix.
+- **D31**: at `max-width: 950px` the overlay caps the one-column shell at
+  `minmax(0, 1fr)`, so extreme zoom cannot widen it to the sidebar's min-content.
+- **#245 D2**: no "Auto-tag images" on the Tags heading until the image-annotation
+  slice.
+- **Brand name**: not a deviation. The brand link's accessible name matches the
+  concept's, mark included, because production's `.brand-mark` is not `aria-hidden`
+  either. The inventory compares `brand.name` and `brand.mark.hidden`.
+
+```sh
+npm run --prefix tools/vendor check
+npm test --prefix tools/vendor
+npm run --prefix tools/vendor test:workflows -- shell-concept.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+```
+
 ## Prompt sending and cross-pack compatibility
 
 `tests/js/prompt-bridge-contracts.test.js` runs the Toolkit's shared protocol

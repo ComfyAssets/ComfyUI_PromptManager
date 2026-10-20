@@ -22,7 +22,7 @@ test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);
 
 async function mountEditor(page,theme) {
     await page.goto(`${workspace}#/overview`);await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
-    if(theme)await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    if(theme)await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     await page.evaluate(async()=>{
         const trigger=document.createElement('button');trigger.type='button';trigger.id='editor-trigger';trigger.textContent='Open editor';document.body.append(trigger);
         window.editorEvents={committed:[],reconciled:[]};
@@ -433,7 +433,7 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
 
 // Real entry actions: Library, Images and prompt history headings, and the Negative variants panel.
 const historyRegion=page=>page.getByRole('region',{name:'Prompt history',exact:true});
-const headingActions=page=>page.locator('#workspace-main .workspace-heading .heading-actions');
+const headingActions=page=>page.locator('#workspace-main > .heading > .heading-actions');
 const variantsPanel=page=>page.getByRole('region',{name:'Saved negative variants',exact:true});
 const savedTexts=page=>historyRegion(page).getByRole('region',{name:'Saved prompt texts',exact:true});
 const toast=page=>page.locator('#workspace-toast');
@@ -865,4 +865,26 @@ test('long and error states retain footer focus and reflow',async({page})=>{
     expect(page.writes.filter(write=>write.method==='POST')).toHaveLength(1);
     await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+});
+
+// Task A2: the editor dialogs keep matching the concept on the concept base stylesheet, with library-editor.css retired.
+const CONCEPT_BASE=['js/shared/toolkit/controls.css','lib/viewerjs/viewer.min.css','js/workspace/concept.css',
+    'js/workspace/images.css','js/workspace/library.css','js/workspace/inspector.css','js/workspace/workspace.css'];
+for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`concept base keeps the tags screen and editor dialogs equal to the concept ${width} ${theme}`,async({page})=>{
+    await page.setViewportSize({width,height});const f=page.fixture;const references={};
+    for(const mode of Object.keys(conceptModes)) {
+        const [hash,openMode]=conceptModes[mode];
+        await page.goto('about:blank');await page.goto(`/__test__/canonical/workspace#${hash}`);
+        await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);await openMode(page);await expect(page.locator('#modal')).toBeVisible();
+        if(mode==='revision')await page.locator('#modal-close').focus();
+        references[mode]=mapConcept(await page.locator('#modal').evaluate(inventoryOf));
+    }
+    await mountEditor(page,theme);
+    expect(await page.evaluate(()=>[...document.styleSheets].filter(sheet=>sheet.href).map(sheet=>new URL(sheet.href).pathname.replace(/^\/prompt_manager\//,'')))).toEqual(CONCEPT_BASE);
+    const options={new:{mode:'new'},metadata:{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id},revision:{mode:'revision',positiveId:f.positive_id,pairId:f.pair_id},negative:{mode:'negative',positiveId:f.positive_id}};
+    for(const mode of Object.keys(conceptModes)) {
+        const dialog=await openEditor(page,options[mode]);await ready(dialog);
+        expect(diffInventory(references[mode],await dialog.evaluate(inventoryOf)),`${mode} dialog`).toEqual([]);
+        await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
+    }
 });

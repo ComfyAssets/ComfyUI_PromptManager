@@ -8,14 +8,14 @@ import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/i
 test.use({ locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
 const workspace = '/prompt_manager/workspace';
 const primary = ['images', 'library', 'tags', 'inspect'];
-const tools = ['overview', 'system'];
+const tools = ['system', 'overview'];
 
 async function noOverflow(page) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
 }
 async function groupedNavigation(page) {
-    for (const [group, routes] of [['primary', primary], ['tools', tools]]) {
-        const region = page.locator(`.workspace-nav-${group}`);
+    for (const [group, routes] of [['primary', primary], ['system', tools]]) {
+        const region = page.locator(`#${group}-nav`);
         await expect(region).toHaveCount(1);
         expect(await region.locator('[data-route]').evaluateAll(nodes => nodes.map(node => node.dataset.route))).toEqual(routes);
     }
@@ -29,7 +29,7 @@ async function attachEvidence(page, testInfo, name, fullPage = true) {
     const screenshotPath = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.workspace-heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.image-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
         const node = document.querySelector(selector);
         if (!node) return [selector, null];
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
@@ -92,7 +92,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
 
         const reset = await request.post('/__test__/reset', { data: { chronological_history: true } });await expect(reset).toBeOK();const fixture = await reset.json();
         await page.goto(`${workspace}#/library/${fixture.canonical_id}`);
-        await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption(theme);
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
         const details = await (await request.get(`/prompt_manager/library/${fixture.canonical_id}`)).json();
         const index = details.variants.findIndex(variant => variant.id === fixture.canonical_pair);
         const choice = page.getByRole('button', { name: `Select negative variant ${index + 1}`, exact: true });
@@ -104,7 +104,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
         // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
-        await expect(page.locator('.workspace-heading button.send')).toBeEnabled();
+        await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
         await expect(page.locator('.library-shared-gallery article[data-image-key]')).toHaveCount(2);
         await page.locator('.library-shared-gallery .image-open').first().click();
         await expect(page.getByRole('region', { name: 'Image details', exact: true })).toContainText('canonical-alt.png');
@@ -197,26 +197,26 @@ test('shell matches approved stable geometry in both themes', async ({ page, req
         for (const route of ['images', 'library']) {
             await page.goto(`${workspace}#/${route}`);
             if (width === 1600) await expect(page.locator('.sidebar')).toHaveCSS('width', '218px');
-            await expect(page.locator('.workspace-heading > .workspace-heading-copy > h1')).toBeVisible();
+            await expect(page.locator('#workspace-main > .heading > div > h1#page-title')).toBeVisible();
             await groupedNavigation(page);
             await expect(page.locator(route === 'images' ? 'article[data-image-key]' : 'article[data-prompt-id]').first()).toBeVisible();
             await expect(page.locator('.brand')).toHaveAttribute('href', '#/images');
             await expect(page.locator('#workspace-main > .eyebrow')).toHaveCount(0);
             for (const [theme, active] of [['dark', 'rgb(20, 54, 77)'], ['light', 'rgb(228, 241, 251)']]) {
-                await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption(theme);
+                await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
                 await expect(page.locator('nav [aria-current="page"]')).toHaveCSS('background-color', active);
                 await expect(page.locator('h1')).toHaveCSS('font-weight', '620');
                 await expect(page.locator('h1')).toHaveCSS('letter-spacing', '-0.7px');
-                await expect(page.locator('.workspace-heading')).toHaveCSS('margin-block-end', '22px');
+                await expect(page.locator('#workspace-main > .heading')).toHaveCSS('margin-block-end', '22px');
                 await expect(page.locator('h1')).toHaveCSS('font-size', width === 1600 ? '28px' : '25px');
-                await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCSS('line-height', '18px');
+                await expect(page.locator('#workspace-main > .heading p.muted')).toHaveCSS('line-height', '18px');
                 await expect(page.locator('#workspace-main')).toHaveCSS('padding-inline-start', width === 1600 ? '30px' : '14px');
                 if (width === 1600) {
                     await expect(page.locator('.sidebar')).toHaveCSS('width', '218px');
                     await expect(page.locator('.topbar')).toHaveCSS('height', '68px');
                 } else {
                     await expect(page.locator('.sidebar')).toHaveCSS('position', 'static');
-                    expect(await page.locator('.workspace-shell').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1);
+                    expect(await page.locator('.app-shell').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1);
                 }
                 await noOverflow(page);
                 await attachEvidence(page, testInfo, `${route}-${width}-${theme}`);
@@ -236,8 +236,8 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
         const link = page.locator(`nav [data-route="${route}"]`);
         await link.focus(); await expect(link).toBeFocused();
     }
-    await page.getByRole('combobox', { name: 'Appearance', exact: true }).focus();
-    await expect(page.getByRole('combobox', { name: 'Appearance', exact: true })).toBeFocused();
+    await page.getByRole('combobox', { name: 'Theme', exact: true }).focus();
+    await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toBeFocused();
     const text = page.locator('.prompt-text').filter({ hasText: 'A study in very long creative context' });
     await text.scrollIntoViewIfNeeded();
     expect((await text.textContent()).length).toBeGreaterThan(1500);
@@ -257,17 +257,17 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
     }
 });
 
-test('Appearance label and control fit the narrow shell at 200 percent zoom', async ({ page, request }, testInfo) => {
+test('Theme label and control fit the narrow shell at 200 percent zoom', async ({ page, request }, testInfo) => {
     await request.post('/__test__/reset', { data: { workspace_visual: true } });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${workspace}#/images`);
     await expect(page.locator('article[data-image-key]')).toHaveCount(24);
     await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
-    const preference = page.getByRole('combobox', { name: 'Appearance', exact: true });
+    const preference = page.getByRole('combobox', { name: 'Theme', exact: true });
     const bounds = await preference.evaluate(select => {
         const field = select.closest('label');
-        return { intendedWrapper: field.classList.contains('workspace-appearance'),
-            boxes: [field, field.querySelector('.ca-field-label'), select].map(node => {
+        return { intendedWrapper: field.classList.contains('theme-label') && field.parentElement.classList.contains('top-actions'),
+            boxes: [field, select].map(node => {
                 const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
             }), width: document.documentElement.clientWidth };
     });
@@ -277,7 +277,7 @@ test('Appearance label and control fit the narrow shell at 200 percent zoom', as
         expect(box.right).toBeLessThanOrEqual(bounds.width + 1);
     }
     expect(bounds.intendedWrapper).toBe(true);
-    for (const theme of ['follow', 'light', 'dark']) {
+    for (const theme of ['system', 'light', 'dark']) {
         await preference.selectOption(theme); await expect(preference).toHaveValue(theme);
     }
     await preference.focus(); await expect(preference).toBeFocused();
@@ -514,15 +514,15 @@ test('Library visual evidence keeps natural cards and returns from real history 
         const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));await startCoverage(page,browserName);
         try {
             await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
-            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await attachEvidence(page,testInfo,`after-library-${width}-${theme}`,false);
             await noOverflow(page);
             await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
             await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
-            await expect(page.locator('.library-history > div > .intro')).toHaveCount(1);
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
             await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
             await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
-            await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(1);
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive. Reusable negatives. Every experiment stays connected.');
             expect(errors).toEqual([]);
         } finally {await saveCoverage(page,browserName);await context.close();}
     }
@@ -533,11 +533,11 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
     await page.goto(`${workspace}#/images`);
     const icons = await page.evaluate(async () => {
         const { createWorkspaceIcon } = await import('/prompt_manager/js/workspace/icons.mjs');
-        const names = ['images', 'library', 'tags', 'upload', 'overview', 'settings', 'grid', 'list', 'masonry', 'search', 'info', 'copy', 'branch'];
+        const names = ['images', 'library', 'tags', 'upload', 'overview', 'settings', 'grid', 'list', 'masonry', 'search', 'info', 'copy', 'branch', 'star', 'tagImage', 'folder', 'history', 'review'];
         const otherDocument = document.implementation.createHTMLDocument();
         const rendered = names.map(name => {
             const icon = createWorkspaceIcon(name, otherDocument);
-            return { name, svg: icon instanceof SVGSVGElement, owner: icon.ownerDocument === otherDocument,
+            return { name, svg: icon instanceof SVGSVGElement, className: icon.getAttribute('class'), owner: icon.ownerDocument === otherDocument,
                 viewBox: icon.getAttribute('viewBox'), hidden: icon.getAttribute('aria-hidden'), focusable: icon.getAttribute('focusable'),
                 fill: icon.getAttribute('fill'), stroke: icon.getAttribute('stroke'), width: icon.getAttribute('stroke-width'),
                 path: icon.querySelector('path').getAttribute('d'), children: icon.childElementCount };
@@ -549,10 +549,12 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
     });
     expect(icons.unknown).toEqual([true, true, true, true, true]);
     for (const icon of icons.rendered) {
-        expect(icon).toMatchObject({ svg: true, owner: true, viewBox: '0 0 24 24', hidden: 'true', focusable: 'false', fill: 'none', stroke: 'currentColor', width: '1.65', children: 1 });
+        expect(icon).toMatchObject({ svg: true, className: 'icon', owner: true, viewBox: '0 0 24 24', hidden: 'true', focusable: 'false', fill: 'none', stroke: 'currentColor', width: '1.65', children: 1 });
         expect(icon.path.length).toBeGreaterThan(10);
     }
-    expect(icons.rendered.find(icon => icon.name === 'overview').path).toBe('M3 12h4l3-8 4 16 3-8h4');
+    // D28 ruling: Overview's own outline home glyph, not the concept's `activity` pulse ('M3 12h4l3-8 4 16 3-8h4').
+    expect(icons.rendered.find(icon => icon.name === 'overview').path).toBe('M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6');
+    expect(new Set(icons.rendered.map(icon => icon.path)).size).toBe(icons.rendered.length);
 });
 
 
@@ -582,7 +584,7 @@ test('Images visual layouts retain real delayed media long filenames and loaded 
     for (const [width,height] of [[1600,1100],[390,844]]) {
         await page.setViewportSize({width,height});
         for (const theme of ['dark','light']) {
-            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await page.locator('.image-card .image-open').first().click();
             await expect(page.locator('.image-details h2')).toHaveText('study-01.png');
             for (const layout of ['Grid','List','Masonry']) {
@@ -618,7 +620,7 @@ test('embedded history gallery keeps the history heading and disposes its layout
         for (const layout of ['List','Masonry','Grid']) {
             await page.getByRole('button',{name:layout,exact:true}).click();await orderedMedia(page);
             await expect(page.locator('h1')).toHaveText(title);
-            await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(0);
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
         }
         await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
         await page.getByRole('button',{name:'← Prompt library',exact:true}).click();

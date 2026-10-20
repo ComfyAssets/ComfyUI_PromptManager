@@ -76,3 +76,74 @@ test('positive library deep links preserve the selected identity without duplica
     win.location.hash='#/library';win.dispatchEvent(new Event('hashchange'));
     assert.deepEqual(seen,[['library',12],['library',13],['library',undefined]]);dispose();
 });
+
+test('nav counts reject negative, non-integer and missing totals', async () => {
+    const { summarizeNavCounts } = await source;
+    const counts = summarizeNavCounts({images: {total: 24}, library: {total: 0}, tags: {total: 7}});
+    assert.ok(counts instanceof Map);
+    assert.deepEqual([...counts], [['images', 24], ['library', 0], ['tags', 7]]);
+    assert.equal(counts.has('inspect'), false, 'Inspect a file has no count');
+    for (const invalid of [undefined, null, {}, {total: -1}, {total: 1.5}, {total: '3'}, {total: NaN},
+        {total: Infinity}, {total: Number.MAX_SAFE_INTEGER + 1}, {total: null}, [], 'x']) {
+        const result = summarizeNavCounts({images: invalid, library: {total: 2}, tags: invalid});
+        assert.equal(result.get('images'), null, JSON.stringify(invalid));
+        assert.equal(result.get('library'), 2);
+        assert.equal(result.get('tags'), null);
+    }
+    assert.deepEqual([...summarizeNavCounts()], [['images', null], ['library', null], ['tags', null]]);
+});
+
+test('nav counts settle independently so a slow images read never delays the others', async () => {
+    const { loadNavCounts } = await source;
+    let releaseImages;
+    const images = new Promise(resolve => { releaseImages = resolve; });
+    const api = {get: async url => {
+        if (url.startsWith('/prompt_manager/images')) return images;
+        if (url.startsWith('/prompt_manager/library')) return {success: true, total: 3};
+        throw new Error('Unavailable');
+    }};
+    const settled = [];
+    const done = loadNavCounts(api, new AbortController().signal, (id, count) => settled.push([id, count]));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(settled.sort(), [['library', 3], ['tags', null]]);
+    releaseImages({success: true, total: 40});
+    const counts = await done;
+    assert.deepEqual(settled.at(-1), ['images', 40]);
+    assert.deepEqual([...counts], [['images', 40], ['library', 3], ['tags', null]]);
+});
+
+test('nav counts issue three bounded requests and drop only the failed count', async () => {
+    const { loadNavCounts } = await source;
+    const calls = [];
+    const signal = new AbortController().signal;
+    const api = {get: async (url, options) => {
+        calls.push([url, options.signal]);
+        if (url.startsWith('/prompt_manager/library')) throw new Error('Unavailable');
+        if (url.startsWith('/prompt_manager/vocabulary/tags')) return {success: true, total: 5};
+        return {success: true, total: 12};
+    }};
+    const counts = await loadNavCounts(api, signal);
+    assert.deepEqual([...counts], [['images', 12], ['library', null], ['tags', 5]]);
+    const urls = calls.map(([url]) => new URL(url, 'http://host'));
+    assert.deepEqual(urls.map(url => url.pathname),
+        ['/prompt_manager/images/output', '/prompt_manager/library', '/prompt_manager/vocabulary/tags']);
+    for (const url of urls) assert.equal(url.searchParams.get('limit'), '1');
+    assert.equal(urls[0].searchParams.get('mode'), 'workspace');
+    assert.ok(calls.every(([, used]) => used === signal));
+});
+
+test('a Library or vocabulary write re-reads only the Library and Tags counts', async () => {
+    const { loadNavCounts, LIBRARY_WRITE_COUNTS } = await source;
+    assert.deepEqual([...LIBRARY_WRITE_COUNTS], ['library', 'tags']);
+    assert.ok(Object.isFrozen(LIBRARY_WRITE_COUNTS));
+    const calls = [];
+    const api = {get: async url => {
+        calls.push(new URL(url, 'http://host').pathname);
+        return {success: true, total: url.startsWith('/prompt_manager/library') ? 4 : 9};
+    }};
+    const settled = [];
+    const counts = await loadNavCounts(api, new AbortController().signal, (id, count) => settled.push([id, count]), LIBRARY_WRITE_COUNTS);
+    assert.deepEqual(calls, ['/prompt_manager/library', '/prompt_manager/vocabulary/tags']);
+    assert.deepEqual(settled.sort(), [['library', 4], ['tags', 9]]);
+    assert.deepEqual([...counts], [['library', 4], ['tags', 9]]);
+});

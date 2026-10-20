@@ -14,6 +14,10 @@ from aiohttp import web
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from tests.browser.workspace_concept_fixture import (
+    MAX_EXTRA_IMAGES as CONCEPT_MAX_EXTRA_IMAGES,
+    seed_workspace_concept,
+)
 from tests.browser.workspace_visual_fixture import seed_workspace_visual
 from tests.browser.workspace_inspector_fixture import seed_workspace_inspector
 from tests.browser.workspace_history_fixture import (
@@ -378,6 +382,30 @@ def create_app(root: Path) -> web.Application:
             extra_variants,
         )
         return web.json_response({"success": True})
+
+    @routes.post("/__test__/concept/reset")
+    async def concept_reset(request: web.Request) -> web.Response:
+        """Seed the concept-shaped fixture (D30); only a bounded image count."""
+        nonlocal history_fixture
+        data = await request.json() if request.can_read_body else {}
+        if (
+            request.query
+            or not isinstance(data, dict)
+            or set(data) - {"extra_images"}
+            or isinstance(data.get("extra_images", 0), bool)
+            or not isinstance(data.get("extra_images", 0), int)
+            or not 0 <= data.get("extra_images", 0) <= CONCEPT_MAX_EXTRA_IMAGES
+        ):
+            raise web.HTTPBadRequest()
+        history_commands.reset()
+        library_editor_commands.reset()
+        history_fixture = None
+        manifest = await api._run_in_executor(
+            lambda: seed_workspace_concept(
+                api, root, extra_images=data.get("extra_images", 0)
+            )
+        )
+        return web.json_response({"success": True, **manifest})
 
     @routes.post("/__test__/add-nested-image")
     async def add_nested_image(request: web.Request) -> web.Response:

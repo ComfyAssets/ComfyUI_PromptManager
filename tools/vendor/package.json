@@ -5,7 +5,8 @@
   "description": "Maintainer-only tools for reproducible browser dependencies",
   "scripts": {
     "sync": "node vendor-viewerjs.mjs",
-    "check": "node vendor-viewerjs.mjs --check && node vendor-toolkit.mjs --check",
+    "check": "node vendor-viewerjs.mjs --check && node vendor-toolkit.mjs --check && node sync-concept-css.mjs --check",
+    "sync:concept": "node sync-concept-css.mjs --write",
     "sync:toolkit": "node vendor-toolkit.mjs",
     "update": "node update-viewerjs.mjs",
     "test": "node --test ../../tests/vendor/*.test.mjs",

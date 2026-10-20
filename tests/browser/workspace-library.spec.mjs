@@ -129,7 +129,7 @@ test('returning from history restores library context and mobile content stays i
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
     await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
     await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Cat portrait');await expect(cards(page)).toHaveCount(1);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).click();
+    await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
     await expect(history(page)).toHaveCount(0);await expect(page.locator('dialog[open]')).toHaveCount(0);
 });
 
@@ -140,9 +140,9 @@ test('empty shelf visits restore saved scroll without inventing a parent anchor'
     await page.evaluate(()=>scrollTo(0,document.documentElement.scrollHeight));
     await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(0);
     const position=await page.evaluate(()=>scrollY);
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).evaluate(node=>node.click());
+    await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).evaluate(node=>node.click());
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
-    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Prompt library',exact:true}).evaluate(node=>node.click());
+    await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Prompt library(?:\s*[\d,]+)?$/}).evaluate(node=>node.click());
     await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('No matching saved positive');
     await expect(cards(page)).toHaveCount(0);
     await expect.poll(()=>page.evaluate(expected=>Math.abs(scrollY-expected),position)).toBeLessThanOrEqual(1);
@@ -188,7 +188,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         const recipe=await(await request.get(`/prompt_manager/library/${parentId}`)).json();
         await openHistory(page);await selectVariant(page,recipe.variants.findIndex(variant=>variant.negative_text==='blurry, watermark'));
         const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre').textContent();
-        await page.locator('.workspace-heading').getByRole('button',{name:'Send prompt pair to ComfyUI: Cat portrait',exact:true}).click();
+        await page.locator('#workspace-main > .heading').getByRole('button',{name:'Send prompt pair to ComfyUI: Cat portrait',exact:true}).click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({label:'Library ComfyUI'});
@@ -203,7 +203,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         await expect(inspector.locator('summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
         await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
         await page.keyboard.press('Escape');await expect(page.locator('dialog[open]')).toHaveCount(0);
-        await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name:'Overview',exact:true}).click();await expect(page.locator('.viewer-container')).toHaveCount(0);
+        await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();await expect(page.locator('.viewer-container')).toHaveCount(0);
     } finally {await host.evaluate(()=>window.libraryHost.dispose());await host.close();}
 });
 
@@ -279,10 +279,10 @@ test('Library natural rows retain long prompt content without overflow',async({p
     for(const [width,height] of [[1600,1100],[390,844]]) {
         await page.setViewportSize({width,height});await page.goto(route);await expect(cards(page)).toHaveCount(6);
         expect(await cards(page).filter({hasText:'A study in very long creative context'}).evaluate(node=>node.getBoundingClientRect().height)).toBeGreaterThan(560);
-        await expect(page.locator('.workspace-heading-copy > .intro')).toContainText('One positive.');
-        await expect(page.locator('.library-shelf > .intro')).toHaveCount(0);
+        await expect(page.locator('#workspace-main > .heading p.muted')).toContainText('One positive.');
+        await expect(page.locator('#workspace-main p').filter({hasText:'One positive. Reusable negatives.'})).toHaveCount(1);
         for(const theme of ['dark','light']) {
-            await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+            await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await expect(page.locator('.prompt-positive h3').first()).toHaveCSS('color',theme==='dark'?'rgb(115, 221, 169)':'rgb(23, 107, 70)');
         }
         await expect(page.locator('.library-card-art').first()).toHaveCSS('height',width===1600?'170px':'150px');

@@ -4,9 +4,11 @@ import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layo
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
+import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
+import { pageHeading } from './heading.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -48,11 +50,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     });
     main.classList.add('images-main');
     scope.cleanup(() => main.classList.remove('images-main'));
-    if (!embedded) {
-        const intro = el('p', 'Browse your images, explore the details, keep your creative context.', 'intro');
-        (main.querySelector('.workspace-heading-copy') || main).append(intro);
-        scope.cleanup(() => intro.remove());
-    }
+    const description = embedded ? null : pageHeading(main)?.description;
+    if (description) description.textContent = 'Browse your images, explore the details, keep your creative context.';
     const filtersBar = el('div', undefined, 'image-filters');
     const search = el('input');
     search.value = filters.q;
@@ -423,5 +422,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         });
         if (visit.state.loading || visit.state.error) stream.loadMore();
     } else reset();
-    return {dispose};
+    /** D6: the selected file's prompt pair, only once its inspection loaded with both roles resolved. */
+    function selectedPair() {
+        const {record, prompts, loading, error, refreshRequired} = inspection.state;
+        if (scope.signal.aborted || selection === null || loading || error || refreshRequired || record?.identity?.key !== selection) return null;
+        const roles = promptRoles(prompts);
+        return Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative') ? roles : null;
+    }
+    return {dispose, selectedPair, sender};
 }

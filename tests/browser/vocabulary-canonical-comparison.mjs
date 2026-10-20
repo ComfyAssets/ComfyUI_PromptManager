@@ -3,7 +3,7 @@
 // mapVocabularyConcept / mapVocabularyDialog apply only the recorded deviations, each named with its ruling.
 export {inventoryOf, diffInventory} from './library-editor-canonical-comparison.mjs';
 
-export function pageInventoryOf(main, production) {
+export function pageInventoryOf(main) {
     const css=(node,...keys)=>{const style=getComputedStyle(node);return Object.fromEntries(keys.map(key=>[key,style[key]]));};
     const px=value=>Math.round(value);
     const visible=node=>node.getClientRects().length>0;
@@ -18,8 +18,8 @@ export function pageInventoryOf(main, production) {
 
     // Rendered line count of a cell's text, so a wrapped short name is reported even when the row height is unchanged.
     const lines=node=>{const range=document.createRange();range.selectNodeContents(node);return new Set([...range.getClientRects()].map(rect=>px(rect.top))).size;};
-    const heading=main.querySelector(production?':scope > .workspace-heading':':scope > .heading');
-    const copy=production?heading.querySelector('.workspace-heading-copy'):heading.firstElementChild;
+    const heading=main.querySelector(':scope > .heading');
+    const copy=heading.firstElementChild;
     const h1=copy.querySelector('h1'),subtitle=copy.querySelector('p'),actions=heading.querySelector('.heading-actions');
     const grid=main.querySelector(':scope > .two-col'),gridBox=grid.getBoundingClientRect();
     const surfaces=[...grid.querySelectorAll(':scope > section.surface')];

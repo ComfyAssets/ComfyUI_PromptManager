@@ -3,6 +3,8 @@ import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/i
 
 const workspace = '/prompt_manager/workspace#/images';
 const cards = page => page.locator('article[data-image-key]');
+// Grid pages only: the sidebar's Images count is its own `limit=1` read of the same listing.
+const imagePages = url => url.pathname === '/prompt_manager/images/output' && url.search !== '' && url.searchParams.get('limit') !== '1';
 const details = page => page.getByRole('region', { name: 'Image details', exact: true });
 
 test.beforeEach(async ({ page, request, browserName }) => {
@@ -54,7 +56,7 @@ test('workspace defaults to the native Images collection without a hash route', 
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
     await expect(cards(page)).toHaveCount(2);
     await expect(page.getByRole('navigation', { name: 'Workspace', exact: true })
-        .getByRole('link', { name: 'Images', exact: true })).toHaveAttribute('aria-current', 'page');
+        .getByRole('link', { name: /^Images(?:\s*[\d,]+)?$/ })).toHaveAttribute('aria-current', 'page');
 });
 
 test('image selection is announced on the selected image button', async ({ page }) => {
@@ -83,7 +85,7 @@ test('closing details preview restores its trigger focus', async ({ page }) => {
 test('a short visible batch automatically continues until the sentinel is filled or exhausted', async ({ page, request }) => {
     const real = await (await request.get('/prompt_manager/images/output?limit=40')).json();
     let reads = 0;
-    await page.route('**/prompt_manager/images/output?*', async route => {
+    await page.route(imagePages, async route => {
         const current = reads++;
         await route.fulfill({ json: {
             success: true, images: [real.images[current]], total: 2,
@@ -435,7 +437,7 @@ test('collection viewer describes video transforms and releases native playback 
 });
 
 test('failed image requests offer retry while stale results cannot replace a newer route', async ({ page }) => {
-    await page.route('**/prompt_manager/images/output?*', route => route.fulfill({
+    await page.route(imagePages, route => route.fulfill({
         status: 503, json: { success: false, error: 'Images unavailable' },
     }), { times: 1 });
     await page.goto(workspace);
@@ -446,7 +448,7 @@ test('failed image requests offer retry while stale results cannot replace a new
     const pending = new Promise(resolve => { release = resolve; });
     let arrived;
     const received = new Promise(resolve => { arrived = resolve; });
-    await page.route('**/prompt_manager/images/output?*', async route => {
+    await page.route(imagePages, async route => {
         const response = await route.fetch();
         arrived();
         await pending;
@@ -454,7 +456,7 @@ test('failed image requests offer retry while stale results cannot replace a new
     });
     await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('nothing');
     await received;
-    await page.getByRole('navigation', { name: 'Workspace', exact: true })
+    await page.getByRole('navigation', { name: 'Tools and system', exact: true })
         .getByRole('link', { name: 'Overview', exact: true }).click();
     release();
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
@@ -492,7 +494,7 @@ async function staleSourceRecovery(page, request, roots) {
     await page.getByRole('combobox', { name: 'Media', exact: true }).selectOption('image');await page.getByRole('combobox', { name: 'Sort', exact: true }).selectOption('name');
     const initial = await (await configured).json();await expect(page.locator('.image-toolbar')).toContainText('40 of 80');
     let oldPage;
-    await page.route('**/prompt_manager/images/output?*', async route => {
+    await page.route(imagePages, async route => {
         if (new URL(route.request().url()).searchParams.has('cursor') && !oldPage) {
             const response = await route.fetch();oldPage = { route, data: await response.json() };
         } else await route.continue();
@@ -557,7 +559,7 @@ test('source-change recovery ignores superseded discovery and route disposal', a
         await recovery.options[0].fulfill({ json: { roots: [{ index: 0, label: 'Obsolete source label' }], subfolders: ['obsolete'] } });
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         expect(recovery.pages).toEqual([]);await expect(recovery.source.locator('option')).toHaveText(['All sources']);
-        await page.getByRole('navigation', { name: 'Workspace', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
         await recovery.options[1].fulfill({ json: { roots: [{ index: 0, label: 'Late source label' }], subfolders: ['late'] } });
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         await expect(page.locator('#workspace-main h1')).toHaveText('Overview');expect(recovery.pages).toEqual([]);expect(recovery.inspections).toEqual([]);expect(recovery.mutations).toEqual([]);
@@ -588,7 +590,7 @@ test('a delayed search cannot replace results for a newer filename query', async
     const received = new Promise(resolve => { arrived = resolve; });
     const completed = new Promise(resolve => { complete = resolve; });
     let delayed = false;
-    await page.route('**/prompt_manager/images/output?*', async route => {
+    await page.route(imagePages, async route => {
         if (delayed) return route.continue();
         delayed = true;
         const response = await route.fetch();
@@ -613,7 +615,7 @@ test('selected layout stays blue with readable text on hover in either theme', a
     await page.goto(workspace);
     const layout = page.getByRole('group', { name: 'Image layout' }).getByRole('button', { name: 'Masonry', exact: true });
     for (const theme of ['light', 'dark']) {
-        await page.getByRole('combobox', { name: 'Appearance', exact: true }).selectOption(theme);
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
         await layout.click();
         await layout.hover();
         await expect(layout).toHaveCSS('background-color', 'rgb(8, 119, 187)');
@@ -672,7 +674,7 @@ test('leaving during Refresh cancels it without replacing the next workspace', a
     const requested = page.waitForRequest('**/prompt_manager/gallery/rescan');
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
     await requested;
-    await page.getByRole('navigation', { name: 'Workspace', exact: true })
+    await page.getByRole('navigation', { name: 'Tools and system', exact: true })
         .getByRole('link', { name: 'Overview', exact: true }).click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     release();
@@ -686,7 +688,7 @@ test('Images uses approved geometry while keeping real controls', async ({page,r
     await page.setViewportSize({width:1600,height:1100});
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(24);
-    await expect(page.locator('.workspace-heading-copy > .intro')).toHaveCount(1);
+    await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Browse your images, explore the details, keep your creative context.');
     await expect(details(page)).toHaveCSS('width','310px');
     await expect(page.locator('.image-workspace')).toHaveCSS('column-gap','22px');
     for (const label of ['Source','Folder','Media','Sort','Thumbnail size']) await expect(page.getByRole('combobox',{name:label,exact:true})).toBeVisible();

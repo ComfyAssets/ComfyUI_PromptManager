@@ -18,7 +18,7 @@ test.beforeEach(async({page,request})=>{
 for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`editor state captures for maintainer acceptance ${width} ${theme}`,async({page},testInfo)=>{
     await page.setViewportSize({width,height});const f=page.fixture;
     await page.goto(`${workspace}#/library/${f.positive_id}`);await expect(variants(page)).toBeVisible();
-    await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption(theme);
+    await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     const shot=name=>captureCanonicalState(page,testInfo,`production-${name}-${width}-${theme}`,name.startsWith('editor-archived')?'.library-variants':'dialog.library-editor');
 
     await variants(page).getByRole('button',{name:'Select negative variant 2',exact:true}).click();

@@ -1,5 +1,8 @@
 const STORAGE_KEY = 'pm_workspace_theme';
-const PREFERENCES = new Set(['follow', 'light', 'dark']);
+// D4 (#249): the concept's Theme select. "system" follows the ComfyUI palette, then the OS.
+const PREFERENCES = new Set(['dark', 'light', 'system']);
+// The pre-#249 "Follow ComfyUI" value, read as System so a saved choice survives the rename.
+const LEGACY = new Map([['follow', 'system']]);
 const LIGHT_PALETTES = new Set(['light', 'solarized', 'github', 'arc']);
 const DARK_PALETTES = new Set(['dark', 'obsidian', 'nord', 'dracula', 'gruvbox']);
 
@@ -9,19 +12,20 @@ export function mountWorkspaceTheme({ root = document.body, scope, fetchImpl = g
     const previousTheme = root.dataset.caTheme;
     const previousScheme = documentElement.style.colorScheme;
     const system = win.matchMedia('(prefers-color-scheme: dark)');
-    let preference = 'follow';
+    let preference = 'system';
     let hostTheme = null;
     let request = null;
     let sequence = 0;
     try {
         storage ??= win.localStorage;
-        const saved = storage?.getItem(STORAGE_KEY);
+        const stored = storage?.getItem(STORAGE_KEY);
+        const saved = LEGACY.get(stored) ?? stored;
         if (PREFERENCES.has(saved)) preference = saved;
     } catch { /* Storage can be disabled while theme controls remain usable. */ }
 
     function update() {
         if (scope.signal.aborted) return;
-        const theme = preference === 'follow' ? hostTheme || (system.matches ? 'dark' : 'light') : preference;
+        const theme = preference === 'system' ? hostTheme || (system.matches ? 'dark' : 'light') : preference;
         root.dataset.caTheme = theme;
         documentElement.style.colorScheme = theme;
     }

@@ -1,0 +1,73 @@
+/* Production overlay on the verbatim concept base (concept.css, D1 of #249). Only production-only states and recorded
+   deviations live here; a rule on a selector the concept also styles carries its decision marker. */
+
+/* Production-only shell states. */
+main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
+/* The page title takes focus after a save or route change (concept app.js 1168); a keyboard user sees where it went. */
+#page-title:focus { outline: none; }
+#page-title:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
+/* D28: the sidebar shows no connection state, so its dot is neutral instead of the concept's demo green. */
+.connection i { background: var(--ca-muted); }
+/* D31: bounded rendering reads the grid's real width, so at extreme zoom the one-column shell must not grow to the
+   sidebar's min-content (the concept's `1fr`); the column is capped at the viewport as production's shell was. */
+@media (max-width: 950px) {
+    .app-shell { grid-template-columns: minmax(0, 1fr); /* D31 */ }
+}
+@media (forced-colors: active) {
+    nav a[aria-current="page"] { border: 2px solid Highlight; color: LinkText; }
+}
+
+/* Overview: real library statistics and the legacy tool cards inside a concept `.surface`. */
+.stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 26px; }
+.stat { padding: 22px; background: var(--ca-surface); border: 1px solid var(--line); border-radius: 7px; }
+.stat dt { color: var(--ca-muted); font-size: 12px; }
+.stat dd { margin: 8px 0 0; font-size: 32px; font-weight: 600; }
+.overview-stats > [role="status"], .overview-stats > [role="alert"], .empty-state { padding: 18px 0; color: var(--ca-muted); }
+.overview-stats > [role="alert"] { color: var(--ca-error-text); }
+.overview-stats > button { margin-bottom: 24px; }
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 12px; margin-top: 22px; }
+.tool-card { border: 1px solid var(--line); background: var(--ca-field); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.tool-card p { flex: 1; margin: 0 0 12px; }
+.workspace-link { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
+.handoff .workspace-link { margin-top: 12px; }
+@media (max-width: 700px) {
+    .stat-grid { gap: 8px; }
+    .stat { padding: 16px; }
+    .stat dd { font-size: 26px; }
+}
+
+/* Tags & categories (#245): real vocabulary has unbounded names and bounded lists, which the concept's short samples
+   never show. Proven by the 390px layout and long-name cases in workspace-vocabulary.spec.mjs. */
+.vocabulary-main :where(.two-col, .surface, .table-wrap, .operation > div) { min-width: 0; }
+.vocabulary-main .operation h3 { overflow-wrap: anywhere; }
+/* Long tag names wrap inside the Tag cell so the Actions column keeps its intrinsic width; on two-column screens the
+   minimum keeps the concept's longest sample ("architecture", about 5em) on one line. */
+.vocabulary-main td:first-child { overflow-wrap: anywhere; min-width: calc(6em + 20px); }
+/* Tags & categories (#245 decision 5): bounded lists continue with Load more; never a scroll anchor, so appended rows push the end away. */
+.vocabulary-main .vocabulary-continuation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-block: 15px 0; overflow-anchor: none; }
+.vocabulary-main .vocabulary-continuation p { margin: 0; flex: 1 1 200px; font-size: 12px; color: var(--ca-muted); }
+.vocabulary-main .vocabulary-continuation .vocabulary-error { color: var(--ca-error-text); }
+@media (max-width: 700px) {
+    /* One column: the Tag column has no fixed minimum and Actions asks only for its stacked width (the concept's 390px
+       rows stack Browse over Rename / merge), so a wider fallback font wraps the name instead of hiding an action. */
+    .vocabulary-main td:first-child { min-width: 0; }
+    .vocabulary-main td .row-actions { width: min-content; margin-inline-start: auto; }
+}
+
+/* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
+   that keep their own design until their page PR rebuilds them in concept markup. */
+.panel { background: var(--ca-surface); border: 1px solid var(--line); } /* PR D: Images side panel (padding and radius in images.css) becomes `.detail-panel` */
+.ca-tools dialog.image-preview { width: min(1500px, 96%); max-height: 94%; padding: 18px; overflow: hidden; } /* PR C: viewer becomes `#viewer-dialog` */
+.ca-tools dialog.prompt-sender { width: min(760px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 22px; border-color: var(--ca-line); border-radius: 12px; } /* PR D */
+.ca-tools dialog.prompt-sender::backdrop { background: #000b; } /* PR D */
+.ca-tools dialog.recorded-run-dialog { width: min(1100px, calc(100% - 32px)); max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); padding: 22px; border-radius: 7px; } /* PR F */
+pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max-height: none; overflow: visible; } /* PR D: prompt text becomes `p.prompt-text` */
+.viewer-container .viewer-hide { display: none; } /* PR C: the concept's own `.viewer-toolbar` would reveal Viewer.js's hidden toolbar */
+.ca-tools .prompt-actions .ca-icon-button { min-width: 30px; } /* PR D: the concept's 28px prompt action would shrink the toolkit icon button */
+@media (pointer: coarse) {
+    .ca-tools .recorded-history .history-toolbar button { min-height: 44px; } /* PR F: concept coarse buttons are 40px */
+}
+@media (max-width: 700px) {
+    .ca-tools dialog.image-preview { overflow: auto; } /* PR C */
+    .ca-tools dialog.recorded-run-dialog { padding: 16px; } /* PR F */
+}
