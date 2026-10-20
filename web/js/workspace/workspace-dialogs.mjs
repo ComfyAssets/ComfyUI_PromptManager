@@ -113,24 +113,35 @@ export function closeWorkspaceDialog() {
     shell = null;
 }
 
-function selectControl(key, options) {
+function fillSelect(select, key, options) {
     if (!Array.isArray(options) || options.length === 0 ||
         options.some(pair => !Array.isArray(pair) || typeof pair[0] !== 'string' || typeof pair[1] !== 'string')) {
         throw new TypeError(`The ${key} filter needs [value, label] options`);
     }
-    const select = el('select');
     select.replaceChildren(...options.map(([value, label]) => {
         const node = el('option', label);
         node.value = value;
         return node;
     }));
+}
+
+function selectControl(key, options) {
+    const select = el('select');
+    fillSelect(select, key, options);
     return select;
+}
+
+/** Show `value` when the select offers it, else its first (cleared) option. */
+function choose(select, value) {
+    const known = [...select.options].some(option => option.value === value);
+    select.value = known ? value : select.options[0].value;
 }
 
 /**
  * "Refine this view". `fields` lists the page's filters in any subset of Source, Folder, Media and Tags, as
  * `{key, options}` with `[value, label]` options for the selects (the first is the cleared value) and no options for
- * Tags. `values` holds the current value per key. Apply reports the edited values; Clear resets every field and
+ * Tags; Folder may add `optionsFor(source)`, the options of one Source, so its list follows the chosen Source and a
+ * folder that Source lacks returns to the first option. `values` holds the current value per key. Apply reports the edited values; Clear resets every field and
  * reports the cleared values plus `category: ''`, so the page clears its toolbar category too. Both close first.
  */
 export function openRefineDialog({ scope, fields, values = {}, onApply, onClear, trigger = null }) {
@@ -149,16 +160,28 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
             return [{ key, control: input, cleared: '' }];
         }
         const select = selectControl(key, item.options);
-        const known = item.options.some(([value]) => value === values[key]);
-        select.value = known ? values[key] : item.options[0][0];
-        return [{ key, control: select, cleared: item.options[0][0] }];
+        choose(select, values[key]);
+        return [{ key, control: select, cleared: item.options[0][0], optionsFor: item.optionsFor }];
     });
+    const source = controls.find(item => item.key === 'source');
+    const folder = controls.find(item => item.key === 'folder' && typeof item.optionsFor === 'function');
+    const followSource = () => {
+        const chosen = folder.control.value;
+        fillSelect(folder.control, 'folder', folder.optionsFor(source.control.value));
+        choose(folder.control, chosen);
+    };
+    if (source && folder) {
+        followSource();
+        source.control.addEventListener('change', followSource);
+    }
     const read = () => Object.fromEntries(controls.map(({ key, control }) =>
         [key, key === 'tags' ? control.value.trim() : control.value]));
 
     const clear = createButton('Clear filters');
     const apply = createButton('Apply filters', 'ca-primary');
     clear.addEventListener('click', () => {
+        // The cleared Source's folders first, so the cleared Folder value is one of them.
+        if (source && folder) { source.control.value = source.cleared; followSource(); }
         for (const { control, cleared } of controls) control.value = cleared;
         const reset = read();
         finish();

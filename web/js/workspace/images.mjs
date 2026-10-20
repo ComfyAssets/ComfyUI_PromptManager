@@ -95,7 +95,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let metrics = {...INITIAL_METRICS};
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
     let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
-    // Discovered sources and folders for "Refine this view" and the scope chip.
+    // Discovered sources (each with its own folders) and every folder, for "Refine this view" and the scope chip.
     let roots = [], folders = [];
     const rendered = new Map();
     const itemIndexes = new Map();
@@ -554,7 +554,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (recovering) return;
         openRefineDialog({scope, trigger, fields:[
             {key:'source', options:[['all', 'All sources'], ...roots.map(root => [String(root.index), root.label])]},
-            {key:'folder', options:[['', 'All output folders'], ...folders.map(path => [path, path])]},
+            {key:'folder', options:folderOptions('all'), optionsFor:folderOptions},
             {key:'media', options:MEDIA_OPTIONS},
             {key:'tags'},
         ], values:{source:filters.root, folder:filters.subfolder, media:filters.media, tags:filters.tags.join(', ')},
@@ -563,6 +563,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             filters.category = cleared.category;
             applyRefinement(cleared);
         }});
+    }
+    /** The chosen Source's folders, as the old field row reloaded them; every folder under All sources. */
+    function folderOptions(source) {
+        const root = source === 'all' ? null : roots.find(item => String(item.index) === source);
+        return [['', 'All output folders'], ...(root?.subfolders ?? folders).map(path => [path, path])];
     }
     function applyRefinement({source, folder, media, tags}) {
         if (recovering) return;
@@ -617,13 +622,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         optionsRequest?.abort();
         const request = new AbortController(); optionsRequest = request;
         try {
-            // Every source's folders (with ancestors), so any Source and Folder pair can be chosen in one dialog.
+            // Every source's folders (with ancestors), listed per source too, so the dialog can follow its Source.
             const params = new URLSearchParams({mode:'workspace', include_ancestors:'true'});
             const data = await api.get(`/prompt_manager/gallery/subfolders?${params}`, {signal:request.signal});
             if (scope.signal.aborted || request !== optionsRequest) return false;
             if (!Array.isArray(data?.roots) || !Array.isArray(data.subfolders)) throw new TypeError('Invalid image sources');
-            roots = data.roots.filter(root => Number.isSafeInteger(root?.index) && typeof root.label === 'string');
-            folders = data.subfolders.filter(path => typeof path === 'string' && path);
+            const paths = list => Array.isArray(list) ? list.filter(path => typeof path === 'string' && path) : null;
+            roots = data.roots.filter(root => Number.isSafeInteger(root?.index) && typeof root.label === 'string')
+                .map(root => ({index:root.index, label:root.label, subfolders:paths(root.subfolders)}));
+            folders = paths(data.subfolders);
             updateScope();
             optionsStatus.hidden = true;
             return true;

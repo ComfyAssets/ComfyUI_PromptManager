@@ -247,6 +247,33 @@ class TestWorkspaceImages(ImageAPITestCase):
         )
         self.assertEqual(response.status, 400)
 
+    async def test_workspace_roots_list_their_own_folders(self):
+        # "Refine this view" offers only the chosen Source's folders (#249 m1).
+        second = self.comfy_dir / "second"
+        second.mkdir()
+        self.media("first/deep/a.png")
+        self.media("nested/b.png", root=second)
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        deep = os.path.join("first", "deep")
+        response = await self.client.get(
+            "/prompt_manager/gallery/subfolders?mode=workspace&include_ancestors=true"
+        )
+        folders = await response.json()
+        self.assertEqual(folders["subfolders"], sorted(["first", deep, "nested"]))
+        self.assertEqual(
+            [(r["index"], r["subfolders"]) for r in folders["roots"]],
+            [(0, sorted(["first", deep])), (1, ["nested"])],
+        )
+        # A chosen root narrows the union; every root still lists its own.
+        response = await self.client.get(
+            "/prompt_manager/gallery/subfolders?mode=workspace&root=1"
+        )
+        folders = await response.json()
+        self.assertEqual(folders["subfolders"], ["nested"])
+        self.assertEqual(
+            [r["subfolders"] for r in folders["roots"]], [[deep], ["nested"]]
+        )
+
     async def test_workspace_dimensions_are_header_only_and_video_is_unknown(self):
         self.media("a.png")
         self.media("b.mp4")

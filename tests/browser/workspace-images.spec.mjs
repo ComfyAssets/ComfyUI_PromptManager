@@ -1458,3 +1458,30 @@ test('a star press leaves the continuation status, count and caption date untouc
     await expect(toast(page)).toHaveText('Added to favorites.');
     expect(await page.evaluate(() => window.__statusMutations)).toEqual([]);
 });
+
+// #249 final review m1: as in the old field row, a Source offers only its own folders.
+test('Refine offers only the chosen source folders', async ({ page, request }) => {
+    await expect(await request.post('/__test__/add-nested-image')).toBeOK();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(3);
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    const source = refineDialog(page).getByLabel('Source', { exact: true });
+    const folder = refineDialog(page).getByLabel('Folder', { exact: true });
+    const values = () => folder.locator('option').evaluateAll(options => options.map(option => option.value));
+    expect(await values()).toEqual(['', 'project', 'project/day', 'shared']);
+    await folder.selectOption('project');
+    await source.selectOption('1');
+    expect(await values()).toEqual(['', 'shared']);
+    await expect(folder).toHaveValue('');
+    await source.selectOption('0');
+    expect(await values()).toEqual(['', 'project', 'project/day', 'shared']);
+    await folder.selectOption('shared');
+    await source.selectOption('1');
+    await expect(folder).toHaveValue('shared');
+    await refineDialog(page).getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
+    // Reopened on that Source, the dialog again lists only its folders.
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    expect(await values()).toEqual(['', 'shared']);
+});

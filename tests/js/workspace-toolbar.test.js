@@ -331,6 +331,42 @@ test('refine dialog round-trips values and clear resets them', async () => {
     }
 });
 
+test('the Folder list follows the chosen Source', async () => {
+    const { openRefineDialog, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        const bySource = { all: ['portraits', 'temp-only'], 0: ['portraits'], 1: ['temp-only'] };
+        const optionsFor = source => [['', 'All output folders'], ...(bySource[source] ?? []).map(path => [path, path])];
+        const fields = [REFINE_FIELDS[0], { key: 'folder', options: optionsFor('all'), optionsFor }, REFINE_FIELDS[2]];
+        const applied = [];
+        openRefineDialog({ scope, fields, values: { source: '1', folder: 'temp-only', media: 'all' },
+            onApply: value => applied.push(value), onClear() {} });
+        const [source, folder] = byId(dom, 'modal-body').children.filter(child => child.className === 'field')
+            .map(field => field.children[1]);
+        // Opened on a chosen Source: only its folders.
+        assert.deepEqual(optionPairs(folder), [['', 'All output folders'], ['temp-only', 'temp-only']]);
+        assert.equal(folder.value, 'temp-only');
+        // Another Source drops a folder it does not have.
+        source.value = '0';
+        source.dispatchEvent(new Event('change'));
+        assert.deepEqual(optionPairs(folder), [['', 'All output folders'], ['portraits', 'portraits']]);
+        assert.equal(folder.value, '');
+        folder.value = 'portraits';
+        // A folder the next Source also has stays chosen.
+        source.value = 'all';
+        source.dispatchEvent(new Event('change'));
+        assert.deepEqual(optionPairs(folder).map(([value]) => value), ['', 'portraits', 'temp-only']);
+        assert.equal(folder.value, 'portraits');
+        button(byId(dom, 'modal-body'), 'Apply filters').click();
+        assert.deepEqual(applied, [{ source: 'all', folder: 'portraits', media: 'all' }]);
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
 test('a running rescan marks Rescan busy and ignores a second press', async () => {
     const { openImportDialog, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();
