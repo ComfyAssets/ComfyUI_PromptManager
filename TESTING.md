@@ -510,8 +510,14 @@ Recorded deviations on this page (spec §8):
 - **D14**: Source, Folder, Media and Tags live in "Refine this view" (no "Prompt
   evidence" field, no scope note); the primary action reads "Apply filters"; extra
   sorts come after the concept's three; long folder names wrap inside the scope chip.
+  Folder lists only the chosen Source's folders (each workspace root lists its own),
+  and an unchanged Apply or Clear reloads nothing.
 - **D15**: Import offers "Inspect a local image" (`#/inspect`) and "Scan an output
-  folder" (Rescan, `/gallery/rescan`); no "Import portable recipes".
+  folder" (Rescan, `/gallery/rescan`); no "Import portable recipes". The concept has
+  no rescan copy: toasts say "Rescanning output folders…", then "Rescan finished. N
+  files in M output folders." (the scan's `total` and `roots`) or "Rescan could not
+  finish. Try again."; while it runs, a reopened Import shows an aria-disabled
+  "Rescanning…".
 - **D16 (follow-up)**: no Save view in PR C; a follow-up PR adds real saved views.
 - **D17**: the caption date is the newest result's day under Recently added (", YYYY"
   outside the current year), hidden under every other sort.
@@ -526,7 +532,8 @@ Recorded deviations on this page (spec §8):
   40×40 coarse targets, production's control names and "Media controls" group, and
   `overscroll-behavior: contain`.
 - **D35**: counts pluralize ("1 positive prompt", "1 image", "1 more image loaded").
-- **D36**: the category list is the Library's, sorted alphabetically.
+- **D36**: the category list is the Library's, sorted alphabetically (case-insensitive)
+  by the page, whatever order the server sends.
 - **D37**: production loads 40 images per page (the concept 12), so the continuation
   and toast use 40; after Escape production returns focus to the opening image.
 
