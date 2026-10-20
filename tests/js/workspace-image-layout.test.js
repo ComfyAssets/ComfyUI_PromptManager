@@ -126,6 +126,14 @@ test('masonry uses real finite proportions and falls back for invalid dimensions
     for (const position of positions) assert.ok(Number.isFinite(position.height));
 });
 
+test('masonry falls back to the concept ratio when a finite size underflows the proportion', async () => {
+    const {layoutImages}=await source;
+    // Both sides are finite and positive, but their ratio underflows to 0, so the proportional height is infinite.
+    const {positions,height}=layoutImages([{width:Number.MIN_VALUE,height:1e300}],300,'masonry',{columns:1});
+    assert.equal(positions[0].height,(300-2)/1.33+56);
+    assert.ok(Number.isFinite(height));
+});
+
 test('a narrow gallery caps the concept columns at the smallest readable card', async () => {
     const {layoutImages, MINIMUM_CARD_WIDTH} = await source;
     // One shared minimum: the page marks `.narrow-cards` below the same width the layout caps columns at.
