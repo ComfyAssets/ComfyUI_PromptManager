@@ -296,8 +296,8 @@ async function importDialogOf(page) {
 async function hoverOf(page) {
     const open=page.locator(CARDS).first().locator('.image-open');
     await open.hover();
-    // The concept's transition is 0.2s; reduced motion makes it instant.
-    await page.waitForTimeout(450);
+    // The concept's 0.2s transition (instant under reduced motion) has started and finished.
+    await settle(page);
     const state=await open.locator('img').evaluate(img=>({hovered:img.closest('.image-open').matches(':hover'),
         transform:getComputedStyle(img).transform,transitionDuration:getComputedStyle(img).transitionDuration,
         transitionProperty:getComputedStyle(img).transitionProperty,hoverNone:matchMedia('(hover: none)').matches}));

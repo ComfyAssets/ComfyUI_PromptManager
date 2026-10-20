@@ -1225,13 +1225,18 @@ test.describe('at an 800px viewport and device scale 2', () => {
 test('a debounced search that lands after a sort change does not reload the same page', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    const reads = [];
-    page.on('request', request => { const url = new URL(request.url()); if (imagePages(url)) reads.push(url.search); });
+    const fetches = await recordFetches(page);
     // The sort change applies the typed query at once; the search debounce then reports the same values.
     await search(page).fill('same');
     await sortBy(page).selectOption('name');
-    await page.waitForTimeout(1000);
-    expect(reads.filter(search => new URLSearchParams(search).get('q') === 'same')).toHaveLength(1);
+    // HTML timers of equal delay run in the order they were set, so a timer of the toolbar's own debounce delay set
+    // now runs after the debounced report.
+    await page.evaluate(async () => {
+        const { SEARCH_DELAY } = await import(new URL('js/workspace/toolbar.mjs', document.baseURI).href);
+        await new Promise(resolve => setTimeout(resolve, SEARCH_DELAY));
+    });
+    const reads = (await fetches()).filter(item => imagePages(new URL(`http://host${item.path}${item.search}`)));
+    expect(reads.filter(item => new URLSearchParams(item.search).get('q') === 'same')).toHaveLength(1);
 });
 
 // #249 D18: the concept's hover zoom (1.03 over 0.2s); reduced motion makes it instant, and a touch device (hover: none)
@@ -1336,6 +1341,8 @@ test('favorite failure keeps the previous state and announces it', async ({ page
     await expectStar(button, false);
     const held = [];
     await page.route(favoriteRoute, route => { held.push(route); });
+    const fetches = await recordFetches(page);
+    const favoriteFetches = async () => (await fetches()).filter(item => item.path === '/prompt_manager/images/favorite').length;
     // Optimistic while in flight; a second press during the request sends nothing more.
     await button.click();
     await expectStar(button, true);
@@ -1343,9 +1350,8 @@ test('favorite failure keeps the previous state and announces it', async ({ page
     await expect(button).toHaveAttribute('aria-disabled', 'true');
     // Playwright waits for an aria-disabled button to enable; a user can still press it, so force the press.
     await button.click({ force: true });
+    expect(await favoriteFetches()).toBe(1);
     await expect.poll(() => held.length).toBe(1);
-    await page.waitForTimeout(150);
-    expect(held.length).toBe(1);
     await held[0].fulfill({ status: 500, json: { success: false, error: 'Favorite update failed' } });
     await expectStar(button, false);
     await expect(button).not.toHaveAttribute('aria-disabled', 'true');
@@ -1392,8 +1398,10 @@ test('favorite failure keeps the previous state and announces it', async ({ page
     await page.evaluate(() => { window.location.hash = '/images'; });
     await expectStar(star(card, 'same.png'), false);
     await expect(star(card, 'same.png')).toHaveAttribute('aria-disabled', 'true');
+    // The page was reloaded above: record afresh, from the ignored press on.
+    const afterReturn = await recordFetches(page);
     await star(card, 'same.png').click({ force: true });
-    await page.waitForTimeout(150);
+    expect((await afterReturn()).filter(item => item.path === '/prompt_manager/images/favorite')).toEqual([]);
     expect(across.length).toBe(1);
     await expectStar(star(card, 'same.png'), false);
     await across[0].fulfill({ status: 500, json: { success: false, error: 'Favorite update failed' } });
