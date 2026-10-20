@@ -11,8 +11,10 @@ import re
 import threading
 import time as _time
 import urllib.parse
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping
 from pathlib import Path
+from typing import NamedTuple
 
 from aiohttp import web
 from PIL import Image, UnidentifiedImageError
@@ -30,11 +32,15 @@ from .inspection_service import (
 
 try:
     from ...database.library import display_title
+    from ...database.models import normalize_image_path
+    from ...database.operations import LinkFilterTooBroad
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
 except ImportError:
     from database.library import display_title
+    from database.models import normalize_image_path
+    from database.operations import LinkFilterTooBroad
     from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
@@ -292,14 +298,66 @@ def _workspace_root(query: dict, roots: list[Path]) -> int | None:
     return index
 
 
+WORKSPACE_ORDERS = ("newest", "oldest", "name", "name-desc", "rating")
+# Library-compatible bounds on the linked-positive filters (database/library.py).
+MAX_FILTER_CATEGORY = 200
+MAX_FILTER_TAGS = 30
+MAX_FILTER_TAG = 200
+
+
+class _Listed(NamedTuple):
+    """One listed file plus the derived values every filter and sort reads.
+
+    Built once per gallery scan (see ``_workspace_orders``); the first four
+    fields are the ``(path, mtime, root, index)`` entry the page formatter takes.
+    """
+
+    path: Path
+    mtime: float
+    root: Path
+    index: int
+    folded: str  # relative POSIX path, case-folded (filename search)
+    folder: str  # str(relative.parent), native separators (subfolder filter)
+    name: str  # case-folded basename (name sorts)
+    tie: str  # sha256 of the relative POSIX path (bounded tie-break)
+    video: bool
+    normalized: str  # normalize_image_path, compared with linked rows
+
+
+def _listed(path: Path, mtime: float, root: Path, index: int) -> _Listed:
+    text, prefix = str(path), os.path.join(str(root), "")
+    relative = (
+        text[len(prefix) :] if text.startswith(prefix) else str(path.relative_to(root))
+    )
+    posix = relative if os.sep == "/" else relative.replace(os.sep, "/")
+    name = relative.rpartition(os.sep)[2]
+    return _Listed(
+        path,
+        mtime,
+        root,
+        index,
+        posix.casefold(),
+        os.path.dirname(relative) or ".",
+        name.casefold(),
+        hashlib.sha256(posix.encode("utf-8")).hexdigest(),
+        os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS,
+        normalize_image_path(text),
+    )
+
+
 def _workspace_key(entry: tuple, order: str) -> tuple:
-    path, mtime, root, index = entry
-    relative = path.relative_to(root).as_posix()
-    tie = hashlib.sha256(relative.encode("utf-8")).hexdigest()
-    name = path.name.casefold()
+    """The keyset sort key of *entry* (a _Listed or a 4-tuple entry)."""
+    if not isinstance(entry, _Listed):
+        entry = _listed(*entry)
     if order in ("name", "name-desc"):
-        return (name, tie, index, mtime)
-    return ((-mtime if order == "newest" else mtime), name, tie, index)
+        return (entry.name, entry.tie, entry.index, entry.mtime)
+    mtime = -entry.mtime if order in ("newest", "rating") else entry.mtime
+    return (mtime, entry.name, entry.tie, entry.index)
+
+
+def _rated_key(entry: _Listed, rank: int) -> tuple:
+    """Highest rated: rating 5..1, linked unrated (0), unlinked (-1); then newest."""
+    return (-rank, *_workspace_key(entry, "rating"))
 
 
 def _workspace_cursor(key: tuple, scope: str) -> str:
@@ -330,6 +388,8 @@ def _workspace_cursor_key(token: str, scope: str, order: str) -> tuple:
             if order in ("name", "name-desc")
             else ((float, int), str, str, int)
         )
+        if order == "rating":
+            types = (int, *types)
         if len(key) != len(types) or not all(
             type(value) in (kind if isinstance(kind, tuple) else (kind,))
             for value, kind in zip(key, types)
@@ -459,6 +519,79 @@ def _output_image_entry(
     if root_scope is not None:
         entry["root_scope"] = root_scope
     return entry
+
+
+def _workspace_filters(query: Mapping) -> dict:
+    """Validate the workspace listing's filter and sort parameters.
+
+    ``q`` (at most 500 characters) matches the relative path, case-folded, and
+    the linked positive's text, title and tag names. ``category`` is exact,
+    ``tags`` is a comma list that must all be present, ``sort=rating`` ranks by
+    the linked positive. Raises ValueError for any unknown or oversized value.
+    """
+    text = query.get("q", "").strip()
+    folded = text.casefold()
+    media = query.get("media", "all")
+    order = query.get("sort", "newest")
+    folder = query.get("subfolder", "").strip().replace("\\", "/")
+    category = query.get("category") or None
+    tags = sorted(
+        {tag.strip() for tag in query.get("tags", "").split(",") if tag.strip()}
+    )
+    if (
+        len(text) > 500
+        or len(folded) > 500
+        or media not in ("all", "image", "video")
+        or order not in WORKSPACE_ORDERS
+        or (category is not None and len(category) > MAX_FILTER_CATEGORY)
+        or len(tags) > MAX_FILTER_TAGS
+        or any(len(tag) > MAX_FILTER_TAG for tag in tags)
+    ):
+        raise ValueError("Invalid gallery filters")
+    if folder and (_has_traversal(folder) or len(folder) > 1024):
+        raise ValueError("Invalid gallery folder")
+    return {
+        "text": text,
+        "query": folded,
+        "media": media,
+        "order": order,
+        "folder": folder,
+        "category": category,
+        "tags": tags,
+    }
+
+
+def _filtered_page(
+    entries: list, start: int, size: int, filters: dict, links: dict | None
+) -> tuple[int, list]:
+    """Count the *entries* the filters admit and take *size* from *start* on.
+
+    *links* maps normalized paths to (hit, rating) for linked images (see
+    PromptDatabase.get_image_link_matches); a category or tag filter admits
+    only those, and ``q`` admits a filename match or a linked-positive hit.
+    """
+    query, media, folder = filters["query"], filters["media"], filters["folder"]
+    members_only = filters["category"] is not None or bool(filters["tags"])
+    native_folder = folder.replace("/", os.sep)
+    nested = native_folder + os.sep
+    total, page = 0, []
+    for position, entry in enumerate(entries):
+        if folder and not (
+            entry.folder == native_folder or entry.folder.startswith(nested)
+        ):
+            continue
+        if media != "all" and (media == "video") != entry.video:
+            continue
+        if links is not None and (members_only or query):
+            match = links.get(entry.normalized)
+            if members_only and match is None:
+                continue
+            if query and query not in entry.folded and not (match and match[0]):
+                continue
+        total += 1
+        if position >= start and len(page) < size:
+            page.append(entry)
+    return total, page
 
 
 def _in_subfolder(rel_dir, subfolder):
@@ -810,32 +943,26 @@ class ImageRoutesMixin:
             return bad_request("limit and offset must be integers")
         try:
             root_index = _workspace_root(request.query, output_dirs)
-            query = request.query.get("q", "").strip().casefold()
-            media = request.query.get("media", "all")
-            order = request.query.get("sort", "newest")
-            folder = request.query.get("subfolder", "").strip().replace("\\", "/")
-            if (
-                len(query) > 500
-                or media not in ("all", "image", "video")
-                or order not in ("newest", "oldest", "name", "name-desc")
-            ):
-                raise ValueError("Invalid gallery filters")
-            if folder and (_has_traversal(folder) or len(folder) > 1024):
-                raise ValueError("Invalid gallery folder")
+            filters = _workspace_filters(request.query)
             scope = hashlib.sha256(
                 json.dumps(
                     [
-                        query,
-                        media,
-                        order,
-                        folder,
+                        filters["query"],
+                        filters["text"],
+                        filters["media"],
+                        filters["order"],
+                        filters["folder"],
                         root_index,
                         [str(root) for root in output_dirs],
+                        filters["category"],
+                        filters["tags"],
                     ]
                 ).encode()
             ).hexdigest()
             token = request.query.get("cursor")
-            after = _workspace_cursor_key(token, scope, order) if token else None
+            after = (
+                _workspace_cursor_key(token, scope, filters["order"]) if token else None
+            )
         except ValueError as exc:
             return bad_request(str(exc))
 
@@ -844,17 +971,12 @@ class ImageRoutesMixin:
             for index, root in enumerate(output_dirs)
             if root_index is None or index == root_index
         ]
-        page, total, has_more, next_cursor = await self._run_in_executor(
-            self._select_workspace_page,
-            listings,
-            folder,
-            query,
-            media,
-            order,
-            after,
-            limit,
-            scope,
-        )
+        try:
+            page, total, has_more, next_cursor = await self._run_in_executor(
+                self._select_workspace_page, listings, filters, after, limit, scope
+            )
+        except LinkFilterTooBroad as exc:
+            return bad_request(str(exc))
         images = await self._run_in_executor(self._format_workspace_page, page)
         return web.json_response(
             {
@@ -867,52 +989,109 @@ class ImageRoutesMixin:
             }
         )
 
-    @staticmethod
+    def _workspace_listed(self, index: int, root: Path, files: list) -> list:
+        """The _Listed values of one root's scan, built once per scan.
+
+        The gallery cache hands out the same list object until it rescans, so
+        the values are reused while the scan is still that same object.
+        """
+        key = (index, str(root))
+        cached = self._workspace_listed_cache.get(key)
+        if cached is not None and cached[0] is files:
+            return cached[1]
+        listed = [_listed(path, mtime, root, index) for path, mtime in files]
+        self._workspace_listed_cache[key] = (files, listed)
+        return listed
+
+    def _workspace_orders(self, listings: list[tuple]) -> dict:
+        """The selected roots' files in newest order, plus lazily added orders."""
+        parts = tuple(
+            self._workspace_listed(index, root, files)
+            for index, root, files in listings
+        )
+        key = tuple((index, str(root)) for index, root, _files in listings)
+        cached = self._workspace_order_cache.get(key)
+        if cached is not None and all(
+            old is new for old, new in zip(cached[0], parts, strict=True)
+        ):
+            return cached[1]
+        newest = sorted(
+            (entry for part in parts for entry in part),
+            key=lambda entry: _workspace_key(entry, "newest"),
+        )
+        orders = {"newest": newest}
+        self._workspace_order_cache[key] = (parts, orders)
+        return orders
+
+    def _workspace_order(self, listings: list[tuple], order: str) -> list:
+        """The listing sorted by a filesystem order (built lazily, cached)."""
+        orders = self._workspace_orders(listings)
+        if order not in orders:
+            if order == "name-desc":
+                orders[order] = self._workspace_order(listings, "name")[::-1]
+            else:
+                orders[order] = sorted(
+                    orders["newest"], key=lambda entry: _workspace_key(entry, order)
+                )
+        return orders[order]
+
     def _select_workspace_page(
+        self,
         listings: list[tuple],
-        folder: str,
-        query: str,
-        media: str,
-        order: str,
+        filters: dict,
         after: tuple | None,
         limit: int,
         scope: str,
     ) -> tuple:
-        entries = []
-        for index, root, files in listings:
-            for path, mtime in files:
-                relative = path.relative_to(root)
-                if folder and not _in_subfolder(
-                    str(relative.parent), folder.replace("/", os.sep)
-                ):
-                    continue
-                if query and query not in relative.as_posix().casefold():
-                    continue
-                kind = "video" if path.suffix.lower() in VIDEO_EXTENSIONS else "image"
-                if media != "all" and media != kind:
-                    continue
-                entries.append((path, mtime, root, index))
-        total = len(entries)
-        reverse = order == "name-desc"
-        entries.sort(key=lambda entry: _workspace_key(entry, order), reverse=reverse)
+        """One keyset page of the filtered listing (blocking; run in executor).
+
+        At most one SELECT (get_image_link_matches) when ``q``, a category,
+        tags or the rating sort need the linked positives.
+        """
+        order, category, tags = filters["order"], filters["category"], filters["tags"]
+        links = None
+        if filters["query"] or category is not None or tags or order == "rating":
+            links = self.db.get_image_link_matches(
+                filters["text"], category, tags, every_link=order == "rating"
+            )
+        if order == "rating":
+
+            def rank(entry):
+                match = links.get(entry.normalized)
+                return -1 if match is None else (match[1] or 0)
+
+            # Stable: within one rank the newest order (the tie-break) stays.
+            entries = sorted(
+                self._workspace_order(listings, "newest"),
+                key=lambda entry: -rank(entry),
+            )
+
+            def key(entry):
+                return _rated_key(entry, rank(entry))
+
+        else:
+            entries = self._workspace_order(listings, order)
+
+            def key(entry):
+                return _workspace_key(entry, order)
+
+        start = 0
         if after is not None:
-            entries = [
-                entry
-                for entry in entries
-                if (
-                    _workspace_key(entry, order) < after
-                    if reverse
-                    else _workspace_key(entry, order) > after
-                )
-            ]
-        page = entries[:limit]
-        has_more = len(entries) > limit
-        next_cursor = (
-            _workspace_cursor(_workspace_key(page[-1], order), scope)
-            if has_more
-            else None
+            if order == "name-desc":
+                ascending = self._workspace_order(listings, "name")
+                start = len(entries) - bisect_left(ascending, after, key=key)
+            else:
+                start = bisect_right(entries, after, key=key)
+        total, page = _filtered_page(entries, start, limit + 1, filters, links)
+        has_more = len(page) > limit
+        page = page[:limit]
+        next_cursor = _workspace_cursor(key(page[-1]), scope) if has_more else None
+        return (
+            [(entry.path, entry.mtime, entry.root, entry.index) for entry in page],
+            total,
+            has_more,
+            next_cursor,
         )
-        return page, total, has_more, next_cursor
 
     async def serve_image(self, request):
         """Serve the actual image file using streamed FileResponse."""

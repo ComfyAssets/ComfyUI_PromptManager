@@ -6,7 +6,7 @@ import sqlite3
 import json
 import datetime
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set, Tuple
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
@@ -196,6 +196,46 @@ LEFT JOIN prompt_pairs pp ON pp.id = (
 LEFT JOIN prompts pt ON pt.id = pp.positive_prompt_id
 LEFT JOIN prompt_library_state pls ON pls.prompt_id = pp.positive_prompt_id
 WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
+# The workspace filters read at most this many linked rows in one SELECT: more
+# than the listing's own ceiling for several output roots (MAX_GALLERY_FILES
+# per root), so a real gallery never reaches it.
+MAX_LINK_FILTER_ROWS = 500_000
+# One image row describes a card only when no other row claims the same file
+# (as in get_image_link_summaries, several rows are ambiguous). The pair scope
+# and the linked positive follow _LINK_SUMMARY_SQL; category, rating, tags and
+# the searchable text and titles come from that positive (spec D12/D13). Every
+# writer since the 3.2.4 migration stores file_path, so it is the path key.
+# The prompt-level conditions are uncorrelated IN sets SQLite builds once, and
+# the CASE evaluates the per-row ambiguity probe only for admitted rows.
+_LINK_FILTER_SQL = """SELECT gi.file_path, p.rating, {hit}
+FROM generated_images gi
+LEFT JOIN prompt_pairs pp ON pp.id = (
+    SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
+    FROM image_prompt_pairs ip WHERE ip.image_id = gi.id)
+JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
+WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
+    SELECT 1 FROM generated_images other
+    WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END
+LIMIT :limit"""
+# The positive's text, its Library title or one of its tag names, or the pair
+# title, contains :pattern (LIKE, so ASCII case is ignored as in Library search).
+_LINK_FILTER_HIT = """(p.id IN (
+    SELECT hp.id FROM prompts hp
+    LEFT JOIN prompt_library_state hls ON hls.prompt_id = hp.id
+    WHERE hp.text LIKE :pattern ESCAPE '\\' OR hls.title LIKE :pattern ESCAPE '\\'
+    OR hp.id IN (SELECT ht.prompt_id FROM prompt_tags ht JOIN tags hn
+                 ON hn.id = ht.tag_id WHERE hn.name LIKE :pattern ESCAPE '\\'))
+  OR pp.title LIKE :pattern ESCAPE '\\')"""
+_LINK_FILTER_TAG = (
+    "p.id IN (SELECT ft.prompt_id FROM prompt_tags ft JOIN tags fn "
+    "ON fn.id = ft.tag_id WHERE fn.name = :tag{index})"
+)
+
+
+class LinkFilterTooBroad(ValueError):
+    """The linked rows a workspace filter reads exceed MAX_LINK_FILTER_ROWS."""
+
+
 _ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
@@ -2264,6 +2304,61 @@ class PromptDatabase(
                     "ambiguous" if matches else "none"
                 )
         return summaries
+
+    def get_image_link_matches(
+        self,
+        q: str,
+        category: Optional[str],
+        tags: List[str],
+        *,
+        every_link: bool = False,
+    ) -> Dict[str, Tuple[bool, Optional[int]]]:
+        """Map normalized paths of unambiguously linked images to (hit, rating).
+
+        Rows are limited to images whose linked positive has *category* and
+        every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
+        the positive's text, Library title or a tag name, or in the pair title.
+        Without category or tags only hits are returned, unless *every_link*
+        asks for every linked image (the rating sort). One SELECT, bounded by
+        MAX_LINK_FILTER_ROWS: LinkFilterTooBroad is raised rather than
+        returning a truncated set.
+        """
+        params: Dict[str, Any] = {"limit": MAX_LINK_FILTER_ROWS + 1}
+        hit = "1"
+        if q:
+            hit = _LINK_FILTER_HIT
+            params["pattern"] = f"%{escape_like(q)}%"
+        admitted = []
+        if category is not None:
+            admitted.append("p.category = :category")
+            params["category"] = category
+        for index, tag in enumerate(tags):
+            admitted.append(_LINK_FILTER_TAG.format(index=index))
+            params[f"tag{index}"] = tag
+        if q and not admitted and not every_link:
+            admitted.append(hit)
+        sql = _LINK_FILTER_SQL.format(hit=hit, admit=" AND ".join(admitted) or "1")
+        with self.model.get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        if len(rows) > MAX_LINK_FILTER_ROWS:
+            raise LinkFilterTooBroad("Too many linked images match; narrow the filter")
+        return {path: (bool(matched), rating) for path, rating, matched in rows}
+
+    def get_image_paths_matching(
+        self, q: str, category: Optional[str], tags: List[str]
+    ) -> Set[str]:
+        """Normalized paths whose linked positive matches *q*, *category* and *tags*.
+
+        See get_image_link_matches; an empty *q* matches every linked image
+        the category and tags admit.
+        """
+        return {
+            path
+            for path, (hit, _rating) in self.get_image_link_matches(
+                q, category, tags
+            ).items()
+            if hit or not q
+        }
 
     def get_prompt_id_for_image(self, image_path: str) -> Optional[int]:
         """Return the prompt_id linked to an image, or None."""

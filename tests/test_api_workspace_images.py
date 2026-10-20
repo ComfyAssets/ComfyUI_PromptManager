@@ -1,9 +1,11 @@
 """Opt-in workspace gallery contracts against disposable SQLite and media."""
 
+import asyncio
 import json
 import os
 import shutil
 import subprocess  # nosec B404
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -758,6 +760,344 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertEqual(
             (await self.inspected("shared.png", items["shared.png"]))["title"], title
         )
+
+    # B3: search, category/tag filters and rating sort over linked positives.
+
+    def _names(self, data):
+        return [item["filename"] for item in data["images"]]
+
+    def _filter_fixtures(self):
+        """Linked, pair-linked, ambiguous and unlinked files for the B3 filters."""
+        db = self.api.db
+        night_ab = self._save_prompt(
+            "A ZEBRA under neon", category="Night", tags=["a", "b"], rating=5
+        )
+        night_a = self._save_prompt("Quiet harbor", category="Night", tags=["a"])
+        day_ab = self._save_prompt(
+            "Morning field", category="Day", tags=["a", "b", "zebra-tag"], rating=3
+        )
+        titled = self._save_prompt("Plain words", category="Day", rating=1)
+        with db.model.get_connection() as connection:
+            connection.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (titled, "Zebra stored title"),
+            )
+        percent = self._save_prompt("100% wild_card", category="Day")
+        pair_positive = self._save_prompt("Pair positive", category="Night", rating=4)
+        pair = db.save_prompt_pair("Pair positive", "Noise", title="Zebra pair")
+        owners = (
+            self._save_prompt("Zebra one", category="Night"),
+            self._save_prompt("Zebra two", category="Night"),
+        )
+        files = {
+            name: self.media(f"{name}.png", mtime=100 + index)
+            for index, name in enumerate(
+                (
+                    "night_ab",
+                    "night_a",
+                    "day_ab",
+                    "titled",
+                    "percent",
+                    "paired",
+                    "ambiguous",
+                    "zebra_unlinked",
+                    "plain_unlinked",
+                )
+            )
+        }
+        db.link_image_to_prompt(night_ab, str(files["night_ab"]))
+        # A non-normalized spelling of the same file still compares equal.
+        db.link_image_to_prompt(
+            night_a, str(self.output_dir / "sub" / ".." / "night_a.png")
+        )
+        db.link_image_to_prompt(day_ab, str(files["day_ab"]))
+        db.link_image_to_prompt(titled, str(files["titled"]))
+        db.link_image_to_prompt(percent, str(files["percent"]))
+        self.assertEqual(db.get_prompt_pair(pair)["positive_prompt_id"], pair_positive)
+        image = db.link_image_to_prompt(pair_positive, str(files["paired"]))
+        db.link_image_to_pair(pair, image, {"source": "fixture"})
+        for owner in owners:
+            db.link_image_to_prompt(owner, str(files["ambiguous"]))
+        return files
+
+    async def test_search_matches_filename_prompt_text_and_tags(self):
+        from database.models import normalize_image_path
+
+        files = self._filter_fixtures()
+        _, data = await self.get(q="ZEBRA", sort="name")
+        # Text, stored title, tag, pair title and filename; never an ambiguous link.
+        self.assertEqual(
+            self._names(data),
+            [
+                "day_ab.png",
+                "night_ab.png",
+                "paired.png",
+                "titled.png",
+                "zebra_unlinked.png",
+            ],
+        )
+        self.assertEqual(data["total"], 5)
+        _, data = await self.get(q="0% w")
+        self.assertEqual(self._names(data), ["percent.png"])
+        _, data = await self.get(q="%")
+        self.assertEqual(self._names(data), ["percent.png"])
+        _, data = await self.get(q="harbor")
+        self.assertEqual(self._names(data), ["night_a.png"])
+        self.assertEqual(
+            self.api.db.get_image_paths_matching("zebra", None, []),
+            {
+                normalize_image_path(str(files[name]))
+                for name in ("night_ab", "day_ab", "titled", "paired")
+            },
+        )
+
+    async def test_category_and_tags_filter_linked_images_only(self):
+        self._filter_fixtures()
+        cases = (
+            ({"category": "Night"}, ["night_ab.png", "night_a.png", "paired.png"]),
+            ({"category": "night"}, []),
+            ({"tags": "a,b"}, ["night_ab.png", "day_ab.png"]),
+            ({"tags": " a , b ,"}, ["night_ab.png", "day_ab.png"]),
+            ({"category": "Night", "tags": "a,b"}, ["night_ab.png"]),
+            ({"category": "Night", "q": "harbor"}, ["night_a.png"]),
+            ({"category": "Night", "q": "paired"}, ["paired.png"]),
+            ({"category": "Day", "q": "zebra"}, ["day_ab.png", "titled.png"]),
+            ({"category": ""}, None),
+        )
+        _, everything = await self.get(sort="name")
+        for params, expected in cases:
+            with self.subTest(**params):
+                response, data = await self.get(sort="name", **params)
+                self.assertEqual(response.status, 200, data)
+                if expected is None:
+                    self.assertEqual(data["images"], everything["images"])
+                else:
+                    self.assertEqual(self._names(data), sorted(expected))
+                    self.assertEqual(data["total"], len(expected))
+        for params in (
+            {"category": "x" * 201},
+            {"tags": ",".join(f"t{i}" for i in range(31))},
+            {"tags": "x" * 201},
+        ):
+            response, data = await self.get(**params)
+            self.assertEqual(response.status, 400, params)
+        # The filters read one SELECT besides the page's link summary.
+        statements = []
+        original = self.api.db.model.get_connection
+
+        def trace_connection():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(
+            self.api.db.model, "get_connection", side_effect=trace_connection
+        ):
+            response, _ = await self.get(
+                category="Night", tags="a", q="zebra", sort="rating"
+            )
+        self.assertEqual(response.status, 200)
+        selects = [
+            query
+            for query in statements
+            if query.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        self.assertEqual(len(selects), 2, selects)
+
+    async def test_rating_sort_orders_linked_then_unlinked(self):
+        self._filter_fixtures()
+        response, data = await self.get(sort="rating")
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(
+            self._names(data),
+            [
+                "night_ab.png",  # 5
+                "paired.png",  # 4, the pair's positive
+                "day_ab.png",  # 3
+                "titled.png",  # 1
+                # linked without a rating, newest first
+                "percent.png",
+                "night_a.png",
+                # unlinked (and ambiguous) last, newest first
+                "plain_unlinked.png",
+                "zebra_unlinked.png",
+                "ambiguous.png",
+            ],
+        )
+        _, first = await self.get(sort="rating", limit=4)
+        _, rest = await self.get(sort="rating", limit=10, cursor=first["next_cursor"])
+        self.assertEqual(first["images"] + rest["images"], data["images"])
+        _, night = await self.get(sort="rating", category="Night")
+        self.assertEqual(
+            self._names(night), ["night_ab.png", "paired.png", "night_a.png"]
+        )
+
+    async def test_cursor_rejects_changed_filters(self):
+        self._filter_fixtures()
+        _, first = await self.get(category="Night", limit=1)
+        token = first["next_cursor"]
+        self.assertIsInstance(token, str)
+        response, _ = await self.get(category="Night", limit=1, cursor=token)
+        self.assertEqual(response.status, 200)
+        for params in (
+            {"category": "Day"},
+            {},
+            {"category": "Night", "tags": "a"},
+            {"category": "Night", "q": "zebra"},
+            {"category": "Night", "sort": "rating"},
+        ):
+            with self.subTest(**params):
+                response, _ = await self.get(cursor=token, **params)
+                self.assertEqual(response.status, 400)
+        _, rated = await self.get(sort="rating", limit=1)
+        response, _ = await self.get(sort="rating", cursor=rated["next_cursor"])
+        self.assertEqual(response.status, 200)
+        response, _ = await self.get(sort="newest", cursor=rated["next_cursor"])
+        self.assertEqual(response.status, 400)
+        _, tagged = await self.get(tags="a,b", limit=1)
+        response, _ = await self.get(tags="b,a", cursor=tagged["next_cursor"])
+        self.assertEqual(response.status, 200)
+        response, _ = await self.get(tags="a", cursor=tagged["next_cursor"])
+        self.assertEqual(response.status, 400)
+        for params in ({"sort": "rated"}, {"sort": "rating-desc"}, {"media": "x"}):
+            response, _ = await self.get(**params)
+            self.assertEqual(response.status, 400, params)
+
+    async def test_windows_style_link_paths_compare_normalized(self):
+        import ntpath
+
+        def windows_normalize(path):
+            return ntpath.normcase(ntpath.normpath(path))
+
+        prompt = self._save_prompt("Case words", category="Night", rating=2)
+        listed = self.media("Sub/Night.PNG")
+        self.media("Sub/other.png")
+        stored = str(listed).upper().replace("/", "\\")
+        with (
+            patch("database.operations.normalize_image_path", windows_normalize),
+            patch("py.api.images.normalize_image_path", windows_normalize),
+        ):
+            self.api.db.link_image_to_prompt(prompt, stored)
+            _, data = await self.get(category="Night")
+            self.assertEqual(self._names(data), ["Night.PNG"])
+            _, data = await self.get(q="case words")
+            self.assertEqual(self._names(data), ["Night.PNG"])
+            _, data = await self.get(sort="rating")
+            self.assertEqual(self._names(data), ["Night.PNG", "other.png"])
+
+    async def test_too_broad_link_filter_is_a_safe_bad_request(self):
+        self._filter_fixtures()
+        with patch("database.operations.MAX_LINK_FILTER_ROWS", 1):
+            response, data = await self.get(category="Night")
+        self.assertEqual(response.status, 400)
+        self.assertIn("narrow", data["error"])
+        self.assertNotIn(str(self.comfy_dir), str(data))
+
+    def _budget_fixture(self, files, links):
+        """*files* listed paths and *links* linked rows, written in bulk."""
+        from database.models import normalize_image_path
+
+        listed = [
+            (self.output_dir / f"day-{i % 50:02}" / f"img_{i:05}.png", 1_000.0 + i)
+            for i in range(files)
+        ]
+        prompts = 2_000
+        with self.api.db.model.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO tags(id,name) VALUES(?,?)",
+                [(i + 1, f"tag-{i}") for i in range(20)],
+            )
+            conn.executemany(
+                "INSERT INTO prompts(id,text,category,rating,hash) VALUES(?,?,?,?,?)",
+                [
+                    (
+                        i + 1,
+                        f"prompt {i} " + "lantern " * (i % 7) + "harbor " * 20,
+                        f"cat-{i % 10}",
+                        (i % 6) or None,
+                        f"hash-{i}",
+                    )
+                    for i in range(prompts)
+                ],
+            )
+            conn.executemany(
+                "INSERT OR IGNORE INTO prompt_tags(prompt_id,tag_id) VALUES(?,?)",
+                [(i + 1, t) for i in range(prompts) for t in (i % 20 + 1, 1)],
+            )
+            conn.executemany(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                [(i + 1, f"Title {i}") for i in range(0, prompts, 3)],
+            )
+            conn.executemany(
+                "INSERT INTO generated_images(prompt_id,image_path,filename,file_path)"
+                " VALUES(?,?,?,?)",
+                [
+                    (
+                        i % prompts + 1,
+                        str(listed[i * 2][0]),
+                        listed[i * 2][0].name,
+                        normalize_image_path(str(listed[i * 2][0])),
+                    )
+                    for i in range(links)
+                ],
+            )
+        return listed
+
+    async def test_filter_budget(self):
+        import math
+        import time
+
+        # Built off the event loop: the bulk inserts take a few hundred ms.
+        listed = await asyncio.get_running_loop().run_in_executor(
+            None, self._budget_fixture, 50_000, 20_000
+        )
+
+        def format_page(page):
+            return [{"filename": entry[0].name} for entry in page]
+
+        requests = [
+            {"q": "lantern"},
+            {"q": "img_0123"},
+            {"q": "Title 1"},
+            {"category": "cat-3"},
+            {"tags": "tag-0,tag-2"},
+            {"sort": "rating"},
+            {"sort": "rating", "category": "cat-4"},
+            {"q": "harbor", "category": "cat-5", "tags": "tag-5"},
+            {"sort": "name", "q": "tag-7"},
+            {"subfolder": "day-07", "q": "lantern"},
+        ]
+        timings = []
+        with (
+            patch.object(
+                self.api, "_get_gallery_files", AsyncMock(return_value=listed)
+            ),
+            patch.object(self.api, "_format_workspace_page", side_effect=format_page),
+        ):
+            # The first request after a scan builds the cached sort orders.
+            started = time.perf_counter()
+            response, _ = await self.get(sort="rating")
+            cold = time.perf_counter() - started
+            self.assertEqual(response.status, 200)
+            for index in range(20):
+                params = dict(requests[index % len(requests)], limit=100)
+                if index >= len(requests):
+                    _, first = await self.get(**params)
+                    if first["next_cursor"]:
+                        params["cursor"] = first["next_cursor"]
+                started = time.perf_counter()
+                response, data = await self.get(**params)
+                timings.append(time.perf_counter() - started)
+                self.assertEqual(response.status, 200, (params, data))
+        _, data = await self.get(category="cat-3")
+        timings.sort()
+        p95 = timings[math.ceil(0.95 * len(timings)) - 1]
+        print(
+            f"\nworkspace filter budget: p95={p95 * 1000:.1f} ms "
+            f"max={timings[-1] * 1000:.1f} ms cold={cold * 1000:.1f} ms",
+            file=sys.stderr,
+        )
+        self.assertLess(p95, 0.150, [round(t * 1000, 1) for t in timings])
 
 
 class TestWorkspaceCursorEncoding(unittest.TestCase):

@@ -283,6 +283,10 @@ class PromptManagerAPI(
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
         self._gallery_cache_ttl = 30  # Cache TTL in seconds
+        # Workspace listing values and sort orders derived from a cached scan
+        # (py/api/images.py _workspace_listed/_workspace_orders).
+        self._workspace_listed_cache = {}
+        self._workspace_order_cache = {}
         # Single-flight locks for long jobs, keyed by job family; see
         # _acquire_long_job(). Created lazily so no lock binds to an event
         # loop before the server's loop exists.
