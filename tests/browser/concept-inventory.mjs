@@ -46,6 +46,16 @@ export async function focusRingOf(locator) {
         outlineColor:style.outlineColor,outlineOffset:style.outlineOffset};});
 }
 
+/** Computed colors of an element while the pointer rests on it; the pointer is parked again afterwards. */
+export async function hoverStateOf(page,locator) {
+    await locator.hover();
+    const state=await locator.evaluate(node=>{const style=getComputedStyle(node);return {hovered:node.matches(':hover'),
+        color:style.color,backgroundColor:style.backgroundColor,borderTopColor:style.borderTopColor,
+        textDecorationLine:style.textDecorationLine,boxShadow:style.boxShadow};});
+    await page.mouse.move(0,0);
+    return state;
+}
+
 /**
  * Inventory sections: {chrome, heading, toolbar, filterRow, caption, grid, cards, panel, library, history,
  * noPageScroll}. A section is null when its element is absent. Sections whose page PR has not landed yet
@@ -96,72 +106,88 @@ export function measureInventory(scope) {
             gapAfter,icon:iconOf(link),
             count:count?{text:count.textContent,shown:shown(count),...font(count),...css(count,'marginInlineStart')}:null};
     }
-    function chromeOf() {
-        if(!sidebar||!workspace)return null;
-        const shell=document.querySelector('.app-shell');
-        const brand=sidebar.querySelector('.brand'),mark=brand.querySelector('.brand-mark'),small=brand.querySelector('small');
-        const bottom=sidebar.querySelector('.sidebar-bottom'),connection=sidebar.querySelector('.connection');
-        const topbar=workspace.querySelector('.topbar'),crumbs=topbar.querySelector('.breadcrumbs'),actions=topbar.querySelector('.top-actions');
-        const footer=workspace.querySelector('.app-footer');
+    // Every subsection is null when its element is missing, so a removed node is reported by its path
+    // (for example `chrome.breadcrumbs`) instead of failing the measurement.
+    const when=(node,measure)=>node?measure(node):null;
+    // The accessible text of a node: its text without aria-hidden descendants.
+    const accessibleText=node=>textOf(node,'[aria-hidden="true"]');
+    function itemOf(node,actions) {
+        const base={tag:node.tagName.toLowerCase(),className:node.className,shown:shown(node)};
+        if(!base.shown)return base;
+        const box=relative(node,actions);
+        return {...base,text:textOf(node,'select, .count'),...font(node),...edges(node),...layout(node),
+            left:box.left,top:box.top,width:box.width,height:box.height,
+            count:node.querySelector('.count')?.textContent??null,
+            select:when(node.querySelector('select'),select=>({options:[...select.options].map(option=>[option.value,option.textContent]),
+                label:select.getAttribute('aria-label'),labelled:select.labels?.[0]===node,...font(select),...edges(select),
+                minHeight:getComputedStyle(select).minHeight,width:px(rect(select).width),height:px(rect(select).height)})),
+            hiddenSuffix:[...node.querySelectorAll('[aria-hidden="true"]')].map(child=>child.textContent).join('')||null,
+            whiteSpace:getComputedStyle(node).whiteSpace};
+    }
+    function sidebarOf() {
+        return when(sidebar,()=>({...layout(sidebar),...edges(sidebar),
+            ...css(sidebar,'top','overflowY','borderInlineEndWidth'),width:px(rect(sidebar).width),
+            fillsViewport:Math.abs(rect(sidebar).height-innerHeight)<=1}));
+    }
+    function bottomOf(bottom) {
+        // In the column sidebar the bottom group is pinned to the end by `margin-top: auto`, whose used value is only
+        // the free space above it, so the pin (its inset from the sidebar's padding edge) is recorded instead.
         const sidebarStyle=getComputedStyle(sidebar);
-        const columns=getComputedStyle(shell).gridTemplateColumns.split(' ');
-        const item=node=>{
-            const base={tag:node.tagName.toLowerCase(),className:node.className,shown:shown(node)};
-            if(!base.shown)return base;
-            const box=relative(node,actions);
-            const select=node.querySelector('select');
-            return {...base,text:textOf(node,'select, .count'),...font(node),...edges(node),...layout(node),width:box.width,height:box.height,top:box.top,
-                count:node.querySelector('.count')?.textContent??null,
-                select:select?{options:[...select.options].map(option=>[option.value,option.textContent]),label:select.getAttribute('aria-label'),
-                    labelled:select.labels?.[0]===node,...font(select),...edges(select),minHeight:getComputedStyle(select).minHeight,
-                    width:px(rect(select).width),height:px(rect(select).height)}:null,
-                hiddenSuffix:[...node.querySelectorAll('[aria-hidden="true"]')].map(child=>child.textContent).join('')||null,
-                whiteSpace:getComputedStyle(node).whiteSpace};
-        };
+        const pinned=sidebarStyle.display==='flex';
+        const {marginTop,...rest}=edges(bottom);
+        return {...rest,...css(bottom,'display'),marginTop:pinned?'auto':marginTop,
+            bottomInset:pinned?px(rect(sidebar).bottom-rect(bottom).bottom-parseFloat(sidebarStyle.paddingBottom)):null};
+    }
+    function topActionsOf(actions,topbar) {
+        const style=getComputedStyle(topbar);
+        return {...layout(actions),...edges(actions),width:px(rect(actions).width),height:px(rect(actions).height),
+            fullWidth:Math.abs(rect(actions).width-(rect(topbar).width-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)))<=1,
+            rightInset:px(rect(topbar).right-rect(actions).right),
+            items:[...actions.children].map(node=>itemOf(node,actions))};
+    }
+    function chromeOf() {
+        if(!sidebar&&!workspace)return null;
+        const shell=document.querySelector('.app-shell');
+        const brand=sidebar?.querySelector('.brand');
+        const topbar=workspace?.querySelector('.topbar');
+        const footer=workspace?.querySelector('.app-footer');
         return {
-            title:document.title.replace(/ · Prompt Manager.*$/,''),
-            skip:{text:document.querySelector('a.skip')?.textContent.trim()??null,...css(document.querySelector('a.skip'),'position','top','left')},
+            title:document.title,
+            skip:when(document.querySelector('a.skip'),skip=>({text:skip.textContent.trim(),...css(skip,'position','top','left')})),
             body:{...font(document.body),backgroundColor:getComputedStyle(document.body).backgroundColor,
                 tokens:Object.fromEntries(['--ca-text','--ca-muted','--ca-focus','--ca-accent','--ca-field','--ca-surface','--ca-line',
                     '--line','--page','--sidebar','--soft-blue','--green'].map(name=>[name,getComputedStyle(document.body).getPropertyValue(name).trim()]))},
-            shell:{display:getComputedStyle(shell).display,columns:columns.length,sidebarColumn:columns.length>1?columns[0]:null,
-                minHeight:getComputedStyle(shell).minHeight},
-            sidebar:{...layout(sidebar),...edges(sidebar),...css(sidebar,'top','overflowY','borderInlineEndWidth'),width:px(rect(sidebar).width),
-                fillsViewport:Math.abs(rect(sidebar).height-innerHeight)<=1},
-            brand:{text:textOf(brand),href:brand.getAttribute('href')?.replace(/^#\/?/,''),...relative(brand,sidebar),...font(brand),...layout(brand),...edges(brand),
-                mark:{text:textOf(mark),...font(mark),width:px(rect(mark).width),height:px(rect(mark).height)},
-                small:{text:small.textContent,...font(small),...css(small,'display','marginTop')}},
-            labels:[...sidebar.querySelectorAll('.sidebar-label')].map(node=>({text:textOf(node),shown:shown(node),...font(node),...layout(node),...edges(node)})),
-            navs:[...sidebar.querySelectorAll('nav')].map(nav=>{const links=[...nav.querySelectorAll(':scope > a')];return {
+            shell:when(shell,()=>{const columns=getComputedStyle(shell).gridTemplateColumns.split(' ');
+                return {display:getComputedStyle(shell).display,columns:columns.length,sidebarColumn:columns.length>1?columns[0]:null,
+                    minHeight:getComputedStyle(shell).minHeight};}),
+            sidebar:sidebarOf(),
+            brand:when(brand,()=>({text:textOf(brand),name:accessibleText(brand),href:brand.getAttribute('href')?.replace(/^#\/?/,''),
+                ...relative(brand,sidebar),...font(brand),...layout(brand),...edges(brand),
+                mark:when(brand.querySelector('.brand-mark'),mark=>({text:textOf(mark),hidden:mark.getAttribute('aria-hidden'),...font(mark),
+                    width:px(rect(mark).width),height:px(rect(mark).height)})),
+                small:when(brand.querySelector('small'),small=>({text:small.textContent,...font(small),...css(small,'display','marginTop')}))})),
+            labels:sidebar?[...sidebar.querySelectorAll('.sidebar-label')].map(node=>({text:textOf(node),shown:shown(node),...font(node),...layout(node),...edges(node)})):null,
+            navs:sidebar?[...sidebar.querySelectorAll('nav')].map(nav=>{const links=[...nav.querySelectorAll(':scope > a')];return {
                 id:nav.id,label:nav.getAttribute('aria-label'),shown:shown(nav),...layout(nav),...edges(nav),
-                width:px(rect(nav).width),rows:links.map(navRow)};}),
-            bottom:(()=>{
-                // In the column sidebar the bottom group is pinned to the end by `margin-top: auto`, whose used value is
-                // only the free space above it, so the pin (its inset from the sidebar's padding edge) is recorded instead.
-                const pinned=sidebarStyle.display==='flex';
-                const {marginTop,...rest}=edges(bottom);
-                return {...rest,...css(bottom,'display'),marginTop:pinned?'auto':marginTop,
-                    bottomInset:pinned?px(rect(sidebar).bottom-rect(bottom).bottom-parseFloat(sidebarStyle.paddingBottom)):null};
-            })(),
-            connection:{shown:shown(connection),text:textOf(connection,'small'),small:connection.querySelector('small')?.textContent??null,
-                ...layout(connection),...edges(connection),...font(connection),
-                smallFont:font(connection.querySelector('small')),
-                dot:(dot=>({...css(dot,'width','height','borderTopLeftRadius','backgroundColor','marginTop')}))(connection.querySelector('i'))},
-            topbar:{...layout(topbar),...edges(topbar),...css(topbar,'height','minHeight'),...relative(topbar,workspace),
-                fullWidth:px(rect(topbar).width)===px(rect(workspace).width)},
-            breadcrumbs:{shown:shown(crumbs),text:textOf(crumbs),...layout(crumbs),...font(crumbs),
+                width:px(rect(nav).width),rows:links.map(navRow)};}):null,
+            bottom:when(sidebar?.querySelector('.sidebar-bottom'),bottomOf),
+            connection:when(sidebar?.querySelector('.connection'),connection=>({shown:shown(connection),text:textOf(connection,'small'),
+                small:connection.querySelector('small')?.textContent??null,...layout(connection),...edges(connection),...font(connection),
+                smallFont:when(connection.querySelector('small'),font),
+                dot:when(connection.querySelector('i'),dot=>css(dot,'width','height','borderTopLeftRadius','backgroundColor','marginTop'))})),
+            topbar:when(topbar,()=>({...layout(topbar),...edges(topbar),...css(topbar,'height','minHeight'),...relative(topbar,workspace),
+                fullWidth:px(rect(topbar).width)===px(rect(workspace).width)})),
+            breadcrumbs:when(topbar?.querySelector('.breadcrumbs'),crumbs=>({shown:shown(crumbs),text:textOf(crumbs),...layout(crumbs),...font(crumbs),
                 parts:[...crumbs.querySelectorAll('span')].map(span=>({text:span.textContent,...font(span)})),
-                ...(shown(crumbs)?{left:relative(crumbs,topbar).left,middle:px(rect(crumbs).top+rect(crumbs).height/2-rect(topbar).top)}:{})},
-            topActions:{...layout(actions),...edges(actions),width:px(rect(actions).width),height:px(rect(actions).height),
-                fullWidth:Math.abs(rect(actions).width-(rect(topbar).width-parseFloat(getComputedStyle(topbar).paddingLeft)-parseFloat(getComputedStyle(topbar).paddingRight)))<=1,
-                rightInset:px(rect(topbar).right-rect(actions).right),
-                items:[...actions.children].map(item)},
-            main:{tag:main.tagName.toLowerCase(),tabIndex:main.tabIndex,...css(main,'paddingTop','paddingRight','paddingBottom','paddingLeft','maxWidth','marginLeft','marginRight')},
-            footer:footer?{...layout(footer),...edges(footer),...font(footer),...css(footer,'height'),width:px(rect(footer).width),
+                ...(shown(crumbs)?{left:relative(crumbs,topbar).left,middle:px(rect(crumbs).top+rect(crumbs).height/2-rect(topbar).top)}:{})})),
+            topActions:when(topbar?.querySelector('.top-actions'),actions=>topActionsOf(actions,topbar)),
+            main:when(main,()=>({tag:main.tagName.toLowerCase(),tabIndex:main.tabIndex,
+                ...css(main,'paddingTop','paddingRight','paddingBottom','paddingLeft','maxWidth','marginLeft','marginRight')})),
+            footer:when(footer,()=>({...layout(footer),...edges(footer),...font(footer),...css(footer,'height'),width:px(rect(footer).width),
                 fullWidth:px(rect(footer).width)===px(rect(workspace).width),
                 spans:[...footer.querySelectorAll(':scope > span')].map(span=>({text:span.textContent.replace(/\s+/g,' ').trim(),...font(span),height:px(rect(span).height)})),
                 buttons:[...footer.querySelectorAll('button')].map(button=>({text:button.textContent.trim(),...font(button),...edges(button),
-                    minHeight:getComputedStyle(button).minHeight,height:px(rect(button).height)}))}:null,
+                    minHeight:getComputedStyle(button).minHeight,height:px(rect(button).height)}))})),
         };
     }
     function headingOf() {
@@ -169,13 +195,13 @@ export function measureInventory(scope) {
         if(!heading)return null;
         const copy=heading.firstElementChild,h1=copy?.querySelector('h1'),description=copy?.querySelector('p'),actions=heading.querySelector('.heading-actions');
         return {...layout(heading),...edges(heading),height:px(rect(heading).height),
-            copy:{tag:copy.tagName.toLowerCase(),...layout(copy)},
-            h1:{id:h1.id,tabIndex:h1.tabIndex,text:h1.textContent,...font(h1),...edges(h1)},
-            description:description?{className:description.className,text:description.textContent,...font(description),...edges(description)}:null,
-            actions:actions?{...layout(actions),...edges(actions),
-                fullWidth:px(rect(actions).width)===px(rect(heading).width),stacked:rect(actions).top>=rect(copy).bottom-0.5,
+            copy:when(copy,()=>({tag:copy.tagName.toLowerCase(),...layout(copy)})),
+            h1:when(h1,()=>({id:h1.id,tabIndex:h1.tabIndex,text:h1.textContent,...font(h1),...edges(h1)})),
+            description:when(description,()=>({className:description.className,text:description.textContent,...font(description),...edges(description)})),
+            actions:when(actions,()=>({...layout(actions),...edges(actions),
+                fullWidth:px(rect(actions).width)===px(rect(heading).width),stacked:copy?rect(actions).top>=rect(copy).bottom-0.5:null,
                 buttons:[...actions.querySelectorAll('button')].map(node=>({text:node.textContent.trim(),primary:node.classList.contains('ca-primary'),
-                    ...font(node),...edges(node),minHeight:getComputedStyle(node).minHeight,height:px(rect(node).height)}))}:null};
+                    ...font(node),...edges(node),minHeight:getComputedStyle(node).minHeight,height:px(rect(node).height)}))}))};
     }
     return {chrome:chromeOf(),heading:headingOf(),toolbar:null,filterRow:null,caption:null,grid:null,cards:null,panel:null,
         library:null,history:null,noPageScroll:document.documentElement.scrollWidth<=innerWidth+1};

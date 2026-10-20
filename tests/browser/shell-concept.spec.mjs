@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,focusRingOf} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,focusRingOf,hoverStateOf} from './concept-inventory.mjs';
 
 // Task A6 of #249: the production shell (sidebar, topbar, heading, footer) against the immutable concept, with the
 // concept-shaped real fixture so the sidebar counts are the concept's own (24 images, 6 prompts, 15 tags). Both themes,
@@ -18,17 +18,30 @@ const rowNamed=(nav,text)=>nav.rows.find(row=>row.text===text);
 
 const removedItem=item=>String(item.className).includes('concept-badge')||(item.tag==='button'&&item.text.startsWith('Activity'));
 
+/** Left offsets of flex items packed along a row of `width` by its `justify-content` and `gap`. */
+function packedLefts(items,width,justify,gap) {
+    const total=items.reduce((sum,item)=>sum+item.width,0)+gap*(items.length-1);
+    let start=0,spacing=gap;
+    if(justify==='flex-end'||justify==='end')start=width-total;
+    else if(justify==='center')start=(width-total)/2;
+    else if(justify==='space-between'&&items.length>1)spacing=gap+(width-total)/(items.length-1);
+    let x=start;
+    return items.map(item=>{const left=Math.round(x);x+=item.width+spacing;return left;});
+}
+
 /** The top-actions row once removed items are gone: a centered flex row, so its size and item offsets follow. */
 function remainingTopActions(actions) {
     const kept=actions.items.filter(item=>!removedItem(item));
     const shown=kept.filter(item=>item.shown);
     const height=Math.max(...shown.map(item=>item.height));
     const gap=parseFloat(actions.columnGap);
-    const width=shown.reduce((sum,item)=>sum+item.width,0)+gap*(shown.length-1);
-    return {...actions,height,
-        // A full-width row (<=700px) keeps its width; otherwise it shrinks to its remaining items.
-        width:actions.fullWidth?actions.width:width,
-        items:kept.map(item=>item.shown?{...item,top:Math.round((height-item.height)/2)}:item)};
+    // A full-width row (<=700px) keeps its width; otherwise it shrinks to its remaining items.
+    const width=actions.fullWidth?actions.width:shown.reduce((sum,item)=>sum+item.width,0)+gap*(shown.length-1);
+    // At <=700px the concept spreads three items with `space-between`, so its Theme select sits in the middle; with
+    // Activity removed (D5) the same rule puts Theme at the row's start. Offsets come from the concept's own sizes.
+    const lefts=new Map(shown.map((item,index)=>[item,packedLefts(shown,width,actions.justifyContent,gap)[index]]));
+    return {...actions,height,width,
+        items:kept.map(item=>item.shown?{...item,top:Math.round((height-item.height)/2),left:lefts.get(item)}:item)};
 }
 
 /** The footer once its button is gone: paddings plus the remaining spans along the footer's flex direction. */
@@ -57,6 +70,8 @@ function mapShellConcept(reference) {
             ]};
         });
     return {...reference,chrome:{...chrome,
+        // D29: no prototype suffix in the document title.
+        title:chrome.title.replace(/ · Prompt Manager concept$/,' · Prompt Manager'),
         // D28: only the WORKSPACE group label remains.
         labels:chrome.labels.filter(label=>label.text==='WORKSPACE'),
         navs,
@@ -80,14 +95,13 @@ function mapShellConcept(reference) {
         buttons:reference.heading.actions.buttons.filter(item=>item.text!=='Auto-tag images')}}};
 }
 
-/** Layout and typography of the heading without its page-owned copy and actions. */
+/** The heading without its page-owned description copy and actions; the h1 text is the shell's and stays compared. */
 function headingFrame(heading) {
     if(!heading)return heading;
-    const {height,h1,description,actions,...frame}=heading;
-    const {text,...h1Tokens}=h1;
+    const {height,description,actions,...frame}=heading;
     const {text:copy,...descriptionTokens}=description??{};
     const {buttons,stacked,...actionTokens}=actions??{};
-    return {...frame,h1:h1Tokens,description:description?descriptionTokens:null,actions:actions?actionTokens:null};
+    return {...frame,description:description?descriptionTokens:null,actions:actions?actionTokens:null};
 }
 
 function compare(route,reference,actual) {
@@ -113,6 +127,22 @@ async function ringsOf(page,mainSelector) {
     return {navLink,headingButton};
 }
 
+/** Hover colors of the first non-current WORKSPACE row, the Theme select and the ComfyUI link. */
+async function hoversOf(page) {
+    return {
+        navRow:await hoverStateOf(page,page.locator('#primary-nav a:not([aria-current])').first()),
+        theme:await hoverStateOf(page,page.getByRole('combobox',{name:'Theme',exact:true})),
+        canvasLink:await hoverStateOf(page,page.locator('.topbar .canvas-link')),
+    };
+}
+
+/** A viewport capture with the footer (and, at 1600, the sidebar's bottom group) in view. */
+async function captureFooter(page,testInfo,name) {
+    await page.locator('.app-footer').scrollIntoViewIfNeeded();
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await captureCanonicalState(page,testInfo,name);
+}
+
 test.beforeEach(async({request})=>{await seedConcept(request);});
 
 for(const [width,height] of SIZES)for(const theme of THEMES)test(`shell geometry, tokens and controls match the concept ${width}x${height} ${theme}`,async({page},testInfo)=>{
@@ -122,21 +152,32 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`shell geometry
         const reference=await inventoryOf(page,'#main');
         if(motion==='no-preference')await captureCanonicalState(page,testInfo,`concept-shell-${route}-${width}-${theme}`);
         const referenceRings=FULL_HEADING.has(route)?await ringsOf(page,'#main'):null;
+        const referenceHovers=await hoversOf(page);
+        if(motion==='no-preference')await captureFooter(page,testInfo,`concept-footer-${route}-${width}-${theme}`);
         await openProduction(page,route,theme,motion);await page.mouse.move(0,0);
         const actual=await inventoryOf(page,'#workspace-main');
         if(motion==='no-preference')await captureCanonicalState(page,testInfo,`production-shell-${route}-${width}-${theme}`);
         const actualRings=FULL_HEADING.has(route)?await ringsOf(page,'#workspace-main'):null;
-        result[`${motion} ${route}`]={breadcrumb,reference,actual,diff:compare(route,reference,actual),referenceRings,actualRings};
+        const actualHovers=await hoversOf(page);
+        if(motion==='no-preference')await captureFooter(page,testInfo,`production-footer-${route}-${width}-${theme}`);
+        result[`${motion} ${route}`]={route,breadcrumb,reference,actual,diff:compare(route,reference,actual),referenceRings,actualRings,
+            referenceHovers,actualHovers};
     }
     const path=testInfo.outputPath('shell-geometry.json');await writeFile(path,JSON.stringify(result,null,2));
     await testInfo.attach('shell-geometry',{path,contentType:'application/json'});
-    for(const [key,{breadcrumb,reference,actual,diff,referenceRings,actualRings}] of Object.entries(result)) {
+    for(const [key,{route,breadcrumb,reference,actual,diff,referenceRings,actualRings,referenceHovers,actualHovers}] of Object.entries(result)) {
         // The concept itself is what this comparison assumes: its sample counts and its shell controls.
         expect.soft(reference.chrome.navs[0].rows.map(row=>[row.text,row.count?.text??null]),`${key} concept WORKSPACE rows`)
             .toEqual([['Images','24'],['Prompt library','6'],['Tags & categories','15'],['Inspect a file',null]]);
         expect.soft(reference.chrome.topActions.items.map(item=>item.className||item.tag),`${key} concept top actions`)
             .toEqual(['concept-badge','button','theme-label','canvas-link']);
         expect.soft(reference.chrome.breadcrumbs.parts.at(-1).text,`${key} concept breadcrumb`).toBe(breadcrumb);
+        expect.soft(reference.chrome.title,`${key} concept title`).toBe(`${breadcrumb} · Prompt Manager concept`);
+        expect.soft(actual.chrome.title,`${key} production title`).toBe(`${breadcrumb} · Prompt Manager`);
+        expect.soft(reference.heading.h1.text,`${key} concept page title`).toBe(route==='tags'?'Tags & categories':breadcrumb);
+        // The concept's own nav-row hover (style.css:183-186) is what production is held to.
+        expect.soft(referenceHovers.navRow,`${key} concept nav-row hover`).toMatchObject({hovered:true,color:reference.chrome.body.color});
+        expect.soft(actualHovers,`${key} hover states`).toEqual(referenceHovers);
         expect.soft(diff,`${key} differences after the recorded deviations`).toEqual([]);
         expect.soft(actual.noPageScroll,`${key} no page-level horizontal scroll`).toBe(true);
         if(referenceRings) {
@@ -146,4 +187,34 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`shell geometry
             expect.soft(actualRings,`${key} focus rings`).toEqual(referenceRings);
         }
     }
+});
+
+test('the inventory reports a missing shell element by its path instead of failing',async({page})=>{
+    await page.setViewportSize({width:1600,height:1100});
+    await openConcept(page,'tags','dark');await page.mouse.move(0,0);
+    const reference=mapShellConcept(await inventoryOf(page,'#main'));
+    await openProduction(page,'tags','dark');await page.mouse.move(0,0);
+    expect(diffInventory(reference.chrome,(await inventoryOf(page,'#workspace-main')).chrome)).toEqual([]);
+    await page.locator('.breadcrumbs').evaluate(node=>node.remove());
+    await page.locator('.connection small').evaluate(node=>node.remove());
+    const actual=await inventoryOf(page,'#workspace-main');
+    expect(actual.chrome.breadcrumbs).toBeNull();
+    expect(actual.chrome.connection.smallFont).toBeNull();
+    const paths=diffInventory(reference.chrome,actual.chrome).map(item=>item.path);
+    expect(paths).toContain('breadcrumbs');
+    expect(paths).toContain('connection.smallFont');
+    expect(paths).toContain('connection.small');
+});
+
+test('the concept fixture renders the concept inspector facts',async({page})=>{
+    await page.setViewportSize({width:1600,height:1100});
+    await openProduction(page,'images','dark');
+    // The first image is the concept's first sample, selected into the panel on first load (D19).
+    const facts=page.locator('#workspace-main .generation-facts');
+    await expect(facts).toBeVisible();
+    const pairs=await facts.evaluate(list=>Object.fromEntries([...list.querySelectorAll('dt')].map(term=>[term.textContent.trim(),term.nextElementSibling.textContent.trim()])));
+    // app.js:404-408: the concept's facts for alpine_00001.png.
+    expect(pairs).toEqual({Seed:'42001',Steps:'28',CFG:'6.5',Sampler:'dpmpp_2m',Scheduler:'karras',Model:'illustrative-model.safetensors'});
+    // D21 maps execution evidence to "Execution recorded" in PR D; today's panel names the same source this way.
+    await expect(page.locator('#workspace-main').getByText('Execution prompt evidence',{exact:true})).toBeVisible();
 });
