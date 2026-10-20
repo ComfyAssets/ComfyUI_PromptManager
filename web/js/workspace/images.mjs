@@ -672,7 +672,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             const data = await api.get('/prompt_manager/library/options', {signal:request.signal});
             if (scope.signal.aborted || request !== categoryRequest) return;
             if (!Array.isArray(data?.categories)) throw new TypeError('Invalid categories');
-            toolbar.setCategories([...data.categories.filter(value => typeof value === 'string'), filters.category]);
+            // D36: alphabetical (case-insensitive) whatever order the server sends, a restored category among them.
+            const names = new Set([...data.categories.filter(value => typeof value === 'string' && value), filters.category]);
+            names.delete('');
+            toolbar.setCategories([...names].sort((a, b) => a.localeCompare(b, 'en-US', {sensitivity:'base'}) || (a < b ? -1 : a > b ? 1 : 0)));
             categoriesFailed = false;
         } catch {
             if (scope.signal.aborted || request !== categoryRequest) return;

@@ -1544,3 +1544,13 @@ test('unreachable sources and categories announce one error', async ({ page }) =
     await rescan(page);
     await expect(page.getByRole('alert')).toHaveCount(0);
 });
+
+// #249 final review m8: D36's alphabetical categories hold whatever order the server sends.
+test('toolbar categories are alphabetical regardless of server order', async ({ page }) => {
+    await page.route('**/prompt_manager/library/options*', route => route.fulfill({
+        json: { success: true, categories: ['zeta', 'Alpha', 'beta'] },
+    }));
+    await page.goto(workspace);
+    const category = page.getByRole('combobox', { name: 'Filter by category', exact: true });
+    await expect(category.locator('option')).toHaveText(['All categories', 'Alpha', 'beta', 'zeta']);
+});
