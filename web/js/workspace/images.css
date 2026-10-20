@@ -1,11 +1,9 @@
+/* The Images page renders the concept DOM (#249 PR C), so its replaced rules are retired. What remains is the side
+   panel, the prompt blocks and the prompt sender, which PR D moves to the concept panel and deletes with this file. */
 .images-main { container: images-page / inline-size; }
 .image-details { position: sticky; inset-block-start: 20px; padding: 17px; border-radius: 7px; min-inline-size: 0; max-block-size: calc(100dvh - 40px); overflow: auto; }
 .image-details h2 { font-size: 14px; overflow-wrap: anywhere; margin-block: 0 12px; }
 .image-details > :where(img, video) { display: block; inline-size: calc(100% + 34px); block-size: 150px; margin: -17px -17px 17px; object-fit: cover; background: var(--ca-field); border-radius: 6px 6px 0 0; }
-.image-facts { font-size: 10px; margin-block: 17px; }
-.image-facts > div { padding-block: 8px; border-block-end: 1px solid var(--ca-line); }
-.image-facts dt { color: var(--ca-muted); margin-block-end: 4px; }
-.image-facts dd { margin: 0; overflow-wrap: anywhere; }
 .image-details .workspace-link { display: flex; font-size: 11px; }
 @media (max-width: 700px) {
     .image-details { position: static; max-block-size: none; padding: 17px; }
@@ -27,10 +25,12 @@
 .prompt-block h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; margin: 0; color: var(--prompt-role); }
 .prompt-source, .prompt-empty, .prompt-block > .muted { font-size: 10px; }
 .prompt-source { margin-block: 6px 10px; }
+/* #249 D22 interim: production's prompt blocks keep their text, action row and 26px buttons until PR D renders the
+   concept prompt block and retires these three overrides. */
 .prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; margin-block: 10px; }
 .prompt-text:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 3px; }
-.prompt-actions { display: flex; flex-wrap: wrap; gap: 4px; }
-.ca-tools .prompt-actions button { display: inline-flex; align-items: center; justify-content: center; inline-size: 26px; block-size: 26px; min-block-size: 26px; padding: 5px; }
+.prompt-actions { /* #249 D22 interim (PR D) */ display: flex; flex-wrap: wrap; gap: 4px; }
+.ca-tools .prompt-actions button { /* #249 D22 interim (PR D) */ display: inline-flex; align-items: center; justify-content: center; inline-size: 26px; block-size: 26px; min-block-size: 26px; padding: 5px; }
 .prompt-actions .prompt-send-button span { display: none; }
 .prompt-actions .icon { inline-size: 14px; block-size: 14px; }
 .prompt-copy-status { font-size: 11px; margin-block-end: 0; }
