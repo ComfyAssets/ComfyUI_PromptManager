@@ -68,6 +68,8 @@ export function mountToolbar(container, { scope, categories = [], sorts, value =
     search.id = 'search';
     search.type = 'search';
     search.placeholder = 'Search prompts, tags, filenames…';
+    // The listing API rejects longer search text (py/api/images.py _workspace_filters).
+    search.maxLength = 500;
     search.setAttribute('aria-label', 'Search workspace');
     label.append(createWorkspaceIcon('search'), search);
 

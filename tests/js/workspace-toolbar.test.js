@@ -138,6 +138,8 @@ test('toolbar emits concept markup and order', async () => {
         assert.equal(input.id, 'search');
         assert.equal(input.type, 'search');
         assert.equal(input.placeholder, 'Search prompts, tags, filenames…');
+        // The listing API rejects search text over 500 characters, as the legacy search capped it.
+        assert.equal(input.maxLength, 500);
         assert.equal(input.getAttribute('aria-label'), 'Search workspace');
         assert.equal(input.value, 'castle');
 
