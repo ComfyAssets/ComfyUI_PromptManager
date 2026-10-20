@@ -7,6 +7,8 @@ import { countOf, noun } from './plural.mjs';
 export const CATEGORY_DIALOG = Object.freeze({title:'Categorize selected images', label:'Category', action:'Apply'});
 export const CATEGORY_NONE_LINKED = 'None of the selected images has a linked prompt.';
 export const CATEGORY_FAILED = 'Category could not be set. Try again.';
+// The server's limit (`validate_category`): the field stops there instead of failing on Apply.
+export const CATEGORY_MAX_LENGTH = 100;
 
 function linkedPositive(image) {
     const link = image?.linked;
@@ -31,4 +33,10 @@ export function categoryOutcome(prompts, skipped) {
     const done = `Category set on ${countOf(prompts, 'prompt')}.`;
     if (!skipped) return done;
     return `${done} ${countOf(skipped, 'selected image')} had no linked prompt and ${noun(skipped, 'was', 'were')} skipped.`;
+}
+
+/** The prompts the server reports changed; without a count, the number of prompts posted. */
+export function updatedCount(result, posted) {
+    const count = result?.updated_count;
+    return Number.isSafeInteger(count) && count >= 0 ? count : posted;
 }

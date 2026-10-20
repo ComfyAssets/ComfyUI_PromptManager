@@ -1,9 +1,9 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, withItem, imageKey, toggleSelection, selectionLabel, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
 import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
-import { createInspectionController, inspectPath, toInspectionRecord } from './inspection-state.mjs';
-import { BUNDLE_FILENAME, metadataBundle, collectImagesMetadata, exportOutcome } from './images-export.mjs';
+import { createInspectionController } from './inspection-state.mjs';
+import { mountSelectionBar } from './images-selection.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
@@ -11,8 +11,7 @@ import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
-import { CATEGORY_DIALOG, CATEGORY_FAILED, CATEGORY_NONE_LINKED, categoryOutcome, categoryTargets } from './images-category.mjs';
-import { openImportDialog, openInputDialog, openRefineDialog } from './workspace-dialogs.mjs';
+import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
 function el(tag, text, className) {
@@ -107,12 +106,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let roots = [], folders = [];
     const rendered = new Map();
     const itemIndexes = new Map();
-    // The checked cards (#249 D8): image keys, kept across appended batches and cleared with the collection.
-    let checked = visit?.checked || Object.freeze(new Set());
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
     filters.tags = [...filters.tags];
     scope.cleanup(() => {
-        if (!embedded) lastVisit = state ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked, scrollY: window.scrollY } : null;
+        // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
+        if (!embedded) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
@@ -178,24 +176,6 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         filterRow.append(chip, group);
     }
     main.append(filterRow);
-    // The concept's selection bar (app.js renderImages, updateBulk), between the filter row and the gallery layout.
-    // One bar and count, mounted while anything is checked, so the count updates in place.
-    // Only the Images page builds it: the Library-embedded gallery has no selection.
-    const bulkbar = embedded ? null : el('div');
-    let bulk, bulkCount;
-    if (bulkbar) {
-        bulkbar.id = 'bulkbar';
-        bulk = el('div', undefined, 'bulkbar'); bulkCount = el('strong');
-        const setCategory = createButton('Set category');
-        scope.listen(setCategory, 'click', () => openCategory(setCategory));
-        const exportMetadata = createButton('Export metadata');
-        scope.listen(exportMetadata, 'click', () => exportChecked(exportMetadata));
-        const clear = createButton('Clear');
-        // Clear hides the bar it sits in, so focus moves to the page heading instead of falling to the page.
-        scope.listen(clear, 'click', () => { clearChecked(); focusFallback.focus({preventScroll:true}); });
-        bulk.append(bulkCount, setCategory, exportMetadata, clear);
-        main.append(bulkbar);
-    }
     const body = el('div', undefined, 'gallery-layout image-workspace');
     const collection = el('section', undefined, 'gallery-body');
     collection.setAttribute('aria-label', 'Images');
@@ -231,6 +211,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     details.setAttribute('aria-label', 'Image details');
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
     body.append(collection, details);
+    // The checked cards and the concept's selection bar (#249 D8), between the filter row and the gallery layout. The
+    // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
+    const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state.items, focusFallback,
+        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }});
+    if (bar) main.append(bar.element);
     main.append(body);
     const mediaViewer = createMediaViewer({container:main,parentScope:scope,inspectionController:inspection,sender,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
@@ -288,9 +273,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // D8: the selection checkbox, then D7: the star, wherever the listing reports favorites (neither on
         // Library-embedded media, which has no selection bar).
         const overlays = el('div', undefined, 'image-overlays');
-        if (bulkbar) {
+        if (bar) {
             const label = el('label'), box = el('input');
-            box.type = 'checkbox'; box.checked = checked.has(key);
+            box.type = 'checkbox'; box.checked = bar.isChecked(key);
             box.setAttribute('aria-label', `Select ${image.filename}`);
             label.append(box);
             overlays.append(label);
@@ -353,95 +338,6 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         deliverFavorite(key, saved ? favorite : !favorite);
         showWorkspaceToast(saved ? FAVORITE_DONE[favorite] : FAVORITE_FAILED[favorite]);
     }
-    /** The concept's bar: empty while nothing is checked, else "N selected" and the real actions in its order. */
-    function renderBulk() {
-        if (!bulkbar) return;
-        if (!checked.size) { bulk.remove(); return; }
-        setText(bulkCount, selectionLabel(checked.size));
-        if (bulk.parentNode !== bulkbar) bulkbar.append(bulk);
-    }
-    /**
-     * Export metadata: the checked images' inspector envelopes in listing order, as one JSON download. The button is
-     * busy until it settles and ignores a second press; the selection is kept.
-     */
-    let exporting = false;
-    async function exportChecked(button) {
-        if (exporting) return;
-        exporting = true;
-        button.setAttribute('aria-disabled', 'true');
-        const images = checkedImages();
-        const {envelopes, failed} = await collectImagesMetadata(images,
-            async image => toInspectionRecord(await api.get(inspectPath(image), {signal:scope.signal}), image));
-        if (scope.signal.aborted) return;
-        exporting = false;
-        button.removeAttribute('aria-disabled');
-        if (envelopes.length) downloadJson(BUNDLE_FILENAME, metadataBundle(envelopes, new Date().toISOString()));
-        showWorkspaceToast(exportOutcome(envelopes.length, envelopes.length + failed));
-    }
-    /**
-     * Set category (app.js bulk-category → simpleInput): images have no category, so Apply sets it on the selection's
-     * distinct linked positives, then reloads the categories and the listing, which clears the selection. With no
-     * linked image there is nothing to change: a toast says so and no dialog opens. A failure keeps the selection.
-     */
-    let categorizing = false;
-    function openCategory(button) {
-        if (categorizing) return;
-        if (!categoryTargets(checkedImages()).promptIds.length) { showWorkspaceToast(CATEGORY_NONE_LINKED); return; }
-        openInputDialog({scope, trigger:button, title:CATEGORY_DIALOG.title, label:CATEGORY_DIALOG.label,
-            action:CATEGORY_DIALOG.action, onApply:category => applyCategory(button, category)});
-    }
-    async function applyCategory(button, category) {
-        if (categorizing) return;
-        const {promptIds, skipped} = categoryTargets(checkedImages());
-        if (!promptIds.length) { showWorkspaceToast(CATEGORY_NONE_LINKED); return; }
-        categorizing = true;
-        button.setAttribute('aria-disabled', 'true');
-        let result = null;
-        try {
-            result = await api.post('/prompt_manager/bulk/category', {prompt_ids:promptIds, category}, {signal:scope.signal});
-        } catch {
-            // Reported below; the selection stays as it was.
-        }
-        if (scope.signal.aborted) return;
-        categorizing = false;
-        button.removeAttribute('aria-disabled');
-        if (!result) { showWorkspaceToast(CATEGORY_FAILED); return; }
-        const updated = Number.isSafeInteger(result.updated_count) && result.updated_count >= 0 ? result.updated_count : promptIds.length;
-        showWorkspaceToast(categoryOutcome(updated, skipped));
-        await loadCategories();
-        if (scope.signal.aborted) return;
-        const focused = document.activeElement === button;
-        reset();
-        // The reload hides the bar with the focused action in it, as Clear does: focus moves to the page heading.
-        if (focused) focusFallback.focus({preventScroll:true});
-    }
-    function checkedImages() {
-        return state.items.filter(image => checked.has(imageKey(image)));
-    }
-    /** A Blob, an anchor and a deferred revoke, as the concept's exportSample does. */
-    function downloadJson(filename, value) {
-        const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], {type:'application/json'}));
-        let timer, released = false;
-        const release = () => { if (released) return; released = true; clearTimeout(timer); URL.revokeObjectURL(url); };
-        scope.cleanup(release);
-        const anchor = el('a'); anchor.href = url; anchor.download = filename;
-        main.append(anchor); anchor.click(); anchor.remove();
-        timer = setTimeout(release, 1000);
-    }
-    function clearChecked() {
-        if (!checked.size) return;
-        checked = Object.freeze(new Set());
-        for (const box of grid.querySelectorAll('.image-overlays input[type="checkbox"]')) box.checked = false;
-        renderBulk();
-    }
-    scope.listen(grid, 'change', event => {
-        const box = event.target;
-        if (!box.matches('.image-overlays input[type="checkbox"]')) return;
-        const key = box.closest('article[data-image-key]')?.dataset.imageKey;
-        if (key === undefined) return;
-        checked = toggleSelection(checked, key, box.checked);
-        renderBulk();
-    });
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
@@ -671,7 +567,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         selection = null;
         focusAfterLoad = null;
         // The ruled selection lifetime: a replaced collection may no longer hold the checked files.
-        clearChecked();
+        bar?.clear();
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         updateScope();
         stream.reset(filters, {load:!recovering});
@@ -808,7 +704,6 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // The page's one discovery alert is written once both first loads settled (#249 final review m6).
     if (!embedded) Promise.all([loadOptions(), loadCategories()]).then(() => { if (!scope.signal.aborted) renderLoadStatus(); });
     if (visit) {
-        renderBulk();
         renderState(stream.state);
         const selected = stream.state.items.find(image => imageKey(image) === selection);
         if (selected) inspect(selected);

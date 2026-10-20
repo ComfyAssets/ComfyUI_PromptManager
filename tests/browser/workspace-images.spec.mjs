@@ -1721,6 +1721,13 @@ async function bundleOf(download) {
 }
 
 test('Export metadata downloads one bundle of the checked images in listing order and keeps the selection', async ({ page }) => {
+    // Record the Blob URLs the page creates and revokes, to prove the download's URL is released.
+    await page.addInitScript(() => {
+        const blobs = window.__blobs = { created: [], revoked: [] };
+        const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+        URL.createObjectURL = value => { const url = create(value); blobs.created.push(url); return url; };
+        URL.revokeObjectURL = url => { blobs.revoked.push(url); revoke(url); };
+    });
     await page.goto(workspace);
     await checkBoth(page);
     const keys = await cards(page).evaluateAll(nodes => nodes.map(node => node.dataset.imageKey));
@@ -1749,6 +1756,10 @@ test('Export metadata downloads one bundle of the checked images in listing orde
     await expect(exportButton(page)).not.toHaveAttribute('aria-disabled', 'true');
     expect(reads).toHaveLength(2);
     expect(downloads).toHaveLength(1);
+    // The bundle's one Blob URL is revoked once the download started.
+    await expect.poll(() => page.evaluate(() => window.__blobs)).toEqual({ created: [expect.stringMatching(/^blob:/)], revoked: [expect.stringMatching(/^blob:/)] });
+    const blobs = await page.evaluate(() => window.__blobs);
+    expect(blobs.revoked).toEqual(blobs.created);
     // The selection is kept after an export.
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
     await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(2);
@@ -1864,4 +1875,70 @@ test('Set category reports a failure, keeps the selection and ignores a second p
     expect(held).toHaveLength(1);
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
     await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(2);
+});
+
+test('leaving Images during an export downloads nothing and shows no toast', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    const held = [];
+    await page.route(inspectRoute, route => { held.push(route); });
+    const downloads = [];
+    page.on('download', download => downloads.push(download));
+    await exportButton(page).click();
+    await expect.poll(() => held.length).toBe(2);
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    // The reads were aborted with the page; answering them now changes nothing.
+    for (const route of held) await route.continue().catch(() => {});
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 150)));
+    expect(downloads).toHaveLength(0);
+    await expect(toast(page)).not.toContainText('etadata');
+});
+
+test('leaving Images during Set category finishes the write, and the return reloads the collection', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    const held = [];
+    await page.route(categoryRoute, route => { held.push(route); });
+    await categoryButton(page).click();
+    await categoryDialog(page).getByLabel('Category', { exact: true }).fill('Landscapes');
+    await categoryDialog(page).getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect.poll(() => held.length).toBe(1);
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    // The write is not aborted with the page: the server still receives and answers it.
+    const answered = page.waitForResponse(response => response.url().endsWith('/prompt_manager/bulk/category'));
+    await held[0].continue();
+    expect((await answered).ok()).toBe(true);
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 150)));
+    await expect(toast(page)).not.toContainText('Category');
+    // The saved visit predates the write, so the return loads the collection afresh: no stale selection or categories.
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Images');
+    await expect(cards(page)).toHaveCount(2);
+    await expect(bulkbar(page)).toBeEmpty();
+    await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(0);
+    await expect(page.getByRole('combobox', { name: 'Filter by category', exact: true }).locator('option')).toContainText(['Landscapes']);
+});
+
+test('Set category limits the field to the server length, shows the server count, and a rejection keeps the selection', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    const answers = [
+        { status: 400, json: { success: false, error: 'Category cannot exceed 100 characters' } },
+        { status: 200, json: { success: true, updated_count: 0 } },
+    ];
+    await page.route(categoryRoute, route => route.fulfill(answers.shift()));
+    for (const expected of ['Category could not be set. Try again.', 'Category set on 0 prompts.']) {
+        await categoryButton(page).click();
+        const field = categoryDialog(page).getByLabel('Category', { exact: true });
+        await expect(field).toHaveAttribute('maxlength', '100');
+        await field.fill('Landscapes');
+        await categoryDialog(page).getByRole('button', { name: 'Apply', exact: true }).click();
+        await expect(toast(page)).toHaveText(expected);
+        if (answers.length) await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+    }
+    // The success reload clears the selection.
+    await expect(bulkbar(page)).toBeEmpty();
+    expect(answers).toHaveLength(0);
 });

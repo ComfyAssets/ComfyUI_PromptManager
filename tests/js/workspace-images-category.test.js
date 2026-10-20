@@ -37,3 +37,17 @@ test('the dialog and failure copy is the plan\'s', async () => {
     assert.equal(CATEGORY_FAILED, 'Category could not be set. Try again.');
     assert.ok(Object.isFrozen(CATEGORY_DIALOG));
 });
+
+test('the updated count is the server\'s when it is a count, else the number of prompts posted', async () => {
+    const {updatedCount} = await source;
+    assert.equal(updatedCount({updated_count:0}, 3), 0);
+    assert.equal(updatedCount({updated_count:2}, 3), 2);
+    for (const result of [{}, {updated_count:-1}, {updated_count:1.5}, {updated_count:'2'}, null, undefined]) {
+        assert.equal(updatedCount(result, 3), 3, JSON.stringify(result));
+    }
+});
+
+test('the category field is limited to the server\'s 100 characters', async () => {
+    const {CATEGORY_MAX_LENGTH} = await source;
+    assert.equal(CATEGORY_MAX_LENGTH, 100);
+});

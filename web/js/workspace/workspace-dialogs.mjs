@@ -263,8 +263,9 @@ export function openCopyFallback(text, { scope, trigger = null } = {}) {
 /**
  * The concept's `simpleInput`: one labelled `input#action-input` (starting at `value`), then Cancel and the primary
  * `action`. The action reports the trimmed value and closes; an empty value keeps the dialog open on its field.
+ * A positive `maxLength` limits the field.
  */
-export function openInputDialog({ scope, title, label, action, value = '', onApply, trigger = null }) {
+export function openInputDialog({ scope, title, label, action, value = '', maxLength, onApply, trigger = null }) {
     requireScope(scope);
     requireCallbacks({ onApply });
     for (const [name, text] of Object.entries({ title, label, action })) {
@@ -272,6 +273,7 @@ export function openInputDialog({ scope, title, label, action, value = '', onApp
     }
     const input = el('input');
     input.value = typeof value === 'string' ? value : '';
+    if (Number.isSafeInteger(maxLength) && maxLength > 0) input.maxLength = maxLength;
     const cancel = createButton('Cancel');
     const apply = createButton(action, 'ca-primary');
     cancel.addEventListener('click', () => finish());
