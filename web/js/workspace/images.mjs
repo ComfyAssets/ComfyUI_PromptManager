@@ -48,6 +48,15 @@ const FAVORITE_FAILED = Object.freeze({true:'Favorite could not be added. Try ag
 const INITIAL_METRICS = Object.freeze({columns:1, gap:13, footerHeight:54, listHeight:97});
 
 let lastVisit = null;
+// One favorite request per file at a time (TESTING.md): the requests outlive the Images page that sent them, so the keys
+// in flight and the page that receives each answer live here, beside the saved visit.
+const favoritePending = new Set();
+let favoriteTarget = null;
+/** Give a favorite state to the mounted Images page, or to the saved visit while none is mounted. */
+function deliverFavorite(key, favorite) {
+    if (favoriteTarget) favoriteTarget(key, favorite);
+    else if (lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
+}
 
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage} = {}) {
     const scope = createScope();
@@ -70,8 +79,6 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // Discovered sources and folders for "Refine this view" and the scope chip.
     let roots = [], folders = [];
     const rendered = new Map();
-    // Keys with a favorite request in flight: a second press waits for the first answer.
-    const favoritePending = new Set();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
     filters.tags = [...filters.tags];
@@ -256,14 +263,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         button.setAttribute('aria-pressed', String(favorite));
     }
     function setFavorite(key, favorite) {
-        // After leaving Images the saved visit, not the disposed stream, holds the card the user comes back to.
-        if (scope.signal.aborted) {
-            if (!embedded && lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
-            return;
-        }
+        if (scope.signal.aborted) return;
         stream.updateItem(key, {favorite});
         const button = rendered.get(key)?.querySelector('.star-button');
         if (button) paintStar(button, favorite);
+    }
+    // Only the Images page receives favorite answers; Library-embedded media has no star (#249 D7).
+    if (!embedded) {
+        favoriteTarget = setFavorite;
+        scope.cleanup(() => { if (favoriteTarget === setFavorite) favoriteTarget = null; });
     }
     /** Optimistic toggle: the star changes at once and returns to its previous state if the store refuses. */
     async function toggleFavorite(image) {
@@ -271,17 +279,18 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (favoritePending.has(key)) return;
         const favorite = !image.favorite;
         favoritePending.add(key);
-        setFavorite(key, favorite);
+        deliverFavorite(key, favorite);
         const body = {root_index: image.root_index, path: image.path};
+        let saved = false;
         try {
             await (favorite ? api.put(FAVORITE_URL, body) : api.del(FAVORITE_URL, {body}));
-            showWorkspaceToast(FAVORITE_DONE[favorite]);
+            saved = true;
         } catch {
-            setFavorite(key, !favorite);
-            showWorkspaceToast(FAVORITE_FAILED[favorite]);
-        } finally {
-            favoritePending.delete(key);
+            // Announced below; the star returns to its previous state.
         }
+        favoritePending.delete(key);
+        if (!saved) deliverFavorite(key, !favorite);
+        showWorkspaceToast(saved ? FAVORITE_DONE[favorite] : FAVORITE_FAILED[favorite]);
     }
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');

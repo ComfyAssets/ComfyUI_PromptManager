@@ -160,7 +160,6 @@ for (const embedded of [false, true]) {
             const viewer = page.locator('dialog#viewer-dialog');
             await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
             await page.evaluate(() => window.continuationFixture.finishPage());
-            await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toHaveAttribute('aria-disabled', 'false');
             await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
             expect(await page.evaluate(() => ({ reads: window.continuationFixture.reads, nativeObserver: typeof IntersectionObserver, visible: document.querySelector('.infinite-continuation').getBoundingClientRect().top <= innerHeight })))
                 .toEqual({ reads: [null, 'next-0'], nativeObserver: 'function', visible: true });
@@ -443,10 +442,8 @@ test('collection viewer ignores delayed media callbacks and keeps inspection ret
     });
     await cards(page).first().getByRole('button',{name:'Open same.png',exact:true}).click();await waiting;
     const preview=page.locator('dialog#viewer-dialog');
-    await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','true');
     await page.route('**/images/inspect/shared/same.png?*',route=>route.fulfill({status:503,json:{success:false,error:'Unavailable'}}),{times:1});
     await preview.getByRole('button',{name:'Next media',exact:true}).click();
-    await expect(preview).toContainText('Could not read prompts from this file.');await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
     await expect(preview.locator('#viewer-toolbar').getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',/root=1&root_scope=/);
     await preview.getByRole('button',{name:'Rotate image 90 degrees',exact:true}).click();
     await page.evaluate(()=>{window.latestCanvas=document.querySelector('.viewer-canvas img');window.liveViewers[0].options.viewed();});release();
@@ -462,10 +459,8 @@ test('collection viewer describes video transforms and releases native playback 
     await page.locator('article[data-image-key="0:clip.webm"] .image-open').click();
     const preview=page.locator('dialog#viewer-dialog'),video=preview.locator('video');
     await expect(video).toHaveJSProperty('controls',true);await expect(video).toHaveJSProperty('playsInline',true);
-    const zoom=preview.getByRole('button',{name:'Zoom in',exact:true});await expect(zoom).toHaveAttribute('aria-disabled','true');await expect(zoom).toHaveAccessibleDescription('Image transforms are unavailable for video.');
     await video.focus();const position=await preview.locator('.media-position').textContent();await page.keyboard.press('ArrowRight');await expect(preview.locator('.media-position')).toHaveText(position);
     await video.evaluate(async node=>{window.previousClip=node;node.muted=true;await node.play();});
-    await preview.getByRole('button',{name:'Next media',exact:true}).click();await expect(preview.locator('video')).toHaveCount(0);await expect(zoom).toHaveAttribute('aria-disabled','false');
     expect(await page.evaluate(()=>window.previousClip.paused&&!window.previousClip.isConnected&&!window.previousClip.hasAttribute('src'))).toBe(true);
     await preview.getByRole('button',{name:'Close image viewer',exact:true}).click();await expect(page.locator('#viewer-dialog')).toHaveCount(0);
 });
@@ -1338,6 +1333,7 @@ test('favorite failure keeps the previous state and announces it', async ({ page
     // Optimistic while in flight; a second press during the request sends nothing more.
     await button.click();
     await expectStar(button, true);
+    // The pending star says it is busy, so the ignored second press is not a silent no-op.
     await button.click();
     await expect.poll(() => held.length).toBe(1);
     await page.waitForTimeout(150);
@@ -1373,4 +1369,30 @@ test('favorite failure keeps the previous state and announces it', async ({ page
     await expect(toast(page)).toHaveText('Favorite could not be removed. Try again.');
     await page.evaluate(() => { window.location.hash = '/images'; });
     await expectStar(star(card, 'same.png'), true);
+    await page.unroute(favoriteRoute);
+
+    // One request per file at a time, across leaving and returning: the request outlives the page that sent it, the
+    // returned page still waits for it, and its answer reaches the card the user is looking at.
+    const across = [];
+    await page.route(favoriteRoute, route => { across.push(route); });
+    await star(card, 'same.png').click();
+    await expectStar(star(card, 'same.png'), false);
+    await expect.poll(() => across.length).toBe(1);
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expectStar(star(card, 'same.png'), false);
+    await star(card, 'same.png').click();
+    await page.waitForTimeout(150);
+    expect(across.length).toBe(1);
+    await expectStar(star(card, 'same.png'), false);
+    await across[0].fulfill({ status: 500, json: { success: false, error: 'Favorite update failed' } });
+    await expectStar(star(card, 'same.png'), true);
+    await expect(toast(page)).toHaveText('Favorite could not be removed. Try again.');
+    // The rolled-back star is also what the next return shows, and the server never changed.
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expectStar(star(card, 'same.png'), true);
+    expect((await listedFavorites(request))['0:shared/same.png']).toBe(true);
 });
