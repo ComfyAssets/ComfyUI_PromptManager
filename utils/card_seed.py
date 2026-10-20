@@ -70,12 +70,14 @@ def header_params(info) -> dict | None:
         return None
 
 
-def card_seed(params: dict | None) -> int | None:
-    """The parsed seed as an integer, else None.
+def card_seed(params: dict | None) -> str | None:
+    """The parsed seed as a decimal string, else None.
 
-    The projection carries integers beyond 2**53 as their exact digits, so a
-    digit string is the recorded seed (the inspector shows it too). A
-    placeholder, other text, a boolean or a decimal gives None.
+    Always text: ``JSON.parse`` in the browser rounds a number past 2**53, and
+    ComfyUI's randomized seeds are often that large. The projection carries
+    integers beyond 2**53 as their exact digits, so a digit string is the
+    recorded seed (the inspector shows it too). A placeholder, other text, a
+    boolean or a decimal gives None.
     """
     if not isinstance(params, Mapping):
         return None
@@ -83,9 +85,9 @@ def card_seed(params: dict | None) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        return str(value)
     if isinstance(value, str) and _INTEGER.match(value):
-        return int(value)
+        return str(int(value))
     return None
 
 

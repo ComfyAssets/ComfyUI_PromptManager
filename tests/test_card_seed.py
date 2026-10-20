@@ -57,7 +57,7 @@ def info_seed(info):
 class CardSeed(unittest.TestCase):
     def test_card_seed_single_sampler(self):
         info = graph(seeded(42001))
-        self.assertEqual(info_seed(info), 42001)
+        self.assertEqual(info_seed(info), "42001")
         self.assertEqual(parsed_positive(header_params(info)), "a lantern at dusk")
 
     def test_card_seed_two_different_seeds_follows_shared_parser(self):
@@ -66,12 +66,12 @@ class CardSeed(unittest.TestCase):
         info = graph(seeded(111), seeded(222))
         expected = extract_from_records(info["prompt"], None)["seed"]
         self.assertIn(expected, (111, 222))
-        self.assertEqual(info_seed(info), expected)
+        self.assertEqual(info_seed(info), str(expected))
 
     def test_card_seed_linked_input_follows_shared_parser(self):
         primitive = {"class_type": "PrimitiveNode", "inputs": {"value": 555}}
         info = graph(seeded(["20", 0]), extra={"20": primitive})
-        self.assertEqual(info_seed(info), 555)
+        self.assertEqual(info_seed(info), "555")
         dangling = graph(seeded(["99", 0]))
         self.assertEqual(
             extract_from_records(dangling["prompt"], None)["seed"], "Unknown"
@@ -83,7 +83,7 @@ class CardSeed(unittest.TestCase):
         advanced["class_type"] = "KSamplerAdvanced"
         del advanced["inputs"]["seed"]
         advanced["inputs"]["noise_seed"] = 77
-        self.assertEqual(info_seed(graph(advanced)), 77)
+        self.assertEqual(info_seed(graph(advanced)), "77")
 
     def test_card_seed_oversized_record_is_none(self):
         padding = "x" * (MAX_RECORD_BYTES + 1)
@@ -96,7 +96,7 @@ class CardSeed(unittest.TestCase):
         wide = "é" * (MAX_RECORD_BYTES // 2 + 1)
         self.assertLessEqual(len(wide), MAX_RECORD_BYTES)
         self.assertIsNone(header_params({"prompt": json.dumps({"a": wide})}))
-        self.assertEqual(info_seed(graph(seeded(1))), 1)
+        self.assertEqual(info_seed(graph(seeded(1))), "1")
 
     def test_records_past_the_inspection_projection_bound_give_nothing(self):
         # The inspector hands the browser parser only graphs its projection
@@ -107,7 +107,7 @@ class CardSeed(unittest.TestCase):
         self.assertIsNone(header_params({"workflow": nested_workflow()}))
         # A limited workflow beside a parsed prompt leaves the prompt's facts.
         both = header_params({**graph(seeded(1)), "workflow": nested_workflow()})
-        self.assertEqual(card_seed(both), 1)
+        self.assertEqual(card_seed(both), "1")
 
     def test_depth_bound_is_the_inspectors(self):
         def deep(levels):
@@ -118,7 +118,7 @@ class CardSeed(unittest.TestCase):
 
         # root object, node object, inputs object: three levels before "v".
         inside = MAX_PROJECTION_DEPTH - 3
-        self.assertEqual(info_seed(deep(inside)), 3)
+        self.assertEqual(info_seed(deep(inside)), "3")
         self.assertIsNone(header_params(deep(inside + 1)))
 
     def test_strict_projection_rules_apply(self):
@@ -143,20 +143,27 @@ class CardSeed(unittest.TestCase):
                 self.assertIsNone(info_seed(graph(seeded(value))))
         self.assertIsNone(card_seed({"seed": "Unknown"}))
         self.assertIsNone(card_seed({"seed": 7.0}))
-        self.assertEqual(info_seed(graph(seeded(-3))), -3)
+        self.assertEqual(info_seed(graph(seeded(-3))), "-3")
 
     def test_digit_string_seed_is_what_the_inspector_reads(self):
         # The projection carries big integers as text and keeps text as text;
         # the inspector shows a digit string as the seed, and so does the card.
-        self.assertEqual(info_seed(graph(seeded("123"))), 123)
+        self.assertEqual(info_seed(graph(seeded("123"))), "123")
 
     def test_seed_beyond_double_precision_is_the_recorded_integer(self):
         # JSON.parse would round it; the projection carries the record's digits.
         case = CASES["seed-beyond-double-precision"]
         rounded = extract_from_records(case["prompt"], None)["seed"]
         self.assertEqual(rounded, float(4974052037430000001))
-        self.assertEqual(info_seed({"prompt": case["prompt"]}), 4974052037430000001)
-        self.assertEqual(info_seed(graph(seeded(-(2**60) - 1))), -(2**60) - 1)
+        self.assertEqual(info_seed({"prompt": case["prompt"]}), "4974052037430000001")
+        self.assertEqual(info_seed(graph(seeded(-(2**60) - 1))), str(-(2**60) - 1))
+
+    def test_seed_is_always_a_decimal_string(self):
+        # JSON.parse rounds numbers past 2**53, so every seed travels as text.
+        for value in (0, 7, 2**53, 2**53 + 1, 2**64, -(2**63)):
+            with self.subTest(seed=value):
+                self.assertEqual(card_seed({"seed": value}), str(value))
+        self.assertEqual(card_seed({"seed": "18446744073709551616"}), str(2**64))
 
     def test_workflow_only_record(self):
         case = next(
@@ -167,7 +174,7 @@ class CardSeed(unittest.TestCase):
             and isinstance(extract_from_records(None, case["workflow"])["seed"], int)
         )
         expected = extract_from_records(None, case["workflow"])["seed"]
-        self.assertEqual(info_seed({"workflow": case["workflow"]}), expected)
+        self.assertEqual(info_seed({"workflow": case["workflow"]}), str(expected))
 
     def test_records_the_parser_cannot_use_give_nothing(self):
         self.assertIsNone(header_params({}))

@@ -446,16 +446,21 @@ and skip the parse.
   records by the shared parser, gives the same display title. Otherwise the title
   is null on the card and in the inspector header. Videos and unreadable files
   have no parsed positive, so their `text` titles are withheld.
-- `seed`: `extract_generation_params` from `utils/generation_params.py` (the
-  inspector's legacy parser, #251), run on the `prompt`/`workflow` header records
-  read by the same open that reads the dimensions. The parse runs after the file
-  handle closes. A record over 2 MiB (UTF-8), a parser error, a recursion error, a
-  placeholder, or a non-integral, boolean or non-finite seed gives null. A seed
-  past 2**53 is re-read exactly from the same records and kept only if it rounds
-  to the parsed double. A card never shows a seed that differs from the
-  inspector's (`test_card_seed_equals_inspector_seed_when_both_present`). The card
-  shows no seed for A1111 `parameters` files or for a BasicGuider custom sampler,
-  where the inspector does.
+- `seed`: a decimal string, or null. Always a string, because `JSON.parse` rounds
+  numbers past 2**53 and ComfyUI's randomized seeds are often that large. It is
+  `extract_generation_params` from `utils/generation_params.py` (the inspector's
+  legacy parser, #251), run on the `prompt`/`workflow` header records read by the
+  same open that reads the dimensions. The records go through the inspection
+  projection first (`utils/inspection_response.project_graph`), which carries
+  integers past 2**53 as their exact digits, so the card and the inspector read
+  the same digits. The parse runs after the file handle closes. A record over
+  2 MiB (UTF-8), a parser error, a recursion error, a placeholder, or a
+  non-integral, boolean or non-finite seed gives null. A card never shows a seed
+  that differs from the inspector's
+  (`test_card_seed_equals_inspector_seed_when_both_present`, which `JSON.parse`s
+  the listing in Node and compares `String(seed)` with the inspector's seed,
+  including one past 2**53). The card shows no seed for A1111 `parameters` files
+  or for a BasicGuider custom sampler, where the inspector does.
 - `favorite: bool`. One favorites SELECT per root per page. A read failure logs a
   warning and shows false.
 

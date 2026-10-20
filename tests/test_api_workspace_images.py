@@ -597,7 +597,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertEqual(
             seeds,
             {
-                "seeded.png": 42001,
+                "seeded.png": "42001",
                 "plain.png": None,
                 "clip.mp4": None,
                 "broken.png": None,
@@ -628,7 +628,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         response, data = await self.get()
         self.assertEqual(response.status, 200, data)
         items = {item["filename"]: item for item in data["images"]}
-        self.assertEqual(items["ok.png"]["seed"], 5)
+        self.assertEqual(items["ok.png"]["seed"], "5")
         response = await self.client.get(
             "/prompt_manager/images/inspect/evil.png",
             params={"root": 0, "root_scope": items["evil.png"]["root_scope"]},
@@ -641,7 +641,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         if card is None:
             self.assertNotEqual(shown["status"], "known")
         else:
-            self.assertEqual(shown, {"status": "known", "value": str(card)})
+            self.assertEqual(shown, {"status": "known", "value": card})
 
     async def test_library_previews_skip_card_facts(self):
         records_png(self.output_dir / "a.png", seeded_records("a fox", 5))
@@ -672,7 +672,7 @@ class TestWorkspaceImages(ImageAPITestCase):
             patch("py.api.images.header_params", side_effect=parsing),
         ):
             _, data = await self.get()
-        self.assertEqual(data["images"][0]["seed"], 5)
+        self.assertEqual(data["images"][0]["seed"], "5")
         self.assertEqual(closed, [True])
 
     def _seed_files(self):
@@ -685,11 +685,11 @@ class TestWorkspaceImages(ImageAPITestCase):
                 records_png(
                     self.output_dir / name, seeded_records(f"concept {i} {j}", seed)
                 )
-                expected[name] = seed
+                expected[name] = str(seed)
         # ComfyUI's randomized seeds mostly exceed 2**53, where JSON.parse rounds.
         big = 2**63 + 12345
         records_png(self.output_dir / "big-seed.png", seeded_records("big", big))
-        expected["big-seed.png"] = big
+        expected["big-seed.png"] = str(big)
         for case, records in CASES.items():
             records_png(self.output_dir / f"case-{case}.png", records)
         records_png(
@@ -700,6 +700,15 @@ class TestWorkspaceImages(ImageAPITestCase):
         return expected
 
     async def _inspector_seeds(self, items):
+        """The seed the inspector shows for each listed item (Node harness)."""
+        return (await self._node_seeds(items))["inspector"]
+
+    async def _node_seeds(self, items, listing=None):
+        """The harness output: inspector seeds and, from *listing*, card seeds.
+
+        *listing* is the exact listing response text; the harness JSON.parses
+        it as the browser does, so the card seeds are what a page would read.
+        """
         node = shutil.which("node")
         if node is None:  # pragma: no cover - CI runners and dev hosts ship Node
             if os.environ.get("CI"):
@@ -716,7 +725,9 @@ class TestWorkspaceImages(ImageAPITestCase):
         # Fixed local Node harness, no shell.
         completed = subprocess.run(  # nosec B603
             [node, str(SEED_HARNESS)],
-            input=json.dumps(bodies).encode("utf-8"),
+            input=json.dumps({"listing": listing, "inspections": bodies}).encode(
+                "utf-8"
+            ),
             capture_output=True,
             timeout=NODE_TIMEOUT_SECONDS,
             check=False,
@@ -726,22 +737,31 @@ class TestWorkspaceImages(ImageAPITestCase):
 
     async def test_card_seed_equals_inspector_seed_when_both_present(self):
         expected = self._seed_files()
-        _, data = await self.get(limit=200)
-        items = data["images"]
+        response = await self.client.get(
+            "/prompt_manager/images/output",
+            params={"mode": "workspace", "limit": 200},
+        )
+        listing = await response.text()
+        items = json.loads(listing)["images"]
         self.assertEqual(len(items), len(CASES) + len(expected) + 2)
-        inspector = await self._inspector_seeds(items)
+        seeds = await self._node_seeds(items, listing)
+        inspector, browser = seeds["inspector"], seeds["card"]
         both = 0
         for item in items:
             with self.subTest(file=item["path"]):
                 card, shown = item["seed"], inspector[item["path"]]
+                # Sent as a decimal string, so JSON.parse keeps every digit.
+                self.assertTrue(card is None or isinstance(card, str), card)
+                self.assertEqual(browser[item["path"]], card)
                 if item["path"] in expected:
                     self.assertEqual(card, expected[item["path"]])
                 if card is None:
                     continue
                 # The card never shows a seed the inspector does not.
-                self.assertEqual(shown, {"status": "known", "value": str(card)})
+                self.assertEqual(shown, {"status": "known", "value": card})
                 both += 1
         self.assertGreaterEqual(both, len(expected) + 10)
+        self.assertGreater(int(browser["big-seed.png"]), 2**53)
 
     async def test_text_title_needs_the_files_parsed_positive(self):
         prompt = self._save_prompt("Saved words\nrest")
