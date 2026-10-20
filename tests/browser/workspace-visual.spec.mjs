@@ -374,7 +374,7 @@ test('zoomed virtual Images keeps the visible real media mounted during native s
     const stride = await cards.first().evaluate(node => node.getBoundingClientRect().height + 26);
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     for (const loaded of [80, 120, 160, 200, 202]) {
-        await more.click(); await expect(page.locator('.image-toolbar')).toContainText(`${loaded} of 202 images`);
+        await more.click(); await expect(page.locator('.section-caption')).toContainText(`${loaded} of 202 images`);
     }
     await expect.poll(() => cards.count()).toBeLessThan(120);
     await page.evaluate(stride => {
@@ -454,10 +454,10 @@ test('supplemental extreme zoom grows real footers preserves the visible anchor 
         await page.getByRole('button', { name: 'List', exact: true }).click();
         await expect.poll(() => containedImageContent(page)).toEqual([]);
         expect(await cards.first().evaluate(node => node.offsetHeight)).toBeGreaterThan(97);
-        await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('no-real-media-match');
+        await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).fill('no-real-media-match');
         await expect(cards).toHaveCount(0);
         expect(await grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBe(54);
-        await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('');
+        await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).fill('');
         await expect(cards).toHaveCount(24);
         await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeGreaterThan(54);
         const extremeFooter = await grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')));
@@ -498,7 +498,7 @@ test('supplemental wrapped real footer reservation survives append without movin
             return node ? { key: node.dataset.imageKey, top: node.getBoundingClientRect().top - top } : null;
         });
         expect(anchor).not.toBeNull();
-        release(); await expect(page.locator('.image-toolbar')).toContainText('80 of 202 images');
+        release(); await expect(page.locator('.section-caption')).toContainText('80 of 202 images');
         await expect(cards).toHaveCount(80);
         await expect.poll(async () => Math.abs(await page.locator(`article[data-image-key="${anchor.key}"]`).evaluate(node => node.getBoundingClientRect().top - (visualViewport?.offsetTop || 0)) - anchor.top)).toBeLessThanOrEqual(1);
         await expect(page.locator(`article[data-image-key="${selectedKey}"]`)).toHaveClass(/selected/);

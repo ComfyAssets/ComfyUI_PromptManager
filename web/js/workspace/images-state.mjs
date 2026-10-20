@@ -1,15 +1,29 @@
+import { noun } from './plural.mjs';
+
 /** Identity is the source and relative path; content hashes may be shared by files. */
 export function imageKey(image) {
     return `${image.root_index}:${image.path}`;
 }
 
+/** The workspace listing's sorts: the concept's Recently added, Name A–Z and Highest rated, plus Oldest and Z–A (D14). */
+export const IMAGE_SORTS = Object.freeze(['newest', 'oldest', 'name', 'name-desc', 'rating']);
+const DATE_SORTS = new Set(['newest', 'oldest']);
+
+const isCount = value => Number.isSafeInteger(value) && value >= 0;
+
 function queryFor(filters, batchSize) {
     const query = new URLSearchParams({ mode: 'workspace', limit: String(batchSize) });
-    for (const key of ['q', 'subfolder']) {
+    for (const key of ['q', 'subfolder', 'category']) {
         const value = filters[key];
         if (value !== undefined && typeof value !== 'string') throw new TypeError('Invalid image filter');
         if (value) query.set(key, value);
     }
+    const tags = filters.tags ?? [];
+    // The listing takes a comma list that must all match, so a tag can neither be empty nor hold a comma.
+    if (!Array.isArray(tags) || tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.includes(','))) {
+        throw new TypeError('Invalid tags filter');
+    }
+    if (tags.length) query.set('tags', tags.map(tag => tag.trim()).join(','));
     const root = filters.root;
     if (root !== undefined && root !== 'all' && root !== '') {
         if (!/^(0|[1-9]\d*)$/.test(String(root)) || !Number.isSafeInteger(Number(root))) {
@@ -21,7 +35,7 @@ function queryFor(filters, batchSize) {
     if (!['all', 'image', 'video'].includes(media)) throw new TypeError('Invalid media filter');
     if (media !== 'all') query.set('media', media);
     const sort = filters.sort ?? 'newest';
-    if (!['newest', 'oldest', 'name', 'name-desc'].includes(sort)) throw new TypeError('Invalid sort filter');
+    if (!IMAGE_SORTS.includes(sort)) throw new TypeError('Invalid sort filter');
     query.set('sort', sort);
     return query.toString();
 }
@@ -30,7 +44,8 @@ function validatePage(page, cursor) {
     if (!page || !Array.isArray(page.images) || !Number.isSafeInteger(page.total) || page.total < 0 ||
         typeof page.has_more !== 'boolean' ||
         !(page.next_cursor === null || (typeof page.next_cursor === 'string' && page.next_cursor.length > 0)) ||
-        page.has_more !== (page.next_cursor !== null)) {
+        page.has_more !== (page.next_cursor !== null) ||
+        !(page.positive_count === undefined || page.positive_count === null || isCount(page.positive_count))) {
         throw new TypeError('Invalid image page');
     }
     if (page.has_more && page.next_cursor === cursor) throw new TypeError('Image cursor did not advance');
@@ -50,8 +65,9 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
     if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 200) {
         throw new TypeError('Invalid image batch size');
     }
+    // positiveCount: distinct linked positives over the whole matching set, or null while unknown (PR B contract).
     let state = Object.freeze({ items: Object.freeze([]), total: 0, cursor: null,
-        hasMore: true, loading: false, error: null, loaded: 0 });
+        hasMore: true, loading: false, error: null, loaded: 0, positiveCount: null });
     let query = queryFor({}, batchSize);
     let controller = null;
     let disposed = false;
@@ -65,13 +81,13 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         const pristine = Array.isArray(saved.items) && saved.items.length === 0 && saved.total === 0 &&
             saved.cursor === null && saved.hasMore === true;
         validatePage({ images: saved.items, total: saved.total, next_cursor: saved.cursor,
-            has_more: pristine ? false : saved.hasMore });
+            has_more: pristine ? false : saved.hasMore, positive_count: saved.positiveCount });
         seen = new Set(saved.items.map(imageKey));
         if (seen.size !== saved.items.length) throw new TypeError('Duplicate restored image identity');
         const items = Object.isFrozen(saved.items) && saved.items.every(Object.isFrozen) ? saved.items :
             Object.freeze(saved.items.map(item => Object.freeze({ ...item })));
         state = Object.freeze({ items, total: saved.total, cursor: saved.cursor, hasMore: saved.hasMore,
-            loading: false, error: null, loaded: items.length });
+            loading: false, error: null, loaded: items.length, positiveCount: saved.positiveCount ?? null });
     }
 
     function publish(update) {
@@ -101,9 +117,12 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
             }
             for (const key of batchKeys) seen.add(key);
             const items = incoming.length ? Object.freeze([...state.items, ...incoming]) : state.items;
+            // A plain cursor page leaves the count out and a failed count read is null: a later page keeps the
+            // first page's count, and a first page without one leaves it unknown.
+            const positiveCount = isCount(page.positive_count) ? page.positive_count : cursor === null ? null : state.positiveCount;
             controller = null;
             publish({ items, total: page.total, cursor: page.next_cursor, hasMore: page.has_more,
-                loading: false, error: null, loaded: items.length });
+                loading: false, error: null, loaded: items.length, positiveCount });
             return incoming.length;
         } catch (error) {
             if (!disposed && request === controller) {
@@ -122,7 +141,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         query = nextQuery;
         seen = new Set();
         publish({ items: Object.freeze([]), total: 0, cursor: null, hasMore: true,
-            loading: false, error: null, loaded: 0 });
+            loading: false, error: null, loaded: 0, positiveCount: null });
         return load ? loadMore() : 0;
     }
 
@@ -137,4 +156,36 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
             controller = null;
         },
     };
+}
+
+/** The concept's count line (app.js a446): "N of M images · K positive prompts", without the count while unknown. */
+export function countLine({ loaded, total, positiveCount }) {
+    const images = `${loaded.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${noun(total, 'image')}`;
+    return isCount(positiveCount) ? `${images} · ${positiveCount.toLocaleString('en-US')} ${noun(positiveCount, 'positive prompt')}` : images;
+}
+
+const DAY_MS = 86400000;
+const startOfDay = date => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+/**
+ * D17: the caption's right-hand date, "<Today|Yesterday|weekday> · <Month D>" of the newest loaded result under a
+ * date sort, and '' under name or rating sorts. A day outside the current year adds the year so it stays unambiguous.
+ */
+export function captionDate(items, sort, now = new Date()) {
+    if (!DATE_SORTS.has(sort)) return '';
+    const newest = items.reduce((latest, item) => Number.isFinite(item.modified_time) ? Math.max(latest, item.modified_time) : latest, -Infinity);
+    if (!Number.isFinite(newest)) return '';
+    const date = new Date(newest * 1000);
+    const days = Math.round((startOfDay(now) - startOfDay(date)) / DAY_MS);
+    const day = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : date.toLocaleDateString('en-US', { weekday: 'long' });
+    const options = { month: 'long', day: 'numeric', ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) };
+    return `${day} · ${date.toLocaleDateString('en-US', options)}`;
+}
+
+/** D14: the filter row's scope chip, "All output folders" or "<source> · <folder>". */
+export function scopeLabel({ root = 'all', subfolder = '' }, roots = []) {
+    if ((root === 'all' || root === '') && !subfolder) return 'All output folders';
+    const source = root === 'all' || root === '' ? 'All sources' :
+        roots.find(item => String(item.index) === String(root))?.label ?? `Source ${root}`;
+    return `${source} · ${subfolder || 'All folders'}`;
 }

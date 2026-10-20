@@ -1,5 +1,5 @@
-import { createScope, createButton, createField, createSelect } from '../shared/toolkit/core.js';
-import { createImageStream, imageKey } from './images-state.mjs';
+import { createScope, createButton } from '../shared/toolkit/core.js';
+import { createImageStream, imageKey, countLine, captionDate, scopeLabel } from './images-state.mjs';
 import { layoutImages, visibleImages, workspaceImageMetrics } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
@@ -9,6 +9,9 @@ import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
+import { mountToolbar } from './toolbar.mjs';
+import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
+import { showWorkspaceToast } from './library-editor.mjs';
 
 function el(tag, text, className) {
     const element = document.createElement(tag);
@@ -20,6 +23,26 @@ function el(tag, text, className) {
 function formatBytes(value) {
     return value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`;
 }
+
+function selectOf(id, options, value) {
+    const select = el('select');
+    select.id = id;
+    select.replaceChildren(...options.map(([optionValue, label]) => {
+        const node = el('option', label);
+        node.value = optionValue;
+        return node;
+    }));
+    select.value = value;
+    return select;
+}
+
+// The concept's three sorts first, then the production ones it lacks (D14); values are the listing's sorts (B3).
+const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated'],
+    ['oldest', 'Oldest first'], ['name-desc', 'Name Z–A']]);
+const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
+const SOURCES_FAILED = 'Sources and folders could not be loaded. Rescan from Import to retry.';
+const CATEGORIES_FAILED = 'Categories could not be loaded. Rescan from Import to retry.';
+const RESCAN_FAILED = 'Output folders could not be rescanned. Try Rescan again.';
 
 let lastVisit = null;
 
@@ -40,38 +63,48 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let density = visit?.density || 'comfortable';
     let metrics = workspaceImageMetrics(window.innerWidth, density);
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
-    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, recovering = false;
+    let state, geometry = { positions: [], height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
+    // Discovered sources and folders for "Refine this view" and the scope chip.
+    let roots = [], folders = [];
     const rendered = new Map();
     const itemIndexes = new Map();
-    const filters = { root: 'all', q: '', subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
+    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
+    filters.tags = [...filters.tags];
     scope.cleanup(() => {
-        if (!embedded) lastVisit = state ? { filters: {...filters}, state, layout, density, selection, scrollY: window.scrollY } : null;
+        if (!embedded) lastVisit = state ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
     scope.cleanup(() => main.classList.remove('images-main'));
-    const description = embedded ? null : pageHeading(main)?.description;
-    if (description) description.textContent = 'Browse your images, explore the details, keep your creative context.';
-    const filtersBar = el('div', undefined, 'image-filters');
-    const search = el('input');
-    search.value = filters.q;
-    search.type = 'search'; search.placeholder = 'Find an image by filename or folder…'; search.maxLength = 256;
-    const source = createSelect([['all', 'All sources']], '');
-    const folder = createSelect([['', 'All folders']], '');
-    const media = createSelect([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']], '');
-    const sort = createSelect([['newest', 'Newest first'], ['oldest', 'Oldest first'], ['name', 'Filename A–Z'], ['name-desc', 'Filename Z–A']], '');
-    media.value = filters.media; sort.value = filters.sort;
-    filtersBar.append(createField('Search filenames', search, 'image-search'), createField('Source', source, 'image-source'),
-        createField('Folder', folder, 'image-folder'), createField('Media', media, 'image-media'), createField('Sort', sort, 'image-sort'));
+    // The concept's Images heading (app.js renderImages): description, then Import before the shell's New prompt.
+    const heading = embedded ? null : pageHeading(main);
+    let importButton = null;
+    if (heading) {
+        heading.description.textContent = 'Your generations, their prompts, and the next idea.';
+        importButton = createButton('');
+        importButton.append(createWorkspaceIcon('upload'), el('span', 'Import'));
+        heading.actions.prepend(importButton);
+        scope.cleanup(() => importButton.remove());
+        scope.listen(importButton, 'click', () => openImportDialog({scope, trigger:importButton,
+            onInspect:() => { window.location.hash = '#/inspect'; }, onRescan:rescan}));
+    }
+    // The shared concept toolbar: search (filename, linked prompt text, title and tags), category and sort (D12–D14).
+    const toolbar = embedded ? null : mountToolbar(main, {scope, categories:filters.category ? [filters.category] : [],
+        sorts:IMAGE_SORT_OPTIONS, value:{q:filters.q, category:filters.category, sort:filters.sort},
+        onChange:value => {
+            if (recovering) return;
+            Object.assign(filters, {q:value.q.trim(), category:value.category, sort:value.sort});
+            reset();
+        }, onFilters:openFilters});
+    const toolbarControls = toolbar ? [...toolbar.element.querySelectorAll('input, select, button')] : [];
     const optionsStatus = el('p', '', 'options-status muted');
     optionsStatus.hidden = true; optionsStatus.setAttribute('role', 'alert');
-    if (!embedded) main.append(filtersBar, optionsStatus);
-    const controls = el('div', undefined, 'image-view-controls');
-    const toolbar = el('div', undefined, 'image-toolbar');
-    const collectionHeading = el('h2', embedded ? 'Linked images' : 'All images');collectionHeading.tabIndex = -1;
-    toolbar.append(collectionHeading);
-    const count = el('p', 'Loading images…', 'muted');
-    const layouts = el('div', undefined, 'image-layouts');
+    const categoryStatus = el('p', '', 'options-status muted');
+    categoryStatus.hidden = true; categoryStatus.setAttribute('role', 'alert');
+    if (!embedded) main.append(optionsStatus, categoryStatus);
+    // The concept's filter row: layouts, thumbnail size, the scope chip and Group by positive prompt (D14, D15).
+    const filterRow = el('div', undefined, 'filter-row');
+    const layouts = el('div', undefined, 'segmented');
     layouts.setAttribute('role', 'group'); layouts.setAttribute('aria-label', 'Image layout');
     for (const mode of ['grid', 'list', 'masonry']) {
         const button = createButton(mode[0].toUpperCase() + mode.slice(1));
@@ -84,50 +117,42 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         });
         layouts.append(button);
     }
-    const refresh = createButton('Refresh');
-    scope.listen(refresh, 'click', async () => {
-        if (refresh.disabled) return;
-        refresh.disabled = true;
-        optionsRequest?.abort(); optionsRequest = null;
-        optionsStatus.hidden = true;
-        try {
-            await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
-            if (scope.signal.aborted) return;
-            if (await loadOptions() && !scope.signal.aborted) reset();
-        } catch {
-            if (scope.signal.aborted) return;
-            optionsStatus.textContent = 'Images could not be refreshed. Try Refresh again.';
-            optionsStatus.hidden = false;
-        } finally {
-            refresh.disabled = recovering;
-        }
-    });
-    const currentGallery = el('a', 'Current gallery', 'workspace-link');
-    currentGallery.href = resolveUrl('/prompt_manager/gallery');
-    const thumbnails = createSelect([['comfortable', 'Comfortable'], ['large', 'Large'], ['compact', 'Compact']], '');
-    thumbnails.value = density;
+    const sizeLabel = el('label', 'Thumbnail size', 'small');
+    sizeLabel.htmlFor = 'image-size';
+    const thumbnails = selectOf('image-size', [['comfortable', 'Comfortable'], ['large', 'Large'], ['compact', 'Compact']], density);
     scope.listen(thumbnails, 'change', () => { density = thumbnails.value; updateLayout(); });
-    controls.append(layouts, createField('Thumbnail size', thumbnails, 'image-density'));
+    filterRow.append(layouts, sizeLabel, thumbnails);
+    const scopeText = document.createTextNode('');
     if (!embedded) {
-        const group = el('a', 'Group by positive prompt', 'workspace-link');
-        group.href = '#/library'; group.prepend(createWorkspaceIcon('branch'));
-        controls.append(group, refresh);
+        const chip = el('span', undefined, 'chip');
+        chip.append(createWorkspaceIcon('folder'), scopeText);
+        const group = createButton('Group by positive prompt →', 'chip');
+        scope.listen(group, 'click', () => { window.location.hash = '#/library'; });
+        filterRow.append(chip, group);
     }
-    main.append(controls);
-    toolbar.append(count);
-    const body = el('div', undefined, 'image-workspace');
-    const collection = el('section', undefined, 'image-collection');
+    main.append(filterRow);
+    const body = el('div', undefined, 'gallery-layout image-workspace');
+    const collection = el('section', undefined, 'gallery-body');
     collection.setAttribute('aria-label', 'Images');
+    // The concept's caption replaces the old "All images" heading; the embedded gallery keeps its own heading.
+    const caption = el('div', undefined, 'section-caption');
+    const collectionHeading = embedded ? el('h2', 'Linked images') : null;
+    if (collectionHeading) { collectionHeading.tabIndex = -1; caption.append(collectionHeading); }
+    const count = el('span', 'Loading images…');
+    if (!embedded) count.id = 'result-count';
+    const captionDay = el('span');
+    captionDay.hidden = true;
+    caption.append(count);
+    if (!embedded) caption.append(captionDay);
+    const focusFallback = collectionHeading || heading?.h1 || main;
     const grid = el('div', undefined, 'image-grid');
     grid.setAttribute('role', 'list'); grid.setAttribute('aria-label', 'Image collection');
-    const continuation = el('div', undefined, 'image-continuation');
-    const message = el('p');
+    const continuation = el('div', undefined, 'infinite-continuation');
+    const message = el('p', '', 'small');
     const more = createButton('Load more images');
     const retry = createButton('Retry');
-    const end = el('p', '', 'muted');
-    continuation.append(message, more, retry, end);
-    collection.append(toolbar, grid, continuation);
-    if (!embedded) collection.append(currentGallery);
+    continuation.append(message, more, retry);
+    collection.append(caption, grid, continuation);
     const details = el('section', undefined, 'image-details panel');
     details.setAttribute('aria-label', 'Image details');
     details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
@@ -137,7 +162,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
         onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
-            if (index >= 0) focusImage(index);else collectionHeading.focus({preventScroll:true});
+            if (index >= 0) focusImage(index);else focusFallback.focus({preventScroll:true});
         }});
     scope.cleanup(() => mediaViewer.dispose());
 
@@ -315,21 +340,39 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!resizeFrame) resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; updateLayout(); });
     });
     scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
+    function continuationText(next) {
+        if (recovering) return 'Images paused until sources and folders are available.';
+        if (next.error) return 'Images could not be loaded. Retry or rescan the collection.';
+        if (next.loading && !next.loaded) return 'Loading images…';
+        if (next.hasMore) return `${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')} · more load as you scroll`;
+        if (embedded) return next.loaded ? 'You’re all caught up.' : 'No linked media available for this selection.';
+        // The concept's end of the collection (app.js updateImageContinuation).
+        return `${next.loaded ? 'You’re all caught up' : 'No matching images'} · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')}`;
+    }
     function renderState(next) {
+        const previous = state;
         const changed = state?.items !== next.items;
         if (changed) {
             if (!next.items.length) itemIndexes.clear();
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} ${noun(next.total, 'linked image')}` : `${next.loaded.toLocaleString()} of ${next.total.toLocaleString()} ${noun(next.total, 'image')}`;
+        count.textContent = embedded ? `${next.loaded.toLocaleString()} loaded · ${next.total.toLocaleString()} ${noun(next.total, 'linked image')}` : countLine(next);
+        if (!embedded) {
+            captionDay.textContent = captionDate(next.items, filters.sort);
+            captionDay.hidden = !captionDay.textContent;
+        }
         if (changed) updateLayout();
-        message.textContent = recovering ? 'Images paused until sources and folders are available.' : next.error ? 'Images could not be loaded. Retry or refresh the collection.' : next.loading ? 'Loading images…' : '';
+        // The concept's Load more toast (app.js loadMoreImages) for every batch appended to a loaded collection.
+        if (!embedded && changed && previous?.loaded && next.loaded > previous.loaded) {
+            const added = next.loaded - previous.loaded;
+            showWorkspaceToast(`${added.toLocaleString('en-US')} more ${noun(added, 'image')} loaded. ${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')}.`);
+        }
+        message.textContent = continuationText(next);
         if (next.error) message.setAttribute('role', 'alert'); else message.setAttribute('role', 'status');
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
-        end.textContent = !recovering && !next.loading && !next.error && !next.hasMore ? (next.loaded ? 'You’re all caught up.' : embedded ? 'No linked media available for this selection.' : 'No matching images or media. Try changing the filters.') : '';
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
     }
@@ -354,6 +397,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }, { rootMargin: '250px' });
         observer.observe(continuation);
     }
+    function updateScope() {
+        scopeText.textContent = ` ${scopeLabel(filters, roots)}`;
+    }
     function reset() {
         mediaViewer.stopSlideshow();
         main.querySelector('.image-preview[open]')?.close();
@@ -364,55 +410,110 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }
         selection = null;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
+        updateScope();
         stream.reset(filters, {load:!recovering});
+    }
+    /** "Refine this view": Source, Folder, Media and Tags, the filters the old field row held (D14). */
+    function openFilters(trigger) {
+        if (recovering) return;
+        openRefineDialog({scope, trigger, fields:[
+            {key:'source', options:[['all', 'All sources'], ...roots.map(root => [String(root.index), root.label])]},
+            {key:'folder', options:[['', 'All folders'], ...folders.map(path => [path, path])]},
+            {key:'media', options:MEDIA_OPTIONS},
+            {key:'tags'},
+        ], values:{source:filters.root, folder:filters.subfolder, media:filters.media, tags:filters.tags.join(', ')},
+        onApply:applyRefinement, onClear:cleared => {
+            toolbar.setValue({category:cleared.category});
+            filters.category = cleared.category;
+            applyRefinement(cleared);
+        }});
+    }
+    function applyRefinement({source, folder, media, tags}) {
+        if (recovering) return;
+        Object.assign(filters, {root:source, subfolder:folder, media,
+            tags:[...new Set(tags.split(',').map(tag => tag.trim()).filter(Boolean))]});
+        reset();
+    }
+    function setControlsDisabled(disabled) {
+        for (const control of [...toolbarControls, more, retry]) control.disabled = disabled;
+        if (importButton) importButton.disabled = disabled;
+    }
+    /** Import → "Scan an output folder" (D15): rescan the output roots, then reload the options and the listing. */
+    async function rescan() {
+        if (rescanning || recovering || scope.signal.aborted) return;
+        rescanning = true;
+        optionsRequest?.abort(); optionsRequest = null;
+        optionsStatus.hidden = true;
+        try {
+            await api.post('/prompt_manager/gallery/rescan', {}, {signal:scope.signal});
+            if (scope.signal.aborted) return;
+            loadCategories();
+            if (await loadOptions() && !scope.signal.aborted) reset();
+        } catch {
+            if (scope.signal.aborted) return;
+            optionsStatus.textContent = RESCAN_FAILED;
+            optionsStatus.hidden = false;
+        } finally {
+            rescanning = false;
+        }
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;
         // Numeric roots may now name another source; retire the old stream first.
         recovering = true;
-        filters.root = 'all';filters.subfolder = '';filters.q = search.value.trim();
-        source.replaceChildren(new Option('All sources', 'all'));folder.replaceChildren(new Option('All folders', ''));
-        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = true;
+        filters.root = 'all';filters.subfolder = '';
+        if (toolbar) filters.q = toolbar.value().q.trim();
+        roots = [];folders = [];
+        setControlsDisabled(true);
         optionsStatus.hidden = true;
         reset();
         const discovery = loadOptions(), request = optionsRequest;
         if (!await discovery || scope.signal.aborted || request !== optionsRequest) return;
         recovering = false;
-        for (const control of [search,source,folder,media,sort,refresh,more,retry]) control.disabled = false;
+        setControlsDisabled(false);
         reset();
     }
     async function loadOptions() {
         optionsRequest?.abort();
         const request = new AbortController(); optionsRequest = request;
         try {
+            // Every source's folders (with ancestors), so any Source and Folder pair can be chosen in one dialog.
             const params = new URLSearchParams({mode:'workspace', include_ancestors:'true'});
-            if (filters.root !== 'all') params.set('root', filters.root);
             const data = await api.get(`/prompt_manager/gallery/subfolders?${params}`, {signal:request.signal});
             if (scope.signal.aborted || request !== optionsRequest) return false;
-            source.replaceChildren(new Option('All sources', 'all'), ...data.roots.map(root => new Option(root.label, String(root.index))));
-            source.value = filters.root;
-            folder.replaceChildren(new Option('All folders', ''), ...data.subfolders.map(path => new Option(path, path)));
-            folder.value = filters.subfolder;
+            if (!Array.isArray(data?.roots) || !Array.isArray(data.subfolders)) throw new TypeError('Invalid image sources');
+            roots = data.roots.filter(root => Number.isSafeInteger(root?.index) && typeof root.label === 'string');
+            folders = data.subfolders.filter(path => typeof path === 'string' && path);
+            updateScope();
             optionsStatus.hidden = true;
             return true;
         } catch {
             if (scope.signal.aborted || request !== optionsRequest) return false;
-            optionsStatus.textContent = recovering ? 'Sources and folders could not be loaded. Refresh image collection to retry.' : 'Sources and folders could not be loaded. Refresh to retry.';
+            optionsStatus.textContent = recovering ? 'Sources and folders could not be loaded. Refresh image collection to retry.' : SOURCES_FAILED;
             optionsStatus.hidden = false;
             return false;
         }
     }
-    scope.cleanup(() => optionsRequest?.abort());
-    scope.listen(search, 'input', scope.debounce(() => { if (!recovering) { filters.q = search.value.trim(); reset(); } }, 200));
-    for (const [input, key] of [[source, 'root'], [folder, 'subfolder'], [media, 'media'], [sort, 'sort']]) {
-        scope.listen(input, 'change', () => {
-            if (recovering) return;
-            filters[key] = input.value;
-            if (key === 'root') { filters.subfolder = ''; folder.value = ''; loadOptions(); }
-            reset();
-        });
+    /** The toolbar's categories are the Library's (the linked positive's category, D13). */
+    async function loadCategories() {
+        if (!toolbar) return;
+        categoryRequest?.abort();
+        const request = new AbortController(); categoryRequest = request;
+        try {
+            const data = await api.get('/prompt_manager/library/options', {signal:request.signal});
+            if (scope.signal.aborted || request !== categoryRequest) return;
+            if (!Array.isArray(data?.categories)) throw new TypeError('Invalid categories');
+            toolbar.setCategories([...data.categories.filter(value => typeof value === 'string'), filters.category]);
+            categoryStatus.hidden = true;
+        } catch {
+            if (scope.signal.aborted || request !== categoryRequest) return;
+            categoryStatus.textContent = CATEGORIES_FAILED;
+            categoryStatus.hidden = false;
+        }
     }
-    if (!embedded) loadOptions();
+    scope.cleanup(() => { optionsRequest?.abort(); categoryRequest?.abort(); });
+    updateScope();
+    if (!embedded) { loadOptions(); loadCategories(); }
     if (visit) {
         renderState(stream.state);
         const selected = stream.state.items.find(image => imageKey(image) === selection);

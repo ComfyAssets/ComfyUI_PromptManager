@@ -34,9 +34,10 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
         if (collection.images.length) {
             await expect(workspace.locator('article[data-image-key]').first()).toBeVisible();
         } else {
-            await expect(workspace.getByText('No matching images or media. Try changing the filters.', { exact: true })).toBeVisible();
+            await expect(workspace.getByText('No matching images · 0 images', { exact: true })).toBeVisible();
         }
-        await expect(workspace.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toHaveAttribute('href', '/prompt_manager/gallery');
+        // D29: Images no longer links the legacy gallery; Overview's tool cards do.
+        await expect(workspace.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toHaveCount(0);
         await workspace.reload();
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Images');
         await expect(workspace.locator('body')).toHaveAttribute('data-ca-theme', 'light');

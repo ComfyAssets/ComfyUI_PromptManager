@@ -54,6 +54,15 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .vocabulary-main td .row-actions { width: min-content; margin-inline-start: auto; }
 }
 
+/* Images (#249 C2). Production-only continuation states the concept never shows: a failed page and a load in flight. */
+.infinite-continuation [role="alert"] { color: var(--ca-error-text); }
+.infinite-continuation button[aria-disabled="true"] { opacity: .55; cursor: wait; }
+/* #249 D14: the scope chip names real sources and folders, which can be far longer than "All output folders". */
+.filter-row span.chip { max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+/* #249 D31: at extreme zoom the 390px shell is narrower than the concept's three layout buttons; they wrap instead of
+   scrolling the page sideways (they never wrap while they fit). */
+.segmented { flex-wrap: wrap; max-width: 100%; }
+
 /* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
    that keep their own design until their page PR rebuilds them in concept markup. */
 .panel { background: var(--ca-surface); border: 1px solid var(--line); } /* PR D: Images side panel (padding and radius in images.css) becomes `.detail-panel` */

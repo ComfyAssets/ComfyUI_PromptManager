@@ -41,7 +41,9 @@ test('native image inspector previews and sends a pair into real visible widgets
     const workspace=await context.newPage();const errors=[];workspace.on('pageerror',error=>errors.push(error.message));
     try {
         await workspace.goto('/prompt_manager/workspace#/images');
-        await workspace.getByRole('button',{name:'Refresh',exact:true}).click();
+        // D15: Refresh is Import → Rescan.
+        await workspace.getByRole('button',{name:'Import',exact:true}).click();
+        await workspace.getByRole('dialog',{name:'Import & inspect',exact:true}).getByRole('button',{name:'Rescan',exact:true}).click();
         const card=workspace.locator('article[data-image-key]').filter({has:workspace.getByRole('button',{name:`Open ${filename}`,exact:true})});
         await card.getByRole('button',{name:`Open ${filename}`,exact:true}).click();
         const inspector=workspace.getByRole('region',{name:'Image details',exact:true});

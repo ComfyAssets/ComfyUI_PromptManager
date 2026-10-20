@@ -227,8 +227,8 @@ test('filtering away a selected image aborts its pending metadata request',async
     try {
         await page.goto(workspace);await select(page,'0:shared/same.png');await requested;
         const baseline=await page.evaluate(()=>window.inspectionAborts);
-        await page.getByRole('searchbox',{name:'Search filenames',exact:true}).fill('no-such-file');
-        await expect(page.getByText('No matching images or media. Try changing the filters.',{exact:true})).toBeVisible();
+        await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('no-such-file');
+        await expect(page.getByText('No matching images · 0 images',{exact:true})).toBeVisible();
         await expect.poll(()=>page.evaluate(()=>window.inspectionAborts),{timeout:1500}).toBeGreaterThan(baseline);
     } finally {release();}
 });

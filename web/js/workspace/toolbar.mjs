@@ -88,12 +88,12 @@ export function mountToolbar(container, { scope, categories = [], sorts, value =
     function setValue(next) {
         if (isText(next?.q)) search.value = next.q;
         if (isText(next?.category)) category.value = next.category;
-        if (isText(next?.sort)) sort.value = sort.options.some(node => node.value === next.sort) ? next.sort : sort.options[0].value;
+        if (isText(next?.sort)) sort.value = [...sort.options].some(node => node.value === next.sort) ? next.sort : sort.options[0].value;
     }
     function setCategories(next) {
         const selected = category.value;
         category.replaceChildren(...categoryOptions(next));
-        category.value = category.options.some(node => node.value === selected) ? selected : '';
+        category.value = [...category.options].some(node => node.value === selected) ? selected : '';
     }
     setValue(value);
 

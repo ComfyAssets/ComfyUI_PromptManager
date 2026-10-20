@@ -11,7 +11,8 @@ const sidebarLink = (page, label) => page.locator('aside.sidebar nav').getByRole
 const sidebarLinks = page => page.locator('aside.sidebar nav a');
 const routes = [
     ['overview', 'Overview', null],
-    ['images', 'Images', '/prompt_manager/gallery'],
+    // D29: Images no longer links the legacy gallery; Overview's tool cards still do.
+    ['images', 'Images', null],
     ['library', 'Prompt library', '/prompt_manager/admin'],
     ['tags', 'Tags & categories', null],
     ['inspect', 'Inspect a file', '/prompt_manager/gallery.html'],
@@ -308,7 +309,7 @@ test('leaving a loading overview prevents its delayed result from replacing the 
     await expect(page.locator('#primary-nav')).toHaveCount(1);
     await expect(page.locator('#system-nav')).toHaveCount(1);
     await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toHaveCount(1);
-    await expect(page.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toBeVisible();
+    await expect(page.locator('#workspace-main .section-caption')).toBeVisible();
     await countThemeWrites(page);
     await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption('light');
     expect(await page.evaluate(() => window.__themeChanges)).toBe(1);

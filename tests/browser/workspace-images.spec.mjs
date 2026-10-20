@@ -6,6 +6,27 @@ const cards = page => page.locator('article[data-image-key]');
 // Grid pages only: the sidebar's Images count is its own `limit=1` read of the same listing.
 const imagePages = url => url.pathname === '/prompt_manager/images/output' && url.search !== '' && url.searchParams.get('limit') !== '1';
 const details = page => page.getByRole('region', { name: 'Image details', exact: true });
+// The concept toolbar, filter row and caption (#249 C2); Source, Folder, Media and Tags live in "Refine this view".
+const search = page => page.getByRole('searchbox', { name: 'Search workspace', exact: true });
+const sortBy = page => page.getByRole('combobox', { name: 'Sort results', exact: true });
+const caption = page => page.locator('.section-caption');
+const refineDialog = page => page.getByRole('dialog', { name: 'Refine this view', exact: true });
+const importDialog = page => page.getByRole('dialog', { name: 'Import & inspect', exact: true });
+async function refine(page, values) {
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    const dialog = refineDialog(page);
+    for (const [label, value] of Object.entries(values)) {
+        const control = dialog.getByLabel(label, { exact: true });
+        if (label === 'Tags') await control.fill(value);
+        else await control.selectOption(value);
+    }
+    await dialog.getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await expect(dialog).toBeHidden();
+}
+async function rescan(page) {
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await importDialog(page).getByRole('button', { name: 'Rescan', exact: true }).click();
+}
 
 test.beforeEach(async ({ page, request, browserName }) => {
     await startCoverage(page, browserName);
@@ -129,7 +150,7 @@ for (const embedded of [false, true]) {
             }, { images: data.images, embedded });
             await expect(cards(page)).toHaveCount(40);
             expect(await page.evaluate(() => window.continuationFixture.reads)).toEqual([null]);
-            await page.locator('.image-continuation').scrollIntoViewIfNeeded();
+            await page.locator('.infinite-continuation').scrollIntoViewIfNeeded();
             await expect.poll(() => page.evaluate(() => window.continuationFixture.reads)).toEqual([null, 'next-0']);
             const key = await cards(page).last().getAttribute('data-image-key');
             const preview = page.locator(`article[data-image-key="${key}"]`).getByRole('button', { name: /^Preview / });
@@ -139,7 +160,7 @@ for (const embedded of [false, true]) {
             await page.evaluate(() => window.continuationFixture.finishPage());
             await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toHaveAttribute('aria-disabled', 'false');
             await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-            expect(await page.evaluate(() => ({ reads: window.continuationFixture.reads, nativeObserver: typeof IntersectionObserver, visible: document.querySelector('.image-continuation').getBoundingClientRect().top <= innerHeight })))
+            expect(await page.evaluate(() => ({ reads: window.continuationFixture.reads, nativeObserver: typeof IntersectionObserver, visible: document.querySelector('.infinite-continuation').getBoundingClientRect().top <= innerHeight })))
                 .toEqual({ reads: [null, 'next-0'], nativeObserver: 'function', visible: true });
             if (close === 'parent abort') await page.evaluate(() => window.continuationFixture.scope.dispose());
             else if (close === 'Close') await viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
@@ -148,7 +169,7 @@ for (const embedded of [false, true]) {
             if (close !== 'parent abort') {
                 await expect(preview).toBeFocused();
                 await expect.poll(() => page.evaluate(() => window.continuationFixture.reads)).toEqual([null, 'next-0', 'next-1']);
-                await expect(page.locator('.image-toolbar')).toContainText(embedded ? '80 loaded' : '80 of 80');
+                await expect(caption(page)).toContainText(embedded ? '80 loaded' : '80 of 80');
             }
             await page.evaluate(() => window.continuationFixture.scope.dispose());
             await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -163,19 +184,18 @@ test('source, folder and media filters operate on real backend records', async (
     await expect(await request.post('/__test__/reset', { data: { extra_images: 3 } })).toBeOK();
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(5);
-    await page.getByRole('combobox', { name: 'Source', exact: true }).selectOption('1');
+    await refine(page, { Source: '1' });
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page).first()).toHaveAttribute('data-image-key', '1:shared/same.png');
-    await page.getByRole('combobox', { name: 'Source', exact: true }).selectOption('all');
-    await page.getByRole('combobox', { name: 'Folder', exact: true }).selectOption('bulk');
+    await refine(page, { Source: 'all', Folder: 'bulk' });
     await expect(cards(page)).toHaveCount(3);
     await expect(cards(page).first()).toHaveAttribute('data-image-key', /^0:bulk\//);
-    await page.getByRole('combobox', { name: 'Media', exact: true }).selectOption('video');
+    await refine(page, { Media: 'video' });
     await expect(cards(page)).toHaveCount(0);
     await expect(page.locator('#workspace-main')).toContainText(/no (matching )?(images|media)/i);
-    await page.getByRole('combobox', { name: 'Media', exact: true }).selectOption('image');
+    await refine(page, { Media: 'image' });
     await expect(cards(page)).toHaveCount(3);
-    await page.getByRole('combobox', { name: 'Folder', exact: true }).selectOption('');
+    await refine(page, { Folder: '' });
     await expect(cards(page)).toHaveCount(5);
 });
 
@@ -183,16 +203,16 @@ test('filename search finds records beyond the initial batch and sort orders the
     await expect(await request.post('/__test__/reset', { data: { extra_images: 100 } })).toBeOK();
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(40);
-    await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('same.png');
+    await search(page).fill('same.png');
     await expect(cards(page)).toHaveCount(2);
-    await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('0099');
+    await search(page).fill('0099');
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page)).toHaveAttribute('data-image-key', '0:bulk/0099.png');
-    await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('same.png');
+    await search(page).fill('same.png');
     await expect(cards(page)).toHaveCount(2);
-    await page.getByRole('combobox', { name: 'Sort', exact: true }).selectOption('oldest');
+    await sortBy(page).selectOption('oldest');
     await expect(cards(page).first()).toHaveAttribute('data-image-key', '1:shared/same.png');
-    await page.getByRole('combobox', { name: 'Sort', exact: true }).selectOption('newest');
+    await sortBy(page).selectOption('newest');
     await expect(cards(page).first()).toHaveAttribute('data-image-key', '0:shared/same.png');
 });
 
@@ -218,13 +238,13 @@ test('returning to Images restores the filtered stream, layout, selection and sc
     await page.addInitScript(() => { window.IntersectionObserver = undefined; });
     await expect(await request.post('/__test__/reset', { data: { extra_images: 100 } })).toBeOK();
     await page.goto(workspace);
-    const search = page.getByRole('searchbox', { name: 'Search filenames', exact: true });
-    await page.getByRole('combobox', { name: 'Source', exact: true }).selectOption('0');
-    await search.fill('00');
-    await expect(page.locator('.image-toolbar')).toContainText('40 of 100 images');
+    const box = search(page);
+    await refine(page, { Source: '0' });
+    await box.fill('00');
+    await expect(caption(page)).toContainText('40 of 100 images');
     await page.getByRole('button', { name: 'List', exact: true }).click();
     await page.getByRole('button', { name: 'Load more images', exact: true }).click();
-    await expect(page.locator('.image-toolbar')).toContainText('80 of 100 images');
+    await expect(caption(page)).toContainText('80 of 100 images');
     await cards(page).first().getByRole('button', { name: /^Open / }).click();
     const selectedTitle = await details(page).getByRole('heading', { level: 2 }).textContent();
     await cards(page).nth(30).scrollIntoViewIfNeeded();
@@ -236,13 +256,18 @@ test('returning to Images restores the filtered stream, layout, selection and sc
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     await page.evaluate(() => { window.location.hash = '/images'; });
     await expect(page.locator('#workspace-main h1')).toHaveText('Images');
-    await expect(search).toHaveValue('00');
-    await expect(page.getByRole('combobox', { name: 'Source', exact: true })).toHaveValue('0');
+    await expect(box).toHaveValue('00');
+    await expect(page.locator('.filter-row span.chip')).toHaveText(/ · All folders$/);
     await expect(page.getByRole('button', { name: 'List', exact: true })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator('.image-toolbar')).toContainText('80 of 100 images');
+    await expect(caption(page)).toContainText('80 of 100 images');
     await expect(cards(page)).toHaveCount(80);
     await expect(details(page).getByRole('heading', { level: 2 })).toHaveText(selectedTitle);
     await expect.poll(async () => Math.abs((await page.evaluate(() => window.scrollY)) - previousScroll)).toBeLessThan(120);
+    // Checked last: closing the dialog focuses Filters, which scrolls the toolbar into view.
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    await expect(refineDialog(page).getByLabel('Source', { exact: true })).toHaveValue('0');
+    await page.keyboard.press('Escape');
+    await expect(refineDialog(page)).toBeHidden();
 });
 
 test('continuous loading appends without replacing cards or losing selected details', async ({ page, request }) => {
@@ -292,7 +317,7 @@ test('large continuous collections bound the mounted cards and restore earlier i
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     for (const loaded of [80, 120, 160, 200, 202]) {
         await more.click();
-        await expect(page.locator('.image-toolbar')).toContainText(`${loaded} of 202 images`);
+        await expect(caption(page)).toContainText(`${loaded} of 202 images`);
     }
     await expect(more).toBeHidden();
     await expect.poll(() => cards(page).count()).toBeLessThan(120);
@@ -321,7 +346,7 @@ test('virtual gallery keyboard navigation reaches loaded endpoints and announces
     const more = page.getByRole('button', { name: 'Load more images', exact: true });
     for (const loaded of [80, 120, 160, 200, 202]) {
         await more.click();
-        await expect(page.locator('.image-toolbar')).toContainText(`${loaded} of 202 images`);
+        await expect(caption(page)).toContainText(`${loaded} of 202 images`);
     }
     await page.evaluate(() => window.scrollTo(0, 0));
     const first = page.locator(`article[data-image-key="${firstKey}"]`);
@@ -364,7 +389,7 @@ test('real video media has a usable card and native playback cleans up on close 
     const media = await (await request.get('/prompt_manager/images/output?limit=40')).json();
     expect(media.images.find(image => image.filename === 'clip.webm').thumbnail_url).toBeNull();
     await page.goto(workspace);
-    await page.getByRole('combobox', { name: 'Media', exact: true }).selectOption('video');
+    await refine(page, { Media: 'video' });
     await expect(cards(page)).toHaveCount(1);
     const card = cards(page).first();
     await expect(card).toHaveAttribute('data-image-key', '0:clip.webm');
@@ -454,7 +479,7 @@ test('failed image requests offer retry while stale results cannot replace a new
         await pending;
         await route.fulfill({ response }).catch(() => {});
     });
-    await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('nothing');
+    await search(page).fill('nothing');
     await received;
     await page.getByRole('navigation', { name: 'Tools and system', exact: true })
         .getByRole('link', { name: 'Overview', exact: true }).click();
@@ -464,19 +489,19 @@ test('failed image requests offer retry while stale results cannot replace a new
     await expect(details(page)).toHaveCount(0);
 });
 
-test('source and folder discovery failure stays visible and Refresh restores usable filters', async ({ page }) => {
+test('source and folder discovery failure stays visible and Import Rescan restores usable filters', async ({ page }) => {
     await page.route('**/prompt_manager/gallery/subfolders?*', route => route.fulfill({
         status: 503, json: { success: false, error: 'Sources unavailable' },
     }), { times: 1 });
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    await expect(page.getByRole('alert')).toHaveText('Sources and folders could not be loaded. Refresh to retry.');
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(page.getByRole('alert')).toHaveText('Sources and folders could not be loaded. Rescan from Import to retry.');
+    await rescan(page);
     await expect(page.getByRole('alert')).toHaveCount(0);
-    await page.getByRole('combobox', { name: 'Source', exact: true }).selectOption('1');
+    await refine(page, { Source: '1' });
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
-    await page.getByRole('combobox', { name: 'Folder', exact: true }).selectOption('shared');
+    await refine(page, { Folder: 'shared' });
     await expect(cards(page)).toHaveCount(1);
 });
 
@@ -484,15 +509,17 @@ async function staleSourceRecovery(page, request, roots) {
     await expect(await request.post('/__test__/reset', { data: { extra_images: 80 } })).toBeOK();
     await page.setViewportSize({ width: 1600, height: 1100 });
     await page.goto(workspace);
-    const source = page.getByRole('combobox', { name: 'Source', exact: true });
-    const folder = page.getByRole('combobox', { name: 'Folder', exact: true });
-    await source.selectOption('0');await expect(folder.locator('option[value="bulk"]')).toHaveCount(1);await folder.selectOption('bulk');
+    const source = refineDialog(page).getByLabel('Source', { exact: true });
+    const folder = refineDialog(page).getByLabel('Folder', { exact: true });
+    const filters = page.getByRole('button', { name: 'Filters', exact: true });
+    await filters.click();await expect(folder.locator('option[value="bulk"]')).toHaveCount(1);await page.keyboard.press('Escape');
+    await refine(page, { Source: '0', Folder: 'bulk' });
     const configured = page.waitForResponse(response => {
         const url = new URL(response.url());return url.pathname.endsWith('/images/output') && url.searchParams.get('root') === '0' && url.searchParams.get('subfolder') === 'bulk' && url.searchParams.get('q') === 'png' && url.searchParams.get('media') === 'image' && url.searchParams.get('sort') === 'name';
     });
-    await page.getByRole('searchbox', { name: 'Search filenames', exact: true }).fill('png');
-    await page.getByRole('combobox', { name: 'Media', exact: true }).selectOption('image');await page.getByRole('combobox', { name: 'Sort', exact: true }).selectOption('name');
-    const initial = await (await configured).json();await expect(page.locator('.image-toolbar')).toContainText('40 of 80');
+    await search(page).fill('png');
+    await refine(page, { Media: 'image' });await sortBy(page).selectOption('name');
+    const initial = await (await configured).json();await expect(caption(page)).toContainText('40 of 80');
     let oldPage;
     await page.route(imagePages, async route => {
         if (new URL(route.request().url()).searchParams.has('cursor') && !oldPage) {
@@ -519,7 +546,7 @@ async function staleSourceRecovery(page, request, roots) {
     await expect(viewer).toHaveCount(0);await expect.poll(() => options.length).toBe(1);
     await oldPage.route.fulfill({ json: oldPage.data });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    return { source, folder, pages, inspections, options, mutations };
+    return { source, folder, filters, pages, inspections, options, mutations };
 }
 
 for (const [name, roots] of [['reordered', ['input', 'output']], ['removed', ['input']]]) {
@@ -527,11 +554,13 @@ for (const [name, roots] of [['reordered', ['input', 'output']], ['removed', ['i
         const recovery = await staleSourceRecovery(page, request, roots);
         try {
             expect(recovery.pages.map(url => url.search)).toEqual([]);expect(recovery.inspections).toEqual([]);
-            await expect(recovery.source).toHaveValue('all');await expect(recovery.source.locator('option')).toHaveText(['All sources']);await expect(recovery.folder).toHaveValue('');
-            for (const name of ['Source', 'Folder', 'Media', 'Sort']) await expect(page.getByRole('combobox', { name, exact: true })).toBeDisabled();
-            await expect(page.getByRole('searchbox', { name: 'Search filenames', exact: true })).toBeDisabled();
+            await expect(page.locator('.filter-row span.chip')).toHaveText('All output folders');
+            for (const name of ['Filter by category', 'Sort results']) await expect(page.getByRole('combobox', { name, exact: true })).toBeDisabled();
+            for (const name of ['Filters', 'Import']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+            await expect(search(page)).toBeDisabled();
             await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toBeDisabled();
-            await page.getByRole('button', { name: 'Load more images', exact: true }).evaluate(node => node.click());await recovery.source.dispatchEvent('change');
+            await page.getByRole('button', { name: 'Load more images', exact: true }).evaluate(node => node.click());await recovery.filters.evaluate(node => node.click());await sortBy(page).dispatchEvent('change');
+            await expect(refineDialog(page)).toBeHidden();
             await recovery.options[0].fulfill({ status: 503, json: { success: false, error: 'Discovery unavailable' } });
             await expect(page.getByRole('alert').filter({ hasText: 'Sources and folders could not be loaded.' })).toBeVisible();
             expect(recovery.pages).toEqual([]);expect(recovery.inspections).toEqual([]);await expect(cards(page)).toHaveCount(0);
@@ -543,8 +572,8 @@ for (const [name, roots] of [['reordered', ['input', 'output']], ['removed', ['i
             await expect.poll(() => recovery.pages.length).toBe(1);
             const query = recovery.pages[0].searchParams;expect(query.has('root')).toBe(false);expect(query.has('subfolder')).toBe(false);
             expect(query.get('q')).toBe('png');expect(query.get('media')).toBe('image');expect(query.get('sort')).toBe('name');
-            await expect(recovery.source).toBeEnabled();await expect(recovery.source).toHaveValue('all');
-            await expect(recovery.source.locator('option')).toHaveText(['All sources', ...roots]);
+            await expect(recovery.filters).toBeEnabled();await recovery.filters.click();await expect(recovery.source).toHaveValue('all');
+            await expect(recovery.source.locator('option')).toHaveText(['All sources', ...roots]);await page.keyboard.press('Escape');
             await expect.poll(() => recovery.inspections.length).toBe(1);expect(recovery.inspections[0].searchParams.get('root')).toBe(name === 'reordered' ? '1' : '0');
             expect(recovery.mutations).toEqual([]);
             if (testInfo.project.name === 'chromium' && name === 'reordered') await page.screenshot({ path: testInfo.outputPath('safe-source-recovery-success.png') });
@@ -558,7 +587,7 @@ test('source-change recovery ignores superseded discovery and route disposal', a
         expect(recovery.pages).toEqual([]);await details(page).getByRole('button', { name: 'Refresh image collection', exact: true }).click();await expect.poll(() => recovery.options.length).toBe(2);
         await recovery.options[0].fulfill({ json: { roots: [{ index: 0, label: 'Obsolete source label' }], subfolders: ['obsolete'] } });
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        expect(recovery.pages).toEqual([]);await expect(recovery.source.locator('option')).toHaveText(['All sources']);
+        expect(recovery.pages).toEqual([]);await expect(page.locator('.filter-row span.chip')).toHaveText('All output folders');await expect(recovery.filters).toBeDisabled();
         await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
         await recovery.options[1].fulfill({ json: { roots: [{ index: 0, label: 'Late source label' }], subfolders: ['late'] } });
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -576,7 +605,7 @@ test('mobile Images keeps filters, layouts and selected details within the viewp
         await expect(details(page)).toContainText(/input/i);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     }
-    await expect(page.getByRole('searchbox', { name: 'Search filenames', exact: true })).toBeVisible();
+    await expect(search(page)).toBeVisible();
 });
 
 test('a delayed search cannot replace results for a newer filename query', async ({ page, request }) => {
@@ -599,10 +628,10 @@ test('a delayed search cannot replace results for a newer filename query', async
         await route.fulfill({ response }).catch(() => {});
         complete();
     });
-    const search = page.getByRole('searchbox', { name: 'Search filenames', exact: true });
-    await search.fill('same.png');
+    const box = search(page);
+    await box.fill('same.png');
     await received;
-    await search.fill('0001');
+    await box.fill('0001');
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page)).toHaveAttribute('data-image-key', '0:bulk/0001.png');
     release();
@@ -630,22 +659,22 @@ test('refresh releases the previous inspector video source', async ({ page, requ
     await card.getByRole('button', { name: 'Open clip.webm', exact: true }).click();
     await expect(details(page).locator('video')).toBeVisible();
     await details(page).locator('video').evaluate(element => { window.__oldInspectorVideo = element; });
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await rescan(page);
     await expect.poll(() => page.evaluate(() => !window.__oldInspectorVideo.isConnected)).toBe(true);
     expect(await page.evaluate(() => window.__oldInspectorVideo.getAttribute('src'))).toBeNull();
 });
 
-test('Refresh rescans cached files and preserves the collection when rescan fails', async ({ page, request }) => {
+test('Import Rescan rescans cached files and preserves the collection when rescan fails', async ({ page, request }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
     await expect(await request.post('/__test__/add-nested-image')).toBeOK();
     await page.route('**/prompt_manager/gallery/rescan', route => route.fulfill({
         status: 503, json: { success: false, error: 'Rescan unavailable' },
     }), { times: 1 });
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('could not be refreshed');
+    await rescan(page);
+    await expect(page.getByRole('alert')).toContainText('could not be rescanned');
     await expect(cards(page)).toHaveCount(2);
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await rescan(page);
     await expect(cards(page)).toHaveCount(3);
     await expect(cards(page).filter({ hasText: 'new-output.png' })).toHaveCount(1);
     await expect(page.getByRole('alert')).toBeHidden();
@@ -655,14 +684,15 @@ test('folder discovery offers ancestors that filter nested images', async ({ pag
     await expect(await request.post('/__test__/add-nested-image')).toBeOK();
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(3);
-    const folder = page.getByRole('combobox', { name: 'Folder', exact: true });
-    await expect(folder.locator('option[value="project"]')).toHaveCount(1);
-    await folder.selectOption('project');
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    await expect(refineDialog(page).getByLabel('Folder', { exact: true }).locator('option[value="project"]')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await refine(page, { Folder: 'project' });
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page)).toContainText('new-output.png');
 });
 
-test('leaving during Refresh cancels it without replacing the next workspace', async ({ page }) => {
+test('leaving during Rescan cancels it without replacing the next workspace', async ({ page }) => {
     let release;
     const pending = new Promise(resolve => { release = resolve; });
     await page.route('**/prompt_manager/gallery/rescan', async route => {
@@ -672,14 +702,14 @@ test('leaving during Refresh cancels it without replacing the next workspace', a
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
     const requested = page.waitForRequest('**/prompt_manager/gallery/rescan');
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await rescan(page);
     await requested;
     await page.getByRole('navigation', { name: 'Tools and system', exact: true })
         .getByRole('link', { name: 'Overview', exact: true }).click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     release();
     await expect(page.getByRole('heading', { name: 'Continue creating', exact: true })).toBeVisible();
-    await expect(page.getByText('Images could not be refreshed. Try Refresh again.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Output folders could not be rescanned. Try Rescan again.', { exact: true })).toHaveCount(0);
 });
 
 
@@ -688,12 +718,12 @@ test('Images uses approved geometry while keeping real controls', async ({page,r
     await page.setViewportSize({width:1600,height:1100});
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(24);
-    await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Browse your images, explore the details, keep your creative context.');
+    await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Your generations, their prompts, and the next idea.');
     await expect(details(page)).toHaveCSS('width','310px');
-    await expect(page.locator('.image-workspace')).toHaveCSS('column-gap','22px');
-    for (const label of ['Source','Folder','Media','Sort','Thumbnail size']) await expect(page.getByRole('combobox',{name:label,exact:true})).toBeVisible();
-    await expect(page.getByRole('searchbox',{name:'Search filenames',exact:true})).toHaveAttribute('placeholder',/filename or folder/);
-    await expect(page.getByRole('link',{name:'Group by positive prompt',exact:true})).toHaveAttribute('href','#/library');
+    await expect(page.locator('.gallery-layout')).toHaveCSS('column-gap','22px');
+    for (const label of ['Filter by category','Sort results','Thumbnail size']) await expect(page.getByRole('combobox',{name:label,exact:true})).toBeVisible();
+    await expect(search(page)).toHaveAttribute('placeholder','Search prompts, tags, filenames…');
+    await expect(page.getByRole('button',{name:'Group by positive prompt →',exact:true})).toBeVisible();
     const geometry = await cards(page).evaluateAll(nodes=>nodes.slice(0,4).map(node=>{
         const box=node.getBoundingClientRect(),media=node.querySelector('.image-open').getBoundingClientRect();
         return {x:box.x,y:box.y,right:box.right,bottom:box.bottom,width:box.width,mediaWidth:media.width,mediaHeight:media.height};
@@ -702,7 +732,7 @@ test('Images uses approved geometry while keeping real controls', async ({page,r
     expect(geometry[3].y-geometry[0].bottom).toBeCloseTo(13,0);
     expect(geometry[3].x).toBeCloseTo(geometry[0].x,0);
     expect(geometry[0].mediaWidth/geometry[0].mediaHeight).toBeCloseTo(4/3,2);
-    expect((await page.locator('.image-toolbar').boundingBox()).y).toBeLessThan(geometry[0].y);
+    expect((await caption(page).boundingBox()).y).toBeLessThan(geometry[0].y);
     await expect(cards(page).first()).toHaveCSS('outline-style','solid');
     const cover=details(page).getByRole('button',{name:'Open full preview',exact:true});
     await expect(cover).toHaveCSS('height','150px');
@@ -742,4 +772,161 @@ test('density changes and resize preserve identity focus and selection', async (
         await expect(cards(page).nth(columns).getByRole('button',{name:/^Open /})).toBeFocused();
         expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
     }
+});
+
+test('images toolbar and filter row match the concept controls', async ({ page, request }) => {
+    // Old → new: Search filenames → toolbar search; Source/Folder/Media → Filters; Refresh → Import → Rescan (D15).
+    await expect(await request.post('/prompt_manager/save', { data: { text: 'Dog landscape', category: 'Landscapes', tags: ['dogs'], rating: 5 } })).toBeOK();
+    const { roots } = await (await request.get('/prompt_manager/gallery/subfolders?mode=workspace')).json();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const main = page.locator('#workspace-main');
+    await expect(main.locator(':scope > .heading p.muted')).toHaveText('Your generations, their prompts, and the next idea.');
+    await expect(main.locator(':scope > .heading .heading-actions > button')).toHaveText(['Import', 'New prompt']);
+    await expect(main.locator(':scope > .heading .heading-actions > button').nth(1)).toHaveClass(/ca-primary/);
+    await expect(page.getByRole('searchbox', { name: 'Search filenames' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Current gallery' })).toHaveCount(0);
+    await expect(main.locator('h2', { hasText: /^All images$/ })).toHaveCount(0);
+    await expect(main.locator('search.toolbar > *')).toHaveCount(4);
+    await expect(sortBy(page).locator('option')).toHaveText(['Recently added', 'Name A–Z', 'Highest rated', 'Oldest first', 'Name Z–A']);
+    const row = main.locator('.filter-row');
+    await expect(row.locator(':scope > *')).toHaveCount(5);
+    await expect(row.locator(':scope > .segmented[role="group"][aria-label="Image layout"] > button')).toHaveText(['Grid', 'List', 'Masonry']);
+    await expect(row.locator(':scope > label.small[for="image-size"]')).toHaveText('Thumbnail size');
+    await expect(row.locator(':scope > select#image-size option')).toHaveText(['Comfortable', 'Large', 'Compact']);
+    await expect(row.locator(':scope > span.chip')).toHaveText('All output folders');
+    await expect(row.locator(':scope > span.chip svg.icon')).toHaveCount(1);
+    await expect(row.locator(':scope > button.chip')).toHaveText('Group by positive prompt →');
+
+    await search(page).fill('cat');
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '0:shared/same.png');
+    await search(page).fill('dogs');
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
+    await search(page).fill('');
+    await expect(cards(page)).toHaveCount(2);
+    await expect(cards(page).first()).toHaveAttribute('data-image-key', '0:shared/same.png');
+    await sortBy(page).selectOption('rating');
+    await expect(cards(page).first()).toHaveAttribute('data-image-key', '1:shared/same.png');
+    await sortBy(page).selectOption('newest');
+    await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('Landscapes');
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
+    await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('');
+    await expect(cards(page)).toHaveCount(2);
+
+    await refine(page, { Source: '1', Folder: 'shared', Media: 'image' });
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
+    await expect(row.locator(':scope > span.chip')).toHaveText(`${roots[1].label} · shared`);
+    await refine(page, { Media: 'video' });
+    await expect(cards(page)).toHaveCount(0);
+    await refine(page, { Source: 'all', Folder: '', Media: 'all', Tags: 'cats' });
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '0:shared/same.png');
+    await expect(row.locator(':scope > span.chip')).toHaveText('All output folders');
+    await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('Landscapes');
+    await expect(cards(page)).toHaveCount(0);
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    await expect(refineDialog(page).getByLabel('Tags', { exact: true })).toHaveValue('cats');
+    await refineDialog(page).getByRole('button', { name: 'Clear filters', exact: true }).click();
+    await expect(page.getByRole('combobox', { name: 'Filter by category', exact: true })).toHaveValue('');
+    await expect(cards(page)).toHaveCount(2);
+
+    const rescans = [];
+    page.on('request', request => { if (request.url().includes('/prompt_manager/gallery/rescan')) rescans.push(request.method()); });
+    await expect(await request.post('/__test__/add-nested-image')).toBeOK();
+    await rescan(page);
+    await expect(cards(page)).toHaveCount(3);
+    await expect(caption(page)).toContainText('3 of 3 images');
+    expect(rescans).toEqual(['POST']);
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await importDialog(page).getByRole('button', { name: 'Open inspector', exact: true }).click();
+    await expect(page).toHaveURL(/#\/inspect$/);
+    await page.goBack();
+    await expect(page.locator('#workspace-main h1')).toHaveText('Images');
+    await row.locator(':scope > button.chip').click();
+    await expect(page).toHaveURL(/#\/library$/);
+});
+
+test('browser Back closes the open Images dialog and leaves the next page usable', async ({ page }) => {
+    await page.goto('/prompt_manager/workspace#/overview');
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    for (const [button, dialog] of [['Filters', refineDialog], ['Import', importDialog]]) {
+        await page.evaluate(() => { location.hash = '/images'; });
+        await expect(cards(page)).toHaveCount(2);
+        await page.getByRole('button', { name: button, exact: true }).click();
+        await expect(dialog(page)).toBeVisible();
+        await page.goBack();
+        await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+        await expect(page.locator('dialog#modal[open]')).toHaveCount(0);
+        await page.getByRole('navigation', { name: 'Workspace', exact: true }).getByRole('link', { name: /^Images(?:\s*[\d,]+)?$/ }).click();
+        await expect(cards(page)).toHaveCount(2);
+        await search(page).fill('cat');
+        await expect(cards(page)).toHaveCount(1);
+        await search(page).fill('');
+        await expect(cards(page)).toHaveCount(2);
+        await page.evaluate(() => { location.hash = '/overview'; });
+        await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    }
+});
+
+test('count line shows images and positive prompts', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    await expect(caption(page).locator('#result-count')).toHaveText('2 of 2 images · 2 positive prompts');
+    await expect(caption(page).locator(':scope > span')).toHaveCount(2);
+    await expect(caption(page).locator(':scope > span').nth(1)).toHaveText(/^Today · [A-Z][a-z]+ \d{1,2}$/);
+    await sortBy(page).selectOption('name');
+    await expect(cards(page).first()).toHaveAttribute('data-image-key', /same\.png$/);
+    await expect(caption(page).locator(':scope > span').nth(1)).toBeHidden();
+    await search(page).fill('cat');
+    await expect(caption(page).locator('#result-count')).toHaveText('1 of 1 image · 1 positive prompt');
+
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 100 } })).toBeOK();
+    // A plain cursor page leaves positive_count out; the first page's count stays.
+    const cursorPages = [];
+    await page.route(url => imagePages(url) && url.searchParams.has('cursor'), async route => {
+        const response = await route.fetch();
+        const json = await response.json();
+        cursorPages.push('positive_count' in json);
+        await route.fulfill({ response, json });
+    });
+    // A fresh document: a same-page visit would restore the earlier search.
+    await page.goto('about:blank');
+    await page.goto(workspace);
+    await expect(caption(page).locator('#result-count')).toHaveText('40 of 102 images · 2 positive prompts');
+    await page.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(caption(page).locator('#result-count')).toHaveText('80 of 102 images · 2 positive prompts');
+    expect(cursorPages).toEqual([false]);
+
+    // A failed count read is null: the count line keeps only the images.
+    await page.unrouteAll({ behavior: 'wait' });
+    await page.route(imagePages, async route => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...(await response.json()), positive_count: null } });
+    });
+    await page.goto('about:blank');
+    await page.goto(workspace);
+    await expect(caption(page).locator('#result-count')).toHaveText('40 of 102 images');
+});
+
+test('Load more toast reports the new total', async ({ page, request }) => {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 100 } })).toBeOK();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(40);
+    await expect(page.locator('.infinite-continuation p.small')).toHaveText('40 of 102 images · more load as you scroll');
+    await expect(page.locator('#workspace-toast')).toHaveText('');
+    await page.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(page.locator('#workspace-toast')).toHaveText('40 more images loaded. 80 of 102.');
+    await page.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(page.locator('#workspace-toast')).toHaveText('22 more images loaded. 102 of 102.');
+    await expect(page.locator('.infinite-continuation p.small')).toHaveText('You’re all caught up · 102 images');
+    await search(page).fill('no-such-image');
+    await expect(cards(page)).toHaveCount(0);
+    await expect(page.locator('.infinite-continuation p.small')).toHaveText('No matching images · 0 images');
 });

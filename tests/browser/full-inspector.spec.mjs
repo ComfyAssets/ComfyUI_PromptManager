@@ -285,12 +285,15 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true,extra_images:200}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');
-    await page.getByRole('combobox',{name:'Source',exact:true}).selectOption('0');
-    await page.getByRole('combobox',{name:'Folder',exact:true}).selectOption('inspector');
-    await page.getByRole('combobox',{name:'Sort',exact:true}).selectOption('name');
+    // #249 C2: Source and Folder live in the concept's "Refine this view"; sort is the toolbar's.
+    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    const refine=page.getByRole('dialog',{name:'Refine this view',exact:true});
+    await refine.getByLabel('Source',{exact:true}).selectOption('0');await refine.getByLabel('Folder',{exact:true}).selectOption('inspector');
+    await refine.getByRole('button',{name:'Apply filters',exact:true}).click();
+    await page.getByRole('combobox',{name:'Sort results',exact:true}).selectOption('name');
     const more=page.getByRole('button',{name:'Load more images',exact:true});
-    await expect(page.locator('.image-toolbar')).toContainText('40 of');
-    for(const n of [80,120,160]) {await more.click();await expect(page.locator('.image-toolbar')).toContainText(`${n} of`);}
+    await expect(page.locator('.section-caption')).toContainText('40 of');
+    for(const n of [80,120,160]) {await more.click();await expect(page.locator('.section-caption')).toContainText(`${n} of`);}
     const listed=await(await request.get('/prompt_manager/images/output?mode=workspace&root=0&subfolder=inspector&sort=name&limit=200')).json();
     const loaded=listed.images.slice(0,160);expect(loaded).toHaveLength(160);
     await page.evaluate(()=>scrollTo(0,0));await expect.poll(()=>page.locator('article[data-image-key]').count()).toBeLessThan(120);
@@ -299,7 +302,7 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     await page.route(url=>url.pathname.endsWith('/images/output') && url.searchParams.get('limit')!=='1',async route=>{started();await held;await route.continue();},{times:1});
     await more.click();await hit;await page.evaluate(()=>scrollTo(0,0));
     const opener=page.locator(`article[data-image-key="0:${loaded[0].path}"] .image-card-footer button`);
-    await opener.click();release();await expect(page.locator('.image-toolbar')).toContainText('200 of');
+    await opener.click();release();await expect(page.locator('.section-caption')).toContainText('200 of');
     const modal=mediaDialog(page);await expect(position(page)).toHaveText(`1 of 160 loaded: ${loaded[0].filename}`);
     let pages=0;page.on('request',req=>{if(req.url().includes('/images/output?'))pages++;});
     await modal.getByRole('button',{name:'Previous media',exact:true}).click();
@@ -311,8 +314,9 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     await mediaStage(page).focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(`2 of 160 loaded: ${loaded[1].filename}`);
     expect(pages).toBe(0);await modal.getByRole('button',{name:'Close preview',exact:true}).click();
     await expect(opener).toBeFocused();
-    await page.getByRole('combobox',{name:'Source',exact:true}).selectOption('1');
-    await page.getByRole('combobox',{name:'Folder',exact:true}).selectOption('inspector');
+    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    await refine.getByLabel('Source',{exact:true}).selectOption('1');await refine.getByLabel('Folder',{exact:true}).selectOption('inspector');
+    await refine.getByRole('button',{name:'Apply filters',exact:true}).click();
     await selectFile(page,'complete.png',1);await openCollection(page);await expect(position(page)).toHaveText('1 of 1 loaded: complete.png');
     for(const name of ['Previous media','Next media'])await expect(mediaDialog(page).getByRole('button',{name,exact:true})).toHaveAttribute('aria-disabled','true');
     const onePlay=mediaDialog(page).getByRole('button',{name:'Play slideshow',exact:true});
@@ -438,7 +442,7 @@ test('slideshow production query and route disposal cancel the active deadline',
     await openCollection(page);await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
     await page.clock.pauseAt(new Date(Date.now()+1000));await slideshowButton(page).click();expect(await timerCount(page)).toBe(1);
     await page.clock.runFor(3499);
-    const pendingAtReset=await page.evaluate(()=>{const folder=document.getElementById('image-folder');folder.value='inspector';folder.dispatchEvent(new Event('change'));return window.slideshowTimers.size;});
+    const pendingAtReset=await page.evaluate(()=>{const sort=document.getElementById('sort');sort.value='name';sort.dispatchEvent(new Event('change'));return window.slideshowTimers.size;});
     expect(pendingAtReset).toBe(0);await page.clock.runFor(1);
     await expect(mediaDialog(page)).toHaveCount(0);expect(await timerCount(page)).toBe(0);
     await selectFile(page,'complete.png');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await readyClockImage(page);await expect(slideshowButton(page)).toHaveText('Play');

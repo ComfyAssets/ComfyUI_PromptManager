@@ -183,3 +183,65 @@ test('custom collection pages reuse image-stream cancellation, cursors and ident
     assert.equal(await stream.loadMore(),1);assert.equal(calls[1].parameters.get('cursor'),'next');assert.equal(stream.state.loaded,2);stream.dispose();
     assert.throws(()=>createImageStream({api:{get:async()=>{}},fetchPage:'invalid'}),/page/i);
 });
+
+test('stream sends category, tags and the rating sort and validates them', async () => {
+    const {createImageStream}=await source;const calls=[];
+    const stream=createImageStream({api:{get:async url=>{calls.push(new URL(url,'http://local').searchParams);return page([]);}}});
+    await stream.reset({q:'cat',category:'Animals',tags:['cats','studio'],sort:'rating'});
+    assert.equal(calls[0].get('category'),'Animals');assert.equal(calls[0].get('tags'),'cats,studio');assert.equal(calls[0].get('sort'),'rating');
+    await stream.reset({category:'',tags:[]});
+    assert.equal(calls[1].has('category'),false);assert.equal(calls[1].has('tags'),false);
+    for(const filters of [{category:3},{tags:'cats'},{tags:[1]},{tags:['a,b']},{tags:['']}]) await assert.rejects(stream.reset(filters),/filter/i);
+});
+
+test('positive count comes from the first page, survives plain cursor pages and hides when unknown', async () => {
+    const {createImageStream}=await source;
+    const replies=[{...page([image('a')],3,'one'),positive_count:2},page([image('b')],3,'two'),{...page([image('c')],3),positive_count:null}];
+    const stream=createImageStream({api:{get:async()=>replies.shift()}});
+    assert.equal(stream.state.positiveCount,null);
+    await stream.reset();assert.equal(stream.state.positiveCount,2);
+    await stream.loadMore();assert.equal(stream.state.positiveCount,2);
+    await stream.loadMore();assert.equal(stream.state.positiveCount,2);
+    const failed=createImageStream({api:{get:async()=>({...page([image('a')]),positive_count:null})}});
+    await failed.reset();assert.equal(failed.state.positiveCount,null);
+    const absent=createImageStream({api:{get:async()=>page([image('a')])}});
+    await absent.reset();assert.equal(absent.state.positiveCount,null);
+    for(const positive_count of [-1,'2',1.5]) {
+        const invalid=createImageStream({api:{get:async()=>({...page([image('a')]),positive_count})}});
+        await invalid.reset();assert.match(invalid.state.error.message,/page/i);
+    }
+    const restored=createImageStream({api:{get(){assert.fail('unexpected request');}},restore:{filters:{},state:{...stream.state}}});
+    assert.equal(restored.state.positiveCount,2);
+    assert.throws(()=>createImageStream({api:{get(){}},restore:{filters:{},state:{...stream.state,positiveCount:-3}}}),TypeError);
+});
+
+test('the count line reads N of M images and K positive prompts only when known', async () => {
+    const {countLine}=await source;
+    assert.equal(countLine({loaded:40,total:102,positiveCount:2}),'40 of 102 images · 2 positive prompts');
+    assert.equal(countLine({loaded:1,total:1,positiveCount:1}),'1 of 1 image · 1 positive prompt');
+    assert.equal(countLine({loaded:2,total:2,positiveCount:null}),'2 of 2 images');
+    assert.equal(countLine({loaded:1200,total:3400,positiveCount:0}),'1,200 of 3,400 images · 0 positive prompts');
+});
+
+test('the caption date names the newest result day under a date sort only', async () => {
+    const {captionDate}=await source;
+    const now=new Date(2026,9,17,15,0);
+    const at=(...parts)=>({modified_time:new Date(...parts).getTime()/1000});
+    assert.equal(captionDate([at(2026,9,17,9),at(2026,9,10)],'newest',now),'Today · October 17');
+    assert.equal(captionDate([at(2026,9,10),at(2026,9,16,23)],'oldest',now),'Yesterday · October 16');
+    assert.equal(captionDate([at(2026,9,13)],'newest',now),'Tuesday · October 13');
+    assert.equal(captionDate([at(2025,2,3)],'newest',now),'Monday · March 3, 2025');
+    for(const sort of ['name','name-desc','rating']) assert.equal(captionDate([at(2026,9,17)],sort,now),'');
+    assert.equal(captionDate([],'newest',now),'');
+    assert.equal(captionDate([{modified_time:'bad'}],'newest',now),'');
+});
+
+test('the scope chip summarizes source and folder', async () => {
+    const {scopeLabel}=await source;
+    const roots=[{index:0,label:'output'},{index:1,label:'input'}];
+    assert.equal(scopeLabel({root:'all',subfolder:''},roots),'All output folders');
+    assert.equal(scopeLabel({root:'1',subfolder:'shared'},roots),'input · shared');
+    assert.equal(scopeLabel({root:'0',subfolder:''},roots),'output · All folders');
+    assert.equal(scopeLabel({root:'all',subfolder:'bulk'},roots),'All sources · bulk');
+    assert.equal(scopeLabel({root:'7',subfolder:''},roots),'Source 7 · All folders');
+});
