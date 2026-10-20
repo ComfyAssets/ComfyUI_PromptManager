@@ -22,15 +22,13 @@ function safeFilename(value) {
     return String(value || 'file').replace(/[\\/\x00-\x1f\x7f<>:"|?*]/g, '_').replace(/^\.+|[. ]+$/g, '') || 'file';
 }
 
-/** Export only the bounded public evidence, never normalized graphs or container carriers. */
-export function inspectionDownloads(record) {
-    const name = safeFilename(record?.download?.filename || record?.identity?.path?.split('/').at(-1));
-    const stem = name.replace(/\.[^.]+$/, '') || 'file';
-    const unavailable = (suffix, reason) => ({available:false, reason, filename:`${stem}.${suffix}.json`, bodyText:null, mime:'application/json'});
+/**
+ * One file's metadata envelope: only the bounded public evidence, never normalized graphs or container carriers.
+ * Null when the inspection holds no full metadata. Shared by "Download metadata JSON" and the Images bulk export.
+ */
+export function metadataEnvelope(record) {
     const metadata = record?.metadata;
-    const reason = metadata?.status === 'limited' ? RAW_LIMIT : 'Full metadata is unavailable for this inspection response.';
-    const result = {metadata:unavailable('metadata', reason), workflow:unavailable('workflow', reason)};
-    if (!metadata || metadata.status === 'limited') return result;
+    if (!metadata || metadata.status === 'limited') return null;
     const raw = {}, record_formats = {}, representations = {};
     for (const key of RAW_KEYS) {
         if (Object.hasOwn(REPRESENTATIONS, metadata.record_formats?.[key])) {
@@ -39,10 +37,23 @@ export function inspectionDownloads(record) {
             if (!TEXTLESS.has(record_formats[key]) && typeof metadata.raw?.[key] === 'string') raw[key] = metadata.raw[key];
         }
     }
-    const envelope = {inspection_version:1, identity:record.identity, file:record.file, prompts:record.prompts,
+    return {inspection_version:1, identity:record.identity, file:record.file, prompts:record.prompts,
         generation:record.generation, library:record.library,
         metadata:{status:metadata.status, omitted_reason:metadata.omitted_reason, raw, record_formats, representations,
             scope:'Supported embedded records only; one selected container carrier for video. Other metadata and private carrier text are excluded.'}};
+}
+
+/** The inspector's metadata and workflow downloads, each with its filename or the reason it is unavailable. */
+export function inspectionDownloads(record) {
+    const name = safeFilename(record?.download?.filename || record?.identity?.path?.split('/').at(-1));
+    const stem = name.replace(/\.[^.]+$/, '') || 'file';
+    const unavailable = (suffix, reason) => ({available:false, reason, filename:`${stem}.${suffix}.json`, bodyText:null, mime:'application/json'});
+    const metadata = record?.metadata;
+    const reason = metadata?.status === 'limited' ? RAW_LIMIT : 'Full metadata is unavailable for this inspection response.';
+    const result = {metadata:unavailable('metadata', reason), workflow:unavailable('workflow', reason)};
+    const envelope = metadataEnvelope(record);
+    if (!envelope) return result;
+    const {raw, record_formats} = envelope.metadata;
     result.metadata = {...result.metadata, available:true, reason:null, bodyText:JSON.stringify(envelope, null, 2)};
     if (record_formats.workflow === 'reserialized-json') result.workflow.reason = CONTAINER_WORKFLOW;
     else if (record_formats.workflow === 'limited') result.workflow.reason = LIMITED_WORKFLOW;

@@ -1599,12 +1599,10 @@ test('card checkboxes select images into the concept bar and Clear empties it', 
     await checkbox(second, 'same.png').check();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveAttribute('data-kept', 'yes');
-    // Set category and Export metadata are wired by later tasks; until then they do nothing.
-    for (const name of ['Set category', 'Export metadata']) {
-        await bulkbar(page).getByRole('button', { name, exact: true }).click();
-        await expect(page.locator('dialog[open]')).toHaveCount(0);
-        await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
-    }
+    // Set category is wired by a later task; until then it does nothing.
+    await bulkbar(page).getByRole('button', { name: 'Set category', exact: true }).click();
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
     await checkbox(second, 'same.png').uncheck();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
     await checkbox(second, 'same.png').check();
@@ -1679,15 +1677,103 @@ test('the selection survives scrolling, re-mounting and appended batches, and a 
     await expect(caption(page)).toContainText('of 202 images');
     await expect(bulkbar(page)).toBeEmpty();
     await expect(page.locator(`article[data-image-key="${firstKey}"]`).getByRole('checkbox', { name: /^Select / })).not.toBeChecked();
+    // A sort change replaces the collection too.
+    await cards(page).first().getByRole('checkbox', { name: /^Select / }).check();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+    await sortBy(page).selectOption('oldest');
+    await expect(bulkbar(page)).toBeEmpty();
+    await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(0);
 });
 
 test('the card checkbox does not open the viewer', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
     const first = cards(page).first();
-    // A press on the label around the box, as well as on the box itself.
+    const selectedBefore = await cards(page).evaluateAll(nodes => nodes.map(node => node.classList.contains('selected')));
+    const inspectorBefore = await details(page).innerText();
+    // A press on the label around the box toggles it, as does a press on the box itself.
     await first.locator('.image-overlays > label').click({ position: { x: 1, y: 1 } });
+    await expect(checkbox(first, 'same.png')).toBeChecked();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
     await checkbox(first, 'same.png').click();
+    await expect(checkbox(first, 'same.png')).not.toBeChecked();
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await expect(page.locator('#viewer-dialog[open]')).toHaveCount(0);
+    // Neither press selected the card or inspected it.
+    expect(await cards(page).evaluateAll(nodes => nodes.map(node => node.classList.contains('selected')))).toEqual(selectedBefore);
+    expect(await details(page).innerText()).toBe(inspectorBefore);
+});
+
+// #249 D8 follow-up (image selection, Task 2): Export metadata downloads one bundle of the inspector's envelopes.
+const exportButton = page => bulkbar(page).getByRole('button', { name: 'Export metadata', exact: true });
+const inspectRoute = '**/prompt_manager/images/inspect/**';
+const atRoot = (route, root) => new URL(route.request().url()).searchParams.get('root') === root;
+async function checkBoth(page) {
+    await expect(cards(page)).toHaveCount(2);
+    await checkbox(cards(page).first(), 'same.png').check();
+    await checkbox(cards(page).last(), 'same.png').check();
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+}
+async function bundleOf(download) {
+    const fs = await import('node:fs/promises');
+    return JSON.parse(await fs.readFile(await download.path(), 'utf8'));
+}
+
+test('Export metadata downloads one bundle of the checked images in listing order and keeps the selection', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    const keys = await cards(page).evaluateAll(nodes => nodes.map(node => node.dataset.imageKey));
+    // Hold both reads: the button is busy and a second press starts nothing more.
+    const held = [], reads = [];
+    await page.route(inspectRoute, route => { reads.push(route.request().url()); held.push(route); });
+    const downloads = [];
+    page.on('download', download => downloads.push(download));
+    await exportButton(page).click();
+    await expect.poll(() => held.length).toBe(2);
+    await expect(exportButton(page)).toHaveAttribute('aria-disabled', 'true');
+    // Playwright waits on an aria-disabled control, so the second press is a dispatched click.
+    await exportButton(page).dispatchEvent('click');
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const saving = page.waitForEvent('download');
+    for (const route of held) await route.continue();
+    const download = await saving;
+    expect(download.suggestedFilename()).toBe('prompt-manager-images-metadata.json');
+    const bundle = await bundleOf(download);
+    expect([bundle.format, bundle.version]).toEqual(['prompt-manager-images-metadata', 1]);
+    expect(Number.isNaN(Date.parse(bundle.exported_at))).toBe(false);
+    expect(bundle.images.map(image => image.identity.key)).toEqual(keys);
+    expect(bundle.images.map(image => image.identity.path.split('/').at(-1))).toEqual(['same.png', 'same.png']);
+    expect(bundle.images.every(image => image.inspection_version === 1 && image.metadata.prompt_graph === undefined)).toBe(true);
+    await expect(toast(page)).toHaveText('Exported metadata for 2 images.');
+    await expect(exportButton(page)).not.toHaveAttribute('aria-disabled', 'true');
+    expect(reads).toHaveLength(2);
+    expect(downloads).toHaveLength(1);
+    // The selection is kept after an export.
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+    await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(2);
+});
+
+test('Export metadata reports images that could not be read and exports the rest', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    await page.route(inspectRoute, route => atRoot(route, '1') ?
+        route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } }) : route.continue());
+    const [download] = await Promise.all([page.waitForEvent('download'), exportButton(page).click()]);
+    const bundle = await bundleOf(download);
+    expect(bundle.images.map(image => image.identity.key)).toEqual(['0:shared/same.png']);
+    await expect(toast(page)).toHaveText('Exported metadata for 1 of 2 images. 1 could not be read.');
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
+});
+
+test('Export metadata downloads nothing when no image can be read', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    await page.route(inspectRoute, route => route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } }));
+    const downloads = [];
+    page.on('download', download => downloads.push(download));
+    await exportButton(page).click();
+    await expect(toast(page)).toHaveText('Metadata could not be read. Try again.');
+    await expect(exportButton(page)).not.toHaveAttribute('aria-disabled', 'true');
+    expect(downloads).toHaveLength(0);
+    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
 });

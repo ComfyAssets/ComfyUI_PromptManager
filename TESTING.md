@@ -505,7 +505,14 @@ Recorded deviations on this page (spec §8):
   category, Export metadata, Clear). Add tags and Add to collection wait for image tags
   and collections; "Remove links…" is dropped. The selection survives Load more and
   bounded re-mounting and is cleared whenever the collection is replaced (search,
-  category, sort, Filters, source change, rescan, reload). `images selection bar matches
+  category, sort, Filters, source change, rescan, reload). A return to Images restores
+  the saved collection unreplaced and keeps its selection; a full page reload starts
+  empty. The Library-embedded gallery has no checkbox and no bar. Export metadata reads
+  each checked image's inspection (at most 4 at a time) and downloads one
+  `prompt-manager-images-metadata.json` (`format`, `version: 1`, `exported_at`, and the
+  inspector's own "Download metadata JSON" envelopes in listing order); the button is
+  `aria-disabled` and ignores a second press while it runs, the selection is kept, and
+  the toast names the unread images (none read: no download). `images selection bar matches
   the concept` compares the bar and the checked card with one card checked; the omitted
   actions flow again from the concept's own boxes, checked against the concept page with
   them removed at runtime.

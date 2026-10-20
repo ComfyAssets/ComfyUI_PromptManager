@@ -2,7 +2,8 @@ import { createScope, createButton } from '../shared/toolkit/core.js';
 import { createImageStream, withItem, imageKey, toggleSelection, selectionLabel, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
 import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
-import { createInspectionController } from './inspection-state.mjs';
+import { createInspectionController, inspectPath, toInspectionRecord } from './inspection-state.mjs';
+import { BUNDLE_FILENAME, metadataBundle, collectImagesMetadata, exportOutcome } from './images-export.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
@@ -178,15 +179,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     main.append(filterRow);
     // The concept's selection bar (app.js renderImages, updateBulk), between the filter row and the gallery layout.
     // One bar and count, mounted while anything is checked, so the count updates in place.
+    // Only the Images page builds it: the Library-embedded gallery has no selection.
     const bulkbar = embedded ? null : el('div');
-    const bulk = el('div', undefined, 'bulkbar'), bulkCount = el('strong');
+    let bulk, bulkCount;
     if (bulkbar) {
         bulkbar.id = 'bulkbar';
-        // Set category and Export metadata are wired by the next selection tasks; until then they do nothing.
+        bulk = el('div', undefined, 'bulkbar'); bulkCount = el('strong');
+        // Set category is wired by the next selection task; until then it does nothing.
+        const exportMetadata = createButton('Export metadata');
+        scope.listen(exportMetadata, 'click', () => exportChecked(exportMetadata));
         const clear = createButton('Clear');
         // Clear hides the bar it sits in, so focus moves to the page heading instead of falling to the page.
         scope.listen(clear, 'click', () => { clearChecked(); focusFallback.focus({preventScroll:true}); });
-        bulk.append(bulkCount, createButton('Set category'), createButton('Export metadata'), clear);
+        bulk.append(bulkCount, createButton('Set category'), exportMetadata, clear);
         main.append(bulkbar);
     }
     const body = el('div', undefined, 'gallery-layout image-workspace');
@@ -352,6 +357,34 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!checked.size) { bulk.remove(); return; }
         setText(bulkCount, selectionLabel(checked.size));
         if (bulk.parentNode !== bulkbar) bulkbar.append(bulk);
+    }
+    /**
+     * Export metadata: the checked images' inspector envelopes in listing order, as one JSON download. The button is
+     * busy until it settles and ignores a second press; the selection is kept.
+     */
+    let exporting = false;
+    async function exportChecked(button) {
+        if (exporting) return;
+        exporting = true;
+        button.setAttribute('aria-disabled', 'true');
+        const images = state.items.filter(image => checked.has(imageKey(image)));
+        const {envelopes, failed} = await collectImagesMetadata(images,
+            async image => toInspectionRecord(await api.get(inspectPath(image), {signal:scope.signal}), image));
+        if (scope.signal.aborted) return;
+        exporting = false;
+        button.removeAttribute('aria-disabled');
+        if (envelopes.length) downloadJson(BUNDLE_FILENAME, metadataBundle(envelopes, new Date().toISOString()));
+        showWorkspaceToast(exportOutcome(envelopes.length, envelopes.length + failed));
+    }
+    /** A Blob, an anchor and a deferred revoke, as the concept's exportSample does. */
+    function downloadJson(filename, value) {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], {type:'application/json'}));
+        let timer, released = false;
+        const release = () => { if (released) return; released = true; clearTimeout(timer); URL.revokeObjectURL(url); };
+        scope.cleanup(release);
+        const anchor = el('a'); anchor.href = url; anchor.download = filename;
+        main.append(anchor); anchor.click(); anchor.remove();
+        timer = setTimeout(release, 1000);
     }
     function clearChecked() {
         if (!checked.size) return;
