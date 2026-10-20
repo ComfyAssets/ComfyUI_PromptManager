@@ -330,7 +330,7 @@ test('viewer matches the concept shell and toolbar order',async({page,request})=
         // reasons), and Download stays the original-file link; every other control keeps the concept's text and order.
         const appended=production.toolbar.slice(9);
         expect(appended.map(control=>control.tag)).toEqual(['p','p','p']);
-        await expect(viewer.locator('#viewer-toolbar > p[role="status"]')).toHaveText(new RegExp(`^\\d+ of \\d+ loaded: ${filename.replace(/[.]/g,'\\.')}$`));
+        await expect(viewer.locator('#viewer-toolbar > p[role="status"]')).toHaveText(new RegExp(`^\\d+ of \\d+ loaded: ${filename.replace(/[\\^$.*+?()[\]{}|]/g,'\\$&')}$`));
         expect(production.toolbar[7].tag).toBe('a');
         production.toolbar=production.toolbar.slice(0,9).map((control,index)=>index===7?{...control,tag:'button'}:control);
         // #249 D34: Viewer.js's own `.viewer-toolbar` rule makes the concept's toolbar absolute across the dialog's
