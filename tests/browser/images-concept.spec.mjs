@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy} from './concept-inventory.mjs';
 
 // Task C7 of #249: the production Images page against the immutable concept, on the concept-shaped real fixture (24
 // images of the concept's six prompts, its seeds, sizes and favorites). Heading, toolbar, filter row, caption, grid,
@@ -20,10 +20,6 @@ const PRODUCTION_BATCH=40;
 const LOAD_MORE_EXTRA=2*PRODUCTION_BATCH-FIXTURE_IMAGES;
 const CARDS='.gallery-body > .image-grid > .media-card';
 const WIDE_SIZES=Object.freeze([[1200,900],[1800,1100]]);
-
-/** D35: production uses the singular for exactly one; the concept's plurals are hard-coded (app.js 447, 489, 517-521). */
-export const countCopy=text=>text.replace(/(^|\D)1 positive prompts\b/g,'$11 positive prompt')
-    .replace(/(^|\D)1 more images\b/g,'$11 more image').replace(/(^|\D)1 images\b/g,'$11 image');
 
 /** D17: "<Today|Yesterday|weekday> · <Month D>" of the newest file (the fixture's own mtime), in the test's UTC zone. */
 function captionDay(seconds,now=new Date()) {
@@ -528,6 +524,20 @@ test('one appended image reads in the singular',async({page,request})=>{
     await expect(page.locator('#result-count')).toHaveText(new RegExp(`^${total} of ${total} images`));
     await expect(page.locator('.toast')).toHaveText(countCopy(`1 more images loaded. ${total} of ${total}.`));
     expect(countCopy('1 more images loaded. 41 of 41.')).toBe('1 more image loaded. 41 of 41.');
+    await expect(page.locator('.infinite-continuation > p').first()).toHaveText(`You’re all caught up · ${total} images`);
+});
+
+// The same singular copy when the page's own observer loads the one image: the user only scrolls (no press).
+test('one image appended by scrolling reads in the singular',async({page,request})=>{
+    test.setTimeout(120_000);
+    await page.setViewportSize({width:1600,height:1100});
+    const total=PRODUCTION_BATCH+1;
+    await seedConcept(request,{extra_images:total-FIXTURE_IMAGES});
+    await openProductionLoaded(page,'dark','no-preference',total);
+    await expect(page.locator('#result-count')).toHaveText(new RegExp(`^${PRODUCTION_BATCH} of ${total} images`));
+    await page.locator('.infinite-continuation').scrollIntoViewIfNeeded();
+    await expect(page.locator('#result-count')).toHaveText(new RegExp(`^${total} of ${total} images`));
+    await expect(page.locator('.toast')).toHaveText(countCopy(`1 more images loaded. ${total} of ${total}.`));
     await expect(page.locator('.infinite-continuation > p').first()).toHaveText(`You’re all caught up · ${total} images`);
 });
 

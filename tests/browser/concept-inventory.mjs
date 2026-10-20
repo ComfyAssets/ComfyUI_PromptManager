@@ -11,6 +11,10 @@ export const SIZES=Object.freeze([[1600,1100],[390,844]]);
 export const THEMES=Object.freeze(['dark','light']);
 export const MOTIONS=Object.freeze(['no-preference','reduce']);
 
+/** D35: production uses the singular for exactly one; the concept's plurals are hard-coded (app.js 447, 489, 517-521). */
+export const countCopy=text=>text.replace(/(^|\D)1 positive prompts\b/g,'$11 positive prompt')
+    .replace(/(^|\D)1 more images\b/g,'$11 more image').replace(/(^|\D)1 images\b/g,'$11 image');
+
 /** Seed the concept-shaped real fixture (tests/browser/workspace_concept_fixture.py) and return its manifest. */
 export async function seedConcept(request,data={}) {
     const response=await request.post('/__test__/concept/reset',{data});
