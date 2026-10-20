@@ -555,3 +555,16 @@ test('a setting the file does not record is never filled from the legacy parse',
     assert.equal(record.generation.cfg.status, 'not-recorded');
     assert.equal(record.generation.cfg.value, null);
 });
+
+test('a workflow the legacy parser throws on keeps the server result instead of failing the record', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const entry = image(), data = envelope(entry);
+    // The browser parser throws on a null workflow node (it reads properties of it).
+    data.metadata.workflow_graph = { status: 'parsed', value: { nodes: [null], links: [] } };
+    data.metadata.raw.workflow = '{"nodes":[null],"links":[]}';
+    data.metadata.record_formats.workflow = 'reserialized-json';
+    const record = contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+    assert.deepEqual(record.prompts.positive, { status: 'resolved', text: 'exact\npositive', source: 'execution' });
+    assert.equal(record.prompts.negative.status, 'ambiguous');
+});
