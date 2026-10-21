@@ -590,7 +590,7 @@ Recorded deviations on this page (spec §8):
 - **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
   applies its negative wording to both roles), and a confirmed `p.prompt-text` is
   focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
-- **D38**: a recipe-linked image shows its recipe's own category and tags (#224), not
+- **D39**: a recipe-linked image shows its recipe's own category and tags (#224), not
   its positive's. The concept shows the prompt's category and tags for every image;
   the concept fixture's recipes have neither, so their images show no category chip
   and no tag row. `positive_links` on `/__test__/concept/reset` links the newest

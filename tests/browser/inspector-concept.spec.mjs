@@ -6,7 +6,7 @@ import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInve
 // Task D4 of #249: the Images side panel (app.js imageDetails a400–414) and the viewer's full details (imageDetails(i,
 // true)) against the immutable concept, on the concept-shaped real fixture, at 1600x1100 and 390x844 in both themes.
 // Both documents select the first listed image, alpine_00001.png (D19: the first load selects it), which the fixture
-// links to its positive prompt alone (`positive_links`, D38), so its panel shows the positive's own category and tags
+// links to its positive prompt alone (`positive_links`, D39), so its panel shows the positive's own category and tags
 // as the concept's does. The panel's box in the gallery layout is the Images spec's. Paired captures are artifacts only;
 // there are no PNG baselines.
 test.use({locale:'en-US',timezoneId:'UTC'});
@@ -266,9 +266,9 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`inspector pane
     expect.soft(production.history,'history').toBe(`#/library/${manifest.prompts[0].positive_id}`);
 });
 
-// D38: a recipe-linked image shows its recipe's own category and tags (#224), which the concept fixture's recipes do
+// D39: a recipe-linked image shows its recipe's own category and tags (#224), which the concept fixture's recipes do
 // not have, so its panel has neither (the concept shows the prompt's for every image).
-test('a recipe-linked image shows only its recipe metadata (D38)',async({page})=>{
+test('a recipe-linked image shows only its recipe metadata (D39)',async({page})=>{
     await page.setViewportSize({width:1600,height:1100});
     await openProductionPanel(page,'dark');
     await page.locator(CARDS).nth(1).locator('[aria-label^="Inspect"]').click();

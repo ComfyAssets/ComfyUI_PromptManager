@@ -158,7 +158,7 @@ MAX_EXTRA_IMAGES = 120
 # Unlinked, seedless images (D11 "W × H · PNG") newer than the concept's, for D3 checks.
 MAX_SEEDLESS_IMAGES = 2
 # The newest images linked to their positive alone (no recipe), for the inspector's
-# positive-scope category and tag chips (D38).
+# positive-scope category and tag chips (D39).
 MAX_POSITIVE_LINKS = 6
 SEEDLESS_SIZE = (1536, 1152)
 SESSION = "5c1f9a7e-3f0b-4a55-9d0e-2b8c4f6a7d10"
