@@ -314,7 +314,7 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await expect(rows).toHaveCount(2);
     await expect(rows.first().locator('.chip')).toHaveText(['Execution recorded','Positive prompt category: Architecture']);
     await expect(rows.first().locator('.chip .ca-visually-hidden')).toHaveText('Positive prompt category: ');
-    await expect(rows.nth(1).locator('button.chip')).toHaveText(['editorial','minimal','warm_light']);
+    await expect(rows.nth(1).locator('button.chip')).toHaveText(['minimal','warm_light','editorial']);
     await expect(rows.nth(1).locator('span.chip')).toHaveCount(0);
     await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history']);
 });
