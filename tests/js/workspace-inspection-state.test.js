@@ -538,6 +538,81 @@ test('a definite server prompt is kept even when the legacy parser reads it diff
     assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
 });
 
+// #249: a LoRA compare grid. Every sampler's negative is a ConditioningZeroOut of the
+// positive encode; the legacy parser follows the zero-out back to the positive text.
+function zeroedGridGraph(samplers = 3) {
+    const graph = {
+        1: { class_type: 'UNETLoader', inputs: { unet_name: 'base.safetensors', weight_dtype: 'default' } },
+        2: { class_type: 'CLIPLoader', inputs: { clip_name: 'te.safetensors', type: 'stable_diffusion' } },
+        4: { class_type: 'CLIPTextEncode', inputs: { text: 'a woman holding a coffee cup', clip: ['2', 0] } },
+        5: { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+        6: { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512, batch_size: 1 } },
+    };
+    for (let index = 0; index < samplers; index++) {
+        graph[`1${index}`] = { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: `epoch_${index}.safetensors`, strength_model: 1, model: ['1', 0] } };
+        graph[`2${index}`] = { class_type: 'KSampler', inputs: { seed: 42, steps: 8, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+            model: [`1${index}`, 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } };
+    }
+    return graph;
+}
+
+function undecided(graph) {
+    const entry = image(), data = envelope(entry);
+    data.prompts = { positive: { status: 'ambiguous', text: null, source: null }, negative: { status: 'ambiguous', text: null, source: null } };
+    data.metadata.prompt_graph = { status: 'parsed', value: graph };
+    data.resolution = { state: 'ambiguous', sampler_id: null, reason: 'Multiple sampler branches' };
+    return contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+}
+
+test('a zeroed negative is never filled with the positive text from the legacy parse (#249)', t => {
+    const parser = require('../../web/js/comfy-metadata.js');
+    globalThis.ComfyMetadata = parser;
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    // The legacy pages keep their reading: the zero-out passes the positive through.
+    assert.equal(parser.extractGenerationParams({ prompt: zeroedGridGraph() }).negativePrompt, 'a woman holding a coffee cup');
+    const record = undecided(zeroedGridGraph());
+    assert.deepEqual(record.prompts.positive, { status: 'resolved', text: 'a woman holding a coffee cup', source: 'graph-inferred' });
+    assert.deepEqual(record.prompts.negative, { status: 'resolved', text: '', source: 'zeroed-conditioning' });
+    // A Reroute between the sampler and the zero-out is still a zeroed negative.
+    const rerouted = zeroedGridGraph(2);
+    rerouted[7] = { class_type: 'Reroute', inputs: { value: ['5', 0] } };
+    rerouted[20].inputs.negative = ['7', 0];
+    assert.deepEqual(undecided(rerouted).prompts.negative, { status: 'resolved', text: '', source: 'zeroed-conditioning' });
+});
+
+test('a negative whose zero-out path cannot be decided stays as the server left it (#249)', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const ambiguous = { status: 'ambiguous', text: null, source: null };
+    // One branch zeroes its negative, another encodes a text: which one the image used is open.
+    const mixed = zeroedGridGraph(2);
+    mixed[8] = { class_type: 'CLIPTextEncode', inputs: { text: 'blurry', clip: ['2', 0] } };
+    mixed[21].inputs.negative = ['8', 0];
+    assert.deepEqual(undecided(mixed).prompts.negative, ambiguous);
+    // A zero-out combined with another conditioning is not an empty negative.
+    const combined = zeroedGridGraph(1);
+    combined[8] = { class_type: 'CLIPTextEncode', inputs: { text: 'blurry', clip: ['2', 0] } };
+    combined[9] = { class_type: 'ConditioningCombine', inputs: { conditioning_1: ['5', 0], conditioning_2: ['8', 0] } };
+    combined[20].inputs.negative = ['9', 0];
+    assert.deepEqual(undecided(combined).prompts.negative, ambiguous);
+    // The positive still fills from the legacy parse in both cases.
+    assert.equal(undecided(mixed).prompts.positive.text, 'a woman holding a coffee cup');
+    // A workflow-only file holding a zero-out never fills the negative either.
+    const entry = image(), data = envelope(entry);
+    data.prompts = { positive: { status: 'unresolved', text: null, source: null }, negative: { status: 'unresolved', text: null, source: null } };
+    const workflow = { nodes: [
+        { id: 4, type: 'CLIPTextEncode', inputs: [], outputs: [{ links: [1, 2] }], widgets_values: ['a woman holding a coffee cup'] },
+        { id: 5, type: 'ConditioningZeroOut', inputs: [{ name: 'conditioning', link: 1 }], outputs: [{ links: [3] }] },
+        { id: 1, type: 'UNETLoader', inputs: [], outputs: [{ links: [4] }], widgets_values: ['base.safetensors', 'default'] },
+        { id: 3, type: 'KSampler', inputs: [{ name: 'model', link: 4 }, { name: 'positive', link: 2 }, { name: 'negative', link: 3 }], widgets_values: [42, 'fixed', 8, 1, 'euler', 'simple', 1] },
+    ], links: [[1, 4, 0, 5, 0, 'CONDITIONING'], [2, 4, 0, 3, 1, 'CONDITIONING'], [3, 5, 0, 3, 2, 'CONDITIONING'], [4, 1, 0, 3, 0, 'MODEL']] };
+    assert.equal(globalThis.ComfyMetadata.extractGenerationParams({ workflow }).negativePrompt, 'a woman holding a coffee cup', 'the legacy parse would fill it');
+    Object.assign(data.metadata, { raw: { workflow: JSON.stringify(workflow) }, record_formats: { workflow: 'reserialized-json' },
+        prompt_graph: { status: 'absent', value: null }, workflow_graph: { status: 'parsed', value: workflow } });
+    const record = contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+    assert.deepEqual(record.prompts.negative, { status: 'unresolved', text: null, source: null });
+});
+
 test('callers without the browser global pass the legacy parser explicitly', () => {
     const parser = require('../../web/js/comfy-metadata.js');
     const entry = image(), data = envelope(entry);

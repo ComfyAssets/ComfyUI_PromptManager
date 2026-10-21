@@ -174,6 +174,48 @@ function comfyMetadata() {
     return globalThis.ComfyMetadata || globalThis.window?.ComfyMetadata;
 }
 
+// #249: the legacy parse follows ConditioningZeroOut back to its input, so it reads the
+// positive text as the negative. The workspace shows the server's zeroed state instead
+// when every sampler's negative is a zero-out, and never fills the negative from the
+// legacy parse when a zero-out sits anywhere else in a negative path.
+const ZERO_OUT = 'ConditioningZeroOut';
+const ZEROED_NEGATIVE = Object.freeze({ status: 'resolved', text: '', source: 'zeroed-conditioning' });
+const MAX_NEGATIVE_VISITS = 2000;
+const isLink = value => Array.isArray(value) && value.length === 2 && ['string', 'number'].includes(typeof value[0]);
+
+/** 'zeroed', 'undecided' (do not fill), or null (no zero-out: the legacy fill applies). */
+function zeroOutNegative(graph, workflow) {
+    if (!graph) return Array.isArray(workflow?.nodes) && workflow.nodes.some(node => node?.type === ZERO_OUT) ? 'undecided' : null;
+    const nodes = Object.values(graph).filter(object);
+    if (!nodes.some(node => node.class_type === ZERO_OUT)) return null;
+    const kinds = nodes.filter(node => object(node.inputs) && isLink(node.inputs.negative)).map(node => negativeKind(graph, node.inputs.negative));
+    if (kinds.length && kinds.every(kind => kind === 'zeroed')) return 'zeroed';
+    return kinds.every(kind => kind === 'plain') && kinds.length ? null : 'undecided';
+}
+
+function negativeKind(graph, link) {
+    let node = graph[String(link[0])];
+    for (let hops = 0; object(node) && node.class_type === 'Reroute' && hops < MAX_NEGATIVE_VISITS; hops++) {
+        const next = object(node.inputs) ? node.inputs.value : undefined;
+        node = isLink(next) ? graph[String(next[0])] : undefined;
+    }
+    if (!object(node)) return 'undecided';
+    if (node.class_type === ZERO_OUT) return 'zeroed';
+    // Any zero-out further up (combined, averaged, ...) leaves the negative undecided.
+    const queue = [node], seen = new Set();
+    while (queue.length) {
+        const current = queue.shift();
+        if (current.class_type === ZERO_OUT) return 'undecided';
+        if (seen.size >= MAX_NEGATIVE_VISITS) return 'undecided';
+        for (const value of object(current.inputs) ? Object.values(current.inputs) : []) {
+            const id = isLink(value) ? String(value[0]) : null;
+            if (id === null || seen.has(id) || !object(graph[id])) continue;
+            seen.add(id); queue.push(graph[id]);
+        }
+    }
+    return 'plain';
+}
+
 function withWorkflowParams(record, parser = comfyMetadata()) {
     const graph = record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null;
     const workflow = record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null;
@@ -184,9 +226,15 @@ function withWorkflowParams(record, parser = comfyMetadata()) {
     const found = key => typeof params[key] === 'string' || typeof params[key] === 'number' ?
         String(params[key]) !== '' && params[key] !== parser.PLACEHOLDERS?.[key] : false;
     const prompts = { ...record.prompts };
+    const zeroed = prompts.negative?.status === 'resolved' ? null : zeroOutNegative(graph, workflow);
     for (const [role, key] of [['positive', 'positivePrompt'], ['negative', 'negativePrompt']]) {
         const current = prompts[role];
-        if (!found(key) || current?.status === 'resolved') continue;
+        if (current?.status === 'resolved') continue;
+        if (role === 'negative' && zeroed !== null) {
+            if (zeroed === 'zeroed') prompts.negative = { ...ZEROED_NEGATIVE };
+            continue;
+        }
+        if (!found(key)) continue;
         prompts[role] = { status: 'resolved', text: params[key], source: 'graph-inferred' };
     }
     record.prompts = prompts;
