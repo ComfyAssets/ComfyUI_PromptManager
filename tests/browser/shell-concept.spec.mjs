@@ -220,13 +220,13 @@ test('the concept fixture renders the concept inspector facts',async({page})=>{
     await page.setViewportSize({width:1600,height:1100});
     await openProduction(page,'images','dark');
     // The first image is the concept's first sample, selected into the panel on first load (D19).
-    const facts=page.locator('#workspace-main .generation-facts');
+    const facts=page.locator('#workspace-main #image-inspector .meta-grid');
     await expect(facts).toBeVisible();
     const pairs=await facts.evaluate(list=>Object.fromEntries([...list.querySelectorAll('dt')].map(term=>[term.textContent.trim(),term.nextElementSibling.textContent.trim()])));
     // app.js:404-408: the concept's facts for alpine_00001.png.
     expect(pairs).toEqual({Seed:'42001',Steps:'28',CFG:'6.5',Sampler:'dpmpp_2m',Scheduler:'karras',Model:'illustrative-model.safetensors'});
-    // D21 maps execution evidence to "Execution recorded" in PR D; today's panel names the same source this way.
-    await expect(page.locator('#workspace-main').getByText('Execution prompt evidence',{exact:true})).toBeVisible();
+    // D21: execution evidence is the concept's "Execution recorded" badge.
+    await expect(page.locator('#image-inspector span.chip.blue')).toHaveText('Execution recorded');
 });
 
 // Task A7: the comparison is only worth something if it notices a change. One CSS mutation (a nav-row height the

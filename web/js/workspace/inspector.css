@@ -1,10 +1,7 @@
-.image-details.file-inspector { padding: 0; }
 .file-inspector { min-inline-size: 0; overflow-wrap: anywhere; }
 .file-inspector-inner { padding: 17px; }
 #viewer-details .file-inspector-inner { padding: 0; }
 #viewer-details .file-inspector-footer { padding-inline: 0; }
-.ca-tools .file-cover { display: block; padding: 0; border: 0; border-radius: 6px 6px 0 0; inline-size: 100%; block-size: 150px; background: var(--ca-field); }
-.file-cover :where(img, video) { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; border-radius: inherit; }
 .file-title { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
 .file-inspector .file-title h2 { font-size: 14px; line-height: 1.5; margin: 0; }
 .file-name { font-size: 12px; margin-block: 12px; }
@@ -37,7 +34,6 @@
 .file-inspector-footer .workspace-link { display: inline-flex; gap: 7px; border: 1px solid var(--ca-line); border-radius: 4px; padding: 5px 8px; }
 .file-inspector-footer .icon { inline-size: 14px; block-size: 14px; }
 .file-status { padding: 17px; }
-@media (max-width: 700px) { .ca-tools .file-cover { block-size: 200px; } }
 @media (pointer: coarse) {
     .ca-tools .file-inspector :is(button, a, summary) { min-inline-size: 40px; min-block-size: 40px; }
     .ca-tools .file-inspector .prompt-actions button { inline-size: 36px; block-size: 36px; min-inline-size: 36px; min-block-size: 36px; }

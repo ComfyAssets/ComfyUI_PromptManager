@@ -96,7 +96,36 @@ function formatBytes(value) {
     return value === null || value === undefined ? null : value >= 1048576 ? `${(value / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`;
 }
 
-export function mountFileInspector(container, {sender, parentScope, inline = false, promptContext = '', onPreview, onRetry, onRefresh, onInteraction = () => {}}) {
+/** The six facts, and the limit note their values point to when the configuration exceeded inspection limits. */
+function generationFacts(record, listClass, noteClass) {
+    const facts = definitionList(FACTS.map(([key, label]) => [label, factText(record.generation[key])]), listClass);
+    if (!FACTS.some(([key]) => record.generation[key]?.reason === 'projection-limited')) return [facts];
+    const explanation = el('p', 'Configuration exceeds inspection limits; download the original file to inspect it locally.', noteClass);
+    explanation.id = `file-fact-limit-${++factReasonId}`;
+    FACTS.forEach(([key], index) => {
+        if (record.generation[key]?.reason === 'projection-limited') facts.children[index].querySelector('dd').setAttribute('aria-describedby', explanation.id);
+    });
+    return [facts, explanation];
+}
+// D21: the panel badge names the strongest resolved prompt source; any other source shows no badge.
+const EVIDENCE_BADGES = [['execution', 'Execution recorded'], ['graph-inferred', 'Workflow inferred'], ['embedded-parameters', 'Embedded parameters']];
+function evidenceBadge(prompts) {
+    const sources = new Set(Object.values(prompts).filter(role => role?.status === 'resolved').map(role => role.source));
+    return EVIDENCE_BADGES.find(([source]) => sources.has(source))?.[1] ?? null;
+}
+/** A concept chip whose visible text carries a visually hidden prefix naming what it is. */
+function prefixedChip(prefix, text) {
+    const chip = el('span', undefined, 'chip');
+    chip.append(el('span', prefix, 'ca-visually-hidden'), text);
+    return chip;
+}
+
+/**
+ * One file's inspector. `variant: 'panel'` is the Images side panel in the concept's structure (app.js imageDetails
+ * a400–414, D20): cover, heading, filename, D21 badges, prompt blocks, tag chips (`onTagFilter`), facts and footer.
+ * `variant: 'full'` (the viewer) also shows provenance, raw records and downloads. `inline: true` means `panel`.
+ */
+export function mountFileInspector(container, {sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onInteraction = () => {}}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -107,39 +136,32 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
     scope.listen(container, 'wheel', onInteraction, {passive:true});
     scope.cleanup(() => {contentScope?.dispose(); container.replaceChildren(); container.classList.remove('file-inspector');});
 
+    const panel = (variant ?? (inline ? 'panel' : 'full')) === 'panel';
+    function statusView(state, parent) {
+        const status = el('p', state.loading ? 'Loading file details…' : state.refreshRequired ? state.message : 'Could not read prompts from this file.', panel ? 'small' : 'file-status muted');
+        status.setAttribute('role', state.error ? 'alert' : 'status'); parent.append(status);
+        if (state.error && state.refreshRequired) {
+            if (onRefresh) {
+                const refresh = createButton(state.code === 'history-changed' ? 'Reload recorded history' : ['candidate-stale', 'capture-changed'].includes(state.code) ? 'Reload reported outputs' : 'Refresh image collection');
+                contentScope.listen(refresh, 'click', onRefresh); parent.append(refresh);
+            } else parent.append(el('p', 'Reopen this file from a refreshed image collection.', panel ? 'small' : 'muted'));
+        } else if (state.error && onRetry) {
+            const retry = createButton('Retry prompt details'); contentScope.listen(retry, 'click', onRetry); parent.append(retry);
+        }
+    }
     function setState(state) {
         if (scope.signal.aborted) return;
         contentScope?.dispose(); contentScope = childScope(scope);
         container.replaceChildren();
+        if (panel) return renderPanel(state);
         if (state.loading || state.error) {
-            const status = el('p', state.loading ? 'Loading file details…' : state.refreshRequired ? state.message : 'Could not read prompts from this file.', 'file-status muted');
-            status.setAttribute('role', state.error ? 'alert' : 'status'); container.append(status);
-            if (state.error && state.refreshRequired) {
-                if (onRefresh) {
-                    const refresh = createButton(state.code === 'history-changed' ? 'Reload recorded history' : ['candidate-stale', 'capture-changed'].includes(state.code) ? 'Reload reported outputs' : 'Refresh image collection');
-                    contentScope.listen(refresh, 'click', onRefresh); container.append(refresh);
-                } else container.append(el('p', 'Reopen this file from a refreshed image collection.', 'muted'));
-            } else if (state.error && onRetry) {
-                const retry = createButton('Retry prompt details'); contentScope.listen(retry, 'click', onRetry); container.append(retry);
-            }
+            statusView(state, container);
             return;
         }
         const record = state.record;
         if (!record) return;
         const {file, library, metadata} = record;
         const filename = record.identity.path.split('/').at(-1);
-        if (inline && record.download) {
-            const cover = createButton('', 'file-cover'); cover.setAttribute('aria-label', 'Open full preview');
-            const video = file?.media_type === 'video';
-            const media = el(video ? 'video' : 'img'); media.src = record.download.url;
-            if (video) {
-                media.muted = true; media.playsInline = true; media.preload = 'metadata';
-                contentScope.cleanup(() => {media.pause(); media.removeAttribute('src'); media.load();});
-            } else {media.alt = filename; media.decoding = 'async'; contentScope.cleanup(() => media.removeAttribute('src'));}
-            cover.append(media); if (onPreview) contentScope.listen(cover, 'click', onPreview);
-            else {cover.setAttribute('aria-disabled', 'true'); cover.title = 'Full preview is unavailable in this view.';}
-            container.append(cover);
-        }
         const inner = el('div', undefined, 'file-inspector-inner'); container.append(inner);
         const header = el('div', undefined, 'file-title');
         header.append(el('h2', library?.status === 'linked' && library.title ? library.title : filename));
@@ -165,16 +187,7 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
             for (const tag of library.tags) tags.append(el('span', tag, 'file-chip'));
             vocabulary.append(library.tags.length ? tags : el('p', 'No saved tags', 'muted')); inner.append(vocabulary);
         } else if (!library) inner.append(el('p', 'Saved vocabulary is unavailable for this inspection response.', 'muted'));
-        const facts = definitionList(FACTS.map(([key, label]) => [label, factText(record.generation[key])]), 'generation-facts');
-        inner.append(facts);
-        if (FACTS.some(([key]) => record.generation[key]?.reason === 'projection-limited')) {
-            const explanation = el('p', 'Configuration exceeds inspection limits; download the original file to inspect it locally.', 'generation-limit muted');
-            explanation.id = `file-fact-limit-${++factReasonId}`;
-            FACTS.forEach(([key], index) => {
-                if (record.generation[key]?.reason === 'projection-limited') facts.children[index].querySelector('dd').setAttribute('aria-describedby', explanation.id);
-            });
-            inner.append(explanation);
-        }
+        inner.append(...generationFacts(record, 'generation-facts', 'generation-limit muted'));
         const provenance = disclosure('File & provenance');
         provenance.append(el('p', record.identity.kind === 'reported-location' ? 'Current file at the reported location · identity unverified' : 'Current file at this source; historical bytes are not verified.', 'muted'));
         if (record.identity.kind === 'reported-location') {
@@ -243,6 +256,68 @@ export function mountFileInspector(container, {sender, parentScope, inline = fal
         if (record.historyTarget) {
             const history = el('a', 'Prompt history', 'workspace-link'); history.href = record.historyTarget;
             history.prepend(createWorkspaceIcon('branch')); footer.append(history);
+        }
+        if (footer.childNodes.length) container.append(footer);
+    }
+    /** The concept side panel (app.js imageDetails a400–414 without `full`, D20). */
+    function renderPanel(state) {
+        const inner = el('div', undefined, 'detail-inner');
+        if (state.loading || state.error) {container.append(inner); statusView(state, inner); return;}
+        const record = state.record;
+        if (!record) return;
+        const {file, library} = record;
+        const filename = record.identity.path.split('/').at(-1);
+        const linked = library?.status === 'linked';
+        const title = linked && library.title ? library.title : filename;
+        if (record.download) {
+            // The concept's plain cover; the card image opens the viewer (D19). Video keeps its own element.
+            const video = file?.media_type === 'video';
+            const cover = el(video ? 'video' : 'img', undefined, 'detail-cover'); cover.src = record.download.url;
+            if (video) {
+                cover.muted = true; cover.playsInline = true; cover.preload = 'metadata';
+                contentScope.cleanup(() => {cover.pause(); cover.removeAttribute('src'); cover.load();});
+            } else {
+                cover.alt = ''; cover.decoding = 'async';
+                if (file?.width && file?.height) {cover.width = file.width; cover.height = file.height;}
+                contentScope.cleanup(() => cover.removeAttribute('src'));
+            }
+            container.append(cover);
+        }
+        container.append(inner);
+        const heading = el('div', undefined, 'panel-heading');
+        const extension = (file?.extension || filename.split('.').at(-1)).replace(/^\./, '').toUpperCase();
+        heading.append(el('h2', title), file?.format ? el('span', file.format, 'chip') : prefixedChip('File extension ', extension));
+        inner.append(heading, el('p', filename, 'small'));
+        const badges = el('div', undefined, 'tags'), badge = evidenceBadge(record.prompts);
+        if (badge) badges.append(el('span', badge, 'chip blue'));
+        if (linked && library.category) badges.append(prefixedChip(library.metadata_scope === 'pair' ? 'Recipe category: ' : 'Positive prompt category: ', library.category));
+        if (badges.childNodes.length) inner.append(badges);
+        const prompts = el('div'); inner.append(prompts);
+        const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext});
+        blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
+        if (linked && library.tags.length) {
+            // D21: a chip sets the Images Tags filter, which matches the linked positive's tags; a recipe's own tags are
+            // not what it matches, so they (and chips where no Tags filter exists) stay plain.
+            const filterable = onTagFilter && library.metadata_scope === 'positive';
+            const tags = el('div', undefined, 'tags');
+            for (const tag of library.tags) {
+                if (!filterable) {tags.append(el('span', tag, 'chip')); continue;}
+                const chip = createButton(tag, 'chip'); contentScope.listen(chip, 'click', () => onTagFilter(tag)); tags.append(chip);
+            }
+            inner.append(tags);
+        }
+        inner.append(...generationFacts(record, 'meta-grid', 'small'));
+        const footer = el('div', undefined, 'detail-footer'), roles = promptRoles(record.prompts);
+        if (Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {
+            const pair = createButton('', 'send');
+            pair.setAttribute('aria-label', `Send ${promptContext ? `${promptContext.toLowerCase()} ` : ''}prompt pair to ComfyUI: ${title}`);
+            pair.append(createWorkspaceIcon('send'), ' Send to ComfyUI'); pair.dataset.sendRole = 'pair';
+            contentScope.listen(pair, 'click', () => sender.open(roles, pair)); footer.append(pair);
+        }
+        if (record.historyTarget) {
+            const history = createButton('');
+            history.append(createWorkspaceIcon('branch'), ' Prompt history');
+            contentScope.listen(history, 'click', () => {window.location.hash = record.historyTarget;}); footer.append(history);
         }
         if (footer.childNodes.length) container.append(footer);
     }

@@ -6,7 +6,10 @@ const workspace = '/prompt_manager/workspace#/images';
 const cards = page => page.locator('article[data-image-key]');
 // Grid pages only: the sidebar's Images count is its own `limit=1` read of the same listing.
 const imagePages = url => url.pathname === '/prompt_manager/images/output' && url.search !== '' && url.searchParams.get('limit') !== '1';
-const details = page => page.getByRole('region', { name: 'Image details', exact: true });
+const details = page => page.getByRole('complementary', { name: 'Selected image details', exact: true });
+// The concept panel names no source (D20); its cover is the selected file's own rooted URL, root 0 output, 1 input.
+const SOURCE_ROOTS = { output: 0, input: 1 };
+const expectPanelSource = (page, source) => expect(details(page).locator('img.detail-cover')).toHaveAttribute('src', new RegExp(`[?&]root=${SOURCE_ROOTS[source]}(&|$)`));
 // The concept toolbar, filter row and caption (#249 C2); Source, Folder, Media and Tags live in "Refine this view".
 const search = page => page.getByRole('searchbox', { name: 'Search workspace', exact: true });
 const sortBy = page => page.getByRole('combobox', { name: 'Sort results', exact: true });
@@ -57,16 +60,15 @@ test('native Images keeps colliding filenames distinct and inspects the selected
     expect(new Set(originals).size).toBe(2);
     await cards(page).nth(1).getByRole('button', { name: 'Inspect same.png', exact: true }).click();
     await expect(details(page)).toContainText('same.png');
-    await expect(details(page)).toContainText('shared/same.png');
-    await expect(details(page)).toContainText(/input/i);
+    await expectPanelSource(page, 'input');
     await capture('after-images-source-collision-input-1600');
     await cards(page).first().getByRole('button', { name: 'Inspect same.png', exact: true }).click();
-    await expect(details(page)).toContainText(/output/i);
+    await expectPanelSource(page, 'output');
     await capture('after-images-source-collision-output-1600');
     await page.setViewportSize({width:390,height:844});
     for (const [index,source] of [[1,'input'],[0,'output']]) {
         await cards(page).nth(index).getByRole('button',{name:'Inspect same.png',exact:true}).click();
-        await expect(details(page)).toContainText(new RegExp(source,'i'));
+        await expectPanelSource(page, source);
         await details(page).scrollIntoViewIfNeeded();
         await capture(`after-images-source-collision-${source}-390`);
     }
@@ -92,17 +94,16 @@ test('image selection is shown on the selected card', async ({ page }) => {
     await expect(cards(page).locator('.image-card-actions [aria-pressed]')).toHaveCount(0);
 });
 
-test('closing details preview restores its trigger focus', async ({ page }) => {
+test('the side panel cover is the concept plain image, never a preview control', async ({ page }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
-    const selected = cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true });
-    await selected.click();
-    const preview = details(page).getByRole('button', { name: 'Open full preview', exact: true });
-    await preview.click();
-    await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
-    await page.keyboard.press('Escape');
+    await cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true }).click();
+    await expectPanelSource(page, 'input');
+    // D19/D20: the card image opens the viewer; the panel cover is decoration (`alt=""`) and not focusable.
+    await expect(details(page).getByRole('button', { name: 'Open full preview', exact: true })).toHaveCount(0);
+    await expect(details(page).locator('img.detail-cover')).toHaveAttribute('alt', '');
+    await details(page).locator('img.detail-cover').click();
     await expect(page.locator('dialog[open]')).toHaveCount(0);
-    await expect(preview).toBeFocused();
 });
 
 test('a short visible batch automatically continues until the sentinel is filled or exhausted', async ({ page, request }) => {
@@ -226,7 +227,7 @@ test('layout changes retain selection and use one collection in Grid, List and M
         await page.getByRole('button', { name: layout, exact: true }).click();
         await expect(page.getByRole('button', { name: layout, exact: true })).toHaveAttribute('aria-pressed', 'true');
         await expect(cards(page)).toHaveCount(2);
-        await expect(details(page)).toContainText(/input/i);
+        await expectPanelSource(page, 'input');
         const boxes = await cards(page).evaluateAll(elements => elements.map(element => {
             const box = element.getBoundingClientRect();
             return { x: box.x, y: box.y, right: box.right, bottom: box.bottom };
@@ -611,7 +612,7 @@ test('mobile Images keeps filters, layouts and selected details within the viewp
     for (const layout of ['List', 'Masonry', 'Grid']) {
         await page.getByRole('button', { name: layout, exact: true }).click();
         await cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true }).click();
-        await expect(details(page)).toContainText(/input/i);
+        await expectPanelSource(page, 'input');
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     }
     await expect(search(page)).toBeVisible();
@@ -747,10 +748,9 @@ test('Images uses approved geometry while keeping real controls', async ({page,r
     expect(geometry[0].mediaWidth/geometry[0].mediaHeight).toBeCloseTo(1.33,2);
     expect((await caption(page).boundingBox()).y).toBeLessThan(geometry[0].y);
     await expect(cards(page).first()).toHaveCSS('box-shadow',/ 0px 0px 0px 1px$/);
-    const cover=details(page).getByRole('button',{name:'Open full preview',exact:true});
-    await expect(cover).toHaveCSS('height','150px');
-    await expect(cover.locator('img')).toBeVisible();await expect(cover.locator('img')).toHaveCSS('height','150px');
-    expect(await cover.evaluate(node=>node===node.parentElement.firstElementChild&&node.tagName==='BUTTON')).toBe(true);
+    const cover=details(page).locator('img.detail-cover');
+    await expect(cover).toBeVisible();await expect(cover).toHaveCSS('height','150px');
+    expect(await cover.evaluate(node=>node===node.parentElement.firstElementChild&&node.tagName==='IMG')).toBe(true);
     await page.setViewportSize({width:390,height:844});
     await expect.poll(()=>cards(page).nth(1).evaluate(node=>node.offsetTop)).toBe(0);
     await expect.poll(()=>cards(page).nth(2).evaluate(node=>node.offsetTop)).toBeGreaterThan(0);
@@ -1099,7 +1099,7 @@ test('image click opens the viewer and Info selects the panel', async ({ page })
     await expect(cards(page)).toHaveCount(2);
     // D19: the first load still selects the first image into the panel.
     await expect(cards(page).first()).toHaveClass(/selected/);
-    await expect(details(page)).toContainText(/output/i);
+    await expectPanelSource(page, 'output');
     const viewer = page.locator('dialog#viewer-dialog');
     const image = cards(page).nth(1).getByRole('button', { name: 'Open same.png', exact: true });
     await image.click();
@@ -1122,10 +1122,10 @@ test('image click opens the viewer and Info selects the panel', async ({ page })
     await expect(cards(page).nth(1)).toHaveClass(/selected/);
     await expect(cards(page).first()).not.toHaveClass(/selected/);
     await expect(info).not.toHaveAttribute('aria-pressed');
-    await expect(details(page)).toContainText(/input/i);
+    await expectPanelSource(page, 'input');
     await image.focus(); await page.keyboard.press('ArrowLeft');
     await expect(cards(page).first().getByRole('button', { name: 'Open same.png', exact: true })).toBeFocused();
-    await expect(details(page)).toContainText(/input/i);
+    await expectPanelSource(page, 'input');
 });
 
 test('grid columns follow concept breakpoints', async ({ page, request }) => {

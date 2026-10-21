@@ -89,7 +89,9 @@ test('inspection wire preserves exact rooted envelope', async ({ request }) => {
     await expect(await request.post('/__test__/reset')).toBeOK();
 });
 
-const inspector=page=>page.locator('.image-details');
+const inspector=page=>page.locator('.detail-panel');
+/** D19: the selected card's image opens the viewer (the side panel has no full-preview cover). */
+const openSelected=page=>page.locator('.media-card.selected .image-open').click();
 const selectFile=async(page,name,root=0)=>page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-card-actions button`).click();
 async function fullFixture(page,request) {
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();
@@ -99,38 +101,151 @@ async function downloadText(page,action) {
     const [download]=await Promise.all([page.waitForEvent('download'),action.click()]);
     const fs=await import('node:fs/promises');return {name:download.suggestedFilename(),text:await fs.readFile(await download.path(),'utf8')};
 }
+/** The viewer's full details for one file (D19: the card image opens the viewer; D20: only it shows provenance and raw). */
+async function viewerDetails(page,name,root=0) {
+    await page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-open`).click();
+    const details=page.locator('dialog#viewer-dialog #viewer-details');await expect(details.locator('.file-inspector-inner')).toBeVisible();return details;
+}
+/** Rewrites the next inspection reads; `null` passes them through. */
+async function patchInspection(page) {
+    const state={patch:null};
+    await page.route('**/images/inspect/**',async route=>{
+        if (!state.patch) return route.continue();
+        const response=await route.fetch();const data=await response.json();state.patch(data);await route.fulfill({response,json:data});
+    });
+    return state;
+}
+/** The side panel's concept structure (app.js imageDetails a400–414): element, class and visible text, in order. */
+const panelStructure=panel=>panel.evaluate(node=>{
+    const describe=item=>`${item.localName}${item.className?'.'+item.className.trim().split(/\s+/).join('.'):''}`;
+    const inner=node.querySelector(':scope > .detail-inner');
+    const flatten=item=>item.classList.contains('prompt-inspector')?[...item.children].map(describe):[describe(item)];
+    return {outer:[...node.children].map(describe),inner:inner?[...inner.children].flatMap(flatten):null};
+});
+
+test('panel matches the concept order and copy',async({page,request})=>{
+    await page.setViewportSize({width:1600,height:1100});const reads=await patchInspection(page);
+    await fullFixture(page,request);const panel=page.getByRole('complementary',{name:'Selected image details',exact:true});
+    await expect(panel).toHaveAttribute('id','image-inspector');await expect(panel).toHaveClass('detail-panel file-inspector');
+    // Linked, workflow inferred: every concept element.
+    await expect(panel.locator('.panel-heading h2')).toHaveText(POSITIVE_TITLE);
+    expect(await panelStructure(panel)).toEqual({outer:['img.detail-cover','div.detail-inner','div.detail-footer'],
+        inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','div.tags','dl.meta-grid']});
+    await expect(panel.locator('img.detail-cover')).toHaveAttribute('alt','');
+    await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');
+    await expect(panel.locator('.detail-inner > p.small')).toHaveText('complete.png');
+    const badges=panel.locator('.detail-inner > .tags').first();
+    await expect(badges.locator('span.chip.blue')).toHaveText('Workflow inferred');
+    await expect(badges.locator('span.chip:not(.blue)')).toHaveText('Recipe category: Inspection');
+    await expect(badges.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Recipe category: ');
+    // Recipe tags are not the positive tags the Images Tags filter matches, so they stay plain chips (D21 ruling).
+    await expect(panel.locator('.detail-inner > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);
+    await expect(panel.locator('.detail-inner > .tags button')).toHaveCount(0);
+    await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
+    await expect(panel.locator('.meta-grid dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
+    const footer=panel.locator('.detail-footer');
+    await expect(footer.locator('button')).toHaveText(['Send to ComfyUI','Prompt history']);
+    await expect(footer.locator('button.send')).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${POSITIVE_TITLE}`);
+    await expect(footer.locator('button.send svg.icon')).toHaveCount(1);await expect(footer.locator('button:not(.send) svg.icon')).toHaveCount(1);
+    await expect(panel).not.toContainText(/prompt evidence|Recipe tags|Positive prompt tags/);
+    // Execution recorded and embedded parameters (D21), with the extension chip naming an unverified format.
+    reads.patch=data=>{for (const role of ['positive','negative']) data.prompts[role].source='execution';};
+    await selectFile(page,'explicit-empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('explicit-empty.png');
+    await expect(panel.locator('span.chip.blue')).toHaveText('Execution recorded');
+    reads.patch=data=>{data.prompts={positive:{status:'resolved',text:'embedded positive',source:'embedded-parameters'},negative:{status:'resolved',text:'embedded negative',source:'embedded-parameters'}};data.file.format=null;};
+    await selectFile(page,'ambiguous.png');await expect(panel.locator('.prompt-section.positive .prompt-text')).toHaveText('embedded positive');
+    await expect(panel.locator('span.chip.blue')).toHaveText('Embedded parameters');
+    await expect(panel.locator('.panel-heading .chip')).toHaveText('File extension PNG');await expect(panel.locator('.panel-heading .chip .ca-visually-hidden')).toHaveText('File extension ');
+    await expect(panel.locator('.detail-footer button')).toHaveText(['Send to ComfyUI']);
+    // Unlinked: no badge, category, tags, pair or history.
+    reads.patch=null;await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
+    expect(await panelStructure(panel)).toEqual({outer:['img.detail-cover','div.detail-inner'],
+        inner:['div.panel-heading','p.small','section.prompt-section.positive','section.prompt-section.negative','dl.meta-grid']});
+    await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
+    // Ambiguous saved association: the same honest absence.
+    reads.patch=data=>{data.library={...data.library,status:'ambiguous',positive_id:null,pair_id:null,title:null,category:null,tags:[],metadata_scope:null};};
+    await selectFile(page,'workflow-only.png');await expect(panel.locator('.panel-heading h2')).toHaveText('workflow-only.png');
+    await expect(panel.locator('.chip:not(.blue)')).toHaveCount(1);await expect(panel.locator('.detail-inner > .tags button')).toHaveCount(0);
+    await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
+    // Loading and error states render in `.detail-inner` as `.small` text with the existing buttons.
+    reads.patch=null;await page.unroute('**/images/inspect/**');
+    await page.route('**/images/inspect/**',route=>route.fulfill({status:500,json:{success:false,error:'broken'}}));
+    await selectFile(page,'malformed.png');
+    await expect(panel.locator('.detail-inner > p.small[role="alert"]')).toHaveText('Could not read prompts from this file.');
+    await expect(panel.locator('.detail-inner > button')).toHaveText(['Retry prompt details']);
+});
+
+test('tag chip filters Images by that tag',async({page,request})=>{
+    await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();
+    const list=await(await request.get('/prompt_manager/library')).json();const id=list.items.find(item=>item.text.startsWith('Inspector portrait')).id;
+    await expect(await request.post('/prompt_manager/prompts/tags',{data:{prompt_id:id,tags:['geometric']}})).toBeOK();
+    // workflow-only.png is linked to the positive alone, so its chips are the positive's tags, which the filter matches.
+    await page.goto('/prompt_manager/workspace#/images');await selectFile(page,'workflow-only.png');
+    const panel=page.getByRole('complementary',{name:'Selected image details',exact:true});
+    const listing=page.waitForRequest(item=>item.url().includes('/images/output?')&&new URL(item.url()).searchParams.has('tags'));
+    await panel.locator('.detail-inner > .tags').getByRole('button',{name:'geometric',exact:true}).click();
+    expect(new URL((await listing).url()).searchParams.get('tags')).toBe('geometric');
+    await expect(page.locator('article[data-image-key="0:inspector/workflow-only.png"]')).toBeVisible();
+    await expect(page.locator('article[data-image-key="0:inspector/complete.png"]')).toBeVisible();
+    await expect(page.locator('article[data-image-key="0:inspector/empty.png"]')).toHaveCount(0);
+    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    await expect(page.getByRole('dialog').getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('geometric');
+});
+
+test('pair send and history appear only with real roles and link',async({page,request})=>{
+    await fullFixture(page,request);const panel=page.getByRole('complementary',{name:'Selected image details',exact:true});
+    await panel.getByRole('button',{name:'Prompt history',exact:true}).click();await expect(page).toHaveURL(/#\/library\/\d+$/);
+    await page.goto('/prompt_manager/workspace#/images');await selectFile(page,'explicit-empty.png');
+    await expect(panel.getByRole('button',{name:'Send prompt pair to ComfyUI: explicit-empty.png',exact:true})).toBeVisible();
+    await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
+    await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
+    await expect(panel.locator('.detail-footer')).toHaveCount(0);await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(0);
+});
+
+test('no provenance, raw or download controls in the side panel',async({page,request})=>{
+    await fullFixture(page,request);const panel=page.getByRole('complementary',{name:'Selected image details',exact:true});
+    await expect(panel.locator('.panel-heading h2')).toHaveText(POSITIVE_TITLE);
+    await expect(panel.locator('details,summary,pre,a')).toHaveCount(0);
+    await expect(panel.getByRole('button',{name:/Download|Open full preview/})).toHaveCount(0);
+    await expect(panel).not.toContainText(/File & provenance|Workflow & raw metadata|Download/);
+    // The viewer keeps them until its own full details (D3).
+    const details=await viewerDetails(page,'complete.png');
+    await expect(details.locator('summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
+    await details.getByText('Workflow & raw metadata',{exact:true}).click();
+    await expect(details.getByRole('button',{name:'Download metadata JSON',exact:true})).toBeVisible();
+});
 
 test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);
-    await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.locator('.file-name')).toHaveText('complete.png');
-    await expect(panel.locator('.file-evidence')).toHaveText('Workflow prompt evidence');
+    await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');await expect(panel.locator('.detail-inner > p.small')).toHaveText('complete.png');
     expect(await panel.evaluate(node=>node.getBoundingClientRect().width)).toBe(310);
-    expect(await panel.locator('.file-inspector-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
+    expect(await panel.locator('.detail-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
     if (!await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
         // The concept's prompt actions (`.prompt-actions button.icon-btn`) measure 31×31 in the mock.
         const copy=await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).boundingBox();expect(copy.width).toBe(31);expect(copy.height).toBe(31);
-        expect((await panel.getByRole('button',{name:'Send prompt pair',exact:true}).boundingBox()).height).toBe(30);
     }
-    await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
-    await expect(panel.locator('.generation-facts dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
-    await expect(panel).toContainText('Recipe tags');await expect(panel).toContainText('Recipe category');
-    await expect(panel.locator('.file-vocabulary button')).toHaveCount(0);
-    await panel.getByText('File & provenance',{exact:true}).click();
-    await expect(panel).toContainText('Current file at this source; historical bytes are not verified.');await expect(panel).toContainText('Saved association; not verified against current file');
-    await expect(panel).toContainText('Configuration evidence');await expect(panel.getByRole('link',{name:'Prompt history',exact:true})).toHaveAttribute('href',/^#\/library\/\d+$/);
-    await expect(panel.getByText('Seed: Configuration evidence · Embedded API configuration',{exact:true})).toBeVisible();
+    await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
+    await expect(panel.locator('.meta-grid dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
+    await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');await expect(panel.getByRole('heading',{name:'empty.png',exact:true})).toBeVisible();
+    await expect(panel.getByRole('button',{name:'Send negative prompt to ComfyUI',exact:true})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
+    await selectFile(page,'explicit-empty.png');await expect(panel.locator('.prompt-section.negative p.prompt-text')).toHaveText('No negative prompt (explicitly empty)');await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(1);
+    // Provenance and its per-fact sources live in the viewer's full details (D20).
+    let details=await viewerDetails(page,'complete.png');
+    await expect(details.locator('.file-evidence')).toHaveText('Workflow prompt evidence');
+    await expect(details).toContainText('Recipe tags');await expect(details).toContainText('Recipe category');
+    await details.getByText('File & provenance',{exact:true}).click();
+    await expect(details).toContainText('Current file at this source; historical bytes are not verified.');await expect(details).toContainText('Saved association; not verified against current file');
+    await expect(details).toContainText('Configuration evidence');await expect(details.getByRole('link',{name:'Prompt history',exact:true})).toHaveAttribute('href',/^#\/library\/\d+$/);
+    await expect(details.getByText('Seed: Configuration evidence · Embedded API configuration',{exact:true})).toBeVisible();
     if (testInfo.project.name === 'chromium') {
-        await panel.getByText('Seed: Configuration evidence · Embedded API configuration',{exact:true}).scrollIntoViewIfNeeded();
+        await details.getByText('Seed: Configuration evidence · Embedded API configuration',{exact:true}).scrollIntoViewIfNeeded();
         const path=testInfo.outputPath('configuration-api-source.png');await page.screenshot({path});await testInfo.attach('configuration-api-source',{path,contentType:'image/png'});
     }
-    await expect(panel).not.toContainText(/Run:|Original file unchanged|Execution recorded/);
-    await selectFile(page,'empty.png');await expect(panel.locator('.file-format')).toHaveText('PNG');await expect(panel.getByRole('heading',{name:'empty.png',exact:true})).toBeVisible();
-    await expect(panel.getByRole('button',{name:'Send negative prompt to ComfyUI',exact:true})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('link',{name:'Prompt history',exact:true})).toHaveCount(0);
-    await selectFile(page,'explicit-empty.png');await expect(panel.locator('.prompt-section.negative p.prompt-text')).toHaveText('No negative prompt (explicitly empty)');await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toHaveCount(1);
-    await selectFile(page,'workflow-only.png');await panel.getByText('File & provenance',{exact:true}).click();
-    await expect(panel.getByText('Seed: Configuration evidence · Saved workflow configuration',{exact:true})).toBeVisible();
+    await expect(details).not.toContainText(/Run:|Original file unchanged|Execution recorded/);
+    await page.keyboard.press('Escape');details=await viewerDetails(page,'workflow-only.png');await details.getByText('File & provenance',{exact:true}).click();
+    await expect(details.getByText('Seed: Configuration evidence · Saved workflow configuration',{exact:true})).toBeVisible();
     if (testInfo.project.name === 'chromium') {
-        await panel.getByText('Seed: Configuration evidence · Saved workflow configuration',{exact:true}).scrollIntoViewIfNeeded();
+        await details.getByText('Seed: Configuration evidence · Saved workflow configuration',{exact:true}).scrollIntoViewIfNeeded();
         const path=testInfo.outputPath('configuration-workflow-source.png');await page.screenshot({path});await testInfo.attach('configuration-workflow-source',{path,contentType:'image/png'});
     }
 });
@@ -140,7 +255,7 @@ test('full inspector preserves long role text and exact sends',async({page,reque
     await host.evaluate(async()=>{const {createBridgeHost}=await import('/prompt_manager/js/shared/toolkit/prompt-bridge.js');const target={id:'pair',label:'Exact pair',type:'PromptManagerPair',roles:['positive','negative']};window.sent=[];window.bridge=createBridgeHost({origin:location.origin,namespace:'/',label:'Exact host',adapter:{listTargets:()=>[target],preview:(_id,roles)=>({preview:{target,fields:Object.entries(roles).map(([role,after])=>({role,before:'',after}))},snapshot:roles}),apply:roles=>{window.sent.push(roles);return{targetId:target.id,values:roles};}}});});
     try {
         await fullFixture(page,request);const panel=inspector(page);const positive=panel.locator('.prompt-section.positive .prompt-text');await expect(positive).toContainText('猫 😀');const text=await positive.textContent();expect(text.length).toBeGreaterThan(1000);
-        await panel.getByRole('button',{name:'Send prompt pair',exact:true}).click();const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
+        await panel.locator('.detail-footer button.send').click();const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         await expect(sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).locator('option')).toContainText(['Exact host']);
         await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Exact host'});await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Exact pair'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
@@ -149,14 +264,14 @@ test('full inspector preserves long role text and exact sends',async({page,reque
 });
 
 test('full inspector downloads actual bounded evidence',async({page,request})=>{
-    await fullFixture(page,request);const panel=inspector(page);await panel.getByText('Workflow & raw metadata',{exact:true}).click();
+    await fullFixture(page,request);let panel=await viewerDetails(page,'complete.png');await panel.getByText('Workflow & raw metadata',{exact:true}).click();
     const list=await(await request.get('/prompt_manager/images/output?mode=workspace&subfolder=inspector')).json();const image=list.images.find(image=>image.root_index===0&&image.path==='inspector/complete.png');
     const result=await(await request.get(`/prompt_manager/images/inspect/inspector/complete.png?root=0&root_scope=${image.root_scope}`)).json();
     await expect(panel).toContainText('Original embedded text');const metadata=await downloadText(page,panel.getByRole('button',{name:'Download metadata JSON',exact:true}));expect(metadata.name).toBe('complete.metadata.json');expect(JSON.parse(metadata.text).metadata.raw).toEqual(result.metadata.raw);expect(JSON.parse(metadata.text).identity.root_scope).toBe(image.root_scope);
     const workflow=await downloadText(page,panel.getByRole('button',{name:'Download workflow JSON',exact:true}));expect(workflow.name).toBe('complete.workflow.json');expect(workflow.text).toBe(result.metadata.raw.workflow);
     await panel.getByText('File & provenance',{exact:true}).click();await expect(panel.getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',image.url);
-    await selectFile(page,'malformed.png');await panel.getByText('Workflow & raw metadata',{exact:true}).click();await expect(panel.locator('pre code').filter({hasText:'{broken'})).toHaveText('{broken');await expect(panel.getByRole('button',{name:'Download workflow JSON',exact:true})).toHaveAttribute('aria-disabled','true');
-    await selectFile(page,'control-heavy.png');await panel.getByText('Workflow & raw metadata',{exact:true}).click();await expect(panel).toContainText('Raw metadata exceeds the response limit. Download the original file to inspect it externally.');
+    await page.keyboard.press('Escape');panel=await viewerDetails(page,'malformed.png');await panel.getByText('Workflow & raw metadata',{exact:true}).click();await expect(panel.locator('pre code').filter({hasText:'{broken'})).toHaveText('{broken');await expect(panel.getByRole('button',{name:'Download workflow JSON',exact:true})).toHaveAttribute('aria-disabled','true');
+    await page.keyboard.press('Escape');panel=await viewerDetails(page,'control-heavy.png');await panel.getByText('Workflow & raw metadata',{exact:true}).click();await expect(panel).toContainText('Raw metadata exceeds the response limit. Download the original file to inspect it externally.');
     let downloads=0;page.on('download',()=>downloads++);for(const name of ['Download metadata JSON','Download workflow JSON']) {const button=panel.getByRole('button',{name,exact:true});await expect(button).toHaveAttribute('aria-disabled','true');await button.focus();await page.keyboard.press('Enter');}expect(downloads).toBe(0);
     await panel.getByText('File & provenance',{exact:true}).click();await expect(panel.getByRole('link',{name:'Download original',exact:true})).toHaveAttribute('href',/root=0&root_scope=[a-f0-9]{64}/);
 });
@@ -164,7 +279,7 @@ test('full inspector downloads actual bounded evidence',async({page,request})=>{
 test('full inspector labels a limited workflow record without hiding prompt facts',async({page,request})=>{
     // The server marks a workflow over its 4 MiB read budget `limited`: no raw text, a limited graph.
     await page.route('**/images/inspect/inspector/complete.png?*',async route=>{const response=await route.fetch();const data=await response.json();data.metadata.record_formats.workflow='limited';delete data.metadata.raw.workflow;data.metadata.workflow_graph={status:'limited',value:null};await route.fulfill({response,json:data});});
-    await fullFixture(page,request);const panel=inspector(page);
+    await fullFixture(page,request);const panel=await viewerDetails(page,'complete.png');
     await expect(panel.locator('.generation-facts dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toBeVisible();
     await panel.getByText('Workflow & raw metadata',{exact:true}).click();
@@ -178,8 +293,8 @@ test('full inspector labels a limited workflow record without hiding prompt fact
 
 test('full inspector rejects stale shared action state',async({page,request})=>{
     let reads=0,stale=false;await page.route('**/images/inspect/**',route=>{reads++;return stale?route.fulfill({status:409,json:{success:false,code:'source-changed',error:'Source changed'}}):route.continue();});
-    await fullFixture(page,request);const panel=inspector(page);await expect(panel.getByRole('button',{name:'Send prompt pair',exact:true})).toBeVisible();const before=reads;
-    await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const preview=page.locator('dialog#viewer-dialog');await expect(preview.locator('.generation-facts dd').first()).toHaveText('9007199254740993');expect(reads).toBe(before);await preview.getByRole('button',{name:'Close image viewer',exact:true}).click();
+    await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.detail-footer button.send')).toBeVisible();const before=reads;
+    await openSelected(page);const preview=page.locator('dialog#viewer-dialog');await expect(preview.locator('.generation-facts dd').first()).toHaveText('9007199254740993');expect(reads).toBe(before);await preview.getByRole('button',{name:'Close image viewer',exact:true}).click();
     stale=true;await selectFile(page,'complete.png',1);await expect(panel).toContainText('The source changed. Refresh the image collection before inspecting this file.');
     await expect(panel.getByRole('button',{name:/Retry/})).toHaveCount(0);await expect(panel.locator('[data-copy-role],[data-send-role],a[download]')).toHaveCount(0);await expect(panel.getByRole('button',{name:/Download/})).toHaveCount(0);
     stale=false;const refreshed=page.waitForResponse(response=>response.url().includes('/images/output?'));await panel.getByRole('button',{name:'Refresh image collection',exact:true}).click();await refreshed;await selectFile(page,'complete.png',1);await expect(panel).toContainText('Input collision');
@@ -192,14 +307,17 @@ test('full inspector keeps long literal content reachable on mobile',async({page
     let external=0;await page.route('https://invalid.test/**',route=>{external++;return route.abort();});
     await page.route('**/images/inspect/**',async route=>{const response=await route.fetch();const data=await response.json();data.metadata.raw.parameters=literal;data.metadata.record_formats.parameters='original-text';data.metadata.parameters=literal;data.metadata.prompt_graph.value['4'].inputs.ckpt_name=literal;await route.fulfill({response,json:data});});
     await page.setViewportSize({width:390,height:844});await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('fine geometry and light.');await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).click();const fallback=page.getByRole('dialog',{name:'Copy prompt',exact:true});await expect(fallback.getByRole('textbox')).toHaveValue(/^Inspector portrait 猫 😀\nFull prompt context, fine geometry and light\./);await page.keyboard.press('Escape');await expect(fallback).toBeHidden();
-    await panel.getByText('Workflow & raw metadata',{exact:true}).click();await expect(panel.locator('pre code').filter({hasText:literal}).last()).toHaveText(literal);await expect(panel.locator('.generation-facts dd').last()).toHaveText(literal);
-    for(const zoom of [1,2]) {await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);const footer=panel.getByRole('button',{name:'Send prompt pair',exact:true});await footer.focus();await expect(footer).toBeFocused();const summary=panel.getByText('File & provenance',{exact:true});await summary.focus();await page.keyboard.press('Enter');await expect(panel).toContainText('historical bytes are not verified');}
+    await expect(panel.locator('.meta-grid dd').last()).toHaveText(literal);
+    for(const zoom of [1,2]) {await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);const footer=panel.locator('.detail-footer button.send');await footer.focus();await expect(footer).toBeFocused();}
+    await page.evaluate(()=>{document.documentElement.style.zoom='1';});
+    const details=await viewerDetails(page,'complete.png');await details.getByText('Workflow & raw metadata',{exact:true}).click();await expect(details.locator('pre code').filter({hasText:literal}).last()).toHaveText(literal);
+    const summary=details.getByText('File & provenance',{exact:true});await summary.focus();await page.keyboard.press('Enter');await expect(details).toContainText('historical bytes are not verified');
     expect(await page.evaluate(()=>window.executed)).toBeUndefined();expect(external).toBe(0);
 });
 
 test('embedded gallery uses the same full inspector',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();const list=await(await request.get('/prompt_manager/library')).json();const id=list.items.find(item=>item.text.startsWith('Inspector portrait')).id;
-    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel).toContainText('Recipe tags');await panel.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('#viewer-dialog .file-inspector')).toHaveCount(1);
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel.locator('.detail-inner > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);await expect(panel).not.toHaveAttribute('id','image-inspector');await openSelected(page);await expect(page.locator('#viewer-dialog .file-inspector')).toHaveCount(1);
 });
 
 test('full inspector labels container representations and releases action URLs',async({page,request})=>{
@@ -231,12 +349,12 @@ test('full inspector labels container representations and releases action URLs',
 
 test('full inspector distinguishes missing, limited and legacy unknown generation facts',async({page,request})=>{
     await fullFixture(page,request);const panel=inspector(page);
-    await selectFile(page,'empty.png');await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
-    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-card-actions button').click();await expect(panel.locator('.generation-facts dd')).toHaveText(Array(6).fill('Not recorded'));
+    await selectFile(page,'empty.png');await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
+    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-card-actions button').click();await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
     await selectFile(page,'control-heavy.png');
     const explanation='Configuration exceeds inspection limits; download the original file to inspect it locally.';
     await expect(panel.getByText(explanation,{exact:true})).toHaveCount(1);await expect(panel.getByText(explanation,{exact:true})).toBeVisible();
-    for(const value of await panel.locator('.generation-facts dd').all())await expect(value).toHaveAccessibleDescription(explanation);
+    for(const value of await panel.locator('.meta-grid dd').all())await expect(value).toHaveAccessibleDescription(explanation);
     await page.evaluate(async()=>{
         const {mountFileInspector}=await import('/prompt_manager/js/workspace/file-inspector.mjs');
         const {toInspectionRecord}=await import('/prompt_manager/js/workspace/inspection-state.mjs');
@@ -255,19 +373,18 @@ test.describe('full inspector coarse pointer',()=>{
         await fullFixture(page,request);expect(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)).toBe(true);const panel=inspector(page);
         await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('Full prompt context, fine geometry and light.');
         const fullText=await panel.locator('.prompt-section.positive p.prompt-text').textContent();expect(fullText.length).toBeGreaterThan(1000);
-        await panel.getByText('File & provenance',{exact:true}).click();await panel.getByText('Workflow & raw metadata',{exact:true}).click();
         const bounds=await panel.locator('button,a,summary').evaluateAll(nodes=>nodes.map(node=>({name:node.getAttribute('aria-label')||node.textContent,role:node.matches('.prompt-actions button'),width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height})));
         for(const target of bounds){expect(target.width,target.name).toBeGreaterThanOrEqual(target.role?36:40);expect(target.height,target.name).toBeGreaterThanOrEqual(target.role?36:40);}
         for(const zoom of [1,2]) {
             await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);
             await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
             await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-            for(const target of [panel.locator('summary').first(),panel.getByRole('button',{name:'Download metadata JSON',exact:true}),panel.getByRole('link',{name:'Prompt history',exact:true})]) {
+            for(const target of [panel.locator('.detail-footer button.send'),panel.getByRole('button',{name:'Prompt history',exact:true})]) {
                 await target.scrollIntoViewIfNeeded();await target.focus();await expect(target).toBeFocused();await expect(target).toBeInViewport();
             }
             await expect(panel.locator('.prompt-section.positive p.prompt-text')).toHaveText(fullText);
         }
-        await panel.getByRole('button',{name:'Open full preview',exact:true}).click();const viewer=page.locator('dialog#viewer-dialog');
+        await openSelected(page);const viewer=page.locator('dialog#viewer-dialog');
         await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
         for(const target of await viewer.locator('#viewer-toolbar > :is(button,a),.dialog-header > button').all()) {
             const box=await target.evaluate(node=>{const {width,height}=node.getBoundingClientRect();return {width,height,name:node.getAttribute('aria-label')};});
@@ -281,7 +398,7 @@ const mediaDialog=page=>page.locator('dialog#viewer-dialog');
 const mediaStage=page=>mediaDialog(page).getByRole('region',{name:'Media preview',exact:true});
 const position=page=>mediaDialog(page).locator('.media-position');
 async function openCollection(page) {
-    await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+    await openSelected(page);
     await expect(mediaDialog(page).locator('.viewer-canvas img')).toBeVisible();
     await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
 }
@@ -520,7 +637,7 @@ test('slideshow production query and route disposal cancel the active deadline',
     const pendingAtReset=await page.evaluate(()=>{const sort=document.getElementById('sort');sort.value='name';sort.dispatchEvent(new Event('change'));return window.slideshowTimers.size;});
     expect(pendingAtReset).toBe(0);await page.clock.runFor(1);
     await expect(mediaDialog(page)).toHaveCount(0);expect(await timerCount(page)).toBe(0);
-    await selectFile(page,'complete.png');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await readyClockImage(page);await expect(slideshowButton(page)).toHaveText('Play');
+    await selectFile(page,'complete.png');await openSelected(page);await readyClockImage(page);await expect(slideshowButton(page)).toHaveText('Play');
     await slideshowButton(page).click();await page.evaluate(()=>{location.hash='/overview';});await expect(page.locator('h1')).toHaveText('Overview');await expect(mediaDialog(page)).toHaveCount(0);expect(await timerCount(page)).toBe(0);
     await page.clock.runFor(7000);await expect(page.locator('.viewer-container')).toHaveCount(0);
 });
@@ -589,8 +706,8 @@ test('full inspector attaches matched theme and mobile evidence with reachable c
     for(const [width,height,theme]of [[1600,1100,'dark'],[1600,1100,'light'],[390,844,'dark'],[390,844,'light']]) {
         const label=`${theme}-${width}`;await page.setViewportSize({width,height});
         await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
-        await selectFile(page,'complete.png');await expect(inspector(page).locator('.generation-facts dd').first()).toHaveText('9007199254740993');
-        if(width===1600)await page.evaluate(()=>scrollTo(0,0));else await inspector(page).locator('.file-cover').evaluate(node=>node.scrollIntoView({block:'start'}));
+        await selectFile(page,'complete.png');await expect(inspector(page).locator('.meta-grid dd').first()).toHaveText('9007199254740993');
+        if(width===1600)await page.evaluate(()=>scrollTo(0,0));else await inspector(page).locator('.detail-cover').evaluate(node=>node.scrollIntoView({block:'start'}));
         await capture(`inline-${label}`);
         await openCollection(page);const modal=mediaDialog(page),rail=modal.locator('#viewer-details');
         await expect(modal.locator('.viewer-canvas img')).toBeVisible();await expect.poll(()=>modal.locator('.viewer-canvas img').evaluate(node=>node.complete&&node.naturalWidth>0)).toBe(true);
@@ -599,9 +716,9 @@ test('full inspector attaches matched theme and mobile evidence with reachable c
         await rail.getByText('File & provenance',{exact:true}).click();await rail.locator('.file-facts').scrollIntoViewIfNeeded();await capture(`provenance-${label}`,true);
         await rail.getByText('Workflow & raw metadata',{exact:true}).click();const raw=rail.locator('pre code').first();await raw.scrollIntoViewIfNeeded();await expect(raw).toBeInViewport();await capture(`raw-${label}`,true);
         const send=rail.getByRole('button',{name:'Send prompt pair',exact:true});await send.focus();await expect(send).toBeInViewport();await send.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await capture(`sender-${label}`);await page.keyboard.press('Escape');await expect(send).toBeFocused();
-        await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await selectFile(page,'clip.webm');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+        await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await selectFile(page,'clip.webm');await openSelected(page);
         await expect.poll(()=>modal.locator('video').evaluate(node=>node.readyState)).toBeGreaterThanOrEqual(1);await capture(`video-${label}`,true);await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();
-        await selectFile(page,'control-heavy.png');await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+        await selectFile(page,'control-heavy.png');await openSelected(page);
         await expect(modal).toContainText('Unavailable within inspection limits');await modal.getByText('Workflow & raw metadata',{exact:true}).click();
         const limitedDownload=modal.getByRole('button',{name:'Download metadata JSON',exact:true});await limitedDownload.scrollIntoViewIfNeeded();await expect(limitedDownload).toHaveAttribute('aria-disabled','true');await capture(`limited-${label}`,true);
         await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();
@@ -613,7 +730,7 @@ test('full inspector attaches matched theme and mobile evidence with reachable c
 test('collection viewer preserves original download and rooted retries',async({page,request})=>{
     await fullFixture(page,request);let deny=true;const originals=[];
     await page.route('**/images/serve/inspector/complete.png?*',route=>{originals.push(route.request().url());return deny?route.fulfill({status:404,body:'Missing'}):route.continue();});
-    await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();const modal=mediaDialog(page);
+    await openSelected(page);const modal=mediaDialog(page);
     await expect(modal).toContainText('Media could not be loaded. Retry this file.');await expect(modal.locator('.generation-facts dd').first()).toHaveText('9007199254740993');
     await expect(modal.locator('.media-position')).toContainText('Media could not be loaded.');
     const download=modal.locator('#viewer-toolbar').getByRole('link',{name:'Download original',exact:true});const original=await download.getAttribute('href');
@@ -646,8 +763,9 @@ test('collection viewer keeps nested dialog focus and route cleanup',async({page
     const text=modal.locator('.prompt-section.positive p.prompt-text');await text.focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(before);
     await modal.getByText('Workflow & raw metadata',{exact:true}).focus();await page.keyboard.press('ArrowLeft');await expect(position(page)).toHaveText(before);
     await modal.getByRole('button',{name:'Next media',exact:true}).click();const key=(await position(page).textContent()).split('loaded: ')[1];
-    await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('.media-card.selected .image-open')).toBeFocused();await expect(inspector(page).locator('.file-name')).toHaveText(key);
-    await inspector(page).getByRole('button',{name:'Open full preview',exact:true}).click();await page.evaluate(()=>{location.hash='/overview';});
+    // D19: focus returns to the opening image; the panel follows the file the viewer moved to.
+    await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);await expect(page.locator('article[data-image-key="0:inspector/complete.png"] .image-open')).toBeFocused();await expect(inspector(page).locator('.detail-inner > p.small')).toHaveText(key);
+    await openSelected(page);await page.evaluate(()=>{location.hash='/overview';});
     await expect(page.locator('h1')).toHaveText('Overview');await expect(page.locator('.viewer-container,#viewer-dialog')).toHaveCount(0);
 });
 

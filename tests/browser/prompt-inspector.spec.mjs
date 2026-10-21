@@ -2,7 +2,7 @@ import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mj
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 
 const workspace='/prompt_manager/workspace#/images';
-const details=page=>page.getByRole('region',{name:'Image details',exact:true});
+const details=page=>page.getByRole('complementary',{name:'Selected image details',exact:true});
 const role=(scope,name)=>scope.getByRole('region',{name:`${name} prompt`,exact:true});
 const select=async(page,key)=>page.locator(`article[data-image-key="${key}"]`).getByRole('button',{name:/^Inspect /}).click();
 const dialog=page=>page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
@@ -58,7 +58,7 @@ test('collection viewer rejects stale source and sends only refreshed API eviden
         await preview.getByRole('button',{name:'Refresh image collection',exact:true}).click();await refreshed;await expect(preview).toHaveCount(0);
         const collection=await(await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();const fresh=collection.images.find(image=>image.root_index===0&&image.path===stale.path);expect(fresh.root_scope).not.toBe(stale.root_scope);
         const evidence=await(await request.get(`/prompt_manager/images/inspect/shared/same.png?root=0&root_scope=${fresh.root_scope}`)).json();
-        await select(page,'0:shared/same.png');await details(page).getByRole('button',{name:'Open full preview',exact:true}).click();await expect(preview).toContainText(evidence.prompts.positive.text);
+        await select(page,'0:shared/same.png');await page.locator('.media-card.selected .image-open').click();await expect(preview).toContainText(evidence.prompts.positive.text);
         await preview.getByRole('button',{name:'Send prompt pair',exact:true}).click();const sender=await chooseDestination(page);await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.applied)).toEqual([{positive:evidence.prompts.positive.text,negative:evidence.prompts.negative.text}]);expect(await page.evaluate(()=>window.copied)).toEqual([]);
     } finally {await expect(await request.post('/prompt_manager/settings',{data:{gallery_root_paths:['output','input']}})).toBeOK();await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
@@ -67,7 +67,7 @@ test('collection viewer rejects stale source and sends only refreshed API eviden
 test('physical image inspector resolves positive and negative metadata separately for duplicate filenames',async({page})=>{
     await page.goto(workspace);await select(page,'0:shared/same.png');
     await expect(role(details(page),'Positive')).toContainText('Cat portrait');await expect(role(details(page),'Negative')).toContainText('blurry, watermark');
-    await expect(details(page).getByRole('button',{name:'Send prompt pair',exact:true})).toBeEnabled();
+    await expect(details(page).getByRole('button',{name:/^Send prompt pair to ComfyUI: /})).toBeEnabled();
     await select(page,'1:shared/same.png');await expect(role(details(page),'Positive')).toContainText('Dog landscape');
     await expect(role(details(page),'Negative')).toContainText('low quality');await expect(details(page)).not.toContainText('Cat portrait');
 });
@@ -100,7 +100,7 @@ test('inspection failures retry and a delayed previous selection cannot replace 
 test('sender requires explicit destination, previews full changes and acknowledges only the applied pair',async({page,context},testInfo)=>{
     const host=await fakeHost(context,page);
     try {
-        await page.goto(workspace);await select(page,'0:shared/same.png');await details(page).getByRole('button',{name:'Send prompt pair',exact:true}).click();
+        await page.goto(workspace);await select(page,'0:shared/same.png');await details(page).getByRole('button',{name:/^Send prompt pair to ComfyUI: /}).click();
         const sender=dialog(page);await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeDisabled();
         const chosen=await chooseDestination(page);await chosen.getByRole('button',{name:'Preview changes',exact:true}).click();
         for(const text of ['Existing positive','Existing negative','Cat portrait','blurry, watermark','trigger Cat portrait detail'])await expect(chosen).toContainText(text);
@@ -113,7 +113,7 @@ test('sender requires explicit destination, previews full changes and acknowledg
         await page.screenshot({path:testInfo.outputPath('inspector-dark.png'),fullPage:true});
         await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('light');
         await page.screenshot({path:testInfo.outputPath('inspector-light.png'),fullPage:true});
-        await details(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+        await page.locator('.media-card.selected .image-open').click();
         await expect(page.locator('dialog#viewer-dialog')).toBeVisible();
         await page.screenshot({path:testInfo.outputPath('viewer-prompts.png')});
         await page.getByRole('button',{name:'Close image viewer',exact:true}).click();
@@ -137,7 +137,7 @@ test('ComfyUI ↗ opens the pair send for a selected resolved image, else follow
         await select(page,'0:uncertain.png');await expect(details(page)).toContainText('Not recorded in this file.');
         await link.click();await expect(dialog(page)).toHaveCount(0);
         expect(await page.evaluate(()=>window.followed)).toEqual([true,true]);
-        await select(page,'0:shared/same.png');await expect(details(page).getByRole('button',{name:'Send prompt pair',exact:true})).toBeEnabled();
+        await select(page,'0:shared/same.png');await expect(details(page).getByRole('button',{name:/^Send prompt pair to ComfyUI: /})).toBeEnabled();
         await link.click();
         const sender=await chooseDestination(page);
         expect(await page.evaluate(()=>window.followed)).toEqual([true,true,false]);
@@ -167,7 +167,7 @@ test('host apply rejection retains the current text and requires a new preview',
 
 test('nested viewer sender Escape restores focus without closing the image and navigation disposes both overlays',async({page})=>{
     await page.goto(workspace);await select(page,'0:shared/same.png');
-    await details(page).getByRole('button',{name:'Open full preview',exact:true}).click();
+    await page.locator('.media-card.selected .image-open').click();
     const viewer=page.locator('dialog[open]').filter({has:page.locator('.viewer-canvas')});await expect(viewer).toBeVisible();
     const send=viewer.getByRole('button',{name:'Send positive prompt to ComfyUI',exact:true});await send.click();await expect(dialog(page)).toBeVisible();
     await page.keyboard.press('Escape');await expect(dialog(page)).toBeHidden();await expect(viewer).toBeVisible();await expect(send).toBeFocused();

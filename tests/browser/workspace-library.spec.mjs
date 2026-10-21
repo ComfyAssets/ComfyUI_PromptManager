@@ -198,10 +198,12 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         expect(await host.evaluate(()=>window.libraryApplied)).toEqual([{positive:'Cat portrait',negative:chosenNegative}]);
         await sender.getByRole('button',{name:'Close',exact:true}).click();
         await media(page).first().getByRole('button',{name:'Inspect same.png',exact:true}).click();
-        const inspector=page.getByRole('region',{name:'Image details',exact:true});await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText('Cat portrait');
-        await expect(inspector.locator('.generation-facts dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
-        await expect(inspector.locator('summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
-        await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
+        const inspector=page.getByRole('complementary',{name:'Selected image details',exact:true});await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText('Cat portrait');
+        await expect(inspector.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
+        // D20: provenance and raw records are the viewer's full details, opened from the card image (D19).
+        await expect(inspector.locator('summary')).toHaveCount(0);
+        await media(page).first().getByRole('button',{name:'Open same.png',exact:true}).click();await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
+        await expect(page.locator('dialog[open] #viewer-details summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
         await page.keyboard.press('Escape');await expect(page.locator('dialog[open]')).toHaveCount(0);
         await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();await expect(page.locator('.viewer-container')).toHaveCount(0);
     } finally {await host.evaluate(()=>window.libraryHost.dispose());await host.close();}

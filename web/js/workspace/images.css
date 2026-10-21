@@ -1,17 +1,8 @@
-/* The Images page renders the concept DOM (#249 PR C), so its replaced rules are retired. What remains is the side
-   panel, the prompt blocks and the prompt sender, which PR D moves to the concept panel and deletes with this file. */
+/* The Images page renders the concept DOM (#249 PR C) and its side panel is the concept's `.detail-panel` (D2), so
+   their replaced rules are retired. What remains is the prompt blocks and the prompt sender, deleted with this file. */
 .images-main { container: images-page / inline-size; }
-.image-details { position: sticky; inset-block-start: 20px; padding: 17px; border-radius: 7px; min-inline-size: 0; max-block-size: calc(100dvh - 40px); overflow: auto; }
-.image-details h2 { font-size: 14px; overflow-wrap: anywhere; margin-block: 0 12px; }
-.image-details > :where(img, video) { display: block; inline-size: calc(100% + 34px); block-size: 150px; margin: -17px -17px 17px; object-fit: cover; background: var(--ca-field); border-radius: 6px 6px 0 0; }
-.image-details .workspace-link { display: flex; font-size: 11px; }
-@media (max-width: 700px) {
-    .image-details { position: static; max-block-size: none; padding: 17px; }
-    .image-details > :where(img, video) { block-size: 200px; }
-}
 @container images-page (inline-size < 600px) {
     .image-workspace { grid-template-columns: minmax(0, 1fr); }
-    .image-details { position: static; max-block-size: none; }
 }
 .options-status { font-size: 12px; padding-inline: 4px; }
 

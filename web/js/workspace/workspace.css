@@ -135,7 +135,6 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 
 /* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
    that keep their own design until their page PR rebuilds them in concept markup. */
-.panel { background: var(--ca-surface); border: 1px solid var(--line); } /* PR D: Images side panel (padding and radius in images.css) becomes `.detail-panel` */
 .ca-tools dialog.prompt-sender { width: min(760px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 22px; border-color: var(--ca-line); border-radius: 12px; } /* PR D */
 .ca-tools dialog.prompt-sender::backdrop { background: #000b; } /* PR D */
 .ca-tools dialog.recorded-run-dialog { width: min(1100px, calc(100% - 32px)); max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); padding: 22px; border-radius: 7px; } /* PR F */
@@ -147,3 +146,13 @@ pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max
 @media (max-width: 700px) {
     .ca-tools dialog.recorded-run-dialog { padding: 16px; } /* PR F */
 }
+
+/* Images side panel (#249 D2), production-only. Real prompts can be far longer than the concept's samples, so the sticky
+   panel scrolls within the window and its footer stays reachable; where the concept unsticks it, it grows instead. */
+.detail-panel { min-inline-size: 0; max-block-size: calc(100dvh - 40px); overflow: auto; }
+@media (max-width: 700px) { .detail-panel { max-block-size: none; } }
+@container images-page (inline-size < 600px) { .detail-panel { position: static; max-block-size: none; } }
+/* #249 D2: the prompt blocks' mount point is transparent, so their sections sit in `.detail-inner` as the concept's do. */
+.detail-inner > .prompt-inspector { display: contents; }
+/* #249 D2: real titles and filenames can be one unbroken word; they wrap inside the 310px panel. */
+.panel-heading h2, .detail-inner > p.small { min-inline-size: 0; overflow-wrap: anywhere; }
