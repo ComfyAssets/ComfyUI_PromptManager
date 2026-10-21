@@ -56,6 +56,14 @@ class TestPairImageLinking(unittest.TestCase):
         self.handler.link_image_to_prompt(self.path, {"id": self.pid}, meta)
         self.assertEqual(self.db.list_prompt_pairs()["total"], 0)
         meta = metadata()
-        meta["prompt"]["4"] = meta["prompt"]["3"]
+        # Two samplers with different positives (#249: identical ones resolve).
+        meta["prompt"]["5"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "dog"},
+        }
+        meta["prompt"]["4"] = {
+            "class_type": "KSampler",
+            "inputs": {"positive": ["5", 0], "negative": ["2", 0]},
+        }
         self.handler.link_image_to_prompt(self.path + "2", {"id": self.pid}, meta)
         self.assertEqual(self.db.list_prompt_pairs()["total"], 0)

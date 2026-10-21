@@ -631,6 +631,8 @@
      * until PR3), and unresolved or absent over several listed samplers, merge the same
      * way across every listed sampler and its stages. Otherwise (no resolution, or one
      * listed sampler) exactly one listed sampler supplies them; several leave every field ambiguous.
+     * A resolved pair without a named sampler (identical branches, #249) merges like
+     * ambiguous when several samplers are listed.
      */
     function graphFacts(graph, source, resolution) {
         if (!object(graph)) return factSet("unresolved", source);
@@ -650,8 +652,9 @@
         }
         const candidates = entries.filter(([id]) => samplerEntry(graph, id));
         // Review I-1: an unresolved or absent prompt does not make the run's settings
-        // unknown, so several listed samplers merge the same way.
-        if (state === "ambiguous" || ((state === "unresolved" || state === "absent") && candidates.length > 1)) {
+        // unknown, so several listed samplers merge the same way. So does a pair the
+        // server resolved across several branches without naming one (#249).
+        if (state === "ambiguous" || (["unresolved", "absent", "resolved"].includes(state) && candidates.length > 1)) {
             // The server's branches: every listed sampler, a detailer judged with its stages.
             const stages = new Set();
             if (!candidates.length || !candidates.every(([id]) => collectStages(graph, id, new Set(), stages, { visits: 0 }))) return factSet("unresolved", source);
