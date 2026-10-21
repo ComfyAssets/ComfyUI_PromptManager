@@ -35,7 +35,7 @@ export async function captureCanonicalState(page, testInfo, name, selector) {
 
 export async function historyGeometry(page, production) {
     const selectors = production ? {
-        surface: '.library-surface', timeline: '.library-branches', positive: '.library-positive-lane',
+        surface: '.library-history article.surface', timeline: '.library-branches', positive: '.library-positive-lane',
         branch: '.library-variant-lane', label: '.library-variant-lane span', dot: '.library-variant-dot[aria-pressed="true"]',
         positiveLabel: '.library-positive-lane span',
         role: '[aria-label="Saved prompt texts"] .prompt-section',

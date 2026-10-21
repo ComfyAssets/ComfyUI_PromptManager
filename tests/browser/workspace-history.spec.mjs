@@ -721,3 +721,45 @@ test('completed page one stays bounded across mode changes until explicit output
         await page.keyboard.press('Escape');await retained();
     } finally {releaseNext();}
 });
+
+// #249 PR F1: the concept heading (app.js a591–597) and summary surface (a598) with real counts (D24).
+const historyHeading=page=>page.locator('#workspace-main > .heading');
+const summary=page=>page.locator('#workspace-main .library-history article.surface');
+test('history heading actions stay on one row at 1600 and are enabled after load',async({page,request})=>{
+    await page.setViewportSize({width:1600,height:1100});const f=page.fixture;
+    let releaseDetail;const held=new Promise(resolve=>{releaseDetail=resolve;});
+    await page.route(new RegExp(`/prompt_manager/library/${f.positive_id}\\?`),async route=>{await held;await route.continue().catch(()=>{});});
+    try {
+        await page.goto(`/prompt_manager/workspace#/library/${f.positive_id}`);
+        const heading=historyHeading(page),send=heading.locator('.heading-actions > button.send');
+        await expect(heading.locator('p.muted')).toHaveText('Prompt history · one positive, one shared gallery');
+        // D24: disabled only while the selected pair's roles are loading.
+        await expect(send).toBeDisabled();releaseDetail();
+        await expect(recorded(page)).toBeVisible();await expect(send).toBeEnabled();
+    } finally {releaseDetail();}
+    const heading=historyHeading(page),title=await heading.locator('h1').textContent();
+    const actions=heading.locator('.heading-actions > button');
+    await expect(actions).toHaveCount(3);
+    expect(await actions.evaluateAll(nodes=>nodes.map(node=>node.textContent.trim()))).toEqual(['← Prompt library','Edit metadata','Send to ComfyUI']);
+    await expect(actions.nth(2)).toHaveClass('send');
+    await expect(actions.nth(2)).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${title}`);
+    for(const action of [actions.nth(0),actions.nth(1)]) await expect(action).toBeEnabled();
+    const boxes=await actions.evaluateAll(nodes=>nodes.map(node=>{const box=node.getBoundingClientRect();return {y:box.y,height:box.height};}));
+    expect(new Set(boxes.map(box=>box.y)).size).toBe(1);
+    const row=await heading.locator('.heading-actions').evaluate(node=>node.getBoundingClientRect().height);
+    expect(row).toBe(boxes[0].height);
+});
+test('summary meta uses recorded runs',async({page,request})=>{
+    const f=page.fixture;await open(page,f.positive_id);
+    const detail=await(await request.get(`/prompt_manager/library/${f.positive_id}`)).json(),runs=(await historyRead(request,f.positive_id)).recorded_run_count;
+    const surface=summary(page),title=await historyHeading(page).locator('h1').textContent();
+    await expect(surface).toHaveCount(1);
+    await expect(surface.locator(':scope > span.chip')).toHaveText(detail.positive.category || 'Uncategorized');
+    const plural=(count,word)=>`${count} ${count===1?word:`${word}s`}`;
+    await expect(surface.locator(':scope > .card-meta > span')).toHaveText([plural(runs,'tracked run'),plural(detail.positive.image_count,'image'),plural(detail.positive.variant_count,'negative variant')]);
+    // The concept order: category chip, positive block, selected negative block, then the meta line.
+    expect(await surface.evaluate(node=>[...node.querySelectorAll('.chip, .prompt-section, .card-meta')].filter(item=>item.checkVisibility()).map(item=>item.className))).toEqual(['chip','prompt-section positive','prompt-section negative','card-meta']);
+    for(const name of ['Copy positive prompt','Send positive prompt to ComfyUI','Copy negative prompt','Send negative prompt to ComfyUI'])
+        await expect(saved(page).getByRole('button',{name:`${name}: ${title}`,exact:true})).toBeVisible();
+    await expect(surface.locator('.prompt-section').first()).toHaveCSS('border-top-width','1px');
+});

@@ -29,7 +29,7 @@ function place(parent, node, before) {
     else parent.insertBefore(node, before);
 }
 
-export function mountRecordedHistory(container, {api, positiveId, parentScope, sender, visit = {}, onParentRevalidate}) {
+export function mountRecordedHistory(container, {api, positiveId, parentScope, sender, visit = {}, onParentRevalidate, onRecordedCount}) {
     const scope = createScope(), dispose = () => scope.dispose();
     if (parentScope.signal.aborted) {dispose();return {dispose};}
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -61,6 +61,9 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     const controller = createHistoryController({api, positiveId, restore:visit, onChange:next => {
         render(next);runView?.setState(next);
         if (next.parent !== activeParent) {activeParent = next.parent;onParentRevalidate?.(next.parent);}
+        // The history summary's "N tracked runs" (#249 D24): a completed window read's count; a read in flight keeps the last.
+        const window = next.window;
+        if (!window.loading) onRecordedCount?.(window.history_epoch && !window.error ? window.recorded_run_count : null);
     }});
     state = controller.state;
     runView = mountRecordedRun(container, {api, controller, sender, parentScope:scope, onRestoreFocus:restoreMarker});

@@ -38,8 +38,8 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
     const named = label => contextLabel ? `${contextLabel} ${label.toLowerCase()} prompt` : `${label} prompt`;
     const action = role => contextLabel ? `${contextLabel[0].toLowerCase()}${contextLabel.slice(1)} ${role} prompt` : `${role} prompt`;
     // The concept names a role's copy and send after the prompt they act on (app.js a298–302): "…: <title>".
-    const subject = title ? `: ${title}` : '';
-    if (parentScope.signal.aborted) return {update() {}, setState() {}, dispose() {}};
+    let subject = title ? `: ${title}` : '';
+    if (parentScope.signal.aborted) return {update() {}, setState() {}, setTitle() {}, dispose() {}};
     const scope = childScope(parentScope);
     container.classList.add('prompt-inspector');
     scope.listen(container, 'click', async event => {
@@ -66,9 +66,10 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
         }
         if (event.target.closest('[data-retry-prompts]')) onRetry?.();
     });
-    let roles = {}, actionsEnabled = true;
+    let roles = {}, actionsEnabled = true, current = {prompts};
     function render(state) {
         if (scope.signal.aborted) return;
+        current = state;
         roles = {};
         actionsEnabled = state.actionsEnabled !== false;
         container.replaceChildren();
@@ -119,5 +120,10 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
         }
     }
     render({prompts});
-    return {update:prompts => render({prompts}), setState:render, dispose:() => scope.dispose()};
+    // A saved title edited in place renames the actions without a remount (the history summary, #249 F1).
+    const setTitle = next => {
+        const value = next ? `: ${next}` : '';
+        if (value !== subject) {subject = value;render(current);}
+    };
+    return {update:prompts => render({prompts}), setState:render, setTitle, dispose:() => scope.dispose()};
 }

@@ -101,7 +101,8 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         const roles = page.getByRole('region', { name: 'Saved prompt texts', exact: true });
         const positive = roles.getByRole('region', { name: 'Positive prompt', exact: true });
         expect(await positive.evaluate(node => node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
-        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
+        const title = await page.locator('#workspace-main > .heading h1').textContent();
+        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(roles.getByRole('button', { name: `${name}: ${title}`, exact: true })).toBeVisible();
         // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
         await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
@@ -110,7 +111,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await expect(page.getByRole('complementary', { name: 'Selected image details', exact: true })).toContainText('canonical-alt.png');
         await page.locator('.library-shared-gallery .media-card.selected .image-open').click();
         await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
-        for (const [name, selector] of [['saved', '.library-surface'], ['branches', '.library-variants'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
+        for (const [name, selector] of [['saved', '.library-history article.surface'], ['branches', '.library-variants'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
             await captureCanonicalState(page, testInfo, `production-${name}-${width}-${theme}`, selector);
         }
         const run = page.locator(`button[data-run-id="${fixture.canonical_run}"][data-anchor-id="10"]`);
@@ -541,7 +542,7 @@ test('Library visual evidence keeps natural cards and returns from real history 
             await noOverflow(page);
             await page.getByRole('button',{name:'Explore history',exact:true}).first().click();
             await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
-            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Prompt history · one positive, one shared gallery');
             await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
             await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
             await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive. Reusable negatives. Every experiment stays connected.');
@@ -643,7 +644,7 @@ test('embedded history gallery keeps the history heading and disposes its layout
         for (const layout of ['List','Masonry','Grid']) {
             await page.getByRole('button',{name:layout,exact:true}).click();await orderedMedia(page);
             await expect(page.locator('h1')).toHaveText(title);
-            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Prompt history · one positive, one shared gallery');
         }
         await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
         await page.getByRole('button',{name:'← Prompt library',exact:true}).click();

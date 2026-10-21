@@ -565,7 +565,7 @@ test('edit metadata stays on the page and re-reads the selected pair',async({pag
     await field(dialog,'Title').fill('Edited in place');await field(dialog,'Category').fill('Studio work');await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
     await expect(page.locator('#workspace-main h1')).toHaveText('Edited in place');await expect(page.locator('#workspace-main h1')).toBeFocused();
     await expect(toast(page)).toHaveText('Saved.');
-    await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));await expect(historyRegion(page).locator('.library-surface .library-chip').first()).toHaveText('Studio work');
+    await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));await expect(historyRegion(page).locator('article.surface > span.chip').first()).toHaveText('Studio work');
     await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 2');
     await expect.poll(()=>pairReads.length).toBeGreaterThan(before);
     await expect(headingActions(page).locator('button.send')).toHaveAccessibleName('Send prompt pair to ComfyUI: Edited in place');

@@ -416,8 +416,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
     function mountHistory() {
         const history=el('section',undefined,'library-history');history.setAttribute('aria-label','Prompt history');main.append(history);
         const body=el('div');history.append(body);
-        // Concept heading: ← Prompt library, Edit metadata, then the selected pair's Send to ComfyUI.
-        headingDescription(main,history,'One positive prompt. Reusable negative variants. One shared gallery.');
+        // Concept heading (app.js a591–597): ← Prompt library, Edit metadata, then the selected pair's Send to ComfyUI.
+        headingDescription(main,history,'Prompt history · one positive, one shared gallery');
         const actions=headingActions(main,history);
         const back=createButton('← Prompt library'),edit=createButton('Edit metadata'),send=createButton('','send');
         send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;actions.append(back,edit,send);
@@ -460,8 +460,11 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 if(state.error) {const retry=createButton('Retry prompt history');contentScope.listen(retry,'click',()=>loader.load(positiveId));body.append(retry);}return;
             }
             detail=state.detail;const content=contentScope;
-            const summary=el('article',undefined,'library-surface');const categoryChip=el('span','','library-chip');summary.append(categoryChip);
+            // The concept summary (app.js a598): category chip, positive and selected negative blocks, then the counts (D24).
+            const summary=el('article',undefined,'surface');const categoryChip=el('span','','chip');summary.append(categoryChip);
             const promptContainer=el('div');promptContainer.setAttribute('role','region');promptContainer.setAttribute('aria-label','Saved prompt texts');summary.append(promptContainer);
+            const meta=el('div',undefined,'card-meta'),runsMeta=el('span'),imagesMeta=el('span'),variantsMeta=el('span');runsMeta.hidden=true;
+            meta.append(runsMeta,imagesMeta,variantsMeta);summary.append(meta);
             const parentStatus=el('p','','library-parent-status muted');parentStatus.hidden=true;parentStatus.setAttribute('role','status');
             const retryParent=createButton('Retry saved Library details'),reloadSaved=createButton('Reload saved Library view');retryParent.hidden=reloadSaved.hidden=true;summary.append(parentStatus,retryParent,reloadSaved);
             const ownerText=detail.positive.text;let savedReadState='current',parentRequest,parentGeneration=0;
@@ -546,9 +549,11 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 const archivedCount=Number.isSafeInteger(detail.positive.archived_variant_count)?detail.positive.archived_variant_count:0;
                 showArchived.textContent=`Show archived (${archivedCount})`;showArchived.setAttribute('aria-pressed',String(archivedShown));
             };
+            const updateMeta=()=>{imagesMeta.textContent=countOf(detail.positive.image_count ?? 0,'image');variantsMeta.textContent=countOf(detail.positive.variant_count ?? 0,'negative variant');};
             updateParent=()=>{
-                main.querySelector('h1').textContent=displayTitle(detail.positive);categoryChip.textContent=detail.positive.category || 'Uncategorized';
-                send.setAttribute('aria-label',`Send prompt pair to ComfyUI: ${displayTitle(detail.positive)}`);
+                const name=displayTitle(detail.positive);
+                main.querySelector('h1').textContent=name;categoryChip.textContent=detail.positive.category || 'Uncategorized';updateMeta();
+                send.setAttribute('aria-label',`Send prompt pair to ComfyUI: ${name}`);blocks?.setTitle(name);
             };
             let activePairId;
             updateParent();updateBranches(state);
@@ -589,7 +594,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                             if(current.negative_text!==variant.negative_text || current.explicit_empty!==variant.explicit_empty) {changed=true;return variant;}
                             return {...variant,...current};
                         });
-                        detail={...detail,positive:fresh.positive,variants};categoryChip.textContent=fresh.positive.category || 'Uncategorized';
+                        detail={...detail,positive:fresh.positive,variants};categoryChip.textContent=fresh.positive.category || 'Uncategorized';updateMeta();
                         savedReadState=changed || unobserved || additional?'stale':'current';
                         parentStatus.textContent=changed?'A saved negative changed identity. This view retains its previous selection and gallery. Reload the saved Library view to inspect current data.':unobserved?(fresh.variants_has_more?'Some loaded saved negatives were not observed in this bounded revalidation page. Reload the saved Library view to validate them.':'Some loaded saved negatives were not present in the revalidation result. This view retains its previous selection and gallery.'):additional?'Saved Library choices changed. This view retains its previous selection and gallery. Reload the saved Library view to inspect current choices.':'Saved Library details revalidated.';
                         reloadSaved.hidden=savedReadState==='current';
@@ -610,9 +615,9 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             if(!historyVisits.has(positiveId)) historyVisits.set(positiveId,{});
             mountRecordedHistory(recorded,{api,positiveId,parentScope:content,sender,visit:historyVisits.get(positiveId),onParentRevalidate:parent=>{
                 if(content.signal.aborted) return;parentGeneration++;parentRequest?.abort();setParentState(parent);
-            }});
+            },onRecordedCount:count=>{runsMeta.hidden=count===null;runsMeta.textContent=count===null?'':countOf(count,'tracked run');}});
             // The heading carries the pair send, as in the concept; the saved texts keep their per-role actions.
-            blocks=mountPromptBlocks(promptContainer,{prompts:libraryPromptRoles(detail),sender,parentScope:content,includePairAction:false});
+            blocks=mountPromptBlocks(promptContainer,{prompts:libraryPromptRoles(detail),sender,parentScope:content,includePairAction:false,title:displayTitle(detail.positive)});
             function select(pairId,{force=false}={}) {
                 if(savedReadState!=='current' || (!force && galleryScope && activePairId===pairId)) return;
                 if(pairId!==null && !recordFor(pairId)) pairId=null;
