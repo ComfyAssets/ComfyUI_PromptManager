@@ -175,9 +175,9 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .image-workspace { grid-template-columns: minmax(0, 1fr); }
 }
 .options-status { font-size: 12px; padding-inline: 4px; }
-/* Until their pages rebuild (PR E Library, PR F history): the Library's and the recorded run's prompt blocks keep
-   their spacing, the Archive negative dialog keeps `section.prompt-block`, and the shared prompt sender keeps its
-   dialog and send button. */
+/* Until their pages rebuild (PR F history): the history page's and the recorded run's prompt blocks keep their
+   spacing (on the shelf's cards `.prompt-inspector` is `display: contents`, so its margin is inert there), the Archive
+   negative dialog keeps `section.prompt-block`, and the shared prompt sender keeps its dialog and send button. */
 .prompt-inspector { margin-block-start: 22px; min-inline-size: 0; }
 .prompt-block { border-block-start: 1px solid var(--ca-line); padding-block: 13px; min-inline-size: 0; }
 .prompt-negative { --prompt-role: #ff8c98; }
@@ -207,3 +207,18 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space
 @media (max-width: 780px) {
     .prompt-sender-options { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Prompt library cards (#249 PR E): the concept's `article.prompt-card` (s653–708) with real prompts, titles and media. */
+/* #249 D23: real prompts are far longer than the concept's samples, so the card clamps the positive to two lines; copy
+   and send keep the full text, and history shows all of it. */
+.prompt-card .prompt-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; /* D23 */ }
+/* #249 D23: the prompt blocks' mount point is transparent, so the section sits in `.card-content` as the concept's does. */
+.card-content > .prompt-inspector { display: contents; /* D23 */ }
+/* #249 D23: a real title can be long or one unbroken word; it wraps inside the title row (the toolkit's buttons never
+   wrap), while the category chip keeps whole words beside it and wraps only a name wider than its share of the row. */
+.card-title button { min-width: 0; white-space: normal; overflow-wrap: anywhere; /* D23 */ }
+.card-title .chip { flex-shrink: 0; max-width: 60%; overflow-wrap: anywhere; /* D23 */ }
+.prompt-card .tags .chip { max-width: 100%; overflow-wrap: anywhere; /* D23 */ }
+/* #249 D23: a parent with one preview, or none, fills the art row instead of leaving the concept's second cell empty. */
+.prompt-card .card-art > :only-child { grid-column: 1 / -1; /* D23 */ }
+.prompt-card .card-art > .small { display: grid; place-content: center; min-width: 0; color: var(--ca-muted); /* D23 */ }

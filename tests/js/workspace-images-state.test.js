@@ -248,6 +248,15 @@ test('the scope chip summarizes source and folder', async () => {
     assert.equal(scopeLabel({root:'7',subfolder:''},roots),'Source 7 · All output folders');
 });
 
+test('the Filters count names each active Refine filter once (D44)', async () => {
+    const {activeRefinements}=await source;
+    assert.equal(activeRefinements({root:'all',subfolder:'',media:'all',tags:[]}),0);
+    assert.equal(activeRefinements({root:'',subfolder:'',media:'all',tags:[]}),0);
+    assert.equal(activeRefinements({root:'1',subfolder:'',media:'all',tags:[]}),1);
+    assert.equal(activeRefinements({root:'all',subfolder:'bulk',media:'video',tags:['a','b']}),3);
+    assert.equal(activeRefinements({root:'0',subfolder:'bulk',media:'image',tags:['a']}),4);
+});
+
 test('the card title is the confirmed linked title, else the filename (D10)', async () => {
     const {cardTitle}=await source;
     const linked=(status,title)=>({filename:'alpine_00001.png',linked:{status,positive_id:1,title,title_source:'title',category:null,rating:null}});

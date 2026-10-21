@@ -2,11 +2,20 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const source=import('../../web/js/workspace/library-state.mjs');
 const item=id=>({id,text:`Positive ${id}`,category:'Art',tags:['blue'],rating:3,variant_count:2,image_count:4,previews:[]});
-const page=(items,cursor=null)=>({items,total:3,has_more:cursor!==null,next_cursor:cursor});
+const page=(items,cursor=null)=>({items,total:3,variant_total:6,has_more:cursor!==null,next_cursor:cursor});
 test('parent stream builds literal filters and deduplicates stable identities across infinite pages',async()=>{
  const {createLibraryStream}=await source;const calls=[];const pending=[page([item(1),item(2)],'next'),page([item(2),item(3)])];const s=createLibraryStream({api:{get:async(url)=>{calls.push(url);return pending.shift();}}});
  assert.equal(await s.reset({text:'a%_',category:'Art',tags:['blue','red'],sort:'rating'}),2);assert.equal(await s.loadMore(),1);assert.deepEqual(s.state.items.map(row=>row.id),[1,2,3]);assert.equal(s.state.hasMore,false);
  const query=new URL(calls[0],'https://x').searchParams;assert.equal(query.get('text'),'a%_');assert.deepEqual(query.getAll('tag'),['blue','red']);assert.equal(query.get('sort'),'rating');assert.equal(new URL(calls[1],'https://x').searchParams.get('cursor'),'next');assert.equal(await s.loadMore(),0);s.dispose();
+});
+test('the shelf caption total of negative variants comes from variant_total and resets with the filters',async()=>{
+ const {createLibraryStream}=await source;const pending=[page([item(1)],'next'),{...page([item(2)]),variant_total:7},{...page([item(3)]),variant_total:1}];
+ const s=createLibraryStream({api:{get:async()=>pending.shift()}});assert.equal(s.state.variantTotal,null);
+ await s.reset();assert.equal(s.state.variantTotal,6);await s.loadMore();assert.equal(s.state.variantTotal,7);
+ const reset=s.reset({text:'x'});assert.equal(s.state.variantTotal,null);await reset;assert.equal(s.state.variantTotal,1);
+ const restored=createLibraryStream({api:{},restore:{filters:{},state:s.state}});assert.equal(restored.state.variantTotal,1);restored.dispose();
+ for(const bad of [undefined,-1,1.5,'2']){const broken=createLibraryStream({api:{get:async()=>({...page([item(1)]),variant_total:bad})}});await broken.reset();assert.ok(broken.state.error);assert.equal(broken.state.variantTotal,null);broken.dispose();}
+ s.dispose();
 });
 test('reset aborts older requests and late success/failure cannot replace current parents',async()=>{
  const {createLibraryStream}=await source;const requests=[];const s=createLibraryStream({api:{get:(url,{signal})=>new Promise((resolve,reject)=>requests.push({signal,resolve,reject}))}});
@@ -36,7 +45,7 @@ test('detail reads validate identities, abort stale selection and expose retryab
 test('restored shelves keep filters, loaded parents and continuation without a fresh first page',async()=>{
  const {createLibraryStream}=await source;const old=createLibraryStream({api:{get:async()=>page([item(1)],'next')}});await old.reset({text:'retained',sort:'name'});old.dispose();const urls=[];
  const next=createLibraryStream({api:{get:async url=>{urls.push(url);return page([item(2)]);}},restore:{filters:{text:'retained',sort:'name'},state:old.state}});assert.equal(next.state.items.length,1);await next.loadMore();assert.match(urls[0],/text=retained/);assert.match(urls[0],/cursor=next/);assert.equal(next.state.items.length,2);next.dispose();
- assert.throws(()=>createLibraryStream({api:{},restore:{filters:{},state:{items:[item(1),item(1)],total:2,cursor:null,hasMore:false}}}));
+ assert.throws(()=>createLibraryStream({api:{},restore:{filters:{},state:{items:[item(1),item(1)],total:2,variantTotal:0,cursor:null,hasMore:false}}}));
 });
 test('parent shelf window bounds DOM and pins focused rows without changing logical order',async()=>{
  const {libraryWindow}=await source;const first=libraryWindow(500,2,0,900);assert.equal(first[0],0);assert.ok(first.length<24);

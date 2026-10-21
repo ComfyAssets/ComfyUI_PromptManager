@@ -24,13 +24,18 @@ async function expectLibrary(page,{tags='',category='',count}) {
     await expect(page).toHaveURL(/#\/library$/);
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Prompt library');
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
-    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('');
-    await expect(page.getByRole('textbox',{name:'Tags',exact:true})).toHaveValue(tags);
-    const select=page.getByRole('combobox',{name:'Category',exact:true});
+    await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('');
+    const select=page.getByRole('combobox',{name:'Filter by category',exact:true});
     await expect(select).toHaveValue(category);
     if(!category) await expect(select.locator('option:checked')).toHaveText('All categories');
-    await expect(page.locator('.library-caption')).toHaveText(`${count} of ${count} positive prompts · Images are grouped by positive prompt`);
+    await expect(page.locator('#workspace-main .section-caption > span').first()).toHaveText(new RegExp(`^${count} positive prompts? · \\d+ negative variants?$`));
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(count);
+    // Browse sets exactly this Tags filter, which lives in "Refine this view" (#249 D14); Filters counts it (D44).
+    const filters=page.locator('#workspace-main search.toolbar').getByRole('button',{name:tags?'Filters · 1':'Filters',exact:true});
+    await expect(filters).toBeVisible();await filters.click();
+    const refine=page.getByRole('dialog',{name:'Refine this view',exact:true});
+    await expect(refine.getByRole('textbox',{name:'Tags',exact:true})).toHaveValue(tags);
+    await refine.getByRole('button',{name:'Close dialog',exact:true}).click();await expect(refine).toHaveCount(0);
 }
 
 let manifest;
@@ -85,9 +90,31 @@ test('prompt counts equal Library Browse results',async({page})=>{
     }
 });
 
+// #249 D44: a Browse-set Tags filter is visible on the shelf as "Filters · 1", and Clear filters returns the full shelf.
+test('a tag Browse shows Filters · 1 until its filter is cleared',async({page})=>{
+    await page.goto('/prompt_manager/workspace#/library');
+    const shelf=page.locator('article[data-prompt-id]');await expect(shelf.first()).toBeVisible();const total=await shelf.count();
+    const toolbar=page.locator('#workspace-main search.toolbar');
+    await expect(toolbar.getByRole('button')).toHaveText(['Filters']);
+    await page.goto(route);
+    const row=tagRow(page,'cinematic');await row.getByRole('button',{name:'Browse',exact:true}).click();
+    await expectLibrary(page,{tags:'cinematic',count:2});
+    await expect(toolbar.getByRole('button')).toHaveText(['Filters · 1']);
+    await toolbar.getByRole('button',{name:'Filters · 1',exact:true}).click();
+    const refine=page.getByRole('dialog',{name:'Refine this view',exact:true});
+    await refine.getByRole('button',{name:'Clear filters',exact:true}).click();await expect(refine).toHaveCount(0);
+    await expect(toolbar.getByRole('button',{name:'Filters',exact:true})).toBeFocused();
+    await expect(shelf).toHaveCount(total);
+    // The cleared filter stays cleared on the next in-app visit (the shelf remembers its filters).
+    const nav=page.getByRole('navigation',{name:'Workspace',exact:true});
+    await nav.getByRole('link',{name:/^Tags & categories(?:\s*[\d,]+)?$/}).click();await expect(main(page).getByRole('heading',{level:1})).toHaveText('Tags & categories');
+    await nav.getByRole('link',{name:/^Prompt library(?:\s*[\d,]+)?$/}).click();
+    await expect(shelf).toHaveCount(total);await expect(toolbar.getByRole('button')).toHaveText(['Filters']);
+});
+
 test('category Browse sets only the category constraint',async({page})=>{
     await page.goto('/prompt_manager/workspace#/library');
-    const search=page.getByRole('searchbox',{name:'Search prompts',exact:true});
+    const search=page.getByRole('searchbox',{name:'Search workspace',exact:true});
     await search.fill('observatory');await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
     await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Tags & categories(?:\s*[\d,]+)?$/}).click();
     const row=categoryRow(page,'Landscapes');await expect(row.locator('p')).toHaveText('3 positive prompts');
@@ -401,8 +428,8 @@ test('delete tag confirms real impact and removes only the vocabulary name',asyn
     expect(after.prompts.map(([id,text,category])=>[id,text,category])).toEqual(before.prompts.map(([id,text,category])=>[id,text,category]));
     await page.goto('/prompt_manager/workspace#/library');
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
-    await expect(page.locator('.library-chip').filter({hasText:/^cinematic$/})).toHaveCount(0);
-    await expect(page.locator('.library-chip').filter({hasText:/^blue_hour$/})).toHaveCount(1);
+    await expect(page.locator('article[data-prompt-id] .tags .chip').filter({hasText:/^cinematic$/})).toHaveCount(0);
+    await expect(page.locator('article[data-prompt-id] .tags .chip').filter({hasText:/^blue_hour$/})).toHaveCount(1);
 });
 
 test('cancel and escape write nothing and restore focus',async({page,request})=>{
@@ -486,7 +513,7 @@ test('lost response is outcome-unknown',async({page,request})=>{
 
 // Concept nav links end in their real `.nav-count` once it loads.
 const nav=(page,name)=>page.locator('aside.sidebar nav').getByRole('link',{name:new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\s*[\\d,]+)?$`)});
-const chips=(page,name)=>main(page).locator('article[data-prompt-id] .library-chip').filter({hasText:new RegExp(`^${name}$`)});
+const chips=(page,name)=>main(page).locator('article[data-prompt-id] :is(.card-title, .tags) > .chip').filter({hasText:new RegExp(`^${name}$`)});
 /** Visit the Library so its shelf is cached, then open Rename on blue_hour and start a rename whose PATCH is held. */
 async function heldRename(page) {
     await page.goto('/prompt_manager/workspace#/library');await expect(chips(page,'blue_hour')).toHaveCount(1);

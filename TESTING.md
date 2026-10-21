@@ -566,6 +566,8 @@ Recorded deviations on this page (spec §8):
   by the page, whatever order the server sends.
 - **D37**: production loads 40 images per page (the concept 12), so the continuation
   and toast use 40; after Escape production returns focus to the opening image.
+- **D44** (#249 PR E): Filters reads "Filters · N" while N of Source, Folder, Media and
+  Tags are set in "Refine this view" (see the Prompt library deviations).
 - **D20**: the side panel shows only the concept content; "File & provenance",
   "Workflow & raw metadata" and the downloads are only in the viewer's details
   (`#viewer-details`: the panel content without the cover in a class-less wrapper, the
@@ -601,6 +603,90 @@ saved file.
 npm run --prefix tools/vendor test:workflows -- images-concept.spec.mjs \
   workspace-images.spec.mjs full-inspector.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
+```
+
+### Prompt library cards and recorded deviations (#249 PR E)
+
+The shelf uses the shared concept toolbar and caption (E1) and the concept's
+`article.prompt-card` (app.js `renderLibrary` a586, style.css s653–708): `.card-art`
+(at most two previews), `.card-content` (`.card-title` with the title `button` and the
+category `span.chip`, the positive prompt block, `.card-meta`, `.tags`) and
+`.card-footer` (the rating and last-use line, then `.row-actions` with the positive
+`button.send.icon-btn` and "Explore history"). Rows stay windowed (`.library-row`).
+`tests/browser/workspace-library.spec.mjs` covers the markup, the clamp, the buttons and
+the measured row heights on Chromium and touch.
+
+Recorded deviations on this page:
+- **D23**: real card facts. "N runs" is the parent's `run_count`. The footer reads
+  "Used today", "Used yesterday", "Used N days ago" (under a week) or "Used <Mon D>"
+  ("Used <Mon D>, <YYYY>" for a use in another calendar year, so last year's date never
+  reads as this year's), counted in the viewer's local calendar days from `last_used_at` (a time ahead of the
+  browser reads as today), and "Not used yet" without one. Stars are `★` × rating with
+  a visually hidden "Rated N out of 5"; an unrated parent shows only the last-use words.
+  The meta chip reads "− N negative variants" (singular for one). The title and Explore
+  history are buttons that open `#/library/<id>`, as the concept's are; the trade-off
+  against the old links is that they offer no open in a new tab, middle-click or URL on
+  hover. The positive is clamped to two lines
+  (`.prompt-card .prompt-text`); copy and send use the full text. A long title wraps
+  inside the title row, and the category chip keeps whole words ("Uncategorized" for
+  none). A parent with one preview, or none, fills the art row; no preview reads "No
+  available image previews" (`.small`). Each card's actions add its title to their names
+  ("Copy positive prompt: <title>", as the concept's do).
+- **D40**: production-only shelf copy the concept never shows. A failed page reads
+  "Prompt library could not be loaded. Retry." beside "Retry prompt library" (no Refresh,
+  D15). A failed category list reads "Categories could not be loaded. Open the Prompt
+  library again to retry." (Retry re-reads it only when the shelf failed too). The
+  continuation keeps "Loading prompt library…", "No matching prompts. Try changing the
+  filters." (the concept: "No matching prompts."), "You’re all caught up.", "The saved
+  prompt is hidden by the current filters." and "Load more prompts".
+- **D41**: the search keeps the concept's shared placeholder "Search prompts, tags,
+  filenames…" for parity with Images, although Library search matches positive text and
+  titles and saved negative text and variant titles, not filenames or tags (Tags live in
+  "Refine this view", D14).
+- **D43**: a card's tag chips come in the store's alphabetical order (`ORDER BY t.name`,
+  as everywhere tags are read); the concept lists each sample's tags in authored order.
+- **D44**: the shared toolbar's Filters button reads "Filters · N" while N "Refine this
+  view" filters are active, and plain "Filters" otherwise; the text is its accessible
+  name, so the count is spoken. The concept has no indicator, and without one a Tags
+  filter set by Tags & categories Browse was invisible on the shelf. The Library counts
+  Tags; Images counts Source, Folder, Media and Tags (each once). The toolbar category is
+  not a Refine filter and is not counted. The caption's count is a `role="status"`
+  region, written only when it changes and kept shown while the shelf reloads, so
+  Load more and scrolling never re-announce it.
+
+`tests/browser/library-concept.spec.mjs` compares the shelf (#249 E3) on the
+concept-shaped fixture, which creates the concept's prompts last to first so Recently
+added lists them in the concept's order: heading, toolbar, caption, grid and the six
+cards (art, title row, prompt block, meta, tags, footer) at 1600x1100 and 390x844 in
+both themes and motion settings, and the grid and cards at 1800x1100 (3 columns).
+Behaviors, in both documents: the title and Explore history open the prompt's history
+(its `h1` is the title), the footer send carries the positive only (a bridge host page
+records the roles production's preview asks for), copy writes the full positive with
+"Prompt copied.", and the "neon" search and the Landscapes category leave the same cards
+and caption. `mapLibraryConcept` applies D14 (Oldest first appended), D16 (no Save
+view; the toolbar flows again, checked against the concept without it), D23 (the
+title button's `min-width: 0`; "− 1 negative variant", measured on the concept with the
+singular at runtime; the spoken "Rated N out of 5"; the two-line clamp, which the
+concept's samples exceed at 390px, checked against the concept with the clamp rule
+applied), D35 (singular captions), D36 (sorted categories), D40 (the continuation after
+the grid) and D43 (sorted chips, checked against the concept with its chips sorted).
+D44 needs no mapping: the comparison runs with no Refine filter active, so the button
+reads "Filters" as the concept's does. Nothing else follows the grid: the legacy
+"Current prompt library" link is removed from the shelf; Overview's legacy card ("Open
+existing prompt library") and the sidebar still link `/prompt_manager/admin`
+(`tests/browser/workspace.spec.mjs`). `library comparison detects
+mutations` injects `.card-footer { padding: 2px }` and removes `.card-meta .chip.red`.
+
+Manual check (quick), after a browser refresh on Prompt library: each card shows the
+title with its category chip on one line, two lines of the positive with copy and send,
+"− N negative variants · N runs · N images" and the tags; the footer reads "★★★ · Used
+today" (or the real date) with send and "Explore history"; Filters → Tags still narrows
+the shelf, and the button then reads "Filters · 1" (D44), also after a Browse from Tags &
+categories.
+
+```sh
+npm run --prefix tools/vendor test:workflows -- library-concept.spec.mjs \
+  workspace-library.spec.mjs --project chromium --project touch --project firefox --project webkit
 ```
 
 ## Workspace data fields for the concept pages (#249)

@@ -2,7 +2,8 @@
  * The concept's shared page toolbar (docs/concepts/workspace/app.js toolbar(), a347–360), used by Images and the
  * Prompt library: `search.toolbar` > `label.search-field` (search icon + `input#search`), `select#category-filter`,
  * `select#sort`, then `Filters`. Recorded deviations (#249): the sort lists the concept's three options first and a
- * page's extra ones after them (D14); there is no `Save view` until saved views are persisted (D16).
+ * page's extra ones after them (D14); there is no `Save view` until saved views are persisted (D16); `Filters` reads
+ * "Filters · N" while N "Refine this view" filters are active (D44).
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { createWorkspaceIcon } from './icons.mjs';
@@ -15,6 +16,12 @@ export const SEARCH_DELAY = 250;
 const CONCEPT_SORT_LABELS = Object.freeze(['Recently added', 'Name A–Z', 'Highest rated']);
 
 const isText = value => typeof value === 'string';
+
+/** The Filters label: plain without active refinements, else "Filters · N" (D44). Its text is its accessible name. */
+function filtersLabel(count) {
+    if (!Number.isSafeInteger(count) || count < 0) throw new TypeError('The active filter count must be a whole number');
+    return count ? `Filters · ${count}` : 'Filters';
+}
 
 /** `sorts` as [value, label] pairs, the concept's options first in its order, then the rest in the given order (D14). */
 export function orderSorts(sorts) {
@@ -48,10 +55,11 @@ function categoryOptions(categories) {
 
 /**
  * Mount the toolbar into `container`. `value` is `{q, category, sort}`; `onChange(value)` receives the whole new
- * value after a select change or, debounced, after typing; `onFilters(trigger)` opens the page's "Refine this view".
- * The toolbar leaves `container` when `scope` is disposed. Returns `{element, value, setValue, setCategories}`.
+ * value after a select change or, debounced, after typing; `onFilters(trigger)` opens the page's "Refine this view";
+ * `activeFilters` is how many of its filters are set. The toolbar leaves `container` when `scope` is disposed.
+ * Returns `{element, value, setValue, setCategories, setActiveFilters}`.
  */
-export function mountToolbar(container, { scope, categories = [], sorts, value = {}, onChange, onFilters }) {
+export function mountToolbar(container, { scope, categories = [], sorts, value = {}, activeFilters = 0, onChange, onFilters }) {
     if (typeof scope?.listen !== 'function' || typeof scope.debounce !== 'function' || typeof scope.cleanup !== 'function') {
         throw new TypeError('The toolbar needs the page scope');
     }
@@ -83,7 +91,7 @@ export function mountToolbar(container, { scope, categories = [], sorts, value =
     sort.setAttribute('aria-label', 'Sort results');
     sort.replaceChildren(...orderSorts(sorts).map(([id, text]) => option(id, text)));
 
-    const filters = createButton('Filters');
+    const filters = createButton(filtersLabel(activeFilters));
     root.append(label, category, sort, filters);
 
     const read = () => ({ q: search.value, category: category.value, sort: sort.value });
@@ -97,6 +105,9 @@ export function mountToolbar(container, { scope, categories = [], sorts, value =
         category.replaceChildren(...categoryOptions(next));
         category.value = [...category.options].some(node => node.value === selected) ? selected : '';
     }
+    function setActiveFilters(count) {
+        filters.textContent = filtersLabel(count);
+    }
     setValue(value);
 
     const report = () => onChange(read());
@@ -107,5 +118,5 @@ export function mountToolbar(container, { scope, categories = [], sorts, value =
     scope.cleanup(() => root.remove());
 
     container.append(root);
-    return { element: root, value: read, setValue, setCategories };
+    return { element: root, value: read, setValue, setCategories, setActiveFilters };
 }
