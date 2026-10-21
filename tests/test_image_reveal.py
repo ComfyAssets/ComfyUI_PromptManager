@@ -4,9 +4,11 @@ No test launches a file manager: ``subprocess.Popen``, ``sys.platform`` and
 ``shutil.which`` are mocked, and route tests swap the API's opener.
 """
 
+import ctypes
 import os
 import subprocess
-import tempfile
+import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -99,34 +101,50 @@ class TestRevealInFileManager(unittest.TestCase):
         self.assertIs(options["close_fds"], True)
         self.assertNotIn("shell", options)
 
-    def test_windows_selects_with_explorer_from_the_windows_directory(self):
-        with tempfile.TemporaryDirectory() as windows:
-            explorer = os.path.join(windows, "explorer.exe")
-            Path(explorer).write_bytes(b"")
-            with (
-                patch.object(file_reveal.sys, "platform", "win32"),
-                patch.dict(os.environ, {"SystemRoot": windows}),
-                self.which({"explorer": "/planted/explorer.exe"}),
-            ):
-                reveal_in_file_manager(self.path)
-        self.assertEqual(self.argv(), [explorer, "/select,", str(self.path)])
-        self.assert_detached()
-        self.assertNotIn("start_new_session", self.popen.call_args.kwargs)
-        self.popen.return_value.wait.assert_not_called()
+    def windows(self, selected=True, startfile=None):
+        """Windows without Windows: the shell call and os.startfile injected."""
+        select = patch.object(file_reveal, "_windows_select", return_value=selected)
+        start = patch.object(
+            file_reveal.os, "startfile", startfile or MagicMock(), create=True
+        )
+        platform = patch.object(file_reveal.sys, "platform", "win32")
+        return select, start, platform
 
-    def test_windows_without_explorer_is_unavailable(self):
-        with tempfile.TemporaryDirectory() as windows:
-            for env in ({"SystemRoot": windows}, {"SystemRoot": "relative"}, {}):
-                with (
-                    self.subTest(env=env),
-                    patch.object(file_reveal.sys, "platform", "win32"),
-                    patch.dict(os.environ, env),
-                ):
-                    if not env:
-                        os.environ.pop("SystemRoot", None)
-                        os.environ.pop("WINDIR", None)
-                    with self.assertRaises(OpenerUnavailable):
-                        reveal_in_file_manager(self.path)
+    def test_windows_selects_through_the_shell_api_without_a_process(self):
+        # A comma path splits Explorer's own command line (security review H1);
+        # the shell API takes the path as one value, unchanged.
+        path = Path(os.path.abspath(os.path.join(os.sep, "out", "a,", "b,c.png")))
+        select, start, platform = self.windows(selected=True)
+        with select as shell, start as startfile, platform:
+            reveal_in_file_manager(path)
+        shell.assert_called_once_with(path)
+        startfile.assert_not_called()
+        self.popen.assert_not_called()
+
+    def test_windows_falls_back_to_opening_the_folder(self):
+        select, start, platform = self.windows(selected=False)
+        with select as shell, start as startfile, platform:
+            reveal_in_file_manager(self.path)
+        shell.assert_called_once_with(self.path)
+        startfile.assert_called_once_with(str(self.path.parent), "explore")
+        self.popen.assert_not_called()
+
+    def test_windows_folder_start_failure_raises(self):
+        select, start, platform = self.windows(
+            selected=False, startfile=MagicMock(side_effect=OSError("denied"))
+        )
+        with select, start, platform, self.assertRaises(OSError):
+            reveal_in_file_manager(self.path)
+        self.popen.assert_not_called()
+
+    def test_windows_without_startfile_is_unavailable(self):
+        with (
+            patch.object(file_reveal, "_windows_select", return_value=False),
+            patch.object(file_reveal.sys, "platform", "win32"),
+            patch.object(file_reveal.os, "startfile", None, create=True),
+            self.assertRaises(OpenerUnavailable),
+        ):
+            reveal_in_file_manager(self.path)
         self.popen.assert_not_called()
 
     def test_macos_reveals_with_open(self):
@@ -224,6 +242,109 @@ class TestRevealInFileManager(unittest.TestCase):
         with self.assertRaises(ValueError):
             reveal_in_file_manager(Path("sub/a.png"))
         self.popen.assert_not_called()
+
+
+class FakeShell:
+    """ole32 and shell32 stand-ins recording the shell calls (H1)."""
+
+    def __init__(self, init=0, pidl=1234, select=0):
+        self.calls = []
+        self.ole32 = types.SimpleNamespace(
+            CoInitializeEx=self.fn("CoInitializeEx", init),
+            CoUninitialize=self.fn("CoUninitialize", None),
+        )
+        self.shell32 = types.SimpleNamespace(
+            ILCreateFromPathW=self.fn("ILCreateFromPathW", pidl),
+            SHOpenFolderAndSelectItems=self.fn("SHOpenFolderAndSelectItems", select),
+            ILFree=self.fn("ILFree", None),
+        )
+
+    def fn(self, name, result):
+        def call(*args):
+            self.calls.append((name, args))
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return MagicMock(side_effect=call)
+
+    def names(self):
+        return [name for name, _ in self.calls]
+
+
+class TestWindowsSelect(unittest.TestCase):
+    def select(self, shell, path=r"C:\out\a,\b.png"):
+        with patch.object(
+            file_reveal, "_windows_libraries", return_value=(shell.ole32, shell.shell32)
+        ):
+            return file_reveal._windows_select(Path(path)), shell
+
+    def test_selects_the_item_and_frees_everything(self):
+        path = r"C:\out\a,\Windows\System32\calc.exe,b\x.png"
+        selected, shell = self.select(FakeShell(), path)
+        self.assertIs(selected, True)
+        self.assertEqual(
+            shell.names(),
+            [
+                "CoInitializeEx",
+                "ILCreateFromPathW",
+                "SHOpenFolderAndSelectItems",
+                "ILFree",
+                "CoUninitialize",
+            ],
+        )
+        self.assertEqual(dict(shell.calls)["ILCreateFromPathW"], (str(Path(path)),))
+        self.assertEqual(
+            dict(shell.calls)["SHOpenFolderAndSelectItems"], (1234, 0, None, 0)
+        )
+        self.assertEqual(dict(shell.calls)["ILFree"], (1234,))
+
+    def test_declares_the_shell_signatures(self):
+        _, shell = self.select(FakeShell())
+        create = shell.shell32.ILCreateFromPathW
+        self.assertEqual(create.argtypes, [ctypes.c_wchar_p])
+        self.assertIs(create.restype, ctypes.c_void_p)
+        open_select = shell.shell32.SHOpenFolderAndSelectItems
+        self.assertEqual(
+            open_select.argtypes,
+            [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_ulong],
+        )
+        self.assertIs(open_select.restype, ctypes.c_long)
+        self.assertEqual(shell.shell32.ILFree.argtypes, [ctypes.c_void_p])
+        self.assertEqual(
+            shell.ole32.CoInitializeEx.argtypes, [ctypes.c_void_p, ctypes.c_ulong]
+        )
+        self.assertIs(shell.ole32.CoInitializeEx.restype, ctypes.c_long)
+
+    def test_already_initialized_com_is_used_and_left_alone(self):
+        selected, shell = self.select(FakeShell(init=file_reveal.RPC_E_CHANGED_MODE))
+        self.assertIs(selected, True)
+        self.assertNotIn("CoUninitialize", shell.names())
+        selected, shell = self.select(FakeShell(init=file_reveal.S_FALSE))
+        self.assertIs(selected, True)
+        self.assertEqual(shell.names()[-1], "CoUninitialize")
+
+    def test_failures_report_false_without_raising(self):
+        cases = {
+            "com": FakeShell(init=-2147024882),
+            "no pidl": FakeShell(pidl=None),
+            "select failed": FakeShell(select=-2147467259),
+            "raises": FakeShell(select=OSError("access violation")),
+        }
+        for name, shell in cases.items():
+            with self.subTest(name):
+                selected, shell = self.select(shell)
+                self.assertIs(selected, False)
+                if "ILCreateFromPathW" in shell.names() and name != "no pidl":
+                    self.assertIn("ILFree", shell.names())
+        with patch.object(file_reveal, "_windows_libraries", side_effect=OSError):
+            self.assertIs(file_reveal._windows_select(Path("C:/a.png")), False)
+
+    def test_libraries_are_unavailable_off_windows(self):
+        if sys.platform == "win32":
+            self.skipTest("loads the real shell libraries on Windows")
+        with self.assertRaises((AttributeError, OSError)):
+            file_reveal._windows_libraries()
 
 
 class TestRevealRoute(ImageAPITestCase):

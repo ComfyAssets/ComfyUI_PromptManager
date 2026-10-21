@@ -1,7 +1,8 @@
 """Show one gallery file in this computer's file manager (TESTING.md D38).
 
 The route that calls this is local-only (``is_local_request``) and hands in a
-path it has already resolved inside a gallery root. Every opener runs as an
+path it has already resolved inside a gallery root. Windows goes through the
+shell API (no command line exists to parse); macOS and Linux openers run as an
 argument list with an absolute executable, no shell and no inherited streams,
 so neither a file name nor ``PATH`` can change what runs or what it parses.
 """
@@ -10,7 +11,8 @@ import ipaddress
 import os
 import shutil
 
-# Only argv launches of a fixed file manager (see _launch).
+# Only POSIX argv launches of a fixed opener (see _launch); Windows never
+# starts a process (see _windows_select).
 import subprocess  # nosec B404
 import sys
 from collections.abc import Mapping
@@ -86,14 +88,79 @@ def _executable(name: str) -> str | None:
     return found if found and os.path.isabs(found) else None
 
 
-def _windows_explorer() -> str | None:
-    """Explorer from the Windows directory, never from PATH or the working
-    directory (Windows searches the current directory first)."""
-    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
-    if not root or not os.path.isabs(root):
-        return None
-    candidate = os.path.join(root, "explorer.exe")
-    return candidate if os.path.isfile(candidate) else None
+# HRESULTs as the signed 32-bit values ctypes.c_long returns.
+S_OK = 0
+S_FALSE = 1
+RPC_E_CHANGED_MODE = -2147417850  # 0x80010106: COM already set up otherwise
+COINIT_APARTMENTTHREADED = 0x2
+COINIT_DISABLE_OLE1DDE = 0x4
+
+
+def _windows_libraries():
+    """Private ole32 and shell32 handles, so the signatures set here never
+    change another library's view of ``ctypes.windll``."""
+    import ctypes
+
+    return ctypes.WinDLL("ole32"), ctypes.WinDLL("shell32")
+
+
+def _declare_shell_signatures(ole32, shell32) -> None:
+    import ctypes
+
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    shell32.ILCreateFromPathW.argtypes = [ctypes.c_wchar_p]
+    shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+    shell32.SHOpenFolderAndSelectItems.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+    ]
+    shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+    shell32.ILFree.argtypes = [ctypes.c_void_p]
+    shell32.ILFree.restype = None
+
+
+def _windows_select(path: Path) -> bool:
+    """Open Explorer on *path*'s folder with *path* selected, via the shell
+    API. The path is one wide-string value, so no command line is ever
+    parsed (Explorer splits its own on commas). False on any failure; never
+    raises into the route."""
+    try:
+        ole32, shell32 = _windows_libraries()
+        _declare_shell_signatures(ole32, shell32)
+        result = ole32.CoInitializeEx(
+            None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
+        )
+        if result not in (S_OK, S_FALSE, RPC_E_CHANGED_MODE):
+            return False
+        try:
+            pidl = shell32.ILCreateFromPathW(str(path))
+            if not pidl:
+                return False
+            try:
+                return shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0) >= 0
+            finally:
+                shell32.ILFree(pidl)
+        finally:
+            # Only a successful CoInitializeEx (S_OK or S_FALSE) is balanced.
+            if result in (S_OK, S_FALSE):
+                ole32.CoUninitialize()
+    except Exception:  # any shell failure falls back to the folder
+        return False
+
+
+def _reveal_windows(path: Path) -> None:
+    if _windows_select(path):
+        return
+    startfile = getattr(os, "startfile", None)
+    if startfile is None:
+        raise OpenerUnavailable()
+    # ShellExecute on the folder itself: no command line is built or parsed.
+    startfile(str(path.parent), "explore")
 
 
 def _launch(argv: list[str]) -> subprocess.Popen:
@@ -102,12 +169,12 @@ def _launch(argv: list[str]) -> subprocess.Popen:
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
-    }
-    if sys.platform != "win32":
         # Its own session, so stopping ComfyUI does not take the window along.
-        options["start_new_session"] = True
-    # argv[0] is an absolute file manager path and every other element is a
-    # fixed flag or an absolute path inside a gallery root; there is no shell.
+        "start_new_session": True,
+    }
+    # POSIX only (Windows uses the shell API): argv[0] is an absolute opener,
+    # the rest are fixed flags and one absolute path inside a gallery root,
+    # passed to execve as separate strings with no shell to re-parse them.
     return subprocess.Popen(argv, **options)  # nosec B603
 
 
@@ -146,10 +213,7 @@ def reveal_in_file_manager(path: Path) -> None:
     if not path.is_absolute():
         raise ValueError("path must be absolute")
     if sys.platform == "win32":
-        explorer = _windows_explorer()
-        if explorer is None:
-            raise OpenerUnavailable()
-        _launch([explorer, "/select,", str(path)])
+        _reveal_windows(path)
         return
     if sys.platform == "darwin":
         opener = _executable("open")
