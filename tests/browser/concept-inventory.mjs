@@ -344,3 +344,107 @@ export function measureInventory(scope) {
         panel:when(gallery,panelOf),
         library:null,history:null,noPageScroll:document.documentElement.scrollWidth<=innerWidth+1};
 }
+
+/**
+ * The inspector (#249 D4): `panel` is the Images side panel's content (`aside#image-inspector`, app.js imageDetails
+ * a400–414) and `viewerDetails` the viewer's full details (`aside#viewer-details`, imageDetails(i, true)), each null
+ * when absent. Both are measured by one in-page function with the concept's selectors in either document.
+ */
+export async function inspectorOf(page) {
+    return {panel:await page.evaluate(measureInspector,'#image-inspector'),
+        viewerDetails:await page.evaluate(measureInspector,'#viewer-details')};
+}
+
+/** Runs in the page; self-contained. Every box is relative to the measured root. */
+export function measureInspector(selector) {
+    const root=document.querySelector(selector);
+    if(!root)return null;
+    const px=value=>Math.round(value);
+    const css=(node,...keys)=>{const style=getComputedStyle(node);return Object.fromEntries(keys.map(key=>[key,style[key]]));};
+    const shown=node=>Boolean(node)&&node.getClientRects().length>0&&getComputedStyle(node).visibility!=='hidden';
+    const rect=node=>node.getBoundingClientRect();
+    const font=node=>css(node,'fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','color','textTransform');
+    const edges=node=>css(node,'paddingTop','paddingRight','paddingBottom','paddingLeft','marginTop','marginRight','marginBottom','marginLeft',
+        'borderTopWidth','borderTopStyle','borderTopColor','borderRightWidth','borderBottomWidth','borderTopLeftRadius','backgroundColor');
+    const layout=node=>css(node,'display','flexDirection','flexWrap','justifyContent','alignItems','columnGap','rowGap');
+    const box=node=>{const a=rect(node),b=rect(root);return {left:px(a.left-b.left),top:px(a.top-b.top),width:px(a.width),height:px(a.height)};};
+    const classes=node=>[...node.classList].sort().join(' ');
+    const when=(node,measure)=>node?measure(node):null;
+    // Visible text: without visually hidden prefixes and aria-hidden glyphs, whitespace collapsed.
+    const textOf=(node,skip='.ca-visually-hidden, [aria-hidden="true"]')=>{const copy=node.cloneNode(true);copy.querySelectorAll(skip).forEach(item=>item.remove());
+        return copy.textContent.replace(/\s+/g,' ').trim();};
+    const hiddenOf=node=>[...node.querySelectorAll('.ca-visually-hidden')].map(item=>item.textContent).join('')||null;
+    const nameOf=node=>node.getAttribute('aria-label')??textOf(node,'[aria-hidden="true"]');
+    function iconOf(node) {
+        const svg=node.querySelector(':scope > svg.icon');
+        if(!svg)return null;
+        return {width:px(rect(svg).width),height:px(rect(svg).height),viewBox:svg.getAttribute('viewBox'),hidden:svg.getAttribute('aria-hidden'),
+            d:svg.querySelector('path')?.getAttribute('d')??null,...css(svg,'strokeWidth','color')};
+    }
+    function controlOf(node) {
+        const style=getComputedStyle(node);
+        return {tag:node.tagName.toLowerCase(),className:classes(node),text:textOf(node),name:nameOf(node),pressed:node.getAttribute('aria-pressed'),
+            primary:node.classList.contains('ca-primary'),...box(node),...font(node),...edges(node),...layout(node),
+            minHeight:style.minHeight,minWidth:style.minWidth,icon:iconOf(node)};
+    }
+    function chipOf(node) {
+        return {tag:node.tagName.toLowerCase(),className:classes(node),text:textOf(node),hidden:hiddenOf(node),...box(node),...font(node),...edges(node),
+            minHeight:getComputedStyle(node).minHeight};
+    }
+    function rowOf(row) {
+        return {...layout(row),...edges(row),...box(row),chips:[...row.children].map(chipOf)};
+    }
+    function sectionOf(section) {
+        const heading=section.querySelector(':scope > .prompt-heading'),label=heading?.querySelector('.role-label');
+        const actions=heading?.querySelector('.prompt-actions'),text=section.querySelector(':scope > .prompt-text');
+        return {className:classes(section),...edges(section),...box(section),
+            heading:when(heading,()=>({...layout(heading),...edges(heading),...box(heading)})),
+            label:when(label,()=>({tag:label.tagName.toLowerCase(),text:label.textContent,...font(label),...box(label)})),
+            actions:when(actions,()=>({...layout(actions),...box(actions),buttons:[...actions.children].map(controlOf)})),
+            text:when(text,()=>({tag:text.tagName.toLowerCase(),className:classes(text),text:text.textContent,tabIndex:text.tabIndex,...font(text),...edges(text),
+                ...css(text,'whiteSpace','overflowWrap'),...box(text),lines:px(rect(text).height/parseFloat(getComputedStyle(text).lineHeight))}))};
+    }
+    function factsOf(list) {
+        const style=getComputedStyle(list);
+        return {...css(list,'display','columnGap','rowGap','fontSize'),...edges(list),columns:style.gridTemplateColumns.split(/\s+/).length,...box(list),
+            items:[...list.children].map(item=>{const dt=item.querySelector('dt'),dd=item.querySelector('dd');
+                return {...box(item),dt:when(dt,()=>({text:dt.textContent,...font(dt),...edges(dt)})),dd:when(dd,()=>({text:dd.textContent,...font(dd),...edges(dd)}))};})};
+    }
+    const describe=item=>`${item.localName}${item.classList.length?'.'+[...item.classList].join('.'):''}`;
+    const panel=root.classList.contains('detail-panel');
+    // The panel's `.detail-inner`, the viewer's class-less wrapper (D20). A prompt-block mount point that is
+    // `display: contents` is transparent: its sections count as the wrapper's own children.
+    const inner=root.querySelector(panel?':scope > .detail-inner':':scope > div');
+    const parts=inner?[...inner.children].flatMap(item=>getComputedStyle(item).display==='contents'?[...item.children]:[item]):[];
+    const sections=parts.filter(item=>item.classList.contains('prompt-section'));
+    const firstSection=parts.indexOf(sections[0]);
+    const rows=parts.filter(item=>item.classList.contains('tags'));
+    const heading=parts.find(item=>item.classList.contains('panel-heading')),h2=heading?.querySelector('h2'),format=heading?.querySelector('.chip');
+    const filename=parts.find(item=>item.matches('p.small'));
+    const cover=root.querySelector(':scope > .detail-cover'),footer=root.querySelector(':scope > .detail-footer');
+    // What a closed disclosure holds is not offered (only its summary is), whatever boxes the engine keeps for it.
+    const offered=node=>{const closed=node.closest('details:not([open])');return !closed||node.parentElement===closed&&node.localName==='summary';};
+    const controls=[...root.querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"]), summary')].filter(node=>shown(node)&&offered(node));
+    return {
+        className:classes(root),label:root.getAttribute('aria-label'),
+        ...css(root,'position','top','overflowX','overflowY','maxHeight'),...edges(root),width:px(rect(root).width),height:px(rect(root).height),
+        structure:{outer:[...root.children].map(describe),inner:parts.map(describe)},
+        cover:when(cover,()=>({tag:cover.tagName.toLowerCase(),alt:cover.getAttribute('alt'),...box(cover),...css(cover,'objectFit','display')})),
+        inner:when(inner,()=>({...edges(inner),...box(inner)})),
+        heading:when(heading,()=>({...layout(heading),...edges(heading),...box(heading),
+            h2:when(h2,()=>({text:h2.textContent,...font(h2),...edges(h2),...box(h2)})),format:when(format,chipOf)})),
+        filename:when(filename,()=>({text:filename.textContent,...font(filename),...edges(filename),...box(filename)})),
+        badges:when(rows.find(row=>parts.indexOf(row)<firstSection),rowOf),
+        sections:sections.map(sectionOf),
+        tags:when(rows.find(row=>parts.indexOf(row)>firstSection),rowOf),
+        facts:when(parts.find(item=>item.matches('dl.meta-grid')),factsOf),
+        // Disclosures (viewer only) by their summary and frame; their content is the D20 production facts.
+        details:parts.filter(item=>item.localName==='details').map(item=>{const summary=item.querySelector(':scope > summary');
+            return {open:item.open,...edges(item),...box(item),summary:when(summary,()=>({text:summary.textContent,...font(summary),...box(summary)}))};}),
+        footer:when(footer,()=>({...layout(footer),...edges(footer),...box(footer),buttons:[...footer.children].map(controlOf)})),
+        // The viewer's pair send and history follow the wrapper directly (imageDetails(i, true) has no footer).
+        actions:panel?null:[...root.children].filter(item=>item.localName==='button').map(controlOf),
+        controls:controls.map(node=>({tag:node.tagName.toLowerCase(),text:textOf(node),name:nameOf(node),pressed:node.getAttribute('aria-pressed'),
+            primary:node.classList.contains('ca-primary'),minHeight:getComputedStyle(node).minHeight})),
+    };
+}

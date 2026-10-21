@@ -125,11 +125,11 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         const viewer = page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
         await expect(viewer.getByRole('region', { name: 'Positive prompt', exact: true })).toContainText(fixture.canonical_positive);
         await expect(viewer.getByRole('region', { name: 'Negative prompt', exact: true })).toContainText(fixture.canonical_negative);
-        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
+        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(viewer.getByRole('button', { name: new RegExp(`^${name}: `) })).toBeVisible();
         await expect(viewer.getByRole('button', { name: /^Send current file prompt pair to ComfyUI: |^Send prompt pair to ComfyUI: / })).toBeVisible();
         await expect(viewer).toContainText('42001');await expect(viewer).toContainText('720');await expect(viewer).toContainText('480');
         const currentPositive = viewer.getByRole('region', { name: 'Positive prompt', exact: true });
-        await currentPositive.getByRole('button', { name: 'Copy positive prompt', exact: true }).click();
+        await currentPositive.getByRole('button', { name: /^Copy positive prompt: / }).click();
         // The concept's copy outcome: the shared toast, or its "Copy prompt" dialog when the clipboard is refused.
         const copyFallback = page.getByRole('dialog', { name: 'Copy prompt', exact: true });
         await expect(page.locator('#workspace-toast').filter({ hasText: 'Prompt copied.' }).or(copyFallback)).toHaveCount(1);

@@ -277,12 +277,12 @@ test('full inspector shows six facts and scoped provenance',async({page,request}
     expect(await panel.locator('.detail-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
     if (!await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
         // The concept's prompt actions (`.prompt-actions button.icon-btn`) measure 31×31 in the mock.
-        const copy=await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).boundingBox();expect(copy.width).toBe(31);expect(copy.height).toBe(31);
+        const copy=await panel.getByRole('button',{name:/^Copy positive prompt: /}).boundingBox();expect(copy.width).toBe(31);expect(copy.height).toBe(31);
     }
     await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
     await expect(panel.locator('.meta-grid dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');await expect(panel.getByRole('heading',{name:'empty.png',exact:true})).toBeVisible();
-    await expect(panel.getByRole('button',{name:'Send negative prompt to ComfyUI',exact:true})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
+    await expect(panel.getByRole('button',{name:/^Send negative prompt to ComfyUI: /})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
     await selectFile(page,'explicit-empty.png');await expect(panel.locator('.prompt-section.negative p.prompt-text')).toHaveText('No negative prompt (explicitly empty)');await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(1);
     // Provenance lives in the viewer's full details (D20): one "Prompt evidence" line replaces the per-fact source lines.
     const details=await viewerDetails(page,'complete.png');
@@ -355,7 +355,7 @@ test('full inspector keeps long literal content reachable on mobile',async({page
     const literal='<svg onload="window.executed=true"><image href="https://invalid.test/never"/></svg></pre>'+'verylongmodelpath/'.repeat(30);
     let external=0;await page.route('https://invalid.test/**',route=>{external++;return route.abort();});
     await page.route('**/images/inspect/**',async route=>{const response=await route.fetch();const data=await response.json();data.metadata.raw.parameters=literal;data.metadata.record_formats.parameters='original-text';data.metadata.parameters=literal;data.metadata.prompt_graph.value['4'].inputs.ckpt_name=literal;await route.fulfill({response,json:data});});
-    await page.setViewportSize({width:390,height:844});await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('fine geometry and light.');await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).click();const fallback=page.getByRole('dialog',{name:'Copy prompt',exact:true});await expect(fallback.getByRole('textbox')).toHaveValue(/^Inspector portrait 猫 😀\nFull prompt context, fine geometry and light\./);await page.keyboard.press('Escape');await expect(fallback).toBeHidden();
+    await page.setViewportSize({width:390,height:844});await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('fine geometry and light.');await panel.getByRole('button',{name:/^Copy positive prompt: /}).click();const fallback=page.getByRole('dialog',{name:'Copy prompt',exact:true});await expect(fallback.getByRole('textbox')).toHaveValue(/^Inspector portrait 猫 😀\nFull prompt context, fine geometry and light\./);await page.keyboard.press('Escape');await expect(fallback).toBeHidden();
     await expect(panel.locator('.meta-grid dd').last()).toHaveText(literal);
     for(const zoom of [1,2]) {await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);const footer=panel.locator('.detail-footer button.send');await footer.focus();await expect(footer).toBeFocused();}
     await page.evaluate(()=>{document.documentElement.style.zoom='1';});
@@ -717,7 +717,7 @@ test('slideshow interaction visibility sender and disposal clear intent',async({
     for(const action of [
         ()=>modal.locator('.prompt-section.positive p.prompt-text').click(),
         ()=>modal.locator('#viewer-details').dispatchEvent('wheel',{deltaY:100}),
-        ()=>modal.getByRole('button',{name:'Copy positive prompt',exact:true}).click(),
+        ()=>modal.getByRole('button',{name:/^Copy positive prompt: /}).click(),
         async()=>{await modal.getByText('Workflow & raw metadata',{exact:true}).click();await downloadText(page,modal.getByRole('button',{name:'Download metadata JSON',exact:true}));},
         async()=>{await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});},
         async()=>{const trigger=modal.getByRole('button',{name:/^Send prompt pair to ComfyUI: /});await trigger.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await page.keyboard.press('Escape');await expect(trigger).toBeFocused();},

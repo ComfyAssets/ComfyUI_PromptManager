@@ -183,7 +183,7 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
         if (linked && library.category) badges.append(prefixedChip(library.metadata_scope === 'pair' ? 'Recipe category: ' : 'Positive prompt category: ', library.category));
         if (badges.childNodes.length) inner.append(badges);
         const prompts = el('div'); inner.append(prompts);
-        const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext});
+        const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext, title});
         blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
         if (linked && library.tags.length) {
             // D21: a chip sets the Images Tags filter, which matches the linked positive's tags; a recipe's own tags are

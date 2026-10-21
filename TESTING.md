@@ -590,6 +590,31 @@ Recorded deviations on this page (spec §8):
 - **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
   applies its negative wording to both roles), and a confirmed `p.prompt-text` is
   focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
+- **D38**: a recipe-linked image shows its recipe's own category and tags (#224), not
+  its positive's. The concept shows the prompt's category and tags for every image;
+  the concept fixture's recipes have neither, so their images show no category chip
+  and no tag row. `positive_links` on `/__test__/concept/reset` links the newest
+  images to their positive alone, so the inspector comparison sees the positive's
+  category ("Positive prompt category: " hidden prefix, D21) and tag filters.
+
+`tests/browser/inspector-concept.spec.mjs` compares the side panel and the viewer's
+full details (#249 D4) for alpine_00001.png, at 1600x1100 and 390x844 in both themes:
+structure, cover, heading, filename, badges, prompt blocks (role labels, actions,
+text), tag chips, facts, footer, the viewer's disclosures and pair actions, and every
+offered control's name and minimum height. Each role's copy and send are named after
+the prompt, as the concept's are ("Copy positive prompt: <title>"). The concept loads
+all 24 fixture images first (D37). Behaviors: copy shows "Prompt copied." (or the
+same "Copy prompt" dialog in both); the pair send previews both roles in the concept
+and is applied and acknowledged by a test ComfyUI tab in production; the `cinematic`
+chip sets the Images Tags filter (D21: the concept searches the word, which also
+matches the untagged forest prompt's text); Prompt history goes to
+`#/library/<positive id>` (the concept's `#prompt/<id>`). `mapInspectorConcept`
+applies D3 (the `.file-inspector` class of the production-only rules), D20 (the
+viewer's plain tag chips, laid out by the concept page itself with its chips made
+plain at runtime), the D20/D21 side-panel scroll (`overflow: auto`,
+`max-height: calc(100dvh - 40px)` above 700px), D21 (the category's hidden scope
+prefix) and D22 (focusable prompt text). `inspector comparison detects mutations`
+changes `.prompt-heading .role-label` letter spacing and removes `.detail-footer`.
 
 Manual check (quick), after a browser refresh on Images: hover an image (it zooms);
 click it (the viewer reads "<title> · <filename>"; Escape closes it); press a card's
@@ -599,7 +624,7 @@ saved file.
 
 ```sh
 npm run --prefix tools/vendor test:workflows -- images-concept.spec.mjs \
-  workspace-images.spec.mjs full-inspector.spec.mjs \
+  workspace-images.spec.mjs full-inspector.spec.mjs inspector-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 
