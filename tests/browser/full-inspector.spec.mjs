@@ -283,6 +283,9 @@ test('Show in folder asks the server to open the listed file and announces each 
     const toast=page.locator('#workspace-toast');
     const [sent]=await Promise.all([page.waitForRequest(entry=>entry.url().endsWith('/prompt_manager/images/reveal')),show.click()]);
     expect(sent.method()).toBe('POST');
+    // The route takes only a same-origin JSON request, as a real browser sends it.
+    const sentHeaders=await sent.allHeaders();
+    expect(sentHeaders.origin).toBe(new URL(page.url()).origin);expect(sentHeaders['content-type']).toBe('application/json');
     const body=sent.postDataJSON();
     expect(Object.keys(body).sort()).toEqual(['path','root_index','root_scope']);
     expect(body).toMatchObject({root_index:0,path:'inspector/complete.png'});expect(body.root_scope).toMatch(/^[0-9a-f]{64}$/);
@@ -293,6 +296,10 @@ test('Show in folder asks the server to open the listed file and announces each 
         await expect(await request.post('/__test__/reveal',{data:{outcome}})).toBeOK();
         await show.click();await expect(toast).toHaveText(message);
     }
+    // A reveal already in progress answers 429 busy.
+    await page.route('**/prompt_manager/images/reveal',route=>route.fulfill({status:429,contentType:'application/json',body:JSON.stringify({success:false,code:'busy',error:'The folder is already opening.'})}));
+    await show.click();await expect(toast).toHaveText('The folder is already opening.');
+    await page.unroute('**/prompt_manager/images/reveal');
     // A proxied request counts as remote, so the real route answers 403 not-local.
     await expect(await request.post('/__test__/reveal',{data:{outcome:'opened'}})).toBeOK();
     await page.route('**/prompt_manager/images/reveal',route=>route.continue({headers:{...route.request().headers(),'x-forwarded-for':'203.0.113.7'}}));

@@ -82,6 +82,7 @@ test('Show in folder outcomes use the D38 toasts',async()=>{
     assert.equal(revealOutcome(null),'Opened the folder on this computer.');
     assert.equal(revealOutcome({status:403,code:'not-local'}),'Show in folder works only in a browser on the computer running ComfyUI.');
     assert.equal(revealOutcome({status:501,code:'unavailable'}),'No file manager is available on this computer.');
-    for(const error of [{status:403,code:null},{status:409,code:'source-changed'},{status:500},new TypeError('offline')])
+    assert.equal(revealOutcome({status:429,code:'busy'}),'The folder is already opening.');
+    for(const error of [{status:403,code:null},{status:409,code:'source-changed'},{status:415,code:'unsupported-media-type'},{status:429,code:null},{status:500},new TypeError('offline')])
         assert.equal(revealOutcome(error),'The folder could not be opened. Try again.');
 });

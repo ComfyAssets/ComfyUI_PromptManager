@@ -1,11 +1,12 @@
 """Show one gallery file in this computer's file manager (TESTING.md D38).
 
-The route that calls this is local-only (``is_local_request``), single-flight
-(``RevealGate``) and hands in a
-path it has already resolved inside a gallery root. Windows goes through the
-shell API (no command line exists to parse); macOS and Linux openers run as an
-argument list with an absolute executable, no shell and no inherited streams,
-so neither a file name nor ``PATH`` can change what runs or what it parses.
+The route that calls this is local-only (``is_local_request``) and
+single-flight (``RevealGate``), and hands in a path it has already resolved
+inside a gallery root, which is re-checked just before launching. Windows
+goes through the shell API (no command line exists to parse); macOS and Linux
+openers run as an argument list with an absolute executable from a fixed
+system PATH, no shell, no inherited streams and a minimal environment, so
+neither a file name nor ``PATH`` can change what runs or what it parses.
 """
 
 import ipaddress

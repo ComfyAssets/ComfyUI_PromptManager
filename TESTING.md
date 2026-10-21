@@ -607,25 +607,54 @@ Recorded deviations on this page (spec §8):
   viewer's File & provenance the Path value stays text, followed in its `dd` by a
   "Show in folder" button (`Show <filename> in folder`), only for a listed file
   (`root_index`, `root_scope`, `path`), so never in the side panel or a recorded run.
-  It POSTs that identity to `/prompt_manager/images/reveal` and toasts "Opened the
-  folder on this computer.", "Show in folder works only in a browser on the computer
-  running ComfyUI." (403 `not-local`), "No file manager is available on this
-  computer." (501 `unavailable`) or "The folder could not be opened. Try again."
-  The route is local-only: a loopback `request.remote`, none of `Forwarded`,
-  `X-Forwarded-For`, `X-Real-IP` or `X-Forwarded-Host`, and (against DNS rebinding) a
-  loopback `Host` and, when sent, `Origin` (`localhost`, `*.localhost` or a loopback
-  address). The body is strict (an int root, a 64-hex scope, a bounded relative path;
-  absolute, drive and `..` paths are 400), the scope goes through
+  It POSTs that identity as JSON to `/prompt_manager/images/reveal` and toasts:
+
+  | Result | Toast |
+  |---|---|
+  | Success | "Opened the folder on this computer." |
+  | 403 `not-local` | "Show in folder works only in a browser on the computer running ComfyUI." |
+  | 501 `unavailable` | "No file manager is available on this computer." |
+  | 429 `busy` | "The folder is already opening." |
+  | Anything else (415, 404, 409, 500, offline) | "The folder could not be opened. Try again." |
+
+  The route is local-only. It answers 403 `not-local` unless all of these hold: no
+  forwarding-style header (`Forwarded`, `Via`, `X-Real-IP`, `CF-Connecting-IP`,
+  `True-Client-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `Fastly-Client-IP`, and any
+  `X-Forwarded-*`, `X-Original-*` or `*-Client-IP`); a loopback `request.remote`; a
+  loopback `Host` (`localhost`, `*.localhost` or a loopback address, against DNS
+  rebinding); an `Origin` equal to the request's own scheme, host and port (absent,
+  `null`, another port or another scheme is refused; browsers send `Origin` on every
+  fetch POST); and, when sent, `Sec-Fetch-Site: same-origin`. A body that is not
+  `application/json` is 415 `unsupported-media-type`, so any cross-origin request
+  needs a CORS preflight. The body is strict (an int root, a 64-hex scope, a bounded
+  relative path; absolute, drive and `..` paths are 400), the scope goes through
   `_gallery_scope_error` (409 `source-changed`), and the path resolves only inside
-  that root to a regular media file (403/404). `utils/file_reveal.py` starts the
-  opener as an argv list with an absolute executable, no shell, DEVNULL streams and
-  `close_fds`, never waited on: Windows `explorer.exe` from `%SystemRoot%` (never
-  PATH or the working directory) with `/select,` and the path, macOS `open -R`,
-  Linux the FileManager1 `ShowItems` dbus call (waited at most 2 s, only to detect a
-  failed start) and else `xdg-open` on the folder. `tests/test_image_reveal.py` mocks
-  `Popen`, `sys.platform` and `shutil.which`; the browser server's opener is a stub
-  (`POST`/`GET /__test__/reveal`). The inspector comparison reads closed disclosures
-  as hidden, so the button needs no mapping there.
+  that root to a regular media file (403/404; a resolution `OSError` such as
+  `ENAMETOOLONG` is the same JSON 404, and the client's path is never logged at error
+  level). One reveal runs at a time per process with a 1 s cooldown after it
+  (`RevealGate`, 429 `busy`), on its own single worker (`reveal_executor`), never
+  ComfyUI's default executor. Just before launching, `utils/file_reveal.py` re-checks
+  that the real path is still a regular file inside the root (a swapped parent is
+  404). Windows starts no process: `ILCreateFromPathW` and
+  `SHOpenFolderAndSelectItems` select the file through the shell API (Explorer's own
+  command line splits on commas, so a path like `output\a,\Windows\...` must never
+  reach it), falling back to `os.startfile(folder, "explore")`. macOS runs
+  `/usr/bin/open -R`; Linux asks FileManager1 `ShowItems` with `dbus-send
+  --print-reply --reply-timeout=2000` (a real reply or a fallback) and else runs
+  `xdg-open` on the folder. Those openers are argv lists resolved only on a fixed
+  system PATH, with no shell, DEVNULL streams, `close_fds`, their own session, a
+  minimal environment (no venv PATH, PYTHONPATH or API keys) and a daemon-thread
+  reaper. `tests/test_image_reveal.py` mocks `Popen`, `sys.platform`, `shutil.which`,
+  the shell API and `os.startfile`; the browser server's opener is a stub
+  (`POST`/`GET /__test__/reveal`) with no cooldown. The inspector comparison reads
+  closed disclosures as hidden, so the button needs no mapping there.
+
+  Residual risk, accepted: a reverse proxy or tunnel that adds no forwarding header
+  (a bare nginx `proxy_pass` to 127.0.0.1, `ssh -R`, `socat`) cannot be told apart
+  from a local client, and a non-browser client behind it can forge a matching
+  `Host` and `Origin`. Such a client can open a folder of a listed file on the host's
+  screen, at most once a second, and learn whether that file exists (which the
+  listing routes already tell it). Operators who expose ComfyUI that way accept this.
 - **D39**: a recipe-linked image shows its recipe's own category and tags (#224), not
   its positive's. The concept shows the prompt's category and tags for every image;
   the concept fixture's recipes have neither, so their images show no category chip
