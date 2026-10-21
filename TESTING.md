@@ -603,6 +603,42 @@ npm run --prefix tools/vendor test:workflows -- images-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 
+### Prompt library cards and recorded deviations (#249 PR E)
+
+The shelf uses the shared concept toolbar and caption (E1) and the concept's
+`article.prompt-card` (app.js `renderLibrary` a586, style.css s653–708): `.card-art`
+(at most two previews), `.card-content` (`.card-title` with the title `button` and the
+category `span.chip`, the positive prompt block, `.card-meta`, `.tags`) and
+`.card-footer` (the rating and last-use line, then `.row-actions` with the positive
+`button.send.icon-btn` and "Explore history"). Rows stay windowed (`.library-row`).
+`tests/browser/workspace-library.spec.mjs` covers the markup, the clamp, the buttons and
+the measured row heights on Chromium and touch.
+
+Recorded deviations on this page:
+- **D23**: real card facts. "N runs" is the parent's `run_count`. The footer reads
+  "Used today", "Used yesterday", "Used N days ago" (under a week) or "Used <Mon D>",
+  counted in the viewer's local calendar days from `last_used_at` (a time ahead of the
+  browser reads as today), and "Not used yet" without one. Stars are `★` × rating with
+  a visually hidden "Rated N out of 5"; an unrated parent shows only the last-use words.
+  The meta chip reads "− N negative variants" (singular for one). The title and Explore
+  history are buttons that open `#/library/<id>`. The positive is clamped to two lines
+  (`.prompt-card .prompt-text`); copy and send use the full text. A long title wraps
+  inside the title row, and the category chip keeps whole words ("Uncategorized" for
+  none). A parent with one preview, or none, fills the art row; no preview reads "No
+  available image previews" (`.small`). Each card's actions add its title to their names
+  ("Copy positive prompt: <title>", as the concept's do).
+- **D40**: production-only shelf copy the concept never shows. A failed page reads
+  "Prompt library could not be loaded. Retry." beside "Retry prompt library" (no Refresh,
+  D15). A failed category list reads "Categories could not be loaded. Open the Prompt
+  library again to retry." (Retry re-reads it only when the shelf failed too). The
+  continuation keeps "Loading prompt library…", "No matching prompts. Try changing the
+  filters." (the concept: "No matching prompts."), "You’re all caught up.", "The saved
+  prompt is hidden by the current filters." and "Load more prompts".
+- **D41**: the search keeps the concept's shared placeholder "Search prompts, tags,
+  filenames…" for parity with Images, although Library search matches positive text and
+  titles and saved negative text and variant titles, not filenames or tags (Tags live in
+  "Refine this view", D14).
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no

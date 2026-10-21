@@ -6,7 +6,7 @@ import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './libr
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
-import {layoutLibraryRows,visibleLibraryRows} from './library-layout.mjs';
+import {layoutLibraryRows,visibleLibraryRows,usedLabel,ratingLabel} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
@@ -199,29 +199,37 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         if(restorable?.layout?.inlineSize===inlineSize && restorable.layout.columns===columnCount) for(const [id,height] of restorable.layout.heights) heights.set(id,height);
         const hiddenSave=restorable?null:savedParentId;savedParentId=null;
         function removeCard(card) {measurementObserver?.unobserve(card.node);pendingMeasurements.delete(Number(card.node.dataset.promptId));card.blocks.dispose();card.node.remove();}
+        /** The concept's prompt card (app.js renderLibrary a586) with real counts, last use and rating (#249 D23). */
         function cardFor(item,index) {
-            const article=el('article',undefined,'library-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
-            const art=el('div',undefined,'library-card-art');art.setAttribute('aria-hidden','true');
+            const article=el('article',undefined,'prompt-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
+            const art=el('div',undefined,'card-art');art.setAttribute('aria-hidden','true');
             const previews=item.previews || [];
             for(const image of previews.slice(0,2)) {
-                if(image.is_video && !image.thumbnail_url) art.append(el('span','Video preview','library-art-empty'));
+                if(image.is_video && !image.thumbnail_url) art.append(el('span','Video preview','small'));
                 else {
                     const img=el('img');img.src=window.ApiClient.resolveUrl(image.thumbnail_url || image.url);img.alt='';img.loading='lazy';img.decoding='async';img.width=image.width || 800;img.height=image.height || 600;art.append(img);
                 }
             }
-            if(!previews.length) art.append(el('span','No available image previews','library-art-empty'));
-            const content=el('div',undefined,'library-card-content');
-            const heading=el('header',undefined,'library-card-title');
-            const name=link(displayTitle(item),`#/library/${item.id}`,'library-title-link');const h2=el('h2');h2.append(name);
-            heading.append(h2,el('span',item.category || 'Uncategorized','library-chip'));
-            const prompts=el('div',undefined,'library-card-prompts');
-            const blocks=mountPromptBlocks(prompts,{prompts:{positive:{status:'resolved',text:item.text,source:'library'}},sender,parentScope:scope,roles:['positive']});
-            const stats=el('div',undefined,'library-card-meta');stats.append(el('span',item.variant_count?countOf(item.variant_count,'saved negative variant'):'No saved negatives','library-chip library-chip-negative'),el('span',countOf(item.image_count,'linked image')));
-            const vocabulary=el('div',undefined,'library-tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'library-chip'));
-            content.append(heading,prompts,stats,vocabulary);
-            const footer=el('footer',undefined,'library-card-footer');
-            const rating=el('span',item.rating?'★'.repeat(item.rating)+'☆'.repeat(5-item.rating):'Unrated','library-rating');rating.setAttribute('role','img');rating.setAttribute('aria-label',item.rating?`Rated ${item.rating} out of 5`:'Unrated');footer.append(rating);
-            const history=link('',`#/library/${item.id}`,'library-history-link');history.append(createWorkspaceIcon('branch'),el('span','Explore history'));footer.append(history);
+            if(!previews.length) art.append(el('span','No available image previews','small'));
+            const name=displayTitle(item);
+            const content=el('div',undefined,'card-content');
+            const heading=el('div',undefined,'card-title');const open=createButton(name);open.dataset.history='';
+            heading.append(open,el('span',item.category || 'Uncategorized','chip'));
+            const prompts=el('div');
+            const blocks=mountPromptBlocks(prompts,{prompts:{positive:{status:'resolved',text:item.text,source:'library'}},sender,parentScope:scope,roles:['positive'],title:name});
+            const meta=el('div',undefined,'card-meta');
+            meta.append(el('span',`\u2212 ${countOf(item.variant_count,'negative variant')}`,'chip red'),el('span',countOf(item.run_count ?? 0,'run')),el('span',countOf(item.image_count,'image')));
+            const vocabulary=el('div',undefined,'tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'chip'));
+            content.append(heading,prompts,meta,vocabulary);
+            const footer=el('div',undefined,'card-footer');
+            const {stars,hidden}=ratingLabel(item.rating), used=usedLabel(item.last_used_at);
+            const facts=el('span');
+            if(stars) {const shown=el('span',stars);shown.setAttribute('aria-hidden','true');facts.append(shown,el('span',hidden,'ca-visually-hidden'),` \u00b7 ${used}`);}
+            else facts.textContent=used;
+            const actions=el('div',undefined,'row-actions');
+            const send=createButton('','send icon-btn');send.setAttribute('aria-label',`Send positive prompt to ComfyUI: ${name}`);send.append(createWorkspaceIcon('send'));send.dataset.sendPositive='';
+            const explore=createButton('');explore.append(createWorkspaceIcon('branch'),' Explore history');explore.dataset.history='';
+            actions.append(send,explore);footer.append(facts,actions);
             article.append(art,content,footer);article.dataset.index=index;return {node:article,blocks};
         }
         function captureAnchor() {
@@ -289,7 +297,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             pendingMeasurements.clear();
             const restore=dirty?(pendingAnchor || anchor):null;
-            if(dirty) {layout=layoutLibraryRows(state.items.map(item=>heights.get(item.id)??null),columnCount,{estimate:columnCount===1?448:468});dirty=false;}
+            if(dirty) {layout=layoutLibraryRows(state.items.map(item=>heights.get(item.id)??null),columnCount,{estimate:columnCount===1?422:448});dirty=false;}
             const index=restore?indexesById.get(restore.id):undefined;
             const target=index===undefined?undefined:Math.max(0,layout.rows[Math.floor(index/columnCount)].top-restore.offset);
             renderWindow(target);
@@ -319,14 +327,21 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         function focusCard(index,last=false) {
             if(index<0 || index>=state.items.length) return;
             if(dirty) {cancelAnimationFrame(frame);flush();}focusOverride=index;renderWindow();const card=cards.get(state.items[index].id).node;
-            const controls=card.querySelectorAll('a,button');(last?controls[controls.length-1]:controls[0]).focus();card.scrollIntoView({block:'nearest'});focusOverride=-1;renderWindow();
+            const controls=card.querySelectorAll('button');(last?controls[controls.length-1]:controls[0]).focus();card.scrollIntoView({block:'nearest'});focusOverride=-1;renderWindow();
         }
+        // The title and Explore history open the prompt's history; the footer send sends the full positive (D23).
+        scope.listen(grid,'click',event=>{
+            const card=event.target.closest('article[data-prompt-id]');if(!card) return;
+            const item=state?.items[indexesById.get(Number(card.dataset.promptId))];if(!item) return;
+            if(event.target.closest('[data-history]')) window.location.hash=`#/library/${item.id}`;
+            const send=event.target.closest('[data-send-positive]');if(send) sender.open({positive:item.text},send);
+        });
         scope.listen(grid,'keydown',event=>{
             const card=event.target.closest('article[data-prompt-id]');if(!card) return;
             const index=Number(card.dataset.index);
-            if(event.target.matches('a') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1));}
+            if(event.target.matches('[data-history]') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1));}
             else if(event.key==='Tab') {
-                const controls=card.querySelectorAll('a,button');const next=index+(event.shiftKey?-1:1);
+                const controls=card.querySelectorAll('button');const next=index+(event.shiftKey?-1:1);
                 const edge=event.shiftKey?controls[0]:controls[controls.length-1];
                 if(event.target===edge && state.items[next] && !cards.has(state.items[next].id)) {event.preventDefault();focusCard(next,event.shiftKey);}
             }
@@ -343,7 +358,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             state=next;
             caption.hidden=next.variantTotal===null;if(next.variantTotal!==null) captionCount.textContent=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
-            message.textContent=(next.error?'Prompt library could not be loaded. Retry or refresh.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
+            message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
             schedule();scheduleLoad();
         }

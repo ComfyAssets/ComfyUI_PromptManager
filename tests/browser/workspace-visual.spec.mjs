@@ -29,7 +29,7 @@ async function attachEvidence(page, testInfo, name, fullPage = true) {
     const screenshotPath = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.media-card', '.detail-panel', '.prompt-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.media-card', '.detail-panel', '.prompt-heading', '.library-grid', '.prompt-card', '.prompt-card .card-art', '.prompt-card .card-content'].map(selector => {
         const node = document.querySelector(selector);
         if (!node) return [selector, null];
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
@@ -246,9 +246,10 @@ test('long content and zoom keep grouped navigation reachable', async ({ page, r
     await text.scrollIntoViewIfNeeded();
     expect((await text.textContent()).length).toBeGreaterThan(1500);
     await text.focus(); await expect(text).toBeFocused();
+    // #249 D23: the card clamps the prompt to two lines; the card content itself never scrolls or overflows.
     expect(await text.evaluate(node => {
-        const scroller = node.closest('.library-card-prompts');
-        return scroller.scrollHeight <= scroller.clientHeight + 1 && node.scrollHeight <= node.clientHeight + 1;
+        const content = node.closest('.card-content');
+        return content.scrollHeight <= content.clientHeight + 1 && content.scrollWidth <= content.clientWidth + 1 && node.scrollHeight > node.clientHeight + 1;
     })).toBe(true);
     await noOverflow(page);
     await page.evaluate(() => { document.documentElement.style.zoom = ''; });
@@ -538,7 +539,7 @@ test('Library visual evidence keeps natural cards and returns from real history 
             await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await attachEvidence(page,testInfo,`after-library-${width}-${theme}`,false);
             await noOverflow(page);
-            await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
+            await page.getByRole('button',{name:'Explore history',exact:true}).first().click();
             await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
             await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
             await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
@@ -632,7 +633,7 @@ test('embedded history gallery keeps the history heading and disposes its layout
     await request.post('/__test__/reset',{data:{workspace_visual:true}});
     for (const width of [1600,390]) {
         await page.setViewportSize({width,height:width===1600?1100:844});await page.goto(`${workspace}#/library`);
-        await page.getByRole('link',{name:'Explore history',exact:true}).first().click();
+        await page.getByRole('button',{name:'Explore history',exact:true}).first().click();
         await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
         await expect(page.locator('h1')).not.toHaveText('Prompt library');
         const title=await page.locator('h1').textContent();expect(title).not.toBe('Images');

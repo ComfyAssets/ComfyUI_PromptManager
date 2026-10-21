@@ -405,8 +405,8 @@ test('delete tag confirms real impact and removes only the vocabulary name',asyn
     expect(after.prompts.map(([id,text,category])=>[id,text,category])).toEqual(before.prompts.map(([id,text,category])=>[id,text,category]));
     await page.goto('/prompt_manager/workspace#/library');
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
-    await expect(page.locator('.library-chip').filter({hasText:/^cinematic$/})).toHaveCount(0);
-    await expect(page.locator('.library-chip').filter({hasText:/^blue_hour$/})).toHaveCount(1);
+    await expect(page.locator('article[data-prompt-id] .tags .chip').filter({hasText:/^cinematic$/})).toHaveCount(0);
+    await expect(page.locator('article[data-prompt-id] .tags .chip').filter({hasText:/^blue_hour$/})).toHaveCount(1);
 });
 
 test('cancel and escape write nothing and restore focus',async({page,request})=>{
@@ -490,7 +490,7 @@ test('lost response is outcome-unknown',async({page,request})=>{
 
 // Concept nav links end in their real `.nav-count` once it loads.
 const nav=(page,name)=>page.locator('aside.sidebar nav').getByRole('link',{name:new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?:\\s*[\\d,]+)?$`)});
-const chips=(page,name)=>main(page).locator('article[data-prompt-id] .library-chip').filter({hasText:new RegExp(`^${name}$`)});
+const chips=(page,name)=>main(page).locator('article[data-prompt-id] :is(.card-title, .tags) > .chip').filter({hasText:new RegExp(`^${name}$`)});
 /** Visit the Library so its shelf is cached, then open Rename on blue_hour and start a rename whose PATCH is held. */
 async function heldRename(page) {
     await page.goto('/prompt_manager/workspace#/library');await expect(chips(page,'blue_hour')).toHaveCount(1);

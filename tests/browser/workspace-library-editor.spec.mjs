@@ -456,8 +456,8 @@ test('library heading offers Export then + New prompt, and New opens the saved p
     await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]').first()).toBeVisible();
     const actions=headingActions(page).locator('button');
     expect(await visibleNames(actions)).toEqual(['Export','+ New prompt']);
-    // One linked image is counted in the singular.
-    const f=page.fixture;await expect(page.locator(`article[data-prompt-id="${f.positive_id}"]`).getByText('1 linked image',{exact:true})).toHaveCount(1);
+    // One image is counted in the singular.
+    const f=page.fixture;await expect(page.locator(`article[data-prompt-id="${f.positive_id}"]`).getByText('1 image',{exact:true})).toHaveCount(1);
     await expect(actions.nth(0)).toHaveAccessibleName('Export full Library JSON');await expect(actions.nth(0)).not.toHaveClass(/ca-primary/);
     await expect(actions.nth(1)).toHaveClass(/\bca-primary\b/);
     for(const index of [0,1])expect((await actions.nth(index).boundingBox()).height).toBeGreaterThanOrEqual(32);
@@ -472,7 +472,7 @@ test('library heading offers Export then + New prompt, and New opens the saved p
     // Exactly one saved negative is counted in the singular, in history and on the shelf card.
     await expect(variantsPanel(page).getByText('1 of 1 saved negative variant',{exact:true})).toHaveCount(1);
     await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-    await expect(page.locator(`article[data-prompt-id="${created.id}"]`).getByText('1 saved negative variant',{exact:true})).toHaveCount(1);
+    await expect(page.locator(`article[data-prompt-id="${created.id}"]`).getByText('− 1 negative variant',{exact:true})).toHaveCount(1);
     expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library']);
 });
 
