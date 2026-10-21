@@ -361,8 +361,8 @@ of the approved concept's `docs/concepts/workspace/style.css`. Never edit the co
 it is only rewritten from the concept with `npm run --prefix tools/vendor sync:concept`.
 `npm run --prefix tools/vendor check` runs `sync-concept-css.mjs --check`, which fails
 on a missing copy or names the first differing byte. `workspace.html` loads, in order,
-the toolkit controls, Viewer.js, `concept.css`, the page stylesheets that their own
-PRs retire, and the production overlay `workspace.css` last.
+the toolkit controls, Viewer.js, `concept.css` and the production overlay `workspace.css`
+last; every page stylesheet that waited for its page PR is retired.
 `tests/vendor/concept-css.test.mjs` asserts that order, the drift check, and that no
 other page or canvas script loads workspace CSS.
 
@@ -373,19 +373,28 @@ D-number must be one of this spec's (#249): a comment that cites any other issue
 as `D5 (#245)`, is that issue's ruling and is not a marker, so write `#245 decision 5`
 for those. The lint test fails if `workspace.css` is missing. The match is by exact
 selector, so a narrower selector over a concept rule (for example
-`.ca-tools dialog.prompt-sender`) passes the lint. Such rules, and the page-stylesheet
-leftovers such as `library.css` `.row-actions`, name the PR that retires them, by
-convention.
+`.ca-tools dialog.prompt-sender`) passes the lint; by convention such rules carry a
+marker too.
 
-The lint also runs over every page stylesheet that loads before the overlay and is
-still kept (`library.css`; test `kept page stylesheets mark their concept-selector
-overrides`). PR D deleted `images.css` and `inspector.css` (test `the retired shell,
-vocabulary, editor, Images and inspector stylesheets stay deleted`); their few
-production-only rules with a live consumer (inspector wrapping and the inert download,
-the narrow Images container, the Library and recorded-run prompt blocks, the Archive
-negative's `section.prompt-block`, the prompt sender) moved to the overlay under
-`#249 D3`, and `the overlay keeps no retired Images page or inspector rules` keeps the
-replaced card, filter, toolbar, preview, facts and inspector rules out.
+PR D deleted `images.css` and `inspector.css`, and PR F-b deleted `library.css`, the
+last page stylesheet (test `the retired shell, vocabulary, editor, Images, inspector and
+library stylesheets stay deleted`). `the overlay keeps no retired Images page or
+inspector rules` keeps the replaced card, filter, toolbar, preview, facts and inspector
+rules out, and `the overlay keeps no rule waiting for a page rebuild` keeps out the
+interim guards and the history page's private role colors. Every rule that stayed has
+a live consumer and a marker: the Library rows windowed (D3) and the shelf's states
+(D40), the history panel's wrap, archived-lane and coarse-target rules (D45), and under
+**D48** the production surfaces the concept never shows, drawn in the concept's tokens
+(`--green`, `--red`, `--ca-*`): recorded executions and the Recorded run dialog (#209,
+D26), `pre.prompt-text` for stored text in the frozen field provenance and the Archive
+negative confirmation, whose `section.prompt-block` (#235) keeps its rules too, and the
+acknowledged prompt sender (spec §2.2). Rules that repeated the concept
+(the `.library-grid` tracks and breakpoints, the history `.row-actions` flex row and
+button size, `summary` cursors, `h2` margins, the sender and Recorded run dialogs'
+colors and border) or had no effect (`min-inline-size` on block children, a
+`.recorded-run-dialog pre` limit, a 700px padding that a later rule overrode) were
+deleted; the workspace browser specs on Chromium and the concept specs on touch prove
+the pages unchanged.
 
 **Comparison method.** Production must equal the concept except for the recorded
 deviations in the #249 design (spec §8, D-numbers). It is never compared against
@@ -835,10 +844,70 @@ Recorded deviations on this page:
   `negatives[0]`, its baseline: the first comparison reads "Baseline compared with
   <newest>" where the concept compares the baseline with itself. The history concept
   comparison (PR F-b, F5) maps this.
+- **D47** (#249 PR F-b): the shared gallery is the concept's `section.history-gallery`
+  (region "Shared gallery") with `.panel-heading` (h2 "Shared gallery", `span.small`
+  "<name> · same positive prompt") after the variants panel (and Compare), and
+  recorded executions (#209) follow it, as the concept has no recorded section. The
+  name is the lane's own name ("<title>", else "Negative variant N"), with " · Archived"
+  for an archived pair, and follows a rename. Its cards are the Images media cards: the
+  star wherever the read returns `favorite`, no checkbox or selection bar (Images only,
+  #259), the image opens the Viewer. A saved variant with no images shows the concept's
+  `.empty` "Saved variant · no runs yet." beside the grid (the concept puts it inside
+  `.image-grid`, which only holds positioned cards here). The concept's "Shared gallery"
+  heading is the gallery's only heading and names its region: the embedded collection's
+  "Linked images" heading and "N loaded · N linked images" count are removed, since they
+  repeated it (maintainer ruling, 2026-10-21). Two production pieces stay, which the
+  concept's gallery does not show: the layout row (Grid/List/Masonry and Thumbnail size),
+  because the legacy gallery let people change layout and density and nothing else on the
+  page offers it, and the selected-image side panel, the one shared inspector the Images
+  page uses (spec §3.3), so an image's details stay reachable without opening the viewer.
+  The same ruling covers the page's two media dialogs, All images for this positive and
+  Repeat run: as in the concept (app.js a1282-1304), each is named by its own dialog
+  title, with no "Linked images" heading or "N loaded · N linked images" count, and a
+  stranded focus returns to the dialog's close button (maintainer ruling, 2026-10-21).
+  The Images page keeps its caption. With no saved variant the page shows every image
+  of the positive under "All images for this positive, including unassigned images. …"
+  and no empty copy (a state the concept never reaches).
+- **D48** (#249 PR F-b): production surfaces the concept never shows keep their own
+  overlay rules, drawn in the concept's tokens: recorded executions and the Recorded run
+  dialog (#209, D26), the Archive negative confirmation (#235) and the acknowledged
+  prompt sender (spec §2.2). With `library.css` retired, these rules live in
+  `workspace.css` (see "Concept shell and comparison method").
 
 The run dot reads `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest`
 (see "Chronological Library history"), and each lane's "N runs" is the pair's
 `run_count` (see "Workspace data fields").
+
+`tests/browser/history-concept.spec.mjs` (#249 PR F-b, F5) compares this page with the
+immutable concept's `#prompt/alpine` on the concept fixture, at 1600×1100 and 390×844 in
+both themes and motion settings, on Chromium and touch: the heading, the summary, the
+variants panel, the comparison (Compare negatives pressed) and the shared gallery's
+place and heading, all measured by `inventoryOf`'s `history` section with the concept's
+selectors in both documents, with "Clean architecture" selected (the middle lane in
+either order). The fixture links and records its images oldest first, so ids grow with
+time as real runs do, and counts one pair use per image, which gives the concept's
+"Quality baseline · 2 runs" and its run dot. `mapHistoryConcept` applies D24 (the four
+recorded runs give the concept's own "4 tracked runs", asserted on both), D45 (the
+visually hidden "3 of 3 saved negative variants" status, and its wrap rules applied to
+the concept at runtime), D35 and D46 (the concept's lanes reordered newest first with
+"1 run", laid out by the browser), D46's Baseline/Selected action names, #235's Show
+archived button (added to the concept at runtime) and D47 (the gallery's body is the
+Images collection, so its height is not compared). D25: each compared block mounts in a
+`display: contents` child of the concept's `.compare-item`, so the item carries no
+production class or margin. Behaviors are compared in both documents: a red dot changes
+the negative block and the gallery, Compare toggles `aria-pressed`, All images opens a
+dialog with the positive's four images, the run dot opens a dialog (D26: Recorded run
+where the concept shows Repeat run), neither dialog has a collection caption (D47), the
+heading send previews the selected pair, and
+← Prompt library navigates. `history comparison detects mutations` injects
+`.ca-tools .variant-dot { width: 20px }` and removes Compare negatives. The older
+`history-canonical-comparison.mjs` stays for `workspace-visual.spec.mjs`'s recorded
+executions (#209) checks; its production selectors are now the concept's.
+
+```sh
+npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
+  workspace-history.spec.mjs --project chromium --project touch --project firefox --project webkit
+```
 
 ## Workspace data fields for the concept pages (#249)
 
@@ -1271,8 +1340,10 @@ Initial production acceptance requires maintainer inspection of paired PNGs and
 geometry; never update snapshots automatically or mask content to bless a gap.
 Data-dependent text/images/counts and the clearly labeled saved/frozen/current
 distinctions are documented in the comparison helper. The Images card tag
-button (#249 D9) and shared role-block
-spacing/padding/glyph polish remain outside #209. The
+button (#249 D9) remains outside #209; every prompt block now renders the concept's
+`section.prompt-section` (D22), so the shared role-block spacing, padding and glyph
+gap is closed, and only the production-only surfaces above keep their own rules
+(D48). The
 responsive production Viewer keeps its toolbar in the media panel and prompt details readable rather than reproducing the concept's
 mobile toolbar collision. These are explicit remaining visual differences, not
 a whole-application or full-gallery/Viewer pixel-parity claim.

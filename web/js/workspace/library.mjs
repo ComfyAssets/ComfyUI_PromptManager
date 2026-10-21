@@ -486,9 +486,10 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const disposeCompareBlocks=()=>{for(const item of compareBlocks)item.dispose();compareBlocks=[];};
             content.cleanup(disposeCompareBlocks);
             function compareBlock(text,label) {
-                const item=el('div',undefined,'compare-item');
+                // The concept's `.compare-item` holds the block itself; the blocks mount in a transparent child (D25).
+                const item=el('div',undefined,'compare-item'),mount=el('div');item.append(mount);
                 // D46: the two blocks are named Baseline and Selected, so no region or action name repeats on the page.
-                compareBlocks.push(mountPromptBlocks(item,{prompts:{negative:{status:'resolved',text,source:'library'}},roles:['negative'],sender,parentScope:content,includePairAction:false,contextLabel:label,title:displayTitle(detail.positive)}));
+                compareBlocks.push(mountPromptBlocks(mount,{prompts:{negative:{status:'resolved',text,source:'library'}},roles:['negative'],sender,parentScope:content,includePairAction:false,contextLabel:label,title:displayTitle(detail.positive)}));
                 compareBlocks.at(-1).setState({prompts:{negative:{status:'resolved',text,source:'library'}},actionsEnabled:savedReadState==='current'});
                 return item;
             }
@@ -600,7 +601,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 variantError.hidden=!loadError;variantError.textContent=!loadError?'':state.variantsError?'Negative variants could not be loaded. Retry to continue.':'Archived negative variants could not be loaded. Retry to continue.';
                 const archivedCount=Number.isSafeInteger(detail.positive.archived_variant_count)?detail.positive.archived_variant_count:0;
                 showArchived.textContent=`Show archived (${archivedCount})`;showArchived.setAttribute('aria-pressed',String(archivedShown));
-                updateCompare();
+                updateCompare();updateGalleryContext();
             };
             const updateMeta=()=>{imagesMeta.textContent=countOf(detail.positive.image_count ?? 0,'image');variantsMeta.textContent=countOf(detail.positive.variant_count ?? 0,'negative variant');};
             updateParent=()=>{
@@ -613,11 +614,15 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             branches.append(emptyNote);
             const lower=el('div',undefined,'timeline-lower');lower.append(el('span','Green + positive · red − negative · small dot repeat run','small'),all);
             variants.append(branches,variantCount,variantError,restoreStatus,restoreAction,more,retry,lower);
-            const context=el('p','','library-variant-context');context.setAttribute('role','status');
-            const gallery=el('section',undefined,'library-shared-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(el('h2','Shared gallery'),context);
+            // The concept's shared gallery (app.js a616-621): its heading names the selected variant; the embedded
+            // collection renders the PR C media cards. Recorded executions (#209) stay below it.
+            const context=el('span','','small');context.setAttribute('role','status');
+            const galleryTitle=el('h2','Shared gallery');galleryTitle.tabIndex=-1;
+            const galleryHeading=el('div',undefined,'panel-heading');galleryHeading.append(galleryTitle,context);
+            const gallery=el('section',undefined,'history-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(galleryHeading);
             const images=el('div',undefined,'library-linked-images');gallery.append(images);
             const recorded=el('div',undefined,'library-recorded-container');
-            body.append(summary,variants,recorded,gallery);
+            body.append(summary,variants,gallery,recorded);
             const recordFor=pairId=>detail.variants.find(variant=>variant.id===pairId) || archivedList().find(variant=>variant.id===pairId) || (separate()?.id===pairId?separate():null);
             const archivedSelection=pairId=>archivedList().some(variant=>variant.id===pairId) || (separate()?.id===pairId && separate().archived===true);
             function rolesFor(pairId) {
@@ -670,17 +675,25 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             },onRecordedCount:count=>{runsMeta.hidden=count===null;runsMeta.textContent=count===null?'':countOf(count,'tracked run');}});
             // The heading carries the pair send, as in the concept; the saved texts keep their per-role actions.
             blocks=mountPromptBlocks(promptContainer,{prompts:libraryPromptRoles(detail),sender,parentScope:content,includePairAction:false,title:displayTitle(detail.positive)});
+            /** The gallery heading's "<name> · same positive prompt" with the lane's own name, renamed with it (D47). */
+            // With no saved variant the page shows every image of the positive, a state the concept never reaches.
+            function updateGalleryContext() {
+                if(activePairId===undefined) return;
+                const lane=[...lanes.values()].find(item=>item.entry.variant.id===activePairId);
+                const archived=activePairId!==null && archivedSelection(activePairId);
+                context.textContent=activePairId===null?'All images for this positive, including unassigned images. Choose a saved negative variant to inspect or send it.':`${lane?laneName(lane.entry):'Selected saved negative variant'}${archived?' · Archived':''} · same positive prompt`;
+            }
             function select(pairId,{force=false}={}) {
                 if(savedReadState!=='current' || (!force && galleryScope && activePairId===pairId)) return;
                 if(pairId!==null && !recordFor(pairId)) pairId=null;
                 activePairId=pairId;blocks.setState({prompts:rolesFor(pairId),actionsEnabled:true});
                 for(const lane of lanes.values()) lane.button.setAttribute('aria-pressed',String(lane.entry.variant.id===pairId));
-                const index=detail.variants.findIndex(variant=>variant.id===pairId),archived=pairId!==null && archivedSelection(pairId);
-                const lane=[...lanes.values()].find(item=>item.entry.variant.id===pairId);
-                context.textContent=pairId===null?'All images for this positive, including unassigned images. Choose a saved negative variant to inspect or send it.':index>=0?`Negative variant ${index+1} · same positive prompt`:`${lane?laneName(lane.entry):'Selected saved negative variant'}${archived?' · Archived':''} · same positive prompt`;
+                const archived=pairId!==null && archivedSelection(pairId);
+                updateGalleryContext();
                 galleryScope?.dispose();galleryScope=createScope();images.replaceChildren();
-                // An archived pair's images are read in the archived scope; the gallery stays authoritative.
-                mountImages(images,api,galleryScope,{embedded:true,fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
+                // An archived pair's images are read in the archived scope; the gallery stays authoritative. The
+                // embedded collection has no caption: the gallery heading names it (D47).
+                mountImages(images,api,galleryScope,{embedded:true,focusTarget:galleryTitle,emptyText:pairId===null?undefined:'Saved variant · no runs yet.',fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
                 updateSend();updateCompare();
             }
             /** A metadata receipt names no pair, so the page re-reads its own selection through the exact-ID route. */
@@ -753,7 +766,9 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 const dialogScope=createScope();imagesDialogScope=dialogScope;
                 const grid=el('div',undefined,className);
                 openContentDialog({scope:content,title,nodes:intro?[el('p',intro,'small'),grid]:[grid],trigger,onClose:()=>{dialogScope.dispose();if(imagesDialogScope===dialogScope) imagesDialogScope=null;}});
-                mountImages(grid,api,dialogScope,{embedded:true,fetchPage});
+                // D47: the dialog's own title names its images, as in the concept (a1282-1304), so the collection has no
+                // "Linked images" heading or count; a stranded focus returns to the dialog's close button.
+                mountImages(grid,api,dialogScope,{embedded:true,focusTarget:grid.closest('dialog')?.querySelector('.dialog-header > button') ?? null,fetchPage});
             }
             const imagesPage=(id,query,signal)=>api.get(`/prompt_manager/library/${id}/images?${query}`,{signal});
             /** Concept "All images for this positive" (a1282-1290): every image of the positive, Load more bounded. */

@@ -381,7 +381,7 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
     await recorded(page).getByRole('button',{name:'View selected run',exact:true}).click();await expect(dialog(page)).toContainText(oldRun);await expect(dialog(page).getByRole('button',{name:'Effective',exact:true})).toHaveAttribute('aria-pressed','true');
     await reviewCapture(page,testInfo,`outside-selected-dialog-${width}-${theme}`,dialog(page));
     const hashes={};
-    for(const path of ['docs/concepts/workspace/index.html','docs/concepts/workspace/app.js','docs/concepts/workspace/style.css','database/history_reads.py','py/api/history.py','web/js/workspace/history-state.mjs','web/js/workspace/history-media.mjs','web/js/workspace/history.mjs','web/js/workspace/recorded-run.mjs','web/js/workspace/library.css'])hashes[path]=createHash('sha256').update(await readFile(new URL(`../../${path}`,import.meta.url))).digest('hex');
+    for(const path of ['docs/concepts/workspace/index.html','docs/concepts/workspace/app.js','docs/concepts/workspace/style.css','database/history_reads.py','py/api/history.py','web/js/workspace/history-state.mjs','web/js/workspace/history-media.mjs','web/js/workspace/history.mjs','web/js/workspace/recorded-run.mjs','web/js/workspace/workspace.css'])hashes[path]=createHash('sha256').update(await readFile(new URL(`../../${path}`,import.meta.url))).digest('hex');
     expect(hashes['docs/concepts/workspace/index.html']).toBe('d84712c7284bb232919a1ed9b154575c8ac574f63b2404a4ac4bc06cbf323c03');expect(hashes['docs/concepts/workspace/app.js']).toBe('e33e7652da12a68cd3fe31e94d77d680aa439b6434ceee94f21cc4ce8883263e');expect(hashes['docs/concepts/workspace/style.css']).toBe('2c479ca1a2ddbbd14a550eae27dd731c326ccdb91fe9ddc87e2b81cd5298fce8');
     const manifest=testInfo.outputPath('final-fix-visual-source-and-scroll.json');await writeFile(manifest,JSON.stringify({width,height,theme,oldRun,before,after,hashes},null,2));
     await testInfo.attach('final-fix-visual-source-and-scroll.json',{path:manifest,contentType:'application/json'});
@@ -832,6 +832,11 @@ test('run dot appears only for pairs with more than one run and opens its run',a
     await clean.click();const repeat=modalDialog(page,'Repeat run');await expect(repeat).toBeVisible();
     await expect(repeat.locator('#modal-body > p.small')).toHaveText('Same positive and negative, another execution.');
     await expect(repeat.locator('#modal-body > .spaced-15 article[data-image-key]')).toHaveCount(1);
+    // D47: as in the concept (a1291-1304), the dialog title names the image; no collection heading or count repeats it.
+    await expect(repeat.locator('.section-caption')).toHaveCount(0);
+    await expect(repeat.getByRole('heading',{name:'Linked images',exact:true})).toHaveCount(0);
+    await expect(repeat.getByText(/ loaded · /)).toHaveCount(0);
+    expect(await repeat.evaluate(node=>[...node.querySelectorAll('h1, h2')].filter(item=>!item.closest('aside')).map(item=>item.textContent))).toEqual(['Repeat run']);
     expect(reads.at(-1).get('pair_id')).toBe(String(f.clean_pair));expect(reads.at(-1).get('limit')).toBe('1');
     await page.keyboard.press('Escape');await expect(repeat).toHaveCount(0);await expect(clean).toBeFocused();
 });
@@ -958,4 +963,69 @@ test('dot names never repeat for trimmed titles or titles that read like a fallb
     const names=await variantsPanel(page).locator('.variant-dot').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));
     expect(new Set(names).size).toBe(names.length);
     expect(names).toEqual(['Select negative variant 1','Select negative variant 2','Select negative variant 3']);
+});
+// #249 F4: the concept's shared gallery (app.js a616-621, style.css 1546-1548) of PR C media cards (C3 activation).
+test('shared gallery uses concept cards, image opens the viewer, empty copy',async({page,request})=>{
+    const f=page.fixture;await open(page,f.canonical_id);
+    const section=gallery(page),heading=section.locator(':scope > .panel-heading');
+    expect(await section.evaluate(node=>`${node.tagName.toLowerCase()}.${node.className}`)).toBe('section.history-gallery');
+    await expect(heading.locator(':scope > h2')).toHaveText('Shared gallery');
+    // The page opens on the newest lane, a saved variant with no runs: the concept's empty copy.
+    await expect(heading.locator(':scope > span.small')).toHaveText('No negative · same positive prompt');
+    await expect(section.locator('.empty')).toHaveText('Saved variant · no runs yet.');await expect(section.locator('.empty')).toBeVisible();
+    await expect(section.locator('article[data-image-key]')).toHaveCount(0);
+    // D47 (maintainer ruling 2026-10-21): the concept's "Shared gallery" heading is the gallery's only heading, so the
+    // collection's "Linked images" heading and its "N loaded · N linked images" count are gone; the layout row and the
+    // selected-image side panel stay.
+    await expect(section.locator('.section-caption')).toHaveCount(0);
+    await expect(section.getByRole('heading',{name:'Linked images',exact:true})).toHaveCount(0);
+    await expect(section.getByText(/ loaded · /)).toHaveCount(0);
+    // Outside the side panel (whose own heading names the selected image), the gallery has one section heading.
+    expect(await section.evaluate(node=>[...node.querySelectorAll('h1, h2')].filter(item=>!item.closest('aside')).map(item=>item.textContent))).toEqual(['Shared gallery']);
+    await expect(section.getByRole('group',{name:'Image layout',exact:true})).toBeVisible();
+    await expect(section.getByRole('combobox',{name:'Thumbnail size',exact:true})).toBeVisible();
+    await expect(section.getByRole('complementary',{name:'Selected image details',exact:true})).toBeVisible();
+    // As in the concept, the gallery follows the variants panel; recorded executions (#209) stay below it.
+    const order=await page.locator('.library-history').evaluate(node=>[...node.querySelectorAll('section[aria-label]')].map(item=>item.getAttribute('aria-label')).filter(name=>['Saved negative variants','Shared gallery','Recorded executions'].includes(name)));
+    expect(order).toEqual(['Saved negative variants','Shared gallery','Recorded executions']);
+    const dot=variantsPanel(page).getByRole('button',{name:'Select negative Quality baseline',exact:true});await dot.click();await expect(dot).toHaveAttribute('aria-pressed','true');
+    await expect(heading.locator(':scope > span.small')).toHaveText('Quality baseline · same positive prompt');
+    const cards=section.locator('article.media-card[data-image-key]');await expect(cards).toHaveCount(2);
+    await expect(section.locator('.empty')).toBeHidden();
+    const details=await(await request.get(`/prompt_manager/library/${f.canonical_id}`)).json();
+    const pair=details.variants.find(variant=>variant.title==='Quality baseline').id;
+    const listing=await(await request.get(`/prompt_manager/library/${f.canonical_id}/images?pair_id=${pair}`)).json();
+    const first=cards.first(),filename=(await first.locator('.image-open').getAttribute('aria-label')).replace(/^Open /,'');
+    const image=listing.images.find(item=>item.filename===filename);expect(typeof image.favorite).toBe('boolean');
+    // The concept card: art (open button + overlays), then the info row; the star where the read returns favorite and
+    // no checkbox (the selection bar stays Images-only, #259).
+    expect(await first.evaluate(node=>[...node.children].map(child=>child.className))).toEqual(['media-art','media-info']);
+    expect(await first.locator(':scope > .media-art').evaluate(node=>[...node.children].map(child=>`${child.tagName.toLowerCase()}.${child.className}`))).toEqual(['button.image-open','div.image-overlays']);
+    await expect(first.locator('.image-overlays input[type="checkbox"]')).toHaveCount(0);
+    const star=first.locator('.image-overlays > button.star-button');
+    await expect(star).toHaveAccessibleName(`Favorite ${filename}`);await expect(star).toHaveAttribute('aria-pressed',String(image.favorite));
+    await expect(star).toHaveText(image.favorite?'★':'☆');
+    await expect(first.locator('.media-info h3')).toHaveCount(1);
+    await expect(first.locator('.image-card-actions > button.icon-btn')).toHaveAccessibleName(`Inspect ${filename}`);
+    // C3 activation: the image opens the viewer and Escape returns focus to it.
+    const openButton=first.locator('.image-open');await openButton.click();
+    const viewer=page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
+    await page.keyboard.press('Escape');await expect(viewer).toBeHidden();await expect(openButton).toBeFocused();
+    await expect(section.locator(':scope > .panel-heading')).toHaveCSS('justify-content','space-between');
+    await expect(section).toHaveCSS('margin-top','24px');
+    // D47 (maintainer ruling 2026-10-21) covers the history page's dialogs too: the All images dialog is named by its
+    // own title, with no "Linked images" heading or "N loaded · N linked images" count, as the concept's (a1282-1290).
+    await variantsPanel(page).getByRole('button',{name:'All images for this positive',exact:true}).click();
+    const all=page.getByRole('dialog',{name:'All images for this positive',exact:true});
+    await expect(all.locator('article[data-image-key]').first()).toBeVisible();
+    await expect(all.locator('.section-caption')).toHaveCount(0);
+    await expect(all.getByRole('heading',{name:'Linked images',exact:true})).toHaveCount(0);
+    await expect(all.getByText(/ loaded · /)).toHaveCount(0);
+    expect(await all.evaluate(node=>[...node.querySelectorAll('h1, h2')].filter(item=>!item.closest('aside')).map(item=>item.textContent))).toEqual(['All images for this positive']);
+    await page.keyboard.press('Escape');await expect(all).toHaveCount(0);
+    // At 390px the heading stays inside the gallery and the page never scrolls sideways.
+    await page.setViewportSize({width:390,height:844});
+    await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    const [box,text]=await Promise.all([section.boundingBox(),heading.locator(':scope > span.small').boundingBox()]);
+    expect(text.x+text.width).toBeLessThanOrEqual(box.x+box.width+0.5);
 });

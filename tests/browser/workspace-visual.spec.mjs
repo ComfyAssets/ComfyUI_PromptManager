@@ -106,12 +106,12 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
         await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
-        await expect(page.locator('.library-shared-gallery article[data-image-key]')).toHaveCount(2);
-        await page.locator('.library-shared-gallery .image-card-actions button').first().click();
+        await expect(page.locator('.library-history .history-gallery article[data-image-key]')).toHaveCount(2);
+        await page.locator('.library-history .history-gallery .image-card-actions button').first().click();
         await expect(page.getByRole('complementary', { name: 'Selected image details', exact: true })).toContainText('canonical-alt.png');
-        await page.locator('.library-shared-gallery .media-card.selected .image-open').click();
+        await page.locator('.library-history .history-gallery .media-card.selected .image-open').click();
         await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
-        for (const [name, selector] of [['saved', '.library-history article.surface'], ['branches', '.library-history .timeline-panel'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
+        for (const [name, selector] of [['saved', '.library-history article.surface'], ['branches', '.library-history .timeline-panel'], ['gallery', '.library-history .history-gallery'], ['chronology', '.recorded-history']]) {
             await captureCanonicalState(page, testInfo, `production-${name}-${width}-${theme}`, selector);
         }
         const run = page.locator(`button[data-run-id="${fixture.canonical_run}"][data-anchor-id="10"]`);

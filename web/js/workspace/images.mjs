@@ -96,7 +96,11 @@ function deliverFavorite(key, favorite) {
     for (const target of embeddedFavoriteTargets) target(key, favorite);
 }
 
-export function mountImages(main, api, parentScope, {embedded = false, fetchPage} = {}) {
+/**
+ * An embedded collection (the history page's shared gallery and its All images and Repeat run dialogs, D47) has no
+ * caption: its page heading or dialog title already names it, and `focusTarget` takes a stranded focus.
+ */
+export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -192,17 +196,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const body = el('div', undefined, 'gallery-layout image-workspace');
     const collection = el('section', undefined, 'gallery-body');
     collection.setAttribute('aria-label', 'Images');
-    // The concept's caption replaces the old "All images" heading; the embedded gallery keeps its own heading.
+    // The concept's caption replaces the old "All images" heading.
     const caption = el('div', undefined, 'section-caption');
-    const collectionHeading = embedded ? el('h2', 'Linked images') : null;
-    if (collectionHeading) { collectionHeading.tabIndex = -1; caption.append(collectionHeading); }
     const count = el('span', 'Loading images…');
-    if (!embedded) count.id = 'result-count';
+    count.id = 'result-count';
     const captionDay = el('span');
     captionDay.hidden = true;
-    caption.append(count);
-    if (!embedded) caption.append(captionDay);
-    const focusFallback = collectionHeading || heading?.h1 || main;
+    caption.append(count, captionDay);
+    const focusFallback = focusTarget || heading?.h1 || main;
     const grid = el('div', undefined, 'image-grid');
     grid.setAttribute('role', 'list'); grid.setAttribute('aria-label', 'Image collection');
     const continuation = el('div', undefined, 'infinite-continuation');
@@ -213,10 +214,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const retry = createButton('Retry');
     continuation.append(message, more, retry);
     // The concept's empty collection (app.js updateImages), beside the grid because the grid only holds positioned cards.
-    const empty = el('div', 'No matching images. Try another search or category.', 'empty');
+    // An embedded gallery shows one only when its page names the concept's copy (the history gallery, app.js a620).
+    const showsEmpty = !embedded || typeof emptyText === 'string';
+    const empty = el('div', embedded ? emptyText : 'No matching images. Try another search or category.', 'empty');
     empty.hidden = true;
-    collection.append(caption, grid);
-    if (!embedded) collection.append(empty);
+    // D47: the history page's shared gallery and dialogs are named by their own heading or title, so they have no caption.
+    if (!embedded) collection.append(caption);
+    collection.append(grid);
+    if (showsEmpty) collection.append(empty);
     collection.append(continuation);
     // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).
     let focusAfterLoad = null;
@@ -508,8 +513,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        setText(count, embedded ? `${next.loaded.toLocaleString('en-US')} loaded · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'linked image')}` : countLine(next));
         if (!embedded) {
+            setText(count, countLine(next));
             setText(captionDay, captionDate(next.items, filters.sort));
             if (captionDay.hidden !== !captionDay.textContent) captionDay.hidden = !captionDay.textContent;
         }
@@ -524,7 +529,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
-        if (!embedded) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
+        if (showsEmpty) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
         if (focusAfterLoad !== null && !next.loading) settleLoadFocus(next);
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
