@@ -17,6 +17,16 @@ const FIXTURE_IMAGES=24;
 const SEED={positive_links:1};
 // The concept's sticky panel never scrolls; production's scrolls inside the window above 700px (D20/D21 side panel).
 const PANEL_INSET=40;
+// D34: coarse pointers keep 40px targets for the viewer details' disclosure summaries and "Download original" (the
+// concept's coarse rule covers buttons only). The recorded rule, applied to the concept under the same emulation so the
+// browser lays out what follows the taller summaries; a fine pointer never matches it.
+const D34_COARSE_TARGETS=`@media (pointer: coarse) {
+    #viewer-details summary { box-sizing: border-box; min-block-size: 40px; padding-block: 10px; }
+    #viewer-details a { display: inline-flex; align-items: center; min-block-size: 40px; }
+}`;
+// What an open "File & provenance" offers beyond the concept's text-only disclosure: D38's Show in folder right after
+// the Path value, then D20's Download original.
+const FILE_CONTROLS=[{tag:'button',text:'Show in folder',name:'Show alpine_00001.png in folder'},{tag:'a',text:'Download original',name:'Download original'}];
 
 /** D22: production's confirmed prompt text is focusable, so it follows its block's actions among the controls. */
 function withFocusablePrompts(inventory) {
@@ -36,12 +46,13 @@ function withCategoryScope(inventory) {
 }
 
 /**
- * Recorded inspector deviations only (spec §8, TESTING.md D20–D22); everything else must equal production.
- * `reference.viewerPlain` is the concept's own full details with its tag chips made plain at runtime (D20): the browser
- * lays out what follows them, as the Images spec's removed toolbar items do.
+ * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38 and D39 through the fixture's
+ * `positive_links`); everything else must equal production. `reference.viewerPlain` is the concept's own full details
+ * with its tag chips made plain (D20) and, under a coarse pointer, D34's targets, both at runtime: the browser lays out
+ * what follows them, as the Images spec's removed toolbar items do.
  */
 export function mapInspectorConcept(reference,{viewport}) {
-    const {panel,viewerPlain}=reference;
+    const {panel,viewerPlain,fileControls}=reference;
     return {
         panel:withCategoryScope(withFocusablePrompts({...panel,
             // D3: the production-only inspector rules (`.file-inspector`, workspace.css) hook on this class.
@@ -51,6 +62,8 @@ export function mapInspectorConcept(reference,{viewport}) {
             overflowX:'auto',overflowY:'auto',maxHeight:viewport.width>700?`${viewport.height-PANEL_INSET}px`:'none'})),
         // D3 as above; D20: the viewer's tag chips are plain (the concept's go to the Library).
         viewerDetails:withCategoryScope(withFocusablePrompts({...viewerPlain,className:'file-inspector'})),
+        // D38 and D20: the open "File & provenance" offers Show in folder and Download original.
+        fileControls:[...fileControls,...FILE_CONTROLS],
     };
 }
 
@@ -93,8 +106,9 @@ async function openProductionPanel(page,theme) {
     await settle(page);
 }
 
-/** The concept's tag chips in the open viewer as plain `span.chip`s (D20); returns an undo. */
+/** The concept's tag chips in the open viewer as plain `span.chip`s (D20) and D34's coarse targets; returns an undo. */
 async function plainViewerChips(page) {
+    const restoreTargets=await mutate(page,{css:D34_COARSE_TARGETS});
     await page.evaluate(()=>{
         window.__plainChips=[...document.querySelectorAll('#viewer-details .tags > button.chip')].map(button=>{
             const span=document.createElement('span');span.className='chip';span.textContent=button.textContent;
@@ -102,25 +116,47 @@ async function plainViewerChips(page) {
         });
     });
     await settle(page);
-    return ()=>page.evaluate(()=>{for(const [span,button] of window.__plainChips)span.replaceWith(button);delete window.__plainChips;});
+    return async()=>{
+        await page.evaluate(()=>{for(const [span,button] of window.__plainChips)span.replaceWith(button);delete window.__plainChips;});
+        await restoreTargets();
+    };
 }
 
-/** The first card's viewer: its full details measured (and, in the concept, with plain chips), then closed again. */
-async function viewerOf(page,concept) {
+/** The controls an open "File & provenance" offers between its summary and the next disclosure's (m5). */
+async function fileControlsOf(page) {
+    const disclosure=page.locator('#viewer-details details').first();
+    await disclosure.evaluate(node=>{node.open=true;});await settle(page);
+    const {controls}=(await inspectorOf(page)).viewerDetails;
+    await disclosure.evaluate(node=>{node.open=false;});await settle(page);
+    const names=controls.map(control=>control.name);
+    return controls.slice(names.indexOf('File & provenance')+1,names.indexOf('Workflow & raw metadata')).map(({tag,text,name})=>({tag,text,name}));
+}
+
+/**
+ * The first card's viewer: its full details and open "File & provenance" measured (in the concept also with plain
+ * chips), then closed again. `mutation` (production) is applied once the viewer is open and undone before it closes.
+ */
+async function viewerOf(page,concept,mutation=null) {
     await page.locator(CARDS).first().locator('.image-open').click();
     await expect(page.locator('#viewer-dialog[open] #viewer-details .panel-heading h2')).toHaveText(TITLE);
     await settle(page);
+    const restoreMutation=mutation?await mutate(page,mutation):null;
+    if(mutation)await settle(page);
     const {viewerDetails}=await inspectorOf(page);
+    const fileControls=await fileControlsOf(page);
     let viewerPlain=null;
     if(concept) {const restore=await plainViewerChips(page);viewerPlain=(await inspectorOf(page)).viewerDetails;await restore();}
+    await restoreMutation?.();
     await page.keyboard.press('Escape');
     await expect(page.locator('#viewer-dialog[open]')).toHaveCount(0);
-    return {viewerDetails,viewerPlain};
+    // The concept re-renders the Images page on the viewer's `close` event (app.js updateImages): let it land first.
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));await settle(page);
+    return {viewerDetails,viewerPlain,fileControls};
 }
 async function inventory(page,concept=false) {
     const {panel}=await inspectorOf(page);
-    const {viewerDetails,viewerPlain}=await viewerOf(page,concept);
-    return concept?{panel,viewerDetails,viewerPlain}:{panel,viewerDetails};
+    const {viewerDetails,viewerPlain,fileControls}=await viewerOf(page,concept);
+    return concept?{panel,viewerDetails,viewerPlain,fileControls}:{panel,viewerDetails,fileControls};
 }
 
 /** A ComfyUI host in a second tab that acknowledges what it applies (the shipped prompt bridge). */
@@ -278,8 +314,9 @@ test('a recipe-linked image shows only its recipe metadata (D39)',async({page})=
     await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history']);
 });
 
-// The comparison is only worth something if it notices a change (spec §7 mutation check): one CSS mutation (the role
-// label's letter spacing) and one DOM mutation (the footer removed), each applied after an exact match.
+// The comparison is only worth something if it notices a change (spec §7 mutation check): on the panel one CSS
+// mutation (the role label's letter spacing) and one DOM mutation (the footer removed); in the viewer (final review m5)
+// its pair actions removed and D38's Show in folder removed; each applied after an exact match.
 test('inspector comparison detects mutations',async({page})=>{
     test.setTimeout(120_000);
     const viewport={width:1600,height:1100};
@@ -287,8 +324,8 @@ test('inspector comparison detects mutations',async({page})=>{
     await openConceptPanel(page,'dark');
     const reference=await inventory(page,true);
     await openProductionPanel(page,'dark');
-    const {viewerDetails}=await inventory(page);
-    const measure=async()=>({panel:(await inspectorOf(page)).panel,viewerDetails});
+    const {viewerDetails,fileControls}=await inventory(page);
+    const measure=async()=>({panel:(await inspectorOf(page)).panel,viewerDetails,fileControls});
     assertInspectorMatch(reference,await measure(),viewport);
 
     const restoreCss=await mutate(page,{css:'.prompt-heading .role-label { letter-spacing: 0 }'});
@@ -296,6 +333,14 @@ test('inspector comparison detects mutations',async({page})=>{
     expect(()=>assertInspectorMatch(reference,cssMutated,viewport)).toThrow(/panel\.sections\.0\.label\.letterSpacing/);
     await restoreCss();await settle(page);
     assertInspectorMatch(reference,await measure(),viewport);
+
+    const panel=(await inspectorOf(page)).panel;
+    const viewerMutated=async mutation=>{const {viewerDetails,fileControls}=await viewerOf(page,false,mutation);return {panel,viewerDetails,fileControls};};
+    const withoutActions=await viewerMutated({remove:['#viewer-details > button']});
+    expect(()=>assertInspectorMatch(reference,withoutActions,viewport)).toThrow(/viewerDetails\.actions/);
+    const withoutReveal=await viewerMutated({remove:['#viewer-details button[aria-label$=" in folder"]']});
+    expect(()=>assertInspectorMatch(reference,withoutReveal,viewport)).toThrow(/fileControls/);
+    assertInspectorMatch(reference,await viewerMutated(),viewport);
 
     await mutate(page,{remove:['#image-inspector > .detail-footer']});
     const domMutated=await measure();
