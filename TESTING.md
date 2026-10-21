@@ -431,13 +431,26 @@ Recorded shell deviations:
 - **D4**: a "Theme" select with Dark, Light and System. System follows the ComfyUI
   palette, then the OS.
 - **D5**: no Activity button or Activity row until an activity center exists.
-- **D28**: no SAVED VIEWS or COLLECTIONS, and no Design review. The bottom nav is
+- **D28**: no COLLECTIONS, and no Design review. The bottom nav is
   System plus the production Overview hub (its own outline home glyph, not the concept's
   `activity` pulse, and no count).
   The connection reads "Your library, on your server" with a neutral muted dot.
+- **D49** (saved views, #249 D16): the SAVED VIEWS group label has no "PROPOSED"
+  badge, because saved views are persisted (`/prompt_manager/saved-views`). Its rows are
+  the concept's `links()` rows: the search icon, the view name and no count, linking
+  `#/saved/<id>`. Opening one shows its page with the saved toolbar value and Refine
+  filters, and the view's name as the h1, breadcrumb and title. A value its page no
+  longer accepts (a removed Source or Folder) stays default; an unknown id opens Images.
+  `a saved view row matches the concept's` saves one view in both documents and
+  compares the rows; `tests/browser/workspace-saved-views.spec.mjs` covers saving,
+  reopening, the defaults that replace rejected values, and failed reads and saves.
+- **D50**: no "Needs review" row in SAVED VIEWS until the tag-review slice (maintainer
+  ruling, 2026-10-21). Favorites arrives with the saved-views plan's Task 3; until then
+  the comparison maps it out with Needs review.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
-  library.", and the title has no " concept" suffix.
+  library.", and the title has no " concept" suffix. Save view's dialog action reads
+  "Save", not "Apply in prototype", and its toast drops the demo's word "Sample".
 - **D31**: at `max-width: 950px` the overlay caps the one-column shell at
   `minmax(0, 1fr)`, so extreme zoom cannot widen it to the sidebar's min-content.
 - **#245 D2**: no "Auto-tag images" on the Tags heading until the image-annotation
@@ -464,7 +477,7 @@ zoom, the 2nd card opens the viewer titled "<title> · <filename>", Escape retur
 to it (production only: the concept re-renders its grid and drops focus), Info on the
 3rd card moves `.selected`, searches for "alpine" and for one image, and Load more with
 its toast. `mapImagesConcept` applies D3, D8 (the selection bar's real actions only),
-D16 (follow-up PR: no Save view), D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
+D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
 sorted alphabetically). Removed toolbar and filter-row items flow again from the
 concept's own boxes (`reflow`), checked against the concept page with those items
 removed at runtime. Masonry tops and heights are compared unrounded, within one layout
@@ -570,7 +583,9 @@ Recorded deviations on this page (spec §8):
   files in M output folders." (the scan's `total` and `roots`) or "Rescan could not
   finish. Try again."; while it runs, a reopened Import shows an aria-disabled
   "Rescanning…".
-- **D16 (follow-up)**: no Save view in PR C; a follow-up PR adds real saved views.
+- **D16 (retired)**: Save view is the concept's own toolbar button, between sort and
+  Filters, on Images and the Prompt library (see D49). It saves the visible toolbar value
+  with the Refine filters; the comparisons no longer map it.
 - **D17**: the caption date is the newest result's day under Recently added (", YYYY"
   outside the current year), hidden under every other sort.
 - **D18**: the concept hover zoom, with no sticky zoom on hover-less (touch) devices.
@@ -775,8 +790,7 @@ Behaviors, in both documents: the title and Explore history open the prompt's hi
 (its `h1` is the title), the footer send carries the positive only (a bridge host page
 records the roles production's preview asks for), copy writes the full positive with
 "Prompt copied.", and the "neon" search and the Landscapes category leave the same cards
-and caption. `mapLibraryConcept` applies D14 (Oldest first appended), D16 (no Save
-view; the toolbar flows again, checked against the concept without it), D23 (the
+and caption. `mapLibraryConcept` applies D14 (Oldest first appended), D23 (the
 title button's `min-width: 0`; "− 1 negative variant", measured on the concept with the
 singular at runtime; the spoken "Rated N out of 5"; the two-line clamp, which the
 concept's samples exceed at 390px, checked against the concept with the clamp rule

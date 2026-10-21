@@ -168,6 +168,7 @@ _TABLES = (
     "execution_contexts",
     "execution_prompt_snapshots",
     "execution_context_texts",
+    "saved_views",
     "image_favorites",
     "image_prompt_pairs",
     "prompt_pair_tags",

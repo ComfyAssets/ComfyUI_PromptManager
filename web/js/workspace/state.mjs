@@ -13,7 +13,10 @@ export const routes = [
         description: 'Open the current dashboard, then choose Settings or Maintenance for configuration, scans, backups and diagnostics.', action: 'Open existing administration' },
 ];
 
-const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview']);
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview', 'saved']);
+
+/** A saved view (#249 D16): the shell resolves its id to the view's page, name and state. */
+const SAVED_ROUTE = Object.freeze({ id: 'saved', label: 'Saved view' });
 
 /** Breadcrumb and document title: the concept names a few pages differently from their nav label. */
 export function routeTitle(route) {
@@ -26,6 +29,8 @@ export function isHandoff(route) {
 }
 
 export function resolveRoute(hash) {
+    const saved = /^#\/saved\/([1-9]\d*)$/.exec(hash);
+    if (saved && Number.isSafeInteger(Number(saved[1]))) return {...SAVED_ROUTE, savedId:Number(saved[1]), hash};
     const match = /^#\/library\/([1-9]\d*)$/.exec(hash);
     if (match && Number.isSafeInteger(Number(match[1]))) {
         return {...routes.find(route => route.id === 'library'), positiveId:Number(match[1]), hash};
@@ -96,7 +101,7 @@ export function mountRouter(win, onRoute) {
         const route = resolveRoute(win.location.hash);
         const hash = route.hash || `#/${route.id}`;
         if (win.location.hash !== hash) win.history.replaceState(win.history.state, '', hash);
-        if (current?.id === route.id && current?.positiveId === route.positiveId) return;
+        if (current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId) return;
         current = route;
         onRoute(route);
     };

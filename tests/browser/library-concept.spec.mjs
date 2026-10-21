@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy,reflow,withoutItems} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy,reflow} from './concept-inventory.mjs';
 
 // Task E3 of #249: the production Prompt library shelf against the immutable concept (app.js renderLibrary a572–586,
 // style.css s648–708), on the concept-shaped real fixture (the concept's six prompts with their negatives, categories,
@@ -18,8 +18,8 @@ const CONCEPT_PROMPTS=6;
 const nocase=(a,b)=>{const x=a.toLowerCase(),y=b.toLowerCase();return x<y?-1:x>y?1:a<b?-1:a>b?1:0;};
 export function mapLibraryConcept(reference) {
     const library=reference.library;
-    // D16 (follow-up PR): no Save view until the saved-views store ships; the remaining items flow again (`reflow`).
-    const toolbar=withoutItems(library.toolbar,item=>item.text==='Save view');
+    // Save view is the concept's own (saved views, #249 D16 retired).
+    const toolbar={...library.toolbar};
     toolbar.items=toolbar.items.map(item=>{
         // D14: the Library appends its Oldest first after the concept's three sorts.
         if(item.id==='sort')return {...item,options:[...item.options,'Oldest first']};
@@ -251,11 +251,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`library geomet
             await openConceptLibrary(page,theme,motion);
             const reference=await conceptInventory(page);
             if(capture)await captureCanonicalState(page,testInfo,`concept-library-${width}-${theme}`);
-            // The browser as the re-layout's oracle: the concept page itself without Save view (D16).
-            const restore=await mutate(page,{remove:['.toolbar > [data-action="save-view"]']});
-            const removed=(await inventoryOf(page,'#main')).library.toolbar;
-            await restore();
-            // ...and with the D23 clamp applied to its cards.
+            // The browser as the re-layout's oracle: the concept page itself with the D23 clamp applied to its cards.
             const restoreClamp=await mutate(page,{css:CLAMP_CSS});
             const clamped=(await inventoryOf(page,'#main')).library;
             await restoreClamp();
@@ -269,13 +265,13 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`library geomet
             const actual=await inventoryOf(page,'#workspace-main');
             if(capture)await captureCanonicalState(page,testInfo,`production-library-${width}-${theme}`);
             const actualBehaviors=capture?await behaviorsOf(page,{back:()=>page.getByRole('button',{name:'← Prompt library',exact:true}).click(),sent:productionSent(host)}):null;
-            result[motion]={reference,removed,sorted,clamped,actual,diff:compare(reference,actual),referenceBehaviors,actualBehaviors};
+            result[motion]={reference,sorted,clamped,actual,diff:compare(reference,actual),referenceBehaviors,actualBehaviors};
         }
         const path=testInfo.outputPath('library-geometry.json');await writeFile(path,JSON.stringify(result,null,2));
         await testInfo.attach('library-geometry',{path,contentType:'application/json'});
 
-        for(const [motion,{reference,removed,sorted,clamped,actual,diff,referenceBehaviors:concept,actualBehaviors:production}] of Object.entries(result)) {
-            const {grid,cards,toolbar}=reference.library,card=cards[0];
+        for(const [motion,{reference,sorted,clamped,actual,diff,referenceBehaviors:concept,actualBehaviors:production}] of Object.entries(result)) {
+            const {grid,cards}=reference.library,card=cards[0];
             // The concept itself is what this comparison assumes (style.css s648–708, 1424–1428, 1475–1483).
             expect.soft(grid,`${motion} concept grid`).toMatchObject({columns:narrow?1:2,columnGap:'18px',rowGap:'18px',cardCount:CONCEPT_PROMPTS});
             expect.soft(card,`${motion} concept card`).toMatchObject({borderTopLeftRadius:'8px',borderTopWidth:'1px',overflow:'hidden'});
@@ -291,7 +287,6 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`library geomet
             expect.soft(card.meta.items.map(item=>item.text),`${motion} concept meta text`).toEqual(['− 3 negative variants','4 runs','4 images']);
             expect.soft(card.footer,`${motion} concept footer`).toMatchObject({paddingTop:'11px',paddingRight:'18px',paddingBottom:'11px',paddingLeft:'18px',borderTopWidth:'1px',borderTopStyle:'solid'});
             expect.soft(card.footer.facts.text,`${motion} concept footer facts`).toBe('★★★★★ · Used today');
-            expect.soft(diffInventory(stripExact(withoutItems(toolbar,item=>item.text==='Save view')),stripExact(removed)),`${motion} toolbar without Save view`).toEqual([]);
             expect.soft(diffInventory(stripExact(cards.map(item=>sortedTags(item.tags))),stripExact(sorted)),`${motion} tags in alphabetical order`).toEqual([]);
             expect.soft(diffInventory(stripExact(clampedCards(reference.library)),stripExact({grid:clamped.grid,cards:clamped.cards})),`${motion} clamped cards`).toEqual([]);
             expect.soft(diff,`${motion} differences after the recorded deviations`).toEqual([]);

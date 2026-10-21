@@ -10,6 +10,7 @@ import { createWorkspaceIcon } from './icons.mjs';
 import { bindCanvasLink, canvasHref } from './topbar.mjs';
 import { renderHeading } from './heading.mjs';
 import { closeWorkspaceDialog } from './workspace-dialogs.mjs';
+import { createSavedViews, openSaveViewDialog, savedViewHash } from './saved-views.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -31,6 +32,7 @@ function mountWorkspace() {
     const api = createApiClient();
     const main = document.getElementById('workspace-main');
     const primaryNav = document.getElementById('primary-nav');
+    const savedNav = document.getElementById('saved-nav');
     const systemNav = document.getElementById('system-nav');
     scope.listen(document.querySelector('.skip'), 'click', event => {
         event.preventDefault();
@@ -61,6 +63,32 @@ function mountWorkspace() {
     // D28: System, then the production Overview hub, in the concept's tools-and-system group.
     systemNav.replaceChildren(...navLinks([['system', 'settings'], ['overview', 'overview']]));
     const sidebar = document.querySelector('aside.sidebar');
+    // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`.
+    const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}` : route.id;
+    let currentKey = null;
+    const markCurrent = () => {
+        for (const link of sidebar.querySelectorAll('nav [data-route]')) {
+            if (link.dataset.route === currentKey) link.setAttribute('aria-current', 'page');
+            else link.removeAttribute('aria-current');
+        }
+    };
+    // SAVED VIEWS (#249 D16): the concept's saved-nav rows (search icon, name, no count), loaded with the shell and
+    // re-read after every change. /* D49 */ no "PROPOSED" badge; /* D50 */ no "Needs review" row.
+    const savedViews = createSavedViews(api, scope.signal);
+    scope.cleanup(savedViews.subscribe(({ views }) => {
+        savedNav.replaceChildren(...views.map(view => {
+            const link = element('a');
+            link.append(createWorkspaceIcon('search'), document.createTextNode(view.name));
+            link.href = savedViewHash(view.id);
+            link.dataset.route = `saved/${view.id}`;
+            return link;
+        }));
+        markCurrent();
+    }));
+    savedViews.load();
+    /** The toolbar's Save view on a page: the concept's name dialog, then the store saves the page's full state. */
+    const saveView = (page, view) => (trigger, state) => openSaveViewDialog({ scope: view, trigger, q: state.q,
+        onSave: name => savedViews.create(page, name, state) });
     // One read per count, so a write that refreshes Library and Tags never supersedes an Images read in flight.
     const countRequests = new Map();
     function refreshCounts(ids) {
@@ -92,10 +120,48 @@ function mountWorkspace() {
         images = null;
         viewScope = createScope();
         const view = viewScope;
-        for (const link of sidebar.querySelectorAll('nav [data-route]')) {
-            if (link.dataset.route === route.id) link.setAttribute('aria-current', 'page');
-            else link.removeAttribute('aria-current');
+        currentKey = routeKey(route);
+        markCurrent();
+        if (route.id === 'saved') {
+            openSavedView(route, view);
+            return;
         }
+        renderPage(route, view);
+    }
+
+    /** A saved view opens its page with its state; the heading, breadcrumb and title are the view's name. */
+    async function openSavedView(route, view) {
+        main.replaceChildren();
+        await savedViews.settled();
+        if (view.signal.aborted) return;
+        // A view saved since the list loaded (another tab) is read once more before the link counts as gone.
+        if (!savedViews.find(route.savedId) && savedViews.status === 'ready') {
+            await savedViews.load();
+            if (view.signal.aborted) return;
+        }
+        const saved = savedViews.find(route.savedId);
+        if (saved) {
+            const page = routes.find(item => item.id === saved.page);
+            renderPage({...page, label:saved.name, title:saved.name}, view, saved);
+            return;
+        }
+        if (savedViews.status === 'ready') {
+            // A removed or unknown view: the shell's default page, without a history entry for the dead link.
+            window.location.replace('#/images');
+            return;
+        }
+        const {description} = renderHeading(main, {title:route.label});
+        description.textContent = 'Saved views could not be loaded. Your saved data has not changed.';
+        description.setAttribute('role', 'alert');
+        const retry = createButton('Retry');
+        view.listen(retry, 'click', () => {
+            savedViews.load();
+            openSavedView(route, view);
+        });
+        main.append(retry);
+    }
+
+    function renderPage(route, view, saved = null) {
         document.title = `${routeTitle(route)} · Prompt Manager`;
         // The concept's heading(); each view fills its description and actions.
         // The concept focuses its page title on a hashchange navigation (app.js 1168); the skip link focuses `main`.
@@ -105,11 +171,11 @@ function mountWorkspace() {
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
         if (route.id === 'images') {
             mountNewPromptAction(main, api, view);
-            images = mountImages(main, api, view);
+            images = mountImages(main, api, view, {savedState:saved?.state, onSaveView:saveView('images', view)});
             return;
         }
         if (route.id === 'library') {
-            mountLibrary(main, api, view, {positiveId:route.positiveId});
+            mountLibrary(main, api, view, {positiveId:route.positiveId, savedState:saved?.state, onSaveView:saveView('library', view)});
             return;
         }
         if (route.id === 'tags') {

@@ -160,3 +160,24 @@ test('navigating to the current route re-renders it, as the concept go() does', 
     win.dispatchEvent(new Event('hashchange'));assert.deepEqual(seen.at(-1),['library',13]);
     dispose();navigateTo('#/library/13',win);assert.equal(seen.length,3);
 });
+
+// Saved views (#249 D16): `#/saved/<id>` opens one persisted view; the shell resolves it to its page.
+test('saved-view links resolve to their id and re-render only when the id changes', async () => {
+    const {resolveRoute,mountRouter,isHandoff,routes}=await source;
+    const route=resolveRoute('#/saved/7');
+    assert.deepEqual([route.id,route.savedId,route.hash],['saved',7,'#/saved/7']);
+    assert.equal(isHandoff(route),false);
+    assert.equal(routes.some(item=>item.id==='saved'),false,'saved views are not an Overview card or a WORKSPACE link');
+    for(const hash of ['#/saved','#/saved/0','#/saved/-2','#/saved/1.5','#/saved/9007199254740992','#/saved/3/x','#/saved/abc']) {
+        assert.equal(resolveRoute(hash).id,'images',hash);
+    }
+    const win=new EventTarget();win.location={hash:'#/saved/3'};
+    win.history={state:null,replaceState(state,unused,hash){win.location.hash=hash;}};
+    const seen=[];const dispose=mountRouter(win,next=>seen.push([next.id,next.savedId]));
+    assert.equal(win.location.hash,'#/saved/3');
+    win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/saved/4';win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/images';win.dispatchEvent(new Event('hashchange'));
+    assert.deepEqual(seen,[['saved',3],['saved',4],['images',undefined]]);
+    dispose();
+});
