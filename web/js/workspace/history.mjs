@@ -31,7 +31,8 @@ function place(parent, node, before) {
 
 export function mountRecordedHistory(container, {api, positiveId, parentScope, sender, visit = {}, onParentRevalidate, onRecordedCount}) {
     const scope = createScope(), dispose = () => scope.dispose();
-    if (parentScope.signal.aborted) {dispose();return {dispose, openRun:() => false};}
+    // openRun is a hoisted declaration: on an aborted parent it answers false before reading any later state.
+    if (parentScope.signal.aborted) {dispose();return {dispose, openRun};}
     parentScope.signal.addEventListener('abort', dispose, {once:true});
     scope.cleanup(() => parentScope.signal.removeEventListener('abort', dispose));
     const section = el('section', undefined, 'library-surface recorded-history');

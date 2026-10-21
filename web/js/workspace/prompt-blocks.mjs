@@ -41,7 +41,9 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
     // The title is mutable so a saved title edited in place (setTitle below, #249 F1) renames the actions.
     let currentTitle = title || '';
     const actionName = (verb, role, rest = '') => `${verb} ${action(role)}${rest}${currentTitle ? `: ${currentTitle}` : ''}`;
-    if (parentScope.signal.aborted) return {update() {}, setState() {}, setTitle() {}, dispose() {}};
+    // An aborted parent gets one inert handle; every method is the same no-op.
+    const inert = () => {};
+    if (parentScope.signal.aborted) return {update:inert, setState:inert, setTitle:inert, dispose:inert};
     const scope = childScope(parentScope);
     container.classList.add('prompt-inspector');
     scope.listen(container, 'click', async event => {
