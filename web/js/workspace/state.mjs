@@ -78,6 +78,8 @@ export const LIBRARY_WRITE_COUNTS = Object.freeze(['library', 'tags']);
 
 /** The count a confirmed favorite change can change. */
 export const FAVORITE_WRITE_COUNTS = Object.freeze(['favorites']);
+// Trailing delay that coalesces quick star toggles into one Favorites count read (#249 M1).
+export const FAVORITE_COUNT_DELAY_MS = 300;
 
 /** Read the given sidebar counts (all by default), reporting each as its own read settles. */
 export async function loadNavCounts(api, signal, onCount = () => {}, ids = NAV_COUNT_ROUTES) {

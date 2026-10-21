@@ -20,8 +20,12 @@ from database.operations import PromptDatabase
 from database.saved_views import (
     MAX_STATE_BYTES,
     TABLE,
+    SavedViewInvalid,
+    encode_state,
     migrate_saved_views,
+    normalize_state,
     saved_views_schema_error,
+    validate_name,
 )
 from utils.hashing import generate_prompt_hash
 
@@ -38,6 +42,31 @@ IMAGES_STATE = {
     "favorites": False,
 }
 LIBRARY_STATE = {"q": "", "category": "", "sort": "rating", "tags": []}
+IMAGES_DEFAULTS = {
+    "q": "",
+    "category": "",
+    "sort": "newest",
+    "source": "all",
+    "folder": "",
+    "media": "all",
+    "tags": [],
+    "favorites": False,
+}
+LIBRARY_DEFAULTS = {"q": "", "category": "", "sort": "newest", "tags": []}
+# A row saved by an older build: no favorites key, a retired key, a sort
+# that is no longer offered and an over-long folder.
+OLD_IMAGES_STATE = json.dumps(
+    {
+        "q": "sunset",
+        "category": "",
+        "sort": "shuffle",
+        "source": "all",
+        "folder": "x" * 2000,
+        "media": "image",
+        "tags": ["golden"],
+        "layout": "grid",
+    }
+)
 
 
 class TestSavedViewsApi(ImageAPITestCase):
@@ -228,6 +257,79 @@ class TestSavedViewsApi(ImageAPITestCase):
             data, {"success": False, "error": "Saved view operation failed"}
         )
 
+    async def test_internal_value_errors_are_a_generic_500(self):
+        # Only the request's own validation is a 400; a ValueError or
+        # TypeError raised by the database layer is a server fault (M4).
+        for error in (
+            ValueError("secret parser detail"),
+            TypeError("secret type detail"),
+            json.JSONDecodeError("secret json detail", "{", 0),
+        ):
+
+            def broken(*_args, error=error):
+                raise error
+
+            for method, path, body, attr in (
+                ("GET", "", None, "list_saved_views"),
+                (
+                    "POST",
+                    "",
+                    {"page": "library", "name": "L", "state": LIBRARY_STATE},
+                    "create_saved_view",
+                ),
+                ("PATCH", "/1", {"name": "X"}, "rename_saved_view"),
+                ("DELETE", "/1", None, "delete_saved_view"),
+            ):
+                with self.subTest(error=type(error).__name__, method=method):
+                    setattr(self.api.db, attr, broken)
+                    try:
+                        with self.assertLogs("prompt_manager.api", level="ERROR"):
+                            response, data = await self.send(method, path, body)
+                    finally:
+                        delattr(self.api.db, attr)
+                    self.assertEqual(response.status, 500)
+                    self.assertEqual(
+                        data,
+                        {"success": False, "error": "Saved view operation failed"},
+                    )
+
+    async def test_a_row_saved_under_older_rules_lists_normalized(self):
+        stale = json.dumps(
+            {
+                "q": "cat",
+                "sort": "random",
+                "media": "video",
+                "tags": ["ok", 7],
+                "retired": True,
+            }
+        )
+        with self.api.db.model.get_connection() as conn:
+            conn.execute(
+                f"INSERT INTO {TABLE} (page, name, state, position, created_at, "
+                "updated_at) VALUES ('images', ' Old\tview ', ?, 0, 'x', 'x')",
+                (stale,),
+            )
+            conn.execute(
+                f"INSERT INTO {TABLE} (page, name, state, position, created_at, "
+                "updated_at) VALUES ('library', '', '{}', 1, 'x', 'x')"
+            )
+        response, data = await self.send("GET")
+        self.assertEqual(response.status, 200, data)
+        images, library = data["views"]
+        self.assertEqual(images["name"], "Oldview")
+        self.assertEqual(
+            images["state"],
+            {**IMAGES_DEFAULTS, "q": "cat", "media": "video"},
+        )
+        self.assertEqual(library["name"], "Saved view")
+        self.assertEqual(library["state"], LIBRARY_DEFAULTS)
+        # A stale view still renames and deletes.
+        response, data = await self.send(
+            "PATCH", f"/{images['id']}", {"name": "Renamed"}
+        )
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(data["view"]["state"], images["state"])
+
 
 class TestSavedViewsSchema(unittest.TestCase):
     def setUp(self):
@@ -334,7 +436,6 @@ class TestSavedViewsSchema(unittest.TestCase):
         return src
 
     def test_restore_rejects_tampered_saved_views(self):
-        bad_state = json.dumps({**IMAGES_STATE, "unknown": 1})
         cases = {
             "definition": (
                 f"DROP TABLE {TABLE}",
@@ -347,12 +448,11 @@ class TestSavedViewsSchema(unittest.TestCase):
                 "PRAGMA ignore_check_constraints = ON",
                 f"UPDATE {TABLE} SET page = 'history'",
             ),
-            "name": (f"UPDATE {TABLE} SET name = ''",),
-            "long name": (f"UPDATE {TABLE} SET name = '{'x' * 101}'",),
-            "untrimmed": (f"UPDATE {TABLE} SET name = ' Cats'",),
+            "long name": (f"UPDATE {TABLE} SET name = '{'x' * 401}'",),
             "blob name": (f"UPDATE {TABLE} SET name = CAST('Cats' AS BLOB)",),
             "state json": (f"UPDATE {TABLE} SET state = '{{'",),
-            "state keys": (f"UPDATE {TABLE} SET state = '{bad_state}'",),
+            "state array": (f"UPDATE {TABLE} SET state = '[]'",),
+            "state string": (f"UPDATE {TABLE} SET state = '\"q\"'",),
             "state size": (
                 f"UPDATE {TABLE} SET state = '{'x' * (MAX_STATE_BYTES + 1)}'",
             ),
@@ -367,6 +467,100 @@ class TestSavedViewsSchema(unittest.TestCase):
                 self.assertIn("Saved views", reason)
                 with self.assertRaises(ValueError):
                     self.db.model.restore_from_file(src)
+
+    def _insert_old_rows(self, path):
+        """Rows written under older value rules, straight into the file."""
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                f"INSERT INTO {TABLE} (page, name, state, position, created_at, "
+                "updated_at) VALUES ('images', 'Golden hour', ?, 5, 'x', 'x')",
+                (OLD_IMAGES_STATE,),
+            )
+            conn.execute(
+                f"INSERT INTO {TABLE} (page, name, state, position, created_at, "
+                "updated_at) VALUES ('library', ?, ?, 6, 'x', 'x')",
+                (" " + "n" * 120, json.dumps({"sort": "name-desc", "q": 4})),
+            )
+            conn.commit()
+
+    def _assert_old_rows_normalized(self, views):
+        self.assertEqual(
+            [(view["page"], view["name"], view["state"]) for view in views],
+            [
+                (
+                    "images",
+                    "Golden hour",
+                    {
+                        **IMAGES_DEFAULTS,
+                        "q": "sunset",
+                        "media": "image",
+                        "tags": ["golden"],
+                    },
+                ),
+                ("library", "n" * 100, LIBRARY_DEFAULTS),
+            ],
+        )
+
+    def test_a_database_with_rows_from_older_rules_still_opens(self):
+        self.db.close_all()
+        self._insert_old_rows(self.path)
+        PromptModel.reset_schema_cache()
+
+        reopened = PromptDatabase(self.path)
+        try:
+            self._assert_old_rows_normalized(reopened.list_saved_views())
+        finally:
+            reopened.close_all()
+        ok, reason = PromptModel.verify_database_file(
+            self.path, require_library_state=True
+        )
+        self.assertTrue(ok, reason)
+
+    def test_restore_accepts_rows_from_older_rules(self):
+        src = self._source()
+        self._insert_old_rows(src)
+        ok, reason = PromptModel.verify_database_file(src, require_library_state=True)
+        self.assertTrue(ok, reason)
+
+        self.db.model.restore_from_file(src)
+
+        self._assert_old_rows_normalized(self.db.list_saved_views())
+
+    def test_normalize_state_keeps_valid_values_and_defaults_the_rest(self):
+        self.assertEqual(normalize_state("images", IMAGES_STATE), IMAGES_STATE)
+        self.assertEqual(normalize_state("library", LIBRARY_STATE), LIBRARY_STATE)
+        self.assertEqual(
+            normalize_state("images", json.dumps(IMAGES_STATE)), IMAGES_STATE
+        )
+        for raw in (None, "{", "[]", '"q"', 7, ["q"], b"{}"):
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_state("library", raw), LIBRARY_DEFAULTS)
+        self.assertEqual(
+            normalize_state(
+                "images",
+                {
+                    "q": "bad\x00",
+                    "source": 3,
+                    "favorites": "true",
+                    "tags": [f"t{n}" for n in range(21)],
+                    "folder": "kept",
+                },
+            ),
+            {**IMAGES_DEFAULTS, "folder": "kept"},
+        )
+        self.assertEqual(normalize_state("history", {}), {})
+
+    def test_validation_errors_are_saved_view_invalid(self):
+        for call in (
+            lambda: validate_name(""),
+            lambda: validate_name(3),
+            lambda: encode_state("history", {}),
+            lambda: encode_state("library", {"q": ""}),
+            lambda: encode_state("library", {**LIBRARY_STATE, "sort": "x"}),
+        ):
+            with self.assertRaises(SavedViewInvalid):
+                call()
+        self.assertTrue(issubclass(SavedViewInvalid, ValueError))
 
     def test_migration_refuses_an_unsupported_table(self):
         path = os.path.join(self.tmpdir, "foreign.db")

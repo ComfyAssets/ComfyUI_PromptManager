@@ -1,7 +1,10 @@
 """Saved views (D16): list, create, rename and delete named toolbar states.
 
 The page, the name and the whitelisted per-page state are validated here
-(through ``database/saved_views.py``) before anything is written.
+(through ``database/saved_views.py``) before anything is written. Only that
+request validation (``SavedViewInvalid``) is a 400 carrying its message; any
+other failure, including a ``ValueError`` raised by the database layer, is a
+logged 500 with a generic message.
 """
 
 from functools import wraps
@@ -10,9 +13,9 @@ from typing import Callable
 from aiohttp import web
 
 try:
-    from ...database.saved_views import encode_state, validate_name
+    from ...database.saved_views import SavedViewInvalid, encode_state, validate_name
 except ImportError:
-    from database.saved_views import encode_state, validate_name
+    from database.saved_views import SavedViewInvalid, encode_state, validate_name
 
 _CREATE_FIELDS = frozenset({"page", "name", "state"})
 _RENAME_FIELDS = frozenset({"name"})
@@ -34,7 +37,7 @@ def saved_view_response(handler: Callable) -> Callable:
             return web.json_response(
                 {"success": False, "error": "Saved view not found"}, status=404
             )
-        except (ValueError, TypeError) as exc:
+        except SavedViewInvalid as exc:
             return web.json_response({"success": False, "error": str(exc)}, status=400)
         except Exception:
             self.logger.exception("Saved view operation failed")
@@ -47,21 +50,26 @@ def saved_view_response(handler: Callable) -> Callable:
 
 async def _body(request: web.Request, fields: frozenset) -> dict:
     """A JSON object whose keys are exactly ``fields``."""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):  # JSONDecodeError is a ValueError
+        raise SavedViewInvalid("Expected a JSON object") from None
     if not isinstance(body, dict):
-        raise ValueError("Expected a JSON object")
+        raise SavedViewInvalid("Expected a JSON object")
     if set(body) != fields:
-        raise ValueError("Request must contain exactly " + ", ".join(sorted(fields)))
+        raise SavedViewInvalid(
+            "Request must contain exactly " + ", ".join(sorted(fields))
+        )
     return body
 
 
 def _view_id(request: web.Request) -> int:
     raw = request.match_info["view_id"]
     if not raw.isascii() or not raw.isdigit():
-        raise ValueError("Invalid saved view ID")
+        raise SavedViewInvalid("Invalid saved view ID")
     value = int(raw)
     if not 1 <= value <= _MAX_ID:
-        raise ValueError("Invalid saved view ID")
+        raise SavedViewInvalid("Invalid saved view ID")
     return value
 
 

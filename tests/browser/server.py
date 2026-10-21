@@ -470,6 +470,29 @@ def create_app(root: Path) -> web.Application:
         )
         return web.json_response({"success": True, **manifest})
 
+    @routes.post("/__test__/saved-views/raw")
+    async def insert_raw_saved_view(request: web.Request) -> web.Response:
+        """Store a view row as an older build wrote it, bypassing the API's rules."""
+        data = await request.json()
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"page", "name", "state"}
+            or not all(isinstance(data[key], str) for key in data)
+        ):
+            raise web.HTTPBadRequest()
+
+        def insert() -> int:
+            with api.db.model.get_connection() as conn:
+                return conn.execute(
+                    "INSERT INTO saved_views (page, name, state, position, "
+                    "created_at, updated_at) VALUES (?, ?, ?, 0, 'x', 'x')",
+                    (data["page"], data["name"], data["state"]),
+                ).lastrowid
+
+        return web.json_response(
+            {"success": True, "id": await api._run_in_executor(insert)}
+        )
+
     @routes.post("/__test__/add-nested-image")
     async def add_nested_image(request: web.Request) -> web.Response:
         destination = root / "output" / "project" / "day" / "new-output.png"

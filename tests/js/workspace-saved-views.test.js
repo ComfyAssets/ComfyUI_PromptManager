@@ -187,3 +187,16 @@ test('renaming and deleting a view re-read the list, whatever the outcome', asyn
     assert.throws(() => store.rename(0, 'X'), TypeError);
     assert.throws(() => store.remove('9'), TypeError);
 });
+
+test('a state over the API 4 KB cap is refused before anything is sent (#249 M5)', async () => {
+    const { createSavedViews, stateFits, SavedViewTooLarge, MAX_STATE_BYTES } = await source;
+    assert.equal(MAX_STATE_BYTES, 4096);
+    assert.equal(stateFits(IMAGE_DEFAULTS), true);
+    // Each value is within its own limit; their multibyte UTF-8 together passes 4 KB.
+    const big = { ...IMAGE_DEFAULTS, q: 'é'.repeat(500), folder: 'é'.repeat(1024), tags: Array.from({ length: 20 }, () => 'é'.repeat(50)) };
+    assert.equal(stateFits(big), false);
+    const { api } = fakeApi();
+    const store = createSavedViews(api);
+    await assert.rejects(store.create('images', 'Big', big), error => error instanceof SavedViewTooLarge && error instanceof RangeError);
+    assert.deepEqual(api.calls, []);
+});

@@ -11,7 +11,7 @@
  *   Delete… (danger), Cancel and Save; Delete… asks inside the same dialog, never through `window.confirm`.
  */
 import { createButton } from '../shared/toolkit/core.js';
-import { openInputDialog, openContentDialog, closeWorkspaceDialog } from './workspace-dialogs.mjs';
+import { openInputDialog, openContentDialog, closeWorkspaceDialog, field } from './workspace-dialogs.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
 export const SAVED_VIEWS_URL = '/prompt_manager/saved-views';
@@ -21,6 +21,9 @@ export const RENAMED_TOAST = 'Saved view renamed.';
 export const DELETED_TOAST = 'Saved view deleted.';
 export const RENAME_FAILED_TOAST = 'The view could not be renamed. Try again.';
 export const DELETE_FAILED_TOAST = 'The view could not be deleted. Try again.';
+export const TOO_LARGE_TOAST = 'The view is too large to save. Shorten its search, folder or tags and try again.';
+// The API's cap on a view's encoded state (database/saved_views.py MAX_STATE_BYTES), in UTF-8 bytes of compact JSON.
+export const MAX_STATE_BYTES = 4096;
 const MAX_NAME_LENGTH = 100;
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 50;
@@ -55,6 +58,16 @@ export function normalizeViewState(page, state) {
         const value = field.accepts(source[key]) ? source[key] : field.fallback;
         return [key, Array.isArray(value) ? [...value] : value];
     }));
+}
+
+/** True when the state's compact JSON fits the API's 4 KB cap (the server's encoding: no spaces, UTF-8). */
+export function stateFits(state) {
+    return new TextEncoder().encode(JSON.stringify(state)).length <= MAX_STATE_BYTES;
+}
+
+/** The error `create()` rejects with when the state is over the cap; nothing is sent. */
+export class SavedViewTooLarge extends RangeError {
+    constructor() { super('Saved view state is over 4 KB'); this.name = 'SavedViewTooLarge'; }
 }
 
 /** The concept's default name (a1336): `Search: <q>` while there is a search, else "My workspace view". */
@@ -136,7 +149,9 @@ export function createSavedViews(api, signal) {
         });
     }
     async function create(page, name, state) {
-        const data = await api.post(SAVED_VIEWS_URL, { page, name, state: normalizeViewState(page, state) }, { signal });
+        const full = normalizeViewState(page, state);
+        if (!stateFits(full)) throw new SavedViewTooLarge();
+        const data = await api.post(SAVED_VIEWS_URL, { page, name, state: full }, { signal });
         const view = parseSavedView(data?.view);
         if (!view) throw new TypeError('Invalid saved view');
         await load();
@@ -193,15 +208,15 @@ export function openSaveViewDialog({ scope, trigger, q, onSave }) {
             try {
                 await onSave(name);
                 showWorkspaceToast(SAVED_TOAST);
-            } catch {
-                if (!scope.signal.aborted) showWorkspaceToast(SAVE_FAILED_TOAST);
+            } catch (error) {
+                if (!scope.signal.aborted) showWorkspaceToast(error instanceof SavedViewTooLarge ? TOO_LARGE_TOAST : SAVE_FAILED_TOAST);
             }
         } });
 }
 
 /**
  * D51: the open view's Edit dialog. "View name" (Save keeps the dialog open on an empty name; an unchanged one closes it), then Delete… (danger), Cancel
- * and Save. Delete… swaps the same dialog to its confirmation, Cancel / Delete, so nothing is removed by one press and
+ * and Save. Delete… swaps the same dialog to its confirmation, Cancel / Delete (its Cancel closes the dialog), so nothing is removed by one press and
  * no browser `confirm()` appears. `onRename(name)` and `onDelete()` return the store's promise; the toast reports either
  * outcome, and the shell navigates after a delete.
  */
@@ -212,12 +227,6 @@ export function openEditViewDialog({ scope, trigger, view, onRename, onDelete })
     const remove = createButton('Delete…', 'danger');
     const cancel = createButton('Cancel');
     const save = createButton('Save', 'ca-primary');
-    const field = document.createElement('div');
-    field.className = 'field';
-    const label = document.createElement('label');
-    label.textContent = 'View name';
-    label.htmlFor = input.id = 'action-input';
-    field.append(label, input);
     const actions = document.createElement('div');
     actions.className = 'dialog-actions';
     actions.append(remove, cancel, save);
@@ -235,7 +244,7 @@ export function openEditViewDialog({ scope, trigger, view, onRename, onDelete })
         }
     });
     remove.addEventListener('click', () => confirmDelete({ scope, trigger, view, onDelete }));
-    openContentDialog({ scope, trigger, title: 'Edit saved view', nodes: [field, actions] });
+    openContentDialog({ scope, trigger, title: 'Edit saved view', nodes: [field('View name', input, 'action-input'), actions] });
     input.focus();
     input.select();
 }
@@ -255,7 +264,7 @@ function confirmDelete({ scope, trigger, view, onDelete }) {
             await onDelete();
             showWorkspaceToast(DELETED_TOAST);
         } catch {
-            showWorkspaceToast(DELETE_FAILED_TOAST);
+            if (!scope.signal.aborted) showWorkspaceToast(DELETE_FAILED_TOAST);
         }
     });
     openContentDialog({ scope, trigger, title: 'Delete saved view', nodes: [text, actions] });

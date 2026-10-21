@@ -2,8 +2,13 @@
 
 A view's state holds exactly its page's toolbar values and its Refine-this-view
 refinements, whitelisted per page and stored as compact JSON of at most 4 KB.
-The same validation guards writes and restores. Optional in old backups,
-required once a database is current (see ``library_schema.py``).
+
+Writes (the API's POST and PATCH) validate strictly. Startup and restore check
+only the structure (the table, its columns and each row's types, sizes and JSON
+object), never the value rules: a row saved under older rules must not stop the
+database from opening. Reads normalize instead, so a stale row opens with its
+usable values and defaults for the rest. Optional in old backups, required once
+a database is current (see ``library_schema.py``).
 """
 
 import json
@@ -24,25 +29,32 @@ _LIBRARY_SORTS = ("newest", "oldest", "name", "rating")
 _MEDIA = ("all", "image", "video")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _SOURCE = re.compile(r"all|0|[1-9][0-9]{0,8}")
+FALLBACK_NAME = "Saved view"
 
-# (kind, limit-or-choices) per state key; "text" values are length-capped.
+
+class SavedViewInvalid(ValueError):
+    """A request's page, name or state breaks the write rules (a 400)."""
+
+
+# (kind, limit-or-choices, default) per state key; "text" values are
+# length-capped. The defaults match the client's (saved-views.mjs FIELDS).
 _STATE_FIELDS = {
     "images": {
-        "q": ("text", 500),
-        "category": ("text", 100),
-        "sort": ("choice", _IMAGE_SORTS),
-        "source": ("source", None),
-        "folder": ("text", 1024),
-        "media": ("choice", _MEDIA),
-        "tags": ("tags", None),
+        "q": ("text", 500, ""),
+        "category": ("text", 100, ""),
+        "sort": ("choice", _IMAGE_SORTS, "newest"),
+        "source": ("source", None, "all"),
+        "folder": ("text", 1024, ""),
+        "media": ("choice", _MEDIA, "all"),
+        "tags": ("tags", None, ()),
         # The Favorites page's filter (#249 D51): a view saved there reopens it.
-        "favorites": ("bool", None),
+        "favorites": ("bool", None, False),
     },
     "library": {
-        "q": ("text", 500),
-        "category": ("text", 100),
-        "sort": ("choice", _LIBRARY_SORTS),
-        "tags": ("tags", None),
+        "q": ("text", 500, ""),
+        "category": ("text", 100, ""),
+        "sort": ("choice", _LIBRARY_SORTS, "newest"),
+        "tags": ("tags", None, ()),
     },
 }
 
@@ -71,19 +83,22 @@ def _compact(sql: str) -> str:
 def validate_name(name: object) -> str:
     """The trimmed name, 1 to 100 characters without control characters."""
     if not isinstance(name, str):
-        raise ValueError("Name must be a string")
+        raise SavedViewInvalid("Name must be a string")
     trimmed = name.strip()
     if not 1 <= len(trimmed) <= MAX_NAME_LENGTH:
-        raise ValueError(f"Name must be 1 to {MAX_NAME_LENGTH} characters")
+        raise SavedViewInvalid(f"Name must be 1 to {MAX_NAME_LENGTH} characters")
     if _CONTROL.search(trimmed):
-        raise ValueError("Name contains control characters")
+        raise SavedViewInvalid("Name contains control characters")
     return trimmed
 
 
 def _validate_value(key: str, kind: str, limit, value: object) -> None:
+    """Raise ``SavedViewInvalid`` when *value* breaks *key*'s write rule."""
     if kind == "tags":
         if not isinstance(value, list) or len(value) > MAX_TAGS:
-            raise ValueError(f"State '{key}' must be a list of at most {MAX_TAGS}")
+            raise SavedViewInvalid(
+                f"State '{key}' must be a list of at most {MAX_TAGS}"
+            )
         for tag in value:
             if (
                 not isinstance(tag, str)
@@ -92,61 +107,93 @@ def _validate_value(key: str, kind: str, limit, value: object) -> None:
                 or "," in tag
                 or _CONTROL.search(tag)
             ):
-                raise ValueError(f"State '{key}' holds an invalid tag")
+                raise SavedViewInvalid(f"State '{key}' holds an invalid tag")
         return
     if kind == "bool":
         if not isinstance(value, bool):
-            raise ValueError(f"State '{key}' must be true or false")
+            raise SavedViewInvalid(f"State '{key}' must be true or false")
         return
     if not isinstance(value, str):
-        raise ValueError(f"State '{key}' must be a string")
+        raise SavedViewInvalid(f"State '{key}' must be a string")
     if kind == "choice" and value not in limit:
-        raise ValueError(f"State '{key}' is not a supported value")
+        raise SavedViewInvalid(f"State '{key}' is not a supported value")
     if kind == "source" and not _SOURCE.fullmatch(value):
-        raise ValueError(f"State '{key}' must be 'all' or a source index")
+        raise SavedViewInvalid(f"State '{key}' must be 'all' or a source index")
     if kind == "text" and (len(value) > limit or _CONTROL.search(value)):
-        raise ValueError(f"State '{key}' is too long or has control characters")
+        raise SavedViewInvalid(f"State '{key}' is too long or has control characters")
 
 
 def encode_state(page: object, state: object) -> str:
     """Validate *state* for *page* and return its compact JSON (at most 4 KB)."""
     if page not in PAGES:
-        raise ValueError("Page must be 'images' or 'library'")
+        raise SavedViewInvalid("Page must be 'images' or 'library'")
     fields = _STATE_FIELDS[page]
     if not isinstance(state, dict):
-        raise ValueError("State must be an object")
+        raise SavedViewInvalid("State must be an object")
     if set(state) != set(fields):
-        raise ValueError(
+        raise SavedViewInvalid(
             f"State for {page} must contain exactly " + ", ".join(sorted(fields))
         )
-    for key, (kind, limit) in fields.items():
+    for key, (kind, limit, _default) in fields.items():
         _validate_value(key, kind, limit, state[key])
     encoded = json.dumps(
         {key: state[key] for key in fields}, ensure_ascii=False, separators=(",", ":")
     )
     if len(encoded.encode("utf-8")) > MAX_STATE_BYTES:
-        raise ValueError("State must encode to at most 4 KB")
+        raise SavedViewInvalid("State must encode to at most 4 KB")
     return encoded
 
 
-def _row_error(page, name, state) -> bool:
-    """True when a persisted row would not pass the write validation."""
+def _decode_object(raw: object) -> Optional[dict]:
+    """The JSON object stored in *raw*, or None when it holds no object."""
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return None
     try:
-        if validate_name(name) != name:
-            return True
-        decoded = json.loads(state)
-        return encode_state(page, decoded) != state
-    except (ValueError, TypeError):
-        return True
+        decoded = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def normalize_state(page: str, raw: object) -> dict:
+    """The page's full state from a stored row, never raising.
+
+    Every key of the page's current whitelist is present: a stored value that
+    passes today's write rule is kept, anything else (missing, invalid, or a
+    row that is not a JSON object) takes the key's default, and keys the
+    whitelist no longer has are dropped. An unknown page has no keys.
+    """
+    fields = _STATE_FIELDS.get(page, {})
+    stored = _decode_object(raw) or {}
+    state = {}
+    for key, (kind, limit, default) in fields.items():
+        value = stored.get(key, default)
+        try:
+            _validate_value(key, kind, limit, value)
+        except SavedViewInvalid:
+            value = default
+        state[key] = list(value) if kind == "tags" else value
+    return state
+
+
+def normalize_name(name: object) -> str:
+    """A stored name made displayable: trimmed, capped, never empty."""
+    text = _CONTROL.sub("", name) if isinstance(name, str) else ""
+    trimmed = text.strip()[:MAX_NAME_LENGTH].strip()
+    return trimmed or FALLBACK_NAME
 
 
 def saved_views_schema_error(
     conn: sqlite3.Connection, *, allow_missing: bool = True
 ) -> Optional[str]:
-    """Reject unsupported saved-views schemas and invalid persisted values.
+    """Reject unsupported saved-views schemas and structurally invalid rows.
 
-    Reads only. A missing table is acceptable for backups that predate it
-    unless ``allow_missing`` is false.
+    Reads only. Checks the table, its columns, each row's types and sizes and
+    that each state is a JSON object; never the value rules, which change
+    between versions and are normalized on read instead. A missing table is
+    acceptable for backups that predate it unless ``allow_missing`` is false.
     """
     objects = conn.execute(
         "SELECT type,name,sql FROM sqlite_master WHERE name=? "
@@ -169,6 +216,7 @@ def saved_views_schema_error(
     # Literal SQL: the table name and limits are constants of this module.
     if conn.execute(
         "SELECT 1 FROM saved_views WHERE typeof(page) != 'text' "
+        "OR page NOT IN ('images','library') "
         "OR typeof(name) != 'text' OR typeof(state) != 'text' "
         "OR typeof(position) != 'integer' OR typeof(created_at) != 'text' "
         "OR typeof(updated_at) != 'text' "
@@ -178,8 +226,8 @@ def saved_views_schema_error(
         "OR length(CAST(updated_at AS BLOB)) > 64 LIMIT 1"
     ).fetchone():
         return "Saved views contains invalid values"
-    for page, name, state in conn.execute("SELECT page, name, state FROM saved_views"):
-        if _row_error(page, name, state):
+    for (state,) in conn.execute("SELECT state FROM saved_views"):
+        if _decode_object(state) is None:
             return "Saved views contains invalid values"
     return None
 
@@ -204,7 +252,12 @@ def migrate_saved_views(conn: sqlite3.Connection) -> None:
 
 def _view(row) -> dict:
     view_id, page, name, state = row
-    return {"id": view_id, "page": page, "name": name, "state": json.loads(state)}
+    return {
+        "id": view_id,
+        "page": page,
+        "name": normalize_name(name),
+        "state": normalize_state(page, state),
+    }
 
 
 class SavedViewOperations:

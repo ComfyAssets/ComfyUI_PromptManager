@@ -141,10 +141,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     if (!IMAGE_SORT_OPTIONS.some(([value]) => value === filters.sort)) filters.sort = 'newest';
     // A saved Source or Folder is only listed once discovery confirms it still exists; until then nothing is fetched.
     let savedScopePending = Boolean(saved) && (filters.root !== 'all' || filters.subfolder !== '');
+    // The first discovery settled (found or failed): only then may a pending saved scope be kept or dropped (#249 M3).
+    let discoverySettled = false;
     scope.cleanup(() => {
         // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
-        // A favorites-only collection is not the Images collection, so it never becomes the Images return state.
-        if (!embedded && !filters.favorites) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
+        // A favorites-only collection or a saved view is not the plain Images collection, so it never becomes the
+        // Images return state (#249 D51, and M2 for saved views).
+        if (!embedded && !filters.favorites && !saved) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
@@ -616,6 +619,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // The ruled selection lifetime: a replaced collection may no longer hold the checked files.
         bar?.clear();
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
+        // A toolbar change while discovery is still pending keeps the saved Source and Folder; the settled discovery
+        // then lists the view with every current value (#249 M3).
+        if (savedScopePending && !discoverySettled) { updateScope(); return; }
         settleSavedScope();
         updateScope();
         stream.reset(filters, {load:!recovering});
@@ -777,6 +783,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // The page's one discovery alert is written once both first loads settled (#249 final review m6).
     if (!embedded) Promise.all([loadOptions(), loadCategories()]).then(() => {
         if (scope.signal.aborted) return;
+        discoverySettled = true;
         renderLoadStatus();
         if (savedScopePending) reset();
     });

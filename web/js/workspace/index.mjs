@@ -1,7 +1,7 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
 import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts,
-    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS } from './state.mjs';
+    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages, onFavoriteChange } from './images.mjs';
 import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
@@ -111,8 +111,14 @@ function mountWorkspace() {
     scope.cleanup(() => { for (const request of countRequests.values()) request.abort(); });
     // A confirmed Library or vocabulary write cannot change the Images count, so only Library and Tags are re-read.
     scope.cleanup(onLibraryWrite(() => refreshCounts(LIBRARY_WRITE_COUNTS)));
-    // Starring or unstarring anywhere (Images, Favorites, Library media) re-reads the Favorites count (D51).
-    scope.cleanup(onFavoriteChange(() => refreshCounts(FAVORITE_WRITE_COUNTS)));
+    // Starring or unstarring anywhere (Images, Favorites, Library media) re-reads the Favorites count (D51), once
+    // after a run of quick toggles settles rather than once per click (#249 M1).
+    let favoriteCountTimer = 0;
+    scope.cleanup(onFavoriteChange(() => {
+        clearTimeout(favoriteCountTimer);
+        favoriteCountTimer = setTimeout(() => refreshCounts(FAVORITE_WRITE_COUNTS), FAVORITE_COUNT_DELAY_MS);
+    }));
+    scope.cleanup(() => clearTimeout(favoriteCountTimer));
     refreshCounts(NAV_COUNT_ROUTES);
     let viewScope;
     let firstRender = true;

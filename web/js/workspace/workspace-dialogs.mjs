@@ -32,7 +32,8 @@ function el(tag, text, className) {
     return node;
 }
 
-function field(label, control, id) {
+/** A labelled `.field` row: `label` names `control`, which takes `id` (shared with the saved-view Edit dialog). */
+export function field(label, control, id) {
     const wrapper = el('div', undefined, 'field');
     const caption = el('label', label);
     caption.htmlFor = id;

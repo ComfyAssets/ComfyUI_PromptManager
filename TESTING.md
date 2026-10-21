@@ -441,6 +441,18 @@ Recorded shell deviations:
   `#/saved/<id>`. Opening one shows its page with the saved toolbar value and Refine
   filters, and the view's name as the h1, breadcrumb and title. A value its page no
   longer accepts (a removed Source or Folder) stays default; an unknown id opens Images.
+  A toolbar change made while the sources are still loading keeps the saved Source and
+  Folder until discovery settles. A saved view, like Favorites, never replaces the plain
+  Images or Library return state. Writes (POST, PATCH) validate strictly; a state over
+  4 KB is refused in the browser with "The view is too large to save. Shorten its
+  search, folder or tags and try again." Startup and restore check only the table's
+  structure and that each row's state is a JSON object of at most 4 KB, never the value
+  rules, so a row saved under older rules (a missing or retired key, a sort no longer
+  offered) never stops the database from opening: reads fill missing keys with their
+  defaults, drop unknown keys, default invalid values and make the name displayable
+  (`tests/test_saved_views.py`). Only request validation is a 400; any other failure is
+  a logged 500 with a generic message. The Favorites count re-read after starring is
+  coalesced to one read 300 ms after the last toggle.
   `a saved view row matches the concept's` saves one view in both documents and
   compares the rows; `tests/browser/workspace-saved-views.spec.mjs` covers saving,
   reopening, the defaults that replace rejected values, and failed reads and saves.
@@ -461,7 +473,8 @@ Recorded shell deviations:
   saved view's heading leads with **Edit**: "Edit saved view" with "View name" and
   Delete… (danger), Cancel and Save. Save re-reads the list, retitles the page and
   toasts "Saved view renamed."; an empty name keeps the dialog open. Delete… swaps the
-  same dialog to "Delete saved view" (Cancel / Delete; never `window.confirm`); Delete
+  same dialog to "Delete saved view" (Cancel / Delete; never `window.confirm`; its Cancel
+  closes the dialog without deleting rather than returning to Edit); Delete
   removes the view, replaces the dead route with the view's plain page and toasts
   "Saved view deleted.". Failures toast "The view could not be renamed. Try again." or
   "The view could not be deleted. Try again."; a view another tab already deleted counts

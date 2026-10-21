@@ -196,6 +196,75 @@ test('a saved value the page no longer accepts stays default while the rest appl
     await expect(imageCards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
 });
 
+test('a view stored under older rules still lists and opens with its usable values (#249 I1)', async ({ page, request }) => {
+    // No favorites key, a retired key and a sort that is no longer offered, as an older build stored it.
+    const raw = async data => {
+        const response = await request.post('/__test__/saved-views/raw', { data });
+        await expect(response).toBeOK();
+        return (await response.json()).id;
+    };
+    const imagesId = await raw({ page: 'images', name: 'Old cats', state: JSON.stringify({ q: 'cat', sort: 'shuffle', layout: 'grid' }) });
+    await raw({ page: 'library', name: '', state: JSON.stringify({ q: 'dog', sort: 'name-desc' }) });
+    expect(await listed(request)).toEqual([
+        { id: imagesId, page: 'images', name: 'Old cats', state: { ...IMAGE_DEFAULTS, q: 'cat' } },
+        expect.objectContaining({ page: 'library', name: 'Saved view', state: { q: 'dog', category: '', sort: 'newest', tags: [] } }),
+    ]);
+    await page.goto(`${workspace}#/saved/${imagesId}`);
+    await expect(heading(page)).toHaveText('Old cats');
+    await expect(viewRows(page)).toHaveText(['Old cats', 'Saved view']);
+    await expect(search(page)).toHaveValue('cat');
+    await expect(sortBy(page)).toHaveValue('newest');
+    await expect(imageCards(page)).toHaveCount(1);
+    await savedNav(page).getByRole('link', { name: 'Saved view', exact: true }).click();
+    await expect(heading(page)).toHaveText('Saved view');
+    await expect(search(page)).toHaveValue('dog');
+    await expect(promptCards(page)).toHaveCount(1);
+});
+
+test('leaving a saved view returns Images and the Library to their own last state (#249 M2)', async ({ page, request }) => {
+    const dogs = await create(request, { page: 'images', name: 'Dogs', state: { ...IMAGE_DEFAULTS, q: 'dogs' } });
+    const cats = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [] } });
+    await page.goto(`${workspace}#/images`);
+    await search(page).fill('cat');
+    await expect(imageCards(page)).toHaveCount(1);
+    await viewRows(page).filter({ hasText: 'Dogs' }).click();
+    await expect(heading(page)).toHaveText('Dogs');
+    await expect(search(page)).toHaveValue('dogs');
+    await page.locator('#primary-nav a[data-route="images"]').click();
+    await expect(heading(page)).toHaveText('Images');
+    await expect(search(page)).toHaveValue('cat');
+    await expect(imageCards(page)).toHaveCount(1);
+
+    await page.locator('#primary-nav a[data-route="library"]').click();
+    await expect(promptCards(page)).toHaveCount(2);
+    await search(page).fill('dog');
+    await expect(promptCards(page)).toHaveCount(1);
+    await page.goto(`${workspace}#/saved/${cats.id}`);
+    await expect(heading(page)).toHaveText('Cats');
+    await expect(search(page)).toHaveValue('cat');
+    await page.locator('#primary-nav a[data-route="library"]').click();
+    await expect(heading(page)).toHaveText('Prompt library');
+    await expect(search(page)).toHaveValue('dog');
+    await expect(promptCards(page)).toHaveCount(1);
+    expect(dogs.id).not.toBe(cats.id);
+});
+
+test('a toolbar change while sources load keeps the saved Source and Folder (#249 M3)', async ({ page, request }) => {
+    const view = await create(request, { page: 'images', name: 'Input shared', state: { ...IMAGE_DEFAULTS, source: '1', folder: 'shared' } });
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    await page.route('**/prompt_manager/gallery/subfolders?**', async route => { await held; await route.fallback(); });
+    await page.goto(`${workspace}#/saved/${view.id}`);
+    await expect(heading(page)).toHaveText('Input shared');
+    await sortBy(page).selectOption('name');
+    await expect(imageCards(page)).toHaveCount(0);
+    release();
+    await expect(filtersButton(page)).toHaveText('Filters · 2');
+    await expect(sortBy(page)).toHaveValue('name');
+    await expect(imageCards(page)).toHaveCount(1);
+    await expect(imageCards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
+});
+
 test('an unknown saved view opens Images, and a failed listing offers Retry', async ({ page, request }) => {
     await page.goto(`${workspace}#/saved/999`);
     await expect(page).toHaveURL(/#\/images$/);
