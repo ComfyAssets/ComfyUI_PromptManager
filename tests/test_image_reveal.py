@@ -13,6 +13,7 @@ import sys
 import tempfile
 import types
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
 
@@ -288,6 +289,18 @@ class TestRevealInFileManager(unittest.TestCase):
         ):
             self.reveal()
         self.popen.assert_not_called()
+
+    def test_posix_opener_lookup_does_not_depend_on_the_host_path_rules(self):
+        # Python 3.13 on Windows no longer treats "/usr/bin/x" as absolute. The
+        # Linux and macOS openers are POSIX paths whatever host runs the code,
+        # so a host os.path with those rules must not reject them.
+        windows_313 = SimpleNamespace(isabs=lambda value: False)
+        with (
+            patch.object(file_reveal.os, "path", windows_313),
+            self.which({"xdg-open": "/usr/bin/xdg-open", "rel": "bin/rel"}),
+        ):
+            self.assertEqual(file_reveal._executable("xdg-open"), "/usr/bin/xdg-open")
+            self.assertIsNone(file_reveal._executable("rel"))
 
     def test_children_get_a_minimal_environment(self):
         inherited = {

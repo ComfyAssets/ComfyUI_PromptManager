@@ -11,6 +11,7 @@ neither a file name nor ``PATH`` can change what runs or what it parses.
 
 import ipaddress
 import os
+import posixpath
 import shutil
 
 # Only POSIX argv launches of a fixed opener (see _launch); Windows never
@@ -227,9 +228,14 @@ class RevealGate:
 
 
 def _executable(name: str) -> str | None:
-    """Absolute path of *name* on the fixed SYSTEM_PATH, never a relative hit."""
+    """Absolute path of *name* on the fixed SYSTEM_PATH, never a relative hit.
+
+    Only the Linux and macOS openers are looked up here, so absoluteness follows
+    POSIX rules rather than the host's (Python 3.13 on Windows no longer counts
+    "/usr/bin/x" as absolute).
+    """
     found = shutil.which(name, path=SYSTEM_PATH)
-    return found if found and os.path.isabs(found) else None
+    return found if found and posixpath.isabs(found) else None
 
 
 def _macos_open() -> str | None:
