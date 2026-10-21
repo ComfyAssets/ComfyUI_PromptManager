@@ -152,6 +152,9 @@ function choose(select, value) {
  * Tags; Folder may add `optionsFor(source)`, the options of one Source, so its list follows the chosen Source and a
  * folder that Source lacks returns to the first option. `values` holds the current value per key. Apply reports the edited values; Clear resets every field and
  * reports the cleared values plus `category: ''`, so the page clears its toolbar category too. Both close first.
+ * Returns `{setOptions(key, options)}` for options discovered after the dialog opened (a slow folder discovery): the
+ * select is refilled and shows the value the field opened with, or the one chosen since, once it is offered; a Folder
+ * that follows its Source is refilled from `optionsFor` again. It does nothing once this dialog closed or was replaced.
  */
 export function openRefineDialog({ scope, fields, values = {}, onApply, onClear, trigger = null }) {
     requireScope(scope);
@@ -172,16 +175,21 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
         choose(select, values[key]);
         return [{ key, control: select, cleared: item.options[0][0], optionsFor: item.optionsFor }];
     });
+    // Each select's wanted value: the one it opened with until the person picks another (see setOptions).
+    const wanted = new Map(controls.map(({ key }) => [key, values[key]]));
+    for (const { key, control } of controls) {
+        if (key !== 'tags') control.addEventListener('change', () => wanted.set(key, control.value));
+    }
     const source = controls.find(item => item.key === 'source');
     const folder = controls.find(item => item.key === 'folder' && typeof item.optionsFor === 'function');
-    const followSource = () => {
-        const chosen = folder.control.value;
+    const followSource = (chosen = folder.control.value) => {
         fillSelect(folder.control, 'folder', folder.optionsFor(source.control.value));
         choose(folder.control, chosen);
     };
     if (source && folder) {
-        followSource();
-        source.control.addEventListener('change', followSource);
+        followSource(values.folder);
+        // A Source that lacks the chosen folder clears it, and that cleared folder is the wanted one from then on.
+        source.control.addEventListener('change', () => { followSource(); wanted.set('folder', folder.control.value); });
     }
     const read = () => Object.fromEntries(controls.map(({ key, control }) =>
         [key, key === 'tags' ? control.value.trim() : control.value]));
@@ -207,6 +215,15 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
         ...controls.map(({ key, control }) => field(FIELD_LABELS[key], control, `filter-${key}`)),
         actions,
     ], { scope, trigger });
+    const opened = session;
+    function setOptions(key, options) {
+        const item = controls.find(candidate => candidate.key === key);
+        if (session !== opened || !item || key === 'tags') return;
+        fillSelect(item.control, key, options);
+        choose(item.control, wanted.get(key));
+        if (source && folder && (item === source || item === folder)) followSource(wanted.get('folder'));
+    }
+    return { setOptions };
 }
 
 /** One operation row; a press on its busy (aria-disabled) action is ignored and keeps the dialog open. */
