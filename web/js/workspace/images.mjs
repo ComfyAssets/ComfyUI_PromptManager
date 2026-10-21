@@ -648,12 +648,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }
     }
     /**
-     * D42: the concept's toast stays fixed at the bottom, so a discovery alert the rescan leaves is scrolled, only when
-     * it must be, clear of the toast's band (its `scroll-margin-block-end`).
+     * D42: the concept's toast stays fixed at the bottom, so a discovery alert the rescan leaves is scrolled clear of
+     * the toast's band (its `scroll-margin-block-end`) only when it is in that band; elsewhere the page stays put.
      */
     function announceRescan(message) {
         showWorkspaceToast(message);
-        if (!optionsStatus.hidden) optionsStatus.scrollIntoView({block:'nearest', inline:'nearest'});
+        if (optionsStatus.hidden) return;
+        const {top, bottom} = optionsStatus.getBoundingClientRect();
+        const band = parseFloat(getComputedStyle(optionsStatus).scrollMarginBlockEnd) || 0;
+        if (bottom > innerHeight - band && top < innerHeight) optionsStatus.scrollIntoView({block:'nearest', inline:'nearest'});
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;
