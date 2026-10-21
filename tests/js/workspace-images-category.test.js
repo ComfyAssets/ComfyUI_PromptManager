@@ -33,7 +33,7 @@ test('the outcome toast counts the prompts and the skipped images', async () => 
 test('the dialog and failure copy is the plan\'s', async () => {
     const {CATEGORY_DIALOG, CATEGORY_NONE_LINKED, CATEGORY_FAILED} = await source;
     assert.deepEqual(CATEGORY_DIALOG, {title:'Categorize selected images', label:'Category', action:'Apply'});
-    assert.equal(CATEGORY_NONE_LINKED, "The selected images aren't in your Library yet, so there is no prompt category to set.");
+    assert.equal(CATEGORY_NONE_LINKED, "None of the selected images is linked to a saved prompt, so there is no prompt category to set.");
     assert.equal(CATEGORY_FAILED, 'Category could not be set. Try again.');
     assert.ok(Object.isFrozen(CATEGORY_DIALOG));
 });
