@@ -10,6 +10,7 @@ import {layoutLibraryRows,visibleLibraryRows,usedLabel,ratingLabel} from './libr
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
+import {addedTerms} from './history-state.mjs';
 import {pageHeading} from './heading.mjs';
 import {mountToolbar} from './toolbar.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
@@ -474,11 +475,43 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const variants=el('section',undefined,'surface timeline-panel');variants.setAttribute('aria-label','Saved negative variants');
             const panelHeading=el('div',undefined,'panel-heading'),panelCopy=el('div'),rowActions=el('div',undefined,'row-actions');
             panelCopy.append(el('h2','Negative variants'),el('p','Choose a red dot to change the negative and filter this gallery.','small'));
-            // Compare negatives (aria-pressed) opens the comparison section (Task F3); Show archived is the approved #235 addition.
+            // Compare negatives (aria-pressed) opens the comparison section below; Show archived is the approved #235 addition.
             const compare=createButton('Compare negatives'),addNegative=createButton('+ Add negative'),showArchived=createButton('');
             compare.setAttribute('aria-pressed','false');showArchived.setAttribute('aria-pressed','false');
             rowActions.append(compare,addNegative,showArchived);panelHeading.append(panelCopy,rowActions);variants.append(panelHeading);
-            content.listen(compare,'click',()=>compare.setAttribute('aria-pressed',String(compare.getAttribute('aria-pressed')!=='true')));
+            content.listen(compare,'click',()=>{compare.setAttribute('aria-pressed',String(compare.getAttribute('aria-pressed')!=='true'));updateCompare();});
+            // The concept's comparison (app.js a599-616, style.css 1155-1179): after the timeline panel, the baseline (the oldest
+            // active variant, D25) beside the selected negative, then its added terms. Another dot updates it in place.
+            const compareSection=el('section',undefined,'surface');let compareBlocks=[],compareKey=null;
+            const disposeCompareBlocks=()=>{for(const item of compareBlocks)item.dispose();compareBlocks=[];};
+            content.cleanup(disposeCompareBlocks);
+            function compareBlock(text,label) {
+                const item=el('div',undefined,'compare-item');
+                // D46: the two blocks are named Baseline and Selected, so no region or action name repeats on the page.
+                compareBlocks.push(mountPromptBlocks(item,{prompts:{negative:{status:'resolved',text,source:'library'}},roles:['negative'],sender,parentScope:content,includePairAction:false,contextLabel:label,title:displayTitle(detail.positive)}));
+                compareBlocks.at(-1).setState({prompts:{negative:{status:'resolved',text,source:'library'}},actionsEnabled:savedReadState==='current'});
+                return item;
+            }
+            function updateCompare() {
+                if(detail.variant_total===0) compare.setAttribute('aria-pressed','false');
+                compare.disabled=detail.variant_total===0;
+                if(compare.getAttribute('aria-pressed')!=='true') {compareSection.remove();disposeCompareBlocks();compareKey=null;return;}
+                if(variants.nextSibling!==compareSection) variants.after(compareSection);
+                // D46: the oldest active variant may sit on an unloaded page; the baseline is never guessed from the newest lanes.
+                const baseline=detail.variants_has_more?null:detail.variants.reduce((oldest,variant)=>!oldest || variant.id<oldest.id?variant:oldest,null);
+                const lane=[...lanes.values()].find(item=>item.entry.variant.id===activePairId) || [...lanes.values()].find(item=>item.entry.variant.id===baseline?.id);
+                const selected=(activePairId!==null && activePairId!==undefined && recordFor(activePairId)) || baseline;
+                const name=lane?laneName(lane.entry):'';
+                const key=JSON.stringify([baseline?.id,baseline?.negative_text,selected?.id,selected?.negative_text,name,displayTitle(detail.positive),savedReadState]);
+                if(key===compareKey) return;
+                compareKey=key;disposeCompareBlocks();compareSection.replaceChildren(el('h2','Compare negative variants'));
+                if(!baseline || !selected) {compareSection.append(el('p','Load more negative variants to reach the baseline.','small'));return;}
+                const grid=el('div',undefined,'compare-grid');grid.append(compareBlock(baseline.negative_text,'Baseline'),compareBlock(selected.negative_text,'Selected'));
+                compareSection.append(el('p',`Baseline compared with ${name}. Choose another red dot to change the comparison.`),grid,el('p','Added terms','small'));
+                const terms=addedTerms(baseline.negative_text,selected.negative_text);
+                if(terms.length) for(const term of terms) compareSection.append(el('span',`+ ${term}`,'diff-added'));
+                else compareSection.append(el('p','No added terms.','small'));
+            }
             const branches=el('div',undefined,'timeline');const positiveLane=el('div',undefined,'positive-lane');positiveLane.append(el('span','Positive prompt · unchanged'));branches.append(positiveLane);
             const lanes=new Map();const emptyNote=el('p','No saved negative variants. Existing image associations remain available.','muted');
             // D45: the bounded page count stays a status for assistive technology; the concept shows no count line.
@@ -564,6 +597,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 variantError.hidden=!loadError;variantError.textContent=!loadError?'':state.variantsError?'Negative variants could not be loaded. Retry to continue.':'Archived negative variants could not be loaded. Retry to continue.';
                 const archivedCount=Number.isSafeInteger(detail.positive.archived_variant_count)?detail.positive.archived_variant_count:0;
                 showArchived.textContent=`Show archived (${archivedCount})`;showArchived.setAttribute('aria-pressed',String(archivedShown));
+                updateCompare();
             };
             const updateMeta=()=>{imagesMeta.textContent=countOf(detail.positive.image_count ?? 0,'image');variantsMeta.textContent=countOf(detail.positive.variant_count ?? 0,'negative variant');};
             updateParent=()=>{
@@ -644,7 +678,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 galleryScope?.dispose();galleryScope=createScope();images.replaceChildren();
                 // An archived pair's images are read in the archived scope; the gallery stays authoritative.
                 mountImages(images,api,galleryScope,{embedded:true,fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
-                updateSend();
+                updateSend();updateCompare();
             }
             /** A metadata receipt names no pair, so the page re-reads its own selection through the exact-ID route. */
             async function rereadSelectedPair() {

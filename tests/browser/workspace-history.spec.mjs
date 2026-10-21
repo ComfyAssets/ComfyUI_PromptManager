@@ -837,3 +837,62 @@ test('all images dialog lists every image for the positive',async({page,request}
     await page.evaluate(()=>{location.hash='#/overview';});await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     await expect(page.locator('dialog[open]')).toHaveCount(0);await expect(page.locator('#modal')).toHaveCount(0);
 });
+test('compare toggles, follows the selected dot and stacks at 390',async({page})=>{
+    const f=page.fixture;await open(page,f.canonical_id);const panel=variantsPanel(page);
+    const compare=panel.getByRole('button',{name:'Compare negatives',exact:true});
+    const section=page.locator('.library-history .timeline-panel + section.surface');
+    await expect(section).toHaveCount(0);
+    await compare.click();await expect(compare).toHaveAttribute('aria-pressed','true');
+    // The concept section (app.js a599-616) follows the timeline panel; the baseline is the oldest active lane (D25).
+    await expect(section).toHaveCount(1);
+    expect(await section.evaluate(node=>[...node.children].map(child=>child.tagName.toLowerCase()+(child.className?'.'+child.className:'')))).toEqual(['h2','p','div.compare-grid','p.small','p.small']);
+    await expect(section.locator(':scope > h2')).toHaveText('Compare negative variants');
+    await expect(section.locator(':scope > p').first()).toHaveText('Baseline compared with No negative. Choose another red dot to change the comparison.');
+    const items=section.locator(':scope > .compare-grid > .compare-item');await expect(items).toHaveCount(2);
+    await expect(items.nth(0).locator('.prompt-section.negative .prompt-text')).toHaveText('blurred edges, watermark');
+    await expect(items.nth(1).locator('.prompt-section.negative .prompt-text')).toHaveText('No negative prompt (explicitly empty)');
+    await expect(items.nth(0).locator('.prompt-section.positive')).toHaveCount(0);
+    // D46: the two blocks are named apart, so no region or action name repeats on the page.
+    await expect(section.getByRole('region',{name:'Baseline negative prompt',exact:true})).toBeVisible();
+    await expect(section.getByRole('region',{name:'Selected negative prompt',exact:true})).toBeVisible();
+    await expect(section.locator(':scope > p.small').first()).toHaveText('Added terms');
+    await expect(section.locator(':scope > p.small').nth(1)).toHaveText('No added terms.');
+    await expect(section.locator('.diff-added')).toHaveCount(0);
+    // Another dot updates the same section in place.
+    const node=await section.elementHandle();
+    await panel.getByRole('button',{name:'Select negative Clean geometry',exact:true}).click();
+    await expect(section.locator(':scope > p').first()).toHaveText('Baseline compared with Clean geometry. Choose another red dot to change the comparison.');
+    await expect(items.nth(1).locator('.prompt-text')).toHaveText('flat light');
+    await expect(section.locator(':scope > span.diff-added')).toHaveText(['+ flat light']);
+    await expect(section.locator(':scope > p.small')).toHaveCount(1);
+    expect(await node.evaluate(element=>element.isConnected)).toBe(true);
+    await expect(section.locator('.diff-added')).toHaveCSS('display','inline-block');
+    await expect(section.locator('.compare-item').first()).toHaveCSS('padding','15px');
+    await page.setViewportSize({width:1600,height:1100});
+    let boxes=await items.evaluateAll(nodes=>nodes.map(node=>node.getBoundingClientRect().toJSON()));
+    expect(boxes[1].x).toBeGreaterThan(boxes[0].x+boxes[0].width-1);expect(Math.abs(boxes[1].y-boxes[0].y)).toBeLessThan(1);
+    await page.setViewportSize({width:390,height:844});
+    boxes=await items.evaluateAll(nodes=>nodes.map(node=>node.getBoundingClientRect().toJSON()));
+    expect(Math.abs(boxes[1].x-boxes[0].x)).toBeLessThan(1);expect(boxes[1].y).toBeGreaterThanOrEqual(boxes[0].y+boxes[0].height);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    await panel.getByRole('button',{name:'Select negative Quality baseline',exact:true}).click();
+    await expect(section.locator(':scope > p').first()).toHaveText('Baseline compared with Quality baseline. Choose another red dot to change the comparison.');
+    await expect(section.locator(':scope > p.small').nth(1)).toHaveText('No added terms.');
+    await compare.click();await expect(compare).toHaveAttribute('aria-pressed','false');await expect(section).toHaveCount(0);
+});
+test('compare waits for the page holding the oldest active negative',async({page})=>{
+    const f=page.fixture;
+    // A bounded first page that does not reach the oldest saved pair: the baseline is not guessed from the newest lanes (D46).
+    await page.route(new RegExp(`/prompt_manager/library/${f.canonical_id}\\?`),async route=>{
+        const url=new URL(route.request().url());if(url.searchParams.has('variant_cursor') || url.searchParams.get('archive')) return route.continue();
+        const response=await route.fetch(),body=await response.json();
+        await route.fulfill({response,json:{...body,variants:body.variants.slice(0,2),variants_has_more:true,variants_next_cursor:'held'}});
+    });
+    await open(page,f.canonical_id);const panel=variantsPanel(page);
+    await panel.getByRole('button',{name:'Compare negatives',exact:true}).click();
+    const section=page.locator('.library-history .timeline-panel + section.surface');
+    await expect(section.locator(':scope > h2')).toHaveText('Compare negative variants');
+    await expect(section.locator(':scope > p.small')).toHaveText('Load more negative variants to reach the baseline.');
+    await expect(section.locator('.compare-grid')).toHaveCount(0);
+    await page.unroute(new RegExp(`/prompt_manager/library/${f.canonical_id}\\?`));
+});

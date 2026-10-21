@@ -114,6 +114,16 @@ function validateDetail(value, runId, epoch) {
     value.contexts.forEach(validateContext);
     requireValue(new Set(value.contexts.map(c => c.anchor_id)).size === value.contexts.length);
 }
+/**
+ * Compare negatives (#249 D25): the selected negative's terms the baseline lacks, by the concept's rule (app.js a600-614):
+ * split on commas, trim, drop empty terms, then an exact, case-sensitive difference that keeps the selected order and repeats.
+ */
+export function addedTerms(base, selected) {
+    if (typeof base !== 'string' || typeof selected !== 'string') throw new TypeError('Negative texts must be strings');
+    const terms = text => text.split(',').map(term => term.trim());
+    const baseline = new Set(terms(base));
+    return terms(selected).filter(term => term && !baseline.has(term));
+}
 export function frozenPromptRoles(context, mode) {
     requireValue(['raw', 'effective'].includes(mode), 'Invalid frozen prompt mode'); validateContext(context);
     return Object.fromEntries(['positive', 'negative'].map(role => {
