@@ -147,3 +147,16 @@ test('a Library or vocabulary write re-reads only the Library and Tags counts', 
     assert.deepEqual(settled.sort(), [['library', 4], ['tags', 9]]);
     assert.deepEqual([...counts], [['library', 4], ['tags', 9]]);
 });
+
+test('navigating to the current route re-renders it, as the concept go() does', async () => {
+    const {mountRouter,navigateTo}=await source;
+    const win=new EventTarget();win.location={hash:'#/library/12'};
+    win.history={state:null,replaceState(state,unused,hash){win.location.hash=hash;}};
+    const seen=[];const dispose=mountRouter(win,route=>seen.push([route.id,route.positiveId]));
+    navigateTo('#/library/12',win);
+    assert.deepEqual(seen,[['library',12],['library',12]]);
+    // A different route only sets the hash; its hashchange renders it once.
+    navigateTo('#/library/13',win);assert.equal(win.location.hash,'#/library/13');assert.equal(seen.length,2);
+    win.dispatchEvent(new Event('hashchange'));assert.deepEqual(seen.at(-1),['library',13]);
+    dispose();navigateTo('#/library/13',win);assert.equal(seen.length,3);
+});

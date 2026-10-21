@@ -369,6 +369,20 @@ test('embedded gallery uses the same full inspector',async({page,request})=>{
     await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel.locator('.detail-inner > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);await expect(panel).not.toHaveAttribute('id','image-inspector');await openSelected(page);await expect(page.locator('#viewer-dialog .file-inspector')).toHaveCount(1);
 });
 
+test('Prompt history to the shown route closes the viewer and re-renders it, as the concept go() does',async({page,request})=>{
+    await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();const list=await(await request.get('/prompt_manager/library')).json();const id=list.items.find(item=>item.text.startsWith('Inspector portrait')).id;
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');await expect(inspector(page).getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();
+    await openSelected(page);const viewer=page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
+    const heading=page.locator('#workspace-main h1');await heading.evaluate(node=>{node.dataset.beforeHistory='true';});
+    await viewer.locator('#viewer-details').getByRole('button',{name:'Prompt history',exact:true}).click();
+    await expect(page.locator('dialog#viewer-dialog[open]')).toHaveCount(0);await expect(page).toHaveURL(new RegExp(`#/library/${id}$`));
+    await expect(page.locator('#workspace-main h1[data-before-history]')).toHaveCount(0);await expect(heading).toBeFocused();
+    // The side panel's Prompt history does the same.
+    await selectFile(page,'complete.png');await heading.evaluate(node=>{node.dataset.beforeHistory='true';});
+    await inspector(page).getByRole('button',{name:'Prompt history',exact:true}).click();
+    await expect(page.locator('#workspace-main h1[data-before-history]')).toHaveCount(0);await expect(heading).toBeFocused();
+});
+
 test('full inspector labels container representations and releases action URLs',async({page,request})=>{
     await fullFixture(page,request);
     await page.evaluate(async()=>{
@@ -440,6 +454,11 @@ test.describe('full inspector coarse pointer',()=>{
             expect(box.width,box.name).toBeGreaterThanOrEqual(80);expect(box.height,box.name).toBeGreaterThanOrEqual(80);
         }
         const raw=viewer.getByText('Workflow & raw metadata',{exact:true});await raw.scrollIntoViewIfNeeded();await raw.focus();await expect(raw).toBeInViewport();
+        // #249 D34: the viewer details' disclosure summaries and "Download original" keep 40px coarse targets as well.
+        const rail=viewer.locator('#viewer-details');await rail.getByText('File & provenance',{exact:true}).click();await expect(rail.getByRole('link',{name:'Download original',exact:true})).toBeVisible();
+        const details=await rail.locator(':is(summary,a)').evaluateAll(nodes=>nodes.map(node=>{const {width,height}=node.getBoundingClientRect();return {name:node.textContent,width,height};}));
+        expect(details.map(target=>target.name)).toEqual(['File & provenance','Download original','Workflow & raw metadata']);
+        for(const target of details){expect(target.width,target.name).toBeGreaterThanOrEqual(40);expect(target.height,target.name).toBeGreaterThanOrEqual(40);}
     });
 });
 

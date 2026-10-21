@@ -3,6 +3,7 @@ import { mountPromptBlocks, promptRoles } from './prompt-blocks.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createSendButton } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
+import { navigateTo } from './state.mjs';
 
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
@@ -207,7 +208,12 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
         if (record.historyTarget) {
             const history = createButton('');
             history.append(createWorkspaceIcon('branch'), ' Prompt history');
-            contentScope.listen(history, 'click', () => {window.location.hash = record.historyTarget;}); footer.append(history);
+            // The concept's go(): the viewer closes, and a link to the route already shown re-renders it.
+            contentScope.listen(history, 'click', () => {
+                document.querySelector('dialog#viewer-dialog[open]')?.close();
+                navigateTo(record.historyTarget);
+            });
+            footer.append(history);
         }
         if (!full && footer.childNodes.length) container.append(footer);
     }

@@ -576,7 +576,17 @@ Recorded deviations on this page (spec §8):
   D21 badge's words in lower case, left out when there is no badge. Raw records keep
   their names, representations and the two downloads with their unavailable reasons;
   the viewer's pair send and history buttons may wrap at 200% zoom. Tag chips in the
-  viewer are plain (the concept's go to the Library).
+  viewer are plain (the concept's go to the Library). The details' disclosure
+  summaries and "Download original" keep 40px coarse targets (D34). Prompt history
+  closes the viewer and, when its target is the route already shown, re-renders it
+  (the concept's `go()`).
+- **D20/D21 side panel**: the sticky panel scrolls inside the window
+  (`max-block-size` with `overflow: auto`, not the concept's `overflow: hidden`), so
+  long real prompts keep the footer reachable; an empty badge or tag `.tags` row is
+  left out (the concept always renders both); the footer, its pair send and Prompt
+  history appear only with resolved prompt roles or a saved link; a video file keeps
+  `video.detail-cover`; and only the linked positive's own tags are `button.chip`
+  filters, while recipe, recorded-run and embedded tags stay plain `span.chip`.
 - **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
   applies its negative wording to both roles), and a confirmed `p.prompt-text` is
   focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
