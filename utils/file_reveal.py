@@ -14,13 +14,14 @@ import os
 import shutil
 
 # Only POSIX argv launches of a fixed opener (see _launch); Windows never
-# starts a process (see _windows_select).
+# starts a process (see _select_item).
 import subprocess  # nosec B404
 import sys
 import threading
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -65,8 +66,13 @@ CHILD_ENV_NAMES = (
     "XDG_RUNTIME_DIR",
     "XDG_CURRENT_DESKTOP",
     "XDG_SESSION_TYPE",
+    "XDG_SESSION_DESKTOP",
+    "DESKTOP_SESSION",
     "XDG_DATA_DIRS",
     "XDG_CONFIG_DIRS",
+    "XDG_CONFIG_HOME",
+    # The X11 cookie: a non-default path under GDM or SDDM.
+    "XAUTHORITY",
     "DBUS_SESSION_BUS_ADDRESS",
     "LANG",
     "LC_ALL",
@@ -299,43 +305,70 @@ def _declare_shell_signatures(ole32, shell32) -> None:
     shell32.ILFree.restype = None
 
 
-def _windows_select(path: Path) -> bool:
+def _shell_libraries():
+    """The declared ole32 and shell32, or None where they cannot be loaded."""
+    try:
+        ole32, shell32 = _windows_libraries()
+        _declare_shell_signatures(ole32, shell32)
+    except Exception:  # no shell libraries: the folder fallback still runs
+        return None
+    return ole32, shell32
+
+
+@contextmanager
+def _com_apartment(ole32):
+    """The calling thread inside COM for the block; yields whether COM is
+    usable. Only a successful CoInitializeEx (S_OK or S_FALSE) is balanced,
+    so the persistent reveal thread never drifts."""
+    try:
+        result = ole32.CoInitializeEx(
+            None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
+        )
+    except Exception:  # an unusable ole32 leaves COM alone
+        result = None
+    try:
+        yield result in (S_OK, S_FALSE, RPC_E_CHANGED_MODE)
+    finally:
+        if result in (S_OK, S_FALSE):
+            ole32.CoUninitialize()
+
+
+def _select_item(shell32, path: Path) -> bool:
     """Open Explorer on *path*'s folder with *path* selected, via the shell
     API. The path is one wide-string value, so no command line is ever
     parsed (Explorer splits its own on commas). False on any failure; never
     raises into the route."""
     try:
-        ole32, shell32 = _windows_libraries()
-        _declare_shell_signatures(ole32, shell32)
-        result = ole32.CoInitializeEx(
-            None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
-        )
-        if result not in (S_OK, S_FALSE, RPC_E_CHANGED_MODE):
+        pidl = shell32.ILCreateFromPathW(str(path))
+        if not pidl:
             return False
         try:
-            pidl = shell32.ILCreateFromPathW(str(path))
-            if not pidl:
-                return False
-            try:
-                return shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0) >= 0
-            finally:
-                shell32.ILFree(pidl)
+            return shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0) >= 0
         finally:
-            # Only a successful CoInitializeEx (S_OK or S_FALSE) is balanced.
-            if result in (S_OK, S_FALSE):
-                ole32.CoUninitialize()
+            shell32.ILFree(pidl)
     except Exception:  # any shell failure falls back to the folder
         return False
 
 
-def _reveal_windows(path: Path) -> None:
-    if _windows_select(path):
-        return
+def _explore(folder: Path) -> None:
     startfile = getattr(os, "startfile", None)
     if startfile is None:
         raise OpenerUnavailable()
     # ShellExecute on the folder itself: no command line is built or parsed.
-    startfile(str(path.parent), "explore")
+    startfile(str(folder), "explore")
+
+
+def _reveal_windows(path: Path) -> None:
+    libraries = _shell_libraries()
+    if libraries is None:
+        _explore(path.parent)
+        return
+    ole32, shell32 = libraries
+    with _com_apartment(ole32) as ready:
+        if ready and _select_item(shell32, path):
+            return
+        # ShellExecute inside the same apartment: shell extensions may need COM.
+        _explore(path.parent)
 
 
 def _launch(argv: list[str]) -> subprocess.Popen:
