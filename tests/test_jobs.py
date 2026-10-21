@@ -13,12 +13,14 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from py.api.jobs import (  # noqa: E402
+    DEFAULT_SCAN_SCOPE,
     LOG_CAP_LINE,
     MAX_FINISHED_JOBS,
     MAX_LOG_LINES,
     MAX_OUTCOME_ROWS,
     SCAN_GROUP_NAMES,
     SCAN_GROUPS,
+    SCAN_SCOPES,
     Job,
     JobBusy,
     JobRegistry,
@@ -395,12 +397,15 @@ class TestJobOutcomesAndLog(unittest.TestCase):
                 "linked": "added",
                 "enriched": "added",
                 "unchanged": "known",
+                # Activity-2: a file the "new" scope skipped is Already known.
+                "skipped": "known",
                 "ambiguous": "review",
                 "conflict": "review",
                 "unresolved": "review",
                 "failed": "errors",
             },
         )
+        self.assertEqual((SCAN_SCOPES, DEFAULT_SCAN_SCOPE), (("new", "all"), "new"))
         self.assertEqual(
             SCAN_GROUP_NAMES, ("added", "known", "review", "no_metadata", "errors")
         )

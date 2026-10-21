@@ -35,12 +35,19 @@ MAX_FINISHED_JOBS = 20  # finished jobs this session keeps
 # The metadata scan's outcome groups, in counter-tile order of the spec's
 # mapping, and the per-file scan status each group collects. Files without
 # usable metadata have no status and go to "no_metadata".
+# Which files a scan reads (#249 Activity-2): "new" skips the files the Library
+# already links with a resolved link (get_known_resolved_paths) before reading
+# them, so new, unlinked, unresolved and ambiguous files are read; "all" reads
+# every file again. The workspace job defaults to "new"; legacy /scan is "all".
+SCAN_SCOPES = ("new", "all")
+DEFAULT_SCAN_SCOPE = "new"
 SCAN_GROUP_NAMES = ("added", "known", "review", "no_metadata", "errors")
 SCAN_GROUPS = {
     "added": "added",
     "linked": "added",
     "enriched": "added",
     "unchanged": "known",
+    "skipped": "known",  # "new" scope: known and resolved, not read again
     "ambiguous": "review",
     "conflict": "review",
     "unresolved": "review",

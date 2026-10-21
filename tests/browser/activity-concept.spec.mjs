@@ -63,16 +63,35 @@ function measureNotice(selector) {
     };
 }
 
-/** D55: the concept's dialog with the production differences applied. */
+/** A concept `.setting-row` switch: its frame, its label and hint, and its checkbox (not its place-dependent margin). */
+function measureToggle(selector) {
+    const row = document.querySelector(selector);
+    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
+    return {
+        children: [...row.children].map(node => [node.localName, ...node.classList].join('.')),
+        frame: css(row, 'display', 'alignItems', 'justifyContent', 'columnGap', 'paddingTop', 'paddingBottom',
+            'borderTopWidth', 'borderTopStyle', 'borderTopColor'),
+        label: css(row.querySelector('label'), 'fontSize', 'fontWeight', 'color'),
+        hint: css(row.querySelector('p'), 'fontSize', 'color', 'marginTop'),
+        box: css(row.querySelector('input[type="checkbox"]'), 'accentColor', 'width', 'height', 'appearance',
+            'backgroundColor', 'borderTopLeftRadius'),
+        role: row.querySelector('input').getAttribute('role'),
+        labelled: row.querySelector('label').htmlFor === row.querySelector('input').id,
+    };
+}
+
+/** D55 and D58: the concept's dialog with the production differences applied. */
 function mapReviewConcept(reference) {
     return {
         ...reference,
-        // No sample-plan note (prototype copy); the backup box sits before the actions.
+        // No sample-plan note (prototype copy); the D58 "All files" toggle follows the grid; the backup box sits
+        // before the actions.
         body: [...reference.body.filter(item => item !== 'p.demo-note').slice(0, -1), 'div.notice', reference.body.at(-1)]
-            .map(item => item === 'div.meta-grid' ? 'dl.meta-grid' : item),
-        // A `dl`, as in the concept's maintenance plan; real sources and the fixed Activity-1 scope.
+            .flatMap(item => item === 'div.meta-grid' ? ['dl.meta-grid', 'div.setting-row'] : [item]),
+        // A `dl`, as in the concept's maintenance plan; real sources. The scope keeps the concept's
+        // "New and unresolved files" until "All files" is checked.
         grid: { ...reference.grid, tag: 'dl', entries: reference.grid.entries.map(entry => ({ ...entry,
-            dd: { Sources: '2 output folders', Scope: 'All files' }[entry.dt] })) },
+            dd: { Sources: '2 output folders', Scope: 'New and unresolved files' }[entry.dt] })) },
         actions: { ...reference.actions, buttons: reference.actions.buttons.map(button => button.text === 'Simulate scan'
             ? { ...button, text: 'Start scan' } : button) },
     };
@@ -92,7 +111,8 @@ async function conceptReview(page, theme) {
     await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
     await page.locator('#main').getByRole('button', { name: 'Manage sources', exact: true }).click();
     await expect(page.locator('#main .notice')).toBeVisible();
-    return { review, notice: await page.evaluate(measureNotice, '#main .notice') };
+    return { review, notice: await page.evaluate(measureNotice, '#main .notice'),
+        toggle: await page.evaluate(measureToggle, '#main .setting-row:has(input[type="checkbox"])') };
 }
 
 async function productionReview(page, theme) {
@@ -103,7 +123,16 @@ async function productionReview(page, theme) {
     await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Review metadata scan');
     // The swapped dialog can open under the pointer that pressed Review scan; measure it at rest.
     await page.mouse.move(0, 0);
-    return { review: await page.evaluate(measureReview), notice: await page.evaluate(measureNotice, 'dialog#modal[open] .notice') };
+    const review = await page.evaluate(measureReview);
+    const notice = await page.evaluate(measureNotice, 'dialog#modal[open] .notice');
+    // The concept's switch is on; compare ours on too, then turn it off again (the default).
+    const allFiles = page.getByRole('switch', { name: 'All files', exact: true });
+    await allFiles.check();
+    await page.mouse.move(0, 0);
+    const toggle = await page.evaluate(measureToggle, 'dialog#modal[open] .setting-row');
+    await allFiles.uncheck();
+    await page.mouse.move(0, 0);
+    return { review, notice, toggle };
 }
 
 for (const theme of THEMES) test(`review dialog matches the concept scan-review ${theme}`, async ({ page, request }) => {
@@ -114,19 +143,29 @@ for (const theme of THEMES) test(`review dialog matches the concept scan-review 
     const production = await productionReview(page, theme);
     expect(diffInventory(mapReviewConcept(concept.review), production.review)).toEqual([]);
     expect(diffInventory(concept.notice, production.notice)).toEqual([]);
+    expect(diffInventory(concept.toggle, production.toggle)).toEqual([]);
+    await expect(page.locator('dialog#modal[open] .setting-row > div > label')).toHaveText('All files');
+    await expect(page.locator('dialog#modal[open] .setting-row input')).not.toBeChecked();
+    await expect(page.getByRole('switch', { name: 'All files', exact: true })).toBeVisible();
     await expect(page.locator('dialog#modal[open] .notice h3')).toHaveText('Back up the database first (recommended)');
     await expect(page.locator('dialog#modal[open] .notice .row-actions button')).toHaveText(['Back up now']);
 
     // Mutation check: one CSS change and one removed element are both noticed, then undone to an exact match again.
-    const undoCss = await mutate(page, { css: '#modal .meta-grid { gap: 3px; } #modal .notice { padding: 2px; }' });
+    const undoCss = await mutate(page, { css: '#modal .meta-grid { gap: 3px; } #modal .notice { padding: 2px; } #modal .setting-row { gap: 3px; }' });
     const cssMutated = await page.evaluate(measureReview);
     const noticeMutated = await page.evaluate(measureNotice, 'dialog#modal[open] .notice');
+    await page.getByRole('switch', { name: 'All files', exact: true }).check();
+    await page.mouse.move(0, 0);
+    const toggleMutated = await page.evaluate(measureToggle, 'dialog#modal[open] .setting-row');
+    await page.getByRole('switch', { name: 'All files', exact: true }).uncheck();
+    await page.mouse.move(0, 0);
+    expect(diffInventory(concept.toggle, toggleMutated).map(item => item.path)).toEqual(['frame.columnGap']);
     expect(diffInventory(mapReviewConcept(concept.review), cssMutated).map(item => item.path)).toEqual(expect.arrayContaining(['grid.columnGap', 'grid.rowGap']));
     expect(diffInventory(concept.notice, noticeMutated).map(item => item.path)).toEqual(['frame.paddingTop', 'frame.paddingLeft']);
     await undoCss();
     const undoDom = await mutate(page, { remove: ['#modal-body > p.small'] });
     const domMutated = await page.evaluate(() => [...document.querySelectorAll('#modal-body > *')].map(node => node.localName));
-    expect(domMutated).toEqual(['dl', 'div', 'div']);
+    expect(domMutated).toEqual(['dl', 'div', 'div', 'div']);
     await undoDom();
     expect(diffInventory(mapReviewConcept(concept.review), await page.evaluate(measureReview))).toEqual([]);
 });

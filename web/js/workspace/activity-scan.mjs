@@ -1,7 +1,8 @@
 /**
  * Scan for metadata (#249 Activity-1, D55): Images → Import → "Scan for metadata" → Review scan opens the concept's
  * "Review metadata scan". Its backup box downloads the existing `/prompt_manager/backup` copy and toasts the outcome;
- * Start scan starts the session job through the Activity store, which toasts "Scan started.", and opens the job's view.
+ * Start scan starts the session job through the Activity store over the chosen scope (new and unresolved files, or
+ * all files with the D58 checkbox), which toasts "Scan started.", and opens the job's view.
  * A start refused because another record-changing job runs toasts "Another job is running: <title>." with a link to
  * that job (D57).
  */
@@ -49,10 +50,13 @@ export function busyToast(running) {
     return ['Another job is running: ', { text: running.title, href: `#/activity/${running.id}` }, '.'];
 }
 
-/** Start the scan job and open its view; a refused or failed start says why and stays on the page. */
-export async function startMetadataScan({ store, scope, notify = showWorkspaceToast, navigate = navigateTo }) {
+/**
+ * Start the scan job over `files` ('new': new and unresolved files, or 'all') and open its view; a refused or failed
+ * start says why and stays on the page.
+ */
+export async function startMetadataScan({ store, scope, files = 'new', notify = showWorkspaceToast, navigate = navigateTo }) {
     try {
-        const result = await store.start('scan');
+        const result = await store.start('scan', { scope: files });
         if (scope.signal.aborted) return;
         if (result.busy !== undefined) {
             notify(busyToast(result.busy));
@@ -68,5 +72,5 @@ export async function startMetadataScan({ store, scope, notify = showWorkspaceTo
 export function openMetadataScan({ scope, store, sources, trigger = null }) {
     openScanReviewDialog({ scope, sources, trigger,
         onBackup: () => downloadDatabaseBackup(),
-        onStart: () => startMetadataScan({ store, scope }) });
+        onStart: ({ scope: files }) => startMetadataScan({ store, scope, files }) });
 }

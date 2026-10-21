@@ -181,6 +181,19 @@ AND p.id NOT IN (SELECT prompt_id FROM live_hint_prompts)
 """
 
 
+# The scan's known set (#249 Activity-2): every image row, with whether its pair
+# link is resolved: exactly one distinct pair, the rule _LINK_SUMMARY_SQL and
+# get_image_prompt_info use. A file is known and resolved when it has exactly one
+# image row and that row is resolved; several rows (one file linked to more than
+# one prompt) are ambiguous. The rows are streamed in fetches of
+# KNOWN_PATHS_FETCH_SIZE and only the scanned paths are kept, so memory follows
+# the scan (at most MAX_SCAN_FILES paths), not the table.
+_KNOWN_PATHS_SQL = """SELECT gi.file_path, gi.image_path,
+       (SELECT COUNT(DISTINCT ip.pair_id) FROM image_prompt_pairs ip
+        WHERE ip.image_id = gi.id) = 1
+FROM generated_images gi"""
+KNOWN_PATHS_FETCH_SIZE = 1000
+
 # One SELECT reads the link summaries of at most this many paths: three bound
 # parameters per path stays under SQLite's historical 999-variable limit.
 LINK_SUMMARY_BATCH = 200
@@ -2279,6 +2292,42 @@ class PromptDatabase(
                 "generation_time": row[7],
                 "parameters": row[8] if len(row) > 8 else None,
             }
+
+    def get_known_resolved_paths(self, paths: List[str]) -> Set[str]:
+        """The ``paths`` the Library already links with a resolved link.
+
+        A path qualifies when exactly one ``generated_images`` row claims the
+        file and that row has exactly one pair link (``image_prompt_pairs``,
+        written only by resolved ingestion). Files linked without a pair (the
+        monitor's fallback and FIFO links, the legacy positive-only import),
+        linked to several prompts or pairs, or not linked at all do not.
+        Paths compare by ``normalize_image_path`` and ``os.path.normcase`` on
+        both sides, so a Windows row stored in another case still matches.
+        One query, streamed; returns the matching items of ``paths``.
+        """
+        wanted: Dict[str, List[str]] = {}
+        for path in paths:
+            key = os.path.normcase(normalize_image_path(str(path)))
+            wanted.setdefault(key, []).append(str(path))
+        if not wanted:
+            return set()
+        rows_seen: Dict[str, int] = {}
+        resolved: Set[str] = set()
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(_KNOWN_PATHS_SQL)
+            while True:
+                rows = cursor.fetchmany(KNOWN_PATHS_FETCH_SIZE)
+                if not rows:
+                    break
+                for file_path, image_path, is_resolved in rows:
+                    stored = file_path or normalize_image_path(image_path)
+                    key = os.path.normcase(stored)
+                    if key not in wanted:
+                        continue
+                    rows_seen[key] = rows_seen.get(key, 0) + 1
+                    if is_resolved:
+                        resolved.add(key)
+        return {path for key in resolved if rows_seen[key] == 1 for path in wanted[key]}
 
     def get_image_link_summaries(
         self, paths: List[str], allow_filename_fallback: bool = True

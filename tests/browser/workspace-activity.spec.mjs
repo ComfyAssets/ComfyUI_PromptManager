@@ -392,6 +392,58 @@ test('start scan creates a job, toasts, and opens its view', async ({ page, requ
     await expect(scanLog(page).locator('pre')).toContainText('Scan finished');
 });
 
+// ── Task 4 (Activity-2): scan scope, new and unresolved files by default ─────────────────────
+
+test('all files checkbox changes the scope line and the request', async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const bodies = [];
+    page.on('request', item => {
+        if (item.method() === 'POST' && new URL(item.url()).pathname === '/prompt_manager/jobs/scan') bodies.push(item.postDataJSON());
+    });
+    const review = page.getByRole('dialog', { name: 'Review metadata scan', exact: true });
+    const scopeValue = review.locator('.meta-grid > div').filter({ has: page.locator('dt', { hasText: 'Scope' }) }).locator('dd');
+    // The concept's switch: a checkbox with role=switch.
+    const allFiles = review.getByRole('switch', { name: 'All files', exact: true });
+    const openReview = async () => {
+        await page.goto(`${workspace}#/images`);
+        await page.getByRole('button', { name: 'Import', exact: true }).click();
+        await page.getByRole('dialog', { name: 'Import & inspect', exact: true }).locator('.operation')
+            .filter({ hasText: 'Scan for metadata' }).getByRole('button', { name: 'Review scan', exact: true }).click();
+        await expect(review).toBeVisible();
+    };
+
+    // The default: the concept's "New and unresolved files", the box unchecked; the request asks for "new".
+    await openReview();
+    await expect(scopeValue).toHaveText('New and unresolved files');
+    await expect(allFiles).not.toBeChecked();
+    await expect(review.locator('.setting-row p')).toHaveText('Also read the files already linked to their prompt again.');
+    // Checking and unchecking switches the Scope value both ways.
+    await allFiles.check();
+    await expect(scopeValue).toHaveText('All files');
+    await allFiles.uncheck();
+    await expect(scopeValue).toHaveText('New and unresolved files');
+    await review.getByRole('button', { name: 'Start scan', exact: true }).click();
+    await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0]).toEqual({ scope: 'new' });
+    await expect(heading(page).locator('h1')).toHaveText('Scan for metadata');
+    // Wait for the first scan to end so the second is not refused as busy.
+    await scanLog(page).locator('summary').click();
+    await expect(scanLog(page).locator('pre')).toContainText('Scan finished', { timeout: 15000 });
+    await expect(scanLog(page).locator('pre')).toContainText('new and unresolved files');
+
+    // Checked: "All files", and the request asks for "all".
+    await openReview();
+    await allFiles.check();
+    await expect(scopeValue).toHaveText('All files');
+    await review.getByRole('button', { name: 'Start scan', exact: true }).click();
+    await expect.poll(() => bodies.length).toBe(2);
+    expect(bodies[1]).toEqual({ scope: 'all' });
+    await scanLog(page).locator('summary').click();
+    await expect(scanLog(page).locator('pre')).toContainText('Scan started · ', { timeout: 15000 });
+    await expect(scanLog(page).locator('pre')).toContainText('all files');
+});
+
 test('job view counters follow the mapping and update live', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     const job = await startJob(request);

@@ -10,11 +10,32 @@ import json
 
 from aiohttp import web
 
-from .jobs import JobBusy
+from .jobs import DEFAULT_SCAN_SCOPE, SCAN_SCOPES, JobBusy
 
 
 def _not_found():
     return web.json_response({"success": False, "error": "Job not found"}, status=404)
+
+
+def _bad_request(message):
+    return web.json_response({"success": False, "error": message}, status=400)
+
+
+async def _scan_scope(request):
+    """The requested scan scope ("new" or "all"), or None when the body is invalid.
+
+    An empty body, or one without ``scope``, asks for the default.
+    """
+    if not request.can_read_body:
+        return DEFAULT_SCAN_SCOPE
+    try:
+        body = await request.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    scope = body.get("scope", DEFAULT_SCAN_SCOPE)
+    return scope if scope in SCAN_SCOPES else None
 
 
 def _summary_event(job):
@@ -65,9 +86,16 @@ class JobRoutesMixin:
         return web.json_response({"success": True, "cancellation_requested": requested})
 
     async def start_scan_job(self, request):
-        """Start the metadata scan as a job (202), or 409 naming the busy job."""
+        """Start the metadata scan as a job (202), or 409 naming the busy job.
+
+        The body's ``scope`` is "new" (the default: new and unresolved files)
+        or "all"; anything else is a 400.
+        """
+        files = await _scan_scope(request)
+        if files is None:
+            return _bad_request('The scan scope must be "new" or "all"')
         try:
-            job = self._start_scan_job()
+            job = self._start_scan_job(files)
         except JobBusy as busy:
             running = busy.running
             return web.json_response(

@@ -17,7 +17,14 @@ from pathlib import Path
 from aiohttp import web
 
 from .prompts import thumbnail_url_for
-from .jobs import SCAN_GROUP_NAMES, SCAN_GROUPS, Job, JobBusy
+from .jobs import (
+    DEFAULT_SCAN_SCOPE,
+    SCAN_GROUP_NAMES,
+    SCAN_GROUPS,
+    SCAN_SCOPES,
+    Job,
+    JobBusy,
+)
 
 try:
     from ...utils.parallel import map_parallel
@@ -150,6 +157,8 @@ SCAN_FINAL_STATES = {
     "cancelled": "cancelled",
     "error": "failed",
 }
+# The scope as the scan log's first line names it (the review dialog's words).
+SCAN_SCOPE_LOG = {"new": "new and unresolved files", "all": "all files"}
 MIN_BATCHES_FOR_ESTIMATE = 2  # "about X min left" waits for this many batches
 # Log line prefix per outcome group (spec: + added, = known, ? review, ! error,
 # - no usable metadata).
@@ -174,6 +183,7 @@ SCAN_DETAILS = {
     "linked": "Linked to an existing prompt",
     "enriched": "Metadata added to its prompt",
     "unchanged": "Already linked to its prompt",
+    "skipped": "Skipped · already linked",
     "ambiguous": "Needs review: more than one prompt could match",
     "unresolved": "Needs review: the prompt could not be traced in the workflow",
     "conflict": "Needs review: already linked to a different prompt",
@@ -1426,7 +1436,7 @@ class AdminRoutesMixin:
         job = self._jobs.active(SCAN_JOB_KIND)
         if job is None:
             try:
-                job = self._start_scan_job()
+                job = self._start_scan_job("all")
             except JobBusy as busy:
                 return self._long_job_busy_response(busy.running.title)
         return await self._stream_scan_job(request, job)
@@ -1450,16 +1460,19 @@ class AdminRoutesMixin:
             }
         )
 
-    def _start_scan_job(self):
+    def _start_scan_job(self, files=DEFAULT_SCAN_SCOPE):
         """Register the scan job synchronously; its runner starts on the loop.
 
-        Raises JobBusy while another record-changing job runs.
+        ``files`` is the scope (``SCAN_SCOPES``). Raises JobBusy while another
+        record-changing job runs.
         """
+        if files not in SCAN_SCOPES:
+            raise ValueError(f"Unknown scan scope: {files!r}")
         job = self._jobs.start(
             SCAN_JOB_KIND,
             SCAN_JOB_TITLE,
             record_changing=True,
-            scope={"mode": "all"},
+            scope={"files": files},
             runner=self._run_scan_job,
             groups=SCAN_GROUP_NAMES,
         )
@@ -1525,7 +1538,8 @@ class AdminRoutesMixin:
             dir_names = [self._public_path(d) for d in output_dirs]
             folders = _plural(len(output_dirs), "output folder")
             job.scope["output_folders"] = len(output_dirs)
-            job.log_line(f"Scan started · {folders}")
+            scope = SCAN_SCOPE_LOG[job.scope.get("files", "all")]
+            job.log_line(f"Scan started · {folders} · {scope}")
             job.update(status_line=f"Looking for media files in {folders}")
             yield self._scan_progress(
                 0, f"Scanning {len(output_dirs)} directory(ies) for media files..."
@@ -1544,7 +1558,14 @@ class AdminRoutesMixin:
                     5, f"Found {len(media_files)} media files to process...", counts
                 )
             roots = _scan_roots(output_dirs)
-            async for event in self._scan_batches(media_files, counts, job, roots):
+            known = set()
+            if media_files and job.scope.get("files") != "all":
+                known = await self._run_in_executor(
+                    self.db.get_known_resolved_paths, [str(f) for f in media_files]
+                )
+            async for event in self._scan_batches(
+                media_files, counts, job, roots, known
+            ):
                 yield event
 
             self.logger.info(
@@ -1565,11 +1586,12 @@ class AdminRoutesMixin:
                 "message": "An internal error occurred. Check server logs for details.",
             }
 
-    async def _scan_batches(self, media_files, counts, job, roots=()):
+    async def _scan_batches(self, media_files, counts, job, roots=(), known=()):
         """Process ``media_files`` in executor batches, updating ``counts`` in place.
 
         Records each file's outcome in ``job`` and yields one progress event
-        per batch.
+        per batch. Files in ``known`` (path strings) are not read: they count
+        as processed and unchanged and are recorded as skipped.
         """
         total = len(media_files)
         started = time.monotonic()
@@ -1578,18 +1600,23 @@ class AdminRoutesMixin:
             if job.cancelled:
                 return
             batch = media_files[batch_start : batch_start + SCAN_BATCH_SIZE]
-            batch_results = await self._run_in_executor(
-                self._extract_batch_metadata_sync, batch
-            )
-            outcomes = []
-            batch_counts = await self._run_in_executor(
-                self._ingest_scan_batch_sync,
-                batch_results,
-                roots=roots,
-                outcomes=outcomes,
-            )
-            for key in counts:
-                counts[key] += batch_counts[key]
+            skipped = [f for f in batch if str(f) in known]
+            to_read = [f for f in batch if str(f) not in known]
+            outcomes = [_scan_outcome(f, roots, "skipped") for f in skipped]
+            counts["processed"] += len(skipped)
+            counts["unchanged"] += len(skipped)
+            if to_read:
+                batch_results = await self._run_in_executor(
+                    self._extract_batch_metadata_sync, to_read
+                )
+                batch_counts = await self._run_in_executor(
+                    self._ingest_scan_batch_sync,
+                    batch_results,
+                    roots=roots,
+                    outcomes=outcomes,
+                )
+                for key in counts:
+                    counts[key] += batch_counts[key]
             for group, row, log_line in outcomes:
                 job.record(group, row, log_line)
 
