@@ -253,7 +253,8 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`inspector pane
     const production={copy:await copyOf(page),send:await productionSendOf(page,context)};
     const listing=page.waitForRequest(item=>item.url().includes('/images/output?')&&new URL(item.url()).searchParams.get('tags')==='cinematic');
     production.tag=await tagOf(page);await listing;
-    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    // D44: the applied tag is one active refinement, so the toolbar's Filters button counts it.
+    await page.getByRole('button',{name:'Filters · 1',exact:true}).click();
     production.tagFilter=await page.getByRole('dialog').getByRole('textbox',{name:'Tags',exact:true}).inputValue();
     await page.keyboard.press('Escape');
     await openProductionPanel(page,theme);production.history=await historyOf(page);
