@@ -809,6 +809,19 @@ test('run dot appears only for pairs with more than one run and opens its run',a
     const f=page.fixture;await open(page,f.canonical_id);const panel=variantsPanel(page);
     await expect(panel.getByRole('button',{name:/^Show repeat run for /})).toHaveCount(2);
     await expect(panel.getByRole('button',{name:'Show repeat run for No negative',exact:true})).toHaveCount(0);
+    // D45: the lane text wraps before the run dot, and a coarse pointer reaches the 12px dot through a 44px target.
+    for(const lane of await panel.locator('.variant-lane:has(> .run-dot:not([hidden]))').all()) {
+        const [text,dot]=await Promise.all([lane.locator(':scope > span').boundingBox(),lane.locator(':scope > .run-dot').boundingBox()]);
+        expect(text.width).toBeLessThanOrEqual(139.5);expect(text.x+text.width).toBeLessThan(dot.x);
+    }
+    if(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
+        const dot=panel.getByRole('button',{name:'Show repeat run for Quality baseline',exact:true});await dot.scrollIntoViewIfNeeded();
+        const reach=await dot.evaluate(node=>{
+            const box=node.getBoundingClientRect(),x=box.x+box.width/2,y=box.y+box.height/2;
+            return [[x-20,y],[x+20,y],[x,y-20],[x,y+20]].map(([px,py])=>{const hit=document.elementFromPoint(px,py);return hit?.closest('button')===node?'dot':`${hit?.tagName}.${hit?.className}`;});
+        });
+        expect(reach).toEqual(['dot','dot','dot','dot']);
+    }
     // The baseline has a recorded execution: the dot opens Recorded run for it.
     const baseline=panel.getByRole('button',{name:'Show repeat run for Quality baseline',exact:true});await baseline.click();
     await expect(dialog(page)).toBeVisible();await expect(dialog(page)).toContainText(f.canonical_run);
@@ -895,4 +908,54 @@ test('compare waits for the page holding the oldest active negative',async({page
     await expect(section.locator(':scope > p.small')).toHaveText('Load more negative variants to reach the baseline.');
     await expect(section.locator('.compare-grid')).toHaveCount(0);
     await page.unroute(new RegExp(`/prompt_manager/library/${f.canonical_id}\\?`));
+});
+test('run dot falls back to Repeat run when the lookup fails or Recorded run cannot open',async({page})=>{
+    const f=page.fixture;
+    await page.route(/\/history\/pairs\/\d+\/newest/,route=>route.fulfill({status:503,json:{success:false}}));
+    await open(page,f.canonical_id);const panel=variantsPanel(page);
+    const baseline=panel.getByRole('button',{name:'Show repeat run for Quality baseline',exact:true});
+    await baseline.click();const repeat=modalDialog(page,'Repeat run');await expect(repeat).toBeVisible();
+    await expect(page.locator('#workspace-toast')).toHaveText('Recorded runs could not be read. Showing the newest linked image.');
+    await expect(dialog(page)).toHaveCount(0);
+    await page.keyboard.press('Escape');await expect(repeat).toHaveCount(0);await expect(baseline).toBeFocused();
+    await page.unroute(/\/history\/pairs\/\d+\/newest/);
+    // The lookup names a run, but the recorded history never loaded, so Recorded run cannot open: Repeat run, no toast.
+    await page.route(/\/library\/\d+\/history\?/,route=>route.fulfill({status:503,json:{success:false}}));
+    await page.reload();await expect(recorded(page).getByRole('button',{name:'Retry recorded history',exact:true})).toBeVisible();
+    await page.locator('#workspace-toast').evaluate(node=>{node.textContent='';});
+    const newest=page.waitForResponse(response=>/\/history\/pairs\/\d+\/newest/.test(response.url()));
+    await variantsPanel(page).getByRole('button',{name:'Show repeat run for Quality baseline',exact:true}).click();
+    expect((await(await newest).json()).run.run_id).toBe(f.canonical_run);
+    await expect(modalDialog(page,'Repeat run')).toBeVisible();await expect(dialog(page)).toHaveCount(0);
+    await expect(page.locator('#workspace-toast')).toHaveText('');
+});
+test('an archived pair\'s Repeat run reads the archived gallery',async({page,request})=>{
+    const f=page.fixture;
+    await expect(await request.patch(`/prompt_manager/pairs/${f.clean_pair}`,{data:{archived:true}})).toBeOK();
+    await open(page,f.canonical_id);const panel=variantsPanel(page);
+    await panel.getByRole('button',{name:'Show archived (1)',exact:true}).click();
+    const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===`/prompt_manager/library/${f.canonical_id}/images`)reads.push(url.searchParams);});
+    await panel.getByRole('button',{name:'Show repeat run for Clean geometry',exact:true}).click();
+    const repeat=modalDialog(page,'Repeat run');await expect(repeat.locator('.spaced-15 article[data-image-key]')).toHaveCount(1);
+    expect(reads.at(-1).get('pair_id')).toBe(String(f.clean_pair));expect(reads.at(-1).get('archive')).toBe('archived');
+    // Each open replaces the previous dialog and its gallery.
+    await page.keyboard.press('Escape');await panel.getByRole('button',{name:'All images for this positive',exact:true}).click();
+    await expect(modalDialog(page,'All images for this positive')).toBeVisible();await expect(page.locator('dialog[open]')).toHaveCount(1);
+});
+test('Compare negatives is disabled without an active variant',async({page,request})=>{
+    const f=page.fixture,detail=await(await request.get(`/prompt_manager/library/${f.canonical_id}`)).json();
+    for(const variant of detail.variants) await expect(await request.patch(`/prompt_manager/pairs/${variant.id}`,{data:{archived:true}})).toBeOK();
+    await open(page,f.canonical_id);const compare=variantsPanel(page).getByRole('button',{name:'Compare negatives',exact:true});
+    await expect(compare).toBeDisabled();await expect(compare).toHaveAttribute('aria-pressed','false');
+    await expect(page.locator('.library-history .timeline-panel + section.surface')).toHaveCount(0);
+});
+test('dot names never repeat for trimmed titles or titles that read like a fallback',async({page,request})=>{
+    const f=page.fixture,detail=await(await request.get(`/prompt_manager/library/${f.canonical_id}`)).json();
+    const byTitle=Object.fromEntries(detail.variants.map(variant=>[variant.title,variant.id]));
+    await expect(await request.patch(`/prompt_manager/pairs/${byTitle['No negative']}`,{data:{title:'variant 2'}})).toBeOK();
+    await expect(await request.patch(`/prompt_manager/pairs/${byTitle['Quality baseline']}`,{data:{title:' Clean geometry '}})).toBeOK();
+    await open(page,f.canonical_id);
+    const names=await variantsPanel(page).locator('.variant-dot').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toEqual(['Select negative variant 1','Select negative variant 2','Select negative variant 3']);
 });

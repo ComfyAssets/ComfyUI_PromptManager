@@ -10,7 +10,7 @@ import { expect } from '../../tools/vendor/node_modules/@playwright/test/index.m
 export const canonicalDifferences = {
     data: ['Independent synthetic text, image bytes, IDs, counts and text wrapping'],
     semantics: [
-    'Saved combinations are distinct from the additional chronological executions',
+    'Negative variants are saved combinations; Recorded runs list the chronological executions',
     'Recorded run exposes exact frozen evidence; Repeat run is illustrative',
     'Current-file candidates disclose unknown identity and context membership',
     ],

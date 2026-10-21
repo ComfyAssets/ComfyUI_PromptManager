@@ -2,7 +2,6 @@ main.library-main { --library-positive: #73dda9; }
 .library-main :where(.library-shelf, .library-history, .library-linked-images) { min-inline-size: 0; }
 .library-main .library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; overflow-anchor: none; }
 .library-main .library-row { grid-column: 1 / -1; display: grid; grid-template-columns: inherit; gap: 18px; min-inline-size: 0; }
-.library-main .library-chip { display: inline-block; max-inline-size: 100%; padding: 3px 8px; border: 1px solid var(--ca-line); border-radius: 4px; font-size: 10px; color: var(--ca-muted); background: var(--ca-field); overflow-wrap: anywhere; }
 .library-main .library-row-spacer { grid-column: 1 / -1; pointer-events: none; }
 .library-main .library-continuation { padding-block: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .library-main .library-status { flex: 1 1 240px; color: var(--ca-muted); }
@@ -73,6 +72,8 @@ main.library-main { --library-negative: #ff8c98; }
     .ca-tools .history-context-anchor::before { content: "−"; inset: 7.5px; inline-size: 29px; block-size: 29px; line-height: 25px; color: #38151b; background: var(--library-negative); }
     /* D45: a coarse pointer reaches the concept dot through a 47px target. */
     .ca-tools .library-history .variant-dot::after { content: ""; position: absolute; inset: -9px; }
+    /* D45: the 12px repeat-run dot (8px inside its border) gets a 44px coarse target the same way. */
+    .ca-tools .library-history .run-dot::after { content: ""; position: absolute; inset: -18px; }
     .ca-tools .recorded-run-dialog :where(button, summary) { min-inline-size: 44px; min-block-size: 44px; }
 }
 @media (forced-colors: active) {
@@ -93,4 +94,6 @@ main.library-main { --library-negative: #ff8c98; }
 /* D45: at 390px and 200% zoom the panel heading and the legend row wrap, and the All images button wraps its label,
    so the page never scrolls sideways (the retired production footer did the same). */
 .library-history .timeline-panel > .panel-heading, .library-history .timeline-lower { flex-wrap: wrap; }
+/* D45: while the repeat-run dot shows (left: 190px), the lane text wraps inside the 57px lane before it (43px + 139px). */
+.library-history .variant-lane:has(> .run-dot:not([hidden])) > span { max-inline-size: 139px; overflow-wrap: anywhere; }
 .ca-tools .library-history .timeline-lower > button { /* D45 */ max-inline-size: 100%; white-space: normal; }

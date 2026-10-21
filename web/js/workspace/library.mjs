@@ -553,9 +553,12 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 return entries;
             }
             /** D45: a dot names its pair by a title no other loaded lane shares, else by its number, so every name is unique. */
+            // Titles compare trimmed (accessible names are whitespace-normalized), and a title that reads like a fallback
+            // "variant N" is never used, so it cannot collide with an untitled lane's name.
+            const trimmedTitle=variant=>typeof variant.title==='string'?variant.title.trim():'';
             function dotName(entry,entries) {
-                const title=entry.variant.title;
-                return typeof title==='string' && title.trim() && entries.filter(other=>other.variant.title===title).length===1?title:`variant ${entry.number}`;
+                const title=trimmedTitle(entry.variant);
+                return title && !/^variant\s+\d+$/i.test(title) && entries.filter(other=>trimmedTitle(other.variant)===title).length===1?title:`variant ${entry.number}`;
             }
             const runCount=variant=>Number.isSafeInteger(variant.run_count) && variant.run_count>0?variant.run_count:0;
             function laneFor(entry) {
@@ -743,10 +746,13 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             current={activePairId:()=>activePairId ?? null,sendRoles:()=>{const roles=activePairId===null || activePairId===undefined?{}:promptRoles(rolesFor(activePairId));return Object.hasOwn(roles,'positive') && Object.hasOwn(roles,'negative')?roles:null;},apply};
             /** A bounded media dialog (D26): its gallery lives until the dialog closes or the view goes. */
+            // One slot: each open replaces the previous dialog's scope, so repeated opens never pile up cleanups.
+            let imagesDialogScope=null;content.cleanup(()=>{imagesDialogScope?.dispose();imagesDialogScope=null;});
             function openImagesDialog({title,intro,className,fetchPage,trigger}) {
-                const dialogScope=createScope();content.cleanup(()=>dialogScope.dispose());
+                imagesDialogScope?.dispose();
+                const dialogScope=createScope();imagesDialogScope=dialogScope;
                 const grid=el('div',undefined,className);
-                openContentDialog({scope:content,title,nodes:intro?[el('p',intro,'small'),grid]:[grid],trigger,onClose:()=>dialogScope.dispose()});
+                openContentDialog({scope:content,title,nodes:intro?[el('p',intro,'small'),grid]:[grid],trigger,onClose:()=>{dialogScope.dispose();if(imagesDialogScope===dialogScope) imagesDialogScope=null;}});
                 mountImages(grid,api,dialogScope,{embedded:true,fetchPage});
             }
             const imagesPage=(id,query,signal)=>api.get(`/prompt_manager/library/${id}/images?${query}`,{signal});
@@ -775,7 +781,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 } catch {
                     failed=true;
                 } finally {runLookups.delete(pair.id);}
-                if(content.signal.aborted) return;
+                // The view may have gone stale while the lookup was in flight; a stale view opens nothing.
+                if(content.signal.aborted || savedReadState!=='current') return;
                 if(run && recordedView.openRun({runId:run.run_id,anchorId:run.anchor_id ?? null,contextId:run.context_id ?? null,trigger})) return;
                 if(failed) showWorkspaceToast('Recorded runs could not be read. Showing the newest linked image.');
                 openRepeatRun(pair,trigger);
