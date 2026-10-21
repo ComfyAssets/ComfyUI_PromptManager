@@ -276,3 +276,17 @@ test('a resumed page success or error cannot replace a later run choice',async()
         await p;assert.equal(c.state.selection.run_id,id(41));assert.equal(c.state.window.items.length,40);assert.equal(c.state.refreshRequired,null);assert.equal(c.state.actionsEnabled,true);c.dispose();
     }
 });
+
+test('added terms split, trim and exact-diff like the concept',()=>{
+    // The concept's rule (app.js a600-614): split on commas, trim, drop empty terms, keep what the baseline lacks exactly.
+    assert.equal(typeof m.addedTerms,'function','addedTerms is exported');
+    assert.deepEqual(m.addedTerms('blurry, lowres','lowres,  watermark , text'),['watermark','text']);
+    assert.deepEqual(m.addedTerms('',''),[]);assert.deepEqual(m.addedTerms('blurry',''),[]);assert.deepEqual(m.addedTerms('','blurry'),['blurry']);
+    assert.deepEqual(m.addedTerms('a','a, ,\n,  b\t'),['b']);
+    // Duplicates in the selected negative stay, as the concept lists every added term in order.
+    assert.deepEqual(m.addedTerms('a','c, c, a'),['c','c']);
+    // Case and inner whitespace are exact.
+    assert.deepEqual(m.addedTerms('Blurry, low res','blurry, Blurry, low  res'),['blurry','low  res']);
+    assert.deepEqual(m.addedTerms('same, text','text, same'),[]);
+    assert.throws(()=>m.addedTerms(null,'a'),TypeError);assert.throws(()=>m.addedTerms('a',undefined),TypeError);
+});

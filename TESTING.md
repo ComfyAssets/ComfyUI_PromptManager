@@ -786,6 +786,54 @@ npm run --prefix tools/vendor test:workflows -- library-concept.spec.mjs \
   workspace-library.spec.mjs --project chromium --project touch --project firefox --project webkit
 ```
 
+### Prompt history page and recorded deviations (#249 PR F-a)
+
+The history page (`#/library/<id>`) takes the concept's heading, summary, negative
+variants panel and comparison (app.js `renderHistory` a591–616, the dialogs a1282–1304,
+style.css 1059–1179). The summary is `article.surface` with the category chip, the
+positive and selected negative prompt blocks and `.card-meta` "N tracked runs · N images
+· N negative variants" (tracked runs from the recorded window's `recorded_run_count`).
+The panel is `section.surface.timeline-panel` (region "Saved negative variants") with
+Compare negatives, + Add negative and Show archived, a `.timeline` of `.variant-lane`
+rows (`--lane-offset` 38 + 47i, the "−" `.variant-dot`, "<name> · N runs" and a
+`.run-dot` for a pair counted more than once) and `.timeline-lower` with the legend and
+All images for this positive. Recorded executions, frozen fields, send and archived
+lanes keep their contracts. `tests/browser/workspace-history.spec.mjs` and
+`workspace-library-editor.spec.mjs` cover them on Chromium and touch.
+
+Spec decisions this page applies: **D24** (Send to ComfyUI is disabled only while the
+selected pair's roles load), **D25** (Compare negatives compares a baseline with the
+selected red dot, and lists the selected side's added comma terms) and **D26** (All
+images for this positive is a dialog with its own bounded gallery; the run dot opens
+Recorded run for the pair's newest recorded execution, else a Repeat run dialog with the
+pair's newest linked image, reading the archived gallery for an archived pair).
+
+Recorded deviations on this page:
+- **D45**: a variant dot is named "Select negative <title>" when no other loaded lane
+  shares that title (compared trimmed), else "Select negative variant N"; a title that
+  itself reads "variant N" always uses the lane's own number, so no two names repeat.
+  The bounded "N of M saved negative variants" count stays a visually hidden status,
+  and production's "Saved combinations, not an execution timeline." is removed.
+  Archived lanes (#235) are concept lanes marked `.library-variant-archived` at the .6
+  marker emphasis (their text stays at full contrast) with their Restore button. Under
+  `pointer: coarse` the variant dot keeps a 47px target and the 12px run dot a 44px one
+  (`::after` overlays). While a run dot shows, the lane text wraps within 139px before
+  it. The panel heading, the legend row and All images wrap at 390px and 200% zoom.
+- **D46**: lanes list newest first (`ORDER BY pp.id DESC`), so the comparison's
+  baseline is the oldest (lowest-id) active variant, not the first lane; while the
+  variant page has more, the oldest is not loaded and the section reads "Load more
+  negative variants to reach the baseline." instead of guessing. The two blocks are
+  named "Baseline" and "Selected" (regions and copy/send actions), so no name repeats.
+  Compare negatives is disabled while the positive has no active variant. The page
+  opens on the newest lane (existing behavior), while the concept opens on
+  `negatives[0]`, its baseline: the first comparison reads "Baseline compared with
+  <newest>" where the concept compares the baseline with itself. The history concept
+  comparison (PR F-b, F5) maps this.
+
+The run dot reads `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest`
+(see "Chronological Library history"), and each lane's "N runs" is the pair's
+`run_count` (see "Workspace data fields").
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no
@@ -884,7 +932,9 @@ null. The edit token ignores both. `variant_total` has two meanings. On the list
 response it counts the active variants over all filtered parents (the same
 snapshot as `total`, the same on every cursor page). On the detail response it
 counts one positive's variants in the chosen archive scope. The Library caption
-reads it from the list state.
+reads it from the list state. Each detail variant (active and archived) also carries
+its pair's `run_count` (`prompt_pairs.run_count`, 0 when null), which the history lanes
+show as "N runs" (#249 F2).
 
 Favorites store (D7 = A): `PUT` and `DELETE /prompt_manager/images/favorite` with
 `{root_index, path}`. Both are idempotent and answer
@@ -1109,9 +1159,19 @@ The versioned public reads are:
 | Route | Meaning |
 | --- | --- |
 | `GET /prompt_manager/library/{positive_id}/history` | Exact frozen raw-positive group; compact chronological windows |
+| `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest` | The pair's newest recorded run for the history run dot (#249 D26): `{run: {run_id, anchor_id, context_id}}` or `{run: null}` |
 | `GET /prompt_manager/history/runs/{run_id}` | Frozen fields, per-field provenance, capture and outcome for a known UUID |
 | `GET /prompt_manager/history/runs/{run_id}/outputs` | Ordered host-reported occurrences, including repeated locations |
 | `GET /prompt_manager/history/runs/{run_id}/output/current/{media,thumbnail,inspection}` | Authorized current file at that reported location, using the returned epoch/scope URL |
+
+The newest-pair read takes no query. It answers 404 when the positive is not an
+eligible saved prompt or the pair is not one of its pairs. It walks the positive's exact
+raw-text scope newest first and follows only a row whose `reference_epoch` is the
+current epoch and whose saved-pair hint still resolves to that pair (the
+`get_history_run` hint rule). It inspects at most 16 candidates, so 16 newer stale hints
+report `{run: null}` (the dot then opens Repeat run). Like the other reads it runs inside
+the fenced history snapshot: a restore or epoch change is 409 `history-changed`, a
+storage failure 503 `storage-unavailable`.
 
 Run and output reads accept the returned `epoch`; current-file routes require
 the returned epoch, current scope and occurrence coordinates. Run integers are

@@ -10,9 +10,10 @@ import {layoutLibraryRows,visibleLibraryRows,usedLabel,ratingLabel} from './libr
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
+import {addedTerms} from './history-state.mjs';
 import {pageHeading} from './heading.mjs';
 import {mountToolbar} from './toolbar.mjs';
-import {openRefineDialog} from './workspace-dialogs.mjs';
+import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -416,8 +417,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
     function mountHistory() {
         const history=el('section',undefined,'library-history');history.setAttribute('aria-label','Prompt history');main.append(history);
         const body=el('div');history.append(body);
-        // Concept heading: ← Prompt library, Edit metadata, then the selected pair's Send to ComfyUI.
-        headingDescription(main,history,'One positive prompt. Reusable negative variants. One shared gallery.');
+        // Concept heading (app.js a591–597): ← Prompt library, Edit metadata, then the selected pair's Send to ComfyUI.
+        headingDescription(main,history,'Prompt history · one positive, one shared gallery');
         const actions=headingActions(main,history);
         const back=createButton('← Prompt library'),edit=createButton('Edit metadata'),send=createButton('','send');
         send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;actions.append(back,edit,send);
@@ -460,21 +461,61 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 if(state.error) {const retry=createButton('Retry prompt history');contentScope.listen(retry,'click',()=>loader.load(positiveId));body.append(retry);}return;
             }
             detail=state.detail;const content=contentScope;
-            const summary=el('article',undefined,'library-surface');const categoryChip=el('span','','library-chip');summary.append(categoryChip);
+            // The concept summary (app.js a598): category chip, positive and selected negative blocks, then the counts (D24).
+            const summary=el('article',undefined,'surface');const categoryChip=el('span','','chip');summary.append(categoryChip);
             const promptContainer=el('div');promptContainer.setAttribute('role','region');promptContainer.setAttribute('aria-label','Saved prompt texts');summary.append(promptContainer);
+            const meta=el('div',undefined,'card-meta'),runsMeta=el('span'),imagesMeta=el('span'),variantsMeta=el('span');runsMeta.hidden=true;
+            meta.append(runsMeta,imagesMeta,variantsMeta);summary.append(meta);
             const parentStatus=el('p','','library-parent-status muted');parentStatus.hidden=true;parentStatus.setAttribute('role','status');
             const retryParent=createButton('Retry saved Library details'),reloadSaved=createButton('Reload saved Library view');retryParent.hidden=reloadSaved.hidden=true;summary.append(parentStatus,retryParent,reloadSaved);
             const ownerText=detail.positive.text;let savedReadState='current',parentRequest,parentGeneration=0;
             content.cleanup(()=>{parentGeneration++;parentRequest?.abort();});
             const all=createButton('All images for this positive');
-            const variants=el('section',undefined,'library-surface library-variants');variants.setAttribute('aria-label','Saved negative variants');
-            const panelHeading=el('div',undefined,'library-panel-heading'),panelCopy=el('div'),rowActions=el('div',undefined,'row-actions');
-            panelCopy.append(el('h2','Negative variants'),el('p','Choose a saved negative to inspect its full text and filter the shared gallery.','muted'));
-            const addNegative=createButton('+ Add negative'),showArchived=createButton('');showArchived.setAttribute('aria-pressed','false');
-            rowActions.append(addNegative,showArchived);panelHeading.append(panelCopy,rowActions);variants.append(panelHeading);
-            const branches=el('div',undefined,'library-branches');const positiveLane=el('p',undefined,'library-positive-lane');positiveLane.append(el('span','Positive prompt · unchanged'));branches.append(positiveLane);
+            // The concept's negative variants panel (app.js a598, style.css 1059-1154): heading, the lanes, then the legend.
+            const variants=el('section',undefined,'surface timeline-panel');variants.setAttribute('aria-label','Saved negative variants');
+            const panelHeading=el('div',undefined,'panel-heading'),panelCopy=el('div'),rowActions=el('div',undefined,'row-actions');
+            panelCopy.append(el('h2','Negative variants'),el('p','Choose a red dot to change the negative and filter this gallery.','small'));
+            // Compare negatives (aria-pressed) opens the comparison section below; Show archived is the approved #235 addition.
+            const compare=createButton('Compare negatives'),addNegative=createButton('+ Add negative'),showArchived=createButton('');
+            compare.setAttribute('aria-pressed','false');showArchived.setAttribute('aria-pressed','false');
+            rowActions.append(compare,addNegative,showArchived);panelHeading.append(panelCopy,rowActions);variants.append(panelHeading);
+            content.listen(compare,'click',()=>{compare.setAttribute('aria-pressed',String(compare.getAttribute('aria-pressed')!=='true'));updateCompare();});
+            // The concept's comparison (app.js a599-616, style.css 1155-1179): after the timeline panel, the baseline (the oldest
+            // active variant, D25) beside the selected negative, then its added terms. Another dot updates it in place.
+            const compareSection=el('section',undefined,'surface');let compareBlocks=[],compareKey=null;
+            const disposeCompareBlocks=()=>{for(const item of compareBlocks)item.dispose();compareBlocks=[];};
+            content.cleanup(disposeCompareBlocks);
+            function compareBlock(text,label) {
+                const item=el('div',undefined,'compare-item');
+                // D46: the two blocks are named Baseline and Selected, so no region or action name repeats on the page.
+                compareBlocks.push(mountPromptBlocks(item,{prompts:{negative:{status:'resolved',text,source:'library'}},roles:['negative'],sender,parentScope:content,includePairAction:false,contextLabel:label,title:displayTitle(detail.positive)}));
+                compareBlocks.at(-1).setState({prompts:{negative:{status:'resolved',text,source:'library'}},actionsEnabled:savedReadState==='current'});
+                return item;
+            }
+            function updateCompare() {
+                if(detail.variant_total===0) compare.setAttribute('aria-pressed','false');
+                compare.disabled=detail.variant_total===0;
+                if(compare.getAttribute('aria-pressed')!=='true') {compareSection.remove();disposeCompareBlocks();compareKey=null;return;}
+                if(variants.nextSibling!==compareSection) variants.after(compareSection);
+                // D46: the oldest active variant may sit on an unloaded page; the baseline is never guessed from the newest lanes.
+                const baseline=detail.variants_has_more?null:detail.variants.reduce((oldest,variant)=>!oldest || variant.id<oldest.id?variant:oldest,null);
+                const lane=[...lanes.values()].find(item=>item.entry.variant.id===activePairId) || [...lanes.values()].find(item=>item.entry.variant.id===baseline?.id);
+                const selected=(activePairId!==null && activePairId!==undefined && recordFor(activePairId)) || baseline;
+                const name=lane?laneName(lane.entry):'';
+                const key=JSON.stringify([baseline?.id,baseline?.negative_text,selected?.id,selected?.negative_text,name,displayTitle(detail.positive),savedReadState]);
+                if(key===compareKey) return;
+                compareKey=key;disposeCompareBlocks();compareSection.replaceChildren(el('h2','Compare negative variants'));
+                if(!baseline || !selected) {compareSection.append(el('p','Load more negative variants to reach the baseline.','small'));return;}
+                const grid=el('div',undefined,'compare-grid');grid.append(compareBlock(baseline.negative_text,'Baseline'),compareBlock(selected.negative_text,'Selected'));
+                compareSection.append(el('p',`Baseline compared with ${name}. Choose another red dot to change the comparison.`),grid,el('p','Added terms','small'));
+                const terms=addedTerms(baseline.negative_text,selected.negative_text);
+                if(terms.length) for(const term of terms) compareSection.append(el('span',`+ ${term}`,'diff-added'));
+                else compareSection.append(el('p','No added terms.','small'));
+            }
+            const branches=el('div',undefined,'timeline');const positiveLane=el('div',undefined,'positive-lane');positiveLane.append(el('span','Positive prompt · unchanged'));branches.append(positiveLane);
             const lanes=new Map();const emptyNote=el('p','No saved negative variants. Existing image associations remain available.','muted');
-            const variantCount=el('p','','muted');variantCount.setAttribute('role','status');
+            // D45: the bounded page count stays a status for assistive technology; the concept shows no count line.
+            const variantCount=el('p','','ca-visually-hidden');variantCount.setAttribute('role','status');
             const variantError=el('p','','muted');variantError.setAttribute('role','alert');variantError.hidden=true;
             const restoreStatus=el('p','','muted library-restore-status');restoreStatus.setAttribute('role','alert');restoreStatus.hidden=true;
             const restoreAction=createButton('');restoreAction.hidden=true;let restoreHandler=null;
@@ -511,13 +552,24 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 for(const [index,variant] of loadedArchived.entries()) entries.push({key:`archived:${variant.id}`,kind:'archived',variant,number:detail.variant_total+index+1});
                 return entries;
             }
+            /** D45: a dot names its pair by a title no other loaded lane shares, else by its number, so every name is unique. */
+            // Titles compare trimmed (accessible names are whitespace-normalized), and a title that reads like a fallback
+            // "variant N" is never used, so it cannot collide with an untitled lane's name.
+            const trimmedTitle=variant=>typeof variant.title==='string'?variant.title.trim():'';
+            function dotName(entry,entries) {
+                const title=trimmedTitle(entry.variant);
+                return title && !/^variant\s+\d+$/i.test(title) && entries.filter(other=>trimmedTitle(other.variant)===title).length===1?title:`variant ${entry.number}`;
+            }
+            const runCount=variant=>Number.isSafeInteger(variant.run_count) && variant.run_count>0?variant.run_count:0;
             function laneFor(entry) {
                 let lane=lanes.get(entry.key);
                 if(!lane) {
-                    const node=el('div',undefined,`library-variant-lane${entry.kind==='archived'?' library-variant-archived':''}`);const button=createButton('−','library-variant-dot');const label=el('span');
-                    node.append(button,label);lane={node,button,label,text:document.createTextNode(''),entry};label.append(lane.text);
+                    // Concept lane (app.js a598): the "−" dot, "<name> · N runs", then the repeat-run dot (D26).
+                    const node=el('div',undefined,`variant-lane${entry.kind==='archived'?' library-variant-archived':''}`);const button=createButton('−','variant-dot');const label=el('span');
+                    const runDot=createButton('','run-dot');runDot.hidden=true;
+                    node.append(button,label,runDot);lane={node,button,label,runDot,text:document.createTextNode(''),entry};label.append(lane.text);
                     if(entry.kind==='archived') {lane.restore=createButton('Restore','library-variant-restore');label.append(lane.restore);content.listen(lane.restore,'click',()=>restorePair(lane.entry.variant.id,lane.restore));}
-                    content.listen(button,'click',()=>select(lane.entry.variant.id));lanes.set(entry.key,lane);
+                    content.listen(button,'click',()=>select(lane.entry.variant.id));content.listen(runDot,'click',()=>openRunDot(lane));lanes.set(entry.key,lane);
                 }
                 lane.entry=entry;return lane;
             }
@@ -528,9 +580,12 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 for(const [index,entry] of entries.entries()) {
                     const lane=laneFor(entry),name=laneName(entry);
                     lane.node.style.setProperty('--lane-offset',`${38+index*47}px`);
-                    lane.button.setAttribute('aria-label',entry.kind==='separate'?'Select the saved negative variant outside the loaded list':`Select negative variant ${entry.number}`);
+                    const named=entry.kind==='separate'?'the saved negative variant outside the loaded list':dotName(entry,entries);
+                    lane.button.setAttribute('aria-label',entry.kind==='separate'?'Select the saved negative variant outside the loaded list':`Select negative ${named}`);
                     lane.button.setAttribute('aria-pressed',String(activePairId===entry.variant.id));lane.button.disabled=savedReadState!=='current';
-                    lane.text.textContent=`${name} · ${countOf(entry.variant.image_count,'linked image')}${entry.kind==='archived'?' · Archived':''}`;
+                    lane.text.textContent=`${name} · ${countOf(runCount(entry.variant),'run')}${entry.kind==='archived'?' · Archived':''}`;
+                    // D26: the small dot appears only for a pair counted more than once.
+                    lane.runDot.hidden=runCount(entry.variant)<=1;lane.runDot.setAttribute('aria-label',`Show repeat run for ${named}`);lane.runDot.disabled=savedReadState!=='current';
                     if(lane.restore) {lane.restore.setAttribute('aria-label',`Restore ${name}`);lane.restore.disabled=savedReadState!=='current' || restoringPairs.has(entry.variant.id);}
                     if(previous.nextSibling!==lane.node) previous.after(lane.node);
                     previous=lane.node;
@@ -545,17 +600,19 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 variantError.hidden=!loadError;variantError.textContent=!loadError?'':state.variantsError?'Negative variants could not be loaded. Retry to continue.':'Archived negative variants could not be loaded. Retry to continue.';
                 const archivedCount=Number.isSafeInteger(detail.positive.archived_variant_count)?detail.positive.archived_variant_count:0;
                 showArchived.textContent=`Show archived (${archivedCount})`;showArchived.setAttribute('aria-pressed',String(archivedShown));
+                updateCompare();
             };
+            const updateMeta=()=>{imagesMeta.textContent=countOf(detail.positive.image_count ?? 0,'image');variantsMeta.textContent=countOf(detail.positive.variant_count ?? 0,'negative variant');};
             updateParent=()=>{
-                main.querySelector('h1').textContent=displayTitle(detail.positive);categoryChip.textContent=detail.positive.category || 'Uncategorized';
-                send.setAttribute('aria-label',`Send prompt pair to ComfyUI: ${displayTitle(detail.positive)}`);
+                const name=displayTitle(detail.positive);
+                main.querySelector('h1').textContent=name;categoryChip.textContent=detail.positive.category || 'Uncategorized';updateMeta();
+                send.setAttribute('aria-label',`Send prompt pair to ComfyUI: ${name}`);blocks?.setTitle(name);
             };
             let activePairId;
             updateParent();updateBranches(state);
             branches.append(emptyNote);
-            const note=el('p','Saved combinations, not an execution timeline.','muted');
-            const variantFooter=el('div',undefined,'library-variant-footer'),variantSummary=el('div',undefined,'library-variant-summary');variantSummary.append(variantCount,note);variantFooter.append(variantSummary,all);
-            variants.append(branches,variantError,restoreStatus,restoreAction,more,retry,variantFooter);
+            const lower=el('div',undefined,'timeline-lower');lower.append(el('span','Green + positive · red − negative · small dot repeat run','small'),all);
+            variants.append(branches,variantCount,variantError,restoreStatus,restoreAction,more,retry,lower);
             const context=el('p','','library-variant-context');context.setAttribute('role','status');
             const gallery=el('section',undefined,'library-shared-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(el('h2','Shared gallery'),context);
             const images=el('div',undefined,'library-linked-images');gallery.append(images);
@@ -589,7 +646,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                             if(current.negative_text!==variant.negative_text || current.explicit_empty!==variant.explicit_empty) {changed=true;return variant;}
                             return {...variant,...current};
                         });
-                        detail={...detail,positive:fresh.positive,variants};categoryChip.textContent=fresh.positive.category || 'Uncategorized';
+                        detail={...detail,positive:fresh.positive,variants};categoryChip.textContent=fresh.positive.category || 'Uncategorized';updateMeta();
                         savedReadState=changed || unobserved || additional?'stale':'current';
                         parentStatus.textContent=changed?'A saved negative changed identity. This view retains its previous selection and gallery. Reload the saved Library view to inspect current data.':unobserved?(fresh.variants_has_more?'Some loaded saved negatives were not observed in this bounded revalidation page. Reload the saved Library view to validate them.':'Some loaded saved negatives were not present in the revalidation result. This view retains its previous selection and gallery.'):additional?'Saved Library choices changed. This view retains its previous selection and gallery. Reload the saved Library view to inspect current choices.':'Saved Library details revalidated.';
                         reloadSaved.hidden=savedReadState==='current';
@@ -608,23 +665,23 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             content.listen(retryParent,'click',retrySavedParent);content.listen(reloadSaved,'click',()=>{pendingSelection=null;loader.load(positiveId);});
             if(!historyVisits.has(positiveId)) historyVisits.set(positiveId,{});
-            mountRecordedHistory(recorded,{api,positiveId,parentScope:content,sender,visit:historyVisits.get(positiveId),onParentRevalidate:parent=>{
+            const recordedView=mountRecordedHistory(recorded,{api,positiveId,parentScope:content,sender,visit:historyVisits.get(positiveId),onParentRevalidate:parent=>{
                 if(content.signal.aborted) return;parentGeneration++;parentRequest?.abort();setParentState(parent);
-            }});
+            },onRecordedCount:count=>{runsMeta.hidden=count===null;runsMeta.textContent=count===null?'':countOf(count,'tracked run');}});
             // The heading carries the pair send, as in the concept; the saved texts keep their per-role actions.
-            blocks=mountPromptBlocks(promptContainer,{prompts:libraryPromptRoles(detail),sender,parentScope:content,includePairAction:false});
+            blocks=mountPromptBlocks(promptContainer,{prompts:libraryPromptRoles(detail),sender,parentScope:content,includePairAction:false,title:displayTitle(detail.positive)});
             function select(pairId,{force=false}={}) {
                 if(savedReadState!=='current' || (!force && galleryScope && activePairId===pairId)) return;
                 if(pairId!==null && !recordFor(pairId)) pairId=null;
                 activePairId=pairId;blocks.setState({prompts:rolesFor(pairId),actionsEnabled:true});
-                for(const lane of lanes.values()) lane.button.setAttribute('aria-pressed',String(lane.entry.variant.id===pairId));all.setAttribute('aria-pressed',String(pairId===null));
+                for(const lane of lanes.values()) lane.button.setAttribute('aria-pressed',String(lane.entry.variant.id===pairId));
                 const index=detail.variants.findIndex(variant=>variant.id===pairId),archived=pairId!==null && archivedSelection(pairId);
                 const lane=[...lanes.values()].find(item=>item.entry.variant.id===pairId);
                 context.textContent=pairId===null?'All images for this positive, including unassigned images. Choose a saved negative variant to inspect or send it.':index>=0?`Negative variant ${index+1} · same positive prompt`:`${lane?laneName(lane.entry):'Selected saved negative variant'}${archived?' · Archived':''} · same positive prompt`;
                 galleryScope?.dispose();galleryScope=createScope();images.replaceChildren();
                 // An archived pair's images are read in the archived scope; the gallery stays authoritative.
                 mountImages(images,api,galleryScope,{embedded:true,fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
-                updateSend();
+                updateSend();updateCompare();
             }
             /** A metadata receipt names no pair, so the page re-reads its own selection through the exact-ID route. */
             async function rereadSelectedPair() {
@@ -688,7 +745,49 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 if(pair) select(pair.id,{force:true});
             }
             current={activePairId:()=>activePairId ?? null,sendRoles:()=>{const roles=activePairId===null || activePairId===undefined?{}:promptRoles(rolesFor(activePairId));return Object.hasOwn(roles,'positive') && Object.hasOwn(roles,'negative')?roles:null;},apply};
-            content.listen(all,'click',()=>select(null));
+            /** A bounded media dialog (D26): its gallery lives until the dialog closes or the view goes. */
+            // One slot: each open replaces the previous dialog's scope, so repeated opens never pile up cleanups.
+            let imagesDialogScope=null;content.cleanup(()=>{imagesDialogScope?.dispose();imagesDialogScope=null;});
+            function openImagesDialog({title,intro,className,fetchPage,trigger}) {
+                imagesDialogScope?.dispose();
+                const dialogScope=createScope();imagesDialogScope=dialogScope;
+                const grid=el('div',undefined,className);
+                openContentDialog({scope:content,title,nodes:intro?[el('p',intro,'small'),grid]:[grid],trigger,onClose:()=>{dialogScope.dispose();if(imagesDialogScope===dialogScope) imagesDialogScope=null;}});
+                mountImages(grid,api,dialogScope,{embedded:true,fetchPage});
+            }
+            const imagesPage=(id,query,signal)=>api.get(`/prompt_manager/library/${id}/images?${query}`,{signal});
+            /** Concept "All images for this positive" (a1282-1290): every image of the positive, Load more bounded. */
+            function openAllImagesDialog(id,trigger) {
+                openImagesDialog({title:'All images for this positive',trigger,fetchPage:({parameters,signal})=>imagesPage(id,new URLSearchParams(parameters),signal)});
+            }
+            /** Concept "Repeat run" (a1291-1304): the pair's newest linked image only. */
+            function openRepeatRun(pair,trigger) {
+                openImagesDialog({title:'Repeat run',intro:'Same positive and negative, another execution.',className:'spaced-15',trigger,fetchPage:async({parameters,signal})=>{
+                    const query=new URLSearchParams(parameters);query.set('pair_id',String(pair.id));query.set('limit','1');query.delete('cursor');
+                    if(pair.archived===true) query.set('archive','archived');
+                    const page=await imagesPage(positiveId,query,signal),images=Array.isArray(page?.images)?page.images.slice(0,1):page?.images;
+                    return {...page,images,total:Array.isArray(images)?images.length:page?.total,has_more:false,next_cursor:null};
+                }});
+            }
+            /** D26: the run dot opens Recorded run for the pair's newest recorded execution, else Repeat run. */
+            const runLookups=new Set();
+            async function openRunDot(lane) {
+                const pair=lane.entry.variant,trigger=lane.runDot;
+                if(savedReadState!=='current' || runLookups.has(pair.id)) return;
+                runLookups.add(pair.id);let run=null,failed=false;
+                try {
+                    const value=await api.get(`/prompt_manager/library/${positiveId}/history/pairs/${pair.id}/newest`,{signal:content.signal,cache:'no-store'});
+                    run=value?.run && typeof value.run.run_id==='string'?value.run:null;
+                } catch {
+                    failed=true;
+                } finally {runLookups.delete(pair.id);}
+                // The view may have gone stale while the lookup was in flight; a stale view opens nothing.
+                if(content.signal.aborted || savedReadState!=='current') return;
+                if(run && recordedView.openRun({runId:run.run_id,anchorId:run.anchor_id ?? null,contextId:run.context_id ?? null,trigger})) return;
+                if(failed) showWorkspaceToast('Recorded runs could not be read. Showing the newest linked image.');
+                openRepeatRun(pair,trigger);
+            }
+            content.listen(all,'click',()=>openAllImagesDialog(positiveId,all));
             const remembered=pendingSelection,outside=selectedPairs.get(positiveId);pendingSelection=null;
             if(outside?.archived && outside.id===remembered && !archivedShown) {archivedShown=true;archivedVisible.set(positiveId,true);}
             if(archivedShown) archivedLoader.load(positiveId);

@@ -913,3 +913,79 @@ class HistoryReadTests(unittest.TestCase):
                 db.list_history_outputs(
                     start.run_id, after=OutputPosition("0" * 64, (node, 0))
                 )
+
+    def test_newest_pair_run_follows_current_hints_in_the_raw_scope(self):
+        db = self.database()
+        pair_a = db.save_prompt_pair("positive", "A")
+        pair_b = db.save_prompt_pair("positive", "B")
+        quiet = db.save_prompt_pair("positive", "C")
+        other = db.save_prompt_pair("elsewhere", "A")
+        positive = db.get_prompt_pair(pair_a)["positive_prompt_id"]
+        self.capture(db, 0, bundle("A"), time=100)
+        newest = self.capture(db, 1, bundle("A"), time=200)
+        b = self.capture(db, 2, bundle("B"), time=300)
+        with db.recorded_history_snapshot():
+            found = db.get_newest_pair_run(positive, pair_a)
+            found_b = db.get_newest_pair_run(positive, pair_b)
+            none = db.get_newest_pair_run(positive, quiet)
+            foreign = db.get_newest_pair_run(positive, other)
+            missing = db.get_newest_pair_run(9999, pair_a)
+        self.assertEqual(found["run"]["run_id"], newest.run_id)
+        self.assertEqual(found["run"]["anchor_id"], "4")
+        self.assertRegex(found["run"]["context_id"], "^[0-9a-f]{64}$")
+        self.assertEqual(found_b["run"]["run_id"], b.run_id)
+        self.assertEqual(none, {"run": None})
+        self.assertIsNone(foreign)
+        self.assertIsNone(missing)
+        # A hint that no longer names the current pair is not followed.
+        db.delete_prompt_pair(pair_b)
+        recreated = db.save_prompt_pair("positive", "B")
+        with db.recorded_history_snapshot():
+            self.assertEqual(db.get_newest_pair_run(positive, recreated), {"run": None})
+        with self.assertRaises(sqlite3.ProgrammingError):
+            db.get_newest_pair_run(positive, pair_a)
+
+    def test_newest_pair_run_skips_stale_epoch_and_bounds_stale_hints(self):
+        db = self.database()
+        pair_a = db.save_prompt_pair("positive", "A")
+        pair_b = db.save_prompt_pair("positive", "B")
+        positive = db.get_prompt_pair(pair_a)["positive_prompt_id"]
+        older = self.capture(db, 0, bundle("A"), time=100)
+        stale_epoch = self.capture(db, 1, bundle("A"), time=200)
+        conn = db.model.get_connection()
+        # A row whose reference epoch is not the current one is never followed.
+        conn.execute(
+            "UPDATE execution_run_contexts SET reference_epoch=? WHERE run_id=?",
+            ("00000000-0000-4000-8000-000000000000", stale_epoch.run_id),
+        )
+        conn.commit()
+        with db.recorded_history_snapshot():
+            self.assertEqual(
+                db.get_newest_pair_run(positive, pair_a)["run"]["run_id"],
+                older.run_id,
+            )
+        # Seventeen newer rows whose hint names pair A but whose texts resolve to
+        # pair B fill the candidate bound, so the older valid run is not reached.
+        for item in range(2, 19):
+            start = self.capture(db, item, bundle("B"), time=300 + item)
+            conn.execute(
+                "UPDATE execution_run_contexts SET pair_id=? WHERE run_id=?",
+                (pair_a, start.run_id),
+            )
+            conn.commit()
+        with db.recorded_history_snapshot():
+            self.assertEqual(db.get_newest_pair_run(positive, pair_a), {"run": None})
+            self.assertIsNotNone(db.get_newest_pair_run(positive, pair_b))
+
+    def test_newest_pair_run_rejects_an_ineligible_or_deleted_positive(self):
+        db = self.database()
+        pair = db.save_prompt_pair("positive", "negative")
+        saved = db.get_prompt_pair(pair)
+        self.capture(db, 0, bundle("negative"), time=100)
+        with db.recorded_history_snapshot():
+            # A prompt saved only as a pair's negative is not a Library positive.
+            self.assertIsNone(db.get_newest_pair_run(saved["negative_prompt_id"], pair))
+        db.delete_prompt_pair(pair)
+        db.delete_prompt(saved["positive_prompt_id"])
+        with db.recorded_history_snapshot():
+            self.assertIsNone(db.get_newest_pair_run(saved["positive_prompt_id"], pair))

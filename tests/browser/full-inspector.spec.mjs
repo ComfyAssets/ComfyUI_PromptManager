@@ -621,11 +621,15 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     await expect(onePlay).toHaveAccessibleDescription('Slideshow requires at least two loaded media entries.');await onePlay.dispatchEvent('click');await expect(onePlay).toHaveText('Play');
     await mediaDialog(page).getByRole('button',{name:'Close image viewer',exact:true}).click();
     const library=await(await request.get('/prompt_manager/library')).json();const id=library.items.find(item=>item.text.startsWith('Inspector portrait')).id;
-    await page.goto(`/prompt_manager/workspace#/library/${id}`);await page.getByRole('button',{name:'Select negative variant 1',exact:true}).click();await selectFile(page,'complete.png');await openCollection(page);
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);await page.getByRole('button',{name:'Select negative Inspector recipe',exact:true}).click();await selectFile(page,'complete.png');await openCollection(page);
     await expect(position(page)).toContainText('of 1 loaded: complete.png');
     await mediaDialog(page).getByRole('button',{name:'Close image viewer',exact:true}).click();
+    // #249 D26: the whole positive's images are in the All images dialog's own embedded gallery.
     await page.getByRole('button',{name:'All images for this positive',exact:true}).click();
-    await selectFile(page,'complete.png');await openCollection(page);await expect(position(page)).toContainText('of 2 loaded:');
+    const listing=page.getByRole('dialog',{name:'All images for this positive',exact:true});
+    await listing.locator('article[data-image-key="0:inspector/complete.png"] .image-card-actions button').click();
+    await listing.locator('.media-card.selected .image-open').click();await expect(mediaDialog(page).locator('.viewer-canvas img')).toBeVisible();
+    await expect(position(page)).toContainText('of 2 loaded:');
 });
 
 test('collection viewer uses real public transforms and resets on navigation',async({page,request})=>{

@@ -92,6 +92,17 @@ class TestLibrary(unittest.TestCase):
             self.db.list_library_images(positive, pair_id=unrelated)
         self.assertIsNone(self.db.get_library_positive(9999))
 
+    def test_detail_variants_carry_their_pair_run_count(self):
+        counted = self.db.save_prompt_pair("Cat", "Blur")
+        fresh = self.db.save_prompt_pair("Cat", "Noise")
+        self.db.record_prompt_pair_use(counted, 3)
+        positive = self.db.get_prompt_pair(counted)["positive_prompt_id"]
+        variants = {
+            row["id"]: row for row in self.db.get_library_positive(positive)["variants"]
+        }
+        self.assertEqual(variants[counted]["run_count"], 3)
+        self.assertEqual(variants[fresh]["run_count"], 0)
+
     def test_options_include_active_pair_categories_not_negative_only_or_archived(self):
         self.save("Legacy", category="Legacy category")
         pair = self.db.save_prompt_pair("Cat", "Noise", category="Pair category")

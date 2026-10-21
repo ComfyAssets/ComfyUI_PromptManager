@@ -12,6 +12,8 @@
  * - "Copy prompt" (a1223–1241): the select-to-copy fallback when the clipboard is unavailable (D22).
  * - One-value input (a1138 `simpleInput`): a "Category"-style field (`input#action-input`) and Cancel / a primary
  *   action; used by the Images selection bar's "Set category" (#249 D8).
+ * - Content (a1282–1304 `dialog(title, body)`): a page-built body such as the history's "All images for this
+ *   positive" and "Repeat run" media (#249 D26); `onClose` runs once when that body leaves the shell.
  *
  * Every opener takes the page `scope`: disposing it closes and removes the shell, so a dialog never outlives its page.
  */
@@ -69,9 +71,10 @@ function createShell() {
 /** Close the open dialog, if any, and focus its trigger while that is still on the page. */
 function finish() {
     if (!session) return;
-    const { trigger } = session;
+    const { trigger, onClose } = session;
     session = null;
     if (shell?.dialog.open) shell.dialog.close();
+    onClose?.();
     if (trigger?.isConnected) trigger.focus();
 }
 
@@ -97,11 +100,14 @@ function bindScope(scope) {
     });
 }
 
-function show(heading, nodes, { scope, trigger, focusTarget }) {
+function show(heading, nodes, { scope, trigger, focusTarget, onClose = null }) {
     shell ??= createShell();
     if (!shell.dialog.isConnected) document.body.append(shell.dialog);
     bindScope(scope);
-    session = { scope, trigger: trigger ?? session?.trigger ?? null };
+    // A swapped-out body is gone from the shell, so its owner releases it.
+    const replaced = session?.onClose;
+    session = { scope, trigger: trigger ?? session?.trigger ?? null, onClose };
+    replaced?.();
     shell.title.textContent = heading;
     shell.body.replaceChildren(...nodes);
     if (!shell.dialog.open) shell.dialog.showModal();
@@ -286,4 +292,16 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(cancel, apply);
     show(title, [field(label, input, 'action-input'), actions], { scope, trigger, focusTarget: input });
+}
+
+/**
+ * The concept's plain `dialog(title, body)` with page-built `nodes`. `onClose` runs once when the dialog closes or
+ * another dialog replaces its body, so the page can dispose what it mounted there.
+ */
+export function openContentDialog({ scope, title, nodes, onClose = null, trigger = null }) {
+    requireScope(scope);
+    if (typeof title !== 'string' || !title) throw new TypeError('The dialog needs a title');
+    if (!Array.isArray(nodes) || nodes.some(node => !node || typeof node !== 'object')) throw new TypeError('The dialog needs its nodes');
+    if (onClose !== null && typeof onClose !== 'function') throw new TypeError('The dialog onClose must be a function');
+    show(title, nodes, { scope, trigger, onClose });
 }

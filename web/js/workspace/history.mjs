@@ -29,9 +29,10 @@ function place(parent, node, before) {
     else parent.insertBefore(node, before);
 }
 
-export function mountRecordedHistory(container, {api, positiveId, parentScope, sender, visit = {}, onParentRevalidate}) {
+export function mountRecordedHistory(container, {api, positiveId, parentScope, sender, visit = {}, onParentRevalidate, onRecordedCount}) {
     const scope = createScope(), dispose = () => scope.dispose();
-    if (parentScope.signal.aborted) {dispose();return {dispose};}
+    // openRun is a hoisted declaration: on an aborted parent it answers false before reading any later state.
+    if (parentScope.signal.aborted) {dispose();return {dispose, openRun};}
     parentScope.signal.addEventListener('abort', dispose, {once:true});
     scope.cleanup(() => parentScope.signal.removeEventListener('abort', dispose));
     const section = el('section', undefined, 'library-surface recorded-history');
@@ -61,6 +62,9 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     const controller = createHistoryController({api, positiveId, restore:visit, onChange:next => {
         render(next);runView?.setState(next);
         if (next.parent !== activeParent) {activeParent = next.parent;onParentRevalidate?.(next.parent);}
+        // The history summary's "N tracked runs" (#249 D24): a completed window read's count; a read in flight keeps the last.
+        const window = next.window;
+        if (!window.loading) onRecordedCount?.(window.history_epoch && !window.error ? window.recorded_run_count : null);
     }});
     state = controller.state;
     runView = mountRecordedRun(container, {api, controller, sender, parentScope:scope, onRestoreFocus:restoreMarker});
@@ -218,5 +222,11 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     });
     render(state);
     void controller.load();
-    return {dispose};
+    /** Open Recorded run for one run (the history run dot, #249 D26); false while recorded actions are unavailable. */
+    function openRun({runId, anchorId = null, contextId = null, trigger}) {
+        if (scope.signal.aborted || !state.actionsEnabled) return false;
+        runView.open({runId, anchorId, contextId, trigger});
+        return true;
+    }
+    return {dispose, openRun};
 }

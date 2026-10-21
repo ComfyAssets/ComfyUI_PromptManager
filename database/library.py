@@ -388,7 +388,7 @@ class LibraryOperations:
             for row in conn.execute(
                 "SELECT pp.id,COALESCE(n.text,'') AS negative_text,"
                 "pp.category,pp.title,pp.archived,"
-                "pp.negative_prompt_id IS NULL AS explicit_empty,"
+                "pp.negative_prompt_id IS NULL AS explicit_empty,pp.run_count,"
                 "(SELECT COUNT(DISTINCT image_id) FROM image_prompt_pairs ip "
                 "WHERE ip.pair_id=pp.id) AS image_count "
                 "FROM prompt_pairs pp "
@@ -404,6 +404,8 @@ class LibraryOperations:
             row["tags"] = []
             row["archived"] = bool(row["archived"])
             row["explicit_empty"] = bool(row["explicit_empty"])
+            # The history lane's "N runs" (#249): queue-hook pair uses, 0 when unset.
+            row["run_count"] = row["run_count"] if type(row["run_count"]) is int else 0
         if by_id:
             marks = ",".join("?" for _ in by_id)
             for row in conn.execute(

@@ -19,7 +19,7 @@ for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`e
     await page.setViewportSize({width,height});const f=page.fixture;
     await page.goto(`${workspace}#/library/${f.positive_id}`);await expect(variants(page)).toBeVisible();
     await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
-    const shot=name=>captureCanonicalState(page,testInfo,`production-${name}-${width}-${theme}`,name.startsWith('editor-archived')?'.library-variants':'dialog.library-editor');
+    const shot=name=>captureCanonicalState(page,testInfo,`production-${name}-${width}-${theme}`,name.startsWith('editor-archived')?'.library-history .timeline-panel':'dialog.library-editor');
 
     await variants(page).getByRole('button',{name:'Select negative variant 2',exact:true}).click();
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();await expect(editor(page)).toBeVisible();

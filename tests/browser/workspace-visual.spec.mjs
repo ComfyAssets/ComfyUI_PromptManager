@@ -94,14 +94,15 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await page.goto(`${workspace}#/library/${fixture.canonical_id}`);
         await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
         const details = await (await request.get(`/prompt_manager/library/${fixture.canonical_id}`)).json();
-        const index = details.variants.findIndex(variant => variant.id === fixture.canonical_pair);
-        const choice = page.getByRole('button', { name: `Select negative variant ${index + 1}`, exact: true });
+        const pairTitle = details.variants.find(variant => variant.id === fixture.canonical_pair).title;
+        const choice = page.getByRole('button', { name: `Select negative ${pairTitle}`, exact: true });
         await choice.focus();await page.keyboard.press('Enter');await expect(choice).toHaveAttribute('aria-pressed', 'true');
         const actual = await historyGeometry(page, true);
         const roles = page.getByRole('region', { name: 'Saved prompt texts', exact: true });
         const positive = roles.getByRole('region', { name: 'Positive prompt', exact: true });
         expect(await positive.evaluate(node => node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
-        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
+        const title = await page.locator('#workspace-main > .heading h1').textContent();
+        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(roles.getByRole('button', { name: `${name}: ${title}`, exact: true })).toBeVisible();
         // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
         await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
@@ -110,7 +111,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await expect(page.getByRole('complementary', { name: 'Selected image details', exact: true })).toContainText('canonical-alt.png');
         await page.locator('.library-shared-gallery .media-card.selected .image-open').click();
         await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
-        for (const [name, selector] of [['saved', '.library-surface'], ['branches', '.library-variants'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
+        for (const [name, selector] of [['saved', '.library-history article.surface'], ['branches', '.library-history .timeline-panel'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
             await captureCanonicalState(page, testInfo, `production-${name}-${width}-${theme}`, selector);
         }
         const run = page.locator(`button[data-run-id="${fixture.canonical_run}"][data-anchor-id="10"]`);
@@ -541,7 +542,7 @@ test('Library visual evidence keeps natural cards and returns from real history 
             await noOverflow(page);
             await page.getByRole('button',{name:'Explore history',exact:true}).first().click();
             await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
-            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Prompt history · one positive, one shared gallery');
             await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
             await expect(page.locator('article[data-prompt-id]')).toHaveCount(6);
             await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive. Reusable negatives. Every experiment stays connected.');
@@ -637,15 +638,18 @@ test('embedded history gallery keeps the history heading and disposes its layout
         await expect(page.getByRole('region',{name:'Prompt history',exact:true})).toBeVisible();
         await expect(page.locator('h1')).not.toHaveText('Prompt library');
         const title=await page.locator('h1').textContent();expect(title).not.toBe('Images');
-        // History opens on its first negative variant (concept navigate: state.variant = 0); the layout contract uses the whole gallery.
+        // History opens on its first negative variant (concept navigate: state.variant = 0); the fixture's images are linked
+        // to the positive only, so the layout contract uses the All images dialog's embedded gallery (#249 D26).
         await page.getByRole('button',{name:'All images for this positive',exact:true}).click();
-        await expect(page.locator('article[data-image-key]').first()).toBeVisible();
+        const listing=page.getByRole('dialog',{name:'All images for this positive',exact:true});
+        await expect(listing.locator('article[data-image-key]').first()).toBeVisible();
         for (const layout of ['List','Masonry','Grid']) {
-            await page.getByRole('button',{name:layout,exact:true}).click();await orderedMedia(page);
+            await listing.getByRole('button',{name:layout,exact:true}).click();await orderedMedia(page);
             await expect(page.locator('h1')).toHaveText(title);
-            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('One positive prompt. Reusable negative variants. One shared gallery.');
+            await expect(page.locator('#workspace-main > .heading p.muted')).toHaveText('Prompt history · one positive, one shared gallery');
         }
         await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
+        await page.keyboard.press('Escape');await expect(listing).toHaveCount(0);
         await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
         await expect(page.locator('.media-card,.detail-panel,dialog[open]')).toHaveCount(0);
     }

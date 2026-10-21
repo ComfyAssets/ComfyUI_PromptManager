@@ -10,7 +10,7 @@ import { expect } from '../../tools/vendor/node_modules/@playwright/test/index.m
 export const canonicalDifferences = {
     data: ['Independent synthetic text, image bytes, IDs, counts and text wrapping'],
     semantics: [
-    'Saved combinations are distinct from the additional chronological executions',
+    'Negative variants are saved combinations; Recorded runs list the chronological executions',
     'Recorded run exposes exact frozen evidence; Repeat run is illustrative',
     'Current-file candidates disclose unknown identity and context membership',
     ],
@@ -35,13 +35,13 @@ export async function captureCanonicalState(page, testInfo, name, selector) {
 
 export async function historyGeometry(page, production) {
     const selectors = production ? {
-        surface: '.library-surface', timeline: '.library-branches', positive: '.library-positive-lane',
-        branch: '.library-variant-lane', label: '.library-variant-lane span', dot: '.library-variant-dot[aria-pressed="true"]',
-        positiveLabel: '.library-positive-lane span',
+        surface: '.library-history article.surface', timeline: '.library-history .timeline', positive: '.library-history .positive-lane',
+        branch: '.library-history .variant-lane', label: '.library-history .variant-lane > span', dot: '.library-history .variant-dot[aria-pressed="true"]',
+        positiveLabel: '.library-history .positive-lane span',
         role: '[aria-label="Saved prompt texts"] .prompt-section',
         prompt: '[aria-label="Saved prompt texts"] .prompt-text', gallery: '.library-shared-gallery',
-        heading: '.library-variants h2', intro: '.library-variants > p.muted',
-        footer: '.library-variant-footer', all: '.library-variants button:last-child',
+        heading: '.library-history .timeline-panel h2', intro: '.library-history .timeline-panel .panel-heading .small',
+        footer: '.library-history .timeline-lower', all: '.library-history .timeline-lower button',
         recordedPositiveLabel: '.history-positive-lane span', recordedBranch: '.history-context-branch',
         recordedHeading: '.recorded-history h2', recordedTimeline: '.history-timeline', recordedCanvas: '.history-canvas',
         recordedPositive: '.history-positive-lane', recordedLabel: '.history-context-label',

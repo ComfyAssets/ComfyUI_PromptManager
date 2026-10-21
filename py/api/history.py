@@ -388,6 +388,9 @@ class HistoryRoutesMixin:
         routes.get("/prompt_manager/library/{positive_id}/history")(
             self.get_library_history
         )
+        routes.get(
+            "/prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest"
+        )(self.get_newest_pair_run)
         routes.get("/prompt_manager/history/runs/{run_id}")(self.get_history_run)
         routes.get("/prompt_manager/history/runs/{run_id}/outputs")(
             self.get_history_outputs
@@ -460,6 +463,40 @@ class HistoryRoutesMixin:
             )
             for run in result["items"]:
                 _wire_run(run)
+            encoded = _serialize_history(
+                {
+                    "success": True,
+                    "history_version": 1,
+                    "history_epoch": epoch,
+                    **result,
+                }
+            )
+            fence.validate(epoch, generation)
+            return encoded
+
+        return _success_response(await self._run_in_executor(project))
+
+    @_history_errors
+    async def get_newest_pair_run(self, request: web.Request) -> web.Response:
+        """The pair's newest recorded run for the history run dot (#249 D26)."""
+        _query(request)
+        if request.query:
+            raise ValueError("Invalid newest pair run query")
+        positive_id = _decimal(request.match_info["positive_id"], minimum=1)
+        pair_id = _decimal(request.match_info["pair_id"], minimum=1)
+        fence = self._history_fence()
+        db = self.db
+
+        def project() -> bytes:
+            generation = fence.begin()
+            try:
+                with db.recorded_history_snapshot() as epoch:
+                    result = db.get_newest_pair_run(positive_id, pair_id)
+            finally:
+                db.model.close()
+            if result is None:
+                fence.validate(epoch, generation)
+                raise HistoryReadError(404, "not-found")
             encoded = _serialize_history(
                 {
                     "success": True,

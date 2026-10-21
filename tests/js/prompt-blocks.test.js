@@ -166,6 +166,21 @@ test('a title names each action after its prompt (concept "Copy positive prompt:
         assert.deepEqual(labels,['Positive prompt','Copy positive prompt: Alpine observatory','Send positive prompt to ComfyUI: Alpine observatory']);
     }finally{scope.dispose();f.restore();}
 });
+test('setTitle renames the actions in place and keeps the last prompts and state',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    try{
+        const view=module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},title:'Old name',roles:['positive'],prompts:{positive:record('p')}});
+        view.setState({prompts:{positive:record('kept')},actionsEnabled:false});
+        const labels=()=>f.walk(container,node=>node.attributes['aria-label']).map(node=>node.attributes['aria-label']);
+        const rendered=container.children[0];view.setTitle('Old name');assert.equal(container.children[0],rendered,'an unchanged title does not re-render');
+        view.setTitle('New name');
+        assert.deepEqual(labels(),['Positive prompt','Copy positive prompt: New name','Send positive prompt to ComfyUI: New name']);
+        assert.ok(f.walk(container,node=>node.textContent==='kept').length);
+        assert.ok(f.walk(container,node=>node.dataset.copyRole==='positive').every(node=>node.disabled===true));
+        view.setTitle('');assert.deepEqual(labels(),['Positive prompt','Copy positive prompt','Send positive prompt to ComfyUI']);
+        scope.dispose();view.setTitle('After dispose');
+    }finally{scope.dispose();f.restore();}
+});
 const shape=node=>({tag:node.tagName,className:node.className,...(node.attributes['aria-label']?{label:node.attributes['aria-label']}:{}),
     ...(node.children.length?{children:node.children.filter(child=>child.tagName!=='svg').map(shape)}:{text:node.textContent})});
 test('prompt block emits concept markup without a source line',()=>{

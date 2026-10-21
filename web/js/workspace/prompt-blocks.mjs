@@ -38,8 +38,12 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
     const named = roleLabel => contextLabel ? `${contextLabel} ${roleLabel.toLowerCase()} prompt` : `${roleLabel} prompt`;
     const action = role => contextLabel ? `${contextLabel[0].toLowerCase()}${contextLabel.slice(1)} ${role} prompt` : `${role} prompt`;
     // A card among many names its actions after its prompt, as the concept's do (app.js a298–302: "Copy positive prompt: <title>").
-    const actionName = (verb, role, rest = '') => `${verb} ${action(role)}${rest}${title ? `: ${title}` : ''}`;
-    if (parentScope.signal.aborted) return {update() {}, setState() {}, dispose() {}};
+    // The title is mutable so a saved title edited in place (setTitle below, #249 F1) renames the actions.
+    let currentTitle = title || '';
+    const actionName = (verb, role, rest = '') => `${verb} ${action(role)}${rest}${currentTitle ? `: ${currentTitle}` : ''}`;
+    // An aborted parent gets one inert handle; every method is the same no-op.
+    const inert = () => {};
+    if (parentScope.signal.aborted) return {update:inert, setState:inert, setTitle:inert, dispose:inert};
     const scope = childScope(parentScope);
     container.classList.add('prompt-inspector');
     scope.listen(container, 'click', async event => {
@@ -66,9 +70,10 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
         }
         if (event.target.closest('[data-retry-prompts]')) onRetry?.();
     });
-    let roles = {}, actionsEnabled = true;
+    let roles = {}, actionsEnabled = true, current = {prompts};
     function render(state) {
         if (scope.signal.aborted) return;
+        current = state;
         roles = {};
         actionsEnabled = state.actionsEnabled !== false;
         container.replaceChildren();
@@ -119,5 +124,10 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
         }
     }
     render({prompts});
-    return {update:prompts => render({prompts}), setState:render, dispose:() => scope.dispose()};
+    // A saved title edited in place renames the actions without a remount (the history summary, #249 F1).
+    const setTitle = next => {
+        const value = next || '';
+        if (value !== currentTitle) {currentTitle = value;render(current);}
+    };
+    return {update:prompts => render({prompts}), setState:render, setTitle, dispose:() => scope.dispose()};
 }

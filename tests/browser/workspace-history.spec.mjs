@@ -9,8 +9,9 @@ const dialog=page=>page.getByRole('dialog',{name:'Recorded run',exact:true});
 const saved=page=>page.getByRole('region',{name:'Saved prompt texts',exact:true});
 const gallery=page=>page.getByRole('region',{name:'Shared gallery',exact:true});
 const open=async(page,id)=>{await page.goto(`/prompt_manager/workspace#/library/${id}`);await expect(recorded(page)).toBeVisible();};
-// A history opens on its first negative variant, as in the concept; these contracts start from the whole shared gallery.
-const showAllImages=async page=>{const all=page.getByRole('button',{name:'All images for this positive',exact:true});await all.click();await expect(all).toHaveAttribute('aria-pressed','true');};
+// A history opens on its first negative variant, as in the concept; these contracts start from the lane that links the
+// fixture image (#249 D26: All images for this positive is a dialog now, not a gallery filter).
+const showLinkedImage=async page=>{const dot=page.getByRole('button',{name:'Select negative Saved exact negative',exact:true});await dot.click();await expect(dot).toHaveAttribute('aria-pressed','true');};
 const marker=(page,id,anchor='10')=>recorded(page).locator(`button[data-run-id="${id}"][data-anchor-id="${anchor}"]`);
 const exact=async locator=>locator.evaluate(node=>node.textContent);
 
@@ -93,7 +94,7 @@ test('same-path replacement is current content and a during-inspection change is
 
 test('root reconfiguration rejects in-flight candidates and every old scope URL without changing receipts',async({page,request})=>{
     const f=page.fixture,window=await historyRead(request,f.detail_id),base=`/prompt_manager/history/runs/${f.runs.shared}`;
-    await open(page,f.detail_id);await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    await open(page,f.detail_id);await showLinkedImage(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     const before=await(await request.get(`${base}/outputs?epoch=${window.history_epoch}`)).json(),media=before.items[0].current_candidate.media;
     await command(request,{action:'arm',boundary:'candidate'});const pending=request.get(`${base}/outputs?epoch=${window.history_epoch}`);
     try {
@@ -163,8 +164,8 @@ test('strict reset seeds real A,A,B positions, two contexts and independently se
     const fixture=page.fixture;let galleryReads=0;page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${fixture.positive_id}/images`)galleryReads++;});
     await open(page,fixture.positive_id);
     const detail=await(await request.get(`/prompt_manager/library/${fixture.positive_id}`)).json();
-    const selected=detail.variants.findIndex(v=>v.negative_text==='A negative')+1;
-    await page.getByRole('button',{name:`Select negative variant ${selected}`,exact:true}).click();
+    const selected=detail.variants.find(v=>v.negative_text==='A negative').title;
+    await page.getByRole('button',{name:`Select negative ${selected}`,exact:true}).click();
     await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     const before=galleryReads,keys=await gallery(page).locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(n=>n.dataset.imageKey));
     await expect(recorded(page)).toContainText('3 distinct recorded runs as of this read');
@@ -182,7 +183,7 @@ test('strict reset seeds real A,A,B positions, two contexts and independently se
         await expect(marker(page,id)).toBeFocused();
     }
     await expect(saved(page).getByRole('region',{name:'Negative prompt',exact:true})).toContainText('A negative');
-    await expect(page.getByRole('button',{name:`Select negative variant ${selected}`,exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(page.getByRole('button',{name:`Select negative ${selected}`,exact:true})).toHaveAttribute('aria-pressed','true');
     expect(galleryReads).toBe(before);expect(await gallery(page).locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(n=>n.dataset.imageKey))).toEqual(keys);
 });
 
@@ -282,7 +283,7 @@ test('active stale inspection echo reaches history ownership without a second me
 });
 
 test('unavailable exact receipt selection and targeted retry observe a newly available file without writes',async({page,request})=>{
-    const f=page.fixture;await open(page,f.detail_id);await page.getByRole('button',{name:'Select negative variant 1',exact:true}).click();
+    const f=page.fixture;await open(page,f.detail_id);await page.getByRole('button',{name:'Select negative Saved empty',exact:true}).click();
     const keys=await gallery(page).locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey));
     let writes=0,galleryReads=0,outputReads=0;
     page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/prompt_manager/')&&request.method()!=='GET')writes++;if(url.pathname.endsWith('/images'))galleryReads++;if(url.pathname.endsWith('/outputs'))outputReads++;});
@@ -301,7 +302,7 @@ test('unavailable exact receipt selection and targeted retry observe a newly ava
     await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
     await missing.getByRole('button',{name:'View current file',exact:true}).click();await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
     await expect(missing).toHaveAttribute('aria-current','true');await page.keyboard.press('Escape');
-    await expect(page.getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(page.getByRole('button',{name:'Select negative Saved empty',exact:true})).toHaveAttribute('aria-pressed','true');
     expect(await gallery(page).locator('article[data-image-key]').evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey))).toEqual(keys);expect(writes).toBe(0);
 });
 
@@ -399,7 +400,7 @@ test('history, run and output failures retry their own reads and route exit igno
     const f=page.fixture;let windowFailure=true,runFailure=true,outputFailure=true;
     await page.route(/\/library\/\d+\/history\?/,async route=>windowFailure?route.fulfill({status:503,json:{success:false}}):route.continue());
     await page.goto(`/prompt_manager/workspace#/library/${f.detail_id}`);await expect(recorded(page).getByRole('button',{name:'Retry recorded history',exact:true})).toBeVisible();
-    await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);windowFailure=false;await recorded(page).getByRole('button',{name:'Retry recorded history',exact:true}).click();
+    await showLinkedImage(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);windowFailure=false;await recorded(page).getByRole('button',{name:'Retry recorded history',exact:true}).click();
     await page.route(/\/history\/runs\/[^/]+\?/,async route=>runFailure?route.fulfill({status:503,json:{success:false}}):route.continue());
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>outputFailure?route.fulfill({status:503,json:{success:false}}):route.continue());
     await marker(page,f.runs.shared).click();await expect(dialog(page).getByRole('button',{name:'Retry run details',exact:true})).toBeVisible();runFailure=false;await dialog(page).getByRole('button',{name:'Retry run details',exact:true}).click();
@@ -564,7 +565,7 @@ test('capture recovery reloads only reported outputs while retaining frozen run 
 });
 
 test('history epoch recovery reports saved-parent read failures and retries without resetting the gallery',async({page})=>{
-    const f=page.fixture;await open(page,f.detail_id);await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    const f=page.fixture;await open(page,f.detail_id);await showLinkedImage(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     let parentFailure=true,galleryReads=0;page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${f.detail_id}/images`)galleryReads++;});
     await page.route(new RegExp(`/prompt_manager/library/${f.detail_id}(?:\\?|$)`),async route=>parentFailure?route.fulfill({status:503,json:{success:false,error:'Unavailable'}}):route.continue());
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
@@ -575,7 +576,7 @@ test('history epoch recovery reports saved-parent read failures and retries with
 });
 
 test('changed saved-owner identity is disclosed without silently relabeling or rebinding the existing gallery',async({page,request})=>{
-    const f=page.fixture;await open(page,f.detail_id);await showAllImages(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
+    const f=page.fixture;await open(page,f.detail_id);await showLinkedImage(page);await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     const positive=saved(page).getByRole('region',{name:'Positive prompt',exact:true});const original=await exact(positive.locator('p.prompt-text'));
     const cards=gallery(page).locator('article[data-image-key]');await cards.first().evaluate(node=>{window.savedGalleryCard=node;});let galleryReads=0;
     page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${f.detail_id}/images`)galleryReads++;});
@@ -595,7 +596,7 @@ test('a bounded saved-parent prefix leaves previously loaded variants unverified
     const f=page.fixture;const detail=await(await request.get(`/prompt_manager/library/${f.detail_id}`)).json();
     for(let index=0;index<41;index++)await expect(await request.post('/prompt_manager/pairs',{data:{positive_text:detail.positive.text,negative_text:`Bounded negative ${index}`}})).toBeOK();
     await open(page,f.detail_id);await expect(page.getByRole('button',{name:'Load more negative variants',exact:true})).toBeVisible();await page.getByRole('button',{name:'Load more negative variants',exact:true}).click();
-    const choices=page.getByRole('button',{name:/^Select negative variant /});await expect(choices).toHaveCount(43);await choices.last().click();await expect(choices.last()).toHaveAttribute('aria-pressed','true');
+    const choices=page.getByRole('button',{name:/^Select negative /});await expect(choices).toHaveCount(43);await choices.last().click();await expect(choices.last()).toHaveAttribute('aria-pressed','true');
     const negative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent();
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
@@ -608,7 +609,7 @@ test('an authoritative save after a stale revalidation makes the saved view curr
     const f=page.fixture;const detail=await(await request.get(`/prompt_manager/library/${f.detail_id}`)).json();
     for(let index=0;index<41;index++)await expect(await request.post('/prompt_manager/pairs',{data:{positive_text:detail.positive.text,negative_text:`Bounded negative ${index}`}})).toBeOK();
     await open(page,f.detail_id);await page.getByRole('button',{name:'Load more negative variants',exact:true}).click();
-    const choices=page.getByRole('button',{name:/^Select negative variant /});await expect(choices).toHaveCount(43);await choices.last().click();
+    const choices=page.getByRole('button',{name:/^Select negative /});await expect(choices).toHaveCount(43);await choices.last().click();
     const negative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent();
     await page.route(/\/history\/runs\/[^/]+\/outputs\?/,async route=>route.fulfill({status:409,json:{success:false,history_version:1,code:'history-changed',error:'History changed',recovery:{action:'refresh-history'}}}));
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
@@ -617,7 +618,7 @@ test('an authoritative save after a stale revalidation makes the saved view curr
     await expect(editor.getByRole('button',{name:'Save',exact:true})).toBeEnabled();await editor.getByLabel('Notes',{exact:true}).fill('Saved after stale revalidation');
     await editor.getByRole('button',{name:'Save',exact:true}).click();await expect(editor).toHaveCount(0);
     await expect(page.locator('.library-parent-status')).toBeHidden();await expect(page.getByRole('button',{name:'Reload saved Library view',exact:true})).toBeHidden();
-    await expect(choices.first()).toBeEnabled();await expect(page.locator('.library-variant-dot[aria-pressed="true"]')).toHaveCount(1);
+    await expect(choices.first()).toBeEnabled();await expect(page.locator('.variant-dot[aria-pressed="true"]')).toHaveCount(1);
     expect(await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).textContent()).toBe(negative);
     const names=await choices.evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));expect(new Set(names).size).toBe(names.length);
 });
@@ -625,14 +626,14 @@ test('an authoritative save after a stale revalidation makes the saved view curr
 async function retainSavedSelection(page,request,fixture) {
     await open(page,fixture.detail_id);
     const details=await(await request.get(`/prompt_manager/library/${fixture.detail_id}`)).json();
-    const index=details.variants.findIndex(variant=>variant.id===fixture.saved_pair);
-    await page.getByRole('button',{name:`Select negative variant ${index+1}`,exact:true}).click();
+    const name=details.variants.find(variant=>variant.id===fixture.saved_pair).title;
+    await page.getByRole('button',{name:`Select negative ${name}`,exact:true}).click();
     await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(1);
     const negative=await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text'));
     await gallery(page).locator('article[data-image-key]').first().evaluate(node=>{window.fix1SavedGalleryCard=node;});
     let reads=0;page.on('request',request=>{if(new URL(request.url()).pathname===`/prompt_manager/library/${fixture.detail_id}/images`)reads++;});
     return async()=>{
-        await expect(page.getByRole('button',{name:`Select negative variant ${index+1}`,exact:true})).toHaveAttribute('aria-pressed','true');
+        await expect(page.getByRole('button',{name:`Select negative ${name}`,exact:true})).toHaveAttribute('aria-pressed','true');
         expect(await exact(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text'))).toBe(negative);
         expect(await gallery(page).locator('article[data-image-key]').first().evaluate(node=>node===window.fix1SavedGalleryCard)).toBe(true);expect(reads).toBe(0);
     };
@@ -720,4 +721,241 @@ test('completed page one stays bounded across mode changes until explicit output
         await more.click();await started;expect(reads).toBe(2);releaseNext();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(41);await expect(more).toBeHidden();
         await page.keyboard.press('Escape');await retained();
     } finally {releaseNext();}
+});
+
+// #249 PR F1: the concept heading (app.js a591–597) and summary surface (a598) with real counts (D24).
+const historyHeading=page=>page.locator('#workspace-main > .heading');
+const summary=page=>page.locator('#workspace-main .library-history article.surface');
+test('history heading actions stay on one row at 1600 and are enabled after load',async({page,request})=>{
+    await page.setViewportSize({width:1600,height:1100});const f=page.fixture;
+    let releaseDetail;const held=new Promise(resolve=>{releaseDetail=resolve;});
+    await page.route(new RegExp(`/prompt_manager/library/${f.positive_id}\\?`),async route=>{await held;await route.continue().catch(()=>{});});
+    try {
+        await page.goto(`/prompt_manager/workspace#/library/${f.positive_id}`);
+        const heading=historyHeading(page),send=heading.locator('.heading-actions > button.send');
+        await expect(heading.locator('p.muted')).toHaveText('Prompt history · one positive, one shared gallery');
+        // D24: disabled only while the selected pair's roles are loading.
+        await expect(send).toBeDisabled();releaseDetail();
+        await expect(recorded(page)).toBeVisible();await expect(send).toBeEnabled();
+    } finally {releaseDetail();}
+    const heading=historyHeading(page),title=await heading.locator('h1').textContent();
+    const actions=heading.locator('.heading-actions > button');
+    await expect(actions).toHaveCount(3);
+    expect(await actions.evaluateAll(nodes=>nodes.map(node=>node.textContent.trim()))).toEqual(['← Prompt library','Edit metadata','Send to ComfyUI']);
+    await expect(actions.nth(2)).toHaveClass('send');
+    await expect(actions.nth(2)).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${title}`);
+    for(const action of [actions.nth(0),actions.nth(1)]) await expect(action).toBeEnabled();
+    const boxes=await actions.evaluateAll(nodes=>nodes.map(node=>{const box=node.getBoundingClientRect();return {y:box.y,height:box.height};}));
+    expect(new Set(boxes.map(box=>box.y)).size).toBe(1);
+    const row=await heading.locator('.heading-actions').evaluate(node=>node.getBoundingClientRect().height);
+    expect(row).toBe(boxes[0].height);
+});
+test('summary meta uses recorded runs',async({page,request})=>{
+    const f=page.fixture;await open(page,f.positive_id);
+    const detail=await(await request.get(`/prompt_manager/library/${f.positive_id}`)).json(),runs=(await historyRead(request,f.positive_id)).recorded_run_count;
+    const surface=summary(page),title=await historyHeading(page).locator('h1').textContent();
+    await expect(surface).toHaveCount(1);
+    await expect(surface.locator(':scope > span.chip')).toHaveText(detail.positive.category || 'Uncategorized');
+    const plural=(count,word)=>`${count} ${count===1?word:`${word}s`}`;
+    await expect(surface.locator(':scope > .card-meta > span')).toHaveText([plural(runs,'tracked run'),plural(detail.positive.image_count,'image'),plural(detail.positive.variant_count,'negative variant')]);
+    // The concept order: category chip, positive block, selected negative block, then the meta line.
+    expect(await surface.evaluate(node=>[...node.querySelectorAll('.chip, .prompt-section, .card-meta')].filter(item=>item.checkVisibility()).map(item=>item.className))).toEqual(['chip','prompt-section positive','prompt-section negative','card-meta']);
+    for(const name of ['Copy positive prompt','Send positive prompt to ComfyUI','Copy negative prompt','Send negative prompt to ComfyUI'])
+        await expect(saved(page).getByRole('button',{name:`${name}: ${title}`,exact:true})).toBeVisible();
+    await expect(surface.locator('.prompt-section').first()).toHaveCSS('border-top-width','1px');
+});
+
+// #249 F2: the concept's negative variants panel (app.js a598, style.css 1059-1154) and its two dialogs (D26).
+const variantsPanel=page=>page.getByRole('region',{name:'Saved negative variants',exact:true});
+const modalDialog=(page,name)=>page.getByRole('dialog',{name,exact:true});
+test('variants panel matches the concept',async({page})=>{
+    const f=page.fixture;await open(page,f.canonical_id);const panel=variantsPanel(page);
+    await expect(panel).toHaveClass('surface timeline-panel');
+    const heading=panel.locator(':scope > .panel-heading');
+    await expect(heading.locator(':scope > div > h2')).toHaveText('Negative variants');
+    await expect(heading.locator(':scope > div > p.small')).toHaveText('Choose a red dot to change the negative and filter this gallery.');
+    const actions=heading.locator(':scope > .row-actions > button');
+    expect(await actions.evaluateAll(nodes=>nodes.map(node=>node.textContent))).toEqual(['Compare negatives','+ Add negative','Show archived (0)']);
+    const compare=actions.nth(0);await expect(compare).toHaveAttribute('aria-pressed','false');
+    await compare.click();await expect(compare).toHaveAttribute('aria-pressed','true');await compare.click();await expect(compare).toHaveAttribute('aria-pressed','false');
+    const timeline=panel.locator(':scope > .timeline');
+    await expect(timeline.locator(':scope > .positive-lane > span')).toHaveText('Positive prompt · unchanged');
+    const lanes=timeline.locator(':scope > .variant-lane');await expect(lanes).toHaveCount(3);
+    // Newest saved pair first, as the bounded variant page reads; every lane is offset 38 + 47i.
+    const names=['No negative','Clean geometry','Quality baseline'],runs=['0 runs','2 runs','2 runs'];
+    for(const [index,name] of names.entries()) {
+        const lane=lanes.nth(index);
+        await expect(lane).toHaveAttribute('style',`--lane-offset: ${38+index*47}px;`);
+        const dot=lane.locator(':scope > button.variant-dot');
+        await expect(dot).toHaveText('−');await expect(dot).toHaveAccessibleName(`Select negative ${name}`);
+        await expect(dot).toHaveAttribute('aria-pressed',String(index===0));
+        await expect(lane.locator(':scope > span')).toHaveText(`${name} · ${runs[index]}`);
+        expect(await lane.evaluate(node=>[...node.children].filter(child=>!child.hidden).map(child=>child.tagName.toLowerCase()+'.'+child.className))).toEqual(index===0?['button.variant-dot','span.']:['button.variant-dot','span.','button.run-dot']);
+    }
+    await lanes.nth(2).locator('.variant-dot').click();await expect(lanes.nth(2).locator('.variant-dot')).toHaveAttribute('aria-pressed','true');
+    await expect(lanes.nth(0).locator('.variant-dot')).toHaveAttribute('aria-pressed','false');
+    await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(2);
+    const lower=panel.locator(':scope > .timeline-lower');
+    await expect(lower.locator(':scope > span.small')).toHaveText('Green + positive · red − negative · small dot repeat run');
+    await expect(lower.locator(':scope > button')).toHaveText('All images for this positive');
+    await expect(lower.locator(':scope > button')).not.toHaveAttribute('aria-pressed',/.*/);
+    await expect(panel).not.toContainText('Saved combinations, not an execution timeline.');
+    // The concept tokens reach the lanes (style.css 1096-1137).
+    await expect(lanes.first()).toHaveCSS('height','57px');await expect(lanes.nth(1)).toHaveCSS('margin-left','85px');
+    await expect(lanes.first().locator('.variant-dot')).toHaveCSS('border-radius','50%');
+    await expect(lanes.nth(1).locator('.run-dot')).toHaveCSS('left','190px');
+});
+test('run dot appears only for pairs with more than one run and opens its run',async({page})=>{
+    const f=page.fixture;await open(page,f.canonical_id);const panel=variantsPanel(page);
+    await expect(panel.getByRole('button',{name:/^Show repeat run for /})).toHaveCount(2);
+    await expect(panel.getByRole('button',{name:'Show repeat run for No negative',exact:true})).toHaveCount(0);
+    // D45: the lane text wraps before the run dot, and a coarse pointer reaches the 12px dot through a 44px target.
+    for(const lane of await panel.locator('.variant-lane:has(> .run-dot:not([hidden]))').all()) {
+        const [text,dot]=await Promise.all([lane.locator(':scope > span').boundingBox(),lane.locator(':scope > .run-dot').boundingBox()]);
+        expect(text.width).toBeLessThanOrEqual(139.5);expect(text.x+text.width).toBeLessThan(dot.x);
+    }
+    if(await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
+        const dot=panel.getByRole('button',{name:'Show repeat run for Quality baseline',exact:true});await dot.scrollIntoViewIfNeeded();
+        const reach=await dot.evaluate(node=>{
+            const box=node.getBoundingClientRect(),x=box.x+box.width/2,y=box.y+box.height/2;
+            return [[x-20,y],[x+20,y],[x,y-20],[x,y+20]].map(([px,py])=>{const hit=document.elementFromPoint(px,py);return hit?.closest('button')===node?'dot':`${hit?.tagName}.${hit?.className}`;});
+        });
+        expect(reach).toEqual(['dot','dot','dot','dot']);
+    }
+    // The baseline has a recorded execution: the dot opens Recorded run for it.
+    const baseline=panel.getByRole('button',{name:'Show repeat run for Quality baseline',exact:true});await baseline.click();
+    await expect(dialog(page)).toBeVisible();await expect(dialog(page)).toContainText(f.canonical_run);
+    await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();await expect(dialog(page)).toHaveCount(0);
+    // Clean geometry was counted but never recorded: Repeat run shows its newest linked image only.
+    const clean=panel.getByRole('button',{name:'Show repeat run for Clean geometry',exact:true});
+    const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===`/prompt_manager/library/${f.canonical_id}/images`)reads.push(url.searchParams);});
+    await clean.click();const repeat=modalDialog(page,'Repeat run');await expect(repeat).toBeVisible();
+    await expect(repeat.locator('#modal-body > p.small')).toHaveText('Same positive and negative, another execution.');
+    await expect(repeat.locator('#modal-body > .spaced-15 article[data-image-key]')).toHaveCount(1);
+    expect(reads.at(-1).get('pair_id')).toBe(String(f.clean_pair));expect(reads.at(-1).get('limit')).toBe('1');
+    await page.keyboard.press('Escape');await expect(repeat).toHaveCount(0);await expect(clean).toBeFocused();
+});
+test('all images dialog lists every image for the positive',async({page,request})=>{
+    const f=page.fixture;await open(page,f.detail_id);
+    const detail=await(await request.get(`/prompt_manager/library/${f.detail_id}`)).json();
+    const all=variantsPanel(page).getByRole('button',{name:'All images for this positive',exact:true});
+    // Opening on the first lane, the shared gallery shows that lane only.
+    await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(0);
+    await all.click();const listing=modalDialog(page,'All images for this positive');await expect(listing).toBeVisible();
+    await expect(listing.locator('article[data-image-key]')).toHaveCount(detail.positive.image_count);
+    await page.keyboard.press('Escape');await expect(listing).toHaveCount(0);await expect(all).toBeFocused();
+    await expect(gallery(page).locator('article[data-image-key]')).toHaveCount(0);
+    // Leaving the route closes an open dialog and its gallery.
+    await all.click();await expect(listing.locator('article[data-image-key]')).toHaveCount(detail.positive.image_count);
+    await page.evaluate(()=>{location.hash='#/overview';});await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);await expect(page.locator('#modal')).toHaveCount(0);
+});
+test('compare toggles, follows the selected dot and stacks at 390',async({page})=>{
+    const f=page.fixture;await open(page,f.canonical_id);const panel=variantsPanel(page);
+    const compare=panel.getByRole('button',{name:'Compare negatives',exact:true});
+    const section=page.locator('.library-history .timeline-panel + section.surface');
+    await expect(section).toHaveCount(0);
+    await compare.click();await expect(compare).toHaveAttribute('aria-pressed','true');
+    // The concept section (app.js a599-616) follows the timeline panel; the baseline is the oldest active lane (D25).
+    await expect(section).toHaveCount(1);
+    expect(await section.evaluate(node=>[...node.children].map(child=>child.tagName.toLowerCase()+(child.className?'.'+child.className:'')))).toEqual(['h2','p','div.compare-grid','p.small','p.small']);
+    await expect(section.locator(':scope > h2')).toHaveText('Compare negative variants');
+    await expect(section.locator(':scope > p').first()).toHaveText('Baseline compared with No negative. Choose another red dot to change the comparison.');
+    const items=section.locator(':scope > .compare-grid > .compare-item');await expect(items).toHaveCount(2);
+    await expect(items.nth(0).locator('.prompt-section.negative .prompt-text')).toHaveText('blurred edges, watermark');
+    await expect(items.nth(1).locator('.prompt-section.negative .prompt-text')).toHaveText('No negative prompt (explicitly empty)');
+    await expect(items.nth(0).locator('.prompt-section.positive')).toHaveCount(0);
+    // D46: the two blocks are named apart, so no region or action name repeats on the page.
+    await expect(section.getByRole('region',{name:'Baseline negative prompt',exact:true})).toBeVisible();
+    await expect(section.getByRole('region',{name:'Selected negative prompt',exact:true})).toBeVisible();
+    await expect(section.locator(':scope > p.small').first()).toHaveText('Added terms');
+    await expect(section.locator(':scope > p.small').nth(1)).toHaveText('No added terms.');
+    await expect(section.locator('.diff-added')).toHaveCount(0);
+    // Another dot updates the same section in place.
+    const node=await section.elementHandle();
+    await panel.getByRole('button',{name:'Select negative Clean geometry',exact:true}).click();
+    await expect(section.locator(':scope > p').first()).toHaveText('Baseline compared with Clean geometry. Choose another red dot to change the comparison.');
+    await expect(items.nth(1).locator('.prompt-text')).toHaveText('flat light');
+    await expect(section.locator(':scope > span.diff-added')).toHaveText(['+ flat light']);
+    await expect(section.locator(':scope > p.small')).toHaveCount(1);
+    expect(await node.evaluate(element=>element.isConnected)).toBe(true);
+    await expect(section.locator('.diff-added')).toHaveCSS('display','inline-block');
+    await expect(section.locator('.compare-item').first()).toHaveCSS('padding','15px');
+    await page.setViewportSize({width:1600,height:1100});
+    let boxes=await items.evaluateAll(nodes=>nodes.map(node=>node.getBoundingClientRect().toJSON()));
+    expect(boxes[1].x).toBeGreaterThan(boxes[0].x+boxes[0].width-1);expect(Math.abs(boxes[1].y-boxes[0].y)).toBeLessThan(1);
+    await page.setViewportSize({width:390,height:844});
+    boxes=await items.evaluateAll(nodes=>nodes.map(node=>node.getBoundingClientRect().toJSON()));
+    expect(Math.abs(boxes[1].x-boxes[0].x)).toBeLessThan(1);expect(boxes[1].y).toBeGreaterThanOrEqual(boxes[0].y+boxes[0].height);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    await panel.getByRole('button',{name:'Select negative Quality baseline',exact:true}).click();
+    await expect(section.locator(':scope > p').first()).toHaveText('Baseline compared with Quality baseline. Choose another red dot to change the comparison.');
+    await expect(section.locator(':scope > p.small').nth(1)).toHaveText('No added terms.');
+    await compare.click();await expect(compare).toHaveAttribute('aria-pressed','false');await expect(section).toHaveCount(0);
+});
+test('compare waits for the page holding the oldest active negative',async({page})=>{
+    const f=page.fixture;
+    // A bounded first page that does not reach the oldest saved pair: the baseline is not guessed from the newest lanes (D46).
+    await page.route(new RegExp(`/prompt_manager/library/${f.canonical_id}\\?`),async route=>{
+        const url=new URL(route.request().url());if(url.searchParams.has('variant_cursor') || url.searchParams.get('archive')) return route.continue();
+        const response=await route.fetch(),body=await response.json();
+        await route.fulfill({response,json:{...body,variants:body.variants.slice(0,2),variants_has_more:true,variants_next_cursor:'held'}});
+    });
+    await open(page,f.canonical_id);const panel=variantsPanel(page);
+    await panel.getByRole('button',{name:'Compare negatives',exact:true}).click();
+    const section=page.locator('.library-history .timeline-panel + section.surface');
+    await expect(section.locator(':scope > h2')).toHaveText('Compare negative variants');
+    await expect(section.locator(':scope > p.small')).toHaveText('Load more negative variants to reach the baseline.');
+    await expect(section.locator('.compare-grid')).toHaveCount(0);
+    await page.unroute(new RegExp(`/prompt_manager/library/${f.canonical_id}\\?`));
+});
+test('run dot falls back to Repeat run when the lookup fails or Recorded run cannot open',async({page})=>{
+    const f=page.fixture;
+    await page.route(/\/history\/pairs\/\d+\/newest/,route=>route.fulfill({status:503,json:{success:false}}));
+    await open(page,f.canonical_id);const panel=variantsPanel(page);
+    const baseline=panel.getByRole('button',{name:'Show repeat run for Quality baseline',exact:true});
+    await baseline.click();const repeat=modalDialog(page,'Repeat run');await expect(repeat).toBeVisible();
+    await expect(page.locator('#workspace-toast')).toHaveText('Recorded runs could not be read. Showing the newest linked image.');
+    await expect(dialog(page)).toHaveCount(0);
+    await page.keyboard.press('Escape');await expect(repeat).toHaveCount(0);await expect(baseline).toBeFocused();
+    await page.unroute(/\/history\/pairs\/\d+\/newest/);
+    // The lookup names a run, but the recorded history never loaded, so Recorded run cannot open: Repeat run, no toast.
+    await page.route(/\/library\/\d+\/history\?/,route=>route.fulfill({status:503,json:{success:false}}));
+    await page.reload();await expect(recorded(page).getByRole('button',{name:'Retry recorded history',exact:true})).toBeVisible();
+    await page.locator('#workspace-toast').evaluate(node=>{node.textContent='';});
+    const newest=page.waitForResponse(response=>/\/history\/pairs\/\d+\/newest/.test(response.url()));
+    await variantsPanel(page).getByRole('button',{name:'Show repeat run for Quality baseline',exact:true}).click();
+    expect((await(await newest).json()).run.run_id).toBe(f.canonical_run);
+    await expect(modalDialog(page,'Repeat run')).toBeVisible();await expect(dialog(page)).toHaveCount(0);
+    await expect(page.locator('#workspace-toast')).toHaveText('');
+});
+test('an archived pair\'s Repeat run reads the archived gallery',async({page,request})=>{
+    const f=page.fixture;
+    await expect(await request.patch(`/prompt_manager/pairs/${f.clean_pair}`,{data:{archived:true}})).toBeOK();
+    await open(page,f.canonical_id);const panel=variantsPanel(page);
+    await panel.getByRole('button',{name:'Show archived (1)',exact:true}).click();
+    const reads=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname===`/prompt_manager/library/${f.canonical_id}/images`)reads.push(url.searchParams);});
+    await panel.getByRole('button',{name:'Show repeat run for Clean geometry',exact:true}).click();
+    const repeat=modalDialog(page,'Repeat run');await expect(repeat.locator('.spaced-15 article[data-image-key]')).toHaveCount(1);
+    expect(reads.at(-1).get('pair_id')).toBe(String(f.clean_pair));expect(reads.at(-1).get('archive')).toBe('archived');
+    // Each open replaces the previous dialog and its gallery.
+    await page.keyboard.press('Escape');await panel.getByRole('button',{name:'All images for this positive',exact:true}).click();
+    await expect(modalDialog(page,'All images for this positive')).toBeVisible();await expect(page.locator('dialog[open]')).toHaveCount(1);
+});
+test('Compare negatives is disabled without an active variant',async({page,request})=>{
+    const f=page.fixture,detail=await(await request.get(`/prompt_manager/library/${f.canonical_id}`)).json();
+    for(const variant of detail.variants) await expect(await request.patch(`/prompt_manager/pairs/${variant.id}`,{data:{archived:true}})).toBeOK();
+    await open(page,f.canonical_id);const compare=variantsPanel(page).getByRole('button',{name:'Compare negatives',exact:true});
+    await expect(compare).toBeDisabled();await expect(compare).toHaveAttribute('aria-pressed','false');
+    await expect(page.locator('.library-history .timeline-panel + section.surface')).toHaveCount(0);
+});
+test('dot names never repeat for trimmed titles or titles that read like a fallback',async({page,request})=>{
+    const f=page.fixture,detail=await(await request.get(`/prompt_manager/library/${f.canonical_id}`)).json();
+    const byTitle=Object.fromEntries(detail.variants.map(variant=>[variant.title,variant.id]));
+    await expect(await request.patch(`/prompt_manager/pairs/${byTitle['No negative']}`,{data:{title:'variant 2'}})).toBeOK();
+    await expect(await request.patch(`/prompt_manager/pairs/${byTitle['Quality baseline']}`,{data:{title:' Clean geometry '}})).toBeOK();
+    await open(page,f.canonical_id);
+    const names=await variantsPanel(page).locator('.variant-dot').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toEqual(['Select negative variant 1','Select negative variant 2','Select negative variant 3']);
 });
