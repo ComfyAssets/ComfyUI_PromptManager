@@ -137,3 +137,16 @@ class ImageFavoriteOperations:
             )
             found.update(path for (path,) in rows)
         return found
+
+    def get_root_favorites(self, root_key: str) -> set[str]:
+        """Every relative key favorited under *root_key* (a primary-key range).
+
+        The Favorites listing (``favorites=1``) intersects these with the
+        root's scan, so its size follows the root's favorites, not its files.
+        """
+        conn = self.model.get_connection()
+        rows = conn.execute(
+            "SELECT relative_path FROM image_favorites WHERE root_key=?",
+            (root_key,),
+        )
+        return {path for (path,) in rows}

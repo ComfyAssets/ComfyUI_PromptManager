@@ -85,8 +85,8 @@ const nocase=(a,b)=>{const x=a.toLowerCase(),y=b.toLowerCase();return x<y?-1:x>y
 
 export function mapImagesConcept(reference,{manifest,now=new Date()}) {
     const paths=new Map(manifest.images.map(image=>[image.filename,image.path]));
-    const toolbar=withoutItems(reference.toolbar,item=>item.text==='Save view');
-    // D16 (follow-up PR): no Save view until the saved-views store ships. D14: the sort appends production's two sorts.
+    // D14: the sort appends production's two sorts. Save view is the concept's own (saved views, #249 D16 retired).
+    const toolbar={...reference.toolbar};
     toolbar.items=toolbar.items.map(item=>item.id==='sort'?{...item,options:[...item.options,'Oldest first','Name Z–A']}:item);
     // D36: the category list is the Library's real list, sorted alphabetically (database/library.py `ORDER BY category
     // COLLATE NOCASE, category`); the concept lists its samples in prompt order (app.js 348). Only the order is mapped.
@@ -329,9 +329,9 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images page ge
         const conceptLoad=await openConceptLoaded(page,theme,motion);
         const reference=await inventoryOf(page,'#main');
         if(capture)await captureCanonicalState(page,testInfo,`concept-images-${width}-${theme}`);
-        // The browser as the re-layout's oracle: the concept page itself without Save view, then without the sample tag.
+        // The browser as the re-layout's oracle: the concept page itself without the sample tag.
         const removed={};
-        for(const [key,selector] of [['toolbar','.toolbar > [data-action="save-view"]'],['filterRow','.filter-row > .sample-tag']]) {
+        for(const [key,selector] of [['filterRow','.filter-row > .sample-tag']]) {
             const restore=await mutate(page,{remove:[selector]});
             removed[key]=(await inventoryOf(page,'#main'))[key];
             await restore();
@@ -385,12 +385,10 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images page ge
         expect.soft(reference.cards[0].info.p.text,`${motion} concept subtitle`).toBe(`${first.width} × ${first.height} · PNG · Seed ${first.seed}`);
         expect.soft(reference.cards[0].info.h3.fontSize,`${motion} concept h3 size`).toBe('11px');
         expect.soft(referenceImport.rows.map(row=>row.title),`${motion} concept Import rows`).toEqual(['Inspect a local image','Scan an output folder','Import portable recipes']);
-        // The row model reproduces the concept's own rows, and the concept page itself once Save view (D16) or the
-        // sample tag (D29) is removed from it at runtime: the browser is the oracle for the remainders the mapping uses.
+        // The row model reproduces the concept's own rows, and the concept page itself once the sample tag (D29) is
+        // removed from it at runtime: the browser is the oracle for the remainders the mapping uses.
         expect.soft(diffInventory(stripExact(reflow(reference.toolbar,reference.toolbar.items)),stripExact(reference.toolbar)),`${motion} toolbar model`).toEqual([]);
         expect.soft(diffInventory(stripExact(reflow(reference.filterRow,reference.filterRow.items)),stripExact(reference.filterRow)),`${motion} filter row model`).toEqual([]);
-        expect.soft(diffInventory(stripExact(withoutItems(reference.toolbar,item=>item.text==='Save view')),stripExact(removed.toolbar)),
-            `${motion} toolbar without Save view`).toEqual([]);
         expect.soft(diffInventory(stripExact(withoutItems(reference.filterRow,item=>String(item.className).includes('sample-tag'))),stripExact(removed.filterRow)),
             `${motion} filter row without the sample tag`).toEqual([]);
         expect.soft(reference.toolbar.items.find(item=>item.id==='category-filter').options,`${motion} concept categories`).toEqual(CONCEPT_CATEGORIES);

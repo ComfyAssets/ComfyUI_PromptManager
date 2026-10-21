@@ -292,6 +292,134 @@ class TestImageFavoriteApi(ImageAPITestCase):
         self.assertEqual(data, {"success": False, "error": "Favorite update failed"})
 
 
+class TestWorkspaceFavoritesFilter(ImageAPITestCase):
+    """``favorites=1`` on the workspace listing: the Favorites page (#249 D51)."""
+
+    async def tearDownAsync(self):
+        self.api.db.close_all()
+        assert_closed(self, self._temp_db.name, self._output_tmp.name)
+        await super().tearDownAsync()
+
+    async def page(self, status=200, **params):
+        response = await self.client.get(
+            "/prompt_manager/images/output", params={"mode": "workspace", **params}
+        )
+        data = await response.json()
+        self.assertEqual(response.status, status, data)
+        return data
+
+    async def star(self, path, root_index=0, method="PUT"):
+        response = await self.client.request(
+            method, FAVORITE, json={"root_index": root_index, "path": path}
+        )
+        self.assertEqual(response.status, 200)
+
+    def make(self, *names):
+        for offset, name in enumerate(names):
+            target = make_png(self.output_dir / name)
+            os.utime(target, (1_700_000_000 + offset, 1_700_000_000 + offset))
+
+    async def test_lists_only_favorites_and_counts_them(self):
+        self.make("a.png", "sub/b.png", "c.png", "sub/d.png")
+        await self.star("a.png")
+        await self.star("sub/d.png")
+        data = await self.page(favorites="1")
+        self.assertEqual([i["path"] for i in data["images"]], ["sub/d.png", "a.png"])
+        self.assertEqual(data["total"], 2)
+        self.assertTrue(all(i["favorite"] is True for i in data["images"]))
+        # The nav count's read: limit=1 still reports every favorite's total.
+        self.assertEqual((await self.page(favorites="1", limit="1"))["total"], 2)
+        # Other filters intersect with it.
+        sub = await self.page(favorites="1", subfolder="sub")
+        self.assertEqual([i["path"] for i in sub["images"]], ["sub/d.png"])
+        self.assertEqual((await self.page(favorites="1", q="a.png"))["total"], 1)
+        self.assertEqual((await self.page(favorites="1", media="video"))["total"], 0)
+        # favorites=0 (and no parameter) is the whole listing.
+        self.assertEqual((await self.page(favorites="0"))["total"], 4)
+        self.assertEqual((await self.page())["total"], 4)
+        await self.star("a.png", method="DELETE")
+        self.assertEqual((await self.page(favorites="1"))["total"], 1)
+
+    async def test_cursor_pages_walk_only_favorites_in_every_order(self):
+        self.make("a.png", "b.png", "c.png", "d.png", "e.png")
+        for name in ("a.png", "c.png", "e.png"):
+            await self.star(name)
+        expected = {
+            "newest": ["e.png", "c.png", "a.png"],
+            "oldest": ["a.png", "c.png", "e.png"],
+            "name": ["a.png", "c.png", "e.png"],
+            "name-desc": ["e.png", "c.png", "a.png"],
+            "rating": ["e.png", "c.png", "a.png"],
+        }
+        for sort, names in expected.items():
+            seen, cursor = [], None
+            while True:
+                params = {"favorites": "1", "sort": sort, "limit": "1"}
+                if cursor:
+                    params["cursor"] = cursor
+                data = await self.page(**params)
+                self.assertEqual(data["total"], 3, sort)
+                seen += [i["path"] for i in data["images"]]
+                cursor = data["next_cursor"]
+                if not data["has_more"]:
+                    break
+            self.assertEqual(seen, names, sort)
+        # A cursor is bound to its filters: a whole-listing cursor is refused.
+        whole = await self.page(limit="1")
+        await self.page(400, favorites="1", cursor=whole["next_cursor"])
+
+    async def test_favorites_follow_their_own_root(self):
+        second = self.comfy_dir / "second"
+        make_png(second / "a.png")
+        make_png(self.output_dir / "a.png")
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        await self.star("a.png", root_index=1)
+        data = await self.page(favorites="1")
+        self.assertEqual(
+            [(i["root_index"], i["path"]) for i in data["images"]], [(1, "a.png")]
+        )
+        self.assertEqual((await self.page(favorites="1", root="0"))["total"], 0)
+        self.assertEqual((await self.page(favorites="1", root="1"))["total"], 1)
+
+    async def test_windows_case_folded_favorite_is_listed(self):
+        make_png(self.output_dir / "Sub" / "A.png")
+        with patch("py.api.images._path_flavor", ntpath):
+            await self.star("Sub/A.png")
+            (self.output_dir / "Sub" / "A.png").rename(
+                self.output_dir / "Sub" / "a.png"
+            )
+            (self.output_dir / "Sub").rename(self.output_dir / "sub")
+            self.api.invalidate_gallery_cache()
+            data = await self.page(favorites="1")
+        self.assertEqual([i["path"] for i in data["images"]], ["sub/a.png"])
+
+    async def test_a_favorite_whose_file_is_gone_is_not_listed(self):
+        self.make("a.png", "b.png")
+        await self.star("a.png")
+        await self.star("b.png")
+        (self.output_dir / "b.png").unlink()
+        self.api.invalidate_gallery_cache()
+        data = await self.page(favorites="1")
+        self.assertEqual([i["path"] for i in data["images"]], ["a.png"])
+        self.assertEqual(data["total"], 1)
+
+    async def test_rejects_other_values(self):
+        for value in ("true", "2", "", "yes"):
+            data = await self.page(400, favorites=value)
+            self.assertFalse(data["success"])
+
+    async def test_store_failure_is_an_error_not_an_unfiltered_page(self):
+        self.make("a.png")
+
+        def broken(*_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        self.api.db.get_root_favorites = broken
+        data = await self.page(500, favorites="1")
+        self.assertFalse(data["success"])
+        self.assertNotIn("images", data)
+
+
 class TestImageFavoriteSchema(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -314,6 +442,10 @@ class TestImageFavoriteSchema(unittest.TestCase):
                 db.get_image_favorites("output", ["a.png", "b.png"]), {"a.png"}
             )
             self.assertEqual(db.get_image_favorites("output", []), set())
+            # One root's favorites, read through the primary key.
+            self.assertEqual(db.get_root_favorites("output"), {"a.png"})
+            self.assertEqual(db.get_root_favorites("other"), {"a.png"})
+            self.assertEqual(db.get_root_favorites("missing"), set())
             many = [f"{n}.png" for n in range(2000)] + ["a.png"]
             self.assertEqual(db.get_image_favorites("output", many), {"a.png"})
             self.assertTrue(db.clear_image_favorite("output", "a.png"))

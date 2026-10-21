@@ -808,7 +808,9 @@ test('images toolbar and filter row match the concept controls', async ({ page, 
     await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Current gallery' })).toHaveCount(0);
     await expect(main.locator('h2', { hasText: /^All images$/ })).toHaveCount(0);
-    await expect(main.locator('search.toolbar > *')).toHaveCount(4);
+    // app.js toolbar() a347–360: search, category, sort, Save view, Filters.
+    await expect(main.locator('search.toolbar > *')).toHaveCount(5);
+    await expect(main.locator('search.toolbar > button')).toHaveText(['Save view', 'Filters']);
     await expect(sortBy(page).locator('option')).toHaveText(['Recently added', 'Name A–Z', 'Highest rated', 'Oldest first', 'Name Z–A']);
     const row = main.locator('.filter-row');
     await expect(row.locator(':scope > *')).toHaveCount(5);

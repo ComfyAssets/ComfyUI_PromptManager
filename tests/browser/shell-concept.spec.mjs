@@ -56,13 +56,23 @@ function remainingFooter(footer,spans) {
 // its `activity` pulse stays reserved for the Activity row D5 omits, so the two entries never share one glyph.
 const OVERVIEW_GLYPH='M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6';
 
+/**
+ * The concept's SAVED VIEWS rows (app.js a331–335) as production lists them: Favorites with its count (D51), then the
+ * saved views. D50: no "Needs review" row until the tag-review slice (maintainer ruling 2026-10-21).
+ */
+function savedNav(nav) {
+    const rows=nav.rows.filter(row=>row.text!=='Needs review');
+    return {...nav,rows:rows.map((row,index)=>index===rows.length-1?{...row,gapAfter:null}:row)};
+}
+
 /** Recorded shell deviations only (spec §8). Everything else in the concept inventory must equal production. */
 function mapShellConcept(reference) {
     const {chrome}=reference;
     const navs=chrome.navs
-        // D28: SAVED VIEWS and COLLECTIONS are proposals with no persisted store, so their navs are not rendered.
-        .filter(nav=>nav.id!=='saved-nav'&&nav.id!=='collections-nav')
+        // D28: COLLECTIONS is a proposal with no persisted store, so its nav is not rendered.
+        .filter(nav=>nav.id!=='collections-nav')
         .map(nav=>{
+            if(nav.id==='saved-nav')return savedNav(nav);
             if(nav.id!=='system-nav')return nav;
             const system=rowNamed(nav,'System');
             return {...nav,rows:[
@@ -76,8 +86,9 @@ function mapShellConcept(reference) {
     return {...reference,chrome:{...chrome,
         // D29: no prototype suffix in the document title.
         title:chrome.title.replace(/ · Prompt Manager concept$/,' · Prompt Manager'),
-        // D28: only the WORKSPACE group label remains.
-        labels:chrome.labels.filter(label=>label.text==='WORKSPACE'),
+        // D28: no COLLECTIONS label. D49: SAVED VIEWS without its "PROPOSED" badge.
+        labels:chrome.labels.filter(label=>label.text!=='COLLECTIONS PROPOSED')
+            .map(label=>label.text==='SAVED VIEWS PROPOSED'?{...label,text:'SAVED VIEWS'}:label),
         navs,
         connection:{...chrome.connection,
             // D28: truthful copy instead of "Demo connection · Classic / Nodes 2.0".
@@ -197,6 +208,30 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`shell geometry
             expect.soft(actualRings,`${key} focus rings`).toEqual(referenceRings);
         }
     }
+});
+
+// Saved views (#249 D16): a view saved from the Images toolbar adds the concept's own saved row (search icon, name, no
+// count) to SAVED VIEWS. The concept's demo action reads "Apply in prototype"; production's is "Save" (D29).
+for(const [width,height] of SIZES)test(`a saved view row matches the concept's ${width}x${height}`,async({page})=>{
+    await page.setViewportSize({width,height});
+    const save=async(action,mainSelector)=>{
+        await page.locator(`${mainSelector} .toolbar`).getByRole('button',{name:'Save view',exact:true}).click();
+        const dialog=page.getByRole('dialog',{name:'Save this view',exact:true});
+        await expect(dialog.getByRole('textbox',{name:'View name',exact:true})).toHaveValue('My workspace view');
+        await dialog.getByRole('textbox',{name:'View name',exact:true}).fill('Golden hour');
+        await dialog.getByRole('button',{name:action,exact:true}).click();
+        await expect(page.locator('#saved-nav').getByRole('link',{name:'Golden hour',exact:true})).toHaveCount(1);
+        await page.mouse.move(0,0);
+        return inventoryOf(page,mainSelector);
+    };
+    await openConcept(page,'images','dark');
+    const reference=await save('Apply in prototype','#main');
+    expect(reference.chrome.navs.find(nav=>nav.id==='saved-nav').rows.map(row=>row.text)).toEqual(['Favorites','Needs review','Golden hour']);
+    await openProduction(page,'images','dark');
+    const actual=await save('Save','#workspace-main');
+    expect(diffInventory(mapShellConcept(reference).chrome.navs,actual.chrome.navs)).toEqual([]);
+    expect(actual.chrome.navs.find(nav=>nav.id==='saved-nav').rows.map(row=>[row.text,row.count]))
+        .toEqual([['Favorites',reference.chrome.navs.find(nav=>nav.id==='saved-nav').rows[0].count],['Golden hour',null]]);
 });
 
 test('the inventory reports a missing shell element by its path instead of failing',async({page})=>{

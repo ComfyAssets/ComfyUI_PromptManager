@@ -26,6 +26,7 @@ from .prompts import PromptRoutesMixin
 from .pairs import PairRoutesMixin
 from .library import LibraryRoutesMixin
 from .vocabulary import VocabularyRoutesMixin
+from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
@@ -251,6 +252,7 @@ class PromptManagerAPI(
     PairRoutesMixin,
     LibraryRoutesMixin,
     VocabularyRoutesMixin,
+    SavedViewRoutesMixin,
     HistoryRoutesMixin,
     PromptRoutesMixin,
     ImageRoutesMixin,
@@ -439,6 +441,7 @@ class PromptManagerAPI(
         self._register_pair_routes(routes)
         self._register_library_routes(routes)
         self._register_vocabulary_routes(routes)
+        self._register_saved_view_routes(routes)
         self._register_history_routes(routes)
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
