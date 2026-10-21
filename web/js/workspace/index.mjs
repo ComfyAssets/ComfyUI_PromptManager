@@ -176,10 +176,9 @@ function mountWorkspace() {
     // /* D51 */ The open view's Edit (maintainer ruling): first in the heading's actions. A rename re-reads the list and
     // retitles the open page; a delete re-reads it and replaces the dead route with the view's plain page.
     function mountEditAction(saved, view) {
-        const heading = pageHeading(main);
-        if (!heading) return;
+        // renderPage has just written the heading.
         const edit = createButton('Edit');
-        heading.actions.prepend(edit);
+        pageHeading(main).actions.prepend(edit);
         view.listen(edit, 'click', () => openEditViewDialog({ scope: view, trigger: edit, view: saved,
             onRename: async name => {
                 const renamed = await savedViews.rename(saved.id, name);
@@ -194,8 +193,8 @@ function mountWorkspace() {
     }
 
     function retitle(name) {
-        const { h1 } = pageHeading(main) ?? {};
-        if (h1) h1.textContent = name;
+        // Only the mounted view retitles (its rename returns once aborted), so its heading is present.
+        pageHeading(main).h1.textContent = name;
         document.getElementById('workspace-breadcrumb').textContent = name;
         document.title = `${name} · Prompt Manager`;
     }

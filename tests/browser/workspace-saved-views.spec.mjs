@@ -265,6 +265,50 @@ test('a toolbar change while sources load keeps the saved Source and Folder (#24
     await expect(imageCards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
 });
 
+test('a saved view left while its list or rename is pending leaves the next page alone', async ({ page, request }) => {
+    const view = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [] } });
+    let releaseList = () => {};
+    const holdList = async () => {
+        const held = new Promise(resolve => { releaseList = resolve; });
+        await page.unroute(`**${API}`);
+        await page.route(`**${API}`, async route => { if (route.request().method() === 'GET') await held; await route.fallback(); });
+    };
+    // Leaving while the shell's first read is pending: the view never mounts over the page left to.
+    await holdList();
+    await page.goto(`${workspace}#/saved/${view.id}`);
+    await page.evaluate(() => { window.location.hash = '#/tags'; });
+    await expect(heading(page)).toHaveText('Tags & categories');
+    releaseList();
+    await expect(viewRows(page)).toHaveText(['Cats']);
+    await expect(heading(page)).toHaveText('Tags & categories');
+    // An unknown id re-reads the list once; leaving during that read keeps the page left to.
+    await holdList();
+    await page.evaluate(() => { window.location.hash = '#/saved/999'; });
+    await page.evaluate(() => { window.location.hash = '#/library'; });
+    await expect(heading(page)).toHaveText('Prompt library');
+    releaseList();
+    await expect(viewRows(page)).toHaveText(['Cats']);
+    await expect(page).toHaveURL(/#\/library$/);
+    await expect(heading(page)).toHaveText('Prompt library');
+    await page.unroute(`**${API}`);
+
+    // A rename that lands after the view was left does not retitle the next page.
+    let releaseRename;
+    const renameHeld = new Promise(resolve => { releaseRename = resolve; });
+    await page.route(`**${API}/${view.id}`, async route => { await renameHeld; await route.fallback(); });
+    await page.goto(`${workspace}#/saved/${view.id}`);
+    await expect(heading(page)).toHaveText('Cats');
+    await main(page).locator('.heading-actions > button').first().click();
+    await editDialog(page).getByRole('textbox', { name: 'View name', exact: true }).fill('Kittens');
+    await editDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('#primary-nav a[data-route="images"]').click();
+    await expect(heading(page)).toHaveText('Images');
+    releaseRename();
+    await expect(viewRows(page)).toHaveText(['Kittens']);
+    await expect(heading(page)).toHaveText('Images');
+    await expect(page).toHaveTitle('Images · Prompt Manager');
+});
+
 test('an unknown saved view opens Images, and a failed listing offers Retry', async ({ page, request }) => {
     await page.goto(`${workspace}#/saved/999`);
     await expect(page).toHaveURL(/#\/images$/);

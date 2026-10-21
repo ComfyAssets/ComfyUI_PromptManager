@@ -305,6 +305,12 @@
     "functions": 77,
     "statements": 95
   },
+  "workspace/saved-views.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 95,
+    "statements": 98
+  },
   "workspace/state.mjs": {
     "lines": 98,
     "branches": 98,
