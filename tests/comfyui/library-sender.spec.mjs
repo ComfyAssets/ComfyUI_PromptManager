@@ -67,7 +67,7 @@ test('native editor preview sends exact saved roles across renderer transitions'
         await expect(workspace).toHaveURL(/#\/library\/\d+$/);const positiveId=Number(new URL(workspace.url()).hash.split('/').at(-1));
         await expect(workspace.locator('#workspace-main h1')).toHaveText(title);
         const saved=workspace.getByRole('region',{name:'Saved prompt texts',exact:true});
-        await expect(saved.getByRole('region',{name:'Negative prompt',exact:true})).toContainText('Empty negative prompt');
+        await expect(saved.getByRole('region',{name:'Negative prompt',exact:true})).toContainText('No negative prompt (explicitly empty)');
         const evidence=async()=>{
             const history=await(await request.get(`/prompt_manager/library/${positiveId}/history`)).json();
             const detail=await(await request.get(`/prompt_manager/library/${positiveId}?archive=all`)).json();

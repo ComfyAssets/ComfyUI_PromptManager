@@ -14,6 +14,12 @@ import { mountToolbar } from './toolbar.mjs';
 import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
+/** The concept's panel without an image (app.js updateImages a456–458). */
+function noSelection() {
+    const inner = el('div', undefined, 'detail-inner');
+    inner.append(el('h2', 'No image selected'), el('p', 'Clear the filters or choose a matching image.', 'small'));
+    return inner;
+}
 function el(tag, text, className) {
     const element = document.createElement(tag);
     if (text !== undefined) element.textContent = text;
@@ -207,9 +213,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     collection.append(continuation);
     // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).
     let focusAfterLoad = null;
-    const details = el('section', undefined, 'image-details panel');
-    details.setAttribute('aria-label', 'Image details');
-    details.append(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
+    // The concept's side panel (app.js a426, D20); the Library-embedded gallery has its own page around it.
+    const details = el('aside', undefined, 'detail-panel');
+    if (!embedded) details.id = 'image-inspector';
+    details.setAttribute('aria-label', 'Selected image details');
+    details.append(noSelection());
     body.append(collection, details);
     // The checked cards and the concept's selection bar (#249 D8), between the filter row and the gallery layout. The
     // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
@@ -246,8 +254,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         detailInspector?.dispose();
         selection = imageKey(image);
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
-        detailInspector = mountFileInspector(details, {sender, parentScope:scope, inline:true,
-            onPreview:() => previewImage(image), onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
+        detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
+            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
         detailInspector.setState(inspection.state);
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);
@@ -562,7 +570,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!recovering) {
             inspection.clear();
             detailInspector?.dispose(); detailInspector = null;
-            details.replaceChildren(el('h2', 'Image details'), el('p', 'Select an image to inspect it.'));
+            details.replaceChildren(noSelection());
         }
         selection = null;
         focusAfterLoad = null;
@@ -571,6 +579,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         updateScope();
         stream.reset(filters, {load:!recovering});
+    }
+    /** A panel tag chip (D21): the Images Tags filter becomes exactly that tag, as "Refine this view" would set it. */
+    function filterByTag(tag) {
+        if (recovering || !tag.trim() || tag.includes(',')) return;
+        if (filters.tags.length === 1 && filters.tags[0] === tag) return;
+        filters.tags = [tag];
+        reset();
     }
     /** "Refine this view": Source, Folder, Media and Tags, the filters the old field row held (D14). */
     function openFilters(trigger) {

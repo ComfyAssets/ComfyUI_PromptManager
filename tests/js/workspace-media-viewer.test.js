@@ -40,8 +40,10 @@ function mountedDom() {
         set textContent(value){this._text=String(value);this.children=[];}
         get childNodes(){return this.children;}
         get isConnected(){return this.root || !!this.parent?.isConnected;}
-        append(...nodes){for(const node of nodes){node.parent=this;this.children.push(node);}}
-        prepend(...nodes){for(const node of nodes)node.parent=this;this.children.unshift(...nodes);}
+        // As in the DOM, a string argument becomes a text node.
+        static wrap(node){if(typeof node!=='string')return node;const text=new Node('#text');text.textContent=node;return text;}
+        append(...nodes){for(const node of nodes.map(Node.wrap)){node.parent=this;this.children.push(node);}}
+        prepend(...nodes){nodes=nodes.map(Node.wrap);for(const node of nodes)node.parent=this;this.children.unshift(...nodes);}
         replaceChildren(...nodes){for(const child of this.children)child.parent=null;this.children=[];this._text='';this.append(...nodes);}
         remove(){if(this.parent)this.parent.children=this.parent.children.filter(c=>c!==this);this.parent=null;}
         setAttribute(key,value){this.attributes[key]=String(value);}

@@ -46,12 +46,12 @@ test('native image inspector previews and sends a pair into real visible widgets
         await workspace.getByRole('dialog',{name:'Import & inspect',exact:true}).getByRole('button',{name:'Rescan',exact:true}).click();
         const card=workspace.locator('article[data-image-key]').filter({has:workspace.getByRole('button',{name:`Open ${filename}`,exact:true})});
         await card.getByRole('button',{name:`Inspect ${filename}`,exact:true}).click();
-        const inspector=workspace.getByRole('region',{name:'Image details',exact:true});
+        const inspector=workspace.getByRole('complementary',{name:'Selected image details',exact:true});
         await expect(inspector.getByRole('region',{name:'Positive prompt',exact:true})).toContainText(positive);
-        await inspector.getByRole('button',{name:'Open full preview',exact:true}).click();
+        await card.getByRole('button',{name:`Open ${filename}`,exact:true}).click();
         const viewer=workspace.locator('dialog#viewer-dialog');
         await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
-        await expect(viewer.locator('.generation-facts dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','host-fixture.safetensors']);
+        await expect(viewer.locator('.meta-grid').first().locator('dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','host-fixture.safetensors']);
         await viewer.getByText('Workflow & raw metadata',{exact:true}).click();
         await expect(viewer.locator('pre code').first()).toContainText('9007199254740993');
         await expect(viewer.getByRole('button',{name:'Download workflow JSON',exact:true})).not.toHaveAttribute('aria-disabled','true');
@@ -59,12 +59,12 @@ test('native image inspector previews and sends a pair into real visible widgets
         for(const renderer of [!testInfo.project.metadata.initialRenderer,testInfo.project.metadata.initialRenderer]) {
             await page.evaluate(async renderer=>{const {app}=await import('/scripts/app.js');await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled',renderer);await app.loadGraphData(app.graph.serialize());app.canvas.centerOnNode(app.graph._nodes[0]);},renderer);
             await expect.poll(()=>page.evaluate(()=>LiteGraph.vueNodesMode)).toBe(renderer);
-            await expect(viewer).toBeVisible();await expect(viewer.locator('.generation-facts dd').first()).toHaveText('9007199254740993');
+            await expect(viewer).toBeVisible();await expect(viewer.locator('.meta-grid dd').first()).toHaveText('9007199254740993');
             await expect(nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true})).toHaveValue('Before positive');
         }
         expect(await page.evaluate(()=>window.senderEffects.queue)).toBe(0);
         await page.evaluate(()=>{window.senderSendBaseline={...window.senderEffects};});
-        await viewer.getByRole('button',{name:'Send prompt pair',exact:true}).click();
+        await viewer.getByRole('button',{name:/^Send prompt pair to ComfyUI: /}).click();
         const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);

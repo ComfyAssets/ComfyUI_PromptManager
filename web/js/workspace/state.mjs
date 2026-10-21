@@ -77,8 +77,21 @@ export async function loadNavCounts(api, signal, onCount = () => {}, ids = NAV_C
     return new Map([...summarizeNavCounts(pages)].filter(([id]) => ids.includes(id)));
 }
 
+/** Fired on the window to render the current route again, where setting the same hash fires no `hashchange`. */
+const ROUTE_REFRESH_EVENT = 'prompt-manager:route-refresh';
+
+/** The concept's `go()` (app.js 292–297): a link to the route already shown re-renders it instead of doing nothing. */
+export function navigateTo(hash, win = window) {
+    if (win.location.hash === hash) win.dispatchEvent(new Event(ROUTE_REFRESH_EVENT));
+    else win.location.hash = hash;
+}
+
 export function mountRouter(win, onRoute) {
     let current;
+    const refresh = () => {
+        current = undefined;
+        update();
+    };
     const update = () => {
         const route = resolveRoute(win.location.hash);
         const hash = route.hash || `#/${route.id}`;
@@ -88,6 +101,10 @@ export function mountRouter(win, onRoute) {
         onRoute(route);
     };
     win.addEventListener('hashchange', update);
+    win.addEventListener(ROUTE_REFRESH_EVENT, refresh);
     update();
-    return () => win.removeEventListener('hashchange', update);
+    return () => {
+        win.removeEventListener('hashchange', update);
+        win.removeEventListener(ROUTE_REFRESH_EVENT, refresh);
+    };
 }

@@ -29,7 +29,7 @@ async function attachEvidence(page, testInfo, name, fullPage = true) {
     const screenshotPath = testInfo.outputPath(`${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage });
     await testInfo.attach(name, { path: screenshotPath, contentType: 'image/png' });
-    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.media-card', '.image-details', '.prompt-block-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
+    const geometry = await page.evaluate(() => Object.fromEntries(['.sidebar', '.topbar', '#workspace-main', '.heading', 'h1', '.image-workspace', '.image-grid', '.media-card', '.detail-panel', '.prompt-heading', '.library-toolbar', '.library-grid', '.library-card', '.library-card-art', '.library-card-content'].map(selector => {
         const node = document.querySelector(selector);
         if (!node) return [selector, null];
         const box = node.getBoundingClientRect(), style = getComputedStyle(node);
@@ -101,14 +101,14 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         const roles = page.getByRole('region', { name: 'Saved prompt texts', exact: true });
         const positive = roles.getByRole('region', { name: 'Positive prompt', exact: true });
         expect(await positive.evaluate(node => node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
-        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
+        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(roles.getByRole('button', { name, exact: true })).toBeVisible();
         // As in the concept, the selected pair's send sits in the history heading, not among the saved texts.
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
         await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
         await expect(page.locator('.library-shared-gallery article[data-image-key]')).toHaveCount(2);
         await page.locator('.library-shared-gallery .image-card-actions button').first().click();
-        await expect(page.getByRole('region', { name: 'Image details', exact: true })).toContainText('canonical-alt.png');
-        await page.getByRole('button', { name: 'Open full preview', exact: true }).click();
+        await expect(page.getByRole('complementary', { name: 'Selected image details', exact: true })).toContainText('canonical-alt.png');
+        await page.locator('.library-shared-gallery .media-card.selected .image-open').click();
         await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
         for (const [name, selector] of [['saved', '.library-surface'], ['branches', '.library-variants'], ['gallery', '.library-shared-gallery'], ['chronology', '.recorded-history']]) {
             await captureCanonicalState(page, testInfo, `production-${name}-${width}-${theme}`, selector);
@@ -125,11 +125,15 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         const viewer = page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
         await expect(viewer.getByRole('region', { name: 'Positive prompt', exact: true })).toContainText(fixture.canonical_positive);
         await expect(viewer.getByRole('region', { name: 'Negative prompt', exact: true })).toContainText(fixture.canonical_negative);
-        for (const name of ['Copy positive prompt', 'Send positive prompt', 'Copy negative prompt', 'Send negative prompt', 'Send prompt pair']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
+        for (const name of ['Copy positive prompt', 'Send positive prompt to ComfyUI', 'Copy negative prompt', 'Send negative prompt to ComfyUI']) await expect(viewer.getByRole('button', { name, exact: true })).toBeVisible();
+        await expect(viewer.getByRole('button', { name: /^Send current file prompt pair to ComfyUI: |^Send prompt pair to ComfyUI: / })).toBeVisible();
         await expect(viewer).toContainText('42001');await expect(viewer).toContainText('720');await expect(viewer).toContainText('480');
         const currentPositive = viewer.getByRole('region', { name: 'Positive prompt', exact: true });
         await currentPositive.getByRole('button', { name: 'Copy positive prompt', exact: true }).click();
-        await expect(currentPositive.getByRole('status')).toContainText(/Copied\.|Copy unavailable/);
+        // The concept's copy outcome: the shared toast, or its "Copy prompt" dialog when the clipboard is refused.
+        const copyFallback = page.getByRole('dialog', { name: 'Copy prompt', exact: true });
+        await expect(page.locator('#workspace-toast').filter({ hasText: 'Prompt copied.' }).or(copyFallback)).toHaveCount(1);
+        if (await copyFallback.isVisible()) { await page.keyboard.press('Escape'); await expect(copyFallback).toBeHidden(); }
         await exerciseCurrentPairSend(page, { positive: fixture.canonical_positive, negative: fixture.canonical_negative });
         await captureCanonicalState(page, testInfo, `production-viewer-${width}-${theme}`, 'dialog#viewer-dialog');
         await page.keyboard.press('Escape');await expect(view).toBeFocused();await page.keyboard.press('Escape');await expect(run).toBeFocused();
@@ -346,8 +350,9 @@ for (const [width, height] of [[390, 844], [1600, 1100]]) for (const layout of [
             expect(filename).toMatch(/layered-context-.*\.png/);
             // D19: Info selects into the panel; the image itself opens the viewer.
             await longCard.locator('.image-card-actions button').focus(); await page.keyboard.press('Enter');
-            await expect(page.locator('.image-details h2')).toHaveText(filename);
-            const fullPreview = page.getByRole('button', { name: 'Open full preview', exact: true });
+            await expect(page.locator('.detail-panel .panel-heading h2')).toHaveText(filename);
+            // D19: the card image, not the panel, opens the viewer.
+            const fullPreview = longCard.locator('.image-open');
             await fullPreview.focus(); await expect(fullPreview).toBeFocused(); await page.keyboard.press('Enter');
             await expect(page.locator('dialog#viewer-dialog')).toBeVisible();
             await expect(page.locator('#viewer-title')).toHaveText(filename);
@@ -453,7 +458,7 @@ test('supplemental extreme zoom grows real footers preserves the visible anchor 
         expect(Math.abs(anchorTop - anchor.top)).toBeLessThanOrEqual(2);
         await expect(page.locator(`article[data-image-key="${key}"]`)).toHaveClass(/selected/);
         await expect(selected.locator('.image-open')).toBeFocused();
-        await expect(page.locator('.image-details h2')).toHaveText(filename);
+        await expect(page.locator('.detail-panel .panel-heading h2')).toHaveText(filename);
         const mutations = await grid.evaluate(async node => {
             let changes = 0;
             const observer = new MutationObserver(records => { changes += records.length; });
@@ -602,7 +607,7 @@ test('Images visual layouts retain real delayed media long filenames and loaded 
         for (const theme of ['dark','light']) {
             await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
             await page.locator('.media-card .image-card-actions button').first().click();
-            await expect(page.locator('.image-details h2')).toHaveText('study-01.png');
+            await expect(page.locator('.detail-panel .panel-heading h2')).toHaveText('study-01.png');
             for (const layout of ['Grid','List','Masonry']) {
                 await page.getByRole('button',{name:layout,exact:true}).click();await page.evaluate(()=>scrollTo(0,0));
                 if(layout==='List') await expect(page.locator('.media-card').first()).toHaveCSS('height','97px');
@@ -614,13 +619,13 @@ test('Images visual layouts retain real delayed media long filenames and loaded 
             const longName=(await longCard.locator('.image-open').getAttribute('aria-label')).replace(/^Open /,'');
             expect(longName).toMatch(/layered-context-.*\.png/);
             await longCard.locator('.image-card-actions button').click();
-            await expect(page.locator('.image-details h2')).toHaveText(longName);
+            await expect(page.locator('.detail-panel .panel-heading h2')).toHaveText(longName);
             await orderedMedia(page);
             await attachEvidence(page,testInfo,`after-images-loaded-scroll-${width}-${theme}`,false);
         }
     }
     await page.evaluate(()=>{location.hash='#/overview';});
-    await expect(page.locator('.media-card,.image-details,.viewer-container,dialog[open]')).toHaveCount(0);
+    await expect(page.locator('.media-card,.detail-panel,.viewer-container,dialog[open]')).toHaveCount(0);
 });
 
 test('embedded history gallery keeps the history heading and disposes its layouts',async({page,request},testInfo)=>{
@@ -641,6 +646,6 @@ test('embedded history gallery keeps the history heading and disposes its layout
         }
         await attachEvidence(page,testInfo,`after-images-embedded-history-${width}`,false);
         await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-        await expect(page.locator('.media-card,.image-details,dialog[open]')).toHaveCount(0);
+        await expect(page.locator('.media-card,.detail-panel,dialog[open]')).toHaveCount(0);
     }
 });

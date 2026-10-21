@@ -798,7 +798,7 @@ test('mutation check: the comparison reports a changed surface padding and a cha
 // Task A2: the workspace loads the verbatim concept stylesheet as its base and one overlay last; the screen and its
 // dialogs must stay equal to the concept with the retired vocabulary and editor sheets gone.
 const CONCEPT_BASE=['js/shared/toolkit/controls.css','lib/viewerjs/viewer.min.css','js/workspace/concept.css',
-    'js/workspace/images.css','js/workspace/library.css','js/workspace/inspector.css','js/workspace/workspace.css'];
+    'js/workspace/library.css','js/workspace/workspace.css'];
 const loadedSheets=page=>page.evaluate(()=>[...document.styleSheets].filter(sheet=>sheet.href).map(sheet=>new URL(sheet.href).pathname.replace(/^\/prompt_manager\//,'')));
 for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`concept base keeps the tags screen and editor dialogs equal to the concept ${width} ${theme}`,async({page})=>{
     await page.setViewportSize({width,height});

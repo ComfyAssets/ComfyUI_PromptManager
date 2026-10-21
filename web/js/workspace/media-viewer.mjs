@@ -80,7 +80,7 @@ export function createMediaViewer({container,parentScope,inspectionController,se
         const details = element('aside');details.id = 'viewer-details';details.setAttribute('aria-label','Image metadata');
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
-        const inspector = mountFileInspector(details,{sender:localSender,parentScope:local,onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
+        const inspector = mountFileInspector(details,{sender:localSender,parentScope:local,variant:'full',onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
             onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined});
         function closeViewer(restore = true) {
             if (closed) return;

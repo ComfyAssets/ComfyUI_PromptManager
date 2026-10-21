@@ -365,13 +365,14 @@ leftovers such as `library.css` `.row-actions`, name the PR that retires them, b
 convention.
 
 The lint also runs over every page stylesheet that loads before the overlay and is
-still kept (`images.css`, `library.css`, `inspector.css`; test `kept page stylesheets
-mark their concept-selector overrides`). After PR C, `images.css` holds only the side
-panel, the prompt blocks and the prompt sender, which PR D moves to the concept panel
-and deletes with the file. Its three remaining concept-selector overrides
-(`.prompt-text`, `.prompt-actions`, `.ca-tools .prompt-actions button`) are marked
-`#249 D22 interim` until then, and `images.css keeps no retired Images page rules`
-keeps the replaced card, grid, filter, toolbar, preview and facts rules out.
+still kept (`library.css`; test `kept page stylesheets mark their concept-selector
+overrides`). PR D deleted `images.css` and `inspector.css` (test `the retired shell,
+vocabulary, editor, Images and inspector stylesheets stay deleted`); their few
+production-only rules with a live consumer (inspector wrapping and the inert download,
+the narrow Images container, the Library and recorded-run prompt blocks, the Archive
+negative's `section.prompt-block`, the prompt sender) moved to the overlay under
+`#249 D3`, and `the overlay keeps no retired Images page or inspector rules` keeps the
+replaced card, filter, toolbar, preview, facts and inspector rules out.
 
 **Comparison method.** Production must equal the concept except for the recorded
 deviations in the #249 design (spec §8, D-numbers). It is never compared against
@@ -565,6 +566,30 @@ Recorded deviations on this page (spec §8):
   by the page, whatever order the server sends.
 - **D37**: production loads 40 images per page (the concept 12), so the continuation
   and toast use 40; after Escape production returns focus to the opening image.
+- **D20**: the side panel shows only the concept content; "File & provenance",
+  "Workflow & raw metadata" and the downloads are only in the viewer's details
+  (`#viewer-details`: the panel content without the cover in a class-less wrapper, the
+  two disclosures, then the pair send and Prompt history buttons). "File & provenance"
+  keeps the honest facts (current-file note, Source, Path, Size, Dimensions, Format,
+  Media type, Modified, the reported-location occurrence, the saved-association
+  sentence, Download original) and the concept's `Prompt evidence: <badge>` line in the
+  D21 badge's words in lower case, left out when there is no badge. Raw records keep
+  their names, representations and the two downloads with their unavailable reasons;
+  the viewer's pair send and history buttons may wrap at 200% zoom. Tag chips in the
+  viewer are plain (the concept's go to the Library). The details' disclosure
+  summaries and "Download original" keep 40px coarse targets (D34). Prompt history
+  closes the viewer and, when its target is the route already shown, re-renders it
+  (the concept's `go()`).
+- **D20/D21 side panel**: the sticky panel scrolls inside the window
+  (`max-block-size` with `overflow: auto`, not the concept's `overflow: hidden`), so
+  long real prompts keep the footer reachable; an empty badge or tag `.tags` row is
+  left out (the concept always renders both); the footer, its pair send and Prompt
+  history appear only with resolved prompt roles or a saved link; a video file keeps
+  `video.detail-cover`; and only the linked positive's own tags are `button.chip`
+  filters, while recipe, recorded-run and embedded tags stay plain `span.chip`.
+- **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
+  applies its negative wording to both roles), and a confirmed `p.prompt-text` is
+  focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
 
 Manual check (quick), after a browser refresh on Images: hover an image (it zooms);
 click it (the viewer reads "<title> · <filename>"; Escape closes it); press a card's

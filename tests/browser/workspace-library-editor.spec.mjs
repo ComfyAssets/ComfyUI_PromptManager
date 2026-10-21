@@ -531,7 +531,7 @@ test('add negative re-renders history with the saved or reused pair selected',as
     await expect(laneLabel(page,'Negative variant 1 ·')).toHaveCount(1);await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 1');
     await add.click();dialog=editorDialog(page);await ready(dialog);await field(dialog,'Negative prompt').fill(`  ${f.selected_negative.toUpperCase()} `);await button(dialog,'Save').click();
     await expect(dialog).toHaveCount(0);await expect(toast(page)).toHaveText('This prompt pair already exists. Showing the saved version.');
-    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText(f.selected_negative);
     await expect(laneLabel(page,/· 1 linked image$/)).toHaveCount(1);
     await expect(pressedVariant(page)).toHaveAccessibleName('Select negative variant 3');
     // The saved selection applies to that save only; returning opens on the first negative, as in the concept.
@@ -550,7 +550,7 @@ test('reused pair outside first forty remains selected without loading every pag
     await openHistory(page,f.positive_id);await expect(variantsPanel(page)).toContainText('40 of 44 saved negative variants');page.writes.length=0;
     await variantsPanel(page).getByRole('button',{name:'+ Add negative',exact:true}).click();
     const dialog=editorDialog(page);await ready(dialog);await field(dialog,'Negative prompt').fill(f.first_negative);await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
-    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.first_negative);
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText(f.first_negative);
     await expect(pressedVariant(page)).toHaveCount(1);await expect(variantsPanel(page)).toContainText('40 of 44 saved negative variants');
     await expect(variantsPanel(page).locator('.library-variant-lane')).toHaveCount(41);
     expect(variantCursorRequests).toHaveLength(0);expect(page.writes).toHaveLength(1);
@@ -678,7 +678,7 @@ test('archive hides a pair, Show archived finds it and Restore keeps it selected
     const opacity=await lane.locator('.library-variant-dot').evaluate(node=>getComputedStyle(node).opacity);expect(Number(opacity)).toBeLessThan(1);
     const galleryReads=[];page.on('request',item=>{if(item.url().includes('/images?'))galleryReads.push(new URL(item.url()).searchParams);});
     await lane.locator('.library-variant-dot').click();await expect(lane.locator('.library-variant-dot')).toHaveAttribute('aria-pressed','true');
-    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText(f.selected_negative);
     await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).locator('article[data-image-key]')).toHaveCount(1);
     // #249 D8 ruling (a): the Library-embedded gallery has no select checkbox and no selection bar.
     await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).locator('.image-overlays input[type="checkbox"]')).toHaveCount(0);
@@ -690,7 +690,7 @@ test('archive hides a pair, Show archived finds it and Restore keeps it selected
     await lane.getByRole('button',{name:/^Restore/}).click();
     await expect(variantsPanel(page).getByRole('button',{name:'Show archived (1)',exact:true})).toBeVisible();
     await expect(variantsPanel(page).locator('.library-variant-archived')).toHaveCount(1);
-    await expect(pressedVariant(page)).toHaveCount(1);await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.selected_negative);
+    await expect(pressedVariant(page)).toHaveCount(1);await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText(f.selected_negative);
     expect(page.writes.slice(writes)).toEqual([{method:'PATCH',url:`/prompt_manager/pairs/${f.pair_id}`,body:{archived:false}}]);
     expect((await pairRead(request,f.pair_id)).archived).toBe(false);expect(await evidence()).toEqual(before);
     await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).locator('article[data-image-key]')).toHaveCount(1);
@@ -740,7 +740,7 @@ test('archived reuse is reported, shown under Show archived and selected read-on
     await expect(variantsPanel(page).getByRole('button',{name:'Show archived (1)',exact:true})).toHaveAttribute('aria-pressed','true');
     const lane=variantsPanel(page).locator('.library-variant-archived');await expect(lane).toHaveCount(1);
     await expect(lane.locator('.library-variant-dot')).toHaveAttribute('aria-pressed','true');
-    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('pre')).toHaveText(f.archived_negative);
+    await expect(savedTexts(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText(f.archived_negative);
     await expect.poll(()=>galleryReads.at(-1)?.get('archive')).toBe('archived');expect(galleryReads.at(-1).get('pair_id')).toBe(String(f.archived_pair_id));
     await uniqueDotNames(page);
     await page.goto(`${workspace}#/library`);await page.getByRole('button',{name:'+ New prompt',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
@@ -873,7 +873,7 @@ test('long and error states retain footer focus and reflow',async({page})=>{
 
 // Task A2: the editor dialogs keep matching the concept on the concept base stylesheet, with library-editor.css retired.
 const CONCEPT_BASE=['js/shared/toolkit/controls.css','lib/viewerjs/viewer.min.css','js/workspace/concept.css',
-    'js/workspace/images.css','js/workspace/library.css','js/workspace/inspector.css','js/workspace/workspace.css'];
+    'js/workspace/library.css','js/workspace/workspace.css'];
 for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`concept base keeps the tags screen and editor dialogs equal to the concept ${width} ${theme}`,async({page})=>{
     await page.setViewportSize({width,height});const f=page.fixture;const references={};
     for(const mode of Object.keys(conceptModes)) {

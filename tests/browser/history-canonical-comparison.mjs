@@ -38,8 +38,8 @@ export async function historyGeometry(page, production) {
         surface: '.library-surface', timeline: '.library-branches', positive: '.library-positive-lane',
         branch: '.library-variant-lane', label: '.library-variant-lane span', dot: '.library-variant-dot[aria-pressed="true"]',
         positiveLabel: '.library-positive-lane span',
-        role: '[aria-label="Saved prompt texts"] .prompt-block',
-        prompt: '[aria-label="Saved prompt texts"] pre', gallery: '.library-shared-gallery',
+        role: '[aria-label="Saved prompt texts"] .prompt-section',
+        prompt: '[aria-label="Saved prompt texts"] .prompt-text', gallery: '.library-shared-gallery',
         heading: '.library-variants h2', intro: '.library-variants > p.muted',
         footer: '.library-variant-footer', all: '.library-variants button:last-child',
         recordedPositiveLabel: '.history-positive-lane span', recordedBranch: '.history-context-branch',
@@ -106,7 +106,7 @@ export async function exerciseCurrentPairSend(page, roles) {
             } });
         });
         const viewer = page.locator('dialog#viewer-dialog');
-        const send = viewer.getByRole('button', { name: 'Send prompt pair', exact: true });await send.click();
+        const send = viewer.getByRole('button', { name: /^Send prompt pair to ComfyUI: / });await send.click();
         const sender = page.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });await expect(sender).toBeVisible();
         await sender.getByRole('combobox', { name: 'ComfyUI window', exact: true }).selectOption({ label: 'Canonical ComfyUI' });
         await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ label: 'Canonical destination' });
