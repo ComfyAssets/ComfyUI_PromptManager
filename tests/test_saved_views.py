@@ -35,6 +35,7 @@ IMAGES_STATE = {
     "folder": "",
     "media": "all",
     "tags": ["fluffy"],
+    "favorites": False,
 }
 LIBRARY_STATE = {"q": "", "category": "", "sort": "rating", "tags": []}
 
@@ -145,6 +146,14 @@ class TestSavedViewsApi(ImageAPITestCase):
             {**good, "state": {**IMAGES_STATE, "tags": ["a,b"]}},
             {**good, "state": {**IMAGES_STATE, "tags": ["x" * 51]}},
             {**good, "state": {**IMAGES_STATE, "tags": [f"t{n}" for n in range(21)]}},
+            # Favorites (the Favorites page's filter) is a JSON boolean.
+            {**good, "state": {**IMAGES_STATE, "favorites": "true"}},
+            {**good, "state": {**IMAGES_STATE, "favorites": 1}},
+            {**good, "state": {**IMAGES_STATE, "favorites": None}},
+            {
+                **good,
+                "state": {k: v for k, v in IMAGES_STATE.items() if k != "favorites"},
+            },
             # Library has no source, folder or media, and its own sorts.
             {"page": "library", "name": "L", "state": IMAGES_STATE},
             {
@@ -185,10 +194,12 @@ class TestSavedViewsApi(ImageAPITestCase):
         for sort in ("newest", "oldest", "name", "name-desc", "rating"):
             for media in ("all", "image", "video"):
                 await self.create(state={"sort": sort, "media": media, "source": "3"})
+        favorite = await self.create(state={"favorites": True})
+        self.assertIs(favorite["state"]["favorites"], True)
         for sort in ("newest", "oldest", "name", "rating"):
             await self.create(page="library", state={"sort": sort, "tags": ["a b"]})
         _, listed = await self.send("GET")
-        self.assertEqual(len(listed["views"]), 19)
+        self.assertEqual(len(listed["views"]), 20)
 
     async def test_rename_and_delete_validate_id_and_body(self):
         view = await self.create()

@@ -128,6 +128,17 @@ test('all-source defaults are omitted and descending name sort remains supported
     await stream.reset({root:'all',media:'all',sort:'name-desc'});
     assert.equal(query.has('root'),false);assert.equal(query.has('media'),false);
     assert.equal(query.get('sort'),'name-desc');assert.equal(query.get('limit'),'40');
+    assert.equal(query.has('favorites'),false);
+});
+
+test('the Favorites page asks the listing for favorites only (#249 D51)', async () => {
+    const {createImageStream}=await source;let query;
+    const stream=createImageStream({api:{get:async url=>{query=new URL(url,'http://local').searchParams;return page([]);}}});
+    await stream.reset({favorites:true,q:'fog'});
+    assert.equal(query.get('favorites'),'1');assert.equal(query.get('q'),'fog');
+    await stream.reset({favorites:false});
+    assert.equal(query.has('favorites'),false);
+    for(const favorites of ['1',1,'true'])await assert.rejects(stream.reset({favorites}),/Invalid favorites filter/);
 });
 
 test('restored browsing state resumes its cursor and filters without an initial request', async () => {

@@ -57,11 +57,11 @@ function remainingFooter(footer,spans) {
 const OVERVIEW_GLYPH='M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6';
 
 /**
- * The concept's SAVED VIEWS rows (app.js a331–335) as production lists them: the saved views only. D50: no "Needs
- * review" row until the tag-review slice (maintainer ruling 2026-10-21). Favorites is the saved-views plan's Task 3.
+ * The concept's SAVED VIEWS rows (app.js a331–335) as production lists them: Favorites with its count (D51), then the
+ * saved views. D50: no "Needs review" row until the tag-review slice (maintainer ruling 2026-10-21).
  */
 function savedNav(nav) {
-    const rows=nav.rows.filter(row=>row.text!=='Favorites'&&row.text!=='Needs review');
+    const rows=nav.rows.filter(row=>row.text!=='Needs review');
     return {...nav,rows:rows.map((row,index)=>index===rows.length-1?{...row,gapAfter:null}:row)};
 }
 
@@ -231,7 +231,7 @@ for(const [width,height] of SIZES)test(`a saved view row matches the concept's $
     const actual=await save('Save','#workspace-main');
     expect(diffInventory(mapShellConcept(reference).chrome.navs,actual.chrome.navs)).toEqual([]);
     expect(actual.chrome.navs.find(nav=>nav.id==='saved-nav').rows.map(row=>[row.text,row.count]))
-        .toEqual([['Golden hour',null]]);
+        .toEqual([['Favorites',reference.chrome.navs.find(nav=>nav.id==='saved-nav').rows[0].count],['Golden hour',null]]);
 });
 
 test('the inventory reports a missing shell element by its path instead of failing',async({page})=>{

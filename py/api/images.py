@@ -696,7 +696,9 @@ def _workspace_filters(query: Mapping) -> dict:
     ``q`` (at most 500 characters) matches the relative path, case-folded, and
     the linked positive's text, title and tag names. ``category`` is exact,
     ``tags`` is a comma list that must all be present, ``sort=rating`` ranks by
-    the linked positive. Raises ValueError for any unknown or oversized value.
+    the linked positive, and ``favorites=1`` keeps only favorites (the
+    Favorites page, #249 D51). Raises ValueError for any unknown or oversized
+    value.
     """
     text = query.get("q", "").strip()
     folded = text.casefold()
@@ -707,8 +709,10 @@ def _workspace_filters(query: Mapping) -> dict:
     tags = sorted(
         {tag.strip() for tag in query.get("tags", "").split(",") if tag.strip()}
     )
+    favorites = query.get("favorites", "0")
     if (
-        len(text) > 500
+        favorites not in ("0", "1")
+        or len(text) > 500
         or len(folded) > 500
         or media not in ("all", "image", "video")
         or order not in WORKSPACE_ORDERS
@@ -727,6 +731,7 @@ def _workspace_filters(query: Mapping) -> dict:
         "folder": folder,
         "category": category,
         "tags": tags,
+        "favorites": favorites == "1",
     }
 
 
@@ -736,7 +741,12 @@ _COUNT_OMITTED = object()
 
 
 def _filtered_page(
-    entries: list, start: int, size: int, filters: dict, links: dict | None
+    entries: list,
+    start: int,
+    size: int,
+    filters: dict,
+    links: dict | None,
+    favorites: frozenset | None = None,
 ) -> tuple[int, list, int | None]:
     """Count the *entries* the filters admit and take *size* from *start* on.
 
@@ -745,6 +755,7 @@ def _filtered_page(
     category or tag filter admits only those, and ``q`` admits a filename match
     or a linked-positive hit. Returns the total, the page and the number of
     distinct linked positives among all admitted entries (None without links).
+    *favorites*, when given, admits only those listed paths (``favorites=1``).
     """
     query, media, folder = filters["query"], filters["media"], filters["folder"]
     members_only = filters["category"] is not None or bool(filters["tags"])
@@ -757,6 +768,8 @@ def _filtered_page(
         ):
             continue
         if media != "all" and (media == "video") != entry.video:
+            continue
+        if favorites is not None and entry.path not in favorites:
             continue
         match = None if links is None else links.get(entry.normalized)
         if members_only and match is None:
@@ -1146,6 +1159,7 @@ class ImageRoutesMixin:
                         [str(root) for root in output_dirs],
                         filters["category"],
                         filters["tags"],
+                        filters["favorites"],
                     ]
                 ).encode()
             ).hexdigest()
@@ -1333,8 +1347,11 @@ class ImageRoutesMixin:
                 start = len(entries) - bisect_left(ascending, after, key=key)
             else:
                 start = bisect_right(entries, after, key=key)
+        favorites = (
+            self._workspace_favorite_paths(listings) if filters["favorites"] else None
+        )
         total, page, positive_count = _filtered_page(
-            entries, start, limit + 1, filters, links
+            entries, start, limit + 1, filters, links, favorites
         )
         if not needed and after is not None:
             positive_count = _COUNT_OMITTED
@@ -2346,6 +2363,25 @@ class ImageRoutesMixin:
             listing.setdefault(_favorite_relative_key(posix), posix)
         self._favorite_listing_cache[cache_key] = (files, listing)
         return listing
+
+    def _workspace_favorite_paths(self, listings: list[tuple]) -> frozenset:
+        """The listed paths of every favorite in the selected roots (blocking).
+
+        One primary-key read per root (get_root_favorites), matched against the
+        root's cached ``{relative key: listing spelling}``, so the work follows
+        the favorites rather than the files, and a key folds case exactly as
+        the toggle stored it (Windows). A favorite whose file is gone matches
+        nothing. A failed read raises: an unfiltered page must never pass for
+        the favorites.
+        """
+        paths = set()
+        for _index, root, files in listings:
+            listing = self._favorite_listing(root, files)
+            for key in self.db.get_root_favorites(_favorite_root_key(root)):
+                listed = listing.get(key)
+                if listed is not None:
+                    paths.add(root / listed)
+        return frozenset(paths)
 
     def _workspace_favorites(self, page: list[tuple]) -> set[tuple[int, str]]:
         """``(root index, listing path)`` of the favorites among *page* entries."""

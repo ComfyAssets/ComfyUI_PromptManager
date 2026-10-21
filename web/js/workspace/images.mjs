@@ -96,14 +96,23 @@ function deliverFavorite(key, favorite) {
     else if (lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
     for (const target of embeddedFavoriteTargets) target(key, favorite);
 }
+// Told after every confirmed favorite change, wherever it was made (the shell's Favorites count, #249 D51).
+const favoriteListeners = new Set();
+/** Run `listener()` after each confirmed favorite change; returns the unsubscribe. */
+export function onFavoriteChange(listener) {
+    favoriteListeners.add(listener);
+    return () => favoriteListeners.delete(listener);
+}
 
 /**
  * An embedded collection (the history page's shared gallery and its All images and Repeat run dialogs, D47) has no
  * caption: its page heading or dialog title already names it, and `focusTarget` takes a stranded focus.
  * `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view.
+ * `favorites` is the Favorites page (#249 D51): only favorites are listed, and it neither restores nor replaces the
+ * Images last visit.
  */
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null, savedState = null,
-    onSaveView = () => {}} = {}) {
+    favorites = false, onSaveView = () => {}} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -117,7 +126,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
     const saved = embedded || !savedState ? null : imagesFilters(savedState);
-    const visit = embedded || saved ? null : lastVisit;
+    const visit = embedded || saved || favorites ? null : lastVisit;
     let density = visit?.density || 'comfortable';
     let metrics = {...INITIAL_METRICS};
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
@@ -126,14 +135,16 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let roots = [], folders = [];
     const rendered = new Map();
     const itemIndexes = new Map();
-    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters, ...saved };
+    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters, ...saved,
+        favorites: favorites || saved?.favorites === true };
     filters.tags = [...filters.tags];
     if (!IMAGE_SORT_OPTIONS.some(([value]) => value === filters.sort)) filters.sort = 'newest';
     // A saved Source or Folder is only listed once discovery confirms it still exists; until then nothing is fetched.
     let savedScopePending = Boolean(saved) && (filters.root !== 'all' || filters.subfolder !== '');
     scope.cleanup(() => {
         // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
-        if (!embedded) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
+        // A favorites-only collection is not the Images collection, so it never becomes the Images return state.
+        if (!embedded && !filters.favorites) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
@@ -370,6 +381,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         favoritePending.delete(key);
         deliverFavorite(key, saved ? favorite : !favorite);
         showWorkspaceToast(saved ? FAVORITE_DONE[favorite] : FAVORITE_FAILED[favorite]);
+        // On Favorites an unstarred card stays (with ☆) until the next load, so the star can be undone in place (D51).
+        if (saved) for (const listener of favoriteListeners) listener();
     }
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');

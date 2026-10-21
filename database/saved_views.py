@@ -35,6 +35,8 @@ _STATE_FIELDS = {
         "folder": ("text", 1024),
         "media": ("choice", _MEDIA),
         "tags": ("tags", None),
+        # The Favorites page's filter (#249 D51): a view saved there reopens it.
+        "favorites": ("bool", None),
     },
     "library": {
         "q": ("text", 500),
@@ -91,6 +93,10 @@ def _validate_value(key: str, kind: str, limit, value: object) -> None:
                 or _CONTROL.search(tag)
             ):
                 raise ValueError(f"State '{key}' holds an invalid tag")
+        return
+    if kind == "bool":
+        if not isinstance(value, bool):
+            raise ValueError(f"State '{key}' must be true or false")
         return
     if not isinstance(value, str):
         raise ValueError(f"State '{key}' must be a string")

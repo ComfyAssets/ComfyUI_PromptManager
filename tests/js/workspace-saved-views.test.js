@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 
 const source = import('../../web/js/workspace/saved-views.mjs');
 
-const IMAGE_DEFAULTS = { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [] };
+const IMAGE_DEFAULTS = { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false };
 const LIBRARY_DEFAULTS = { q: '', category: '', sort: 'newest', tags: [] };
 
 test('a saved state always holds every page key and keeps only values its page accepts', async () => {
@@ -12,8 +12,10 @@ test('a saved state always holds every page key and keeps only values its page a
     assert.deepEqual(SAVED_VIEW_PAGES, ['images', 'library']);
     assert.deepEqual(normalizeViewState('images', {}), IMAGE_DEFAULTS);
     assert.deepEqual(normalizeViewState('library', null), LIBRARY_DEFAULTS);
-    const full = { q: 'castle', category: 'Portraits', sort: 'name-desc', source: '2', folder: 'a/b', media: 'video', tags: ['moody', 'fog'] };
+    const full = { q: 'castle', category: 'Portraits', sort: 'name-desc', source: '2', folder: 'a/b', media: 'video', tags: ['moody', 'fog'], favorites: true };
     assert.deepEqual(normalizeViewState('images', full), full);
+    // D51: favorites is a boolean; anything else is the whole listing.
+    for (const favorites of ['true', 1, null]) assert.equal(normalizeViewState('images', { ...full, favorites }).favorites, false);
     // Each rejected value falls back on its own; the rest of the view still applies.
     assert.deepEqual(normalizeViewState('images', { ...full, sort: 'bogus', source: '-1', media: 'audio', tags: ['a,b'], extra: 1 }),
         { ...full, sort: 'newest', source: 'all', media: 'all', tags: [] });
@@ -61,11 +63,12 @@ test('the listing keeps usable views in order and normalizes their state', async
 
 test('page filters and saved states convert both ways', async () => {
     const { imagesFilters, imagesViewState, libraryFilters, libraryViewState } = await source;
-    const filters = { q: 'castle', category: 'Portraits', sort: 'rating', root: '1', subfolder: 'x', media: 'image', tags: ['fog'] };
+    const filters = { q: 'castle', category: 'Portraits', sort: 'rating', root: '1', subfolder: 'x', media: 'image', tags: ['fog'], favorites: true };
     const state = imagesViewState(filters);
-    assert.deepEqual(state, { q: 'castle', category: 'Portraits', sort: 'rating', source: '1', folder: 'x', media: 'image', tags: ['fog'] });
+    assert.deepEqual(state, { q: 'castle', category: 'Portraits', sort: 'rating', source: '1', folder: 'x', media: 'image', tags: ['fog'], favorites: true });
     assert.deepEqual(imagesFilters(state), filters);
-    assert.deepEqual(imagesFilters({}), { q: '', category: '', sort: 'newest', root: 'all', subfolder: '', media: 'all', tags: [] });
+    assert.deepEqual(imagesFilters({}), { q: '', category: '', sort: 'newest', root: 'all', subfolder: '', media: 'all', tags: [], favorites: false });
+    assert.equal(imagesViewState({ ...filters, favorites: undefined }).favorites, false);
     const shelf = { text: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'] };
     assert.deepEqual(libraryViewState(shelf), { q: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'] });
     assert.deepEqual(libraryFilters(libraryViewState(shelf)), shelf);
@@ -83,6 +86,14 @@ function fakeApi() {
         post(url, body) {
             calls.push(['POST', url, body]);
             return Promise.resolve({ success: true, view: { id: 9, ...body } });
+        },
+        patch(url, body) {
+            calls.push(['PATCH', url, body]);
+            return api.patchResult ?? Promise.resolve({ success: true, view: { id: 9, page: 'images', name: body.name, state: {} } });
+        },
+        del(url) {
+            calls.push(['DELETE', url]);
+            return api.deleteResult ?? Promise.resolve({ success: true, id: 9 });
         },
     };
     return { api, pending };
@@ -135,4 +146,44 @@ test('creating a view posts the full state and re-reads the list', async () => {
     assert.equal(store.find(9).name, 'Neon');
     const broken = createSavedViews({ ...api, post: () => Promise.resolve({ success: true, view: null }) });
     await assert.rejects(broken.create('images', 'X', {}), TypeError);
+});
+
+test('renaming and deleting a view re-read the list, whatever the outcome', async () => {
+    const { createSavedViews, SAVED_VIEWS_URL } = await source;
+    const { api, pending } = fakeApi();
+    const store = createSavedViews(api);
+    const renamed = store.rename(9, 'Dusk');
+    await flush();
+    assert.deepEqual(api.calls[0], ['PATCH', `${SAVED_VIEWS_URL}/9`, { name: 'Dusk' }]);
+    assert.deepEqual(api.calls[1], ['GET', SAVED_VIEWS_URL, 'no-store']);
+    pending[0].resolve({ success: true, views: [{ id: 9, page: 'images', name: 'Dusk', state: {} }] });
+    assert.deepEqual(await renamed, { id: 9, page: 'images', name: 'Dusk', state: IMAGE_DEFAULTS });
+    assert.equal(store.find(9).name, 'Dusk');
+
+    const removed = store.remove(9);
+    await flush();
+    assert.deepEqual(api.calls[2], ['DELETE', `${SAVED_VIEWS_URL}/9`]);
+    pending[1].resolve({ success: true, views: [] });
+    assert.equal(await removed, 9);
+    assert.equal(store.find(9), null);
+
+    // A view another tab already deleted is the outcome asked for; any other failure rejects, after a re-read.
+    api.deleteResult = Promise.reject(Object.assign(new Error('Not found'), { status: 404 }));
+    const gone = store.remove(4);
+    await flush();
+    pending[2].resolve({ success: true, views: [] });
+    assert.equal(await gone, 4);
+    api.deleteResult = Promise.reject(Object.assign(new Error('Locked'), { status: 500 }));
+    const failed = store.remove(4);
+    await flush();
+    pending[3].resolve({ success: true, views: [] });
+    await assert.rejects(failed, /Locked/);
+    api.patchResult = Promise.resolve({ success: true, view: null });
+    const invalid = store.rename(4, 'X');
+    await flush();
+    pending[4].resolve({ success: true, views: [] });
+    await assert.rejects(invalid, TypeError);
+    assert.equal(pending.length, 5);
+    assert.throws(() => store.rename(0, 'X'), TypeError);
+    assert.throws(() => store.remove('9'), TypeError);
 });

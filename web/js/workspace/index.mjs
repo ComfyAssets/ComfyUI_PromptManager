@@ -1,16 +1,16 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
 import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts,
-    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES } from './state.mjs';
+    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
-import { mountImages } from './images.mjs';
+import { mountImages, onFavoriteChange } from './images.mjs';
 import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { bindCanvasLink, canvasHref } from './topbar.mjs';
-import { renderHeading } from './heading.mjs';
+import { renderHeading, pageHeading } from './heading.mjs';
 import { closeWorkspaceDialog } from './workspace-dialogs.mjs';
-import { createSavedViews, openSaveViewDialog, savedViewHash } from './saved-views.mjs';
+import { createSavedViews, openSaveViewDialog, openEditViewDialog, savedViewHash } from './saved-views.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -73,10 +73,13 @@ function mountWorkspace() {
         }
     };
     // SAVED VIEWS (#249 D16): the concept's saved-nav rows (search icon, name, no count), loaded with the shell and
-    // re-read after every change. /* D49 */ no "PROPOSED" badge; /* D50 */ no "Needs review" row.
+    // re-read after every change. /* D49 */ no "PROPOSED" badge; /* D50 */ no "Needs review" row. The first row is
+    // the concept's Favorites (star icon, count), kept across every re-read so its count stays (D51).
+    const [favoritesLink] = navLinks([['favorites', 'star']]);
+    savedNav.replaceChildren(favoritesLink);
     const savedViews = createSavedViews(api, scope.signal);
     scope.cleanup(savedViews.subscribe(({ views }) => {
-        savedNav.replaceChildren(...views.map(view => {
+        savedNav.replaceChildren(favoritesLink, ...views.map(view => {
             const link = element('a');
             link.append(createWorkspaceIcon('search'), document.createTextNode(view.name));
             link.href = savedViewHash(view.id);
@@ -99,7 +102,7 @@ function mountWorkspace() {
             // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
             loadNavCounts(api, request.signal, (_, count) => {
                 if (request.signal.aborted) return;
-                const link = primaryNav.querySelector(`[data-route="${id}"]`);
+                const link = sidebar.querySelector(`nav [data-route="${id}"]`);
                 link?.querySelector('.nav-count')?.remove();
                 if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
             }, [id]);
@@ -108,6 +111,8 @@ function mountWorkspace() {
     scope.cleanup(() => { for (const request of countRequests.values()) request.abort(); });
     // A confirmed Library or vocabulary write cannot change the Images count, so only Library and Tags are re-read.
     scope.cleanup(onLibraryWrite(() => refreshCounts(LIBRARY_WRITE_COUNTS)));
+    // Starring or unstarring anywhere (Images, Favorites, Library media) re-reads the Favorites count (D51).
+    scope.cleanup(onFavoriteChange(() => refreshCounts(FAVORITE_WRITE_COUNTS)));
     refreshCounts(NAV_COUNT_ROUTES);
     let viewScope;
     let firstRender = true;
@@ -143,6 +148,7 @@ function mountWorkspace() {
         if (saved) {
             const page = routes.find(item => item.id === saved.page);
             renderPage({...page, label:saved.name, title:saved.name}, view, saved);
+            mountEditAction(saved, view);
             return;
         }
         if (savedViews.status === 'ready') {
@@ -161,6 +167,33 @@ function mountWorkspace() {
         main.append(retry);
     }
 
+    // /* D51 */ The open view's Edit (maintainer ruling): first in the heading's actions. A rename re-reads the list and
+    // retitles the open page; a delete re-reads it and replaces the dead route with the view's plain page.
+    function mountEditAction(saved, view) {
+        const heading = pageHeading(main);
+        if (!heading) return;
+        const edit = createButton('Edit');
+        heading.actions.prepend(edit);
+        view.listen(edit, 'click', () => openEditViewDialog({ scope: view, trigger: edit, view: saved,
+            onRename: async name => {
+                const renamed = await savedViews.rename(saved.id, name);
+                if (view.signal.aborted) return;
+                saved = renamed;
+                retitle(renamed.name);
+            },
+            onDelete: async () => {
+                await savedViews.remove(saved.id);
+                window.location.replace(`#/${saved.page}`);
+            } }));
+    }
+
+    function retitle(name) {
+        const { h1 } = pageHeading(main) ?? {};
+        if (h1) h1.textContent = name;
+        document.getElementById('workspace-breadcrumb').textContent = name;
+        document.title = `${name} · Prompt Manager`;
+    }
+
     function renderPage(route, view, saved = null) {
         document.title = `${routeTitle(route)} · Prompt Manager`;
         // The concept's heading(); each view fills its description and actions.
@@ -169,9 +202,10 @@ function mountWorkspace() {
         if (!firstRender) h1.focus();
         firstRender = false;
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
-        if (route.id === 'images') {
+        if (route.id === 'images' || route.id === 'favorites') {
             mountNewPromptAction(main, api, view);
-            images = mountImages(main, api, view, {savedState:saved?.state, onSaveView:saveView('images', view)});
+            images = mountImages(main, api, view, {savedState:saved?.state, favorites:route.id === 'favorites',
+                onSaveView:saveView('images', view)});
             return;
         }
         if (route.id === 'library') {

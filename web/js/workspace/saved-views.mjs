@@ -7,13 +7,20 @@
  * - The sidebar SAVED VIEWS group lists each view (concept `nav()` a331–335) as `#/saved/<id>` (a1158–1162).
  * - A view's state always holds every key of its page (the API requires them all); a value its page no longer
  *   accepts is dropped to that key's default, so an opened view applies what it can.
+ * - D51: an open view's heading Edit (maintainer ruling, beyond the concept): "Edit saved view" with "View name",
+ *   Delete… (danger), Cancel and Save; Delete… asks inside the same dialog, never through `window.confirm`.
  */
-import { openInputDialog } from './workspace-dialogs.mjs';
+import { createButton } from '../shared/toolkit/core.js';
+import { openInputDialog, openContentDialog, closeWorkspaceDialog } from './workspace-dialogs.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
 export const SAVED_VIEWS_URL = '/prompt_manager/saved-views';
 export const SAVED_TOAST = 'Saved view added to the sidebar.';
 export const SAVE_FAILED_TOAST = 'The view could not be saved. Try again.';
+export const RENAMED_TOAST = 'Saved view renamed.';
+export const DELETED_TOAST = 'Saved view deleted.';
+export const RENAME_FAILED_TOAST = 'The view could not be renamed. Try again.';
+export const DELETE_FAILED_TOAST = 'The view could not be deleted. Try again.';
 const MAX_NAME_LENGTH = 100;
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 50;
@@ -29,6 +36,8 @@ const FIELDS = Object.freeze({
         q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'name-desc', 'rating'], 'newest'),
         source: { fallback: 'all', accepts: value => typeof value === 'string' && /^(all|0|[1-9][0-9]{0,8})$/.test(value) },
         folder: text(1024), media: choice(['all', 'image', 'video'], 'all'), tags,
+        // A view saved on Favorites (#249 D51) reopens Images filtered to favorites.
+        favorites: { fallback: false, accepts: value => typeof value === 'boolean' },
     }),
     library: Object.freeze({
         q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'rating'], 'newest'), tags,
@@ -73,11 +82,12 @@ export const savedViewHash = id => `#/saved/${id}`;
 /** Images filters (images.mjs `filters`) from a saved state, and the state of the current filters. */
 export function imagesFilters(state) {
     const view = normalizeViewState('images', state);
-    return { q: view.q, category: view.category, sort: view.sort, root: view.source, subfolder: view.folder, media: view.media, tags: view.tags };
+    return { q: view.q, category: view.category, sort: view.sort, root: view.source, subfolder: view.folder, media: view.media,
+        tags: view.tags, favorites: view.favorites };
 }
 export function imagesViewState(filters) {
     return normalizeViewState('images', { q: filters.q, category: filters.category, sort: filters.sort, source: filters.root,
-        folder: filters.subfolder, media: filters.media, tags: filters.tags });
+        folder: filters.subfolder, media: filters.media, tags: filters.tags, favorites: filters.favorites === true });
 }
 
 /** Library shelf filters (library.mjs `filters`) from a saved state, and the state of the current filters. */
@@ -91,7 +101,7 @@ export function libraryViewState(filters) {
 
 /**
  * The shell's list of saved views: `load()` re-reads it (a newer read supersedes an older one), `create()` saves one
- * and re-reads the list, `subscribe(fn)` reports `{views, status}` on every change, and `settled()` resolves once no
+ * and re-reads the list, `rename(id, name)` and `remove(id)` change one and re-read it (a failure re-reads it too), `subscribe(fn)` reports `{views, status}` on every change, and `settled()` resolves once no
  * read is in flight. `status` is 'loading', 'ready' or 'error'; a failed read keeps the last listed views.
  */
 export function createSavedViews(api, signal) {
@@ -132,8 +142,36 @@ export function createSavedViews(api, signal) {
         await load();
         return view;
     }
+    /** Run one change of a listed view, then re-read the list whatever its outcome (another tab may have changed it). */
+    async function change(send) {
+        try { return await send(); } finally { await load(); }
+    }
+    const viewUrl = id => {
+        if (!Number.isSafeInteger(id) || id < 1) throw new TypeError('Invalid saved view id');
+        return `${SAVED_VIEWS_URL}/${id}`;
+    };
+    function rename(id, name) {
+        const url = viewUrl(id);
+        return change(async () => {
+            const view = parseSavedView((await api.patch(url, { name }, { signal }))?.view);
+            if (!view) throw new TypeError('Invalid saved view');
+            return view;
+        });
+    }
+    function remove(id) {
+        const url = viewUrl(id);
+        return change(async () => {
+            try {
+                await api.del(url, { signal });
+            } catch (error) {
+                // Already gone (another tab deleted it): the outcome the user asked for.
+                if (error?.status !== 404) throw error;
+            }
+            return id;
+        });
+    }
     return {
-        load, create,
+        load, create, rename, remove,
         get views() { return views; },
         get status() { return status; },
         find: id => views.find(view => view.id === id) ?? null,
@@ -159,4 +197,67 @@ export function openSaveViewDialog({ scope, trigger, q, onSave }) {
                 if (!scope.signal.aborted) showWorkspaceToast(SAVE_FAILED_TOAST);
             }
         } });
+}
+
+/**
+ * D51: the open view's Edit dialog. "View name" (Save keeps the dialog open on an empty name; an unchanged one closes it), then Delete… (danger), Cancel
+ * and Save. Delete… swaps the same dialog to its confirmation, Cancel / Delete, so nothing is removed by one press and
+ * no browser `confirm()` appears. `onRename(name)` and `onDelete()` return the store's promise; the toast reports either
+ * outcome, and the shell navigates after a delete.
+ */
+export function openEditViewDialog({ scope, trigger, view, onRename, onDelete }) {
+    const input = document.createElement('input');
+    input.value = view.name;
+    input.maxLength = MAX_NAME_LENGTH;
+    const remove = createButton('Delete…', 'danger');
+    const cancel = createButton('Cancel');
+    const save = createButton('Save', 'ca-primary');
+    const field = document.createElement('div');
+    field.className = 'field';
+    const label = document.createElement('label');
+    label.textContent = 'View name';
+    label.htmlFor = input.id = 'action-input';
+    field.append(label, input);
+    const actions = document.createElement('div');
+    actions.className = 'dialog-actions';
+    actions.append(remove, cancel, save);
+    cancel.addEventListener('click', () => closeWorkspaceDialog());
+    save.addEventListener('click', async () => {
+        const name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        closeWorkspaceDialog();
+        if (name === view.name) return;
+        try {
+            await onRename(name);
+            showWorkspaceToast(RENAMED_TOAST);
+        } catch {
+            if (!scope.signal.aborted) showWorkspaceToast(RENAME_FAILED_TOAST);
+        }
+    });
+    remove.addEventListener('click', () => confirmDelete({ scope, trigger, view, onDelete }));
+    openContentDialog({ scope, trigger, title: 'Edit saved view', nodes: [field, actions] });
+    input.focus();
+    input.select();
+}
+
+function confirmDelete({ scope, trigger, view, onDelete }) {
+    const text = document.createElement('p');
+    text.textContent = `Delete “${view.name}”? Only the saved view is removed; its images and prompts stay.`;
+    const actions = document.createElement('div');
+    actions.className = 'dialog-actions';
+    const cancel = createButton('Cancel');
+    const confirmButton = createButton('Delete', 'danger');
+    actions.append(cancel, confirmButton);
+    cancel.addEventListener('click', () => closeWorkspaceDialog());
+    confirmButton.addEventListener('click', async () => {
+        closeWorkspaceDialog();
+        try {
+            await onDelete();
+            showWorkspaceToast(DELETED_TOAST);
+        } catch {
+            showWorkspaceToast(DELETE_FAILED_TOAST);
+        }
+    });
+    openContentDialog({ scope, trigger, title: 'Delete saved view', nodes: [text, actions] });
+    cancel.focus();
 }

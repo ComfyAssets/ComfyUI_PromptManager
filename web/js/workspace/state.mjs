@@ -9,11 +9,13 @@ export const routes = [
     { id: 'inspect', label: 'Inspect a file', href: '/prompt_manager/gallery.html',
         description: 'Inspect generation metadata from an image or video file.', action: 'Open existing metadata inspector' },
     { id: 'overview', label: 'Overview' },
+    // SAVED VIEWS' first row (#249 D51): Images filtered to favorites. No href, so Overview lists no card for it.
+    { id: 'favorites', label: 'Favorites' },
     { id: 'system', label: 'System', href: '/prompt_manager/admin',
         description: 'Open the current dashboard, then choose Settings or Maintenance for configuration, scans, backups and diagnostics.', action: 'Open existing administration' },
 ];
 
-const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview', 'saved']);
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview', 'saved', 'favorites']);
 
 /** A saved view (#249 D16): the shell resolves its id to the view's page, name and state. */
 const SAVED_ROUTE = Object.freeze({ id: 'saved', label: 'Saved view' });
@@ -47,14 +49,16 @@ export function summarizeStats(stats) {
         });
 }
 
-// The sidebar's real counts (D27): one bounded `limit=1` read each, whose `total` is the count.
+// The sidebar's real counts (D27): one bounded `limit=1` read each, whose `total` is the count. Favorites (D51) is the
+// Favorites page's own listing, so its count is what that page lists.
 const NAV_COUNT_SOURCES = Object.freeze([
     ['images', '/prompt_manager/images/output?mode=workspace&limit=1'],
+    ['favorites', '/prompt_manager/images/output?mode=workspace&favorites=1&limit=1'],
     ['library', '/prompt_manager/library?limit=1'],
     ['tags', '/prompt_manager/vocabulary/tags?limit=1'],
 ]);
 
-/** Route id -> count for the WORKSPACE links; null when a page is missing or its total is not a count. */
+/** Route id -> count for the sidebar links; null when a page is missing or its total is not a count. */
 export function summarizeNavCounts(pages = {}) {
     return new Map(NAV_COUNT_SOURCES.map(([id]) => {
         const total = pages?.[id]?.total;
@@ -63,16 +67,19 @@ export function summarizeNavCounts(pages = {}) {
 }
 
 /**
- * Read the three counts; a failed read yields null for its route only. `onCount(id, count)` runs as each read
- * settles, so a slow listing (the Images output scan) never holds back the cheap Library and Tags counts.
+ * Read the counts; a failed read yields null for its route only. `onCount(id, count)` runs as each read settles, so a
+ * slow listing (the Images output scan) never holds back the cheap Library and Tags counts.
  */
-/** The WORKSPACE routes that carry a count. */
+/** The sidebar routes that carry a count (WORKSPACE, plus SAVED VIEWS' Favorites). */
 export const NAV_COUNT_ROUTES = Object.freeze(NAV_COUNT_SOURCES.map(([id]) => id));
 
 /** The counts a confirmed Library or vocabulary write can change; the Images listing cannot. */
 export const LIBRARY_WRITE_COUNTS = Object.freeze(['library', 'tags']);
 
-/** Read the given WORKSPACE counts (all by default), reporting each as its own read settles. */
+/** The count a confirmed favorite change can change. */
+export const FAVORITE_WRITE_COUNTS = Object.freeze(['favorites']);
+
+/** Read the given sidebar counts (all by default), reporting each as its own read settles. */
 export async function loadNavCounts(api, signal, onCount = () => {}, ids = NAV_COUNT_ROUTES) {
     const pages = {};
     await Promise.all(NAV_COUNT_SOURCES.filter(([id]) => ids.includes(id)).map(async ([id, url]) => {

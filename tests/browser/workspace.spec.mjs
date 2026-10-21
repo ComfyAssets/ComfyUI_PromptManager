@@ -18,6 +18,8 @@ const routes = [
     ['tags', 'Tags & categories', null],
     ['inspect', 'Inspect a file', '/prompt_manager/gallery.html'],
     ['system', 'System', '/prompt_manager/admin'],
+    // #249 D51: SAVED VIEWS' Favorites, Images filtered to favorites.
+    ['favorites', 'Favorites', null],
 ];
 
 async function countThemeWrites(page) {

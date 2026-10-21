@@ -445,8 +445,29 @@ Recorded shell deviations:
   compares the rows; `tests/browser/workspace-saved-views.spec.mjs` covers saving,
   reopening, the defaults that replace rejected values, and failed reads and saves.
 - **D50**: no "Needs review" row in SAVED VIEWS until the tag-review slice (maintainer
-  ruling, 2026-10-21). Favorites arrives with the saved-views plan's Task 3; until then
-  the comparison maps it out with Needs review.
+  ruling, 2026-10-21). The comparison maps only that row out.
+- **D51** (maintainer ruling, 2026-10-21, beyond the concept): SAVED VIEWS starts with
+  the concept's Favorites row (star icon, name, count). Its count is the Favorites
+  listing's own `limit=1` total (`/images/output?mode=workspace&favorites=1`), follows
+  the nav-count rules (hidden until loaded, absent when its read fails, never a
+  placeholder) and is re-read after every confirmed star or unstar, on any page.
+  `#/favorites` is Images filtered to favorites, named "Favorites" (concept
+  `renderImages`); `favorites=1` keeps only the selected roots' favorites, read per root
+  from `image_favorites` and matched against the scan with the toggle's case folding,
+  and a failed read is an error, never an unfiltered page. Unlike the concept, an
+  unstarred card stays on Favorites (showing ☆) until the next load, so the star can be
+  undone in place. Favorites neither restores nor replaces the Images return state.
+  Save view there saves `favorites: true`, so the view reopens the favorites. An open
+  saved view's heading leads with **Edit**: "Edit saved view" with "View name" and
+  Delete… (danger), Cancel and Save. Save re-reads the list, retitles the page and
+  toasts "Saved view renamed."; an empty name keeps the dialog open. Delete… swaps the
+  same dialog to "Delete saved view" (Cancel / Delete; never `window.confirm`); Delete
+  removes the view, replaces the dead route with the view's plain page and toasts
+  "Saved view deleted.". Failures toast "The view could not be renamed. Try again." or
+  "The view could not be deleted. Try again."; a view another tab already deleted counts
+  as deleted. `tests/browser/workspace-saved-views.spec.mjs` covers the row, count,
+  route, star updates, Save view on Favorites, Edit, and the failure paths;
+  `tests/test_image_favorites.py` covers `favorites=1`.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
   library.", and the title has no " concept" suffix. Save view's dialog action reads
