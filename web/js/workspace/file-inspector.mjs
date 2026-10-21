@@ -4,6 +4,7 @@ import { createInspectionController } from './inspection-state.mjs';
 import { createSendButton } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { navigateTo } from './state.mjs';
+import { showWorkspaceToast } from './toast.mjs';
 
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
@@ -16,6 +17,12 @@ const REPRESENTATIONS = {
     limited: 'Record exceeds inspection limits; text is unavailable',
 };
 const TEXTLESS = new Set(['invalid', 'limited']);
+const REVEAL_URL = '/prompt_manager/images/reveal';
+// D38 Show in folder: the route's answers, in the maintainer's words.
+const REVEAL_OPENED = 'Opened the folder on this computer.';
+const REVEAL_NOT_LOCAL = 'Show in folder works only in a browser on the computer running ComfyUI.';
+const REVEAL_UNAVAILABLE = 'No file manager is available on this computer.';
+const REVEAL_FAILED = 'The folder could not be opened. Try again.';
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
 
 function safeFilename(value) {
@@ -61,6 +68,22 @@ export function inspectionDownloads(record) {
         result.workflow = {...result.workflow, available:true, reason:null, bodyText:raw.workflow};
     } else result.workflow.reason = 'A valid original workflow JSON record is not available in this file.';
     return result;
+}
+
+/** The reveal body for a listed file's identity (`root_index`, `root_scope`, `path`), else null (D38). */
+export function revealTarget(identity) {
+    if (identity?.kind !== 'rooted-file') return null;
+    const {root_index, root_scope, path} = identity;
+    if (!Number.isInteger(root_index) || root_index < 0 || typeof root_scope !== 'string' || !/^[0-9a-f]{64}$/.test(root_scope) ||
+        typeof path !== 'string' || !path) return null;
+    return {root_index, root_scope, path};
+}
+/** The toast for a reveal outcome: null is success, otherwise the request's error (D38). */
+export function revealOutcome(error) {
+    if (error === null) return REVEAL_OPENED;
+    if (error?.status === 403 && error.code === 'not-local') return REVEAL_NOT_LOCAL;
+    if (error?.status === 501) return REVEAL_UNAVAILABLE;
+    return REVEAL_FAILED;
 }
 
 function el(tag, text, className) {
@@ -130,7 +153,7 @@ function prefixedChip(prefix, text) {
  * `variant: 'full'` (the viewer's `#viewer-details`, imageDetails(i, true)) leaves out the cover and adds "File &
  * provenance" and "Workflow & raw metadata" with the downloads. `inline: true` means `panel`; neither means `full`.
  */
-export function mountFileInspector(container, {sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onInteraction = () => {}}) {
+export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onInteraction = () => {}}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -236,13 +259,18 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
         const {file, library} = record, section = disclosure('File & provenance');
         const reported = record.identity.kind === 'reported-location';
         section.append(el('p', reported ? 'Current file at the reported location · identity unverified' : 'Current file at this source; historical bytes are not verified.', 'small'));
-        if (file) section.append(definitionList([
+        const facts = file && definitionList([
             ['Source', file.source_label], ['Path', record.identity.path], ['Size', formatBytes(file.size)],
             ['Dimensions', file.width && file.height ? `${file.width} × ${file.height}` : null],
             ['Format', file.format || `${extensionOf(record)} extension`], ['Media type', file.media_type],
             ['Modified', file.modified_time !== null ? new Date(file.modified_time * 1000).toLocaleString() : null],
-        ], 'meta-grid'));
-        else section.append(el('p', 'Current file observations are unavailable for this inspection response.', 'small'));
+        ], 'meta-grid');
+        if (facts) {
+            // D38: "Show in folder" follows the Path value (the second row).
+            const target = api ? revealTarget(record.identity) : null;
+            if (target) facts.children[1].lastChild.append(' ', revealButton(target));
+            section.append(facts);
+        } else section.append(el('p', 'Current file observations are unavailable for this inspection response.', 'small'));
         // The concept's "Prompt evidence: execution recorded" line, in the D21 badge's words; no badge, no line.
         if (badge) section.append(el('p', `Prompt evidence: ${badge.toLowerCase()}`, 'small'));
         if (reported) {
@@ -257,6 +285,25 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
             original.download = safeFilename(record.download.filename); section.append(original);
         }
         return section;
+    }
+    /** D38: "Show in folder" right after the Path value, for a listed file only; the server opens its file manager. */
+    function revealButton(target) {
+        const button = createButton('Show in folder');
+        button.setAttribute('aria-label', `Show ${target.path.split('/').at(-1)} in folder`);
+        let pending = false;
+        contentScope.listen(button, 'click', async () => {
+            if (pending) return;
+            pending = true; button.setAttribute('aria-busy', 'true');
+            let error = null;
+            try {
+                await api.post(REVEAL_URL, target, {signal:contentScope.signal});
+            } catch (failure) {
+                error = failure ?? {};
+            }
+            pending = false; button.removeAttribute('aria-busy');
+            if (!contentScope.signal.aborted) showWorkspaceToast(revealOutcome(error));
+        });
+        return button;
     }
     /** "Workflow & raw metadata": each supported record (`pre[tabindex=0] > code`), then the two downloads. */
     function rawMetadata(record) {

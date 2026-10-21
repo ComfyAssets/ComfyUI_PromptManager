@@ -590,6 +590,29 @@ Recorded deviations on this page (spec §8):
 - **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
   applies its negative wording to both roles), and a confirmed `p.prompt-text` is
   focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
+- **D38 Show in folder** (maintainer decision 2026-10-20, beyond the mock): in the
+  viewer's File & provenance the Path value stays text, followed in its `dd` by a
+  "Show in folder" button (`Show <filename> in folder`), only for a listed file
+  (`root_index`, `root_scope`, `path`), so never in the side panel or a recorded run.
+  It POSTs that identity to `/prompt_manager/images/reveal` and toasts "Opened the
+  folder on this computer.", "Show in folder works only in a browser on the computer
+  running ComfyUI." (403 `not-local`), "No file manager is available on this
+  computer." (501 `unavailable`) or "The folder could not be opened. Try again."
+  The route is local-only: a loopback `request.remote`, none of `Forwarded`,
+  `X-Forwarded-For`, `X-Real-IP` or `X-Forwarded-Host`, and (against DNS rebinding) a
+  loopback `Host` and, when sent, `Origin` (`localhost`, `*.localhost` or a loopback
+  address). The body is strict (an int root, a 64-hex scope, a bounded relative path;
+  absolute, drive and `..` paths are 400), the scope goes through
+  `_gallery_scope_error` (409 `source-changed`), and the path resolves only inside
+  that root to a regular media file (403/404). `utils/file_reveal.py` starts the
+  opener as an argv list with an absolute executable, no shell, DEVNULL streams and
+  `close_fds`, never waited on: Windows `explorer.exe` from `%SystemRoot%` (never
+  PATH or the working directory) with `/select,` and the path, macOS `open -R`,
+  Linux the FileManager1 `ShowItems` dbus call (waited at most 2 s, only to detect a
+  failed start) and else `xdg-open` on the folder. `tests/test_image_reveal.py` mocks
+  `Popen`, `sys.platform` and `shutil.which`; the browser server's opener is a stub
+  (`POST`/`GET /__test__/reveal`). The inspector comparison reads closed disclosures
+  as hidden, so the button needs no mapping there.
 - **D39**: a recipe-linked image shows its recipe's own category and tags (#224), not
   its positive's. The concept shows the prompt's category and tags for every image;
   the concept fixture's recipes have neither, so their images show no category chip

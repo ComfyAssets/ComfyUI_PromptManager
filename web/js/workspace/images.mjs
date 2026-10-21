@@ -225,7 +225,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }});
     if (bar) main.append(bar.element);
     main.append(body);
-    const mediaViewer = createMediaViewer({container:main,parentScope:scope,inspectionController:inspection,sender,
+    const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
         onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));

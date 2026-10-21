@@ -242,7 +242,8 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     const provenance=details.locator('details').first();await provenance.locator('summary').click();
     await expect(provenance.locator('p.small').first()).toHaveText('Current file at this source; historical bytes are not verified.');
     await expect(provenance.locator('dl.meta-grid dt')).toHaveText(['Source','Path','Size','Dimensions','Format','Media type','Modified']);
-    await expect(provenance.locator('dl.meta-grid dd').nth(1)).toHaveText('inspector/complete.png');
+    // D38: the Path value stays text, with "Show in folder" right after it.
+    await expect(provenance.locator('dl.meta-grid dd').nth(1)).toHaveText('inspector/complete.png Show in folder');
     await expect(provenance.getByText('Prompt evidence: workflow inferred',{exact:true})).toBeVisible();
     await expect(provenance.getByText('Saved association; not verified against current file',{exact:true})).toBeVisible();
     await expect(provenance.getByRole('link',{name:'Download original',exact:true})).toBeVisible();
@@ -270,6 +271,34 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     await expect(page.locator('#viewer-dialog')).toHaveCount(0);
 });
 
+// D38 Show in folder: a listed file's Path offers it; the stubbed opener records what the route resolved.
+test('Show in folder asks the server to open the listed file and announces each outcome',async({page,request})=>{
+    await fullFixture(page,request);
+    await expect(inspector(page).getByRole('button',{name:/in folder$/})).toHaveCount(0);
+    const details=await viewerDetails(page,'complete.png');
+    const provenance=details.locator('details').first();await provenance.locator('summary').click();
+    const path=provenance.locator('dl.meta-grid > div').nth(1);await expect(path.locator('dt')).toHaveText('Path');
+    const show=path.locator('dd > button');
+    await expect(show).toHaveText('Show in folder');await expect(show).toHaveAccessibleName('Show complete.png in folder');
+    const toast=page.locator('#workspace-toast');
+    const [sent]=await Promise.all([page.waitForRequest(entry=>entry.url().endsWith('/prompt_manager/images/reveal')),show.click()]);
+    expect(sent.method()).toBe('POST');
+    const body=sent.postDataJSON();
+    expect(Object.keys(body).sort()).toEqual(['path','root_index','root_scope']);
+    expect(body).toMatchObject({root_index:0,path:'inspector/complete.png'});expect(body.root_scope).toMatch(/^[0-9a-f]{64}$/);
+    await expect(toast).toHaveText('Opened the folder on this computer.');
+    const opened=async()=>(await (await request.get('/__test__/reveal')).json()).opened;
+    expect(await opened()).toEqual(['output/inspector/complete.png']);
+    for (const [outcome,message] of [['unavailable','No file manager is available on this computer.'],['fail','The folder could not be opened. Try again.']]) {
+        await expect(await request.post('/__test__/reveal',{data:{outcome}})).toBeOK();
+        await show.click();await expect(toast).toHaveText(message);
+    }
+    // A proxied request counts as remote, so the real route answers 403 not-local.
+    await expect(await request.post('/__test__/reveal',{data:{outcome:'opened'}})).toBeOK();
+    await page.route('**/prompt_manager/images/reveal',route=>route.continue({headers:{...route.request().headers(),'x-forwarded-for':'203.0.113.7'}}));
+    await show.click();await expect(toast).toHaveText('Show in folder works only in a browser on the computer running ComfyUI.');
+    expect(await opened()).toEqual(['output/inspector/complete.png']);
+});
 test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);
     await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');await expect(panel.locator('.detail-inner > p.small')).toHaveText('complete.png');

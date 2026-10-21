@@ -65,3 +65,23 @@ test('limited workflow record exports its representation and disables workflow d
     assert.equal(downloads.workflow.available,false);assert.equal(downloads.workflow.bodyText,null);
     assert.equal(downloads.workflow.reason,'Workflow exceeds inspection limits. Download the original file to inspect it externally.');
 });
+
+test('Show in folder needs the full listing identity (D38)',async()=>{
+    const {revealTarget}=await load(),scope='a'.repeat(64);
+    assert.deepEqual(revealTarget(record().identity),{root_index:2,root_scope:scope,path:'a.png'});
+    for(const identity of [
+        {kind:'rooted-file',root_index:2,path:'a.png',root_scope:null},
+        {kind:'rooted-file',root_index:'2',path:'a.png',root_scope:scope},
+        {kind:'rooted-file',root_index:2,path:'',root_scope:scope},
+        {kind:'reported-location',path:'folder/a.png',current_scope:scope},
+        null,
+    ])assert.equal(revealTarget(identity),null);
+});
+test('Show in folder outcomes use the D38 toasts',async()=>{
+    const {revealOutcome}=await load();
+    assert.equal(revealOutcome(null),'Opened the folder on this computer.');
+    assert.equal(revealOutcome({status:403,code:'not-local'}),'Show in folder works only in a browser on the computer running ComfyUI.');
+    assert.equal(revealOutcome({status:501,code:'unavailable'}),'No file manager is available on this computer.');
+    for(const error of [{status:403,code:null},{status:409,code:'source-changed'},{status:500},new TypeError('offline')])
+        assert.equal(revealOutcome(error),'The folder could not be opened. Try again.');
+});

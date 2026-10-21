@@ -77,6 +77,51 @@ class TestModel:
         return ["generated", Path(image_path).parent.parent.name]
 
 
+REVEAL_OUTCOMES = ("opened", "unavailable", "fail")
+
+
+def register_reveal_stub(routes, api, root: Path):
+    """D38: Show in folder never opens a real file manager here.
+
+    The API's opener records the resolved path; ``POST /__test__/reveal``
+    sets the next outcome and ``GET /__test__/reveal`` lists the opened paths.
+    """
+    from utils.file_reveal import OpenerUnavailable
+
+    state = {"outcome": "opened", "opened": []}
+
+    def opener(path: Path) -> None:
+        if state["outcome"] == "unavailable":
+            raise OpenerUnavailable()
+        if state["outcome"] == "fail":
+            raise OSError("stubbed start failure")
+        state["opened"].append(Path(path).relative_to(root.resolve()).as_posix())
+
+    api._reveal_opener = opener
+
+    @routes.post("/__test__/reveal")
+    async def set_reveal_outcome(request: web.Request) -> web.Response:
+        data = await request.json() if request.can_read_body else None
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"outcome"}
+            or data["outcome"] not in REVEAL_OUTCOMES
+        ):
+            raise web.HTTPBadRequest()
+        state["outcome"] = data["outcome"]
+        return web.json_response({"success": True})
+
+    @routes.get("/__test__/reveal")
+    async def reveal_calls(request: web.Request) -> web.Response:
+        return web.json_response({"opened": state["opened"]})
+
+    def reset() -> None:
+        state["outcome"] = "opened"
+        state["opened"].clear()
+
+    return types.SimpleNamespace(reset=reset)
+
+
 def create_app(root: Path) -> web.Application:
     os.environ["PROMPT_MANAGER_CONFIG_PATH"] = str(root / "config.json")
     os.chdir(root)
@@ -112,6 +157,7 @@ def create_app(root: Path) -> web.Application:
     history_commands = register_workspace_history_commands(routes, api, root)
     library_editor_commands = register_library_editor_commands(routes, api, root)
     register_vocabulary_commands(routes, api, root)
+    reveal_stub = register_reveal_stub(routes, api, root)
 
     async def canonical_asset(request: web.Request) -> web.Response:
         filename, content_type = CANONICAL_ASSETS[request.path]
@@ -312,6 +358,7 @@ def create_app(root: Path) -> web.Application:
             history_fixture = manifest
             return web.json_response({"success": True, **manifest})
         history_commands.reset()
+        reveal_stub.reset()
         workspace_visual = data.get("workspace_visual", False)
         full_inspector = data.get("full_inspector", False)
         extra = data.get("extra_images", 0)
@@ -410,6 +457,7 @@ def create_app(root: Path) -> web.Application:
             raise web.HTTPBadRequest()
         history_commands.reset()
         library_editor_commands.reset()
+        reveal_stub.reset()
         history_fixture = None
         manifest = await api._run_in_executor(
             lambda: seed_workspace_concept(
