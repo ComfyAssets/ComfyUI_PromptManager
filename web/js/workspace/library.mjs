@@ -615,7 +615,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const lower=el('div',undefined,'timeline-lower');lower.append(el('span','Green + positive · red − negative · small dot repeat run','small'),all);
             variants.append(branches,variantCount,variantError,restoreStatus,restoreAction,more,retry,lower);
             // The concept's shared gallery (app.js a616-621): its heading names the selected variant; the embedded
-            // collection renders the PR C media cards. Recorded executions (#209) stay below it. /* D47 */
+            // collection renders the PR C media cards. Recorded executions (#209) stay below it.
             const context=el('span','','small');context.setAttribute('role','status');
             const galleryTitle=el('h2','Shared gallery');galleryTitle.tabIndex=-1;
             const galleryHeading=el('div',undefined,'panel-heading');galleryHeading.append(galleryTitle,context);
@@ -691,8 +691,9 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 const archived=pairId!==null && archivedSelection(pairId);
                 updateGalleryContext();
                 galleryScope?.dispose();galleryScope=createScope();images.replaceChildren();
-                // An archived pair's images are read in the archived scope; the gallery stays authoritative.
-                mountImages(images,api,galleryScope,{embedded:true,caption:false,focusTarget:galleryTitle,emptyText:pairId===null?undefined:'Saved variant · no runs yet.',fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
+                // An archived pair's images are read in the archived scope; the gallery stays authoritative. The
+                // embedded collection has no caption: the gallery heading names it (D47).
+                mountImages(images,api,galleryScope,{embedded:true,focusTarget:galleryTitle,emptyText:pairId===null?undefined:'Saved variant · no runs yet.',fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
                 updateSend();updateCompare();
             }
             /** A metadata receipt names no pair, so the page re-reads its own selection through the exact-ID route. */
@@ -767,7 +768,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 openContentDialog({scope:content,title,nodes:intro?[el('p',intro,'small'),grid]:[grid],trigger,onClose:()=>{dialogScope.dispose();if(imagesDialogScope===dialogScope) imagesDialogScope=null;}});
                 // D47: the dialog's own title names its images, as in the concept (a1282-1304), so the collection has no
                 // "Linked images" heading or count; a stranded focus returns to the dialog's close button.
-                mountImages(grid,api,dialogScope,{embedded:true,caption:false,focusTarget:grid.closest('dialog')?.querySelector('.dialog-header > button') ?? null,fetchPage});
+                mountImages(grid,api,dialogScope,{embedded:true,focusTarget:grid.closest('dialog')?.querySelector('.dialog-header > button') ?? null,fetchPage});
             }
             const imagesPage=(id,query,signal)=>api.get(`/prompt_manager/library/${id}/images?${query}`,{signal});
             /** Concept "All images for this positive" (a1282-1290): every image of the positive, Load more bounded. */

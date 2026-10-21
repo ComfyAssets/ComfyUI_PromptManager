@@ -116,7 +116,7 @@ async function conceptAsRecorded(page) {
         const timeline=document.querySelector('.timeline'),lanes=[...timeline.querySelectorAll(':scope > .variant-lane')];
         const texts=lanes.map(lane=>[lane.querySelector(':scope > span'),lane.querySelector(':scope > span').textContent]);
         lanes.reverse().forEach((lane,index)=>{lane.style.setProperty('--lane-offset',`${38+index*47}px`);timeline.append(lane);});
-        for(const [span,text] of texts)span.textContent=text.replace(/(^|\D)1 runs$/,'$11 run');
+        for(const [span,text] of texts)span.textContent=text.replace(/(^|\D)1 runs$/,(match,before)=>`${before}1 run`);
         const add=[...document.querySelectorAll('.timeline-panel .row-actions > button')].find(node=>node.textContent==='+ Add negative');
         const archived=add.cloneNode(false);archived.removeAttribute('data-action');archived.removeAttribute('data-prompt');
         archived.setAttribute('aria-pressed','false');archived.textContent=label;add.after(archived);
@@ -288,7 +288,7 @@ test('history comparison detects mutations',async({page},testInfo)=>{
     await restoreCss();await settle(page);
     assertHistoryMatch(reference,await measure());
 
-    await mutate(page,{remove:['.timeline-panel .row-actions > button[aria-pressed]:first-child']});
+    await compareButton(page).evaluate(node=>node.remove());
     const domMutated=await measure();
     expect(()=>assertHistoryMatch(reference,domMutated)).toThrow(/history\.variants\.heading\.actions\.buttons\.0\.text/);
 });

@@ -189,7 +189,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .prompt-card .card-art > .small { display: grid; place-content: center; min-width: 0; color: var(--ca-muted); /* D23 */ }
 
 /* Prompt library shelf (#249 PR E). #249 D3: rows stay windowed, as the Images grid's do; the concept's `.library-grid`
-   tracks and breakpoints lay them out, each row spans them, and appended rows never anchor the scroll. */
+   tracks and breakpoints lay them out, each row spans them, and appended rows never anchor the scroll. The row's
+   `min-inline-size: 0` is load-bearing: it keeps cards out of the concept's ≤700px `1fr` track's min-content. */
 .library-main .library-grid { overflow-anchor: none; /* D3 */ }
 .library-main .library-row { grid-column: 1 / -1; display: grid; grid-template-columns: inherit; gap: 18px; min-inline-size: 0; /* D3 */ }
 .library-main .library-row-spacer { grid-column: 1 / -1; pointer-events: none; /* D3 */ }
@@ -246,7 +247,6 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .history-run-marker[aria-disabled="true"] { opacity: .6; cursor: progress; /* D48 */ }
 /* D48: the Recorded run dialog (#209, D26). */
 .ca-tools dialog.recorded-run-dialog { box-sizing: border-box; inline-size: min(1100px, calc(100% - 32px)); max-inline-size: calc(100% - 32px); max-block-size: calc(100dvh - 32px); padding: 22px; border-radius: 7px; overscroll-behavior: contain; scrollbar-gutter: stable; overflow-wrap: anywhere; /* D48 */ }
-.recorded-run-dialog::backdrop { background: #0009; /* D48 */ }
 .recorded-run-header { display: flex; gap: 12px; align-items: center; justify-content: space-between; /* D48 */ }
 .recorded-run-header h2 { font-size: 20px; /* D48 */ }
 .recorded-run-body, .recorded-run-body > section { min-inline-size: 0; /* D48 */ }

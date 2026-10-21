@@ -97,11 +97,10 @@ function deliverFavorite(key, favorite) {
 }
 
 /**
- * `caption: false` (the history page's shared gallery and its All images and Repeat run dialogs, D47) leaves out the
- * embedded collection's "Linked images" heading and count, whose page heading or dialog title already names it;
- * `focusTarget` then takes focus where that heading did.
+ * An embedded collection (the history page's shared gallery and its All images and Repeat run dialogs, D47) has no
+ * caption: its page heading or dialog title already names it, and `focusTarget` takes a stranded focus.
  */
-export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, caption: showCaption = true, focusTarget = null} = {}) {
+export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -197,17 +196,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const body = el('div', undefined, 'gallery-layout image-workspace');
     const collection = el('section', undefined, 'gallery-body');
     collection.setAttribute('aria-label', 'Images');
-    // The concept's caption replaces the old "All images" heading; the embedded gallery keeps its own heading.
+    // The concept's caption replaces the old "All images" heading.
     const caption = el('div', undefined, 'section-caption');
-    const collectionHeading = embedded && showCaption ? el('h2', 'Linked images') : null;
-    if (collectionHeading) { collectionHeading.tabIndex = -1; caption.append(collectionHeading); }
     const count = el('span', 'Loading images…');
-    if (!embedded) count.id = 'result-count';
+    count.id = 'result-count';
     const captionDay = el('span');
     captionDay.hidden = true;
-    caption.append(count);
-    if (!embedded) caption.append(captionDay);
-    const focusFallback = collectionHeading || focusTarget || heading?.h1 || main;
+    caption.append(count, captionDay);
+    const focusFallback = focusTarget || heading?.h1 || main;
     const grid = el('div', undefined, 'image-grid');
     grid.setAttribute('role', 'list'); grid.setAttribute('aria-label', 'Image collection');
     const continuation = el('div', undefined, 'infinite-continuation');
@@ -218,12 +214,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const retry = createButton('Retry');
     continuation.append(message, more, retry);
     // The concept's empty collection (app.js updateImages), beside the grid because the grid only holds positioned cards.
-    // An embedded gallery shows one only when its page names the concept's copy (the history gallery, app.js a620). /* D47 */
+    // An embedded gallery shows one only when its page names the concept's copy (the history gallery, app.js a620).
     const showsEmpty = !embedded || typeof emptyText === 'string';
     const empty = el('div', embedded ? emptyText : 'No matching images. Try another search or category.', 'empty');
     empty.hidden = true;
     // D47: the history page's shared gallery and dialogs are named by their own heading or title, so they have no caption.
-    if (showCaption) collection.append(caption);
+    if (!embedded) collection.append(caption);
     collection.append(grid);
     if (showsEmpty) collection.append(empty);
     collection.append(continuation);
@@ -517,8 +513,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
         state = next;
-        setText(count, embedded ? `${next.loaded.toLocaleString('en-US')} loaded · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'linked image')}` : countLine(next));
         if (!embedded) {
+            setText(count, countLine(next));
             setText(captionDay, captionDate(next.items, filters.sort));
             if (captionDay.hidden !== !captionDay.textContent) captionDay.hidden = !captionDay.textContent;
         }
