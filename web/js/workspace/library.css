@@ -1,12 +1,5 @@
 main.library-main { --library-positive: #73dda9; }
 .library-main :where(.library-shelf, .library-history, .library-card, .library-card-content, .library-card-prompts, .library-linked-images) { min-inline-size: 0; }
-.library-main .library-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-block: 0 20px; }
-.library-main .library-toolbar .ca-field { position: relative; display: flex; min-inline-size: 0; flex: 1 1 140px; align-items: stretch; }
-.library-main .library-toolbar .ca-field:first-child { flex: 3 1 250px; }
-.library-main .library-toolbar .ca-field > span { position: absolute; inline-size: 1px; block-size: 1px; padding: 0; margin: -1px; overflow: clip; clip-path: inset(50%); white-space: nowrap; }
-.library-main .library-toolbar :where(input, select, button), .ca-tools .library-main .library-toolbar > button { box-sizing: border-box; inline-size: 100%; min-inline-size: 0; block-size: 36px; min-block-size: 36px; font-size: 12px; }
-.ca-tools .library-main .library-toolbar > button { inline-size: auto; }
-.library-main .library-caption { display: flex; justify-content: space-between; font-size: 10px; color: var(--ca-muted); margin-block: 0 13px; }
 .library-main .library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; overflow-anchor: none; }
 .library-main .library-row { grid-column: 1 / -1; display: grid; grid-template-columns: inherit; gap: 18px; min-inline-size: 0; }
 .library-main .library-card { box-sizing: border-box; display: grid; grid-template-rows: 170px 1fr auto; min-inline-size: 0; border: 1px solid var(--ca-line); border-radius: 8px; background: var(--ca-surface); }

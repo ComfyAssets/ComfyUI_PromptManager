@@ -8,6 +8,21 @@ const saved=page=>history(page).getByRole('region',{name:'Saved prompt texts',ex
 const gallery=page=>page.getByRole('region',{name:'Shared gallery',exact:true});
 const media=page=>gallery(page).locator('article[data-image-key]');
 
+const refine=page=>page.getByRole('dialog',{name:'Refine this view',exact:true});
+/** The Library's Tags filter lives in "Refine this view" (#249 D14). */
+async function applyTags(page,tags) {
+    await page.locator('#workspace-main search.toolbar').getByRole('button',{name:'Filters',exact:true}).click();
+    await refine(page).getByRole('textbox',{name:'Tags',exact:true}).fill(tags);
+    await refine(page).getByRole('button',{name:'Apply filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
+}
+/** The first shelf page, then `pages` more, each waited for by its own response (the caption counts the filtered set). */
+async function loadShelfPages(page,more,pages) {
+    await expect(page.locator('.section-caption')).toContainText('203 positive prompts');await expect(more).toHaveAttribute('aria-disabled','false');
+    for(let index=0;index<pages;index++) {
+        const response=page.waitForResponse(item=>{const url=new URL(item.url());return url.pathname==='/prompt_manager/library'&&url.searchParams.has('cursor');});
+        await more.evaluate(node=>node.click());await response;await expect(more).toHaveAttribute('aria-disabled','false');
+    }
+}
 async function openHistory(page,text='Cat portrait') {
     await cards(page).filter({has:page.getByText(text,{exact:true})}).getByRole('link',{name:'Explore history',exact:true}).click();
     await expect(history(page)).toBeVisible();
@@ -57,13 +72,13 @@ test('history displays the selected full negative beneath its positive and filte
 });
 
 test('search, category and tag filters preserve their constraints and return standalone positives',async({page})=>{
-    await page.goto(route);await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('Dog landscape');
+    await page.goto(route);await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('Dog landscape');
     await expect(cards(page)).toHaveCount(1);await expect(cards(page).first()).toContainText('Dog landscape');
-    await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('');
-    await page.getByRole('combobox',{name:'Category',exact:true}).selectOption('Portraits');
-    await page.getByRole('textbox',{name:'Tags',exact:true}).fill('studio');await expect(cards(page)).toHaveCount(1);
-    await page.getByRole('textbox',{name:'Tags',exact:true}).fill('outdoors');await expect(cards(page)).toHaveCount(0);
-    await page.getByRole('combobox',{name:'Category',exact:true}).selectOption('');await expect(cards(page)).toHaveCount(1);
+    await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('');
+    await page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('Portraits');
+    await applyTags(page,'studio');await expect(cards(page)).toHaveCount(1);
+    await applyTags(page,'outdoors');await expect(cards(page)).toHaveCount(0);
+    await page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('');await expect(cards(page)).toHaveCount(1);
 });
 
 test('library infinite loading keeps unique parents and keyboard-accessible history controls',async({page,request})=>{
@@ -97,11 +112,60 @@ test('failed library reads retry while late search responses cannot overwrite ne
     });
     await page.goto(route);await expect(page.getByRole('button',{name:'Retry prompt library',exact:true})).toBeVisible();
     fail=false;await page.getByRole('button',{name:'Retry prompt library',exact:true}).click();await expect(cards(page)).toHaveCount(3);
-    const search=page.getByRole('searchbox',{name:'Search prompts',exact:true});const oldRequest=page.waitForRequest(request=>new URL(request.url()).searchParams.get('text')==='Cat');await search.fill('Cat');await oldRequest;await search.fill('Dog');
+    const search=page.getByRole('searchbox',{name:'Search workspace',exact:true});const oldRequest=page.waitForRequest(request=>new URL(request.url()).searchParams.get('text')==='Cat');await search.fill('Cat');await oldRequest;await search.fill('Dog');
     await expect(cards(page)).toHaveCount(1);await expect(cards(page).first()).toContainText('Dog landscape');release();await expect(cards(page).first()).toContainText('Dog landscape');
 });
 
-test('refresh atomically discards old row geometry and renders changed parent data',async({page,request})=>{
+test('library toolbar matches the concept and tags live in Refine this view',async({page})=>{
+    await page.goto(route);await expect(cards(page)).toHaveCount(3);
+    // app.js toolbar() a347–360: search.toolbar > label.search-field (input#search), select#category-filter, select#sort, Filters.
+    const toolbar=page.locator('#workspace-main search.toolbar');await expect(toolbar).toHaveCount(1);
+    expect(await toolbar.evaluate(node=>[...node.children].map(child=>child.tagName.toLowerCase()+(child.id?`#${child.id}`:'')+(child.className?`.${child.className.split(' ').filter(name=>!name.startsWith('ca-')).join('.')}`:'')))).toEqual(['label.search-field','select#category-filter','select#sort','button']);
+    await expect(toolbar.locator('#search')).toHaveAttribute('placeholder','Search prompts, tags, filenames…');
+    await expect(toolbar.locator('#sort option')).toHaveText(['Recently added','Name A–Z','Highest rated','Oldest first']);
+    await expect(toolbar.getByRole('button')).toHaveText(['Filters']);
+    await expect(page.getByRole('button',{name:'Refresh library',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('textbox',{name:'Tags',exact:true})).toHaveCount(0);
+    await expect(page.locator('.library-shelf > search.toolbar:first-child')).toHaveCount(1);
+    // Tags apply from the dialog only; Clear clears them and the toolbar category, as the concept's does.
+    await page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('Portraits');await applyTags(page,'studio');await expect(cards(page)).toHaveCount(1);
+    await toolbar.getByRole('button',{name:'Filters',exact:true}).click();
+    await expect(refine(page).locator('.field label')).toHaveText(['Tags']);await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('studio');
+    await refine(page).getByRole('button',{name:'Clear filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
+    await expect(toolbar.getByRole('button',{name:'Filters',exact:true})).toBeFocused();
+    await expect(page.getByRole('combobox',{name:'Filter by category',exact:true})).toHaveValue('');await expect(cards(page)).toHaveCount(3);
+    const sorted=page.waitForRequest(item=>new URL(item.url()).searchParams.get('sort')==='name');
+    await page.getByRole('combobox',{name:'Sort results',exact:true}).selectOption({label:'Name A–Z'});await sorted;
+});
+
+test('caption counts equal the filtered cards',async({page,request})=>{
+    const totals=async query=>{const data=await(await request.get(`/prompt_manager/library?${query}`)).json();return [data.items.length,data.items.reduce((sum,item)=>sum+item.variant_count,0),data.variant_total];};
+    await page.goto(route);await expect(cards(page)).toHaveCount(3);
+    const caption=page.locator('#workspace-main .section-caption');
+    for(const [query,act] of [['',null],['category=Portraits',()=>page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('Portraits')],['category=Portraits&tag=outdoors',()=>applyTags(page,'outdoors')]]) {
+        if(act)await act();
+        const [count,variants,total]=await totals(query);expect(variants).toBe(total);
+        await expect(cards(page)).toHaveCount(count);
+        await expect(caption.locator('span')).toHaveText([`${count} positive prompt${count===1?'':'s'} · ${variants} negative variant${variants===1?'':'s'}`,'Images are grouped by positive prompt']);
+    }
+});
+
+test('a Library-embedded media card stars its file and the star survives a reload',async({page})=>{
+    await page.goto(route);await openHistory(page);
+    await history(page).getByRole('button',{name:'All images for this positive',exact:true}).click();await expect(media(page)).toHaveCount(3);
+    const card=gallery(page).locator('article[data-image-key="0:legacy-unassigned.png"]');
+    const star=card.getByRole('button',{name:'Favorite legacy-unassigned.png',exact:true});
+    await expect(star).toHaveAttribute('aria-pressed','false');await expect(card.locator('input[type=checkbox]')).toHaveCount(0);
+    await expect(page.locator('.bulkbar, #bulkbar')).toHaveCount(0);
+    const saved=page.waitForResponse(item=>new URL(item.url()).pathname==='/prompt_manager/images/favorite'&&item.request().method()==='PUT');
+    await star.click();expect((await saved).ok()).toBe(true);
+    await expect(star).toHaveAttribute('aria-pressed','true');await expect(star).toHaveText('★');
+    await expect(page.getByText('Added to favorites.',{exact:true})).toBeVisible();
+    await page.reload();await history(page).getByRole('button',{name:'All images for this positive',exact:true}).click();
+    await expect(gallery(page).locator('article[data-image-key="0:legacy-unassigned.png"]').getByRole('button',{name:'Favorite legacy-unassigned.png',exact:true})).toHaveAttribute('aria-pressed','true');
+});
+
+test('a sort change atomically discards old row geometry and renders changed parent data',async({page,request})=>{
     await page.goto(route);await expect(cards(page)).toHaveCount(3);
     const card=cards(page).filter({has:page.getByText('Dog landscape',{exact:true})});const id=await card.getAttribute('data-prompt-id');
     await expect(await request.put(`/prompt_manager/prompts/${id}`,{data:{text:'Revised dog landscape'}})).toBeOK();
@@ -111,7 +175,8 @@ test('refresh atomically discards old row geometry and renders changed parent da
         window.requestAnimationFrame=callback=>native(time=>{if(paused)held.push(()=>callback(time));else callback(time);});
     });
     try {
-        await page.getByRole('button',{name:'Refresh library',exact:true}).click();
+        // D15: no Refresh; any filter change restarts the stream the same way.
+        await page.getByRole('combobox',{name:'Sort results',exact:true}).selectOption('oldest');
         await expect(page.locator('.library-status')).not.toHaveText('Loading prompt library…');
     } finally {await page.evaluate(()=>window.releaseLibraryFrames());}
     await expect(cards(page)).toHaveCount(3);
@@ -122,20 +187,20 @@ test('refresh atomically discards old row geometry and renders changed parent da
 
 test('returning from history restores library context and mobile content stays inside the viewport',async({page})=>{
     await page.setViewportSize({width:390,height:844});await page.goto(route);
-    await page.getByRole('combobox',{name:'Category',exact:true}).selectOption('Animals');
-    await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('Cat portrait');await expect(cards(page)).toHaveCount(1);
+    await page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('Animals');
+    await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('Cat portrait');await expect(cards(page)).toHaveCount(1);
     await openHistory(page);await selectVariant(page,0);
     await expect(saved(page).getByRole('region',{name:'Positive prompt',exact:true})).toContainText('Cat portrait');
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
     await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Cat portrait');await expect(cards(page)).toHaveCount(1);
+    await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('Cat portrait');await expect(cards(page)).toHaveCount(1);
     await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
     await expect(history(page)).toHaveCount(0);await expect(page.locator('dialog[open]')).toHaveCount(0);
 });
 
 test('empty shelf visits restore saved scroll without inventing a parent anchor',async({page})=>{
     await page.setViewportSize({width:1600,height:300});await page.goto(route);
-    await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('No matching saved positive');
+    await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('No matching saved positive');
     await expect(cards(page)).toHaveCount(0);await expect(page.locator('.library-status')).toContainText('No matching prompts.');
     await page.evaluate(()=>scrollTo(0,document.documentElement.scrollHeight));
     await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(0);
@@ -143,17 +208,17 @@ test('empty shelf visits restore saved scroll without inventing a parent anchor'
     await page.getByRole('navigation', { name: 'Tools and system', exact: true }).getByRole('link', { name: 'Overview', exact: true }).evaluate(node=>node.click());
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Prompt library(?:\s*[\d,]+)?$/}).evaluate(node=>node.click());
-    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('No matching saved positive');
+    await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('No matching saved positive');
     await expect(cards(page)).toHaveCount(0);
     await expect.poll(()=>page.evaluate(expected=>Math.abs(scrollY-expected),position)).toBeLessThanOrEqual(1);
-    const search=page.getByRole('searchbox',{name:'Search prompts',exact:true});await search.focus();await search.fill('Dog landscape');
+    const search=page.getByRole('searchbox',{name:'Search workspace',exact:true});await search.focus();await search.fill('Dog landscape');
     await expect(cards(page)).toHaveCount(1);await expect(search).toBeFocused();
-    await page.evaluate(()=>scrollTo(0,0));await page.getByRole('button',{name:'Refresh library',exact:true}).click();await expect(cards(page)).toHaveCount(1);
+    await page.evaluate(()=>scrollTo(0,0));await page.getByRole('combobox',{name:'Sort results',exact:true}).selectOption('oldest');await expect(cards(page)).toHaveCount(1);
     expect(await page.evaluate(()=>scrollY)).toBe(0);
     const anchor=await firstVisibleParent(page);expect(anchor).not.toBeNull();
     await cards(page).getByRole('link',{name:'Explore history',exact:true}).evaluate(node=>node.click());await expect(history(page)).toBeVisible();
     await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-    await retainedParent(page,anchor);await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Dog landscape');
+    await retainedParent(page,anchor);await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('Dog landscape');
 });
 
 test('history detail failures retry and returning to the list ignores late detail responses',async({page})=>{
@@ -319,15 +384,14 @@ test('row measurement preserves anchor after width invalidation and append',asyn
     try {
         await page.setViewportSize({width:1600,height:1100});await page.goto(route);
         const more=page.getByRole('button',{name:'Load more prompts',exact:true});
-        for(const count of [40,80,120]) {await expect(page.locator('.library-caption')).toContainText(`${count} of 203`);await more.evaluate(node=>node.click());}
-        await expect(page.locator('.library-caption')).toContainText('160 of 203');
+        await loadShelfPages(page,more,3);
         await page.evaluate(()=>scrollTo(0,document.querySelector('.library-grid').getBoundingClientRect().top+scrollY+40*486+25));
         await settleLibrary(page);const anchor=await firstVisibleParent(page);expect(anchor).not.toBeNull();
         const pinned=cards(page).first();const pinnedId=await pinned.getAttribute('data-prompt-id');await pinned.locator('a').first().evaluate(node=>node.focus({preventScroll:true}));
         await page.evaluate(()=>window.libraryObservation.release());await settleLibrary(page);await retainedParent(page,anchor);
         expect(await cards(page).count()).toBeLessThan(80);await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
         const after=await firstVisibleParent(page);release();await page.evaluate(async()=>{await Promise.all([...document.querySelectorAll('.library-card img')].map(image=>image.decode().catch(()=>{})));});await settleLibrary(page);await retainedParent(page,after);
-        await more.evaluate(node=>node.click());await expect(page.locator('.library-caption')).toContainText('200 of 203');await settleLibrary(page);await retainedParent(page,after);
+        {const response=page.waitForResponse(item=>{const url=new URL(item.url());return url.pathname==='/prompt_manager/library'&&url.searchParams.has('cursor');});await more.evaluate(node=>node.click());await response;await expect(more).toHaveAttribute('aria-disabled','false');}await settleLibrary(page);await retainedParent(page,after);
         await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
         await page.setViewportSize({width:390,height:844});await settleLibrary(page);await retainedParent(page,after);
         await expect(page.locator(`article[data-prompt-id="${pinnedId}"] a`).first()).toBeFocused();
@@ -349,8 +413,7 @@ test('queued row growth preserves newer native wheel movement and correction eve
     await observeLibrary(page);await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
     await page.setViewportSize({width:1600,height:1100});await page.goto(route);
     const more=page.getByRole('button',{name:'Load more prompts',exact:true});
-    for(const count of [40,80,120]) {await expect(page.locator('.library-caption')).toContainText(`${count} of 203`);await more.evaluate(node=>node.click());}
-    await expect(page.locator('.library-caption')).toContainText('160 of 203');
+    await loadShelfPages(page,more,3);
     await page.evaluate(()=>scrollTo(0,document.querySelector('.library-grid').getBoundingClientRect().top+scrollY+20*486+25));
     await settleLibrary(page);await page.mouse.move(1100,550);
     const pinned=cards(page).first(),pinnedId=await pinned.getAttribute('data-prompt-id');await pinned.locator('a').first().evaluate(node=>node.focus({preventScroll:true}));
@@ -413,8 +476,7 @@ test('unchanged row observations settle without resize feedback',async({page,req
             breakpoint=(await session.send('Debugger.setBreakpoint',{location,condition:'(window.libraryLayoutCalls++, false)'})).breakpointId;
         } else {await page.goto(route);await expect(cards(page).first()).toBeVisible();await settleLibrary(page);}
         const more=page.getByRole('button',{name:'Load more prompts',exact:true});
-        for(const count of [40,80,120]) {await expect(page.locator('.library-caption')).toContainText(`${count} of 203`);await more.evaluate(node=>node.click());}
-        await expect(page.locator('.library-caption')).toContainText('160 of 203');await settleLibrary(page);
+        await loadShelfPages(page,more,3);await settleLibrary(page);
         if(session)expect(await page.evaluate(()=>window.libraryLayoutCalls)).toBeGreaterThan(0);
         const before=await page.evaluate(()=>({stats:window.libraryObservation.stats(),calls:window.libraryLayoutCalls}));
         await page.evaluate(()=>{for(let i=0;i<12;i++){window.libraryObservation.equal();dispatchEvent(new Event('scroll'));}});await settleLibrary(page);

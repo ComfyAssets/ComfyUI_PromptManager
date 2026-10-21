@@ -24,13 +24,17 @@ async function expectLibrary(page,{tags='',category='',count}) {
     await expect(page).toHaveURL(/#\/library$/);
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Prompt library');
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
-    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('');
-    await expect(page.getByRole('textbox',{name:'Tags',exact:true})).toHaveValue(tags);
-    const select=page.getByRole('combobox',{name:'Category',exact:true});
+    await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('');
+    const select=page.getByRole('combobox',{name:'Filter by category',exact:true});
     await expect(select).toHaveValue(category);
     if(!category) await expect(select.locator('option:checked')).toHaveText('All categories');
-    await expect(page.locator('.library-caption')).toHaveText(`${count} of ${count} positive prompts · Images are grouped by positive prompt`);
+    await expect(page.locator('#workspace-main .section-caption > span').first()).toHaveText(new RegExp(`^${count} positive prompts? · \\d+ negative variants?$`));
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(count);
+    // Browse sets exactly this Tags filter, which lives in "Refine this view" (#249 D14).
+    await page.locator('#workspace-main search.toolbar').getByRole('button',{name:'Filters',exact:true}).click();
+    const refine=page.getByRole('dialog',{name:'Refine this view',exact:true});
+    await expect(refine.getByRole('textbox',{name:'Tags',exact:true})).toHaveValue(tags);
+    await refine.getByRole('button',{name:'Close dialog',exact:true}).click();await expect(refine).toHaveCount(0);
 }
 
 let manifest;
@@ -87,7 +91,7 @@ test('prompt counts equal Library Browse results',async({page})=>{
 
 test('category Browse sets only the category constraint',async({page})=>{
     await page.goto('/prompt_manager/workspace#/library');
-    const search=page.getByRole('searchbox',{name:'Search prompts',exact:true});
+    const search=page.getByRole('searchbox',{name:'Search workspace',exact:true});
     await search.fill('observatory');await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
     await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Tags & categories(?:\s*[\d,]+)?$/}).click();
     const row=categoryRow(page,'Landscapes');await expect(row.locator('p')).toHaveText('3 positive prompts');

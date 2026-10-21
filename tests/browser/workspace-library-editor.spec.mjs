@@ -698,14 +698,14 @@ test('archive hides a pair, Show archived finds it and Restore keeps it selected
 });
 
 test('filter hidden save resets shelf cursor and measured heights retaining anchor',async({page})=>{
-    await page.goto(`${workspace}#/library`);await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('Standalone');
+    await page.goto(`${workspace}#/library`);await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('Standalone');
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
     const shelfReads=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library'&&item.method()==='GET')shelfReads.push(url.searchParams);});
     await page.getByRole('button',{name:'+ New prompt',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
     await field(dialog,'Title').fill('Hidden by filter');await field(dialog,'Positive prompt').fill('Lighthouse in heavy rain');await button(dialog,'Save').click();
     await expect(page).toHaveURL(/#\/library\/\d+$/);await expect(page.locator('#workspace-main h1')).toHaveText('Hidden by filter');
     await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Standalone');
+    await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('Standalone');
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
     await expect(page.getByText('The saved prompt is hidden by the current filters.',{exact:false})).toBeVisible();
     expect(shelfReads.length).toBeGreaterThan(0);expect(shelfReads.every(params=>!params.has('cursor'))).toBe(true);

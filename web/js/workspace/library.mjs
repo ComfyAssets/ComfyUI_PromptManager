@@ -1,4 +1,4 @@
-import {createScope,createButton,createField,createSelect} from '../shared/toolkit/core.js';
+import {createScope,createButton} from '../shared/toolkit/core.js';
 import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
@@ -11,6 +11,8 @@ import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
 import {pageHeading} from './heading.mjs';
+import {mountToolbar} from './toolbar.mjs';
+import {openRefineDialog} from './workspace-dialogs.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -23,6 +25,9 @@ const selectedPairs=new Map();
 // Parent metadata a reuse did not apply, kept for an explicit Edit metadata action.
 const metadataDrafts=new Map();
 const archivedVisible=new Map();
+// The concept's three sorts first, then the Library's appended Oldest first (D14).
+const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
+const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';
 const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative variants.';
 function el(tag,text,className) {
     const node=document.createElement(tag);if(text!==undefined) node.textContent=text;if(className) node.className=className;return node;
@@ -144,15 +149,14 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         const restorable=visit?.state?visit:null;
         const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters};
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
-        const toolbar=el('search',undefined,'library-toolbar');
-        const search=el('input');search.type='search';search.placeholder='Search prompts and saved negatives…';search.value=filters.text;search.maxLength=500;
-        const category=createSelect([['','All categories']], '');category.value=filters.category;
-        const tags=el('input');tags.type='text';tags.placeholder='Comma-separated tags';tags.value=filters.tags.join(', ');tags.maxLength=2000;
-        const sort=createSelect([['newest','Recently added'],['oldest','Oldest first'],['name','Prompt A–Z'],['rating','Highest rated']], '');sort.value=filters.sort;
-        const refresh=createButton('Refresh library');
-        toolbar.append(createField('Search prompts',search,'library-search'),createField('Category',category,'library-category'),createField('Tags',tags,'library-tags'),createField('Sort',sort,'library-sort'),refresh);
+        // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
+        // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
+        const toolbarScope=createScope();
+        const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
+            value:{q:filters.text,category:filters.category,sort:filters.sort},onChange:applyToolbar,onFilters:openFilters});
         const optionsStatus=el('p','','library-options-status');optionsStatus.hidden=true;optionsStatus.setAttribute('role','alert');
-        const caption=el('p','','library-caption');caption.setAttribute('role','status');
+        // The concept caption (app.js renderLibrary a586): the filtered set's parents and their negative variants.
+        const caption=el('div',undefined,'section-caption');const captionCount=el('span');caption.append(captionCount,el('span','Images are grouped by positive prompt'));caption.hidden=true;
         const grid=el('div',undefined,'library-grid');grid.setAttribute('role','list');grid.setAttribute('aria-label','Positive prompts');
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
@@ -184,7 +188,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         }
         scope.listen(exportButton,'click',exportLibrary);
         headingDescription(main,section,'One positive. Reusable negatives. Every experiment stays connected.');
-        continuation.append(message,retry,more);section.append(toolbar,optionsStatus,exportStatus,caption,grid,continuation,legacy);main.append(section);
+        continuation.append(message,retry,more);section.append(optionsStatus,exportStatus,caption,grid,continuation,legacy);main.append(section);
         const cards=new Map(), rowNodes=new Map(), spacers=new Map(), heights=new Map(), pendingMeasurements=new Map();
         let state,frame=0,loadFrame=0,observer,optionsRequest,focusOverride=-1;
         const columns=()=>window.innerWidth>=1700?3:window.innerWidth<=700?1:2;
@@ -337,7 +341,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 } else if(retainedAnchor) {pendingAnchor=retainedAnchor;retainedAnchor=null;}
             }
             state=next;
-            caption.textContent=`${next.items.length} of ${next.total} positive prompts · Images are grouped by positive prompt`;
+            caption.hidden=next.variantTotal===null;if(next.variantTotal!==null) captionCount.textContent=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
             message.textContent=(next.error?'Prompt library could not be loaded. Retry or refresh.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
@@ -354,14 +358,29 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             optionsRequest?.abort();const request=optionsRequest=new AbortController();
             try {
                 const data=await api.get('/prompt_manager/library/options',{signal:request.signal});if(scope.signal.aborted || optionsRequest!==request) return;
-                const values=[...new Set([...data.categories,filters.category].filter(Boolean))];category.replaceChildren(new Option('All categories',''),...values.map(value=>new Option(value,value)));category.value=filters.category;optionsStatus.hidden=true;
-            } catch {if(!scope.signal.aborted && optionsRequest===request) {optionsStatus.textContent='Categories could not be loaded. Refresh library to retry.';optionsStatus.hidden=false;}}
+                toolbar.setCategories([...data.categories,filters.category]);toolbar.setValue({category:filters.category});optionsStatus.hidden=true;
+            } catch {if(!scope.signal.aborted && optionsRequest===request) {optionsStatus.textContent=CATEGORIES_FAILED;optionsStatus.hidden=false;}}
         }
         const reset=()=>{restoreScrollY=null;return stream.reset(filters);};
-        scope.listen(search,'input',scope.debounce(()=>{filters.text=search.value.trim();reset();},200));
-        scope.listen(tags,'input',scope.debounce(()=>{filters.tags=[...new Set(tags.value.split(',').map(tag=>tag.trim()).filter(Boolean))];reset();},200));
-        scope.listen(category,'change',()=>{filters.category=category.value;reset();});scope.listen(sort,'change',()=>{filters.sort=sort.value;reset();});
-        scope.listen(refresh,'click',()=>{loadCategories();reset();});scope.listen(more,'click',()=>stream.loadMore());scope.listen(retry,'click',()=>stream.loadMore());
+        /** A toolbar report; a debounced search that lands after a select already applied the same values reloads nothing. */
+        function applyToolbar(value) {
+            const next={text:value.q.trim(),category:value.category,sort:value.sort};
+            if(Object.entries(next).every(([key,item])=>filters[key]===item)) return;
+            Object.assign(filters,next);reset();
+        }
+        /** "Refine this view" with the Library's one extra filter, Tags (D14); Clear also clears the toolbar category. */
+        function openFilters(trigger) {
+            openRefineDialog({scope,trigger,fields:[{key:'tags'}],values:{tags:filters.tags.join(', ')},onApply:applyRefinement,
+                onClear:cleared=>{toolbar.setValue({category:cleared.category});applyRefinement(cleared);}});
+        }
+        function applyRefinement({tags,category=filters.category}) {
+            const next=[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
+            if(category===filters.category && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
+            filters.category=category;filters.tags=next;reset();
+        }
+        scope.listen(more,'click',()=>stream.loadMore());
+        // Retry also re-reads a category list that failed (D15: Refresh is gone).
+        scope.listen(retry,'click',()=>{if(!optionsStatus.hidden)loadCategories();stream.loadMore();});
         scope.listen(window,'scroll',()=>{reconcileScroll();schedule();});
         // Mobile viewport resizing can adjust scroll before delivering its resize event.
         scope.listen(window,'resize',()=>{pendingAnchor ||= anchor;observedScrollY=window.scrollY;schedule();});
@@ -369,7 +388,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const savedFilters={...filters,tags:[...filters.tags]},savedAnchor=pendingAnchor || anchor || captureAnchor();
             // A write while mounted makes this stream stale: keep only what still means something.
             shelfVisit=mountedGeneration!==writeGeneration?{filters:savedFilters,anchor:savedAnchor}:state?{filters:savedFilters,state,scrollY:window.scrollY,layout:{inlineSize,columns:columnCount,heights:[...heights],anchor:savedAnchor}}:null;
-            stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
+            toolbarScope.dispose();stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
         loadCategories();if(restorable) {render(stream.state);if(restorable.state.loading || restorable.state.error)stream.loadMore();} else reset();
     }
 

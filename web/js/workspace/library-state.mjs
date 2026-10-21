@@ -14,15 +14,16 @@ function parameters(filters,limit) {
     if(!['newest','oldest','name','rating'].includes(sort)) throw new TypeError('Invalid library sort');
     query.set('sort',sort);return query;
 }
+// `variant_total` is the filtered parents' active negative variants (the concept caption's "M negative variants").
 function validatePage(page,cursor) {
-    if(!page || !Array.isArray(page.items) || page.items.some(item=>!parent(item)) || !Number.isSafeInteger(page.total) || page.total<0 || typeof page.has_more!=='boolean' || !(page.next_cursor===null || (typeof page.next_cursor==='string' && page.next_cursor.length)) || page.has_more!==(page.next_cursor!==null) || (page.has_more && cursor===page.next_cursor)) throw new TypeError('Invalid library page');
+    if(!page || !Array.isArray(page.items) || page.items.some(item=>!parent(item)) || !Number.isSafeInteger(page.total) || page.total<0 || !Number.isSafeInteger(page.variant_total) || page.variant_total<0 || typeof page.has_more!=='boolean' || !(page.next_cursor===null || (typeof page.next_cursor==='string' && page.next_cursor.length)) || page.has_more!==(page.next_cursor!==null) || (page.has_more && cursor===page.next_cursor)) throw new TypeError('Invalid library page');
 }
 export function createLibraryStream({api,onChange=()=>{},restore}) {
-    let state=Object.freeze({items:Object.freeze([]),total:0,cursor:null,hasMore:true,loading:false,error:null});
+    let state=Object.freeze({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null});
     let query=parameters({},40),request,disposed=false,seen=new Set();
     if(restore) {
         query=parameters(restore.filters,40);const saved=restore.state;
-        validatePage({items:saved.items,total:saved.total,next_cursor:saved.cursor,has_more:saved.cursor!==null},null);
+        validatePage({items:saved.items,total:saved.total,variant_total:saved.variantTotal,next_cursor:saved.cursor,has_more:saved.cursor!==null},null);
         if(new Set(saved.items.map(item=>item.id)).size!==saved.items.length) throw new TypeError('Duplicate restored parent');
         state=Object.freeze({...saved,items:Object.freeze(saved.items.map(item=>Object.freeze({...item}))),loading:false,error:null});seen=new Set(state.items.map(item=>item.id));
     }
@@ -37,11 +38,11 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
             validatePage(page,cursor);const incoming=[];const added=new Set();
             for(const item of page.items) if(!seen.has(item.id) && !added.has(item.id)) {added.add(item.id);incoming.push(Object.freeze({...item}));}
             for(const value of added) seen.add(value);
-            request=null;emit({items:incoming.length?Object.freeze([...state.items,...incoming]):state.items,total:page.total,cursor:page.next_cursor,hasMore:page.has_more,loading:false,error:null});return incoming.length;
+            request=null;emit({items:incoming.length?Object.freeze([...state.items,...incoming]):state.items,total:page.total,variantTotal:page.variant_total,cursor:page.next_cursor,hasMore:page.has_more,loading:false,error:null});return incoming.length;
         } catch(error) {if(!disposed && current===request) {request=null;emit({loading:false,error});}return 0;}
     }
     return {get state(){return state;},loadMore,async reset(filters={}) {
-        if(disposed) return 0;const next=parameters(filters,40);request?.abort();request=null;query=next;seen=new Set();emit({items:Object.freeze([]),total:0,cursor:null,hasMore:true,loading:false,error:null});return loadMore();
+        if(disposed) return 0;const next=parameters(filters,40);request?.abort();request=null;query=next;seen=new Set();emit({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null});return loadMore();
     },dispose(){disposed=true;request?.abort();request=null;}};
 }
 /**

@@ -84,10 +84,16 @@ let lastVisit = null;
 // in flight and the page that receives each answer live here, beside the saved visit.
 const favoritePending = new Set();
 let favoriteTarget = null;
-/** Give a favorite state to the mounted Images page, or to the saved visit while none is mounted. */
+// Library-embedded galleries showing media cards (#249 PR E); keyed like the Images page, so each repaints its own copy.
+const embeddedFavoriteTargets = new Set();
+/**
+ * Give a favorite state to the mounted Images page, or to the saved visit while none is mounted, and to every mounted
+ * Library-embedded gallery.
+ */
 function deliverFavorite(key, favorite) {
     if (favoriteTarget) favoriteTarget(key, favorite);
     else if (lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
+    for (const target of embeddedFavoriteTargets) target(key, favorite);
 }
 
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage} = {}) {
@@ -278,8 +284,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const open = createButton('', 'image-open');
         open.setAttribute('aria-label', `Open ${image.filename}`);
         open.append(mediaElement(image, true));
-        // D8: the selection checkbox, then D7: the star, wherever the listing reports favorites (neither on
-        // Library-embedded media, which has no selection bar).
+        // D8: the selection checkbox (Images only: Library-embedded media has no selection bar), then D7: the star,
+        // wherever the listing reports favorites (Images and Library-embedded media).
         const overlays = el('div', undefined, 'image-overlays');
         if (bar) {
             const label = el('label'), box = el('input');
@@ -322,10 +328,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const button = rendered.get(key)?.querySelector('.star-button');
         if (button) paintStar(button, favorite, favoritePending.has(key));
     }
-    // Only the Images page receives favorite answers; Library-embedded media has no star (#249 D7).
+    // The Images page and every Library-embedded gallery receive favorite answers (#249 D7, PR E).
     if (!embedded) {
         favoriteTarget = setFavorite;
         scope.cleanup(() => { if (favoriteTarget === setFavorite) favoriteTarget = null; });
+    } else {
+        embeddedFavoriteTargets.add(setFavorite);
+        scope.cleanup(() => embeddedFavoriteTargets.delete(setFavorite));
     }
     /** Optimistic toggle: the star changes at once and returns to its previous state if the store refuses. */
     async function toggleFavorite(image) {
