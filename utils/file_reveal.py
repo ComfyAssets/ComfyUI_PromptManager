@@ -1,6 +1,7 @@
 """Show one gallery file in this computer's file manager (TESTING.md D38).
 
-The route that calls this is local-only (``is_local_request``) and hands in a
+The route that calls this is local-only (``is_local_request``), single-flight
+(``RevealGate``) and hands in a
 path it has already resolved inside a gallery root. Windows goes through the
 shell API (no command line exists to parse); macOS and Linux openers run as an
 argument list with an absolute executable, no shell and no inherited streams,
@@ -16,14 +17,32 @@ import shutil
 import subprocess  # nosec B404
 import sys
 import threading
+import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
 
 # A local reverse proxy makes every client look like loopback, so a request
-# that carries any of these counts as remote.
-PROXY_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host")
+# that carries any forwarding-style header counts as remote: these names, and
+# every X-Forwarded-*, X-Original-* and *-Client-IP header.
+FORWARDING_HEADERS = frozenset(
+    (
+        "forwarded",
+        "via",
+        "x-real-ip",
+        "cf-connecting-ip",
+        "true-client-ip",
+        "x-client-ip",
+        "x-cluster-client-ip",
+        "fastly-client-ip",
+    )
+)
+FORWARDING_PREFIXES = ("x-forwarded-", "x-original-")
+FORWARDING_SUFFIXES = ("-client-ip",)
+DEFAULT_PORTS = {"http": 80, "https": 443}
+# One reveal at a time per process, then a pause before the next.
+REVEAL_COOLDOWN = 1.0
 # dbus-send waits this long for the FileManager1 reply, so its exit status
 # says whether a file manager really took the request.
 DBUS_REPLY_TIMEOUT_MS = 2000
@@ -88,43 +107,116 @@ def _loopback_address(value: str | None) -> bool:
     return (mapped or address).is_loopback
 
 
-def _loopback_host(host: str | None) -> bool:
-    """True for a Host or Origin host naming this computer.
+def _loopback_host(host: str) -> bool:
+    """True for a Host name naming this computer.
 
     Rejects every other name, so a DNS-rebinding page whose name now resolves
     to 127.0.0.1 still reads as remote.
     """
-    if not host:
-        return False
     host = host.rstrip(".").lower()
     if host == "localhost" or host.endswith(".localhost"):
         return True
     return _loopback_address(host.strip("[]"))
 
 
-def _authority_host(authority: str) -> str | None:
+def _authority(authority: str) -> tuple[str, int | None] | None:
+    """``(host, port)`` of a Host value, or None when it does not parse."""
     try:
-        return urlsplit(f"//{authority}").hostname
+        parts = urlsplit(f"//{authority}")
+        host, port = parts.hostname, parts.port
     except ValueError:
         return None
+    return (host, port) if host else None
 
 
-def is_local_request(remote: str | None, headers: Mapping) -> bool:
-    """True only for a direct loopback client addressing this computer by a
-    loopback name, with no proxy header and no foreign Origin."""
-    if any(name in headers for name in PROXY_HEADERS):
+def _forwarded(headers: Mapping) -> bool:
+    for name in headers.keys():
+        name = name.lower()
+        if (
+            name in FORWARDING_HEADERS
+            or name.startswith(FORWARDING_PREFIXES)
+            or name.endswith(FORWARDING_SUFFIXES)
+        ):
+            return True
+    return False
+
+
+def _same_origin(origin: str, scheme: str, host: tuple[str, int | None]) -> bool:
+    """True when *origin* is exactly this request's scheme://host:port."""
+    default = DEFAULT_PORTS.get(scheme)
+    if default is None:
+        return False
+    try:
+        parts = urlsplit(origin)
+        origin_host, origin_port = parts.hostname, parts.port
+    except ValueError:
+        return False
+    if (
+        parts.scheme != scheme
+        or not origin_host
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path
+        or parts.query
+        or parts.fragment
+    ):
+        return False
+    host_name, host_port = host
+    return (origin_host.rstrip("."), origin_port or default) == (
+        host_name.rstrip("."),
+        host_port or default,
+    )
+
+
+def is_local_request(remote: str | None, headers: Mapping, scheme="http") -> bool:
+    """True only for a same-origin browser request from this computer.
+
+    That is: no forwarding-style header, a loopback client, a loopback name
+    in Host, an ``Origin`` that is exactly this request's scheme://host:port
+    (browsers send it on every fetch POST, so a missing one is refused), and
+    ``Sec-Fetch-Site: same-origin`` whenever that header is sent.
+    """
+    if _forwarded(headers):
         return False
     if not _loopback_address(remote):
         return False
-    if not _loopback_host(_authority_host(headers.get("Host", ""))):
+    host = _authority(headers.get("Host", ""))
+    if host is None or not _loopback_host(host[0]):
         return False
     origin = headers.get("Origin")
-    if origin is None:
-        return True
-    try:
-        return _loopback_host(urlsplit(origin).hostname)
-    except ValueError:
+    if not origin or not _same_origin(origin, scheme, host):
         return False
+    site = headers.get("Sec-Fetch-Site")
+    return site is None or site == "same-origin"
+
+
+class RevealGate:
+    """Single flight plus a cooldown: at most one reveal runs per process,
+    and the next may start only *cooldown* seconds after it finished."""
+
+    def __init__(self, cooldown: float = REVEAL_COOLDOWN, clock=time.monotonic):
+        self.cooldown = cooldown
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._busy = False
+        self._finished: float | None = None
+
+    def try_enter(self) -> bool:
+        with self._lock:
+            if self._busy:
+                return False
+            if (
+                self._finished is not None
+                and self._clock() - self._finished < self.cooldown
+            ):
+                return False
+            self._busy = True
+            return True
+
+    def leave(self) -> None:
+        with self._lock:
+            self._busy = False
+            self._finished = self._clock()
 
 
 def _executable(name: str) -> str | None:

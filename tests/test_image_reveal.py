@@ -5,6 +5,8 @@ No test launches a file manager: ``subprocess.Popen``, ``sys.platform`` and
 """
 
 import ctypes
+import json
+import logging
 import os
 import subprocess
 import sys
@@ -30,53 +32,132 @@ from utils.file_reveal import (
 )
 
 REVEAL = "/prompt_manager/images/reveal"
-PROXY_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host")
+PROXY_HEADERS = (
+    "Forwarded",
+    "Via",
+    "X-Forwarded-For",
+    "X-Forwarded-Host",
+    "X-Forwarded-Proto",
+    "X-Forwarded-Port",
+    "X-Forwarded-Server",
+    "X-Real-IP",
+    "X-Original-Forwarded-For",
+    "X-Original-Host",
+    "CF-Connecting-IP",
+    "True-Client-IP",
+    "X-Client-IP",
+    "X-Cluster-Client-IP",
+    "Fastly-Client-IP",
+)
+ORIGIN = "http://127.0.0.1:8188"
 
 
 def headers(**values):
-    base = {"Host": "127.0.0.1:8188"}
+    base = {"Host": "127.0.0.1:8188", "Origin": ORIGIN}
     base.update({key.replace("_", "-"): value for key, value in values.items()})
-    return CIMultiDict(base)
+    return CIMultiDict({key: value for key, value in base.items() if value is not None})
 
 
 class TestIsLocalRequest(unittest.TestCase):
-    def test_loopback_clients_by_loopback_name_are_local(self):
-        for remote, host in (
-            ("127.0.0.1", "127.0.0.1:8188"),
-            ("127.8.9.10", "localhost:8188"),
-            ("::1", "[::1]:8188"),
-            ("::ffff:127.0.0.1", "comfy.localhost"),
+    def test_same_origin_loopback_clients_by_loopback_name_are_local(self):
+        for remote, host, origin in (
+            ("127.0.0.1", "127.0.0.1:8188", ORIGIN),
+            ("127.8.9.10", "localhost:8188", "http://localhost:8188"),
+            ("::1", "[::1]:8188", "http://[::1]:8188"),
+            ("::ffff:127.0.0.1", "comfy.localhost", "http://comfy.localhost"),
+            ("127.0.0.1", "LOCALHOST:8188", "http://localhost:8188"),
+            ("127.0.0.1", "localhost", "http://localhost:80"),
         ):
             with self.subTest(remote=remote, host=host):
-                self.assertTrue(is_local_request(remote, headers(Host=host)))
+                self.assertTrue(
+                    is_local_request(remote, headers(Host=host, Origin=origin))
+                )
+        self.assertTrue(
+            is_local_request(
+                "127.0.0.1",
+                headers(Host="localhost", Origin="https://localhost:443"),
+                "https",
+            )
+        )
 
     def test_non_loopback_or_unknown_remote_is_not_local(self):
         for remote in ("192.168.1.5", "10.0.0.1", "::2", "fe80::1%eth0", "", None):
             with self.subTest(remote=remote):
                 self.assertFalse(is_local_request(remote, headers()))
 
-    def test_any_proxy_header_makes_loopback_remote(self):
-        for name in PROXY_HEADERS:
+    def test_any_forwarding_header_makes_loopback_remote(self):
+        for name in (*PROXY_HEADERS, "X-Forwarded-Anything", "X-Original-URI"):
             for spelling in (name, name.lower()):
                 with self.subTest(header=spelling):
                     request_headers = headers()
                     request_headers[spelling] = "127.0.0.1"
                     self.assertFalse(is_local_request("127.0.0.1", request_headers))
 
-    def test_foreign_host_or_origin_is_not_local(self):
-        # A DNS-rebinding page reaches 127.0.0.1 under its own name.
-        for host in ("evil.example:8188", "", "[bad"):
-            with self.subTest(host=host):
-                self.assertFalse(is_local_request("127.0.0.1", headers(Host=host)))
-        self.assertFalse(
-            is_local_request("127.0.0.1", CIMultiDict({"Origin": "http://localhost"}))
-        )
-        for origin in ("http://evil.example:8188", "null", "http://[bad"):
+    def test_origin_is_required_and_must_be_the_request_origin(self):
+        # A header-less proxy or curl leaves Origin out; a page on another
+        # loopback port or scheme sends its own (security review M1, L2).
+        self.assertFalse(is_local_request("127.0.0.1", headers(Origin=None)))
+        for origin in (
+            "",
+            "null",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1",
+            "https://127.0.0.1:8188",
+            "http://localhost:8188",
+            "http://foo.localhost:8188",
+            "http://evil.example:8188",
+            "http://[bad",
+            "http://127.0.0.1:8188/path",
+            "http://user@127.0.0.1:8188",
+            "file://127.0.0.1:8188",
+        ):
             with self.subTest(origin=origin):
                 self.assertFalse(is_local_request("127.0.0.1", headers(Origin=origin)))
+        self.assertFalse(is_local_request("127.0.0.1", headers(Origin=ORIGIN), "https"))
+
+    def test_sec_fetch_site_must_be_same_origin_when_sent(self):
         self.assertTrue(
-            is_local_request("127.0.0.1", headers(Origin="http://127.0.0.1:8188"))
+            is_local_request("127.0.0.1", headers(Sec_Fetch_Site="same-origin"))
         )
+        for site in ("same-site", "cross-site", "none", ""):
+            with self.subTest(site=site):
+                self.assertFalse(
+                    is_local_request("127.0.0.1", headers(Sec_Fetch_Site=site))
+                )
+
+    def test_foreign_host_is_not_local(self):
+        # A DNS-rebinding page reaches 127.0.0.1 under its own name.
+        for host in ("evil.example:8188", "", "[bad", "127.0.0.1:bad"):
+            with self.subTest(host=host):
+                self.assertFalse(
+                    is_local_request(
+                        "127.0.0.1", headers(Host=host, Origin=f"http://{host}")
+                    )
+                )
+        self.assertFalse(is_local_request("127.0.0.1", CIMultiDict({"Origin": ORIGIN})))
+
+
+class TestRevealGate(unittest.TestCase):
+    def test_one_reveal_at_a_time_then_a_cooldown(self):
+        now = [100.0]
+        gate = file_reveal.RevealGate(cooldown=1.0, clock=lambda: now[0])
+        self.assertTrue(gate.try_enter())
+        self.assertFalse(gate.try_enter())
+        now[0] += 5
+        self.assertFalse(gate.try_enter())
+        gate.leave()
+        now[0] += 0.5
+        self.assertFalse(gate.try_enter())
+        now[0] += 0.5
+        self.assertTrue(gate.try_enter())
+
+    def test_zero_cooldown_only_blocks_while_busy(self):
+        gate = file_reveal.RevealGate(cooldown=0)
+        self.assertTrue(gate.try_enter())
+        self.assertFalse(gate.try_enter())
+        gate.leave()
+        self.assertTrue(gate.try_enter())
 
 
 class TestRevealInFileManager(unittest.TestCase):
@@ -335,6 +416,15 @@ class TestRevealInFileManager(unittest.TestCase):
                 shell.assert_not_called()
         self.popen.assert_not_called()
 
+    def test_a_path_on_another_drive_is_not_contained(self):
+        # Windows: commonpath raises ValueError across drives.
+        with (
+            patch.object(file_reveal.os.path, "commonpath", side_effect=ValueError),
+            self.assertRaises(file_reveal.RevealTargetChanged),
+        ):
+            self.reveal()
+        self.popen.assert_not_called()
+
 
 class TestReaping(unittest.TestCase):
     def test_reap_waits_on_a_daemon_thread(self):
@@ -472,14 +562,21 @@ class TestRevealRoute(ImageAPITestCase):
             self.roots.append(root)
 
         self.api._reveal_opener = opener
+        self.api._reveal_gate = file_reveal.RevealGate(cooldown=0)
         return app
+
+    def origin(self):
+        return str(self.client.make_url("/").origin())
 
     def scope(self, index=0):
         roots = self.api._get_all_output_dirs()
         return self.api._gallery_root_scope(roots[index], index)
 
     async def post(self, body, **request_headers):
-        response = await self.client.post(REVEAL, json=body, headers=request_headers)
+        # Like the workspace's fetch: a same-origin JSON POST.
+        sent = {"Origin": self.origin(), **request_headers}
+        sent = {key: value for key, value in sent.items() if value is not None}
+        response = await self.client.post(REVEAL, json=body, headers=sent)
         return response.status, await response.json()
 
     def body(self, path="sub/a.png", **changes):
@@ -523,6 +620,105 @@ class TestRevealRoute(ImageAPITestCase):
         self.assertEqual((status, data["code"]), (403, "not-local"))
         self.assertEqual(self.opened, [])
 
+    async def test_missing_or_foreign_origin_is_not_local(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        port = self.client.make_url("/").port
+        for origin in (None, f"http://127.0.0.1:{port + 1}", "null"):
+            with self.subTest(origin=origin):
+                status, data = await self.post(self.body(), Origin=origin)
+                self.assertEqual((status, data["code"]), (403, "not-local"))
+        status, data = await self.post(self.body(), **{"Sec-Fetch-Site": "same-site"})
+        self.assertEqual((status, data["code"]), (403, "not-local"))
+        status, _ = await self.post(self.body(), **{"Sec-Fetch-Site": "same-origin"})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.opened), 1)
+
+    async def test_only_json_bodies_are_accepted(self):
+        # text/plain would be a CORS "simple" request with no preflight (L2).
+        make_png(self.output_dir / "sub" / "a.png")
+        body = json.dumps(self.body())
+        for content_type in ("text/plain", "application/x-www-form-urlencoded", None):
+            with self.subTest(content_type=content_type):
+                sent = {"Origin": self.origin()}
+                if content_type:
+                    sent["Content-Type"] = content_type
+                response = await self.client.post(
+                    REVEAL, data=body.encode(), headers=sent
+                )
+                self.assertEqual(response.status, 415)
+                data = await response.json()
+                self.assertEqual(
+                    (data["success"], data["code"]), (False, "unsupported-media-type")
+                )
+        self.assertEqual(self.opened, [])
+
+    async def test_a_reveal_in_progress_or_cooling_down_is_busy(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        gate = self.api._reveal_gate
+        self.assertTrue(gate.try_enter())
+        status, data = await self.post(self.body())
+        self.assertEqual(status, 429)
+        self.assertEqual(data, {**data, "success": False, "code": "busy"})
+        gate.leave()
+        now = [50.0]
+        self.api._reveal_gate = file_reveal.RevealGate(
+            cooldown=1.0, clock=lambda: now[0]
+        )
+        statuses = [(await self.post(self.body()))[0] for _ in range(2)]
+        now[0] += 1.0
+        statuses.append((await self.post(self.body()))[0])
+        self.assertEqual(statuses, [200, 429, 200])
+        self.assertEqual(len(self.opened), 2)
+
+    async def test_a_failed_reveal_releases_the_gate(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        self.outcome = OSError("cannot start")
+        status, _ = await self.post(self.body())
+        self.assertEqual(status, 500)
+        self.outcome = None
+        status, _ = await self.post(self.body())
+        self.assertEqual(status, 200)
+
+    async def test_default_gate_is_one_per_process_with_a_cooldown(self):
+        gate = type(self.api)._reveal_gate
+        self.assertIsInstance(gate, file_reveal.RevealGate)
+        self.assertEqual(gate.cooldown, file_reveal.REVEAL_COOLDOWN)
+        self.assertGreaterEqual(file_reveal.REVEAL_COOLDOWN, 1.0)
+
+    async def test_resolution_errors_are_404_and_never_log_the_path(self):
+        # ENAMETOOLONG and friends must not escape as a non-JSON 500 (L3).
+        make_png(self.output_dir / "sub" / "a.png")
+        secret = "sub/" + "n" * 300 + "/a.png"
+        with self.assertLogs(self.api.logger, level="DEBUG") as logs:
+            self.api.logger.debug("start")
+            status, data = await self.post(self.body(path=secret))
+            self.assertEqual(status, 404)
+            self.assertEqual(data, {"success": False, "error": "Image file not found"})
+            with patch.object(
+                type(self.api),
+                "_reveal_path",
+                staticmethod(MagicMock(side_effect=OSError(36, "too long", secret))),
+            ):
+                status, data = await self.post(self.body(path=secret))
+        self.assertEqual(status, 404)
+        self.assertIs(data["success"], False)
+        for record in logs.records:
+            if record.levelno >= logging.WARNING:
+                self.assertNotIn("n" * 300, record.getMessage())
+        self.assertEqual(self.opened, [])
+
+    async def test_start_failure_never_logs_the_path_at_error_level(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        self.outcome = OSError(2, "No such file", str(self.output_dir / "sub"))
+        with self.assertLogs(self.api.logger, level="DEBUG") as logs:
+            status, _ = await self.post(self.body())
+        self.assertEqual(status, 500)
+        errors = [r for r in logs.records if r.levelno >= logging.ERROR]
+        self.assertTrue(errors)
+        for record in errors:
+            self.assertNotIn(str(self.output_dir), record.getMessage())
+            self.assertIsNone(record.exc_info)
+
     async def test_changed_or_missing_scope_is_rejected(self):
         make_png(self.output_dir / "sub" / "a.png")
         status, data = await self.post(self.body(root_scope="0" * 64))
@@ -554,7 +750,11 @@ class TestRevealRoute(ImageAPITestCase):
             with self.subTest(changes=changes):
                 status, data = await self.post(self.body(**changes))
                 self.assertEqual(status, 400, data)
-        response = await self.client.post(REVEAL, data="[1]")
+        response = await self.client.post(
+            REVEAL,
+            data="[1]",
+            headers={"Origin": self.origin(), "Content-Type": "application/json"},
+        )
         self.assertEqual(response.status, 400)
         self.assertEqual(self.opened, [])
 

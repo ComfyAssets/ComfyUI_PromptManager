@@ -86,7 +86,7 @@ def register_reveal_stub(routes, api, root: Path):
     The API's opener records the resolved path; ``POST /__test__/reveal``
     sets the next outcome and ``GET /__test__/reveal`` lists the opened paths.
     """
-    from utils.file_reveal import OpenerUnavailable
+    from utils.file_reveal import OpenerUnavailable, RevealGate
 
     state = {"outcome": "opened", "opened": []}
 
@@ -98,6 +98,8 @@ def register_reveal_stub(routes, api, root: Path):
         state["opened"].append(Path(path).relative_to(root.resolve()).as_posix())
 
     api._reveal_opener = opener
+    # Each click gets an answer here; the cooldown is a unit-tested default.
+    api._reveal_gate = RevealGate(cooldown=0)
 
     @routes.post("/__test__/reveal")
     async def set_reveal_outcome(request: web.Request) -> web.Response:

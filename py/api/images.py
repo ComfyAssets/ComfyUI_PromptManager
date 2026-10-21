@@ -40,6 +40,7 @@ try:
     from ...utils.prompt_inspector import MetadataReadError, read_inspection_file
     from ...utils.file_reveal import (
         OpenerUnavailable,
+        RevealGate,
         RevealTargetChanged,
         is_local_request,
         reveal_executor,
@@ -55,6 +56,7 @@ except ImportError:
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.file_reveal import (
         OpenerUnavailable,
+        RevealGate,
         RevealTargetChanged,
         is_local_request,
         reveal_executor,
@@ -2222,6 +2224,8 @@ class ImageRoutesMixin:
 
     # Swapped by tests and the disposable browser server; never a shell.
     _reveal_opener = staticmethod(reveal_in_file_manager)
+    # One per process (a class attribute): single flight plus a cooldown.
+    _reveal_gate = RevealGate()
 
     @staticmethod
     def _reveal_path(relative: str, root: Path) -> Path | None:
@@ -2235,11 +2239,22 @@ class ImageRoutesMixin:
     async def reveal_image(self, request):
         """POST ``{root_index, root_scope, path}``: show the file in its folder.
 
-        Local-only (no proxy header, loopback client and Host): the browser
-        must run on the computer whose file manager opens.
+        Local-only (a same-origin browser request from a loopback client, no
+        forwarding header) and JSON-only: the browser must run on the
+        computer whose file manager opens. One reveal at a time (429 busy).
         """
-        if not is_local_request(request.remote, request.headers):
+        if not is_local_request(request.remote, request.headers, request.scheme):
             return _not_local()
+        if request.content_type != "application/json":
+            # A non-JSON POST is a CORS "simple" request with no preflight.
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "unsupported-media-type",
+                    "error": "Send the request as application/json.",
+                },
+                status=415,
+            )
         data, error = await _json_body_or_error(request)
         if error is not None:
             return error
@@ -2256,7 +2271,31 @@ class ImageRoutesMixin:
         root = roots[index]
         if Path(relative).suffix.lower() not in SERVABLE_EXTENSIONS:
             return _forbidden("Only media files can be shown")
-        path = await self._run_in_executor(self._reveal_path, relative, root)
+        gate = self._reveal_gate
+        if not gate.try_enter():
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "busy",
+                    "error": "The folder is already opening.",
+                },
+                status=429,
+            )
+        try:
+            return await self._reveal(relative, root)
+        finally:
+            gate.leave()
+
+    async def _reveal(self, relative: str, root: Path):
+        """Resolve and open, inside the reveal gate."""
+        try:
+            path = await self._run_in_executor(self._reveal_path, relative, root)
+        except (OSError, ValueError) as exc:
+            # ENAMETOOLONG and the like: the client's path is not logged.
+            self.logger.debug(
+                "Show in folder could not resolve: %s", type(exc).__name__
+            )
+            return _reveal_not_found()
         if path is None:
             return _reveal_not_found()
         try:
@@ -2274,8 +2313,11 @@ class ImageRoutesMixin:
                 },
                 status=501,
             )
-        except Exception:
-            self.logger.exception("Show in folder failed")
+        except Exception as exc:
+            # The exception text can hold the path: only its type at error
+            # level, the traceback at debug.
+            self.logger.error("Show in folder failed: %s", type(exc).__name__)
+            self.logger.debug("Show in folder failure", exc_info=True)
             return web.json_response(
                 {"success": False, "error": "The folder could not be opened."},
                 status=500,
