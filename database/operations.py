@@ -12,6 +12,7 @@ from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations, titled
 from .image_favorites import ImageFavoriteOperations
+from .saved_views import SavedViewOperations
 from .library_commands import LibraryCommandOperations
 from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
@@ -306,6 +307,7 @@ class PromptDatabase(
     ExecutionOutputOperations,
     HistoryReadOperations,
     ImageFavoriteOperations,
+    SavedViewOperations,
 ):
     """Database operations class for managing prompts."""
 
