@@ -649,6 +649,18 @@ Recorded shell deviations:
   place-dependent top margin; `workspace-activity.spec.mjs` covers the Scope value and
   the request both ways; `tests/test_scan_scope.py` covers the skip, the re-read of
   unresolved files, "all", the legacy route, the 400 and Windows case folding.
+- **D59** (job report and log, Activity-2 Task 5): the job view's "Download report" is
+  enabled. It fetches `GET /prompt_manager/jobs/<id>/report` through the api-client URL
+  (so a proxy mount works) and saves a JSON attachment named
+  `prompt-manager-<kind>-<YYYYMMDD-HHMM>.json` (server local time), then toasts "Job
+  report downloaded." (or "The report could not be downloaded. Try again."). The report
+  holds the summary, every counter, each outcome group's exact `count`, its listed
+  `rows` (at most 200) and a `truncated` flag, the scope and the log; rows and log lines
+  carry root-relative paths only, never an absolute path (an unknown id is a 404).
+  The scan log opens at its newest line and follows new lines only while the reader is
+  at the bottom; a reader who scrolled up keeps the position.
+  `test_report_is_attachment_without_absolute_paths` and the browser tests `download
+  report saves the job JSON` and `log keeps the reader's scroll position` cover it.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
   library.", and the title has no " concept" suffix. Save view's dialog action reads

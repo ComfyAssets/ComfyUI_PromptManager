@@ -2094,6 +2094,72 @@ class TestActivityJobs(AdminAPITestCase):
             (legacy["processed"], legacy["found"], legacy["failed"]), (6, 4, 1)
         )
 
+    async def test_report_is_attachment_without_absolute_paths(self):
+        """Task 5: the report downloads as JSON, whole and without server paths."""
+        import re
+
+        from py.api.jobs import MAX_OUTCOME_ROWS
+
+        async def runner(job):
+            absolute = f"{self.tmpdir}/output/deep/abs.png"
+            job.record(
+                "added",
+                {"path": absolute, "root": "output", "root_index": 0, "detail": "ok"},
+                f"+ {absolute} · ok",
+            )
+            for index in range(MAX_OUTCOME_ROWS + 5):
+                job.record(
+                    "known",
+                    {"path": f"k/{index}.png", "root": "output", "detail": "x"},
+                    f"= k/{index}.png",
+                )
+            job.update(processed=MAX_OUTCOME_ROWS + 6, total=MAX_OUTCOME_ROWS + 6)
+
+        job = self.api._jobs.start(
+            "scan",
+            "Scan for metadata",
+            record_changing=True,
+            scope={"files": "new", "output_folders": 1},
+            runner=runner,
+            groups=("added", "known", "review", "no_metadata", "errors"),
+        )
+        await asyncio.wait_for(job.task, 10)
+
+        resp = await self.client.request("GET", f"/prompt_manager/jobs/{job.id}/report")
+        text = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("application/json", resp.headers["Content-Type"])
+        disposition = resp.headers["Content-Disposition"]
+        self.assertRegex(
+            disposition,
+            r'^attachment; filename="prompt-manager-scan-\d{8}-\d{4}\.json"$',
+        )
+        self.assertNotIn(self.tmpdir, text)
+        self.assertIsNone(
+            re.search(r"[A-Za-z]:[\\/]|(?<![\w.])/(?:tmp|home|var)/", text)
+        )
+        report = json.loads(text)
+        self.assertEqual(report["job"]["id"], job.id)
+        self.assertEqual(report["job"]["scope"]["files"], "new")
+        self.assertEqual(report["job"]["counters"]["known"], MAX_OUTCOME_ROWS + 5)
+        added = report["outcomes"]["added"]
+        self.assertEqual(
+            (added["count"], len(added["rows"]), added["truncated"]), (1, 1, False)
+        )
+        self.assertEqual(added["rows"][0]["path"], "abs.png")
+        known = report["outcomes"]["known"]
+        self.assertEqual(
+            (known["count"], len(known["rows"]), known["truncated"]),
+            (MAX_OUTCOME_ROWS + 5, MAX_OUTCOME_ROWS, True),
+        )
+        self.assertEqual(report["outcomes"]["errors"]["rows"], [])
+        self.assertFalse(report["outcomes"]["errors"]["truncated"])
+        self.assertEqual(report["log"], job.detail()["log"])
+        self.assertIn("generated_at", report)
+
+        resp = await self.client.request("GET", "/prompt_manager/jobs/nope/report")
+        self.assertEqual(resp.status, 404)
+
     async def test_cancel_after_first_batch_keeps_partial_counts(self):
         """Review M7: the real scan stops at the batch boundary, keeping batch 1."""
         import threading

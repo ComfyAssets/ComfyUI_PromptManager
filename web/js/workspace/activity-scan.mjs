@@ -13,6 +13,9 @@ import { navigateTo } from './state.mjs';
 export const BACKUP_URL = '/prompt_manager/backup';
 export const BACKUP_DONE = 'Database backup downloaded.';
 export const BACKUP_FAILED = 'The database could not be backed up. Try again.';
+export const REPORT_DONE = 'Job report downloaded.';
+export const REPORT_FAILED = 'The report could not be downloaded. Try again.';
+const JOBS_REPORT_BASE = '/prompt_manager/jobs';
 export const START_FAILED = 'The scan could not start. Try again.';
 const FALLBACK_NAME = 'prompts_backup.db';
 
@@ -22,24 +25,44 @@ export function backupFilename(disposition) {
     return match ? match[1] : FALLBACK_NAME;
 }
 
+/** Save a fetched response through a temporary link, named by `filename`. */
+function saveResponse(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /** Download the prompts database copy the legacy admin page also uses; toasts the outcome. */
 export async function downloadDatabaseBackup({ fetchUrl = window.ApiClient.fetchUrl, notify = showWorkspaceToast } = {}) {
     try {
         const response = await fetchUrl(BACKUP_URL);
         if (!response.ok) throw new Error(`Backup failed with ${response.status}`);
         const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = backupFilename(response.headers.get('Content-Disposition'));
-        document.body.append(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        saveResponse(blob, backupFilename(response.headers.get('Content-Disposition')));
         notify(BACKUP_DONE);
         return true;
     } catch {
         notify(BACKUP_FAILED);
+        return false;
+    }
+}
+
+/** Download a job's JSON report (Activity-2, D59) through the api-client URL, so a proxy mount works; toasts the outcome. */
+export async function downloadJobReport(jobId, { fetchUrl = window.ApiClient.fetchUrl, notify = showWorkspaceToast } = {}) {
+    try {
+        const response = await fetchUrl(`${JOBS_REPORT_BASE}/${encodeURIComponent(jobId)}/report`);
+        if (!response.ok) throw new Error(`Report failed with ${response.status}`);
+        const blob = await response.blob();
+        saveResponse(blob, backupFilename(response.headers.get('Content-Disposition')).replace(FALLBACK_NAME, 'prompt-manager-report.json'));
+        notify(REPORT_DONE);
+        return true;
+    } catch {
+        notify(REPORT_FAILED);
         return false;
     }
 }

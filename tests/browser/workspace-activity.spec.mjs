@@ -449,11 +449,11 @@ test('job view counters follow the mapping and update live', async ({ page, requ
     const job = await startJob(request);
     await step(request, job.id, { processed: 8240, counters: { added: 1420, known: 6511, review: 37, no_metadata: 254, errors: 18 } });
     await openJob(page, job.id);
-    // The header: the title, the detail line, then Download report (Task 5) and Cancel scan (danger).
+    // The header: the title, the detail line, then Download report (enabled in Task 5) and Cancel scan (danger).
     await expect(heading(page).locator('h1')).toHaveText('Scan for metadata');
     await expect(heading(page).locator('p.muted')).toHaveText(/^Started \d\d:\d\d · 2 output folders · closing this view does not cancel it$/);
     await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report', 'Cancel scan']);
-    await expect(heading(page).getByRole('button', { name: 'Download report', exact: true })).toBeDisabled();
+    await expect(heading(page).getByRole('button', { name: 'Download report', exact: true })).toBeEnabled();
     await expect(heading(page).getByRole('button', { name: 'Cancel scan', exact: true })).toHaveClass(/danger/);
     // Progress: the bar, the server's line and the five tiles in order and colour.
     await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('Processing file 8,240 of 19,622');
@@ -713,4 +713,63 @@ test('a finished job the server pruned leaves its open view honest', async ({ pa
     await expect(heading(page).locator('h1')).toHaveText('Activity');
     await expect(heading(page).locator('h1')).toBeFocused();
     await expect(page).toHaveTitle('Activity · Prompt Manager');
+});
+
+// Activity-2 Task 5 (D59): Download report and the log's scroll position.
+test('download report saves the job JSON', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request);
+    await step(request, job.id, { processed: 2, records: [
+        { group: 'added', path: 'sub/a.png', root: 'output', detail: 'Added' },
+        { group: 'errors', path: 'broken/b.png', root: 'output', detail: 'Error' },
+    ] });
+    await finish(request, job.id);
+    await openJob(page, job.id);
+    const button = heading(page).getByRole('button', { name: 'Download report', exact: true });
+    await expect(button).toBeEnabled();
+    const [download] = await Promise.all([page.waitForEvent('download'), button.click()]);
+    expect(download.suggestedFilename()).toMatch(/^prompt-manager-scan-\d{8}-\d{4}\.json$/);
+    const path = await download.path();
+    const report = JSON.parse(await (await import('node:fs/promises')).readFile(path, 'utf8'));
+    expect(report.job.id).toBe(job.id);
+    expect(report.outcomes.added.rows.map(row => row.path)).toEqual(['sub/a.png']);
+    expect(report.outcomes.errors.truncated).toBe(false);
+    expect(report.log.length).toBeGreaterThan(0);
+    await expect(toast(page)).toHaveText('Job report downloaded.');
+});
+
+test('log keeps the reader\'s scroll position', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request);
+    const more = (from, count) => Array.from({ length: count }, (_, index) => ({ group: 'known', path: `log/f_${from + index}.png`,
+        root: 'output', detail: 'Known' }));
+    await step(request, job.id, { processed: 60, records: more(0, 60) });
+    await openJob(page, job.id);
+    await scanLog(page).locator('summary').click();
+    const pre = scanLog(page).locator('pre');
+    await expect(pre).toContainText('log/f_59.png');
+    const metrics = () => pre.evaluate(node => ({ top: node.scrollTop, max: node.scrollHeight - node.clientHeight }));
+    // Opening starts at the newest line.
+    await expect.poll(async () => { const m = await metrics(); return m.max > 0 && m.top >= m.max - 2; }).toBe(true);
+    // Pinned to the bottom: new lines are followed.
+    await step(request, job.id, { processed: 90, records: more(60, 30) });
+    await expect(pre).toContainText('log/f_89.png');
+    await expect.poll(async () => { const m = await metrics(); return m.top >= m.max - 2; }).toBe(true);
+    // Scrolled up: the position stays while more lines arrive.
+    await pre.evaluate(node => { node.scrollTop = 40; });
+    await step(request, job.id, { processed: 120, records: more(90, 30) });
+    await expect(pre).toContainText('log/f_119.png');
+    expect((await metrics()).top).toBe(40);
+});
+
+test('a failed report download says so and leaves the button usable', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request);
+    await finish(request, job.id);
+    await openJob(page, job.id);
+    await page.route(`**/prompt_manager/jobs/${job.id}/report`, route => route.fulfill({ status: 500, body: 'no' }));
+    const button = heading(page).getByRole('button', { name: 'Download report', exact: true });
+    await button.click();
+    await expect(toast(page)).toHaveText('The report could not be downloaded. Try again.');
+    await expect(button).not.toHaveAttribute('aria-disabled', 'true');
 });

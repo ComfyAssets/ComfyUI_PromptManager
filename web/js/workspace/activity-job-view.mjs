@@ -3,7 +3,7 @@
  * concept's classes.
  *
  * - Header: the page heading names the job; its line is the Activity item's (D54), and its actions are Download report
- *   (disabled until Activity-2) and, while the job runs, "Cancel scan" (danger).
+ *   (the job's JSON report, D59) and, while the job runs, "Cancel scan" (danger).
  * - Progress (`section.surface`): `<progress>`, the server's "Processing file N of M · about X min left", and the
  *   outcome counters as `dl.stat-row` tiles: Added to Library (green), Already known, Needs review (warning), No usable
  *   metadata, Errors (red).
@@ -21,6 +21,7 @@ import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
 import { parseJob, JOBS_URL, LOST_DETAIL } from './activity-store.mjs';
 import { jobDetail, CANCEL_FAILED_TOAST } from './activity.mjs';
+import { downloadJobReport } from './activity-scan.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
@@ -122,7 +123,6 @@ function section(title, id) {
 export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const parts = pageHeading(main);
     const download = createButton('Download report');
-    download.disabled = true;
     const cancel = createButton('Cancel scan', 'danger');
 
     const progressPart = section('Progress', 'job-progress-title');
@@ -189,6 +189,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     let readTimer = null;
     let roots = null;
     let lastState = null;
+    let logOpened = false;
     // Set once this page's own list read answered, or the detail read said the job is unknown.
     let listedOnce = false;
     let notFound = false;
@@ -290,9 +291,11 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         logLabel.textContent = `● ${scan ? 'Scan' : 'Job'} log`;
         const text = detail?.log.length ? detail.log.join('\n') : 'No log lines yet.';
         if (pre.textContent !== text) {
+            // Replacing the text clamps the scroll position, so keep it: pinned readers follow the end, others stay.
+            const { scrollTop } = pre;
             const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 2;
             pre.textContent = text;
-            if (atEnd) pre.scrollTop = pre.scrollHeight;
+            pre.scrollTop = atEnd ? pre.scrollHeight : scrollTop;
         }
         renderRows(job);
     }
@@ -347,10 +350,21 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     }
 
     scope.listen(log, 'toggle', () => {
+        // A log opened for the first time starts at its newest line.
+        if (log.open && !logOpened) { logOpened = true; pre.scrollTop = pre.scrollHeight; }
         const job = store.find(jobId);
         if (log.open && job && job.state !== 'lost' && detailChanged(job)) scheduleRead();
     });
 
+    scope.listen(download, 'click', async () => {
+        if (download.getAttribute('aria-disabled') === 'true') return;
+        download.setAttribute('aria-disabled', 'true');
+        try {
+            await downloadJobReport(jobId);
+        } finally {
+            download.removeAttribute('aria-disabled');
+        }
+    });
     scope.listen(cancel, 'click', async () => {
         if (cancel.getAttribute('aria-disabled') === 'true') return;
         cancel.setAttribute('aria-disabled', 'true');

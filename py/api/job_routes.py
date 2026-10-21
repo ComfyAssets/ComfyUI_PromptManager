@@ -58,6 +58,10 @@ class JobRoutesMixin:
         async def job_detail_route(request):
             return await self.job_detail(request)
 
+        @routes.get("/prompt_manager/jobs/{job_id}/report")
+        async def job_report_route(request):
+            return await self.job_report(request)
+
         @routes.get("/prompt_manager/jobs/{job_id}/events")
         async def job_events_route(request):
             return await self.job_events(request)
@@ -76,6 +80,22 @@ class JobRoutesMixin:
         if job is None:
             return _not_found()
         return web.json_response({"success": True, "job": job.detail()})
+
+    async def job_report(self, request):
+        """The job's whole record as a JSON attachment (no absolute paths)."""
+        job = self._jobs.get(request.match_info["job_id"])
+        if job is None:
+            return _not_found()
+        body = json.dumps(job.report(), indent=2)
+        disposition = f'attachment; filename="{job.report_filename()}"'
+        return web.Response(
+            text=body,
+            content_type="application/json",
+            headers={
+                "Content-Disposition": disposition,
+                "Cache-Control": "no-store",
+            },
+        )
 
     async def cancel_job(self, request):
         """Stop a job at its next file boundary; a finished job is a no-op."""
