@@ -152,7 +152,8 @@ export async function mutate(page,{css=null,remove=[]}={}) {
  * history, noPageScroll}. A section is null when its element is absent. The Images sections (toolbar … panel, #249 C7)
  * measure the concept's Images markup; `cards` holds the first six; `bulkbar` is the selection bar's place and, while
  * anything is checked, its `.bulkbar` row. `library` (#249 E3) holds the Prompt library's toolbar,
- * caption, grid, first six cards and whatever follows the grid; history stays null until PR F.
+ * caption, grid, first six cards and whatever follows the grid. `history` (#249 F5) holds the Prompt history's summary,
+ * negative variants panel, comparison (while Compare negatives is pressed) and the shared gallery's heading.
  */
 export function inventoryOf(page,scope='main') {
     return page.evaluate(measureInventory,scope);
@@ -441,6 +442,85 @@ export function measureInventory(scope) {
             grid:{columns:style.gridTemplateColumns.split(/\s+/).length,...css(grid,'columnGap','rowGap'),...relative(grid,main),cardCount:cards.length},
             cards:cards.slice(0,6).map(card=>libraryCardOf(card,grid)),trailing};
     }
+    // ---- Prompt history (#249 F5): renderHistory a587–622, style.css 1059–1179 and 1546–1567. The concept's main holds
+    // the summary, the variants panel, the comparison and the gallery; production's sit in `section.library-history`, so
+    // each is found by descendant and placed relative to `main` (vertical rhythm) or to its own section.
+    const spoken=node=>node.classList.contains('ca-visually-hidden');
+    const outline=node=>css(node,'outlineStyle','outlineWidth','outlineColor','outlineOffset');
+    const pseudo=(node,which)=>{const style=getComputedStyle(node,which);return Object.fromEntries(['content','position','top','left','width','height',
+        'borderLeftWidth','borderBottomWidth','borderLeftColor','borderBottomColor','borderBottomLeftRadius','backgroundColor','color'].map(key=>[key,style[key]]));};
+    // What a section shows, in order: each shown child as `tag.classes`, visually hidden statuses apart (`spoken`).
+    const structureOf=node=>({children:boxedChildren(node).filter(child=>shown(child)&&!spoken(child)).map(child=>`${child.tagName.toLowerCase()}.${classes(child)}`),
+        spoken:[...node.querySelectorAll('.ca-visually-hidden')].filter(shown).map(child=>({role:child.getAttribute('role'),text:child.textContent}))});
+    function promptSectionOf(section,origin) {
+        const heading=section.querySelector(':scope > .prompt-heading'),label=heading?.querySelector('.role-label');
+        const actions=heading?.querySelector('.prompt-actions'),text=section.querySelector(':scope > .prompt-text');
+        return {className:classes(section),...relative(section,origin),...edges(section),
+            label:when(label,()=>({text:label.textContent,...font(label)})),
+            actions:when(actions,()=>({...layout(actions),...relative(actions,section),buttons:[...actions.children].map(node=>controlOf(node,actions))})),
+            text:when(text,()=>({text:text.textContent,...font(text),...edges(text),...relative(text,section),
+                lines:Math.round(rect(text).height/parseFloat(getComputedStyle(text).lineHeight))}))};
+    }
+    function panelHeadingOf(heading,origin) {
+        const h2=heading.querySelector('h2'),note=heading.querySelector('.small'),actions=heading.querySelector(':scope > .row-actions');
+        return {...layout(heading),...edges(heading),...relative(heading,origin),
+            h2:when(h2,()=>({text:h2.textContent,...font(h2),...edges(h2),...relative(h2,heading)})),
+            note:when(note,()=>({tag:note.tagName.toLowerCase(),text:note.textContent,...font(note),...edges(note),...relative(note,heading)})),
+            actions:when(actions,()=>({...layout(actions),...relative(actions,heading),buttons:[...actions.children].filter(shown).map(node=>controlOf(node,actions))}))};
+    }
+    function laneOf(lane,timeline) {
+        const dot=lane.querySelector(':scope > .variant-dot'),label=lane.querySelector(':scope > span'),run=lane.querySelector(':scope > .run-dot');
+        return {className:classes(lane),offset:lane.style.getPropertyValue('--lane-offset'),...relative(lane,timeline),...edges(lane),...css(lane,'minWidth','position'),
+            before:pseudo(lane,'::before'),
+            dot:when(dot,()=>({...controlOf(dot,lane),...outline(dot),...css(dot,'position','top','left','width','height','color')})),
+            label:when(label,()=>({text:label.textContent,...font(label),...relative(label,lane),...css(label,'position','top','left')})),
+            run:shown(run)?{...controlOf(run,lane),...css(run,'position','top','left','width','height')}:null};
+    }
+    function timelineOf(timeline,origin) {
+        const positive=timeline.querySelector(':scope > .positive-lane'),span=positive?.querySelector('span');
+        return {...edges(timeline),...css(timeline,'overflowX','position'),...relative(timeline,origin),
+            positive:when(positive,()=>({...edges(positive),...css(positive,'height','minWidth'),...relative(positive,timeline),before:pseudo(positive,'::before'),
+                span:when(span,()=>({text:span.textContent,...font(span),...relative(span,positive)}))})),
+            lanes:[...timeline.querySelectorAll(':scope > .variant-lane')].map(lane=>laneOf(lane,timeline)),
+            structure:structureOf(timeline)};
+    }
+    function variantsOf(panel) {
+        const heading=panel.querySelector(':scope > .panel-heading'),timeline=panel.querySelector(':scope > .timeline'),lower=panel.querySelector(':scope > .timeline-lower');
+        return {className:classes(panel),...edges(panel),...relative(panel,main),structure:structureOf(panel),
+            heading:when(heading,()=>panelHeadingOf(heading,panel)),timeline:when(timeline,()=>timelineOf(timeline,panel)),
+            lower:when(lower,()=>({...layout(lower),...edges(lower),...relative(lower,panel),
+                items:[...lower.children].filter(shown).map(node=>({...controlOf(node,lower),...font(node)}))}))};
+    }
+    function compareOf(section) {
+        const h2=section.querySelector(':scope > h2'),intro=section.querySelector(':scope > p:not(.small)'),grid=section.querySelector(':scope > .compare-grid');
+        return {...edges(section),...relative(section,main),structure:structureOf(section),
+            h2:when(h2,()=>({text:h2.textContent,...font(h2),...edges(h2)})),
+            intro:when(intro,()=>({text:intro.textContent,...font(intro),...edges(intro),...relative(intro,section)})),
+            grid:when(grid,()=>({columns:getComputedStyle(grid).gridTemplateColumns.split(/\s+/).length,...css(grid,'columnGap','rowGap'),...relative(grid,section),
+                items:[...grid.children].map(item=>({className:classes(item),...edges(item),...relative(item,grid),
+                    sections:[...item.querySelectorAll('.prompt-section')].map(node=>promptSectionOf(node,item))}))})),
+            notes:[...section.querySelectorAll(':scope > p.small')].map(note=>({text:note.textContent,...font(note),...edges(note),...relative(note,section)})),
+            added:[...section.querySelectorAll(':scope > .diff-added')].map(chip=>({text:chip.textContent,...font(chip),...edges(chip),...css(chip,'display'),...relative(chip,section)}))};
+    }
+    function historyOf() {
+        const panel=main?.querySelector('section.timeline-panel');
+        if(!panel)return null;
+        const summary=main.querySelector('article.surface'),gallery=main.querySelector('section.history-gallery');
+        const compare=[...main.querySelectorAll('section.surface:not(.timeline-panel)')].find(shown);
+        const chip=summary?.querySelector(':scope > .chip'),meta=summary?.querySelector(':scope > .card-meta');
+        const galleryHeading=gallery?.querySelector(':scope > .panel-heading');
+        return {
+            summary:when(summary,()=>({...edges(summary),...relative(summary,main),structure:structureOf(summary),
+                chip:when(chip,()=>({text:chip.textContent,...font(chip),...edges(chip),...relative(chip,summary)})),
+                sections:[...summary.querySelectorAll('.prompt-section')].map(node=>promptSectionOf(node,summary)),
+                meta:when(meta,()=>({...layout(meta),...edges(meta),...font(meta),...relative(meta,summary),
+                    items:[...meta.children].filter(shown).map(node=>({text:node.textContent,...font(node),...relative(node,meta)}))}))})),
+            variants:variantsOf(panel),
+            compare:when(compare,compareOf),
+            gallery:when(gallery,()=>({...edges(gallery),...relative(gallery,main),
+                heading:when(galleryHeading,()=>panelHeadingOf(galleryHeading,gallery))})),
+        };
+    }
     return {chrome:chromeOf(),heading:headingOf(),
         toolbar:when(main?.querySelector(':scope > search.toolbar'),rowOf),
         filterRow:when(main?.querySelector(':scope > .filter-row'),rowOf),
@@ -450,7 +530,7 @@ export function measureInventory(scope) {
         cards:grid?[...grid.querySelectorAll(':scope > .media-card')].slice(0,6).map(cardOf):null,
         continuation:when(continuation,continuationOf),
         panel:when(gallery,panelOf),
-        library:libraryOf(),history:null,noPageScroll:document.documentElement.scrollWidth<=innerWidth+1};
+        library:libraryOf(),history:historyOf(),noPageScroll:document.documentElement.scrollWidth<=innerWidth+1};
 }
 
 /**

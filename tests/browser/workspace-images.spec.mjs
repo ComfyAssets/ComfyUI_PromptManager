@@ -174,7 +174,9 @@ for (const embedded of [false, true]) {
             if (close !== 'parent abort') {
                 await expect(preview).toBeFocused();
                 await expect.poll(() => page.evaluate(() => window.continuationFixture.reads)).toEqual([null, 'next-0', 'next-1']);
-                await expect(caption(page)).toContainText(embedded ? '80 loaded' : '80 of 80');
+                // An embedded collection has no caption (D47); its loaded cards show the continuation instead.
+                if (embedded) { await expect(cards(page)).toHaveCount(80); await expect(caption(page)).toHaveCount(0); }
+                else await expect(caption(page)).toContainText('80 of 80');
             }
             await page.evaluate(() => window.continuationFixture.scope.dispose());
             await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
