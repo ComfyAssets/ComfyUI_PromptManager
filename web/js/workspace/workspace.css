@@ -17,6 +17,58 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     nav a[aria-current="page"] { border: 2px solid Highlight; color: LinkText; }
 }
 
+/* D53: the running job's progress pill before the Activity button (the approved Activity mockup's `.pill`), in the
+   concept's tokens. At <=700px it keeps its verb and percentage; the file counts and bar stay in its accessible name. */
+.activity-pill:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--line);
+    border-radius: 999px; font-size: 12px; white-space: nowrap; color: var(--ca-text); background: var(--ca-surface); /* D53 */ }
+.activity-pill:hover { border-color: var(--ca-accent); /* D53 */ }
+.activity-pill-bar { display: block; inline-size: 70px; block-size: 5px; border-radius: 3px; background: var(--line); overflow: hidden; /* D53 */ }
+.activity-pill-bar i { display: block; block-size: 100%; inline-size: 0; background: var(--ca-accent); /* D53 */ }
+@media (pointer: coarse) { .activity-pill:not([hidden]) { min-block-size: 40px; /* D53 */ } }
+@media (max-width: 700px) {
+    /* D52: with the Activity button the full-width row can be wider than a zoomed phone, so its items wrap. */
+    .top-actions { flex-wrap: wrap; /* D52 */ }
+    .activity-pill:not([hidden]) { gap: 0; padding-inline: 10px; /* D53 */ }
+    .activity-pill-files, .activity-pill-bar { display: none; /* D53 */ }
+}
+
+/* D56: each Activity item's title links its job's view in the title's own colour. */
+.activity-item h3 a { color: inherit; text-decoration: none; /* D56 */ }
+.activity-item h3 a:hover { text-decoration: underline; /* D56 */ }
+
+/* D56: one job's view, the approved Activity mockup (activity-scan.html) in the concept's tokens: the counter tiles,
+   the outcome list beside the selected outcome's files, and the collapsible log. */
+.stat-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 16px 0; /* D56 */ }
+.stat-row .stat { border: 1px solid var(--line); border-radius: 7px; padding: 12px 14px; background: var(--ca-surface); min-inline-size: 0; /* D56 */ }
+.stat-row .stat dt { font-size: 11px; color: var(--ca-muted); /* D56 */ }
+.stat-row .stat dd { margin: 6px 0 0; font-size: 20px; font-weight: 600; /* D56 */ }
+.stat-row .stat.added dd { color: var(--green); /* D56 */ }
+.stat-row .stat.warn dd { color: var(--warning); /* D56 */ }
+.stat-row .stat.bad dd { color: var(--red); /* D56 */ }
+.surface > .panel-heading > .search-field { max-width: 320px; /* D56 */ }
+.outcomes { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; margin-top: 6px; /* D56 */ }
+.ca-tools .outcome-list button { display: flex; justify-content: space-between; width: 100%; margin-bottom: 6px; text-align: left; /* D56 */ }
+.ca-tools .outcome-list button[aria-pressed="true"] { border-color: var(--ca-accent); background: var(--soft-blue); /* D56 */ }
+.outcome-files .file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 9px 4px;
+    border-bottom: 1px solid var(--line); font-size: 12px; /* D56 */ }
+.ca-tools button.file-row { width: 100%; min-height: 0; justify-content: normal; align-items: start; border: 0;
+    border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; color: inherit; text-align: left;
+    white-space: normal; font: inherit; font-size: 12px; /* D56 */ }
+.ca-tools button.file-row:hover:not(:disabled) { background: var(--ca-hover); /* D56 */ }
+.file-row .path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; /* D56 */ }
+.file-row .why { color: var(--ca-muted); /* D56 */ }
+.outcome-files > p.small { color: var(--ca-muted); margin-top: 10px; /* D56 */ }
+.term { margin-top: 16px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; /* D56 */ }
+.term summary { padding: 11px 14px; cursor: pointer; font-size: 12px; background: var(--ca-surface); /* D56 */ }
+.term summary span { color: var(--ca-muted); /* D56 */ }
+.term pre { margin: 0; padding: 12px 14px; max-height: 180px; overflow: auto; font: 11px/1.7 ui-monospace, monospace;
+    color: var(--ca-muted); background: var(--page); white-space: pre-wrap; overflow-wrap: anywhere; /* D56 */ }
+@media (max-width: 700px) {
+    .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); /* D56 */ }
+    .outcomes { grid-template-columns: minmax(0, 1fr); /* D56 */ }
+    .outcome-files .file-row { grid-template-columns: minmax(0, 1fr); gap: 4px; /* D56 */ }
+}
+
 /* Overview: real library statistics and the legacy tool cards inside a concept `.surface`. */
 .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 26px; }
 .stat { padding: 22px; background: var(--ca-surface); border: 1px solid var(--line); border-radius: 7px; }

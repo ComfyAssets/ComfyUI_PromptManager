@@ -1,7 +1,7 @@
 /**
  * State of the output-image scan as seen by the dashboard.
  *
- * The scan runs on the server as a background job (see py/api/scan_job.py) and
+ * The scan runs on the server as a background job (see py/api/jobs.py) and
  * reports progress over SSE. This module turns those events into a small
  * immutable state object and answers the UI questions that depend on it:
  * what dismissing the modal should do, what the minimized pill should say, and

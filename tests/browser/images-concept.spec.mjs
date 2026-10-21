@@ -7,7 +7,7 @@ import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,
 // images of the concept's six prompts, its seeds, sizes and favorites). Heading, toolbar, filter row, caption, grid,
 // the first six cards, the continuation and the panel box are compared at 1600x1100 and 390x844 in both themes, and the
 // page's behaviors under normal and reduced motion; grid, cards and panel also at 1200x900 and 1800x1100 (2 and 4
-// columns, the 275px and 310px panel). The topbar and sidebar (D5, D28, D29) are the shell spec's.
+// columns, the 275px and 310px panel). The topbar and sidebar (D28, D29, D52, D53) are the shell spec's.
 // Paired captures are artifacts only; there are no PNG baselines.
 test.use({locale:'en-US',timezoneId:'UTC'});
 
@@ -149,12 +149,15 @@ function compareLoadingRow(reference,actual,count) {
     return diffInventory(unplaced(mapContinuation(reference,{loaded,total})),unplaced(actual));
 }
 
-/** D15: the Import dialog's two real operations, with the ruled intro and the Rescan wording. */
+/**
+ * D15: the Import dialog's real operations, with the ruled intro and the Rescan wording. D55: the concept's own "Scan an
+ * output folder → Review scan" row follows Rescan as "Scan for metadata", opening the concept's "Review metadata scan".
+ */
 function mapImportConcept(reference) {
     return {...reference,
         intro:{...reference.intro,text:'Image inspection and output scanning have different effects. Choose the workflow you want.'},
-        rows:reference.rows.filter(row=>row.title!=='Import portable recipes').map(row=>row.title==='Scan an output folder'
-            ?{...row,description:'Find files added or removed in the output folders.',buttons:['Rescan']}:row)};
+        rows:reference.rows.filter(row=>row.title!=='Import portable recipes').flatMap(row=>row.title==='Scan an output folder'
+            ?[{...row,description:'Find files added or removed in the output folders.',buttons:['Rescan']},{...row,title:'Scan for metadata'}]:[row])};
 }
 
 const SECTIONS=['heading','toolbar','filterRow','bulkbar','caption','grid','cards','continuation','panel','noPageScroll'];

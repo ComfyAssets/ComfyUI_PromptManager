@@ -437,10 +437,11 @@ the first nav link and heading button.
 Recorded shell deviations:
 - **D4**: a "Theme" select with Dark, Light and System. System follows the ComfyUI
   palette, then the OS.
-- **D5**: no Activity button or Activity row until an activity center exists.
+- **D5**: retired by Activity (#249 Activity-1). The concept's Activity button and
+  Activity row are shown; their differences are D52 to D54.
 - **D28**: no COLLECTIONS, and no Design review. The bottom nav is
-  System plus the production Overview hub (its own outline home glyph, not the concept's
-  `activity` pulse, and no count).
+  the concept's Activity and System, plus the production Overview hub (its own
+  outline home glyph, not the concept's `activity` pulse, and no count).
   The connection reads "Your library, on your server" with a neutral muted dot.
 - **D49** (saved views, #249 D16): the SAVED VIEWS group label has no "PROPOSED"
   badge, because saved views are persisted (`/prompt_manager/saved-views`). Its rows are
@@ -491,6 +492,138 @@ Recorded shell deviations:
   as deleted. `tests/browser/workspace-saved-views.spec.mjs` covers the row, count,
   route, star updates, Save view on Favorites, Edit, and the failure paths;
   `tests/test_image_favorites.py` covers `favorites=1`.
+- **D52** (Activity, #249 Activity-1): the top-bar `button#activity-open` and the
+  sidebar's Activity row (the concept's `activity` pulse, first in `system-nav`) count
+  this session's *running* jobs. The concept counts
+  every sample job. `span.count#activity-count` is `hidden` at 0 (its text stays "0"),
+  and the row has no `.nav-count` then. The Activity heading has no "Unified activity ·
+  proposed" chip (prototype copy). At `max-width: 700px` the full-width `.top-actions`
+  row may wrap (`flex-wrap: wrap`), so the button, Theme and ComfyUI stay inside a
+  zoomed phone. The shell comparison hides the concept's count at runtime
+  (`#activity-count { display: none }`), so the concept's own CSS lays out its button
+  without it, and maps the row's count to none, the button's count to "0" and the
+  phone row's `flexWrap` to `wrap`.
+- **D53**: while a job runs, the approved Activity mockup's progress pill sits before
+  the Activity button on every page: `a#activity-pill.activity-pill`, "Scanning · 41% ·
+  8,240 / 19,622" (the verb by job kind, the server's floored percentage, and the file
+  counts once the total is known), a 70px mini bar, `href="#/activity/<id>"` and the same
+  text as its `aria-label`. With no running job it is `hidden`, which the shell
+  comparison maps as a hidden item before the button. At `max-width: 700px` it keeps the
+  verb and percentage only; on coarse pointers it is 40px tall like the concept's
+  buttons. Its rules are in `workspace.css` under D53.
+- **D54**: each `.activity-item` is a real job of this session (`GET
+  /prompt_manager/jobs`), running first, then finished newest first. The concept's
+  structure and CSS stay: `.panel-heading` > `h3` "✓ <title>" for a completed job and
+  "○ <title>" otherwise, plus `span.chip`, then `p`, and for a running job `<progress
+  max=100>` ("<title> progress") and `.row-actions`. The chip is green "Completed" or
+  blue "Running", "Cancelled", "Failed" or "Ended". The line reads "Started HH:MM · K
+  output folders · closing this view does not cancel it" while running, "Finished HH:MM
+  · N added · M errors", "Cancelled HH:MM at a file boundary · N added · completed work
+  is kept", "Stopped on an error at HH:MM · N added · M errors", or "This job ended when
+  ComfyUI restarted." The running actions are "Cancel job" only (no "Simulate
+  completion"); a failed cancel toasts "The job could not be cancelled. Try again.". With
+  no job the section says "No jobs have run since ComfyUI started. Scans and other long
+  operations appear here." `#/activity/<id>` is that job's own view (D56). When a job
+  ends while its Cancel job has focus, focus moves to the item's title link.
+
+  The Activity store reads the list once, then follows each running job over
+  `/prompt_manager/jobs/<id>/events`. A dropped stream re-reads the list after 1 s,
+  doubling to at most 30 s; a received event resets the wait, and so does a good list
+  read after failed ones or after any read that was not for a dropped stream. A running
+  job the server no longer lists, or one whose server could not be read twice in a row,
+  is shown as ended, so no pill stays; one failed read (a proxy's 502) changes nothing.
+  A finished job the server no longer lists (it keeps 20) is dropped. Numbers are
+  grouped "en-US", as the server's lines are. While the tab is visible the list is read again every 15 s (and whenever
+  Activity opens), so a job started in another tab or on the legacy admin page appears
+  without a reload. Toasts: "Scan started." after this tab's own start; "Scan finished
+  · N added · M errors", "Scan cancelled · N added" or "Scan failed · N added · M
+  errors" when a job this tab saw running ends (plural helper for "error").
+  `tests/js/workspace-activity-store.test.js` covers the store, its backoff and the
+  copy; `tests/browser/workspace-activity.spec.mjs` covers the list against the
+  concept's own items (`renderActivity` and `startJob`), the pill and counts, a phone,
+  reload and a second tab, Cancel job, a restart and an unreachable server, and the
+  toasts, with fake jobs from `tests/browser/workspace_activity_fixture.py`
+  (`/__test__/jobs/*`, including a simulated restart that drops the job streams).
+- **D55** (Scan for metadata, Activity-1 Task 3): Images → Import keeps Rescan as the
+  quick refresh (D15) and then shows the concept's own "Scan an output folder → Review
+  scan" row as "Scan for metadata" ("Discover and enrich existing files using the
+  configured sources.", button "Review scan"). It opens the concept's `scan-review`,
+  "Review metadata scan": no sample-plan `.demo-note` (prototype copy); Sources and
+  Scope in a `dl.meta-grid` (the concept's maintenance plan uses `dl`; `scan-review`
+  uses a `div`) reading "N output folders" (the discovered sources) and "All files"
+  (fixed in Activity-1; Activity-2 adds the scope option); the concept's sentence; then
+  a backup `.notice` (the concept's System notice box): `h3` "Back up the database first
+  (recommended)", "Downloads a copy of the prompts database before the scan changes any
+  records." and "Back up now", which downloads the existing `/prompt_manager/backup`
+  copy (as the legacy admin page does), reads "Backing up…" while aria-disabled, keeps
+  the dialog open and toasts "Database backup downloaded." or "The database could not be
+  backed up. Try again."; then Cancel / Start scan (primary; the concept's "Simulate
+  scan"). Start scan closes the dialog, starts the session scan job (`POST
+  /prompt_manager/jobs/scan`), toasts "Scan started." and opens `#/activity/<id>`; a
+  failed start toasts "The scan could not start. Try again.". The scan's progress line
+  now groups thousands ("Processing file 8,240 of 19,622"), as the mockup does.
+  `tests/browser/activity-concept.spec.mjs` compares the dialog with the concept's
+  `scan-review` and its box with the concept's System `.notice` (dark and light,
+  Chromium and touch, with a CSS and a DOM mutation check); `images-concept.spec.mjs`
+  maps the Import row; `workspace-images.spec.mjs` covers the dialog, the backup and
+  Cancel.
+- **D56**: one job's view at `#/activity/<id>`, the approved mockup
+  (`activity-scan.html`, "100% spot on"), which the concept does not have. The page
+  heading names the job (h1, document title "<title> · Prompt Manager"; the breadcrumb
+  stays "Activity"), its line is the D54 item line, and its actions are Download report
+  (disabled until Activity-2) and, while the job runs, "Cancel scan" (`.danger`; "Cancel
+  job" for another kind; a failed request toasts the D54 message). Then `section.surface`
+  "Progress": `.panel-heading` (h2, `span.small` with the server's "Processing file N of
+  M · about X min left", or after the end "N of M files processed", "Cancelled after N
+  of M files", the error line, or the restart line), `<progress max=100>` ("Scan
+  progress") and `dl.stat-row` tiles in order: Added to Library (`.added`, green),
+  Already known, Needs review (`.warn`, warning), No usable metadata, Errors (`.bad`,
+  red). Then `section.surface` "Results": `label.search-field` "Filter by file path…"
+  (`aria-label` "Filter results", case-folded match on the root label and path), and
+  `.outcomes` with `.outcome-list` (`button[aria-pressed]` label + count, in the
+  mockup's order Added, Needs review, Errors, No usable metadata, Already known; the
+  view opens on the first with files) beside `.outcome-files`: one `.file-row` (`.path`
+  root-relative, `.why` the server's detail) per listed file. The detail wording is the
+  builder's (approved with Task 1): "Added to the Library as “title”", "Linked to
+  “title”", "Already linked to “title”", "Needs review: …", "Error: …", where the title
+  is the prompt's Library title (its stored title, else its text's first line), not the
+  mockup's sample "→ “title” · new positive + negative". Each log line is "HH:MM:SS
+  <prefix> <root label>/<path> · <detail>" rather than the mockup's "[HH:MM:SS] + path →
+  prompt #4812 (new)". The header's actions sit in the page heading's
+  `.heading-actions`, where the mockup has a `.panel-heading > .row-actions`. An
+  empty outcome shows "No files in this group."
+  or "No listed file matches this filter.", and the note "Showing N of M" when fewer
+  than the counter are shown (the server lists 200 per outcome), with "each row opens
+  the image in the viewer" for Added and Already known. Then `details.term`, collapsed:
+  "● Scan log — raw detail, click to show" and `pre[tabindex=0]` with the raw lines.
+  The summary follows the store and carries `listed` (rows per outcome) and
+  `log_length`; the rows and log are read from `GET /prompt_manager/jobs/<id>` once on
+  opening, then at most once a second only while what it lists changes (or, with the
+  log open, its length), so a job whose lists are capped and whose log is closed is not
+  re-read; opening the log reads its new lines. When the job ends while Cancel scan has
+  focus, focus moves to the job's heading. An unknown id, or a job the store's list no
+  longer has, shows "This job is not in this session’s Activity. Jobs are kept until
+  ComfyUI restarts." and "All activity"; a job lost with a restart keeps what was read.
+  At `max-width: 700px` the tiles take two columns and the outcome list stacks above
+  the files. Each Activity item's title is now a link to its view, in the title's
+  colour. The rules are in `workspace.css` under D56. `activity-concept.spec.mjs`
+  restates the mockup's structure and CSS values and checks them with mutations;
+  `workspace-activity.spec.mjs` covers the counters, live updates, viewer rows, the
+  filter, the 200-row cap, Cancel scan, the busy start and an unknown or lost job.
+- **D57**: rows under Added and Already known are `button.file-row`s that open the
+  existing media viewer on that one file, by the identity Images opens it by
+  (`root_index:path`). Each scan row records its root's listing index (`root_index`,
+  the place in `_get_all_output_dirs`) beside its label. The row's source is that index
+  in `/prompt_manager/gallery/subfolders?mode=workspace` and must still carry the row's
+  label, so a reordered or replaced source never opens another root's file; the
+  workspace listing's new `path` filter (one exact relative path, case-folded, at most
+  1,024 characters, no traversal) returns that file. A row without an index, a changed
+  source or a file the listing no longer has toasts "This file is no longer in Images.
+  Rescan from Import and try again."; other rows are plain text, with no new file
+  route. A start refused because another record-changing job runs toasts "Another job
+  is running: <title>." with the title linking that job's view (the shared toast now
+  accepts link parts). A toast with a link stays 20 s instead of 6.5 s, and any toast
+  stays while the pointer or focus is on it.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
   library.", and the title has no " concept" suffix. Save view's dialog action reads
@@ -577,7 +710,8 @@ Recorded deviations on this page (spec §8):
   footer, masonry tops may differ by sub-pixel snapping (at most one layout unit per
   card above in the column), and a List row's info takes its natural height, centred
   beside the 160×95 art.
-- **D5**, **D29**: no Activity button and no prototype copy (shell).
+- **D29**: no prototype copy (shell). The Activity button and pill are the shell's
+  (D52, D53).
 - **D7**: the star is a real persisted favorite with "Added to favorites." /
   "Removed from favorites." and a rollback toast on failure.
 - **D8**: every Images card has the concept's select checkbox before the star; the

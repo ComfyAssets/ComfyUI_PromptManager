@@ -8,7 +8,7 @@ import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/i
 test.use({ locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
 const workspace = '/prompt_manager/workspace';
 const primary = ['images', 'library', 'tags', 'inspect'];
-const tools = ['system', 'overview'];
+const tools = ['activity', 'system', 'overview'];
 
 async function noOverflow(page) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
@@ -556,7 +556,7 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
     await page.goto(`${workspace}#/images`);
     const icons = await page.evaluate(async () => {
         const { createWorkspaceIcon } = await import('/prompt_manager/js/workspace/icons.mjs');
-        const names = ['images', 'library', 'tags', 'upload', 'overview', 'settings', 'grid', 'list', 'masonry', 'search', 'info', 'copy', 'branch', 'star', 'tagImage', 'folder', 'history', 'review'];
+        const names = ['images', 'library', 'tags', 'upload', 'overview', 'activity', 'settings', 'grid', 'list', 'masonry', 'search', 'info', 'copy', 'branch', 'star', 'tagImage', 'folder', 'history', 'review'];
         const otherDocument = document.implementation.createHTMLDocument();
         const rendered = names.map(name => {
             const icon = createWorkspaceIcon(name, otherDocument);
@@ -575,7 +575,8 @@ test('approved icons are decorative safe SVGs and reject unknown vocabulary', as
         expect(icon).toMatchObject({ svg: true, className: 'icon', owner: true, viewBox: '0 0 24 24', hidden: 'true', focusable: 'false', fill: 'none', stroke: 'currentColor', width: '1.65', children: 1 });
         expect(icon.path.length).toBeGreaterThan(10);
     }
-    // D28 ruling: Overview's own outline home glyph, not the concept's `activity` pulse ('M3 12h4l3-8 4 16 3-8h4').
+    // D28 ruling: Overview's own outline home glyph; the concept's `activity` pulse is the Activity row's.
+    expect(icons.rendered.find(icon => icon.name === 'activity').path).toBe('M3 12h4l3-8 4 16 3-8h4');
     expect(icons.rendered.find(icon => icon.name === 'overview').path).toBe('M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6');
     expect(new Set(icons.rendered.map(icon => icon.path)).size).toBe(icons.rendered.length);
 });

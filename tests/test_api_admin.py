@@ -1965,6 +1965,353 @@ class TestOutputScanIsABackgroundJob(AdminAPITestCase):
         self.assertEqual(data["last_event"]["type"], "error")
 
 
+class TestActivityJobs(AdminAPITestCase):
+    """The scan runs as a registry job; legacy routes keep their payloads."""
+
+    def _gate_collect(self):
+        import threading
+
+        gate = threading.Event()
+        calls = []
+        original = self.api._collect_output_media_sync
+
+        def gated(output_dirs):
+            calls.append(output_dirs)
+            gate.wait(5)
+            return original(output_dirs)
+
+        self.api._collect_output_media_sync = gated
+        return gate, calls
+
+    async def _json(self, method, url):
+        resp = await self.client.request(method, url)
+        return resp.status, await resp.json()
+
+    async def test_legacy_scan_route_reuses_registry_job_and_payload_shape(self):
+        from py.api.admin import SCAN_COUNT_KEYS
+
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        gate, calls = self._gate_collect()
+
+        # The workspace starts the job; the legacy page then attaches to it.
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        self.assertEqual(status, 202)
+        self.assertTrue(started["success"])
+        legacy = asyncio.ensure_future(
+            self.client.request("POST", "/prompt_manager/scan", data="{}")
+        )
+        await asyncio.sleep(0.05)
+        gate.set()
+        body = await (await legacy).text()
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+
+        self.assertEqual(len(calls), 1)
+        payloads = _sse_payloads(body)
+        progress = [p for p in payloads if p["type"] == "progress"]
+        self.assertTrue(progress)
+        legacy_keys = set(SCAN_COUNT_KEYS) | {"type", "progress", "status", "processed"}
+        for payload in progress:
+            self.assertEqual(set(payload), legacy_keys)
+        final = payloads[-1]
+        self.assertEqual(final["type"], "complete")
+        self.assertEqual(set(final), set(SCAN_COUNT_KEYS) | {"type", "directories"})
+        self.assertEqual(final["added"], 1)
+        self.assertEqual(final["directories"], ["output"])
+
+        status, listed = await self._json("GET", "/prompt_manager/jobs")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(listed["jobs"]), 1)
+        job = listed["jobs"][0]
+        self.assertEqual(job["id"], started["job"]["id"])
+        self.assertEqual(job["id"], self.api._scan_job.id)
+        self.assertEqual((job["kind"], job["state"]), ("scan", "finished"))
+        self.assertEqual(job["counters"]["added"], 1)
+        self.assertEqual(job["progress"], 100)
+        self.assertEqual(job["scope"]["output_folders"], 1)
+
+    async def test_scan_records_outcomes_by_group(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        (self.output_dir / "sub").mkdir()
+        names = {
+            "sub/added.png": {"status": "added", "title": "A red fox"},
+            "linked.png": {"status": "linked", "title": "A grey cat"},
+            "unchanged.png": {"status": "unchanged", "title": "A brown dog"},
+            "ambiguous.png": {"status": "ambiguous"},
+            "failed.png": RuntimeError(f"{self.tmpdir}/secret boom"),
+            "none.png": None,
+        }
+        for name in names:
+            (self.output_dir / name).write_bytes(b"not an image")
+
+        def fake_ingest(media_file, metadata, detailed=False):
+            key = Path(media_file).relative_to(self.output_dir).as_posix()
+            outcome = names[key]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        self.api._ingest_scanned_file = fake_ingest
+        with self.assertLogs("prompt_manager.api", level="ERROR"):
+            status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+            self.assertEqual(status, 202)
+            await asyncio.wait_for(self.api._scan_job.task, 10)
+
+        resp = await self.client.request(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        text = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(self.tmpdir, text)
+        job = json.loads(text)["job"]
+        self.assertEqual(
+            job["counters"],
+            {"added": 2, "known": 1, "review": 1, "no_metadata": 1, "errors": 1},
+        )
+        outcomes = job["outcomes"]
+        self.assertEqual(
+            {k: len(v) for k, v in outcomes.items()},
+            {"added": 2, "known": 1, "review": 1, "no_metadata": 1, "errors": 1},
+        )
+        added = {row["path"]: row for row in outcomes["added"]}
+        self.assertEqual(set(added), {"sub/added.png", "linked.png"})
+        self.assertIn("A red fox", added["sub/added.png"]["detail"])
+        self.assertIn("A grey cat", added["linked.png"]["detail"])
+        self.assertEqual(added["linked.png"]["root"], "output")
+        self.assertIn("A brown dog", outcomes["known"][0]["detail"])
+        self.assertIn("review", outcomes["review"][0]["detail"].lower())
+        self.assertEqual(outcomes["errors"][0]["path"], "failed.png")
+        self.assertTrue(outcomes["errors"][0]["detail"])
+        self.assertEqual(outcomes["no_metadata"][0]["path"], "none.png")
+        self.assertTrue(outcomes["no_metadata"][0]["detail"])
+        prefixes = {line.split(" ", 2)[1] for line in job["log"][1:-1]}
+        self.assertEqual(prefixes, {"+", "=", "?", "!", "-"})
+        self.assertEqual(job["state"], "finished")
+        self.assertTrue(job["status_line"].startswith("Processing file 6 of 6"))
+
+        legacy = self.api._scan_job.last_event
+        self.assertEqual(
+            (legacy["processed"], legacy["found"], legacy["failed"]), (6, 4, 1)
+        )
+
+    async def test_cancel_after_first_batch_keeps_partial_counts(self):
+        """Review M7: the real scan stops at the batch boundary, keeping batch 1."""
+        import threading
+        from unittest import mock
+
+        from py.api import admin
+
+        _write_png(self.output_dir / "a.png", prompt_text="a red square")
+        _write_png(self.output_dir / "b.png", prompt_text="a blue circle")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        first_done, release = threading.Event(), threading.Event()
+        original = self.api._ingest_scan_batch_sync
+
+        def gated(batch_results, roots=(), outcomes=None):
+            counts = original(batch_results, roots=roots, outcomes=outcomes)
+            first_done.set()
+            release.wait(5)
+            return counts
+
+        self.api._ingest_scan_batch_sync = gated
+        with mock.patch.object(admin, "SCAN_BATCH_SIZE", 1):
+            status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+            self.assertEqual(status, 202)
+            job_id = started["job"]["id"]
+            await asyncio.get_running_loop().run_in_executor(None, first_done.wait, 5)
+            status, cancelled = await self._json(
+                "POST", f"/prompt_manager/jobs/{job_id}/cancel"
+            )
+            self.assertEqual((status, cancelled["cancellation_requested"]), (200, True))
+            release.set()
+            await asyncio.wait_for(self.api._scan_job.task, 10)
+
+        status, body = await self._json("GET", f"/prompt_manager/jobs/{job_id}")
+        job = body["job"]
+        self.assertEqual(job["state"], "cancelled")
+        self.assertEqual((job["processed"], job["total"]), (1, 2))
+        self.assertEqual(sum(job["counters"].values()), job["processed"])
+        self.assertEqual(job["counters"]["added"], 1)
+        listed = [row["path"] for rows in job["outcomes"].values() for row in rows]
+        self.assertEqual(len(listed), 1)
+        self.assertIn(listed[0], {"a.png", "b.png"})
+        self.assertIn("Scan cancelled · 1 file processed", job["log"][-1])
+        # A cancel after the end is a no-op.
+        status, again = await self._json(
+            "POST", f"/prompt_manager/jobs/{job_id}/cancel"
+        )
+        self.assertEqual((status, again["cancellation_requested"]), (200, False))
+
+    async def test_scan_rows_carry_their_root_index(self):
+        """Review M9: two roots labelled "output" stay apart by listing index."""
+        second = self.outside_dir / "output"
+        second.mkdir(parents=True)
+        os.environ[EXTRA_ROOTS_ENV] = str(second)
+        _write_png(self.output_dir / "same.png", prompt_text="a red square")
+        _write_png(second / "same.png", prompt_text="a blue circle")
+        GalleryConfig.MONITORING_DIRECTORIES = [
+            self._root(self.output_dir),
+            self._root(second),
+        ]
+        output_dirs = [Path(d) for d in self.api._get_all_output_dirs()]
+        self.assertEqual(len(output_dirs), 2)
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+        status, body = await self._json(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        rows = body["job"]["outcomes"]["added"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["root"] for row in rows}, {"output"})
+        by_index = {row["root_index"]: row for row in rows}
+        self.assertEqual(set(by_index), {0, 1})
+        for index, row in by_index.items():
+            self.assertEqual(row["path"], "same.png")
+            self.assertTrue((output_dirs[index] / row["path"]).is_file())
+        texts = {
+            index: (
+                "red"
+                if output_dirs[index] == Path(self._root(self.output_dir))
+                else "blue"
+            )
+            for index in by_index
+        }
+        for index, row in by_index.items():
+            self.assertIn(texts[index], row["detail"])
+
+    async def test_scan_row_names_the_prompt_by_its_stored_title(self):
+        """Review M10: a row names the prompt as the Library does."""
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square\nmore")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        summaries = self.api.db.get_image_link_summaries
+
+        def titled(paths, allow_filename_fallback=True):
+            found = summaries(paths, allow_filename_fallback)
+            return {
+                path: {**summary, "title": "Stored square title"}
+                for path, summary in found.items()
+            }
+
+        self.api.db.get_image_link_summaries = titled
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+        status, body = await self._json(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        (row,) = body["job"]["outcomes"]["added"]
+        self.assertIn("“Stored square title”", row["detail"])
+
+        # Without a stored title (or an unreadable one): the text's first line.
+        def broken(paths, allow_filename_fallback=True):
+            raise RuntimeError("unreadable")
+
+        self.api.db.get_image_link_summaries = broken
+        _write_png(self.output_dir / "next.png", prompt_text="a green cone\nmore")
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+        status, body = await self._json(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        details = {r["path"]: r["detail"] for r in body["job"]["outcomes"]["added"]}
+        self.assertIn("“a green cone”", details["next.png"])
+
+    async def test_jobs_routes_404_and_409(self):
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        for method, url in (
+            ("GET", "/prompt_manager/jobs/nope"),
+            ("GET", "/prompt_manager/jobs/nope/events"),
+            ("POST", "/prompt_manager/jobs/nope/cancel"),
+        ):
+            status, data = await self._json(method, url)
+            self.assertEqual(status, 404, url)
+            self.assertFalse(data["success"])
+
+        gate, calls = self._gate_collect()
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        self.assertEqual(status, 202)
+        job_id = started["job"]["id"]
+        self.assertEqual(started["job"]["state"], "running")
+
+        status, busy = await self._json("POST", "/prompt_manager/jobs/scan")
+        self.assertEqual(status, 409)
+        self.assertEqual(
+            busy["running"], {"id": job_id, "title": started["job"]["title"]}
+        )
+        self.assertEqual((busy["success"], busy["code"]), (False, "busy"))
+
+        watcher = asyncio.ensure_future(
+            self.client.request("GET", f"/prompt_manager/jobs/{job_id}/events")
+        )
+        await asyncio.sleep(0.05)
+        status, cancel = await self._json(
+            "POST", f"/prompt_manager/jobs/{job_id}/cancel"
+        )
+        self.assertEqual((status, cancel["cancellation_requested"]), (200, True))
+        gate.set()
+        events = _sse_payloads(await (await watcher).text())
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(events[0]["id"], job_id)
+        self.assertEqual(events[-1]["state"], "cancelled")
+        status, cancel = await self._json(
+            "POST", f"/prompt_manager/jobs/{job_id}/cancel"
+        )
+        self.assertEqual((status, cancel["cancellation_requested"]), (200, False))
+        status, legacy = await self._json("GET", "/prompt_manager/scan/status")
+        self.assertEqual(legacy["last_event"]["type"], "cancelled")
+
+    async def test_scan_without_directories_fails_the_job(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.outside_dir)]
+        sys.modules.pop("folder_paths", None)
+        self.api._find_comfyui_output_dir = lambda: None
+
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+        status, data = await self._json(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        self.assertEqual(data["job"]["state"], "failed")
+        self.assertIn("No output directories", data["job"]["status_line"])
+
+    async def test_legacy_scan_refused_while_another_record_job_runs(self):
+        hold = asyncio.Event()
+
+        async def runner(job):
+            await hold.wait()
+
+        other = self.api._jobs.start(
+            "maintenance", "Maintenance", record_changing=True, scope={}, runner=runner
+        )
+        resp = await self.client.request("POST", "/prompt_manager/scan", data="{}")
+        self.assertEqual(resp.status, 409)
+        self.assertIn("Maintenance", (await resp.json())["error"])
+        hold.set()
+        await asyncio.wait_for(other.task, 5)
+
+
+class TestScanStatusLine(unittest.TestCase):
+
+    def test_estimate_appears_after_two_batches(self):
+        from py.api.admin import _scan_status_line
+
+        self.assertEqual(
+            _scan_status_line(50, 200, 1, 10.0), "Processing file 50 of 200"
+        )
+        self.assertEqual(
+            _scan_status_line(100, 1000, 2, 30.0),
+            "Processing file 100 of 1,000 · about 5 min left",
+        )
+        self.assertEqual(
+            _scan_status_line(100, 120, 2, 1.0),
+            "Processing file 100 of 120 · about 1 min left",
+        )
+        self.assertEqual(
+            _scan_status_line(120, 120, 3, 9.0), "Processing file 120 of 120"
+        )
+
+
 class TestWorkerThreadsSetting(AdminAPITestCase):
     """The worker-thread count is exposed, validated, persisted and used by the scan."""
 
