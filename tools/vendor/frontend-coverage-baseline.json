@@ -157,7 +157,7 @@
   },
   "workspace/activity-job-view.mjs": {
     "lines": 97,
-    "branches": 82,
+    "branches": 83,
     "functions": 98,
     "statements": 97
   },
@@ -169,8 +169,8 @@
   },
   "workspace/activity-store.mjs": {
     "lines": 98,
-    "branches": 94,
-    "functions": 95,
+    "branches": 95,
+    "functions": 98,
     "statements": 98
   },
   "workspace/activity.mjs": {
@@ -349,7 +349,7 @@
   },
   "workspace/toast.mjs": {
     "lines": 98,
-    "branches": 86,
+    "branches": 98,
     "functions": 98,
     "statements": 98
   },

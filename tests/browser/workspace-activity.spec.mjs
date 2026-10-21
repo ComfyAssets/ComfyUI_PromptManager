@@ -643,3 +643,22 @@ test('an unknown or restarted job view says so', async ({ page, request }) => {
     await expect(fileRows(page)).toHaveCount(1);
     await expect(pill(page)).toBeHidden();
 });
+
+// Review M3: a finished job the server no longer lists is gone from this tab too, and its open view says so.
+test('a finished job the server pruned leaves its open view honest', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request);
+    await step(request, job.id, { processed: 1, records: [{ group: 'added', path: 'kept/row.png', detail: 'Added' }] });
+    await finish(request, job.id);
+    await openJob(page, job.id);
+    await expect(fileRows(page)).toHaveCount(1);
+    await filter(page).focus();
+    await expect(await request.post('/__test__/jobs/restart')).toBeOK();
+    // The next periodic list read (15 s) no longer has the finished job.
+    test.slow();
+    await expect(main(page).locator('section.surface p.empty-state')).toHaveText('This job is not in this session’s Activity. Jobs are kept until ComfyUI restarts.', { timeout: 20000 });
+    await expect(progressSection(page)).toHaveCount(0);
+    await expect(heading(page).locator('h1')).toHaveText('Activity');
+    await expect(heading(page).locator('h1')).toBeFocused();
+    await expect(page).toHaveTitle('Activity · Prompt Manager');
+});
