@@ -11,7 +11,7 @@
  *   Rescan; no "Import portable recipes" (D15). Rescan shows its running state (aria-disabled "Rescanning…").
  * - "Copy prompt" (a1223–1241): the select-to-copy fallback when the clipboard is unavailable (D22).
  * - One-value input (a1138 `simpleInput`): a "Category"-style field (`input#action-input`) and Cancel / a primary
- *   action; used by the Images selection bar's "Set category" (#249 D8).
+ *   action; used by the Images selection bar's "Set category" (#249 D8) and the toolbar's Save view.
  * - Content (a1282–1304 `dialog(title, body)`): a page-built body such as the history's "All images for this
  *   positive" and "Repeat run" media (#249 D26); `onClose` runs once when that body leaves the shell.
  *
@@ -32,7 +32,8 @@ function el(tag, text, className) {
     return node;
 }
 
-function field(label, control, id) {
+/** A labelled `.field` row: `label` names `control`, which takes `id` (shared with the saved-view Edit dialog). */
+export function field(label, control, id) {
     const wrapper = el('div', undefined, 'field');
     const caption = el('label', label);
     caption.htmlFor = id;
@@ -268,14 +269,17 @@ export function openCopyFallback(text, { scope, trigger = null } = {}) {
 
 /**
  * The concept's `simpleInput`: one labelled `input#action-input` (starting at `value`), then Cancel and the primary
- * `action`. The action reports the trimmed value and closes; an empty value keeps the dialog open on its field.
- * A positive `maxLength` limits the field.
+ * `action`. The action reports the trimmed value and closes; an empty value keeps the dialog open on its field, or
+ * reports `fallback` when one is given (Save view's "Saved view", a1339). A positive `maxLength` limits the field.
  */
-export function openInputDialog({ scope, title, label, action, value = '', maxLength, onApply, trigger = null }) {
+export function openInputDialog({ scope, title, label, action, value = '', maxLength, fallback, onApply, trigger = null }) {
     requireScope(scope);
     requireCallbacks({ onApply });
     for (const [name, text] of Object.entries({ title, label, action })) {
         if (typeof text !== 'string' || !text) throw new TypeError(`The input dialog needs a ${name}`);
+    }
+    if (fallback !== undefined && (typeof fallback !== 'string' || !fallback.trim())) {
+        throw new TypeError('The input dialog fallback must be text');
     }
     const input = el('input');
     input.value = typeof value === 'string' ? value : '';
@@ -284,7 +288,7 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
     const apply = createButton(action, 'ca-primary');
     cancel.addEventListener('click', () => finish());
     apply.addEventListener('click', () => {
-        const entered = input.value.trim();
+        const entered = input.value.trim() || fallback;
         if (!entered) { input.focus(); return; }
         finish();
         onApply(entered);

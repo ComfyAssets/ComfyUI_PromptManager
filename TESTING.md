@@ -431,13 +431,63 @@ Recorded shell deviations:
 - **D4**: a "Theme" select with Dark, Light and System. System follows the ComfyUI
   palette, then the OS.
 - **D5**: no Activity button or Activity row until an activity center exists.
-- **D28**: no SAVED VIEWS or COLLECTIONS, and no Design review. The bottom nav is
+- **D28**: no COLLECTIONS, and no Design review. The bottom nav is
   System plus the production Overview hub (its own outline home glyph, not the concept's
   `activity` pulse, and no count).
   The connection reads "Your library, on your server" with a neutral muted dot.
+- **D49** (saved views, #249 D16): the SAVED VIEWS group label has no "PROPOSED"
+  badge, because saved views are persisted (`/prompt_manager/saved-views`). Its rows are
+  the concept's `links()` rows: the search icon, the view name and no count, linking
+  `#/saved/<id>`. Opening one shows its page with the saved toolbar value and Refine
+  filters, and the view's name as the h1, breadcrumb and title. A value its page no
+  longer accepts (a removed Source or Folder) stays default; an unknown id opens Images.
+  A toolbar change made while the sources are still loading keeps the saved Source and
+  Folder until discovery settles. A saved view, like Favorites, never replaces the plain
+  Images or Library return state. Writes (POST, PATCH) validate strictly; a state over
+  4 KB is refused in the browser with "The view is too large to save. Shorten its
+  search, folder or tags and try again." Startup and restore check only the table's
+  structure and that each row's state is a JSON object of at most 4 KB, never the value
+  rules, so a row saved under older rules (a missing or retired key, a sort no longer
+  offered) never stops the database from opening: reads fill missing keys with their
+  defaults, drop unknown keys, default invalid values and make the name displayable
+  (`tests/test_saved_views.py`). A live row whose state is not a JSON object never
+  blocks startup either: its id is logged as a warning, the row is left in place, the
+  listing and rename skip it, and its `#/saved/<id>` link behaves like a missing view.
+  Restore stays strict and rejects such a backup ("Saved views contains invalid values"). Only request validation is a 400; any other failure is
+  a logged 500 with a generic message. The Favorites count re-read after starring is
+  coalesced to one read 300 ms after the last toggle.
+  `a saved view row matches the concept's` saves one view in both documents and
+  compares the rows; `tests/browser/workspace-saved-views.spec.mjs` covers saving,
+  reopening, the defaults that replace rejected values, and failed reads and saves.
+- **D50**: no "Needs review" row in SAVED VIEWS until the tag-review slice (maintainer
+  ruling, 2026-10-21). The comparison maps only that row out.
+- **D51** (maintainer ruling, 2026-10-21, beyond the concept): SAVED VIEWS starts with
+  the concept's Favorites row (star icon, name, count). Its count is the Favorites
+  listing's own `limit=1` total (`/images/output?mode=workspace&favorites=1`), follows
+  the nav-count rules (hidden until loaded, absent when its read fails, never a
+  placeholder) and is re-read after every confirmed star or unstar, on any page.
+  `#/favorites` is Images filtered to favorites, named "Favorites" (concept
+  `renderImages`); `favorites=1` keeps only the selected roots' favorites, read per root
+  from `image_favorites` and matched against the scan with the toggle's case folding,
+  and a failed read is an error, never an unfiltered page. Unlike the concept, an
+  unstarred card stays on Favorites (showing ☆) until the next load, so the star can be
+  undone in place. Favorites neither restores nor replaces the Images return state.
+  Save view there saves `favorites: true`, so the view reopens the favorites. An open
+  saved view's heading leads with **Edit**: "Edit saved view" with "View name" and
+  Delete… (danger), Cancel and Save. Save re-reads the list, retitles the page and
+  toasts "Saved view renamed."; an empty name keeps the dialog open. Delete… swaps the
+  same dialog to "Delete saved view" (Cancel / Delete; never `window.confirm`; its Cancel
+  closes the dialog without deleting rather than returning to Edit); Delete
+  removes the view, replaces the dead route with the view's plain page and toasts
+  "Saved view deleted.". Failures toast "The view could not be renamed. Try again." or
+  "The view could not be deleted. Try again."; a view another tab already deleted counts
+  as deleted. `tests/browser/workspace-saved-views.spec.mjs` covers the row, count,
+  route, star updates, Save view on Favorites, Edit, and the failure paths;
+  `tests/test_image_favorites.py` covers `favorites=1`.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
-  library.", and the title has no " concept" suffix.
+  library.", and the title has no " concept" suffix. Save view's dialog action reads
+  "Save", not "Apply in prototype", and its toast drops the demo's word "Sample".
 - **D31**: at `max-width: 950px` the overlay caps the one-column shell at
   `minmax(0, 1fr)`, so extreme zoom cannot widen it to the sidebar's min-content.
 - **#245 D2**: no "Auto-tag images" on the Tags heading until the image-annotation
@@ -464,7 +514,7 @@ zoom, the 2nd card opens the viewer titled "<title> · <filename>", Escape retur
 to it (production only: the concept re-renders its grid and drops focus), Info on the
 3rd card moves `.selected`, searches for "alpine" and for one image, and Load more with
 its toast. `mapImagesConcept` applies D3, D8 (the selection bar's real actions only),
-D16 (follow-up PR: no Save view), D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
+D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
 sorted alphabetically). Removed toolbar and filter-row items flow again from the
 concept's own boxes (`reflow`), checked against the concept page with those items
 removed at runtime. Masonry tops and heights are compared unrounded, within one layout
@@ -570,7 +620,9 @@ Recorded deviations on this page (spec §8):
   files in M output folders." (the scan's `total` and `roots`) or "Rescan could not
   finish. Try again."; while it runs, a reopened Import shows an aria-disabled
   "Rescanning…".
-- **D16 (follow-up)**: no Save view in PR C; a follow-up PR adds real saved views.
+- **D16 (retired)**: Save view is the concept's own toolbar button, between sort and
+  Filters, on Images and the Prompt library (see D49). It saves the visible toolbar value
+  with the Refine filters; the comparisons no longer map it.
 - **D17**: the caption date is the newest result's day under Recently added (", YYYY"
   outside the current year), hidden under every other sort.
 - **D18**: the concept hover zoom, with no sticky zoom on hover-less (touch) devices.
@@ -775,8 +827,7 @@ Behaviors, in both documents: the title and Explore history open the prompt's hi
 (its `h1` is the title), the footer send carries the positive only (a bridge host page
 records the roles production's preview asks for), copy writes the full positive with
 "Prompt copied.", and the "neon" search and the Landscapes category leave the same cards
-and caption. `mapLibraryConcept` applies D14 (Oldest first appended), D16 (no Save
-view; the toolbar flows again, checked against the concept without it), D23 (the
+and caption. `mapLibraryConcept` applies D14 (Oldest first appended), D23 (the
 title button's `min-width: 0`; "− 1 negative variant", measured on the concept with the
 singular at runtime; the spoken "Rated N out of 5"; the two-line clamp, which the
 concept's samples exceed at 390px, checked against the concept with the clamp rule

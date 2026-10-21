@@ -116,19 +116,21 @@ test('toolbar emits concept markup and order', async () => {
         dom.body.append(container);
         const changes = [];
         const filters = [];
+        const saves = [];
         const toolbar = mountToolbar(container, {
             scope, categories: ['Portraits', 'Landscapes'],
             sorts: [['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated']],
             value: { q: 'castle', category: 'Landscapes', sort: 'name' },
             onChange: value => changes.push(value), onFilters: trigger => filters.push(trigger),
+            onSaveView: trigger => saves.push(trigger),
         });
         const root = container.children[0];
         assert.equal(toolbar.element, root);
         assert.equal(root.tagName, 'SEARCH');
         assert.equal(root.className, 'toolbar');
-        assert.deepEqual(tags(root), ['label', 'select', 'select', 'button']);
+        assert.deepEqual(tags(root), ['label', 'select', 'select', 'button', 'button']);
 
-        const [label, category, sort, filtersButton] = root.children;
+        const [label, category, sort, saveButton, filtersButton] = root.children;
         assert.equal(label.className, 'search-field');
         assert.equal(label.htmlFor, 'search');
         assert.deepEqual(tags(label), ['svg', 'input']);
@@ -151,8 +153,12 @@ test('toolbar emits concept markup and order', async () => {
         assert.equal(sort.getAttribute('aria-label'), 'Sort results');
         assert.equal(sort.value, 'name');
 
-        // D16: no Save view until saved views are persisted.
-        assert.equal(button(root, 'Save view'), undefined);
+        // The concept's Save view, between sort and Filters (a359), reports its own button as the trigger.
+        assert.equal(button(root, 'Save view'), saveButton);
+        assert.equal(saveButton.type, 'button');
+        saveButton.click();
+        assert.deepEqual(saves, [saveButton]);
+        assert.deepEqual(filters, []);
         assert.equal(filtersButton.textContent, 'Filters');
         assert.equal(filtersButton.type, 'button');
         filtersButton.click();
@@ -184,6 +190,9 @@ test('toolbar emits concept markup and order', async () => {
         toolbar.setValue({ sort: 'bogus' });
         assert.equal(sort.value, 'newest');
         assert.throws(() => mountToolbar(container, { categories: [], sorts: [['newest', 'Recently added']],
+            onChange() {}, onFilters() {}, onSaveView() {} }), TypeError);
+        // Every toolbar page offers Save view, so the callback is required.
+        assert.throws(() => mountToolbar(container, { scope, categories: [], sorts: [['newest', 'Recently added']],
             onChange() {}, onFilters() {} }), TypeError);
     } finally {
         scope.dispose();
@@ -200,7 +209,7 @@ test('toolbar search uses a debounced onChange that stops with its scope', async
         const container = new dom.Element('div');
         const changes = [];
         mountToolbar(container, { scope, categories: [], sorts: [['newest', 'Recently added']],
-            value: { q: '', category: '', sort: 'newest' }, onChange: value => changes.push(value), onFilters() {} });
+            value: { q: '', category: '', sort: 'newest' }, onChange: value => changes.push(value), onFilters() {}, onSaveView() {} });
         const input = container.children[0].children[0].children[1];
         assert.equal(input.id, 'search');
         for (const text of ['c', 'ca', 'cat']) {
@@ -244,7 +253,7 @@ test('sort lists concept options first', async () => {
     try {
         const container = new dom.Element('div');
         mountToolbar(container, { scope, categories: [], sorts: given, value: { q: '', category: '', sort: 'oldest' },
-            onChange() {}, onFilters() {} });
+            onChange() {}, onFilters() {}, onSaveView() {} });
         const sort = container.children[0].children[2];
         assert.deepEqual(optionPairs(sort).map(([, label]) => label),
             ['Recently added', 'Name A–Z', 'Highest rated', 'Oldest first', 'Filename Z–A']);
@@ -469,6 +478,40 @@ test('copy fallback selects the text', async () => {
     }
 });
 
+// The concept's Save view dialog (a1330–1346 via simpleInput a1138): an empty name falls back to "Saved view".
+test('an input dialog with a fallback applies it for an empty value', async () => {
+    const { openInputDialog, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        const applied = [];
+        const open = value => openInputDialog({ scope, title: 'Save this view', label: 'View name', action: 'Save',
+            value, maxLength: 100, fallback: 'Saved view', onApply: name => applied.push(name) });
+        open('My workspace view');
+        assert.equal(byId(dom, 'modal-title').textContent, 'Save this view');
+        const body = byId(dom, 'modal-body');
+        const [field, actions] = body.children;
+        const [label, input] = field.children;
+        assert.equal(label.textContent, 'View name');
+        assert.equal(input.id, 'action-input');
+        assert.equal(input.value, 'My workspace view');
+        assert.equal(input.maxLength, 100);
+        assert.deepEqual(actions.children.map(node => node.textContent), ['Cancel', 'Save']);
+        input.value = '   ';
+        actions.children[1].click();
+        assert.deepEqual(applied, ['Saved view']);
+        open('');
+        byId(dom, 'action-input').value = '  Castles  ';
+        byId(dom, 'modal-body').children[1].children[1].click();
+        assert.deepEqual(applied, ['Saved view', 'Castles']);
+        assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', fallback: '', onApply() {} }), TypeError);
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
 test('dialogs restore focus to the trigger on Escape', async () => {
     const { openRefineDialog, openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();
@@ -662,8 +705,8 @@ test('the Filters button shows the active refinement count', async () => {
     try {
         const container = new dom.Element('div');
         const toolbar = mountToolbar(container, { scope, categories: [], sorts: [['newest', 'Recently added']],
-            activeFilters: 2, onChange() {}, onFilters() {} });
-        const filtersButton = container.children[0].children[3];
+            activeFilters: 2, onChange() {}, onFilters() {}, onSaveView() {} });
+        const filtersButton = container.children[0].children[4];
         // The visible text is the accessible name, so the count is spoken too.
         assert.equal(filtersButton.textContent, 'Filters · 2');
         toolbar.setActiveFilters(1);
@@ -673,7 +716,7 @@ test('the Filters button shows the active refinement count', async () => {
         for (const bad of [-1, 1.5, '1', null, Number.NaN]) assert.throws(() => toolbar.setActiveFilters(bad), TypeError);
         assert.equal(filtersButton.textContent, 'Filters');
         assert.throws(() => mountToolbar(new dom.Element('div'), { scope, categories: [], sorts: [['newest', 'Recently added']],
-            activeFilters: -1, onChange() {}, onFilters() {} }), TypeError);
+            activeFilters: -1, onChange() {}, onFilters() {}, onSaveView() {} }), TypeError);
     } finally {
         scope.dispose();
         dom.restore();

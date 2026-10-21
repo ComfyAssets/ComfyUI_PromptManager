@@ -36,6 +36,10 @@ function queryFor(filters, batchSize) {
     const sort = filters.sort ?? 'newest';
     if (!IMAGE_SORTS.includes(sort)) throw new TypeError('Invalid sort filter');
     query.set('sort', sort);
+    // The Favorites page (#249 D51): the listing keeps only favorites.
+    const favorites = filters.favorites ?? false;
+    if (typeof favorites !== 'boolean') throw new TypeError('Invalid favorites filter');
+    if (favorites) query.set('favorites', '1');
     return query.toString();
 }
 

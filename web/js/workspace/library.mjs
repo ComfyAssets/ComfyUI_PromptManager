@@ -13,6 +13,7 @@ import {countOf} from './plural.mjs';
 import {addedTerms} from './history-state.mjs';
 import {pageHeading} from './heading.mjs';
 import {mountToolbar} from './toolbar.mjs';
+import {libraryFilters,libraryViewState} from './saved-views.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
 
 let shelfVisit=null;
@@ -133,7 +134,8 @@ export function mountNewPromptAction(main,api,parentScope) {
     return button;
 }
 
-export function mountLibrary(main,api,parentScope,{positiveId}={}) {
+/** `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view. */
+export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,onSaveView=()=>{}}={}) {
     const scope=createScope();parentScope.cleanup(()=>scope.dispose());
     main.classList.add('library-main');
     const sender=createPromptSender({scope});
@@ -144,10 +146,11 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
     scope.cleanup(()=>main.classList.remove('library-main'));
 
     function mountShelf() {
-        const visit=shelfVisit, mountedGeneration=writeGeneration;
+        const saved=savedState?libraryFilters(savedState):null;
+        const visit=saved?null:shelfVisit, mountedGeneration=writeGeneration;
         // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again.
         const restorable=visit?.state?visit:null;
-        const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters};
+        const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters,...saved};
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
@@ -155,7 +158,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         // D44: Filters reads "Filters · 1" while a Tags filter (from Refine or a Browse) narrows the shelf.
         const refinements=()=>filters.tags.length?1:0;
         const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
-            value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters});
+            value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters,
+            onSaveView:trigger=>{const value=toolbar.value();onSaveView(trigger,libraryViewState({...filters,text:value.q.trim(),category:value.category,sort:value.sort}));}});
         const optionsStatus=el('p','','library-options-status');optionsStatus.hidden=true;optionsStatus.setAttribute('role','alert');
         // The concept caption (app.js renderLibrary a586): the filtered set's parents and their negative variants.
         const caption=el('div',undefined,'section-caption');const captionCount=el('span');caption.append(captionCount,el('span','Images are grouped by positive prompt'));caption.hidden=true;
@@ -409,7 +413,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         scope.cleanup(()=>{
             const savedFilters={...filters,tags:[...filters.tags]},savedAnchor=pendingAnchor || anchor || captureAnchor();
             // A write while mounted makes this stream stale: keep only what still means something.
-            shelfVisit=mountedGeneration!==writeGeneration?{filters:savedFilters,anchor:savedAnchor}:state?{filters:savedFilters,state,scrollY:window.scrollY,layout:{inlineSize,columns:columnCount,heights:[...heights],anchor:savedAnchor}}:null;
+            // A saved view is not the plain shelf, so it never replaces the Library return state (#249 M2, as Favorites).
+            if(!saved) shelfVisit=mountedGeneration!==writeGeneration?{filters:savedFilters,anchor:savedAnchor}:state?{filters:savedFilters,state,scrollY:window.scrollY,layout:{inlineSize,columns:columnCount,heights:[...heights],anchor:savedAnchor}}:null;
             toolbarScope.dispose();stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
         loadCategories();if(restorable) {render(stream.state);if(restorable.state.loading || restorable.state.error)stream.loadMore();} else reset();
     }

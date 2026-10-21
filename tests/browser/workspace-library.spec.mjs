@@ -151,19 +151,19 @@ test('failed library reads retry while late search responses cannot overwrite ne
 
 test('library toolbar matches the concept and tags live in Refine this view',async({page})=>{
     await page.goto(route);await expect(cards(page)).toHaveCount(3);
-    // app.js toolbar() a347–360: search.toolbar > label.search-field (input#search), select#category-filter, select#sort, Filters.
+    // app.js toolbar() a347–360: search.toolbar > label.search-field (input#search), select#category-filter, select#sort, Save view, Filters.
     const toolbar=page.locator('#workspace-main search.toolbar');await expect(toolbar).toHaveCount(1);
-    expect(await toolbar.evaluate(node=>[...node.children].map(child=>child.tagName.toLowerCase()+(child.id?`#${child.id}`:'')+(child.className?`.${child.className.split(' ').filter(name=>!name.startsWith('ca-')).join('.')}`:'')))).toEqual(['label.search-field','select#category-filter','select#sort','button']);
+    expect(await toolbar.evaluate(node=>[...node.children].map(child=>child.tagName.toLowerCase()+(child.id?`#${child.id}`:'')+(child.className?`.${child.className.split(' ').filter(name=>!name.startsWith('ca-')).join('.')}`:'')))).toEqual(['label.search-field','select#category-filter','select#sort','button','button']);
     await expect(toolbar.locator('#search')).toHaveAttribute('placeholder','Search prompts, tags, filenames…');
     await expect(toolbar.locator('#sort option')).toHaveText(['Recently added','Name A–Z','Highest rated','Oldest first']);
-    await expect(toolbar.getByRole('button')).toHaveText(['Filters']);
+    await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters']);
     await expect(page.getByRole('button',{name:'Refresh library',exact:true})).toHaveCount(0);
     await expect(page.getByRole('textbox',{name:'Tags',exact:true})).toHaveCount(0);
     await expect(page.locator('.library-shelf > search.toolbar:first-child')).toHaveCount(1);
     // Tags apply from the dialog only; Clear clears them and the toolbar category, as the concept's does.
     await page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('Portraits');await applyTags(page,'studio');await expect(cards(page)).toHaveCount(1);
     // D44: the active Tags filter shows on the button; the category is the toolbar's own and is not counted.
-    await expect(toolbar.getByRole('button')).toHaveText(['Filters · 1']);
+    await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters · 1']);
     await toolbar.getByRole('button',{name:'Filters · 1',exact:true}).click();
     await expect(refine(page).locator('.field label')).toHaveText(['Tags']);await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('studio');
     await refine(page).getByRole('button',{name:'Clear filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);

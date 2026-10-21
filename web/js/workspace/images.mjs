@@ -13,6 +13,7 @@ import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
 import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { showWorkspaceToast } from './toast.mjs';
+import { imagesFilters, imagesViewState } from './saved-views.mjs';
 
 /** The concept's panel without an image (app.js updateImages a456–458). */
 function noSelection() {
@@ -95,12 +96,23 @@ function deliverFavorite(key, favorite) {
     else if (lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
     for (const target of embeddedFavoriteTargets) target(key, favorite);
 }
+// Told after every confirmed favorite change, wherever it was made (the shell's Favorites count, #249 D51).
+const favoriteListeners = new Set();
+/** Run `listener()` after each confirmed favorite change; returns the unsubscribe. */
+export function onFavoriteChange(listener) {
+    favoriteListeners.add(listener);
+    return () => favoriteListeners.delete(listener);
+}
 
 /**
  * An embedded collection (the history page's shared gallery and its All images and Repeat run dialogs, D47) has no
  * caption: its page heading or dialog title already names it, and `focusTarget` takes a stranded focus.
+ * `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view.
+ * `favorites` is the Favorites page (#249 D51): only favorites are listed, and it neither restores nor replaces the
+ * Images last visit.
  */
-export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null} = {}) {
+export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null, savedState = null,
+    favorites = false, onSaveView = () => {}} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -113,7 +125,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
-    const visit = embedded ? null : lastVisit;
+    const saved = embedded || !savedState ? null : imagesFilters(savedState);
+    const visit = embedded || saved || favorites ? null : lastVisit;
     let density = visit?.density || 'comfortable';
     let metrics = {...INITIAL_METRICS};
     let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
@@ -122,11 +135,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let roots = [], folders = [];
     const rendered = new Map();
     const itemIndexes = new Map();
-    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters };
+    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters, ...saved,
+        favorites: favorites || saved?.favorites === true };
     filters.tags = [...filters.tags];
+    if (!IMAGE_SORT_OPTIONS.some(([value]) => value === filters.sort)) filters.sort = 'newest';
+    // A saved Source or Folder is only listed once discovery confirms it still exists; until then nothing is fetched.
+    let savedScopePending = Boolean(saved) && (filters.root !== 'all' || filters.subfolder !== '');
+    // The first discovery settled (found or failed): only then may a pending saved scope be kept or dropped (#249 M3).
+    let discoverySettled = false;
     scope.cleanup(() => {
         // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
-        if (!embedded) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
+        // A favorites-only collection or a saved view is not the plain Images collection, so it never becomes the
+        // Images return state (#249 D51, and M2 for saved views).
+        if (!embedded && !filters.favorites && !saved) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
@@ -157,7 +178,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (Object.entries(next).every(([key, item]) => filters[key] === item)) return;
             Object.assign(filters, next);
             reset();
-        }, onFilters:openFilters});
+        }, onFilters:openFilters, onSaveView:trigger => {
+            const value = toolbar.value();
+            onSaveView(trigger, imagesViewState({...filters, q:value.q.trim(), category:value.category, sort:value.sort}));
+        }});
     const toolbarControls = toolbar ? [...toolbar.element.querySelectorAll('input, select, button')] : [];
     const optionsStatus = el('p', '', 'options-status muted');
     optionsStatus.hidden = true; optionsStatus.setAttribute('role', 'alert');
@@ -360,6 +384,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         favoritePending.delete(key);
         deliverFavorite(key, saved ? favorite : !favorite);
         showWorkspaceToast(saved ? FAVORITE_DONE[favorite] : FAVORITE_FAILED[favorite]);
+        // On Favorites an unstarred card stays (with ☆) until the next load, so the star can be undone in place (D51).
+        if (saved) for (const listener of favoriteListeners) listener();
     }
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');
@@ -593,8 +619,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // The ruled selection lifetime: a replaced collection may no longer hold the checked files.
         bar?.clear();
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
+        // A toolbar change while discovery is still pending keeps the saved Source and Folder; the settled discovery
+        // then lists the view with every current value (#249 M3).
+        if (savedScopePending && !discoverySettled) { updateScope(); return; }
+        settleSavedScope();
         updateScope();
         stream.reset(filters, {load:!recovering});
+    }
+    /** A saved view's Source and Folder apply only while the discovered sources still list them (#249 D16). */
+    function settleSavedScope() {
+        if (!savedScopePending) return;
+        savedScopePending = false;
+        if (filters.root !== 'all' && !roots.some(root => String(root.index) === filters.root)) filters.root = 'all';
+        if (!folderOptions(filters.root).some(([path]) => path === filters.subfolder)) filters.subfolder = '';
     }
     /** A panel tag chip (D21): the Images Tags filter becomes exactly that tag, as "Refine this view" would set it. */
     function filterByTag(tag) {
@@ -744,7 +781,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(() => { optionsRequest?.abort(); categoryRequest?.abort(); });
     updateScope();
     // The page's one discovery alert is written once both first loads settled (#249 final review m6).
-    if (!embedded) Promise.all([loadOptions(), loadCategories()]).then(() => { if (!scope.signal.aborted) renderLoadStatus(); });
+    if (!embedded) Promise.all([loadOptions(), loadCategories()]).then(() => {
+        if (scope.signal.aborted) return;
+        discoverySettled = true;
+        renderLoadStatus();
+        if (savedScopePending) reset();
+    });
     if (visit) {
         renderState(stream.state);
         const selected = stream.state.items.find(image => imageKey(image) === selection);
@@ -753,7 +795,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (!scope.signal.aborted) window.scrollTo(0, visit.scrollY);
         });
         if (visit.state.loading || visit.state.error) stream.loadMore();
-    } else reset();
+    } else if (savedScopePending) updateScope();
+    else reset();
     /** D6: the selected file's prompt pair, only once its inspection loaded with both roles resolved. */
     function selectedPair() {
         const {record, prompts, loading, error, refreshRequired} = inspection.state;

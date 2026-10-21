@@ -95,11 +95,11 @@ test('a tag Browse shows Filters · 1 until its filter is cleared',async({page})
     await page.goto('/prompt_manager/workspace#/library');
     const shelf=page.locator('article[data-prompt-id]');await expect(shelf.first()).toBeVisible();const total=await shelf.count();
     const toolbar=page.locator('#workspace-main search.toolbar');
-    await expect(toolbar.getByRole('button')).toHaveText(['Filters']);
+    await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters']);
     await page.goto(route);
     const row=tagRow(page,'cinematic');await row.getByRole('button',{name:'Browse',exact:true}).click();
     await expectLibrary(page,{tags:'cinematic',count:2});
-    await expect(toolbar.getByRole('button')).toHaveText(['Filters · 1']);
+    await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters · 1']);
     await toolbar.getByRole('button',{name:'Filters · 1',exact:true}).click();
     const refine=page.getByRole('dialog',{name:'Refine this view',exact:true});
     await refine.getByRole('button',{name:'Clear filters',exact:true}).click();await expect(refine).toHaveCount(0);
@@ -109,7 +109,7 @@ test('a tag Browse shows Filters · 1 until its filter is cleared',async({page})
     const nav=page.getByRole('navigation',{name:'Workspace',exact:true});
     await nav.getByRole('link',{name:/^Tags & categories(?:\s*[\d,]+)?$/}).click();await expect(main(page).getByRole('heading',{level:1})).toHaveText('Tags & categories');
     await nav.getByRole('link',{name:/^Prompt library(?:\s*[\d,]+)?$/}).click();
-    await expect(shelf).toHaveCount(total);await expect(toolbar.getByRole('button')).toHaveText(['Filters']);
+    await expect(shelf).toHaveCount(total);await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters']);
 });
 
 test('category Browse sets only the category constraint',async({page})=>{

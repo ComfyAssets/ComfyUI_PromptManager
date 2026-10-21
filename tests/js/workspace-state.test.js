@@ -79,18 +79,19 @@ test('positive library deep links preserve the selected identity without duplica
 
 test('nav counts reject negative, non-integer and missing totals', async () => {
     const { summarizeNavCounts } = await source;
-    const counts = summarizeNavCounts({images: {total: 24}, library: {total: 0}, tags: {total: 7}});
+    const counts = summarizeNavCounts({images: {total: 24}, favorites: {total: 3}, library: {total: 0}, tags: {total: 7}});
     assert.ok(counts instanceof Map);
-    assert.deepEqual([...counts], [['images', 24], ['library', 0], ['tags', 7]]);
+    assert.deepEqual([...counts], [['images', 24], ['favorites', 3], ['library', 0], ['tags', 7]]);
     assert.equal(counts.has('inspect'), false, 'Inspect a file has no count');
     for (const invalid of [undefined, null, {}, {total: -1}, {total: 1.5}, {total: '3'}, {total: NaN},
         {total: Infinity}, {total: Number.MAX_SAFE_INTEGER + 1}, {total: null}, [], 'x']) {
-        const result = summarizeNavCounts({images: invalid, library: {total: 2}, tags: invalid});
+        const result = summarizeNavCounts({images: invalid, favorites: invalid, library: {total: 2}, tags: invalid});
         assert.equal(result.get('images'), null, JSON.stringify(invalid));
+        assert.equal(result.get('favorites'), null);
         assert.equal(result.get('library'), 2);
         assert.equal(result.get('tags'), null);
     }
-    assert.deepEqual([...summarizeNavCounts()], [['images', null], ['library', null], ['tags', null]]);
+    assert.deepEqual([...summarizeNavCounts()], [['images', null], ['favorites', null], ['library', null], ['tags', null]]);
 });
 
 test('nav counts settle independently so a slow images read never delays the others', async () => {
@@ -98,6 +99,7 @@ test('nav counts settle independently so a slow images read never delays the oth
     let releaseImages;
     const images = new Promise(resolve => { releaseImages = resolve; });
     const api = {get: async url => {
+        if (url.includes('favorites=1')) return {success: true, total: 2};
         if (url.startsWith('/prompt_manager/images')) return images;
         if (url.startsWith('/prompt_manager/library')) return {success: true, total: 3};
         throw new Error('Unavailable');
@@ -105,14 +107,14 @@ test('nav counts settle independently so a slow images read never delays the oth
     const settled = [];
     const done = loadNavCounts(api, new AbortController().signal, (id, count) => settled.push([id, count]));
     await new Promise(resolve => setTimeout(resolve, 0));
-    assert.deepEqual(settled.sort(), [['library', 3], ['tags', null]]);
+    assert.deepEqual(settled.sort(), [['favorites', 2], ['library', 3], ['tags', null]]);
     releaseImages({success: true, total: 40});
     const counts = await done;
     assert.deepEqual(settled.at(-1), ['images', 40]);
-    assert.deepEqual([...counts], [['images', 40], ['library', 3], ['tags', null]]);
+    assert.deepEqual([...counts], [['images', 40], ['favorites', 2], ['library', 3], ['tags', null]]);
 });
 
-test('nav counts issue three bounded requests and drop only the failed count', async () => {
+test('nav counts issue four bounded requests and drop only the failed count', async () => {
     const { loadNavCounts } = await source;
     const calls = [];
     const signal = new AbortController().signal;
@@ -123,13 +125,40 @@ test('nav counts issue three bounded requests and drop only the failed count', a
         return {success: true, total: 12};
     }};
     const counts = await loadNavCounts(api, signal);
-    assert.deepEqual([...counts], [['images', 12], ['library', null], ['tags', 5]]);
+    assert.deepEqual([...counts], [['images', 12], ['favorites', 12], ['library', null], ['tags', 5]]);
     const urls = calls.map(([url]) => new URL(url, 'http://host'));
     assert.deepEqual(urls.map(url => url.pathname),
-        ['/prompt_manager/images/output', '/prompt_manager/library', '/prompt_manager/vocabulary/tags']);
+        ['/prompt_manager/images/output', '/prompt_manager/images/output', '/prompt_manager/library', '/prompt_manager/vocabulary/tags']);
     for (const url of urls) assert.equal(url.searchParams.get('limit'), '1');
     assert.equal(urls[0].searchParams.get('mode'), 'workspace');
+    assert.equal(urls[0].searchParams.has('favorites'), false);
+    // D51: the Favorites count is the Favorites page's own listing.
+    assert.equal(urls[1].searchParams.get('mode'), 'workspace');
+    assert.equal(urls[1].searchParams.get('favorites'), '1');
     assert.ok(calls.every(([, used]) => used === signal));
+});
+
+test('a favorite change re-reads only the Favorites count', async () => {
+    const { loadNavCounts, FAVORITE_WRITE_COUNTS } = await source;
+    assert.deepEqual([...FAVORITE_WRITE_COUNTS], ['favorites']);
+    assert.ok(Object.isFrozen(FAVORITE_WRITE_COUNTS));
+    const calls = [];
+    const api = {get: async url => { calls.push(url); return {success: true, total: 0}; }};
+    const counts = await loadNavCounts(api, new AbortController().signal, () => {}, FAVORITE_WRITE_COUNTS);
+    assert.deepEqual(calls, ['/prompt_manager/images/output?mode=workspace&favorites=1&limit=1']);
+    // A real zero is a count, unlike an outstanding read.
+    assert.deepEqual([...counts], [['favorites', 0]]);
+});
+
+test('the Favorites route is native and resolves by its hash', async () => {
+    const { resolveRoute, isHandoff, routeTitle, routes } = await source;
+    const route = resolveRoute('#/favorites');
+    assert.equal(route.id, 'favorites');
+    assert.equal(route.label, 'Favorites');
+    assert.equal(routeTitle(route), 'Favorites');
+    assert.equal(isHandoff(route), false);
+    // No href: Overview lists no legacy card for it.
+    assert.equal(routes.find(item => item.id === 'favorites').href, undefined);
 });
 
 test('a Library or vocabulary write re-reads only the Library and Tags counts', async () => {
@@ -159,4 +188,25 @@ test('navigating to the current route re-renders it, as the concept go() does', 
     navigateTo('#/library/13',win);assert.equal(win.location.hash,'#/library/13');assert.equal(seen.length,2);
     win.dispatchEvent(new Event('hashchange'));assert.deepEqual(seen.at(-1),['library',13]);
     dispose();navigateTo('#/library/13',win);assert.equal(seen.length,3);
+});
+
+// Saved views (#249 D16): `#/saved/<id>` opens one persisted view; the shell resolves it to its page.
+test('saved-view links resolve to their id and re-render only when the id changes', async () => {
+    const {resolveRoute,mountRouter,isHandoff,routes}=await source;
+    const route=resolveRoute('#/saved/7');
+    assert.deepEqual([route.id,route.savedId,route.hash],['saved',7,'#/saved/7']);
+    assert.equal(isHandoff(route),false);
+    assert.equal(routes.some(item=>item.id==='saved'),false,'saved views are not an Overview card or a WORKSPACE link');
+    for(const hash of ['#/saved','#/saved/0','#/saved/-2','#/saved/1.5','#/saved/9007199254740992','#/saved/3/x','#/saved/abc']) {
+        assert.equal(resolveRoute(hash).id,'images',hash);
+    }
+    const win=new EventTarget();win.location={hash:'#/saved/3'};
+    win.history={state:null,replaceState(state,unused,hash){win.location.hash=hash;}};
+    const seen=[];const dispose=mountRouter(win,next=>seen.push([next.id,next.savedId]));
+    assert.equal(win.location.hash,'#/saved/3');
+    win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/saved/4';win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/images';win.dispatchEvent(new Event('hashchange'));
+    assert.deepEqual(seen,[['saved',3],['saved',4],['images',undefined]]);
+    dispose();
 });

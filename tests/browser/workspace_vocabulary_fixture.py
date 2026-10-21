@@ -79,6 +79,7 @@ UNUSED_TAG = "unused_vocabulary"
 MAX_EXTRA_TAGS = 300
 MAX_EXTRA_CATEGORIES = 200
 _TABLES = (
+    "saved_views",
     "image_favorites",
     "image_prompt_pairs",
     "prompt_pair_tags",
