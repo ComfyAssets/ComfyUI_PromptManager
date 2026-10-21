@@ -109,6 +109,13 @@ the baseline updater. Raise floors with `npm run --prefix tools/vendor
 coverage:update`; it reruns the suites and cannot lower an existing floor.
 Review baseline changes like code changes.
 
+`npm run --prefix tools/vendor coverage:baseline-check` runs in well under a
+second without a browser and fails, naming the files, when a measured
+`web/js` file has no baseline entry or the baseline lists a file that no longer
+exists. It uses the gate's own `discoverSources`, and `npm test` runs the same
+check, so run it before pushing a new or deleted frontend file instead of
+waiting for the `frontend coverage` job.
+
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
 aggregate job that passes only when the `frontend coverage (chromium and touch)`
 job and both `page workflows (firefox)` and `page workflows (webkit)` jobs
