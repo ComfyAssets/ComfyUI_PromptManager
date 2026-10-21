@@ -97,8 +97,9 @@ function deliverFavorite(key, favorite) {
 }
 
 /**
- * `caption: false` (the history page's shared gallery, D47) leaves out the embedded collection's "Linked images" heading
- * and count, whose page heading already names it; `focusTarget` then takes focus where that heading did.
+ * `caption: false` (the history page's shared gallery and its All images and Repeat run dialogs, D47) leaves out the
+ * embedded collection's "Linked images" heading and count, whose page heading or dialog title already names it;
+ * `focusTarget` then takes focus where that heading did.
  */
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, caption: showCaption = true, focusTarget = null} = {}) {
     const scope = createScope();
@@ -221,7 +222,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const showsEmpty = !embedded || typeof emptyText === 'string';
     const empty = el('div', embedded ? emptyText : 'No matching images. Try another search or category.', 'empty');
     empty.hidden = true;
-    // D47: the history page's shared gallery is named by its own "Shared gallery" heading, so it has no caption.
+    // D47: the history page's shared gallery and dialogs are named by their own heading or title, so they have no caption.
     if (showCaption) collection.append(caption);
     collection.append(grid);
     if (showsEmpty) collection.append(empty);

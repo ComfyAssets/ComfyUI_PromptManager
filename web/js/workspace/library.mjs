@@ -765,7 +765,9 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 const dialogScope=createScope();imagesDialogScope=dialogScope;
                 const grid=el('div',undefined,className);
                 openContentDialog({scope:content,title,nodes:intro?[el('p',intro,'small'),grid]:[grid],trigger,onClose:()=>{dialogScope.dispose();if(imagesDialogScope===dialogScope) imagesDialogScope=null;}});
-                mountImages(grid,api,dialogScope,{embedded:true,fetchPage});
+                // D47: the dialog's own title names its images, as in the concept (a1282-1304), so the collection has no
+                // "Linked images" heading or count; a stranded focus returns to the dialog's close button.
+                mountImages(grid,api,dialogScope,{embedded:true,caption:false,focusTarget:grid.closest('dialog')?.querySelector('.dialog-header > button') ?? null,fetchPage});
             }
             const imagesPage=(id,query,signal)=>api.get(`/prompt_manager/library/${id}/images?${query}`,{signal});
             /** Concept "All images for this positive" (a1282-1290): every image of the positive, Load more bounded. */

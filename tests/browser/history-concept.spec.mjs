@@ -144,13 +144,15 @@ const negativeText=page=>page.locator('article.surface .prompt-section.negative 
 const galleryOf=async page=>({context:await page.locator('.history-gallery .panel-heading .small').textContent(),
     cards:await galleryCards(page).locator('.image-open').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')))});
 
-/** A dialog the page opens: its accessible name and how many media cards it shows once loaded; then closed. */
+/** A dialog the page opens: its accessible name, how many media cards it shows once loaded and its captions; then closed. */
 async function dialogOf(page,trigger,{name,cards}) {
     await trigger.click();
     const dialog=page.getByRole('dialog',{name,exact:true});
     await expect(dialog).toBeVisible();
     if(cards)await expect(dialog.locator('.media-card')).toHaveCount(cards);
-    const result=cards?{name,cards:await dialog.locator('.media-card').count()}:{name};
+    // D47: neither document's media dialog carries a collection caption ("Linked images", "N loaded · …").
+    const captions=await dialog.locator('.section-caption').count();
+    const result=cards?{name,cards:await dialog.locator('.media-card').count(),captions}:{name,captions};
     await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
     return result;
 }

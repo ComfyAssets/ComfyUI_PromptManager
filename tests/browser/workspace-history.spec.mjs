@@ -832,6 +832,11 @@ test('run dot appears only for pairs with more than one run and opens its run',a
     await clean.click();const repeat=modalDialog(page,'Repeat run');await expect(repeat).toBeVisible();
     await expect(repeat.locator('#modal-body > p.small')).toHaveText('Same positive and negative, another execution.');
     await expect(repeat.locator('#modal-body > .spaced-15 article[data-image-key]')).toHaveCount(1);
+    // D47: as in the concept (a1291-1304), the dialog title names the image; no collection heading or count repeats it.
+    await expect(repeat.locator('.section-caption')).toHaveCount(0);
+    await expect(repeat.getByRole('heading',{name:'Linked images',exact:true})).toHaveCount(0);
+    await expect(repeat.getByText(/ loaded · /)).toHaveCount(0);
+    expect(await repeat.evaluate(node=>[...node.querySelectorAll('h1, h2')].filter(item=>!item.closest('aside')).map(item=>item.textContent))).toEqual(['Repeat run']);
     expect(reads.at(-1).get('pair_id')).toBe(String(f.clean_pair));expect(reads.at(-1).get('limit')).toBe('1');
     await page.keyboard.press('Escape');await expect(repeat).toHaveCount(0);await expect(clean).toBeFocused();
 });
@@ -1008,10 +1013,15 @@ test('shared gallery uses concept cards, image opens the viewer, empty copy',asy
     await page.keyboard.press('Escape');await expect(viewer).toBeHidden();await expect(openButton).toBeFocused();
     await expect(section.locator(':scope > .panel-heading')).toHaveCSS('justify-content','space-between');
     await expect(section).toHaveCSS('margin-top','24px');
-    // The D47 ruling covers the shared gallery only: the All images dialog's collection keeps its own caption.
+    // D47 (maintainer ruling 2026-10-21) covers the history page's dialogs too: the All images dialog is named by its
+    // own title, with no "Linked images" heading or "N loaded · N linked images" count, as the concept's (a1282-1290).
     await variantsPanel(page).getByRole('button',{name:'All images for this positive',exact:true}).click();
     const all=page.getByRole('dialog',{name:'All images for this positive',exact:true});
-    await expect(all.locator('.section-caption')).toContainText(/ loaded · /);
+    await expect(all.locator('article[data-image-key]').first()).toBeVisible();
+    await expect(all.locator('.section-caption')).toHaveCount(0);
+    await expect(all.getByRole('heading',{name:'Linked images',exact:true})).toHaveCount(0);
+    await expect(all.getByText(/ loaded · /)).toHaveCount(0);
+    expect(await all.evaluate(node=>[...node.querySelectorAll('h1, h2')].filter(item=>!item.closest('aside')).map(item=>item.textContent))).toEqual(['All images for this positive']);
     await page.keyboard.press('Escape');await expect(all).toHaveCount(0);
     // At 390px the heading stays inside the gallery and the page never scrolls sideways.
     await page.setViewportSize({width:390,height:844});

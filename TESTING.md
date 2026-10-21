@@ -846,10 +846,13 @@ Recorded deviations on this page:
   because the legacy gallery let people change layout and density and nothing else on the
   page offers it, and the selected-image side panel, the one shared inspector the Images
   page uses (spec §3.3), so an image's details stay reachable without opening the viewer.
-  The All images and Repeat run dialogs keep their collection caption. With no
-  saved variant the page shows every image of the positive under "All images for this
-  positive, including unassigned images. …" and no empty copy (a state the concept
-  never reaches).
+  The same ruling covers the page's two media dialogs, All images for this positive and
+  Repeat run: as in the concept (app.js a1282-1304), each is named by its own dialog
+  title, with no "Linked images" heading or "N loaded · N linked images" count, and a
+  stranded focus returns to the dialog's close button (maintainer ruling, 2026-10-21).
+  The Images page keeps its caption. With no saved variant the page shows every image
+  of the positive under "All images for this positive, including unassigned images. …"
+  and no empty copy (a state the concept never reaches).
 
 The run dot reads `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest`
 (see "Chronological Library history"), and each lane's "N runs" is the pair's
@@ -874,7 +877,8 @@ Images collection, so its height is not compared). D25: each compared block moun
 production class or margin. Behaviors are compared in both documents: a red dot changes
 the negative block and the gallery, Compare toggles `aria-pressed`, All images opens a
 dialog with the positive's four images, the run dot opens a dialog (D26: Recorded run
-where the concept shows Repeat run), the heading send previews the selected pair, and
+where the concept shows Repeat run), neither dialog has a collection caption (D47), the
+heading send previews the selected pair, and
 ← Prompt library navigates. `history comparison detects mutations` injects
 `.ca-tools .variant-dot { width: 20px }` and removes Compare negatives. The older
 `history-canonical-comparison.mjs` stays for `workspace-visual.spec.mjs`'s recorded
