@@ -619,6 +619,13 @@ Recorded deviations on this page (spec §8):
   and no tag row. `positive_links` on `/__test__/concept/reset` links the newest
   images to their positive alone, so the inspector comparison sees the positive's
   category ("Positive prompt category: " hidden prefix, D21) and tag filters.
+- **D42**: the concept never shows a toast and a page alert together. Production keeps
+  the concept's fixed toast (centred, 22px from the bottom, 12px at 700px and below)
+  and, when an Import → Rescan toast leaves the Images discovery alert
+  (`.options-status`), scrolls that alert into view only as far as needed, with
+  `scroll-margin-block-end: 96px`, so it is never under the toast.
+  `Rescan toast does not cover the discovery alert it leaves` ends the window inside
+  the toast's band at 1600 and 390 pixels and measures both boxes.
 
 `tests/browser/inspector-concept.spec.mjs` compares the side panel and the viewer's
 full details (#249 D4) for alpine_00001.png, at 1600x1100 and 390x844 in both themes:

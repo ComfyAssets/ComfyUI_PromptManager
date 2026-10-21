@@ -1559,6 +1559,39 @@ test('unreachable sources and categories announce one error', async ({ page }) =
     await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
+// PR D-b Task 3 (D42): the shared toast keeps the concept's fixed bottom placement, so a discovery alert that a rescan
+// leaves visible must not stay under it. The window ends just below the alert, inside the toast's band, as on a short
+// window or a phone with its browser bars shown.
+const boxOf = locator => locator.evaluate(node => {
+    const { top, right, bottom, left } = node.getBoundingClientRect();
+    return { top, right, bottom, left };
+});
+const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+for (const width of [1600, 390]) {
+    test(`Rescan toast does not cover the discovery alert it leaves at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 1100 });
+        await page.route('**/prompt_manager/library/options*', route => route.abort('failed'));
+        await page.goto(workspace);
+        await expect(cards(page)).toHaveCount(2);
+        const alert = page.getByRole('alert');
+        const failed = 'Categories could not be loaded. Rescan from Import to retry.';
+        await expect(alert).toHaveText(failed);
+        const toastInset = width > 700 ? 22 : 12;
+        await page.setViewportSize({ width, height: Math.ceil((await boxOf(alert)).bottom) + toastInset + 16 });
+        await rescan(page);
+        await expect(toast(page)).toHaveText(/^Rescan finished\. /);
+        await expect(alert).toHaveText(failed);
+        await expect.poll(async () => overlaps(await boxOf(alert), await boxOf(toast(page)))).toBe(false);
+        const [shown, placed] = [await boxOf(alert), await boxOf(toast(page))];
+        expect(shown.top).toBeGreaterThanOrEqual(0);
+        expect(shown.bottom).toBeLessThanOrEqual(placed.top);
+        // The concept's toast stays where the concept puts it: centred, its inset from the bottom.
+        const viewport = page.viewportSize();
+        expect(Math.round(viewport.height - placed.bottom)).toBe(toastInset);
+        expect(Math.abs((placed.left + placed.right) / 2 - viewport.width / 2)).toBeLessThan(1);
+    });
+}
+
 // #249 final review m8: D36's alphabetical categories hold whatever order the server sends.
 test('toolbar categories are alphabetical regardless of server order', async ({ page }) => {
     await page.route('**/prompt_manager/library/options*', route => route.fulfill({

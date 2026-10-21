@@ -638,14 +638,22 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (scope.signal.aborted) return;
             renderLoadStatus();
             if (found) reset();
-            if (!scope.signal.aborted) showWorkspaceToast(rescanFinished(result));
+            if (!scope.signal.aborted) announceRescan(rescanFinished(result));
         } catch {
             // A failed rescan leaves the collection and any discovery alert as they were.
-            if (!scope.signal.aborted) showWorkspaceToast(RESCAN_FAILED);
+            if (!scope.signal.aborted) announceRescan(RESCAN_FAILED);
         } finally {
             rescanning = false;
             importDialog?.setRescanBusy(false);
         }
+    }
+    /**
+     * D42: the concept's toast stays fixed at the bottom, so a discovery alert the rescan leaves is scrolled, only when
+     * it must be, clear of the toast's band (its `scroll-margin-block-end`).
+     */
+    function announceRescan(message) {
+        showWorkspaceToast(message);
+        if (!optionsStatus.hidden) optionsStatus.scrollIntoView({block:'nearest', inline:'nearest'});
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;
