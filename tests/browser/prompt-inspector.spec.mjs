@@ -77,7 +77,8 @@ test('explicit empty negative is sendable while unrecorded text is never invente
     await expect(role(details(page),'Negative').locator('p.prompt-text')).toHaveText('No negative prompt (explicitly empty)');
     await expect(details(page).getByRole('button',{name:/^Send negative prompt to ComfyUI: /})).toBeEnabled();
     await select(page,'0:uncertain.png');await expect(details(page)).toContainText('Not recorded in this file.');
-    await expect(details(page).getByRole('button',{name:/^Send (positive|negative) prompt to ComfyUI$/})).toHaveCount(0);
+    // Every inspector send is named after its prompt ("…to ComfyUI: <title>"); an untitled one ends at "ComfyUI".
+    await expect(details(page).getByRole('button',{name:/^Send (positive|negative) prompt to ComfyUI(: |$)/})).toHaveCount(0);
 });
 
 test('inspection failures retry and a delayed previous selection cannot replace the current prompt',async({page})=>{
