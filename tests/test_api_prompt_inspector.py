@@ -128,7 +128,12 @@ class TestPromptInspector(ImageAPITestCase):
         for expected in ("ambiguous", "unresolved"):
             source = graph()
             if expected == "ambiguous":
-                source["4"] = source["3"]
+                # Branches with different prompts (#249: identical ones resolve).
+                source["5"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "x"}}
+                source["4"] = {
+                    "class_type": "KSampler",
+                    "inputs": {"positive": ["5", 0], "negative": ["2", 0]},
+                }
             else:
                 source["1"]["class_type"] = "UnknownEncoder"
             png(

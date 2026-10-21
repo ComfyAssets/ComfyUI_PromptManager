@@ -1487,6 +1487,30 @@ test('a star press leaves the continuation status, count and caption date untouc
     expect(await page.evaluate(() => window.__statusMutations)).toEqual([]);
 });
 
+// Opened before the source and folder discovery answered (a slow server), Refine lists them once it does.
+test('Refine opened before discovery settles lists the discovered sources and folders', async ({ page }) => {
+    let release, started;
+    const held = new Promise(resolve => { release = resolve; }), hit = new Promise(resolve => { started = resolve; });
+    await page.route('**/prompt_manager/gallery/subfolders?*', async route => { started(); await held; await route.continue(); }, { times: 1 });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    await hit;
+    await filtersButton(page).click();
+    const source = refineDialog(page).getByLabel('Source', { exact: true });
+    const folder = refineDialog(page).getByLabel('Folder', { exact: true });
+    const values = select => select.locator('option').evaluateAll(options => options.map(option => option.value));
+    expect(await values(source)).toEqual(['all']);
+    expect(await values(folder)).toEqual(['']);
+    release();
+    await expect.poll(() => values(source)).toEqual(['all', '0', '1']);
+    expect(await values(folder)).toEqual(['', 'shared']);
+    await expect(source).toHaveValue('all');
+    await source.selectOption('1');
+    await refineDialog(page).getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
+});
+
 // #249 final review m1: as in the old field row, a Source offers only its own folders.
 test('Refine offers only the chosen source folders', async ({ page, request }) => {
     await expect(await request.post('/__test__/add-nested-image')).toBeOK();
@@ -1921,7 +1945,7 @@ test('Set category without a linked image posts nothing and opens no dialog', as
     await page.route(categoryRoute, route => { posted += 1; return route.continue(); });
     await checkbox(cards(page).last(), 'same.png').check();
     await categoryButton(page).click();
-    await expect(toast(page)).toHaveText('None of the selected images has a linked prompt.');
+    await expect(toast(page)).toHaveText("None of the selected images is linked to a saved prompt, so there is no prompt category to set.");
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     expect(posted).toBe(0);
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');

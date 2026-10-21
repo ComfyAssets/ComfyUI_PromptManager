@@ -224,6 +224,22 @@ test("facts use resolution.sampler_id for detailer-stage nodes", () => {
     assert.ok(Object.values(factsFor(wide, { resolution: { state: "ambiguous", sampler_id: "d" } })).every(fact => fact.status === "unresolved"), "the stage walk is bounded by MAX_VISITS");
 });
 
+test("a shared pair resolved across sampler branches merges facts per field (#249)", () => {
+    // The server resolves identical branches with no sampler named: settings the
+    // branches agree on are known, those they differ on (a LoRA per epoch) are ambiguous.
+    const shared = { resolution: { state: "resolved", sampler_id: null, reason: "Every sampler branch uses the same prompt pair" } };
+    const grid = factGraph();
+    grid.lora = { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "epoch_10.safetensors" } };
+    grid.other = structuredClone(grid.s); grid.other.inputs.model = ["lora", 0];
+    assert.deepEqual(statusValues(factsFor(grid, shared)), {
+        seed: ["known", "9007199254740993"], steps: ["known", "28"], cfg: ["known", "6.5000000000000000001"],
+        sampler: ["known", "dpmpp_2m"], scheduler: ["known", "karras"], model: ["ambiguous", null],
+    });
+    assert.ok(Object.values(factsFor(grid, shared)).every(fact => fact.sampler_id === null));
+    // One listed sampler keeps reading that sampler alone.
+    assert.equal(factsFor(factGraph(), shared).model.value, "model.safetensors");
+});
+
 test("ambiguous results without a sampler_id merge facts across every listed stage", () => {
     const ambiguous = { resolution: { state: "ambiguous", sampler_id: null, reason: "Multiple sampler branches" } };
     // f01b's shape: an upstream sampler and a detailer whose settings partly differ.

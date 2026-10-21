@@ -5,7 +5,7 @@ import { countOf, noun } from './plural.mjs';
  * filter matches the linked positive prompt's, so the action sets the category on those prompts.
  */
 export const CATEGORY_DIALOG = Object.freeze({title:'Categorize selected images', label:'Category', action:'Apply'});
-export const CATEGORY_NONE_LINKED = 'None of the selected images has a linked prompt.';
+export const CATEGORY_NONE_LINKED = "None of the selected images is linked to a saved prompt, so there is no prompt category to set.";
 export const CATEGORY_FAILED = 'Category could not be set. Try again.';
 // The server's limit (`validate_category`): the field stops there instead of failing on Apply.
 export const CATEGORY_MAX_LENGTH = 100;

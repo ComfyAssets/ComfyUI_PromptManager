@@ -54,11 +54,28 @@ class TestPromptPairResolver(unittest.TestCase):
         self.assertEqual(result["positive"]["text"], "portrait")
         self.assertIsNone(result["negative"])
 
-    def test_multiple_samplers_are_ambiguous_even_when_texts_match(self):
+    def test_multiple_samplers_with_matching_texts_resolve_to_the_shared_pair(self):
         source = graph()
         source["4"] = {
             "class_type": "KSamplerAdvanced",
             "inputs": source["3"]["inputs"],
+        }
+        result = resolve_prompt_pair(source)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(
+            (result["positive"]["text"], result["negative"]["text"]),
+            ("portrait", "blurry"),
+        )
+        self.assertIsNone(result["sampler_id"])
+        self.assertEqual(result["reason"], resolver.IDENTICAL_BRANCHES_REASON)
+        self.assertEqual(len(result["candidates"]), 2)
+
+    def test_multiple_samplers_with_different_texts_are_ambiguous(self):
+        source = graph()
+        source["5"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "other"}}
+        source["4"] = {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {"positive": ["5", 0], "negative": ["2", 0]},
         }
         result = resolve_prompt_pair(source)
         self.assertEqual(result["state"], "ambiguous")
@@ -2253,12 +2270,14 @@ class TestDetailerStages(unittest.TestCase):
         self.assertEqual(_sides(result), (parity.DETAILER_POS, parity.NEG))
         self.assertEqual(result["sampler_id"], "50")
 
-    def test_raw_and_detailed_saves_stay_ambiguous_without_an_anchor(self):
+    def test_raw_and_detailed_saves_of_one_prompt_share_it_without_an_anchor(self):
         source = _detailed(same_prompt=True)
         source["14"] = {"class_type": "SaveImage", "inputs": {"images": ["8", 0]}}
         result = _inspect(source)
-        self.assertEqual(result["state"], "ambiguous")
-        self.assertEqual(result["reason"], "Multiple sampler branches")
+        # #249: both saves used one pair, so it resolves with no sampler named.
+        self.assertEqual(result["state"], "resolved")
+        self.assertIsNone(result["sampler_id"])
+        self.assertEqual(result["reason"], resolver.IDENTICAL_BRANCHES_REASON)
         self.assertEqual(
             sorted(item["sampler_id"] for item in result["candidates"]), ["3", "50"]
         )

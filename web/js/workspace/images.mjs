@@ -133,6 +133,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
     // Discovered sources (each with its own folders) and every folder, for "Refine this view" and the scope chip.
     let roots = [], folders = [];
+    // The open "Refine this view", so a discovery that settles after it opened still lists its sources and folders.
+    let refine = null;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters, ...saved,
@@ -643,8 +645,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     /** "Refine this view": Source, Folder, Media and Tags, the filters the old field row held (D14). */
     function openFilters(trigger) {
         if (recovering) return;
-        openRefineDialog({scope, trigger, fields:[
-            {key:'source', options:[['all', 'All sources'], ...roots.map(root => [String(root.index), root.label])]},
+        refine = openRefineDialog({scope, trigger, fields:[
+            {key:'source', options:sourceOptions()},
             {key:'folder', options:folderOptions('all'), optionsFor:folderOptions},
             {key:'media', options:MEDIA_OPTIONS},
             {key:'tags'},
@@ -653,6 +655,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             toolbar.setValue({category:cleared.category});
             applyRefinement(cleared);
         }});
+    }
+    function sourceOptions() {
+        return [['all', 'All sources'], ...roots.map(root => [String(root.index), root.label])];
     }
     /** The chosen Source's folders, as the old field row reloaded them; every folder under All sources. */
     function folderOptions(source) {
@@ -750,6 +755,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             roots = data.roots.filter(root => Number.isSafeInteger(root?.index) && typeof root.label === 'string')
                 .map(root => ({index:root.index, label:root.label, subfolders:paths(root.subfolders)}));
             folders = paths(data.subfolders);
+            refine?.setOptions('source', sourceOptions());
             updateScope();
             sourcesRetry = null;
             return true;

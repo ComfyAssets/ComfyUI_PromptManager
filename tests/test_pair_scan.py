@@ -44,10 +44,15 @@ class TestPairScan(AdminAPITestCase):
         return [p["text"] for p in self.api.db.get_recent_prompts()["prompts"]]
 
     def test_samplers_sharing_one_prompt_link_that_prompt(self):
+        # #249: every branch resolves to one exact pair, so the pair is ingested.
         g = sampled_graph()
         g["5"] = {**g["3"]}
         self.assertEqual(self._scanned("multi.png", g), "added")
-        self.assertEqual(self._texts(), ["cat"])
+        self.assertEqual(sorted(self._texts()), ["blur", "cat"])
+        pairs = self.api.db.list_prompt_pairs()["pairs"]
+        self.assertEqual(
+            [(p["positive_text"], p["negative_text"]) for p in pairs], [("cat", "blur")]
+        )
 
     def test_samplers_with_different_prompts_link_the_first_sampler_prompt(self):
         # The prompt the inspector and the legacy panels show for this file.
