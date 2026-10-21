@@ -293,6 +293,23 @@ class TestSavedViewsApi(ImageAPITestCase):
                         {"success": False, "error": "Saved view operation failed"},
                     )
 
+    async def test_a_corrupt_state_is_skipped_by_the_listing(self):
+        kept = await self.create(page="library", name="Kept", state={})
+        with self.api.db.model.get_connection() as conn:
+            conn.execute(
+                f"INSERT INTO {TABLE} (page, name, state, position, created_at, "
+                "updated_at) VALUES ('images', 'Broken', '{', 0, 'x', 'x')"
+            )
+        response, data = await self.send("GET")
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(data["views"], [kept])
+        # Hidden from the listing, it is not found by rename either.
+        broken_id = kept["id"] + 1
+        response, _ = await self.send("PATCH", f"/{broken_id}", {"name": "X"})
+        self.assertEqual(response.status, 404)
+        response, _ = await self.send("DELETE", f"/{broken_id}")
+        self.assertEqual(response.status, 200)
+
     async def test_a_row_saved_under_older_rules_lists_normalized(self):
         stale = json.dumps(
             {
@@ -525,6 +542,59 @@ class TestSavedViewsSchema(unittest.TestCase):
         self.db.model.restore_from_file(src)
 
         self._assert_old_rows_normalized(self.db.list_saved_views())
+
+    def _insert_corrupt_rows(self, path):
+        """A valid view between two rows whose state is no JSON object."""
+        with closing(sqlite3.connect(path)) as conn:
+            ids = []
+            for name, state in (
+                ("Broken", "{not json"),
+                ("Kept", json.dumps(LIBRARY_STATE)),
+                ("Array", "[1, 2]"),
+            ):
+                ids.append(
+                    conn.execute(
+                        f"INSERT INTO {TABLE} (page, name, state, position, "
+                        "created_at, updated_at) VALUES ('library', ?, ?, 0, "
+                        "'x', 'x')",
+                        (name, state),
+                    ).lastrowid
+                )
+            conn.commit()
+        return ids
+
+    def test_startup_tolerates_a_corrupt_state_and_list_skips_it(self):
+        self.db.close_all()
+        broken, kept, array = self._insert_corrupt_rows(self.path)
+        PromptModel.reset_schema_cache()
+
+        with self.assertLogs("prompt_manager.database", level="WARNING") as logs:
+            reopened = PromptDatabase(self.path)
+        try:
+            self.assertEqual(
+                [(view["id"], view["name"]) for view in reopened.list_saved_views()],
+                [(kept, "Kept")],
+            )
+        finally:
+            reopened.close_all()
+        output = "\n".join(logs.output)
+        self.assertIn(f"id {broken}", output)
+        self.assertIn(f"id {array}", output)
+        self.assertNotIn("not json", output)
+        # The rows stay in place, untouched.
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(
+                conn.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0], 3
+            )
+
+    def test_restore_rejects_a_backup_with_a_corrupt_state(self):
+        src = self._source()
+        self._insert_corrupt_rows(src)
+        ok, reason = PromptModel.verify_database_file(src)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "Saved views contains invalid values")
+        with self.assertRaises(ValueError):
+            self.db.model.restore_from_file(src)
 
     def test_normalize_state_keeps_valid_values_and_defaults_the_rest(self):
         self.assertEqual(normalize_state("images", IMAGES_STATE), IMAGES_STATE)

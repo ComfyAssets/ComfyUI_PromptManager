@@ -6,15 +6,21 @@ refinements, whitelisted per page and stored as compact JSON of at most 4 KB.
 Writes (the API's POST and PATCH) validate strictly. Startup and restore check
 only the structure (the table, its columns and each row's types, sizes and JSON
 object), never the value rules: a row saved under older rules must not stop the
-database from opening. Reads normalize instead, so a stale row opens with its
+database from opening. Startup is more tolerant still: a row whose state is not
+a JSON object is logged by id, left in place and skipped by every read, while
+restore rejects such a backup. Reads normalize instead, so a stale row opens with its
 usable values and defaults for the rest. Optional in old backups, required once
 a database is current (see ``library_schema.py``).
 """
 
 import json
+import logging
 import re
 import sqlite3
 from typing import Optional
+
+# The models logger's parent ("prompt_manager.database.models" logs there too).
+_LOGGER = logging.getLogger("prompt_manager.database.saved_views")
 
 TABLE = "saved_views"
 PAGES = ("images", "library")
@@ -186,7 +192,10 @@ def normalize_name(name: object) -> str:
 
 
 def saved_views_schema_error(
-    conn: sqlite3.Connection, *, allow_missing: bool = True
+    conn: sqlite3.Connection,
+    *,
+    allow_missing: bool = True,
+    check_states: bool = True,
 ) -> Optional[str]:
     """Reject unsupported saved-views schemas and structurally invalid rows.
 
@@ -194,6 +203,8 @@ def saved_views_schema_error(
     that each state is a JSON object; never the value rules, which change
     between versions and are normalized on read instead. A missing table is
     acceptable for backups that predate it unless ``allow_missing`` is false.
+    ``check_states=False`` (live startup) skips the JSON-object check; such
+    rows are reported by ``unusable_view_ids`` and skipped on read.
     """
     objects = conn.execute(
         "SELECT type,name,sql FROM sqlite_master WHERE name=? "
@@ -226,23 +237,37 @@ def saved_views_schema_error(
         "OR length(CAST(updated_at AS BLOB)) > 64 LIMIT 1"
     ).fetchone():
         return "Saved views contains invalid values"
-    for (state,) in conn.execute("SELECT state FROM saved_views"):
-        if _decode_object(state) is None:
-            return "Saved views contains invalid values"
+    if check_states and unusable_view_ids(conn):
+        return "Saved views contains invalid values"
     return None
+
+
+def unusable_view_ids(conn: sqlite3.Connection) -> list[int]:
+    """Ids of rows whose state is not a JSON object (never listed)."""
+    return [
+        view_id
+        for view_id, state in conn.execute("SELECT id, state FROM saved_views")
+        if _decode_object(state) is None
+    ]
 
 
 def migrate_saved_views(conn: sqlite3.Connection) -> None:
     """Install the table atomically; validate before and after creating it."""
     conn.execute("SAVEPOINT saved_views_schema")
     try:
-        error = saved_views_schema_error(conn)
+        error = saved_views_schema_error(conn, check_states=False)
         if error:
             raise sqlite3.DatabaseError(error)
         conn.execute(_DDL.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))
-        error = saved_views_schema_error(conn, allow_missing=False)
+        error = saved_views_schema_error(conn, allow_missing=False, check_states=False)
         if error:
             raise sqlite3.DatabaseError(error)
+        # A corrupt state never stops the live database from opening: the row
+        # stays (no data is destroyed) and reads skip it. Only its id is logged.
+        for view_id in unusable_view_ids(conn):
+            _LOGGER.warning(
+                "Saved view id %d has an unreadable state and is hidden", view_id
+            )
         conn.execute("RELEASE saved_views_schema")
     except BaseException:
         conn.execute("ROLLBACK TO saved_views_schema")
@@ -266,7 +291,8 @@ class SavedViewOperations:
     def list_saved_views(self) -> list[dict]:
         """Every view, in list order (position, then creation)."""
         rows = self.model.get_connection().execute(_SELECT + " ORDER BY position, id")
-        return [_view(row) for row in rows]
+        # A row whose state is no JSON object (logged at startup) is never listed.
+        return [_view(row) for row in rows if _decode_object(row[3]) is not None]
 
     def create_saved_view(self, page: object, name: object, state: object) -> dict:
         """Validate and append one view at the end of the list."""
@@ -298,7 +324,8 @@ class SavedViewOperations:
                 (trimmed, utc_now_iso(), view_id),
             )
             row = conn.execute(_SELECT + " WHERE id = ?", (view_id,)).fetchone()
-        return _view(row) if row else None
+        # A hidden (unreadable) view is not found, as in the listing.
+        return _view(row) if row and _decode_object(row[3]) is not None else None
 
     def delete_saved_view(self, view_id: int) -> bool:
         """True when a view was removed."""

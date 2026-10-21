@@ -209,6 +209,14 @@ test('a view stored under older rules still lists and opens with its usable valu
         { id: imagesId, page: 'images', name: 'Old cats', state: { ...IMAGE_DEFAULTS, q: 'cat' } },
         expect.objectContaining({ page: 'library', name: 'Saved view', state: { q: 'dog', category: '', sort: 'newest', tags: [] } }),
     ]);
+    // A state that is no JSON object is never listed, and its link behaves like a missing view.
+    const corruptId = await raw({ page: 'images', name: 'Corrupt', state: '{not json' });
+    expect((await listed(request)).map(view => view.id)).not.toContain(corruptId);
+    await page.goto(`${workspace}#/saved/${corruptId}`);
+    await expect(page).toHaveURL(/#\/images$/);
+    await expect(heading(page)).toHaveText('Images');
+    await expect(viewRows(page)).toHaveText(['Old cats', 'Saved view']);
+
     await page.goto(`${workspace}#/saved/${imagesId}`);
     await expect(heading(page)).toHaveText('Old cats');
     await expect(viewRows(page)).toHaveText(['Old cats', 'Saved view']);

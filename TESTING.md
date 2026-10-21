@@ -450,7 +450,10 @@ Recorded shell deviations:
   rules, so a row saved under older rules (a missing or retired key, a sort no longer
   offered) never stops the database from opening: reads fill missing keys with their
   defaults, drop unknown keys, default invalid values and make the name displayable
-  (`tests/test_saved_views.py`). Only request validation is a 400; any other failure is
+  (`tests/test_saved_views.py`). A live row whose state is not a JSON object never
+  blocks startup either: its id is logged as a warning, the row is left in place, the
+  listing and rename skip it, and its `#/saved/<id>` link behaves like a missing view.
+  Restore stays strict and rejects such a backup ("Saved views contains invalid values"). Only request validation is a 400; any other failure is
   a logged 500 with a generic message. The Favorites count re-read after starring is
   coalesced to one read 300 ms after the last toggle.
   `a saved view row matches the concept's` saves one view in both documents and
