@@ -335,7 +335,7 @@ export function openScanReviewDialog({ scope, sources, onBackup, onStart, trigge
     requireCallbacks({ onBackup, onStart });
     if (!Number.isSafeInteger(sources) || sources < 0) throw new TypeError('The scan review needs its source count');
     const grid = el('dl', undefined, 'meta-grid');
-    for (const [term, value] of [['Sources', `${sources.toLocaleString()} output ${sources === 1 ? 'folder' : 'folders'}`],
+    for (const [term, value] of [['Sources', `${sources.toLocaleString('en-US')} output ${sources === 1 ? 'folder' : 'folders'}`],
         ['Scope', 'All files']]) {
         const entry = el('div');
         entry.append(el('dt', term), el('dd', value));

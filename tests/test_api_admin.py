@@ -2094,6 +2094,127 @@ class TestActivityJobs(AdminAPITestCase):
             (legacy["processed"], legacy["found"], legacy["failed"]), (6, 4, 1)
         )
 
+    async def test_cancel_after_first_batch_keeps_partial_counts(self):
+        """Review M7: the real scan stops at the batch boundary, keeping batch 1."""
+        import threading
+        from unittest import mock
+
+        from py.api import admin
+
+        _write_png(self.output_dir / "a.png", prompt_text="a red square")
+        _write_png(self.output_dir / "b.png", prompt_text="a blue circle")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        first_done, release = threading.Event(), threading.Event()
+        original = self.api._ingest_scan_batch_sync
+
+        def gated(batch_results, roots=(), outcomes=None):
+            counts = original(batch_results, roots=roots, outcomes=outcomes)
+            first_done.set()
+            release.wait(5)
+            return counts
+
+        self.api._ingest_scan_batch_sync = gated
+        with mock.patch.object(admin, "SCAN_BATCH_SIZE", 1):
+            status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+            self.assertEqual(status, 202)
+            job_id = started["job"]["id"]
+            await asyncio.get_running_loop().run_in_executor(None, first_done.wait, 5)
+            status, cancelled = await self._json(
+                "POST", f"/prompt_manager/jobs/{job_id}/cancel"
+            )
+            self.assertEqual((status, cancelled["cancellation_requested"]), (200, True))
+            release.set()
+            await asyncio.wait_for(self.api._scan_job.task, 10)
+
+        status, body = await self._json("GET", f"/prompt_manager/jobs/{job_id}")
+        job = body["job"]
+        self.assertEqual(job["state"], "cancelled")
+        self.assertEqual((job["processed"], job["total"]), (1, 2))
+        self.assertEqual(sum(job["counters"].values()), job["processed"])
+        self.assertEqual(job["counters"]["added"], 1)
+        listed = [row["path"] for rows in job["outcomes"].values() for row in rows]
+        self.assertEqual(len(listed), 1)
+        self.assertIn(listed[0], {"a.png", "b.png"})
+        self.assertIn("Scan cancelled · 1 file processed", job["log"][-1])
+        # A cancel after the end is a no-op.
+        status, again = await self._json(
+            "POST", f"/prompt_manager/jobs/{job_id}/cancel"
+        )
+        self.assertEqual((status, again["cancellation_requested"]), (200, False))
+
+    async def test_scan_rows_carry_their_root_index(self):
+        """Review M9: two roots labelled "output" stay apart by listing index."""
+        second = self.outside_dir / "output"
+        second.mkdir(parents=True)
+        os.environ[EXTRA_ROOTS_ENV] = str(second)
+        _write_png(self.output_dir / "same.png", prompt_text="a red square")
+        _write_png(second / "same.png", prompt_text="a blue circle")
+        GalleryConfig.MONITORING_DIRECTORIES = [
+            self._root(self.output_dir),
+            self._root(second),
+        ]
+        output_dirs = [Path(d) for d in self.api._get_all_output_dirs()]
+        self.assertEqual(len(output_dirs), 2)
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+        status, body = await self._json(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        rows = body["job"]["outcomes"]["added"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["root"] for row in rows}, {"output"})
+        by_index = {row["root_index"]: row for row in rows}
+        self.assertEqual(set(by_index), {0, 1})
+        for index, row in by_index.items():
+            self.assertEqual(row["path"], "same.png")
+            self.assertTrue((output_dirs[index] / row["path"]).is_file())
+        texts = {
+            index: (
+                "red"
+                if output_dirs[index] == Path(self._root(self.output_dir))
+                else "blue"
+            )
+            for index in by_index
+        }
+        for index, row in by_index.items():
+            self.assertIn(texts[index], row["detail"])
+
+    async def test_scan_row_names_the_prompt_by_its_stored_title(self):
+        """Review M10: a row names the prompt as the Library does."""
+        _write_png(self.output_dir / "gen.png", prompt_text="a red square\nmore")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        summaries = self.api.db.get_image_link_summaries
+
+        def titled(paths, allow_filename_fallback=True):
+            found = summaries(paths, allow_filename_fallback)
+            return {
+                path: {**summary, "title": "Stored square title"}
+                for path, summary in found.items()
+            }
+
+        self.api.db.get_image_link_summaries = titled
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+        status, body = await self._json(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        (row,) = body["job"]["outcomes"]["added"]
+        self.assertIn("“Stored square title”", row["detail"])
+
+        # Without a stored title (or an unreadable one): the text's first line.
+        def broken(paths, allow_filename_fallback=True):
+            raise RuntimeError("unreadable")
+
+        self.api.db.get_image_link_summaries = broken
+        _write_png(self.output_dir / "next.png", prompt_text="a green cone\nmore")
+        status, started = await self._json("POST", "/prompt_manager/jobs/scan")
+        await asyncio.wait_for(self.api._scan_job.task, 10)
+        status, body = await self._json(
+            "GET", f"/prompt_manager/jobs/{started['job']['id']}"
+        )
+        details = {r["path"]: r["detail"] for r in body["job"]["outcomes"]["added"]}
+        self.assertIn("“a green cone”", details["next.png"])
+
     async def test_jobs_routes_404_and_409(self):
         _write_png(self.output_dir / "gen.png", prompt_text="a red square")
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]

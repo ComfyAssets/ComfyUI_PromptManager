@@ -177,9 +177,13 @@ class TestJobRegistry(unittest.IsolatedAsyncioTestCase):
                 "total",
                 "counters",
                 "scope",
+                "listed",
+                "log_length",
             },
         )
         self.assertEqual(summary["scope"], {"mode": "all"})
+        # What the detail would list, so a view reads it only when that changed.
+        self.assertEqual((summary["listed"], summary["log_length"]), ({}, 0))
         self.assertIsNone(summary["finished_at"])
 
         gate.set()
@@ -404,3 +408,19 @@ class TestJobOutcomesAndLog(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestListedSummary(unittest.TestCase):
+    def test_summary_counts_listed_rows_and_log_lines(self):
+        job = Job("scan", "Scan", groups=("added", "errors"))
+        job.record(
+            "added", {"path": "a.png", "root": "output", "root_index": 0}, "+ a.png"
+        )
+        job.record("errors", {"path": "b.png", "root_index": "x"}, "! b.png")
+        summary = job.summary()
+        self.assertEqual(summary["listed"], {"added": 1, "errors": 1})
+        self.assertEqual(summary["log_length"], 2)
+        rows = job.detail()["outcomes"]
+        self.assertEqual(rows["added"][0]["root_index"], 0)
+        # Only a whole non-negative number is a root index.
+        self.assertIsNone(rows["errors"][0]["root_index"])

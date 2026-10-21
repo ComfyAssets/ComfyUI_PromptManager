@@ -6,7 +6,7 @@ reading files, so a test sets its progress and counters exactly:
 - ``POST /__test__/jobs/start`` starts one (``kind``, ``title``, ``total``,
   ``output_folders``) and returns its summary, or 409 while one runs;
 - ``POST /__test__/jobs/{id}/step`` records ``records`` (``{group, path,
-  root, detail}`` file outcomes, counted, listed and logged as the scan
+  root, root_index, detail}`` file outcomes, counted, listed and logged as the scan
   records them) and ``bulk`` (``{group, count, root}``: ``count`` numbered
   rows), sets ``processed`` (and ``total``) and ``counters``, then publishes
   the progress to every subscriber;
@@ -28,6 +28,7 @@ POLL_SECONDS = 0.02
 
 PREFIXES = {"added": "+", "known": "=", "review": "?", "errors": "!"}
 PREFIXES["no_metadata"] = "-"
+ROOT_INDEXES = {"output": 0, "input": 1}
 
 
 def outcome_records(data):
@@ -40,11 +41,14 @@ def outcome_records(data):
     for record in records:
         if not isinstance(record, dict) or record.get("group") not in PREFIXES:
             raise web.HTTPBadRequest()
+        root = str(record.get("root", "output"))
         rows.append(
             {
                 "group": record["group"],
                 "path": str(record.get("path", "")),
-                "root": str(record.get("root", "output")),
+                "root": root,
+                # The fixture's listing order: output is root 0, input root 1.
+                "root_index": record.get("root_index", ROOT_INDEXES.get(root)),
                 "detail": str(record.get("detail", "")),
             }
         )
@@ -59,6 +63,7 @@ def outcome_records(data):
                 "group": bulk["group"],
                 "path": f"bulk/file_{index:05d}.png",
                 "root": str(bulk.get("root", "output")),
+                "root_index": 0,
                 "detail": f"Bulk row {index}",
             }
             for index in range(total)

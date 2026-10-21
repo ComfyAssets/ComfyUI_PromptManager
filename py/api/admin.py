@@ -198,21 +198,28 @@ def _scan_status_line(done, total, batches, elapsed):
 
 
 def _scan_roots(output_dirs):
-    """(absolute root, public label) pairs, the most specific root first."""
+    """(absolute root, public label, listing index), the most specific first.
+
+    The index is the root's place in ``output_dirs`` (``_get_all_output_dirs``),
+    the ``root_index`` the workspace listing names it by.
+    """
     public_path, _ = _public_helpers()
-    roots = [(os.path.abspath(str(d)), public_path(d)) for d in output_dirs]
+    roots = [
+        (os.path.abspath(str(d)), public_path(d), index)
+        for index, d in enumerate(output_dirs)
+    ]
     return sorted(roots, key=lambda root: len(root[0]), reverse=True)
 
 
 def _scan_location(media_file, roots):
-    """``media_file`` relative to its output root, and that root's label."""
+    """``media_file`` relative to its output root, that root's label and index."""
     full = os.path.abspath(str(media_file))
     folded = os.path.normcase(full)
-    for root, label in roots:
+    for root, label, index in roots:
         base = os.path.normcase(root).rstrip("\\/") + os.sep
         if folded.startswith(base):
-            return Path(os.path.relpath(full, root)).as_posix(), label
-    return Path(full).name, ""
+            return Path(os.path.relpath(full, root)).as_posix(), label, index
+    return Path(full).name, "", None
 
 
 def _scan_outcome(media_file, roots, status, title=None):
@@ -223,8 +230,8 @@ def _scan_outcome(media_file, roots, status, title=None):
         group = "errors" if status == "error" else "no_metadata"
     template = SCAN_TITLED_DETAILS.get(status) if title else None
     detail = template.format(title=title) if template else SCAN_DETAILS[status]
-    path, label = _scan_location(media_file, roots)
-    row = {"path": path, "root": label, "detail": detail}
+    path, label, index = _scan_location(media_file, roots)
+    row = {"path": path, "root": label, "root_index": index, "detail": detail}
     where = f"{label}/{path}" if label else path
     return group, row, f"{SCAN_LOG_PREFIXES[group]} {where} · {detail}"
 
@@ -1715,7 +1722,7 @@ class AdminRoutesMixin:
                 return result["status"]
             return {
                 **result,
-                "title": display_title((), resolution["positive"]["text"]),
+                "title": self._scan_title(media_file, resolution["positive"]["text"]),
             }
         if canonical.get("prompt") and resolution["state"] in (
             "ambiguous",
@@ -1747,7 +1754,19 @@ class AdminRoutesMixin:
         status = self._store_scanned_prompt(media_file, canonical, prompt_text)
         if not detailed or status not in SCAN_TITLED_DETAILS:
             return status
-        return {"status": status, "title": display_title((), prompt_text)}
+        return {"status": status, "title": self._scan_title(media_file, prompt_text)}
+
+    def _scan_title(self, media_file, text):
+        """The linked prompt's Library title (its stored title, else ``text``'s
+        first line), as the Library and the inspector name it."""
+        try:
+            path = str(media_file)
+            summary = self.db.get_image_link_summaries([path], False).get(path)
+            if summary and summary.get("title"):
+                return summary["title"]
+        except Exception:
+            self.logger.warning("Scan row title could not be read; using its text")
+        return display_title((), text)
 
     def _store_scanned_prompt(self, media_file, canonical, prompt_text):
         """Link ``media_file`` to ``prompt_text``'s prompt, saving it when new."""

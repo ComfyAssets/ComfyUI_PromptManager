@@ -516,14 +516,17 @@ Recorded shell deviations:
   ComfyUI restarted." The running actions are "Cancel job" only (no "Simulate
   completion"); a failed cancel toasts "The job could not be cancelled. Try again.". With
   no job the section says "No jobs have run since ComfyUI started. Scans and other long
-  operations appear here." `#/activity/<id>` shows the list with that job's item marked
-  `aria-current="true"` until the job view (Activity-1 Task 3); that view is D56.
+  operations appear here." `#/activity/<id>` is that job's own view (D56). When a job
+  ends while its Cancel job has focus, focus moves to the item's title link.
 
   The Activity store reads the list once, then follows each running job over
   `/prompt_manager/jobs/<id>/events`. A dropped stream re-reads the list after 1 s,
-  doubling to at most 30 s; a received event resets the wait. A running job the server
-  no longer lists, or one whose server cannot be read, is shown as ended, so no pill
-  stays. While the tab is visible the list is read again every 15 s (and whenever
+  doubling to at most 30 s; a received event resets the wait, and so does a good list
+  read after failed ones or after any read that was not for a dropped stream. A running
+  job the server no longer lists, or one whose server could not be read twice in a row,
+  is shown as ended, so no pill stays; one failed read (a proxy's 502) changes nothing.
+  A finished job the server no longer lists (it keeps 20) is dropped. Numbers are
+  grouped "en-US", as the server's lines are. While the tab is visible the list is read again every 15 s (and whenever
   Activity opens), so a job started in another tab or on the legacy admin page appears
   without a reload. Toasts: "Scan started." after this tab's own start; "Scan finished
   · N added · M errors", "Scan cancelled · N added" or "Scan failed · N added · M
@@ -573,14 +576,26 @@ Recorded shell deviations:
   `.outcomes` with `.outcome-list` (`button[aria-pressed]` label + count, in the
   mockup's order Added, Needs review, Errors, No usable metadata, Already known; the
   view opens on the first with files) beside `.outcome-files`: one `.file-row` (`.path`
-  root-relative, `.why` the server's detail) per listed file, "No files in this group."
+  root-relative, `.why` the server's detail) per listed file. The detail wording is the
+  builder's (approved with Task 1): "Added to the Library as “title”", "Linked to
+  “title”", "Already linked to “title”", "Needs review: …", "Error: …", where the title
+  is the prompt's Library title (its stored title, else its text's first line), not the
+  mockup's sample "→ “title” · new positive + negative". Each log line is "HH:MM:SS
+  <prefix> <root label>/<path> · <detail>" rather than the mockup's "[HH:MM:SS] + path →
+  prompt #4812 (new)". The header's actions sit in the page heading's
+  `.heading-actions`, where the mockup has a `.panel-heading > .row-actions`. An
+  empty outcome shows "No files in this group."
   or "No listed file matches this filter.", and the note "Showing N of M" when fewer
   than the counter are shown (the server lists 200 per outcome), with "each row opens
   the image in the viewer" for Added and Already known. Then `details.term`, collapsed:
   "● Scan log — raw detail, click to show" and `pre[tabindex=0]` with the raw lines.
-  The summary follows the store; the rows and log are read from `GET
-  /prompt_manager/jobs/<id>` at most once a second while it runs and once at its end.
-  An unknown id shows "This job is not in this session’s Activity. Jobs are kept until
+  The summary follows the store and carries `listed` (rows per outcome) and
+  `log_length`; the rows and log are read from `GET /prompt_manager/jobs/<id>` once on
+  opening, then at most once a second only while what it lists changes (or, with the
+  log open, its length), so a job whose lists are capped and whose log is closed is not
+  re-read; opening the log reads its new lines. When the job ends while Cancel scan has
+  focus, focus moves to the job's heading. An unknown id, or a job the store's list no
+  longer has, shows "This job is not in this session’s Activity. Jobs are kept until
   ComfyUI restarts." and "All activity"; a job lost with a restart keeps what was read.
   At `max-width: 700px` the tiles take two columns and the outcome list stacks above
   the files. Each Activity item's title is now a link to its view, in the title's
@@ -589,14 +604,19 @@ Recorded shell deviations:
   `workspace-activity.spec.mjs` covers the counters, live updates, viewer rows, the
   filter, the 200-row cap, Cancel scan, the busy start and an unknown or lost job.
 - **D57**: rows under Added and Already known are `button.file-row`s that open the
-  existing media viewer on that one file. The row's root label finds its source in
-  `/prompt_manager/gallery/subfolders?mode=workspace`, and the workspace listing
-  (`root`, `q` = the path) returns the listing item with that exact path: the same
-  identity (`root_index:path`) Images opens. A file the listing no longer has toasts
-  "This file is no longer in Images. Rescan from Import and try again."; other rows are
-  plain text, with no new file route. A start refused because another record-changing
-  job runs toasts "Another job is running: <title>." with the title linking that job's
-  view (the shared toast now accepts link parts).
+  existing media viewer on that one file, by the identity Images opens it by
+  (`root_index:path`). Each scan row records its root's listing index (`root_index`,
+  the place in `_get_all_output_dirs`) beside its label. The row's source is that index
+  in `/prompt_manager/gallery/subfolders?mode=workspace` and must still carry the row's
+  label, so a reordered or replaced source never opens another root's file; the
+  workspace listing's new `path` filter (one exact relative path, case-folded, at most
+  1,024 characters, no traversal) returns that file. A row without an index, a changed
+  source or a file the listing no longer has toasts "This file is no longer in Images.
+  Rescan from Import and try again."; other rows are plain text, with no new file
+  route. A start refused because another record-changing job runs toasts "Another job
+  is running: <title>." with the title linking that job's view (the shared toast now
+  accepts link parts). A toast with a link stays 20 s instead of 6.5 s, and any toast
+  stays while the pointer or focus is on it.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
   library.", and the title has no " concept" suffix. Save view's dialog action reads

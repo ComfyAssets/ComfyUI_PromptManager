@@ -146,6 +146,8 @@ function itemFor(job, scope) {
             if (!progress.isConnected) item.insertBefore(progress, actions.isConnected ? actions : null);
             if (!actions.isConnected) item.append(actions);
         } else {
+            // A focused Cancel job that goes away hands its focus to the item's title link, never to the page body.
+            if (actions.contains(document.activeElement)) link.focus();
             progress.remove();
             actions.remove();
         }

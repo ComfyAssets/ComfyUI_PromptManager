@@ -190,6 +190,26 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertEqual(data["images"], [])
         self.assertIsNone(data["next_cursor"])
 
+    async def test_path_filter_lists_only_that_exact_file(self):
+        # Activity (D57): a scan row opens its file by root and exact relative path,
+        # never by a substring that also matches the same name in other folders.
+        self.media("ComfyUI_00001_.png")
+        for day in range(3):
+            self.media(f"2026-10-0{day + 1}/ComfyUI_00001_.png")
+        self.media("2026-10-01/ComfyUI_00001_.png.bak.png")
+        _, data = await self.get(path="ComfyUI_00001_.png")
+        self.assertEqual([i["path"] for i in data["images"]], ["ComfyUI_00001_.png"])
+        _, data = await self.get(path="2026-10-02/ComfyUI_00001_.png")
+        self.assertEqual(
+            [i["path"] for i in data["images"]], ["2026-10-02/ComfyUI_00001_.png"]
+        )
+        _, data = await self.get(path="missing.png")
+        self.assertEqual(data["images"], [])
+        for bad in ("../outside.png", "a" * 1025):
+            with self.subTest(bad=bad[:12]):
+                response, _ = await self.get(path=bad)
+                self.assertEqual(response.status, 400)
+
     async def test_cursor_cannot_be_reused_with_changed_filters_or_tampered(self):
         self.media("a.png")
         self.media("b.png")

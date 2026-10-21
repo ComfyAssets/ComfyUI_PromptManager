@@ -111,12 +111,13 @@ test('store merges list and SSE updates and caps backoff', async () => {
     assert.deepEqual(store.running(), []);
     assert.equal(typeof LOST_DETAIL, 'string');
 
-    // The server is back without the job (a restart): it stays ended, earlier finished jobs stay listed.
+    // The server is back without the job (a restart): it stays ended; finished jobs the server no longer lists are
+    // dropped, so the list never outgrows the server's (review M3).
     world.listError = null;
     world.list = [];
     await world.fire();
     assert.equal(store.status, 'ready');
-    assert.deepEqual(store.jobs().map(job => [job.id, job.state]), [[ID_C, 'lost'], [ID_A, 'finished'], [ID_B, 'finished']]);
+    assert.deepEqual(store.jobs().map(job => [job.id, job.state]), [[ID_C, 'lost']]);
     assert.equal(world.timers.filter(timer => !timer.cleared && !timer.fired).length, 0, 'no retry after a good read');
     assert.equal(world.toasts.length, 1, 'an ended job has no finish toast');
     world.dispose();
@@ -260,7 +261,7 @@ test('summaries are validated and the copy follows the spec', async () => {
     const loose = parseJob({ id: ID_A, state: 'running', progress: 140.4, processed: -1, total: 1.5, counters: { added: 'x', errors: 2 },
         title: '  ', started_at: 'x', scope: [] });
     assert.deepEqual(loose, { id: ID_A, kind: '', title: 'Background job', state: 'running', started_at: null, finished_at: null,
-        progress: 100, status_line: '', processed: 0, total: 0, counters: { added: 0, errors: 2 }, scope: {} });
+        progress: 100, status_line: '', processed: 0, total: 0, counters: { added: 0, errors: 2 }, scope: {}, listed: {}, log_length: 0 });
     assert.equal(parseJob(summary({ progress: -3 })).progress, 0);
 
     const scan = parseJob(summary({ progress: 42, processed: 8240, total: 19622, counters: { added: 1, errors: 1 } }));
@@ -323,4 +324,48 @@ test('pagehide stops polling, closes streams and aborts the in-flight read; page
     world.dispose();
     assert.equal(signals.at(-1).aborted, true, 'disposing aborts the store reads');
     assert.equal(world.open().length, 0);
+});
+
+test('one failed read is not a restart; two in a row are, and a good read resets the backoff', async () => {
+    const { createActivityStore } = await source;
+    const { world, ...deps } = harness();
+    world.list = [summary(), summary({ id: ID_B, state: 'finished', finished_at: 900 })];
+    const store = createActivityStore(deps);
+    await store.load();
+    // A single failed read (a proxy's 502) keeps the job running and its stream open (review M1).
+    world.listError = apiError(502, 'Bad gateway', null);
+    await store.load();
+    assert.equal(store.status, 'error');
+    assert.equal(store.find(ID_A).state, 'running');
+    assert.equal(world.open().length, 1);
+    assert.equal(await world.fire(), 1000);
+    // The second failure in a row: the server is gone, so the running job ended with it.
+    assert.equal(store.find(ID_A).state, 'lost');
+    assert.equal(world.open().length, 0);
+    for (let index = 0; index < 3; index += 1) await world.fire();
+    // The server is back with a new running job: the backoff starts again at 1 s (review M2).
+    world.listError = null;
+    world.list = [summary({ id: ID_C })];
+    await world.fire();
+    assert.equal(store.status, 'ready');
+    assert.deepEqual(store.jobs().map(job => [job.id, job.state]), [[ID_C, 'running'], [ID_A, 'lost']]);
+    world.open()[0].onerror();
+    assert.equal(await world.fire(), 1000);
+    // A summary carries what its detail lists, for the job view's reads (review M12).
+    send(world.open()[0], summary({ id: ID_C, listed: { added: 3, errors: -1 }, log_length: 7 }));
+    assert.deepEqual([store.find(ID_C).listed, store.find(ID_C).log_length], [{ added: 3, errors: 0 }, 7]);
+    world.dispose();
+});
+
+test('numbers group the way the server writes them, whatever the browser locale', async () => {
+    const { pillParts, finishToast, parseJob } = await source;
+    const original = Number.prototype.toLocaleString;
+    Number.prototype.toLocaleString = function (locale, ...rest) { return original.call(this, locale ?? 'de-DE', ...rest); };
+    try {
+        const job = parseJob(summary({ progress: 41, processed: 8240, total: 19622, counters: { added: 1420, errors: 18 } }));
+        assert.equal(pillParts(job).text, 'Scanning · 41% · 8,240 / 19,622');
+        assert.equal(finishToast({ ...job, state: 'finished' }), 'Scan finished · 1,420 added · 18 errors');
+    } finally {
+        Number.prototype.toLocaleString = original;
+    }
 });

@@ -143,9 +143,10 @@ class Job:
     def record(self, group, row, log_line):
         """Count one file outcome in ``group``, list its row and log it.
 
-        ``row`` is ``{path, root, detail}``: the path relative to its output
-        root and the root's public label. An absolute path is cut to its file
-        name, so a row never reveals the server's layout.
+        ``row`` is ``{path, root, root_index, detail}``: the path relative to
+        its output root, the root's public label and its listing index (the
+        identity Images opens it by; None when unknown). An absolute path is
+        cut to its file name, so a row never reveals the server's layout.
         """
         if group not in self.counters:
             raise ValueError(f"Unknown outcome group {group!r} for {self.kind}")
@@ -155,11 +156,15 @@ class Job:
         if raw and raw != path:
             log_line = log_line.replace(raw, path)
         rows = self.outcomes[group]
+        index = row.get("root_index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            index = None
         if len(rows) < MAX_OUTCOME_ROWS:
             rows.append(
                 {
                     "path": path,
                     "root": str(row.get("root") or ""),
+                    "root_index": index,
                     "detail": str(row.get("detail") or ""),
                 }
             )
@@ -219,6 +224,9 @@ class Job:
             "total": self.total,
             "counters": dict(self.counters),
             "scope": dict(self.scope),
+            # What detail() lists, so a view re-reads it only when it changed.
+            "listed": {group: len(rows) for group, rows in self.outcomes.items()},
+            "log_length": len(self.log),
         }
 
     def detail(self):

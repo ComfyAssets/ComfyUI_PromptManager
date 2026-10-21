@@ -705,6 +705,8 @@ def _workspace_filters(query: Mapping) -> dict:
     media = query.get("media", "all")
     order = query.get("sort", "newest")
     folder = query.get("subfolder", "").strip().replace("\\", "/")
+    # ``path``: one exact relative path (Activity opens a scan row by it, D57).
+    exact = query.get("path", "").strip().replace("\\", "/")
     category = query.get("category", "").strip() or None
     tags = sorted(
         {tag.strip() for tag in query.get("tags", "").split(",") if tag.strip()}
@@ -723,12 +725,15 @@ def _workspace_filters(query: Mapping) -> dict:
         raise ValueError("Invalid gallery filters")
     if folder and (_has_traversal(folder) or len(folder) > 1024):
         raise ValueError("Invalid gallery folder")
+    if exact and (_has_traversal(exact) or len(exact) > 1024):
+        raise ValueError("Invalid gallery path")
     return {
         "text": text,
         "query": folded,
         "media": media,
         "order": order,
         "folder": folder,
+        "path": exact.casefold(),
         "category": category,
         "tags": tags,
         "favorites": favorites == "1",
@@ -762,7 +767,10 @@ def _filtered_page(
     native_folder = folder.replace("/", os.sep)
     nested = native_folder + os.sep
     total, page, positives = 0, [], set()
+    exact = filters.get("path", "")
     for position, entry in enumerate(entries):
+        if exact and entry.folded != exact:
+            continue
         if folder and not (
             entry.folder == native_folder or entry.folder.startswith(nested)
         ):
@@ -1155,6 +1163,7 @@ class ImageRoutesMixin:
                         filters["media"],
                         filters["order"],
                         filters["folder"],
+                        filters["path"],
                         root_index,
                         [str(root) for root in output_dirs],
                         filters["category"],

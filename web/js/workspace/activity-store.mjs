@@ -18,6 +18,7 @@ export const JOBS_URL = '/prompt_manager/jobs';
 export const BACKOFF_FIRST_MS = 1000;
 export const BACKOFF_MAX_MS = 30000;
 export const POLL_MS = 15000;
+export const LOST_AFTER_FAILURES = 2;
 export const LOST_DETAIL = 'This job ended when ComfyUI restarted.';
 const SERVER_STATES = new Set(['running', 'finished', 'cancelled', 'failed']);
 const FINAL_STATES = new Set(['finished', 'cancelled', 'failed']);
@@ -41,6 +42,9 @@ export function parseJob(raw) {
     if (!plainObject(raw) || typeof raw.id !== 'string' || !JOB_ID.test(raw.id) || !SERVER_STATES.has(raw.state)) return null;
     const counters = {};
     if (plainObject(raw.counters)) for (const [key, value] of Object.entries(raw.counters)) counters[key] = count(value);
+    // What the job's detail lists per outcome, and its log length: a view re-reads the detail only when they change.
+    const listed = {};
+    if (plainObject(raw.listed)) for (const [key, value] of Object.entries(raw.listed)) listed[key] = count(value);
     const progress = typeof raw.progress === 'number' && Number.isFinite(raw.progress) ? Math.round(raw.progress) : 0;
     return {
         id: raw.id,
@@ -55,10 +59,13 @@ export function parseJob(raw) {
         total: count(raw.total),
         counters,
         scope: plainObject(raw.scope) ? { ...raw.scope } : {},
+        listed,
+        log_length: count(raw.log_length),
     };
 }
 
-const number = value => value.toLocaleString();
+// Grouped as the server writes its status lines ("8,240 of 19,622"), whatever the browser's locale.
+const number = value => value.toLocaleString('en-US');
 const errorsOf = job => `${number(job.counters.errors ?? 0)} ${noun(job.counters.errors ?? 0, 'error')}`;
 /** "1,420 added". */
 export const addedOf = job => `${number(job.counters.added ?? 0)} added`;
@@ -113,6 +120,8 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
     let jobs = [];
     let status = 'idle';
     let attempt = 0;
+    // Failed list reads in a row: one (a proxy's 502, a dropped poll) is not yet a restart.
+    let failures = 0;
     let retryTimer = null;
     let pollTimer = null;
     let reads = 0;
@@ -155,7 +164,7 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
         };
         source.onerror = () => {
             closeStream(id);
-            if (find(id)?.state === 'running') scheduleResync();
+            if (find(id)?.state === 'running') scheduleResync({ drop: true });
         };
     }
 
@@ -171,12 +180,15 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
         emit();
     }
 
-    /** Replace the jobs with the server's list; a running job it no longer has has ended with the server. */
+    /**
+     * Replace the jobs with the server's list. A running job it no longer has ended with the server and stays as
+     * ended; a finished job it no longer lists was pruned there and is dropped here too.
+     */
     function merge(list) {
         const next = list.map(parseJob).filter(Boolean).map(job => settled(find(job.id), job));
         const ids = new Set(next.map(job => job.id));
-        const carried = jobs.filter(job => !ids.has(job.id))
-            .map(job => job.state === 'running' ? { ...job, state: 'lost' } : job);
+        const carried = jobs.filter(job => !ids.has(job.id) && (job.state === 'running' || job.state === 'lost'))
+            .map(job => ({ ...job, state: 'lost' }));
         for (const job of next) announce(find(job.id), job);
         jobs = [...next, ...carried];
         follow();
@@ -187,13 +199,14 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
         follow();
     }
 
-    function scheduleResync() {
+    /** Re-read after the backoff; `drop` marks a re-read for a dropped stream, which keeps the backoff growing. */
+    function scheduleResync({ drop = false } = {}) {
         if (disposed || suspended || retryTimer !== null) return;
         const delay = backoffDelay(attempt);
         attempt += 1;
         retryTimer = timers.setTimeout(() => {
             retryTimer = null;
-            load();
+            load({ drop });
         }, delay);
     }
 
@@ -209,7 +222,7 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
     }
 
     /** Read this session's jobs. A failed read marks running jobs ended and tries again after the backoff. */
-    async function load() {
+    async function load({ drop = false } = {}) {
         if (disposed || suspended) return;
         const read = ++reads;
         // Only the newest read applies, so an older one still in flight is aborted.
@@ -223,10 +236,15 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
             if (!Array.isArray(result?.jobs)) throw new TypeError('Invalid job list');
             merge(result.jobs);
             status = 'ready';
+            // A good read ends the backoff (the server is back, or nothing dropped), except for a stream that keeps
+            // dropping while the list reads fine: that waits longer each time, and a received message resets it.
+            if (failures > 0 || !drop) attempt = 0;
+            failures = 0;
             schedulePoll();
         } catch (error) {
             if (disposed || suspended || scope.signal?.aborted || controller.signal.aborted || read !== reads) return;
-            markLost();
+            failures += 1;
+            if (failures >= LOST_AFTER_FAILURES) markLost();
             status = 'error';
             scheduleResync();
         }

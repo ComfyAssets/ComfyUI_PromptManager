@@ -267,8 +267,11 @@ test('reload during a scan reattaches to the running job', async ({ page, reques
 
     // Cancel job asks the server to stop at a file boundary; the job ends cancelled with its partial counts.
     await step(request, job.id, { counters: { added: 7 } });
-    await items(page).first().getByRole('button', { name: 'Cancel job', exact: true }).click();
+    await items(page).first().getByRole('button', { name: 'Cancel job', exact: true }).focus();
+    await page.keyboard.press('Enter');
     await expect(toast(page)).toHaveText('Scan cancelled · 7 added');
+    // The removed Cancel job hands its focus to the item's title link (review M4).
+    await expect(items(page).first().locator('h3 > a')).toBeFocused();
     await expect(items(page).first().locator('.chip.blue')).toHaveText('Cancelled');
     await expect(items(page).first().locator('p')).toHaveText(/^Cancelled \d\d:\d\d at a file boundary · 7 added · completed work is kept$/);
     await expect(pill(page)).toBeHidden();
@@ -384,6 +387,8 @@ test('start scan creates a job, toasts, and opens its view', async ({ page, requ
     const values = await tileValues(page);
     expect(values.map(([, label]) => label)).toEqual(TILE_LABELS);
     expect(values.reduce((sum, [, , value]) => sum + Number(value.replaceAll(',', '')), 0)).toBe(job.processed);
+    // Opening the log reads its last lines (review M12).
+    await scanLog(page).locator('summary').click();
     await expect(scanLog(page).locator('pre')).toContainText('Scan finished');
 });
 
@@ -498,6 +503,26 @@ test('added rows open the viewer, error rows are plain', async ({ page, request 
     await fileRows(page).nth(1).click();
     await expect(toast(page)).toHaveText('This file is no longer in Images. Rescan from Import and try again.');
     await expect(page.locator('dialog#viewer-dialog')).toHaveCount(0);
+    // A row opens only its own root's file: a root whose label no longer matches (a replaced source) never opens the
+    // other root's same path, and a row without a root index opens nothing (review M8, M9).
+    const lookups = [];
+    page.on('request', item => { const url = new URL(item.url()); if (url.pathname === '/prompt_manager/images/output' && url.searchParams.get('path')) lookups.push(url.search); });
+    await step(request, job.id, { records: [
+        { group: 'added', path: 'shared/same.png', root: 'output', root_index: 1, detail: 'Added' },
+        { group: 'added', path: 'shared/same.png', root: 'output', root_index: null, detail: 'Added' },
+    ] });
+    await expect(fileRows(page)).toHaveCount(4);
+    for (const index of [2, 3]) {
+        await fileRows(page).nth(index).click();
+        await expect(toast(page)).toHaveText('This file is no longer in Images. Rescan from Import and try again.');
+        await expect(page.locator('dialog#viewer-dialog')).toHaveCount(0);
+    }
+    expect(lookups).toEqual([]);
+    // The lookup is the exact identity, not a name search.
+    await fileRows(page).first().click();
+    await expect(page.locator('dialog#viewer-dialog[open]')).toBeVisible();
+    expect(lookups).toEqual(['?mode=workspace&root=0&path=shared%2Fsame.png&limit=5']);
+    await page.keyboard.press('Escape');
 });
 
 test('filter narrows the selected outcome', async ({ page, request }) => {
@@ -545,6 +570,18 @@ test('job view renders 200-row cap note', async ({ page, request }) => {
     await filter(page).fill('file_00199');
     await expect(fileRows(page)).toHaveCount(1);
     await expect(resultsNote(page)).toHaveText(`Showing 1 of 250 · ${VIEWER_HINT}`);
+
+    // Review M12: with the list capped and the log closed, more files only update the counters; the detail is read
+    // again only when the log opens with new lines.
+    const reads = [];
+    page.on('request', item => { if (new URL(item.url()).pathname === `/prompt_manager/jobs/${job.id}`) reads.push(Date.now()); });
+    await step(request, job.id, { processed: 300, bulk: { group: 'added', count: 40 } });
+    await expect(tiles(page).first().locator('dd')).toHaveText('290');
+    await page.waitForTimeout(1500);
+    expect(reads).toEqual([]);
+    await scanLog(page).locator('summary').click();
+    await expect.poll(() => reads.length).toBe(1);
+    await expect(scanLog(page).locator('pre')).toContainText('bulk/file_00039.png');
 });
 
 test('cancel scan ends cancelled with partial counts', async ({ page, request }) => {
@@ -552,8 +589,11 @@ test('cancel scan ends cancelled with partial counts', async ({ page, request })
     const job = await startJob(request);
     await step(request, job.id, { processed: 9, counters: { added: 7, errors: 2 } });
     await openJob(page, job.id);
-    await heading(page).getByRole('button', { name: 'Cancel scan', exact: true }).click();
+    // From the keyboard: when the job ends and Cancel scan goes away, focus moves to the job's heading (review M4).
+    await heading(page).getByRole('button', { name: 'Cancel scan', exact: true }).focus();
+    await page.keyboard.press('Enter');
     await expect(toast(page)).toHaveText('Scan cancelled · 7 added');
+    await expect(heading(page).locator('h1')).toBeFocused();
     await expect(heading(page).locator('p.muted')).toHaveText(/^Cancelled \d\d:\d\d at a file boundary · 7 added · completed work is kept$/);
     await expect(heading(page).getByRole('button', { name: 'Cancel scan', exact: true })).toHaveCount(0);
     await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('Cancelled after 9 of 19,622 files');
@@ -577,6 +617,9 @@ test('busy start names the running job', async ({ page, request }) => {
     await expect(toast(page).getByRole('link', { name: 'Database maintenance', exact: true })).toHaveAttribute('href', `#/activity/${running.id}`);
     await expect(page).toHaveURL(/#\/images$/);
     expect((await listed(request)).map(item => item.id)).toEqual([running.id]);
+    // Review M14: a toast with a link outlasts the plain 6.5 s, so the link stays reachable.
+    await page.waitForTimeout(7000);
+    await expect(toast(page).getByRole('link', { name: 'Database maintenance', exact: true })).toBeVisible();
     await toast(page).getByRole('link', { name: 'Database maintenance', exact: true }).click();
     await expect(heading(page).locator('h1')).toHaveText('Database maintenance');
     // A job of another kind cancels as "Cancel job".

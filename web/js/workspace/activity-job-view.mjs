@@ -33,8 +33,7 @@ export const NO_MATCH = 'No listed file matches this filter.';
 export const VIEWER_HINT = 'each row opens the image in the viewer';
 export const FILE_GONE = 'This file is no longer in Images. Rescan from Import and try again.';
 export const OPEN_FAILED = 'The file could not be opened. Try again.';
-const LISTING_LIMIT = 100;
-const MAX_QUERY = 500;
+const LISTING_LIMIT = 5;
 
 /** The counter tiles, in the spec's order and the mockup's tones. */
 export const TILES = Object.freeze([
@@ -55,7 +54,8 @@ function element(tag, text, className) {
     return node;
 }
 
-const number = value => value.toLocaleString();
+// Grouped as the server writes its lines, whatever the browser's locale (as images.mjs does).
+const number = value => value.toLocaleString('en-US');
 const isText = value => typeof value === 'string';
 
 /** A job's detail read: the summary plus its listed rows per outcome and its log; null when it is not one. */
@@ -67,7 +67,9 @@ export function parseDetail(raw) {
     for (const [group, rows] of Object.entries(groups)) {
         if (!Array.isArray(rows)) continue;
         outcomes[group] = rows.filter(row => row && isText(row.path) && row.path)
-            .map(row => ({ path: row.path, root: isText(row.root) ? row.root : '', detail: isText(row.detail) ? row.detail : '' }));
+            .map(row => ({ path: row.path, root: isText(row.root) ? row.root : '',
+                root_index: Number.isSafeInteger(row.root_index) && row.root_index >= 0 ? row.root_index : null,
+                detail: isText(row.detail) ? row.detail : '' }));
     }
     const log = Array.isArray(raw.log) ? raw.log.filter(isText) : [];
     return { job, outcomes, log };
@@ -187,7 +189,11 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     let readTimer = null;
     let roots = null;
     let lastState = null;
-    const current = () => store.find(jobId) ?? detail?.job ?? null;
+    // Set once this page's own list read answered, or the detail read said the job is unknown.
+    let listedOnce = false;
+    let notFound = false;
+    // The store is the truth once it has read the list: a job it no longer has was pruned by the server.
+    const current = () => store.find(jobId) ?? (listedOnce ? null : detail?.job ?? null);
 
     const inspection = createInspectionController({ api });
     scope.cleanup(() => inspection.dispose());
@@ -201,6 +207,24 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         parts.actions.append(download, cancel);
         main.append(progressPart.node, resultsPart.node, log);
         selected ??= defaultOutcome(job.counters);
+    }
+
+    /** The job is not (or no longer) in this session: say so instead of an empty view. */
+    function showMissing() {
+        if (mounted) {
+            mounted = false;
+            const focused = main.contains(document.activeElement) && document.activeElement !== parts.h1;
+            download.remove();
+            cancel.remove();
+            progressPart.node.remove();
+            resultsPart.node.remove();
+            log.remove();
+            parts.h1.textContent = 'Activity';
+            parts.description.textContent = '';
+            document.title = 'Activity · Prompt Manager';
+            if (focused) parts.h1.focus();
+        }
+        if (!missing.isConnected) main.append(missing);
     }
 
     // Listed rows only ever grow, so a row keeps its node across reads: a focused row (or the viewer's trigger) stays.
@@ -237,7 +261,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
 
     function render() {
         const job = current();
-        if (!job) return;
+        if (!job) {
+            if (listedOnce || notFound) showMissing();
+            return;
+        }
         showBody(job);
         const scan = job.kind === 'scan';
         parts.h1.textContent = job.title;
@@ -246,7 +273,9 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         cancel.textContent = scan ? 'Cancel scan' : 'Cancel job';
         if (job.state === 'running') {
             if (!cancel.isConnected) parts.actions.append(cancel);
-        } else {
+        } else if (cancel.isConnected) {
+            // A focused Cancel that goes away hands its focus to the job's heading, never to the page body.
+            if (document.activeElement === cancel) parts.h1.focus();
             cancel.remove();
         }
         status.textContent = progressLine(job);
@@ -289,7 +318,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         } catch (error) {
             if (scope.signal.aborted) return;
             // An unknown job: the page says so unless the store still knows it (then the rows wait for a later read).
-            if (error?.status === 404 && !current()) main.append(missing);
+            if (error?.status === 404) notFound = true;
         } finally {
             reading = false;
         }
@@ -297,14 +326,30 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         if (readAgain) { readAgain = false; scheduleRead(); }
     }
 
+    /**
+     * Whether the detail read would change the page: more listed rows in any outcome, or (with the log open) more log
+     * lines. Counters come with the summary, so a job whose lists are capped and whose log is closed is not re-read.
+     */
+    function detailChanged(job) {
+        if (!detail) return true;
+        const groups = new Set([...Object.keys(job.listed), ...Object.keys(detail.outcomes)]);
+        for (const group of groups) if ((job.listed[group] ?? 0) !== (detail.outcomes[group]?.length ?? 0)) return true;
+        return log.open && job.log_length !== detail.log.length;
+    }
+
     function follow() {
         const job = store.find(jobId);
         render();
         if (!job) return;
-        // The listed rows change while it runs, and once more as it ends; a job lost with the server cannot be read.
-        if (job.state === 'running' || (lastState === 'running' && job.state !== 'lost')) scheduleRead();
+        // A job lost with the server cannot be read; any other is read while what it lists changes.
+        if (job.state !== 'lost' && (job.state === 'running' || lastState === 'running') && detailChanged(job)) scheduleRead();
         lastState = job.state;
     }
+
+    scope.listen(log, 'toggle', () => {
+        const job = store.find(jobId);
+        if (log.open && job && job.state !== 'lost' && detailChanged(job)) scheduleRead();
+    });
 
     scope.listen(cancel, 'click', async () => {
         if (cancel.getAttribute('aria-disabled') === 'true') return;
@@ -329,17 +374,20 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         if (button?.row) openRow(button.row, button);
     });
 
-    /** The listing's own item for a row (its source by label, then its path), so the viewer reads it as Images does. */
+    /**
+     * The listing's own item for a row, by its exact identity (D57): the root index the scan recorded, still carrying
+     * the row's label (so a reordered or replaced source never opens another root's file), and its exact relative path.
+     */
     async function listed(row) {
+        if (row.root_index === null) return null;
         if (!roots) {
             const data = await api.get('/prompt_manager/gallery/subfolders?mode=workspace', { signal: scope.signal });
             roots = Array.isArray(data?.roots) ? data.roots : [];
         }
-        const root = roots.find(item => item?.label === row.root && Number.isSafeInteger(item.index));
-        if (!root) return null;
-        const query = row.path.length > MAX_QUERY ? row.path.split('/').at(-1).slice(0, MAX_QUERY) : row.path;
-        const params = new URLSearchParams({ mode: 'workspace', root: String(root.index), q: query,
-            limit: String(LISTING_LIMIT), sort: 'newest' });
+        const root = roots.find(item => item?.index === row.root_index);
+        if (!root || root.label !== row.root) return null;
+        const params = new URLSearchParams({ mode: 'workspace', root: String(root.index), path: row.path,
+            limit: String(LISTING_LIMIT) });
         const page = await api.get(`/prompt_manager/images/output?${params}`, { signal: scope.signal });
         return (Array.isArray(page?.images) ? page.images : []).find(item => item?.path === row.path
             && item.root_index === root.index) ?? null;
@@ -364,6 +412,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     scope.cleanup(store.subscribe(follow));
     render();
     read();
-    // A job that finished before this page loaded is only in the list read.
-    store.load();
+    // A job that finished before this page loaded is only in the list read; once it answered, the store decides.
+    store.load().then(() => {
+        if (scope.signal.aborted || store.status !== 'ready') return;
+        listedOnce = true;
+        render();
+    });
 }
