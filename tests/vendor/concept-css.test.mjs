@@ -73,18 +73,21 @@ test('overlay rules on concept selectors carry a decision marker', () => {
     assert.deepEqual(violations, []);
 });
 
-// PRs C and D lint each page stylesheet they keep: a page rule on a concept selector is an override like the overlay's.
+// Each kept page stylesheet is linted: a page rule on a concept selector is an override like the overlay's.
 test('kept page stylesheets mark their concept-selector overrides', () => {
-    for (const name of ['images.css', 'library.css', 'inspector.css']) {
+    for (const name of ['library.css']) {
         const { violations } = lintOverlay(readFileSync(concept, 'utf8'), readFileSync(join(root, 'web/js/workspace', name), 'utf8'));
         assert.deepEqual(violations, [], name);
     }
 });
 
-// #249 C8: the Images page renders the concept DOM, so the replaced production rules stay retired.
-test('images.css keeps no retired Images page rules', () => {
-    const css = readFileSync(join(root, 'web/js/workspace/images.css'), 'utf8');
-    for (const retired of ['.image-facts', '.image-card', '.image-grid', '.image-filters', '.image-toolbar', '.image-preview', '.image-collection', '.image-continuation']) {
+// #249 C8 and D3: the Images page and the inspector render the concept DOM, so the replaced production rules stay
+// retired; the few production-only rules still consumed live in the overlay.
+test('the overlay keeps no retired Images page or inspector rules', () => {
+    const css = readFileSync(join(root, 'web/js/workspace/workspace.css'), 'utf8');
+    // `.image-grid` and `.image-card-actions` are concept selectors now, so only the retired production names are listed.
+    for (const retired of ['.image-facts', '.image-filters', '.image-toolbar', '.image-preview', '.image-collection', '.image-continuation',
+        '.image-details', '.file-cover', '.file-inspector-inner', '.file-title', '.file-chip', '.file-facts', '.generation-facts', '.file-inspector-footer']) {
         assert.equal(css.includes(retired), false, `${retired} is retired`);
     }
 });
@@ -106,15 +109,13 @@ test('workspace.html loads controls, viewer, concept, page CSS and the overlay i
         'js/shared/toolkit/controls.css',
         'lib/viewerjs/viewer.min.css',
         'js/workspace/concept.css',
-        'js/workspace/images.css',
         'js/workspace/library.css',
-        'js/workspace/inspector.css',
         'js/workspace/workspace.css',
     ]);
 });
 
-test('the retired shell, vocabulary and editor stylesheets stay deleted', () => {
-    for (const name of ['style.css', 'vocabulary.css', 'library-editor.css']) {
+test('the retired shell, vocabulary, editor, Images and inspector stylesheets stay deleted', () => {
+    for (const name of ['style.css', 'vocabulary.css', 'library-editor.css', 'images.css', 'inspector.css']) {
         assert.equal(existsSync(join(root, 'web/js/workspace', name)), false, `web/js/workspace/${name} must not come back`);
     }
 });

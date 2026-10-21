@@ -51,7 +51,7 @@ test('disposed blocks ignore updates and aborted parents never mount content',()
     }finally{scope.dispose();f.restore();}
 });
 
-test('frozen fields disclose their exact source and keep null, empty and whitespace actions distinct',()=>{
+test('frozen fields keep null, empty and whitespace actions distinct without a source line',()=>{
     const f=dom(),scope=createScope(),container=new f.Element('div'),sent=[];
     const field=(text,source)=>({status:text===null?'unresolved':'resolved',text,source:'execution',evidence:{provenance:'recorded',source,reason:null}});
     try{
@@ -191,4 +191,38 @@ test('copy shows the shared toast "Prompt copied." with the exact role text',asy
         assert.deepEqual(copied,['  exact\ntext ']);assert.equal(f.toast.textContent,'Prompt copied.');
         assert.equal(f.walk(container,node=>node.attributes.role==='status').length,0,'no per-block copy status line');
     }finally{scope.dispose();f.restore();if(previous)Object.defineProperty(globalThis,'navigator',previous);else delete globalThis.navigator;}
+});
+
+/** Runs one copy click with `clipboard` as `navigator.clipboard`, recording what the fallback seam receives. */
+async function copyWithClipboard(clipboard,{detach=false}={}) {
+    const f=dom(),scope=createScope(),container=new f.Element('div'),fallbacks=[];
+    const previous=Object.getOwnPropertyDescriptor(globalThis,'navigator');
+    Object.defineProperty(globalThis,'navigator',{configurable:true,value:clipboard===undefined?{}:{clipboard}});
+    try{
+        const view=module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},prompts:{positive:record('exact text'),negative:record('')},
+            copyFallback:(text,options)=>fallbacks.push({text,...options})});
+        const copy=f.walk(container,node=>node.dataset.copyRole==='positive')[0];
+        let current=copy;
+        if(detach) {
+            // The blocks re-render while the clipboard is pending: the clicked button is detached, its successor is not.
+            copy.isConnected=false;container.querySelector=selector=>selector==='[data-copy-role="positive"]'?current:null;
+        }
+        const pending=container.listeners.get('click')({target:copy});
+        if(detach) {view.update({positive:record('exact text'),negative:record('')});current=f.walk(container,node=>node.dataset.copyRole==='positive')[0];}
+        await pending;
+        return {fallbacks,toast:f.toast.textContent,copy,current,scope};
+    }finally{scope.dispose();f.restore();if(previous)Object.defineProperty(globalThis,'navigator',previous);else delete globalThis.navigator;}
+}
+test('copy without a clipboard opens the select-to-copy fallback and shows no toast',async()=>{
+    const {fallbacks,toast,copy,scope}=await copyWithClipboard(undefined);
+    assert.equal(fallbacks.length,1);assert.equal(fallbacks[0].text,'exact text');assert.equal(fallbacks[0].trigger,copy);assert.ok(fallbacks[0].scope);
+    assert.notEqual(toast,'Prompt copied.');assert.equal(scope.signal.aborted,true);
+});
+test('a refused clipboard write opens the fallback instead of the toast',async()=>{
+    const {fallbacks,toast}=await copyWithClipboard({writeText:async()=>{throw new Error('Denied');}});
+    assert.equal(fallbacks.length,1);assert.equal(fallbacks[0].text,'exact text');assert.notEqual(toast,'Prompt copied.');
+});
+test('a fallback after a re-render returns focus to the same-role copy button, not the detached one',async()=>{
+    const {fallbacks,copy,current}=await copyWithClipboard({writeText:async()=>{throw new Error('Denied');}},{detach:true});
+    assert.equal(fallbacks.length,1);assert.notEqual(current,copy);assert.equal(fallbacks[0].trigger,current);
 });

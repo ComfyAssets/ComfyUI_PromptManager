@@ -106,7 +106,7 @@ export async function exerciseCurrentPairSend(page, roles) {
             } });
         });
         const viewer = page.locator('dialog#viewer-dialog');
-        const send = viewer.getByRole('button', { name: 'Send prompt pair', exact: true });await send.click();
+        const send = viewer.getByRole('button', { name: /^Send prompt pair to ComfyUI: / });await send.click();
         const sender = page.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });await expect(sender).toBeVisible();
         await sender.getByRole('combobox', { name: 'ComfyUI window', exact: true }).selectOption({ label: 'Canonical ComfyUI' });
         await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ label: 'Canonical destination' });

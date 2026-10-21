@@ -152,7 +152,56 @@ pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max
 .detail-panel { min-inline-size: 0; max-block-size: calc(100dvh - 40px); overflow: auto; /* D2 */ }
 @media (max-width: 700px) { .detail-panel { max-block-size: none; /* D2 */ } }
 @container images-page (inline-size < 600px) { .detail-panel { position: static; max-block-size: none; /* D2 */ } }
-/* #249 D2: the prompt blocks' mount point is transparent, so their sections sit in `.detail-inner` as the concept's do. */
-.detail-inner > .prompt-inspector { display: contents; }
+/* #249 D2/D20: the prompt blocks' mount point is transparent, so their sections sit in `.detail-inner` (panel) and the
+   viewer details' wrapper as the concept's do. */
+:is(.detail-inner, #viewer-details > div) > .prompt-inspector { display: contents; /* D20 */ }
 /* #249 D2: real titles and filenames can be one unbroken word; they wrap inside the 310px panel. */
 .panel-heading h2, .detail-inner > p.small { min-inline-size: 0; overflow-wrap: anywhere; }
+
+/* #249 D3: production-only rules kept from the retired images.css and inspector.css. Each has a live consumer. */
+/* The inspector wraps real unbroken literals (model paths, raw records) inside the 310px panel and the 340px viewer
+   details, and an unavailable download stays visibly inert next to its reason. */
+.file-inspector { min-inline-size: 0; overflow-wrap: anywhere; }
+.file-inspector [aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
+/* #249 D20: the viewer details' pair send and history buttons wrap inside the narrow rail at 200% zoom with wider fonts,
+   where the toolkit's `nowrap` would push them past its edge. */
+.ca-tools #viewer-details > button { white-space: normal; /* D20 */ }
+/* The Images page narrows to one column inside a narrow container (the Library-embedded gallery). */
+.images-main { container: images-page / inline-size; }
+@container images-page (inline-size < 600px) {
+    .image-workspace { grid-template-columns: minmax(0, 1fr); }
+}
+.options-status { font-size: 12px; padding-inline: 4px; }
+/* Until their pages rebuild (PR E Library, PR F history): the Library's and the recorded run's prompt blocks keep
+   their spacing, the Archive negative dialog keeps `section.prompt-block`, and the shared prompt sender keeps its
+   dialog and send button. */
+.prompt-inspector { margin-block-start: 22px; min-inline-size: 0; }
+.prompt-block { border-block-start: 1px solid var(--ca-line); padding-block: 13px; min-inline-size: 0; }
+.prompt-positive { --prompt-role: #73dda9; }
+[data-ca-theme="light"] .prompt-positive { --prompt-role: #176b46; }
+.prompt-negative { --prompt-role: #ff8c98; }
+[data-ca-theme="light"] .prompt-negative { --prompt-role: #b71931; }
+.prompt-block-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.prompt-block h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; margin: 0; color: var(--prompt-role); }
+.prompt-empty, .prompt-block > .muted { font-size: 10px; }
+pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; margin-block: 10px; }
+.prompt-send-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ca-focus); }
+.prompt-send-button svg { inline-size: 16px; block-size: 16px; flex-shrink: 0; }
+.prompt-sender { background: var(--ca-surface); color: var(--ca-text); border: 1px solid var(--ca-line); border-radius: 12px; padding: 22px; inline-size: min(760px, calc(100% - 32px)); max-inline-size: none; max-block-size: calc(100dvh - 32px); overflow: auto; }
+.prompt-sender::backdrop { background: #000b; }
+.prompt-sender-header, .prompt-sender-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.prompt-sender-header h2 { font-size: 20px; margin: 0; }
+.prompt-sender-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-block: 20px; }
+.prompt-sender-options .ca-field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.prompt-sender select { inline-size: 100%; min-block-size: 38px; }
+.prompt-sender-status { font-size: 13px; line-height: 1.6; }
+.prompt-sender-status[role="alert"] { color: var(--ca-error-text); }
+.prompt-sender-preview { margin-block: 20px; min-inline-size: 0; }
+.prompt-sender-field { border: 1px solid var(--ca-line); border-radius: 7px; padding: 14px; margin-block: 12px; min-inline-size: 0; }
+.prompt-sender-field :where(pre, textarea), .prompt-sender-composition { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.65; max-inline-size: 100%; }
+.prompt-sender-field textarea { inline-size: 100%; min-block-size: 100px; resize: vertical; }
+.prompt-sender-composition { padding: 12px; background: var(--ca-field); border-radius: 6px; }
+.prompt-sender-actions { justify-content: flex-end; margin-block-start: 18px; }
+@media (max-width: 780px) {
+    .prompt-sender-options { grid-template-columns: minmax(0, 1fr); }
+}

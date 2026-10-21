@@ -32,7 +32,7 @@ function childScope(parentScope) {
     return scope;
 }
 
-export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry, includePairAction = true, contextLabel = ''}) {
+export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry, includePairAction = true, contextLabel = '', copyFallback = openCopyFallback}) {
     // A nested set of blocks (the current file inside a recorded run) names its regions and actions with a
     // context so assistive technology never meets two identically named prompt regions in one dialog.
     const named = title => contextLabel ? `${contextLabel} ${title.toLowerCase()} prompt` : `${title} prompt`;
@@ -56,7 +56,10 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
                 await navigator.clipboard.writeText(text);
                 if (!scope.signal.aborted) showWorkspaceToast('Prompt copied.');
             } catch {
-                if (!scope.signal.aborted) openCopyFallback(text, {scope, trigger:copy});
+                if (scope.signal.aborted) return;
+                // A re-render during the pending write detaches the clicked button; Escape then returns to its successor.
+                const trigger = copy.isConnected === false ? container.querySelector(`[data-copy-role="${copy.dataset.copyRole}"]`) : copy;
+                copyFallback(text, {scope, trigger});
             }
         }
         if (event.target.closest('[data-retry-prompts]')) onRetry?.();

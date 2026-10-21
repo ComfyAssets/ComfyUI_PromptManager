@@ -16,7 +16,6 @@ const REPRESENTATIONS = {
 };
 const TEXTLESS = new Set(['invalid', 'limited']);
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
-const FACT_SOURCES = {'api-graph': 'Embedded API configuration', workflow: 'Saved workflow configuration', 'embedded-parameters': 'Embedded generation parameters'};
 
 function safeFilename(value) {
     return String(value || 'file').replace(/[\\/\x00-\x1f\x7f<>:"|?*]/g, '_').replace(/^\.+|[. ]+$/g, '') || 'file';
@@ -113,6 +112,10 @@ function evidenceBadge(prompts) {
     const sources = new Set(Object.values(prompts).filter(role => role?.status === 'resolved').map(role => role.source));
     return EVIDENCE_BADGES.find(([source]) => sources.has(source))?.[1] ?? null;
 }
+/** The file's extension without its leading dot, upper case ("PNG"). */
+function extensionOf(record) {
+    return (record.file?.extension || record.identity.path.split('.').at(-1)).replace(/^\./, '').toUpperCase();
+}
 /** A concept chip whose visible text carries a visually hidden prefix naming what it is. */
 function prefixedChip(prefix, text) {
     const chip = el('span', undefined, 'chip');
@@ -123,7 +126,8 @@ function prefixedChip(prefix, text) {
 /**
  * One file's inspector. `variant: 'panel'` is the Images side panel in the concept's structure (app.js imageDetails
  * a400–414, D20): cover, heading, filename, D21 badges, prompt blocks, tag chips (`onTagFilter`), facts and footer.
- * `variant: 'full'` (the viewer) also shows provenance, raw records and downloads. `inline: true` means `panel`.
+ * `variant: 'full'` (the viewer's `#viewer-details`, imageDetails(i, true)) leaves out the cover and adds "File &
+ * provenance" and "Workflow & raw metadata" with the downloads. `inline: true` means `panel`; neither means `full`.
  */
 export function mountFileInspector(container, {sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onInteraction = () => {}}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
@@ -136,15 +140,15 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
     scope.listen(container, 'wheel', onInteraction, {passive:true});
     scope.cleanup(() => {contentScope?.dispose(); container.replaceChildren(); container.classList.remove('file-inspector');});
 
-    const panel = (variant ?? (inline ? 'panel' : 'full')) === 'panel';
+    const full = (variant ?? (inline ? 'panel' : 'full')) === 'full';
     function statusView(state, parent) {
-        const status = el('p', state.loading ? 'Loading file details…' : state.refreshRequired ? state.message : 'Could not read prompts from this file.', panel ? 'small' : 'file-status muted');
+        const status = el('p', state.loading ? 'Loading file details…' : state.refreshRequired ? state.message : 'Could not read prompts from this file.', 'small');
         status.setAttribute('role', state.error ? 'alert' : 'status'); parent.append(status);
         if (state.error && state.refreshRequired) {
             if (onRefresh) {
                 const refresh = createButton(state.code === 'history-changed' ? 'Reload recorded history' : ['candidate-stale', 'capture-changed'].includes(state.code) ? 'Reload reported outputs' : 'Refresh image collection');
                 contentScope.listen(refresh, 'click', onRefresh); parent.append(refresh);
-            } else parent.append(el('p', 'Reopen this file from a refreshed image collection.', panel ? 'small' : 'muted'));
+            } else parent.append(el('p', 'Reopen this file from a refreshed image collection.', 'small'));
         } else if (state.error && onRetry) {
             const retry = createButton('Retry prompt details'); contentScope.listen(retry, 'click', onRetry); parent.append(retry);
         }
@@ -153,115 +157,14 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
         if (scope.signal.aborted) return;
         contentScope?.dispose(); contentScope = childScope(scope);
         container.replaceChildren();
-        if (panel) return renderPanel(state);
-        if (state.loading || state.error) {
-            statusView(state, container);
-            return;
-        }
-        const record = state.record;
-        if (!record) return;
-        const {file, library, metadata} = record;
-        const filename = record.identity.path.split('/').at(-1);
-        const inner = el('div', undefined, 'file-inspector-inner'); container.append(inner);
-        const header = el('div', undefined, 'file-title');
-        header.append(el('h2', library?.status === 'linked' && library.title ? library.title : filename));
-        const extension = file?.extension || filename.split('.').at(-1);
-        header.append(el('span', file?.format || `${extension.toUpperCase()} extension`, 'file-format file-chip'));
-        inner.append(header, el('p', filename, 'file-name muted'));
-        const chips = el('div', undefined, 'file-chips');
-        const sources = new Set(Object.values(record.prompts).filter(role => role?.status === 'resolved').map(role => role.source));
-        const evidence = sources.has('execution') ? 'Execution prompt evidence' : sources.has('graph-inferred') ? 'Workflow prompt evidence' : sources.has('embedded-parameters') ? 'Embedded parameter evidence' : null;
-        if (evidence) chips.append(el('span', evidence, 'file-chip file-evidence'));
-        if (library?.status === 'linked' && library.category) {
-            const label = library.metadata_scope === 'pair' ? 'Recipe category' : 'Positive prompt category';
-            chips.append(el('span', `${label}: ${library.category}`, 'file-chip'));
-        }
-        if (chips.childNodes.length) inner.append(chips);
-        const prompts = el('div'); inner.append(prompts);
-        const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext});
-        blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
-        if (library?.status === 'linked') {
-            const vocabulary = el('div', undefined, 'file-vocabulary');
-            vocabulary.append(el('p', library.metadata_scope === 'pair' ? 'Recipe tags' : 'Positive prompt tags', 'muted'));
-            const tags = el('div', undefined, 'file-chips');
-            for (const tag of library.tags) tags.append(el('span', tag, 'file-chip'));
-            vocabulary.append(library.tags.length ? tags : el('p', 'No saved tags', 'muted')); inner.append(vocabulary);
-        } else if (!library) inner.append(el('p', 'Saved vocabulary is unavailable for this inspection response.', 'muted'));
-        inner.append(...generationFacts(record, 'generation-facts', 'generation-limit muted'));
-        const provenance = disclosure('File & provenance');
-        provenance.append(el('p', record.identity.kind === 'reported-location' ? 'Current file at the reported location · identity unverified' : 'Current file at this source; historical bytes are not verified.', 'muted'));
-        if (record.identity.kind === 'reported-location') {
-            const occurrence = record.identity.occurrence;
-            provenance.append(definitionList([
-                ['Recorded run', occurrence.run_id], ['Output node', occurrence.output_node_id], ['Image ordinal', String(occurrence.image_ordinal)],
-            ], 'file-occurrence'));
-        }
-        if (file) provenance.append(definitionList([
-            ['Source', file.source_label], ['Path', record.identity.path], ['Size', formatBytes(file.size)],
-            ['Dimensions', file.width && file.height ? `${file.width} × ${file.height}` : null],
-            ['Format', file.format || `${file.extension.toUpperCase()} extension`], ['Media type', file.media_type],
-            ['Modified', file.modified_time !== null ? new Date(file.modified_time * 1000).toLocaleString() : null],
-        ], 'file-facts'));
-        else provenance.append(el('p', 'Current file observations are unavailable for this inspection response.', 'muted'));
-        for (const [key, label] of FACTS) {
-            const fact = record.generation[key];
-            if (fact?.evidence) provenance.append(el('p', `${label}: ${fact.evidence === 'configuration' ? 'Configuration evidence' : 'Embedded parameter evidence'} · ${FACT_SOURCES[fact.source] || 'Source not recorded'}`, 'muted'));
-        }
-        provenance.append(el('p', record.historyTarget ? 'Saved association; not verified against current file' : library?.status === 'ambiguous' ? 'Saved association is ambiguous; no unique saved positive prompt is available.' : 'No unique saved positive prompt association is available.', 'muted'));
-        if (record.download) {
-            const original = el('a', 'Download original', 'workspace-link'); original.href = record.download.url;
-            original.download = safeFilename(record.download.filename); provenance.append(original);
-        }
-        inner.append(provenance);
-        const raw = disclosure('Workflow & raw metadata');
-        raw.append(el('p', 'Supported embedded records only, not all EXIF or container metadata. Video records come from one selected container carrier; alternate carriers are not merged.', 'muted'));
-        if (!metadata) raw.append(el('p', 'Full metadata is unavailable for this inspection response.', 'muted'));
-        else {
-            if (metadata.status !== 'available') raw.append(el('p', {limited:RAW_LIMIT, absent:'No supported embedded metadata was recorded in this file.', unreadable:'Embedded metadata could not be read.'}[metadata.status], 'muted'));
-            for (const key of RAW_KEYS) {
-                const format = metadata.record_formats[key]; if (!format) continue;
-                raw.append(el('p', key, 'raw-record-name'), el('p', REPRESENTATIONS[format], 'muted'));
-                if (Object.hasOwn(metadata.raw, key)) {
-                    const text = el('pre'); text.tabIndex = 0; text.append(el('code', metadata.raw[key])); raw.append(text);
-                }
-            }
-        }
-        const downloads = inspectionDownloads(record);
-        for (const [key, label] of [['metadata', 'Download metadata JSON'], ['workflow', 'Download workflow JSON']]) {
-            const item = downloads[key], action = createButton(label);
-            const group = el('div', undefined, 'file-download'); group.append(action);
-            if (!item.available) {
-                action.setAttribute('aria-disabled', 'true');
-                const explanation = el('p', item.reason, 'muted');
-                // IDs need only be unique within the current document, including its two inspectors.
-                explanation.id = `file-download-${++downloadReasonId}`; action.setAttribute('aria-describedby', explanation.id); group.append(explanation);
-            }
-            contentScope.listen(action, 'click', () => {
-                if (!item.available || contentScope.signal.aborted) return;
-                const url = URL.createObjectURL(new Blob([item.bodyText], {type:item.mime}));
-                let timer, released = false;
-                const release = () => {if (released) return; released = true; clearTimeout(timer); URL.revokeObjectURL(url);};
-                contentScope.cleanup(release);
-                const anchor = el('a'); anchor.href = url; anchor.download = item.filename;
-                container.append(anchor); anchor.click(); anchor.remove(); timer = setTimeout(release, 1000);
-            });
-            raw.append(group);
-        }
-        inner.append(raw);
-        const footer = el('footer', undefined, 'file-inspector-footer'), roles = promptRoles(record.prompts);
-        if (Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {
-            const pair = createSendButton(promptContext ? `Send ${promptContext.toLowerCase()} prompt pair` : 'Send prompt pair'); pair.dataset.sendRole = 'pair';
-            contentScope.listen(pair, 'click', () => sender.open(roles, pair)); footer.append(pair);
-        }
-        if (record.historyTarget) {
-            const history = el('a', 'Prompt history', 'workspace-link'); history.href = record.historyTarget;
-            history.prepend(createWorkspaceIcon('branch')); footer.append(history);
-        }
-        if (footer.childNodes.length) container.append(footer);
+        render(state);
     }
-    /** The concept side panel (app.js imageDetails a400–414 without `full`, D20). */
-    function renderPanel(state) {
-        const inner = el('div', undefined, 'detail-inner');
+    /**
+     * The concept's imageDetails (app.js a400–414). The side panel has the cover, `.detail-inner` and `.detail-footer`;
+     * the viewer (`full`) has a class-less wrapper that adds the two disclosures, with the footer buttons after it (D20).
+     */
+    function render(state) {
+        const inner = el('div', undefined, full ? undefined : 'detail-inner');
         if (state.loading || state.error) {container.append(inner); statusView(state, inner); return;}
         const record = state.record;
         if (!record) return;
@@ -269,24 +172,10 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
         const filename = record.identity.path.split('/').at(-1);
         const linked = library?.status === 'linked';
         const title = linked && library.title ? library.title : filename;
-        if (record.download) {
-            // The concept's plain cover; the card image opens the viewer (D19). Video keeps its own element.
-            const video = file?.media_type === 'video';
-            const cover = el(video ? 'video' : 'img', undefined, 'detail-cover'); cover.src = record.download.url;
-            if (video) {
-                cover.muted = true; cover.playsInline = true; cover.preload = 'metadata';
-                contentScope.cleanup(() => {cover.pause(); cover.removeAttribute('src'); cover.load();});
-            } else {
-                cover.alt = ''; cover.decoding = 'async';
-                if (file?.width && file?.height) {cover.width = file.width; cover.height = file.height;}
-                contentScope.cleanup(() => cover.removeAttribute('src'));
-            }
-            container.append(cover);
-        }
+        if (record.download && !full) container.append(cover(record));
         container.append(inner);
         const heading = el('div', undefined, 'panel-heading');
-        const extension = (file?.extension || filename.split('.').at(-1)).replace(/^\./, '').toUpperCase();
-        heading.append(el('h2', title), file?.format ? el('span', file.format, 'chip') : prefixedChip('File extension ', extension));
+        heading.append(el('h2', title), file?.format ? el('span', file.format, 'chip') : prefixedChip('File extension ', extensionOf(record)));
         inner.append(heading, el('p', filename, 'small'));
         const badges = el('div', undefined, 'tags'), badge = evidenceBadge(record.prompts);
         if (badge) badges.append(el('span', badge, 'chip blue'));
@@ -297,7 +186,7 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
         blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
         if (linked && library.tags.length) {
             // D21: a chip sets the Images Tags filter, which matches the linked positive's tags; a recipe's own tags are
-            // not what it matches, so they (and chips where no Tags filter exists) stay plain.
+            // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain.
             const filterable = onTagFilter && library.metadata_scope === 'positive';
             const tags = el('div', undefined, 'tags');
             for (const tag of library.tags) {
@@ -307,7 +196,8 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
             inner.append(tags);
         }
         inner.append(...generationFacts(record, 'meta-grid', 'small'));
-        const footer = el('div', undefined, 'detail-footer'), roles = promptRoles(record.prompts);
+        if (full) inner.append(provenance(record, badge), rawMetadata(record));
+        const footer = full ? container : el('div', undefined, 'detail-footer'), roles = promptRoles(record.prompts);
         if (Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {
             const pair = createButton('', 'send');
             pair.setAttribute('aria-label', `Send ${promptContext ? `${promptContext.toLowerCase()} ` : ''}prompt pair to ComfyUI: ${title}`);
@@ -319,7 +209,86 @@ export function mountFileInspector(container, {sender, parentScope, variant, inl
             history.append(createWorkspaceIcon('branch'), ' Prompt history');
             contentScope.listen(history, 'click', () => {window.location.hash = record.historyTarget;}); footer.append(history);
         }
-        if (footer.childNodes.length) container.append(footer);
+        if (!full && footer.childNodes.length) container.append(footer);
+    }
+    /** The concept's plain cover; the card image opens the viewer (D19). Video keeps its own element. */
+    function cover(record) {
+        const {file} = record, video = file?.media_type === 'video';
+        const node = el(video ? 'video' : 'img', undefined, 'detail-cover'); node.src = record.download.url;
+        if (video) {
+            node.muted = true; node.playsInline = true; node.preload = 'metadata';
+            contentScope.cleanup(() => {node.pause(); node.removeAttribute('src'); node.load();});
+        } else {
+            node.alt = ''; node.decoding = 'async';
+            if (file?.width && file?.height) {node.width = file.width; node.height = file.height;}
+            contentScope.cleanup(() => node.removeAttribute('src'));
+        }
+        return node;
+    }
+    /** "File & provenance": the current-file facts, the D21 prompt evidence, the occurrence and the saved association. */
+    function provenance(record, badge) {
+        const {file, library} = record, section = disclosure('File & provenance');
+        const reported = record.identity.kind === 'reported-location';
+        section.append(el('p', reported ? 'Current file at the reported location · identity unverified' : 'Current file at this source; historical bytes are not verified.', 'small'));
+        if (file) section.append(definitionList([
+            ['Source', file.source_label], ['Path', record.identity.path], ['Size', formatBytes(file.size)],
+            ['Dimensions', file.width && file.height ? `${file.width} × ${file.height}` : null],
+            ['Format', file.format || `${extensionOf(record)} extension`], ['Media type', file.media_type],
+            ['Modified', file.modified_time !== null ? new Date(file.modified_time * 1000).toLocaleString() : null],
+        ], 'meta-grid'));
+        else section.append(el('p', 'Current file observations are unavailable for this inspection response.', 'small'));
+        // The concept's "Prompt evidence: execution recorded" line, in the D21 badge's words; no badge, no line.
+        if (badge) section.append(el('p', `Prompt evidence: ${badge.toLowerCase()}`, 'small'));
+        if (reported) {
+            const occurrence = record.identity.occurrence;
+            section.append(definitionList([
+                ['Recorded run', occurrence.run_id], ['Output node', occurrence.output_node_id], ['Image ordinal', String(occurrence.image_ordinal)],
+            ], 'meta-grid'));
+        }
+        section.append(el('p', record.historyTarget ? 'Saved association; not verified against current file' : library?.status === 'ambiguous' ? 'Saved association is ambiguous; no unique saved positive prompt is available.' : 'No unique saved positive prompt association is available.', 'small'));
+        if (record.download) {
+            const original = el('a', 'Download original'); original.href = record.download.url;
+            original.download = safeFilename(record.download.filename); section.append(original);
+        }
+        return section;
+    }
+    /** "Workflow & raw metadata": each supported record (`pre[tabindex=0] > code`), then the two downloads. */
+    function rawMetadata(record) {
+        const {metadata} = record, section = disclosure('Workflow & raw metadata');
+        section.append(el('p', 'Supported embedded records only, not all EXIF or container metadata. Video records come from one selected container carrier; alternate carriers are not merged.', 'small'));
+        if (!metadata) section.append(el('p', 'Full metadata is unavailable for this inspection response.', 'small'));
+        else {
+            if (metadata.status !== 'available') section.append(el('p', {limited:RAW_LIMIT, absent:'No supported embedded metadata was recorded in this file.', unreadable:'Embedded metadata could not be read.'}[metadata.status], 'small'));
+            for (const key of RAW_KEYS) {
+                const format = metadata.record_formats[key]; if (!format) continue;
+                const name = el('p', undefined, 'small'); name.append(el('strong', key));
+                section.append(name, el('p', REPRESENTATIONS[format], 'small'));
+                if (Object.hasOwn(metadata.raw, key)) {
+                    const text = el('pre'); text.tabIndex = 0; text.append(el('code', metadata.raw[key])); section.append(text);
+                }
+            }
+        }
+        const downloads = inspectionDownloads(record);
+        for (const [key, label] of [['metadata', 'Download metadata JSON'], ['workflow', 'Download workflow JSON']]) {
+            const item = downloads[key], action = createButton(label);
+            section.append(action);
+            if (!item.available) {
+                action.setAttribute('aria-disabled', 'true');
+                const explanation = el('p', item.reason, 'small');
+                // IDs need only be unique within the current document, including its two inspectors.
+                explanation.id = `file-download-${++downloadReasonId}`; action.setAttribute('aria-describedby', explanation.id); section.append(explanation);
+            }
+            contentScope.listen(action, 'click', () => {
+                if (!item.available || contentScope.signal.aborted) return;
+                const url = URL.createObjectURL(new Blob([item.bodyText], {type:item.mime}));
+                let timer, released = false;
+                const release = () => {if (released) return; released = true; clearTimeout(timer); URL.revokeObjectURL(url);};
+                contentScope.cleanup(release);
+                const anchor = el('a'); anchor.href = url; anchor.download = item.filename;
+                container.append(anchor); anchor.click(); anchor.remove(); timer = setTimeout(release, 1000);
+            });
+        }
+        return section;
     }
     return {setState, dispose:() => scope.dispose()};
 }

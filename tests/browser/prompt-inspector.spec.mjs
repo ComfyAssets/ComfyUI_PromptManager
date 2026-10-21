@@ -59,7 +59,7 @@ test('collection viewer rejects stale source and sends only refreshed API eviden
         const collection=await(await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();const fresh=collection.images.find(image=>image.root_index===0&&image.path===stale.path);expect(fresh.root_scope).not.toBe(stale.root_scope);
         const evidence=await(await request.get(`/prompt_manager/images/inspect/shared/same.png?root=0&root_scope=${fresh.root_scope}`)).json();
         await select(page,'0:shared/same.png');await page.locator('.media-card.selected .image-open').click();await expect(preview).toContainText(evidence.prompts.positive.text);
-        await preview.getByRole('button',{name:'Send prompt pair',exact:true}).click();const sender=await chooseDestination(page);await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
+        await preview.getByRole('button',{name:/^Send prompt pair to ComfyUI: /}).click();const sender=await chooseDestination(page);await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.applied)).toEqual([{positive:evidence.prompts.positive.text,negative:evidence.prompts.negative.text}]);expect(await page.evaluate(()=>window.copied)).toEqual([]);
     } finally {await expect(await request.post('/prompt_manager/settings',{data:{gallery_root_paths:['output','input']}})).toBeOK();await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
 });
