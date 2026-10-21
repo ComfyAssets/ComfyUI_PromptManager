@@ -24,6 +24,11 @@ except ImportError:
     import test_execution_history_writer as fixtures
 
 
+# Upper bound a blocked fake write waits for its release. Tests prove ordering
+# with events, so this only caps a failing run and never decides a pass.
+BLOCK_SECONDS = 10
+
+
 class OutputWriterTests(fixtures.unittest.TestCase):
     setUp = fixtures.HistoryWriterTests.setUp
     cleanup_workers = fixtures.HistoryWriterTests.cleanup_workers
@@ -408,59 +413,81 @@ class OutputWriterTests(fixtures.unittest.TestCase):
     def test_bounded_close_and_early_native_join_keep_inflight_combined_charge(self):
         for early in (False, True):
             with self.subTest(early_join=early):
-                writer = self.writer()
-                start = self.start_command(len(self.writers))
-                self.db.write_execution_start(start)
-                entered, release = self.block()
-                original = self.db.write_execution_outputs_for_finish
+                self.assert_bounded_close_keeps_inflight_charge(early)
 
-                def write(*args, **kwargs):
-                    entered.set()
-                    release.wait(3)
-                    return original(*args, **kwargs)
+    def assert_bounded_close_keeps_inflight_charge(self, early):
+        # Every writer in this test charges the process-wide budget, so a
+        # failing subtest must not leave its worker blocked (and charged) for
+        # the next one: release and join it before the next subtest starts.
+        writer = self.writer()
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
+        start = self.start_command(len(self.writers))
+        self.db.write_execution_start(start)
+        entered, release = self.block()
+        left = threading.Event()
+        original = self.db.write_execution_outputs_for_finish
 
-                with patch.object(self.db, "write_execution_outputs_for_finish", write):
-                    self.finalization(writer, start)
-                    self.assertTrue(entered.wait(1))
-                    charge = writer.context_budget.charged_bytes
-                    self.finalization(writer, start)
-                    clock = fixtures.ManualClock()
-                    native_join = writer._thread.join
+        def write(*args, **kwargs):
+            entered.set()
+            release.wait(BLOCK_SECONDS)
+            left.set()
+            return original(*args, **kwargs)
 
-                    def return_early(timeout):
-                        native_join(0)
-                        clock.advance(min(timeout, 0.004))
+        try:
+            with patch.object(self.db, "write_execution_outputs_for_finish", write):
+                self.finalization(writer, start)
+                self.assertTrue(entered.wait(BLOCK_SECONDS))
+                charge = writer.context_budget.charged_bytes
+                self.finalization(writer, start)
+                clock = fixtures.ManualClock()
+                native_join = writer._thread.join
 
-                    def sleep(delay):
-                        clock.advance(delay)
+                def return_early(timeout):
+                    native_join(0)
+                    clock.advance(min(timeout, 0.004))
 
-                    clock_patch = (
-                        patch(
-                            "utils.execution_history_writer.time",
-                            SimpleNamespace(monotonic=clock, sleep=sleep),
-                        )
-                        if early
-                        else nullcontext()
+                def sleep(delay):
+                    clock.advance(delay)
+
+                clock_patch = (
+                    patch(
+                        "utils.execution_history_writer.time",
+                        SimpleNamespace(monotonic=clock, sleep=sleep),
                     )
-                    join_patch = (
-                        patch.object(writer._thread, "join", return_early)
-                        if early
-                        else nullcontext()
-                    )
-                    with clock_patch, join_patch:
-                        before = clock() if early else time.monotonic()
-                        self.assertFalse(writer.close(0.02))
-                        elapsed = (clock() if early else time.monotonic()) - before
-                    self.assertGreaterEqual(elapsed, 0.02)
+                    if early
+                    else nullcontext()
+                )
+                join_patch = (
+                    patch.object(writer._thread, "join", return_early)
+                    if early
+                    else nullcontext()
+                )
+                with clock_patch, join_patch:
+                    before = clock() if early else time.monotonic()
+                    self.assertFalse(writer.close(0.02))
+                    elapsed = (clock() if early else time.monotonic()) - before
+                # close() waits until its own monotonic deadline, so the lower
+                # bound holds on any runner.
+                self.assertGreaterEqual(elapsed, 0.02)
+                if early:
+                    # Manual clock: only the patched join/sleep advance it, so
+                    # this exact bound proves early joins do not spin forever.
                     self.assertLess(elapsed, 0.2)
-                    self.assertEqual(writer.context_budget.charged_bytes, charge)
-                    replacement = HistoryWriter(lambda: self.db)
-                    self.writers.append(replacement)
-                    self.assertIs(replacement.context_budget, writer.context_budget)
-                    self.assertIsNone(replacement.context_budget.reserve(8388608))
-                    release.set()
-                    self.assertTrue(writer.close(2))
-                self.assertEqual(writer.context_budget.charged_bytes, 0)
+                # Bounded, not unbounded: close() gave up while the in-flight
+                # write was still blocked, instead of waiting it out.
+                self.assertFalse(left.is_set())
+                self.assertTrue(writer._thread.is_alive())
+                self.assertEqual(writer.context_budget.charged_bytes, charge)
+                replacement = HistoryWriter(lambda: self.db)
+                self.writers.append(replacement)
+                self.assertIs(replacement.context_budget, writer.context_budget)
+                self.assertIsNone(replacement.context_budget.reserve(8388608))
+                release.set()
+                self.assertTrue(writer.close(2))
+        finally:
+            release.set()
+            writer.close(BLOCK_SECONDS)
+        self.assertEqual(writer.context_budget.charged_bytes, 0)
 
     def test_pending_saturation_and_invalid_command_release_both_payloads(self):
         writer = self.writer()
@@ -552,11 +579,13 @@ class OutputWriterTests(fixtures.unittest.TestCase):
         self.db.write_execution_start(start)
         entered, release = self.block()
         invalidating, invalidated = threading.Event(), threading.Event()
+        committed = threading.Event()
         original = outputs_db._capture
 
         def capture(*args, **kwargs):
             entered.set()
-            release.wait(3)
+            release.wait(BLOCK_SECONDS)
+            committed.set()
             return original(*args, **kwargs)
 
         def invalidate():
@@ -566,20 +595,24 @@ class OutputWriterTests(fixtures.unittest.TestCase):
 
         with patch.object(outputs_db, "_capture", capture):
             self.finalization(writer, start)
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(BLOCK_SECONDS))
             invalidator = threading.Thread(target=invalidate)
             invalidator.start()
             try:
-                self.assertTrue(invalidating.wait(1))
+                self.assertTrue(invalidating.wait(BLOCK_SECONDS))
                 self.assertFalse(invalidated.wait(0.03))
-                before = time.monotonic()
                 self.assertTrue(writer.submit(self.finish_command(start)))
                 self.assertFalse(writer.close(0))
-                self.assertLess(time.monotonic() - before, 0.1)
+                # submit() and close() returned while the commit still held the
+                # gate: the blocked invalidation has not finished and the
+                # commit is still waiting for its release. Had either call
+                # queued behind the gate, it could only return after both.
+                self.assertFalse(invalidated.is_set())
+                self.assertFalse(committed.is_set())
                 self.assertGreater(writer.context_budget.charged_bytes, 0)
             finally:
                 release.set()
-                invalidator.join(3)
+                invalidator.join(BLOCK_SECONDS)
             self.assertFalse(invalidator.is_alive())
             self.assertTrue(writer.close(2))
         self.assertEqual(
