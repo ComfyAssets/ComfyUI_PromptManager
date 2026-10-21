@@ -77,7 +77,8 @@ def encode(read, *, prompts=None, file=None, library=None):
             "title": None,
             "category": None,
             "tags": [],
-            "metadata_scope": None,
+            "category_scope": None,
+            "tags_scope": None,
         },
     )
 
@@ -663,6 +664,21 @@ class TestInspectionResponse(unittest.TestCase):
         for key in ("positive_id", "pair_id", "category", "title"):
             self.assertNotIn(key, result["library"])
         self.assertEqual(result["library"]["tags"], ["valid"])
+        # An unknown or non-string scope is dropped, never passed through.
+        for bad in ("recipe", 3, ["pair"]):
+            result = json.loads(
+                encode(
+                    None,
+                    library={
+                        "status": "linked",
+                        "category_scope": bad,
+                        "tags_scope": bad,
+                        "tags": [],
+                    },
+                )
+            )
+            self.assertNotIn("category_scope", result["library"])
+            self.assertNotIn("tags_scope", result["library"])
         result = json.loads(
             encode(inspection({}), library={"status": "linked", "tags": ["猫" * 12000]})
         )

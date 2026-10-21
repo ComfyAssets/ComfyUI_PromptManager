@@ -375,7 +375,9 @@ class TestLibraryAPI(ImageAPITestCase):
             result["image"],
             {"root_index": 0, "path": relative, "filename": "猫 % #.png"},
         )
-        self.assertEqual(result["library"]["metadata_scope"], "pair")
+        # D39: the recipe has no category or tags, so both fall back.
+        self.assertEqual(result["library"]["category_scope"], "positive")
+        self.assertEqual(result["library"]["tags_scope"], "positive")
         self.assertEqual(result["library"]["pair_id"], pair)
         self.assertEqual(result["library"]["positive_id"], positive)
         # D10/D20: the linked positive's title; "Pair title" names the variant.

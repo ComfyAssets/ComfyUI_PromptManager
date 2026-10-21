@@ -657,12 +657,18 @@ Recorded deviations on this page (spec §8):
   `Host` and `Origin`. Such a client can open a folder of a listed file on the host's
   screen, at most once a second, and learn whether that file exists (which the
   listing routes already tell it). Operators who expose ComfyUI that way accept this.
-- **D39**: a recipe-linked image shows its recipe's own category and tags (#224), not
-  its positive's. The concept shows the prompt's category and tags for every image;
-  the concept fixture's recipes have neither, so their images show no category chip
-  and no tag row. `positive_links` on `/__test__/concept/reset` links the newest
-  images to their positive alone, so the inspector comparison sees the positive's
-  category ("Positive prompt category: " hidden prefix, D21) and tag filters.
+- **D39** (ruled 2026-10-21: fallback): a recipe-linked image shows its recipe's own
+  category when set, otherwise the linked positive prompt's, and its recipe's own tags
+  when it has any, otherwise the positive's; each field falls back on its own and the
+  two tag sets are never merged. Set category (#259) writes the positive's category and
+  the Images category and Tags filters match the positive's, so the panel now agrees
+  with them whenever the recipe adds nothing. The inspection response names each
+  field's source (`library.category_scope`, `library.tags_scope`: `pair`, `positive` or
+  null); the category chip's visually hidden prefix (D21) says "Recipe category: " or
+  "Positive prompt category: " from it, and tag chips are Tags filter buttons only when
+  they are the positive's (#260 D2). History's media inspector uses the same rule. The
+  concept shows the prompt's category and tags for every image and the concept
+  fixture's recipes have neither, so the inspector comparison needs no mapping for it.
 - **D42**: the concept never shows a toast and a page alert together. Production keeps
   the concept's fixed toast (centred, 22px from the bottom, 12px at 700px and below)
   and, when an Import → Rescan toast leaves the Images discovery alert

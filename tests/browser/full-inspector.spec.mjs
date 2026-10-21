@@ -75,7 +75,7 @@ test('inspection wire preserves exact rooted envelope', async ({ request }) => {
     expect(result.metadata.prompt_graph.value['3'].inputs.cfg).toBe('6.5');
     expect(result.metadata.record_formats).toEqual({ prompt: 'original-text', workflow: 'original-text' });
     expect(result.file).toMatchObject({ observation: 'current-file', format: 'PNG', width: 720, height: 480 });
-    expect(result.library).toMatchObject({ status: 'linked', metadata_scope: 'pair', title: POSITIVE_TITLE, category: 'Inspection', tags: ['fixture', 'geometric'] });
+    expect(result.library).toMatchObject({ status: 'linked', category_scope: 'pair', tags_scope: 'pair', title: POSITIVE_TITLE, category: 'Inspection', tags: ['fixture', 'geometric'] });
     expect((await inspect(collision)).prompts.positive.text).toBe('Input collision');
     const gallery = await (await request.get(`/prompt_manager/library/${result.library.positive_id}/images?pair_id=${result.library.pair_id}`)).json();
     expect(gallery.images[0].root_scope).toBe(complete.root_scope);
@@ -163,10 +163,20 @@ test('panel matches the concept order and copy',async({page,request})=>{
         inner:['div.panel-heading','p.small','section.prompt-section.positive','section.prompt-section.negative','dl.meta-grid']});
     await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
     // Ambiguous saved association: the same honest absence.
-    reads.patch=data=>{data.library={...data.library,status:'ambiguous',positive_id:null,pair_id:null,title:null,category:null,tags:[],metadata_scope:null};};
+    reads.patch=data=>{data.library={...data.library,status:'ambiguous',positive_id:null,pair_id:null,title:null,category:null,tags:[],category_scope:null,tags_scope:null};};
     await selectFile(page,'workflow-only.png');await expect(panel.locator('.panel-heading h2')).toHaveText('workflow-only.png');
     await expect(panel.locator('.chip:not(.blue)')).toHaveCount(1);await expect(panel.locator('.detail-inner > .tags button')).toHaveCount(0);
     await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
+    // D39 mixed scopes: each field follows its own source, so the prefix and the tag chips can disagree.
+    const tagRow=panel.locator('.detail-inner > .tags').last();
+    reads.patch=data=>{data.library={...data.library,status:'linked',category:'Subject',category_scope:'pair',tags_scope:'positive',tags:['alpha','beta']};};
+    await selectFile(page,'complete.png');
+    await expect(panel.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Recipe category: ');
+    await expect(tagRow.getByRole('button')).toHaveText(['alpha','beta']);
+    reads.patch=data=>{data.library={...data.library,status:'linked',category:'Subject',category_scope:'positive',tags_scope:'pair',tags:['alpha','beta']};};
+    await selectFile(page,'workflow-only.png');
+    await expect(panel.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Positive prompt category: ');
+    await expect(tagRow.locator('span.chip')).toHaveText(['alpha','beta']);await expect(tagRow.getByRole('button')).toHaveCount(0);
     // Loading and error states render in `.detail-inner` as `.small` text with the existing buttons.
     reads.patch=null;await page.unroute('**/images/inspect/**');
     await page.route('**/images/inspect/**',route=>route.fulfill({status:500,json:{success:false,error:'broken'}}));

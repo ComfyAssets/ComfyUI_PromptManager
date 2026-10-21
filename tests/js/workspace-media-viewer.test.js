@@ -119,7 +119,7 @@ function currentInspectionEnvelope(target) {
         file:{observation:'current-file',source_label:'output',media_type:'image',extension:'.png',format:'PNG',size:10,width:2,height:3,modified_time:1},
         prompts:{positive:{status:'resolved',text:'current positive',source:'execution'},negative:{status:'resolved',text:'',source:'execution'}},
         metadata:{status:'absent',omitted_reason:null,raw:{},record_formats:{},prompt_graph:{status:'absent',value:null},workflow_graph:{status:'absent',value:null},parameters:null},
-        resolution:{state:'absent',sampler_id:null,reason:'no graph'},library:{status:'none',scope:'saved-library',positive_id:null,pair_id:null,title:null,category:null,tags:[],metadata_scope:null}};
+        resolution:{state:'absent',sampler_id:null,reason:'no graph'},library:{status:'none',scope:'saved-library',positive_id:null,pair_id:null,title:null,category:null,tags:[],category_scope:null,tags_scope:null}};
 }
 
 test('real inspection navigation preserves slideshow across two advances and deferred metadata loads',async()=>{

@@ -206,15 +206,16 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         inner.append(heading, el('p', filename, 'small'));
         const badges = el('div', undefined, 'tags'), badge = evidenceBadge(record.prompts);
         if (badge) badges.append(el('span', badge, 'chip blue'));
-        if (linked && library.category) badges.append(prefixedChip(library.metadata_scope === 'pair' ? 'Recipe category: ' : 'Positive prompt category: ', library.category));
+        if (linked && library.category) badges.append(prefixedChip(library.category_scope === 'pair' ? 'Recipe category: ' : 'Positive prompt category: ', library.category));
         if (badges.childNodes.length) inner.append(badges);
         const prompts = el('div'); inner.append(prompts);
         const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext, title});
         blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
         if (linked && library.tags.length) {
             // D21: a chip sets the Images Tags filter, which matches the linked positive's tags; a recipe's own tags are
-            // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain.
-            const filterable = onTagFilter && library.metadata_scope === 'positive';
+            // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain. With the
+            // D39 fallback a recipe without tags shows its positive's, which are filter buttons again.
+            const filterable = onTagFilter && library.tags_scope === 'positive';
             const tags = el('div', undefined, 'tags');
             for (const tag of library.tags) {
                 if (!filterable) {tags.append(el('span', tag, 'chip')); continue;}
