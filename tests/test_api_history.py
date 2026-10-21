@@ -309,6 +309,56 @@ class HistoryAPITests(ImageAPITestCase):
         response = await self.client.get(f"{base}/{pair}/newest", params={"x": "1"})
         self.assert_error(response, await response.json(), 400, "invalid-request")
 
+    async def test_newest_pair_run_route_reports_storage_and_epoch_failures(self):
+        pair = self.api.db.save_prompt_pair("positive", "negative")
+        saved = self.api.db.get_prompt_pair(pair)
+        self.capture(0, 100)
+        url = (
+            f"/prompt_manager/library/{saved['positive_prompt_id']}"
+            f"/history/pairs/{pair}/newest"
+        )
+        # A prompt saved only as a negative is not a Library positive.
+        response = await self.client.get(
+            f"/prompt_manager/library/{saved['negative_prompt_id']}"
+            f"/history/pairs/{pair}/newest"
+        )
+        self.assert_error(response, await response.json(), 404, "not-found")
+        private = "SECRET_PROMPT /private/data/secret.db"
+        for exc in (sqlite3.OperationalError("busy " + private), OSError(private)):
+            with patch.object(self.api.db, "get_newest_pair_run", side_effect=exc):
+                with self.assertLogs("prompt_manager.api", "WARNING") as logs:
+                    response = await self.client.get(url)
+                body = await response.json()
+            self.assert_error(
+                response, body, 503, "storage-unavailable", {"action": "retry-read"}
+            )
+            self.assertNotIn(private, json.dumps(body) + " ".join(logs.output))
+        source = str(self.comfy_dir / "source.db")
+        self.assertTrue(self.api.db.model.backup_database(source))
+        writer = PromptDatabase(self.api.db.model.db_path)
+        original = self.api.db.get_newest_pair_run
+
+        def during_snapshot(*args, **kwargs):
+            result = original(*args, **kwargs)
+            with patch("database.execution_history.notify_history_restore"):
+                writer.model.restore_from_file(source)
+            return result
+
+        try:
+            with patch.object(
+                self.api.db, "get_newest_pair_run", side_effect=during_snapshot
+            ):
+                response = await self.client.get(url)
+            self.assert_error(
+                response,
+                await response.json(),
+                409,
+                "history-changed",
+                {"action": "refresh-history"},
+            )
+        finally:
+            writer.close_all()
+
     async def test_nullable_frozen_fields_and_every_recorded_time_remain_exact(self):
         start = make_start(
             SESSION,
