@@ -838,9 +838,15 @@ Recorded deviations on this page:
   star wherever the read returns `favorite`, no checkbox or selection bar (Images only,
   #259), the image opens the Viewer. A saved variant with no images shows the concept's
   `.empty` "Saved variant · no runs yet." beside the grid (the concept puts it inside
-  `.image-grid`, which only holds positioned cards here). The embedded collection keeps
-  production's layout row, "Linked images" caption with "N loaded · N linked images"
-  and the selected-image side panel, which the concept's gallery does not show. With no
+  `.image-grid`, which only holds positioned cards here). The concept's "Shared gallery"
+  heading is the gallery's only heading and names its region: the embedded collection's
+  "Linked images" heading and "N loaded · N linked images" count are removed, since they
+  repeated it (maintainer ruling, 2026-10-21). Two production pieces stay, which the
+  concept's gallery does not show: the layout row (Grid/List/Masonry and Thumbnail size),
+  because the legacy gallery let people change layout and density and nothing else on the
+  page offers it, and the selected-image side panel, the one shared inspector the Images
+  page uses (spec §3.3), so an image's details stay reachable without opening the viewer.
+  The All images and Repeat run dialogs keep their collection caption. With no
   saved variant the page shows every image of the positive under "All images for this
   positive, including unassigned images. …" and no empty copy (a state the concept
   never reaches).

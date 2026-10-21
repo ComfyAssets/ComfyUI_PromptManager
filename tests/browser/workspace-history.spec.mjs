@@ -969,6 +969,17 @@ test('shared gallery uses concept cards, image opens the viewer, empty copy',asy
     await expect(heading.locator(':scope > span.small')).toHaveText('No negative · same positive prompt');
     await expect(section.locator('.empty')).toHaveText('Saved variant · no runs yet.');await expect(section.locator('.empty')).toBeVisible();
     await expect(section.locator('article[data-image-key]')).toHaveCount(0);
+    // D47 (maintainer ruling 2026-10-21): the concept's "Shared gallery" heading is the gallery's only heading, so the
+    // collection's "Linked images" heading and its "N loaded · N linked images" count are gone; the layout row and the
+    // selected-image side panel stay.
+    await expect(section.locator('.section-caption')).toHaveCount(0);
+    await expect(section.getByRole('heading',{name:'Linked images',exact:true})).toHaveCount(0);
+    await expect(section.getByText(/ loaded · /)).toHaveCount(0);
+    // Outside the side panel (whose own heading names the selected image), the gallery has one section heading.
+    expect(await section.evaluate(node=>[...node.querySelectorAll('h1, h2')].filter(item=>!item.closest('aside')).map(item=>item.textContent))).toEqual(['Shared gallery']);
+    await expect(section.getByRole('group',{name:'Image layout',exact:true})).toBeVisible();
+    await expect(section.getByRole('combobox',{name:'Thumbnail size',exact:true})).toBeVisible();
+    await expect(section.getByRole('complementary',{name:'Selected image details',exact:true})).toBeVisible();
     // As in the concept, the gallery follows the variants panel; recorded executions (#209) stay below it.
     const order=await page.locator('.library-history').evaluate(node=>[...node.querySelectorAll('section[aria-label]')].map(item=>item.getAttribute('aria-label')).filter(name=>['Saved negative variants','Shared gallery','Recorded executions'].includes(name)));
     expect(order).toEqual(['Saved negative variants','Shared gallery','Recorded executions']);
@@ -997,6 +1008,11 @@ test('shared gallery uses concept cards, image opens the viewer, empty copy',asy
     await page.keyboard.press('Escape');await expect(viewer).toBeHidden();await expect(openButton).toBeFocused();
     await expect(section.locator(':scope > .panel-heading')).toHaveCSS('justify-content','space-between');
     await expect(section).toHaveCSS('margin-top','24px');
+    // The D47 ruling covers the shared gallery only: the All images dialog's collection keeps its own caption.
+    await variantsPanel(page).getByRole('button',{name:'All images for this positive',exact:true}).click();
+    const all=page.getByRole('dialog',{name:'All images for this positive',exact:true});
+    await expect(all.locator('.section-caption')).toContainText(/ loaded · /);
+    await page.keyboard.press('Escape');await expect(all).toHaveCount(0);
     // At 390px the heading stays inside the gallery and the page never scrolls sideways.
     await page.setViewportSize({width:390,height:844});
     await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);

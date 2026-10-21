@@ -616,7 +616,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             // The concept's shared gallery (app.js a616-621): its heading names the selected variant; the embedded
             // collection renders the PR C media cards. Recorded executions (#209) stay below it. /* D47 */
             const context=el('span','','small');context.setAttribute('role','status');
-            const galleryHeading=el('div',undefined,'panel-heading');galleryHeading.append(el('h2','Shared gallery'),context);
+            const galleryTitle=el('h2','Shared gallery');galleryTitle.tabIndex=-1;
+            const galleryHeading=el('div',undefined,'panel-heading');galleryHeading.append(galleryTitle,context);
             const gallery=el('section',undefined,'history-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(galleryHeading);
             const images=el('div',undefined,'library-linked-images');gallery.append(images);
             const recorded=el('div',undefined,'library-recorded-container');
@@ -690,7 +691,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 updateGalleryContext();
                 galleryScope?.dispose();galleryScope=createScope();images.replaceChildren();
                 // An archived pair's images are read in the archived scope; the gallery stays authoritative.
-                mountImages(images,api,galleryScope,{embedded:true,emptyText:pairId===null?undefined:'Saved variant · no runs yet.',fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
+                mountImages(images,api,galleryScope,{embedded:true,caption:false,focusTarget:galleryTitle,emptyText:pairId===null?undefined:'Saved variant · no runs yet.',fetchPage:({parameters,signal})=>{const query=new URLSearchParams(parameters);if(pairId!==null) query.set('pair_id',String(pairId));if(archived) query.set('archive','archived');return api.get(`/prompt_manager/library/${positiveId}/images?${query}`,{signal});}});
                 updateSend();updateCompare();
             }
             /** A metadata receipt names no pair, so the page re-reads its own selection through the exact-ID route. */

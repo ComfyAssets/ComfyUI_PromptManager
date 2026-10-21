@@ -96,7 +96,11 @@ function deliverFavorite(key, favorite) {
     for (const target of embeddedFavoriteTargets) target(key, favorite);
 }
 
-export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText} = {}) {
+/**
+ * `caption: false` (the history page's shared gallery, D47) leaves out the embedded collection's "Linked images" heading
+ * and count, whose page heading already names it; `focusTarget` then takes focus where that heading did.
+ */
+export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, caption: showCaption = true, focusTarget = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -194,7 +198,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     collection.setAttribute('aria-label', 'Images');
     // The concept's caption replaces the old "All images" heading; the embedded gallery keeps its own heading.
     const caption = el('div', undefined, 'section-caption');
-    const collectionHeading = embedded ? el('h2', 'Linked images') : null;
+    const collectionHeading = embedded && showCaption ? el('h2', 'Linked images') : null;
     if (collectionHeading) { collectionHeading.tabIndex = -1; caption.append(collectionHeading); }
     const count = el('span', 'Loading images…');
     if (!embedded) count.id = 'result-count';
@@ -202,7 +206,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     captionDay.hidden = true;
     caption.append(count);
     if (!embedded) caption.append(captionDay);
-    const focusFallback = collectionHeading || heading?.h1 || main;
+    const focusFallback = collectionHeading || focusTarget || heading?.h1 || main;
     const grid = el('div', undefined, 'image-grid');
     grid.setAttribute('role', 'list'); grid.setAttribute('aria-label', 'Image collection');
     const continuation = el('div', undefined, 'infinite-continuation');
@@ -217,7 +221,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const showsEmpty = !embedded || typeof emptyText === 'string';
     const empty = el('div', embedded ? emptyText : 'No matching images. Try another search or category.', 'empty');
     empty.hidden = true;
-    collection.append(caption, grid);
+    // D47: the history page's shared gallery is named by its own "Shared gallery" heading, so it has no caption.
+    if (showCaption) collection.append(caption);
+    collection.append(grid);
     if (showsEmpty) collection.append(empty);
     collection.append(continuation);
     // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).

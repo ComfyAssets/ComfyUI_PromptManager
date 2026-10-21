@@ -708,7 +708,8 @@ test('archive hides a pair, Show archived finds it and Restore keeps it selected
     // #249 D8 ruling (a): the Library-embedded gallery has no select checkbox and no selection bar.
     await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).locator('.image-overlays input[type="checkbox"]')).toHaveCount(0);
     await expect(page.locator('#bulkbar, .bulkbar')).toHaveCount(0);
-    await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).getByText('1 loaded · 1 linked image',{exact:true})).toBeVisible();
+    // D47: the archived pair's gallery is named by its "Shared gallery" heading, with no separate loaded count.
+    await expect(page.getByRole('region',{name:'Shared gallery',exact:true}).locator('.panel-heading .small')).toHaveText(/ · Archived · same positive prompt$/);
     expect(galleryReads.at(-1).get('archive')).toBe('archived');expect(galleryReads.at(-1).get('pair_id')).toBe(String(f.pair_id));
     await expect(headingActions(page).getByRole('button',{name:/^Send prompt pair to ComfyUI/})).toBeEnabled();
     const writes=page.writes.length;
