@@ -20,6 +20,8 @@ const routes = [
     ['system', 'System', '/prompt_manager/admin'],
     // #249 D51: SAVED VIEWS' Favorites, Images filtered to favorites.
     ['favorites', 'Favorites', null],
+    // #249 Activity-1: the concept's Activity page in the tools-and-system group.
+    ['activity', 'Activity', null],
 ];
 
 async function countThemeWrites(page) {
@@ -176,7 +178,8 @@ test('theme System follows ComfyUI and persists an explicit light or dark prefer
     await expect(theme).toHaveAttribute('data-ca-theme', 'light');
 });
 
-// Task A4 (D4, D5): the concept topbar (index.html 45-63, style.css 225-277) without the prototype badge or Activity.
+// Task A4 (D4, D29): the concept topbar (index.html 45-63, style.css 225-277) without the prototype badge; Activity
+// (D52, D53) shows its button, and its pill only while a job runs.
 test('topbar matches the concept actions', async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     await page.goto(`${workspace}#/images`);
@@ -204,7 +207,7 @@ test('topbar matches the concept actions', async ({ page }) => {
     expect(shape).toEqual({
         children: ['div.breadcrumbs', 'div.top-actions'],
         crumbs: ['ComfyAssets', 'span:/', 'span#workspace-breadcrumb:Images'],
-        actions: ['label.theme-label', 'a.canvas-link'],
+        actions: ['a.activity-pill', 'button.', 'label.theme-label', 'a.canvas-link'],
         label: 'Theme', labelFor: 'theme',
         options: [['dark', 'Dark'], ['light', 'Light'], ['system', 'System']],
         arrow: [['↗', 'true']],
@@ -218,11 +221,12 @@ test('topbar matches the concept actions', async ({ page }) => {
     await expect(link).toHaveAttribute('href', '/');
     expect(await link.evaluate(node => node.href === `${location.origin}/`)).toBe(true);
     await expect(page.getByRole('combobox', { name: 'Appearance' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /^Activity/ })).toHaveCount(0);
-    await expect(page.locator('.concept-badge, #activity-open')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Activity', exact: true })).toHaveCount(1);
+    await expect(page.locator('#activity-pill')).toBeHidden();
+    await expect(page.locator('.concept-badge')).toHaveCount(0);
     await page.locator('nav [data-route="library"]').click();
     await expect(page.locator('#workspace-breadcrumb')).toHaveText('Prompt library');
-    await expect(topbar.locator('.top-actions > *')).toHaveCount(2);
+    await expect(topbar.locator('.top-actions > *')).toHaveCount(4);
 });
 
 // Concept style.css 1375-1391: at <=700px the breadcrumbs hide, the actions spread across the bar and the Theme
@@ -242,13 +246,18 @@ test('mobile topbar hides breadcrumbs and spreads actions', async ({ page }) => 
             expected: bar.width - 28,
             label: getComputedStyle(node.querySelector('.theme-label')).fontSize,
             select: getComputedStyle(node.querySelector('#theme')).fontSize,
-            labelLeft: box(node.querySelector('.theme-label')).left - bar.left,
+            activityLeft: box(node.querySelector('#activity-open')).left - bar.left,
+            actionsGap: [box(node.querySelector('#activity-open')).right, box(node.querySelector('.theme-label')).left,
+                box(node.querySelector('.theme-label')).right, box(node.querySelector('.canvas-link')).left],
             linkRight: bar.right - box(node.querySelector('.canvas-link')).right,
         };
     });
     expect(layout).toMatchObject({ padding: '14px', actions: { justify: 'space-between', gap: '8px' }, label: '0px', select: '11px' });
     expect(Math.abs(layout.actions.width - layout.expected)).toBeLessThanOrEqual(1);
-    expect(Math.abs(layout.labelLeft - 14)).toBeLessThanOrEqual(1);
+    // The concept's three items spread with space-between: Activity first, Theme between equal gaps, ComfyUI last.
+    expect(Math.abs(layout.activityLeft - 14)).toBeLessThanOrEqual(1);
+    const [activityRight, themeLeft, themeRight, linkLeft] = layout.actionsGap;
+    expect(Math.abs((themeLeft - activityRight) - (linkLeft - themeRight))).toBeLessThanOrEqual(1);
     expect(Math.abs(layout.linkRight - 14)).toBeLessThanOrEqual(1);
     await expect(page.getByRole('link', { name: 'ComfyUI', exact: true })).toBeVisible();
     await theme.selectOption('light');
@@ -506,18 +515,18 @@ test('a slow Images count does not delay the Library and Tags badges', async ({ 
     await expect(navCount(page, 'images')).toHaveText(String(totals.images));
 });
 
-test('sidebar bottom holds System and Overview with a neutral connection', async ({ page }) => {
+test('sidebar bottom holds Activity, System and Overview with a neutral connection', async ({ page }) => {
     await page.goto(`${workspace}#/system`);
     const bottom = page.locator('aside.sidebar > .sidebar-bottom');
     expect(await childShape(bottom)).toEqual(['nav#system-nav', 'div.connection']);
     const system = page.locator('nav#system-nav');
     await expect(system).toHaveAttribute('aria-label', 'Tools and system');
     expect(await system.locator(':scope > a').evaluateAll(nodes => nodes.map(node => [node.getAttribute('href'), node.textContent]))).toEqual([
-        ['#/system', 'System'], ['#/overview', 'Overview'],
+        ['#/activity', 'Activity'], ['#/system', 'System'], ['#/overview', 'Overview'],
     ]);
     await expect(system.locator('.nav-count')).toHaveCount(0);
     await expect(system.locator('a[href="#/system"]')).toHaveAttribute('aria-current', 'page');
-    await expect(system.locator('svg.icon')).toHaveCount(2);
+    await expect(system.locator('svg.icon')).toHaveCount(3);
     const connection = bottom.locator('.connection');
     expect(await childShape(connection)).toEqual(['i', 'div']);
     await expect(connection.locator(':scope > div')).toHaveText('ComfyUI workspaceYour library, on your server');

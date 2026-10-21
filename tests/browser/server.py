@@ -14,6 +14,7 @@ from aiohttp import web
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from tests.browser.workspace_activity_fixture import register_activity_commands
 from tests.browser.workspace_concept_fixture import (
     MAX_EXTRA_IMAGES as CONCEPT_MAX_EXTRA_IMAGES,
     MAX_SEEDLESS_IMAGES as CONCEPT_MAX_SEEDLESS_IMAGES,
@@ -159,6 +160,7 @@ def create_app(root: Path) -> web.Application:
     library_editor_commands = register_library_editor_commands(routes, api, root)
     register_vocabulary_commands(routes, api, root)
     reveal_stub = register_reveal_stub(routes, api, root)
+    register_activity_commands(app, routes, api)
 
     async def canonical_asset(request: web.Request) -> web.Response:
         filename, content_type = CANONICAL_ASSETS[request.path]

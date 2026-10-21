@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,focusRingOf,hoverStateOf,mutate} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConcept,openConcept as openConceptPage,openProduction,inventoryOf,diffInventory,focusRingOf,hoverStateOf,mutate} from './concept-inventory.mjs';
 
 // Task A6 of #249: the production shell (sidebar, topbar, heading, footer) against the immutable concept, with the
 // concept-shaped real fixture so the sidebar counts are the concept's own (24 images, 6 prompts, 15 tags). Both themes,
@@ -16,7 +16,16 @@ const FULL_HEADING=new Set(['tags']);
 
 const rowNamed=(nav,text)=>nav.rows.find(row=>row.text===text);
 
-const removedItem=item=>String(item.className).includes('concept-badge')||(item.tag==='button'&&item.text.startsWith('Activity'));
+const removedItem=item=>String(item.className).includes('concept-badge');
+
+/**
+ * The concept with its Activity count hidden (D52): production counts running jobs only and hides the count at 0, as
+ * the comparison fixture has none. The concept's own CSS then lays out its button without the count.
+ */
+async function openConcept(page,route,theme,motion) {
+    await openConceptPage(page,route,theme,motion);
+    await mutate(page,{css:'#activity-count { display: none }'});
+}
 
 /** Left offsets of flex items packed along a row of `width` by its `justify-content` and `gap`. */
 function packedLefts(items,width,justify,gap) {
@@ -37,10 +46,12 @@ function remainingTopActions(actions) {
     const gap=parseFloat(actions.columnGap);
     // A full-width row (<=700px) keeps its width; otherwise it shrinks to its remaining items.
     const width=actions.fullWidth?actions.width:shown.reduce((sum,item)=>sum+item.width,0)+gap*(shown.length-1);
-    // At <=700px the concept spreads three items with `space-between`, so its Theme select sits in the middle; with
-    // Activity removed (D5) the same rule puts Theme at the row's start. Offsets come from the concept's own sizes.
+    // At <=700px the concept spreads its shown items with `space-between`; the hidden pill (D53) takes no place.
+    // Offsets come from the concept's own sizes.
     const lefts=new Map(shown.map((item,index)=>[item,packedLefts(shown,width,actions.justifyContent,gap)[index]]));
     return {...actions,height,width,
+        // D52: the full-width row (<=700px) wraps its items when a zoomed phone is narrower than they are.
+        flexWrap:actions.fullWidth?'wrap':actions.flexWrap,
         items:kept.map(item=>item.shown?{...item,top:Math.round((height-item.height)/2),left:lefts.get(item)}:item)};
 }
 
@@ -53,7 +64,7 @@ function remainingFooter(footer,spans) {
 }
 
 // D28 ruling (final review A, Minor 1): Overview gets a distinct outline home glyph. The concept has no home icon, and
-// its `activity` pulse stays reserved for the Activity row D5 omits, so the two entries never share one glyph.
+// its `activity` pulse belongs to the Activity row, so the two entries never share one glyph.
 const OVERVIEW_GLYPH='M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6';
 
 /**
@@ -76,7 +87,9 @@ function mapShellConcept(reference) {
             if(nav.id!=='system-nav')return nav;
             const system=rowNamed(nav,'System');
             return {...nav,rows:[
-                // D5: no Activity row until an activity center exists. D28: no Design review (prototype page).
+                // D52: the Activity row counts running jobs only, so with none it has no count.
+                {...rowNamed(nav,'Activity'),count:null},
+                // D28: no Design review (prototype page).
                 system,
                 // D28: the production Overview hub follows System, as a concept nav row without a count. Its icon is
                 // the ruling's own outline home glyph (OVERVIEW_GLYPH), never the concept's `activity` pulse.
@@ -95,9 +108,11 @@ function mapShellConcept(reference) {
             small:'Your library, on your server',
             // D28: no fake connection state, so the dot is the neutral muted token (the concept's label color).
             dot:{...chrome.connection.dot,backgroundColor:chrome.labels[0].color}},
-        // D29: no "Interactive concept" badge. D5: no Activity button. The row's size and the remaining items'
-        // centered offsets follow from the concept's own item sizes.
-        topActions:remainingTopActions(chrome.topActions),
+        // D29: no "Interactive concept" badge. D53: the progress pill before the Activity button, hidden with no running
+        // job. D52: the button's count is hidden at 0. The row's size and the remaining items' centered offsets follow
+        // from the concept's own item sizes.
+        topActions:remainingTopActions({...chrome.topActions,items:chrome.topActions.items.flatMap(item=>
+            item.tag==='button'&&item.text==='Activity'?[{tag:'a',className:'activity-pill',shown:false},{...item,count:'0'}]:[item])}),
         footer:(()=>{
             // D29: production footer copy (one line, as the concept's own copy is), and no "What changes & why"
             // (a prototype review page); the footer then holds only its span.

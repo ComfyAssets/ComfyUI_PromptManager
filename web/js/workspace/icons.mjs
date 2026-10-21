@@ -3,8 +3,9 @@ const paths = Object.freeze({
     "library": "M4 4h5v16H4z M11 4h4v16h-4z M17 5l3-1 3 15-3 1z",
     "tags": "M3 3h8l10 10-8 8L3 11V3ZM7 7h.01",
     "upload": "M12 16V3m-5 5 5-5 5 5M3 15v6h18v-6",
-    // D28 ruling: an outline home glyph of its own; the concept's `activity` pulse stays with the Activity row D5 omits.
+    // D28 ruling: an outline home glyph of its own; the concept's `activity` pulse belongs to the Activity row.
     "overview": "M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6",
+    "activity": "M3 12h4l3-8 4 16 3-8h4",
     "settings": "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2",
     "grid": "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
     "list": "M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01",

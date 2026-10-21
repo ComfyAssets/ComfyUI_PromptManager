@@ -11,11 +11,13 @@ export const routes = [
     { id: 'overview', label: 'Overview' },
     // SAVED VIEWS' first row (#249 D51): Images filtered to favorites. No href, so Overview lists no card for it.
     { id: 'favorites', label: 'Favorites' },
+    // The concept's Activity (app.js renderActivity 732–738): this server session's jobs. No href: no Overview card.
+    { id: 'activity', label: 'Activity' },
     { id: 'system', label: 'System', href: '/prompt_manager/admin',
         description: 'Open the current dashboard, then choose Settings or Maintenance for configuration, scans, backups and diagnostics.', action: 'Open existing administration' },
 ];
 
-const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview', 'saved', 'favorites']);
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview', 'saved', 'favorites', 'activity']);
 
 /** A saved view (#249 D16): the shell resolves its id to the view's page, name and state. */
 const SAVED_ROUTE = Object.freeze({ id: 'saved', label: 'Saved view' });
@@ -33,6 +35,9 @@ export function isHandoff(route) {
 export function resolveRoute(hash) {
     const saved = /^#\/saved\/([1-9]\d*)$/.exec(hash);
     if (saved && Number.isSafeInteger(Number(saved[1]))) return {...SAVED_ROUTE, savedId:Number(saved[1]), hash};
+    // One job of the Activity page (its id is the registry's uuid4 hex).
+    const job = /^#\/activity\/([0-9a-f]{32})$/.exec(hash);
+    if (job) return {...routes.find(route => route.id === 'activity'), jobId:job[1], hash};
     const match = /^#\/library\/([1-9]\d*)$/.exec(hash);
     if (match && Number.isSafeInteger(Number(match[1]))) {
         return {...routes.find(route => route.id === 'library'), positiveId:Number(match[1]), hash};
@@ -110,7 +115,8 @@ export function mountRouter(win, onRoute) {
         const route = resolveRoute(win.location.hash);
         const hash = route.hash || `#/${route.id}`;
         if (win.location.hash !== hash) win.history.replaceState(win.history.state, '', hash);
-        if (current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId) return;
+        if (current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId &&
+            current?.jobId === route.jobId) return;
         current = route;
         onRoute(route);
     };

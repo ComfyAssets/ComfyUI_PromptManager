@@ -17,6 +17,21 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     nav a[aria-current="page"] { border: 2px solid Highlight; color: LinkText; }
 }
 
+/* D53: the running job's progress pill before the Activity button (the approved Activity mockup's `.pill`), in the
+   concept's tokens. At <=700px it keeps its verb and percentage; the file counts and bar stay in its accessible name. */
+.activity-pill:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--line);
+    border-radius: 999px; font-size: 12px; white-space: nowrap; color: var(--ca-text); background: var(--ca-surface); /* D53 */ }
+.activity-pill:hover { border-color: var(--ca-accent); /* D53 */ }
+.activity-pill-bar { display: block; inline-size: 70px; block-size: 5px; border-radius: 3px; background: var(--line); overflow: hidden; /* D53 */ }
+.activity-pill-bar i { display: block; block-size: 100%; inline-size: 0; background: var(--ca-accent); /* D53 */ }
+@media (pointer: coarse) { .activity-pill:not([hidden]) { min-block-size: 40px; /* D53 */ } }
+@media (max-width: 700px) {
+    /* D52: with the Activity button the full-width row can be wider than a zoomed phone, so its items wrap. */
+    .top-actions { flex-wrap: wrap; /* D52 */ }
+    .activity-pill:not([hidden]) { gap: 0; padding-inline: 10px; /* D53 */ }
+    .activity-pill-files, .activity-pill-bar { display: none; /* D53 */ }
+}
+
 /* Overview: real library statistics and the legacy tool cards inside a concept `.surface`. */
 .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 26px; }
 .stat { padding: 22px; background: var(--ca-surface); border: 1px solid var(--line); border-radius: 7px; }

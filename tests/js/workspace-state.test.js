@@ -4,10 +4,10 @@ const source = import('../../web/js/workspace/state.mjs');
 
 test('workspace routes resolve only supported deep links', async () => {
     const { resolveRoute } = await source;
-    for (const route of ['overview', 'images', 'library', 'tags', 'inspect', 'system']) {
+    for (const route of ['overview', 'images', 'library', 'tags', 'inspect', 'system', 'activity']) {
         assert.equal(resolveRoute(`#/${route}`).id, route);
     }
-    for (const hash of ['', '#', '#/unknown', '#/images/other', '#/<script>']) {
+    for (const hash of ['', '#', '#/unknown', '#/images/other', '#/<script>', '#/activity/abc', `#/activity/${'A'.repeat(32)}`]) {
         assert.equal(resolveRoute(hash).id, 'images');
     }
 });
@@ -23,8 +23,31 @@ test('tags is a native route titled Tags; only unbuilt routes hand off to legacy
         assert.equal(routeTitle(route), route.label);
     }
     assert.equal(routeTitle(resolveRoute('#/library/7')), 'Prompt library');
-    for (const id of ['images', 'library', 'tags', 'overview']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
+    for (const id of ['images', 'library', 'tags', 'overview', 'activity']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
     for (const id of ['inspect', 'system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), true, id);
+});
+
+test('a job of the Activity page is its own deep link', async () => {
+    const { resolveRoute, routeTitle, isHandoff } = await source;
+    const id = '0123456789abcdef'.repeat(2);
+    const route = resolveRoute(`#/activity/${id}`);
+    assert.deepEqual([route.id, route.jobId, route.hash, routeTitle(route), isHandoff(route)],
+        ['activity', id, `#/activity/${id}`, 'Activity', false]);
+    assert.equal(resolveRoute('#/activity').jobId, undefined);
+    assert.equal(route.href, undefined, 'Activity has no legacy card on Overview');
+    // The router renders again when only the job changes, and not for the same job.
+    const { mountRouter } = await source;
+    const other = 'f'.repeat(32);
+    const win = new EventTarget();
+    win.location = { hash: `#/activity/${id}` };
+    win.history = { state: null, replaceState(state, unused, hash) { win.location.hash = hash; } };
+    const seen = [];
+    const dispose = mountRouter(win, next => seen.push([next.id, next.jobId]));
+    win.dispatchEvent(new Event('hashchange'));
+    win.location.hash = `#/activity/${other}`; win.dispatchEvent(new Event('hashchange'));
+    win.location.hash = '#/activity'; win.dispatchEvent(new Event('hashchange'));
+    assert.deepEqual(seen, [['activity', id], ['activity', other], ['activity', undefined]]);
+    dispose();
 });
 
 test('statistics preserve zero and reject incomplete or invalid counts', async () => {

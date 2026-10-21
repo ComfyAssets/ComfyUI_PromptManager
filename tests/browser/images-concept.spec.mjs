@@ -7,7 +7,7 @@ import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,
 // images of the concept's six prompts, its seeds, sizes and favorites). Heading, toolbar, filter row, caption, grid,
 // the first six cards, the continuation and the panel box are compared at 1600x1100 and 390x844 in both themes, and the
 // page's behaviors under normal and reduced motion; grid, cards and panel also at 1200x900 and 1800x1100 (2 and 4
-// columns, the 275px and 310px panel). The topbar and sidebar (D5, D28, D29) are the shell spec's.
+// columns, the 275px and 310px panel). The topbar and sidebar (D28, D29, D52, D53) are the shell spec's.
 // Paired captures are artifacts only; there are no PNG baselines.
 test.use({locale:'en-US',timezoneId:'UTC'});
 

@@ -11,6 +11,8 @@ import { bindCanvasLink, canvasHref } from './topbar.mjs';
 import { renderHeading, pageHeading } from './heading.mjs';
 import { closeWorkspaceDialog } from './workspace-dialogs.mjs';
 import { createSavedViews, openSaveViewDialog, openEditViewDialog, savedViewHash } from './saved-views.mjs';
+import { createActivityStore } from './activity-store.mjs';
+import { mountActivityPage, mountActivityTopbar } from './activity.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -43,7 +45,7 @@ function mountWorkspace() {
     const preference = document.getElementById('theme');
     preference.value = theme.preference;
     scope.listen(preference, 'change', () => theme.setPreference(preference.value));
-    // D6: ComfyUI ↗ opens the canvas; on Images with a resolved selection it sends that pair (D5: no Activity).
+    // D6: ComfyUI ↗ opens the canvas; on Images with a resolved selection it sends that pair (a send is not an Activity job).
     let images = null;
     scope.cleanup(bindCanvasLink(document.querySelector('.topbar .canvas-link'), {
         href: canvasHref(resolveUrl, window.location.pathname),
@@ -60,8 +62,13 @@ function mountWorkspace() {
         return link;
     });
     primaryNav.replaceChildren(...navLinks([['images', 'images'], ['library', 'library'], ['tags', 'tags'], ['inspect', 'upload']]));
-    // D28: System, then the production Overview hub, in the concept's tools-and-system group.
-    systemNav.replaceChildren(...navLinks([['system', 'settings'], ['overview', 'overview']]));
+    // The concept's tools-and-system group: Activity, System, then (D28) the production Overview hub.
+    systemNav.replaceChildren(...navLinks([['activity', 'activity'], ['system', 'settings'], ['overview', 'overview']]));
+    // Activity (#249 Activity-1): one store of this session's jobs feeds the top-bar button and pill, the sidebar
+    // row's count and the Activity page, on every route.
+    const activity = createActivityStore({ api, scope, connect: url => new EventSource(resolveUrl(url)) });
+    mountActivityTopbar({ store: activity, scope });
+    activity.load();
     const sidebar = document.querySelector('aside.sidebar');
     // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`.
     const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}` : route.id;
@@ -219,6 +226,10 @@ function mountWorkspace() {
         }
         if (route.id === 'tags') {
             mountVocabulary(main, api, view);
+            return;
+        }
+        if (route.id === 'activity') {
+            mountActivityPage(main, { store: activity, scope: view, jobId: route.jobId });
             return;
         }
         if (isHandoff(route)) {
