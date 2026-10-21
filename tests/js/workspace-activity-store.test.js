@@ -281,3 +281,46 @@ test('summaries are validated and the copy follows the spec', async () => {
     assert.equal(outcomeLine(other), '');
     assert.deepEqual([-1, 0, 1, 4, 5, 6, 1e9, 0.5].map(backoffDelay), [1000, 1000, 2000, 16000, 30000, 30000, 30000, 1000]);
 });
+
+test('pagehide stops polling, closes streams and aborts the in-flight read; pageshow resumes', async () => {
+    const { createActivityStore } = await source;
+    const { world, api, ...deps } = harness();
+    const lifecycle = new EventTarget();
+    const signals = [];
+    let answer = null;
+    const pendingApi = { ...api, get: (url, options) => {
+        signals.push(options.signal);
+        world.gets += 1;
+        if (world.gets === 1) return Promise.resolve({ success: true, jobs: [summary()] });
+        return new Promise((resolve, reject) => {
+            answer = resolve;
+            options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        });
+    } };
+    const store = createActivityStore({ ...deps, api: pendingApi, pollMs: 15000, lifecycle });
+    await store.load();
+    assert.equal(world.open().length, 1);
+    const poll = world.timers.find(timer => !timer.cleared && timer.delay === 15000);
+    assert.ok(poll, 'a visible tab polls');
+    // A read in flight when the page goes away (a closed tab, a test teardown) is aborted, nothing is scheduled again.
+    const read = store.load();
+    lifecycle.dispatchEvent(new Event('pagehide'));
+    await read;
+    assert.equal(signals.at(-1).aborted, true);
+    assert.equal(world.open().length, 0);
+    assert.ok(world.timers.every(timer => timer.cleared || timer.fired));
+    assert.equal(store.find(ID_A).state, 'running', 'a hidden page marks nothing lost');
+    await store.load();
+    assert.equal(world.gets, 2, 'a suspended store reads nothing');
+    // Back from the cache, it reads the list again and follows the job.
+    const resumed = Object.assign(new Event('pageshow'), { persisted: true });
+    lifecycle.dispatchEvent(resumed);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(world.gets, 3);
+    answer({ success: true, jobs: [summary()] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(world.open().length, 1);
+    world.dispose();
+    assert.equal(signals.at(-1).aborted, true, 'disposing aborts the store reads');
+    assert.equal(world.open().length, 0);
+});

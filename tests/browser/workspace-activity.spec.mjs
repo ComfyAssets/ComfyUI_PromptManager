@@ -68,6 +68,8 @@ test.beforeEach(async ({ page, request, browserName }) => {
 });
 
 test.afterEach(async ({ page, request, browserName }) => {
+    // The store's own reads can meet a route handler at teardown; that must not fail the test it outlived.
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
     await saveCoverage(page, browserName);
     expect(page.activityErrors).toEqual([]);
     await request.post('/__test__/jobs/restart');

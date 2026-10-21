@@ -48,6 +48,8 @@ test.beforeEach(async ({ page, request, browserName }) => {
 });
 
 test.afterEach(async ({ page, browserName }) => {
+    // A route handler still running at teardown must not fail the test it outlived.
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
     await saveCoverage(page, browserName);
     expect(page.workspaceErrors).toEqual([]);
 });
@@ -688,8 +690,14 @@ async function serveUnderProxyMount(page) {
     await page.route(url => url.pathname.startsWith(`${PROXY_MOUNT}/`), async route => {
         const url = new URL(route.request().url());
         url.pathname = url.pathname.slice(PROXY_MOUNT.length);
-        const response = await route.fetch({ url: url.href });
-        await route.fulfill({ response });
+        // A request still in flight when the test ends (a thumbnail the last route started) meets a page that is
+        // closing: its fetched response is disposed under it. Only that teardown error is ignored.
+        try {
+            const response = await route.fetch({ url: url.href });
+            await route.fulfill({ response });
+        } catch (error) {
+            if (!/has been disposed|has been closed|Target page, context or browser has been closed/.test(String(error?.message))) throw error;
+        }
     });
     return escaped;
 }

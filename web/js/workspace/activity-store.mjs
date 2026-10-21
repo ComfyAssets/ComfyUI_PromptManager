@@ -101,10 +101,15 @@ function defaultConnect(url) {
  * @param {{api: {get: Function, post: Function}, scope: {signal: AbortSignal, cleanup: Function},
  *   connect?: (url: string) => {onmessage: Function|null, onerror: Function|null, close: Function},
  *   notify?: (message: string) => void, timers?: {setTimeout: Function, clearTimeout: Function},
- *   pollMs?: number, isVisible?: () => boolean}} options
+ *   pollMs?: number, isVisible?: () => boolean, lifecycle?: EventTarget}} options
+ *
+ * `lifecycle` (the window) ends the store's work on `pagehide`: the periodic and backoff reads stop, the streams close
+ * and a read in flight is aborted, so nothing answers into a page that is going away (a closed tab, a test teardown).
+ * A `pageshow` from the back-forward cache reads the list again.
  */
 export function createActivityStore({ api, scope, connect = defaultConnect, notify = showWorkspaceToast,
-    timers = globalThis, pollMs = POLL_MS, isVisible = () => globalThis.document?.visibilityState !== 'hidden' } = {}) {
+    timers = globalThis, pollMs = POLL_MS, isVisible = () => globalThis.document?.visibilityState !== 'hidden',
+    lifecycle = globalThis.window ?? null } = {}) {
     let jobs = [];
     let status = 'idle';
     let attempt = 0;
@@ -112,6 +117,8 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
     let pollTimer = null;
     let reads = 0;
     let disposed = false;
+    let suspended = false;
+    let reading = null;
     const streams = new Map();
     const listeners = new Set();
 
@@ -181,7 +188,7 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
     }
 
     function scheduleResync() {
-        if (disposed || retryTimer !== null) return;
+        if (disposed || suspended || retryTimer !== null) return;
         const delay = backoffDelay(attempt);
         attempt += 1;
         retryTimer = timers.setTimeout(() => {
@@ -192,7 +199,7 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
 
     /** The next periodic read; a hidden tab skips its turn. */
     function schedulePoll() {
-        if (disposed || pollMs <= 0) return;
+        if (disposed || suspended || pollMs <= 0) return;
         if (pollTimer !== null) timers.clearTimeout(pollTimer);
         pollTimer = timers.setTimeout(() => {
             pollTimer = null;
@@ -203,18 +210,22 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
 
     /** Read this session's jobs. A failed read marks running jobs ended and tries again after the backoff. */
     async function load() {
-        if (disposed) return;
+        if (disposed || suspended) return;
         const read = ++reads;
+        // Only the newest read applies, so an older one still in flight is aborted.
+        reading?.abort();
+        const controller = new AbortController();
+        reading = controller;
         try {
-            const result = await api.get(JOBS_URL, { signal: scope.signal, cache: 'no-store' });
-            // Only the newest read applies; an older one answering late is dropped.
-            if (disposed || read !== reads) return;
+            const result = await api.get(JOBS_URL, { signal: controller.signal, cache: 'no-store' });
+            // An older read answering late is dropped.
+            if (disposed || suspended || read !== reads) return;
             if (!Array.isArray(result?.jobs)) throw new TypeError('Invalid job list');
             merge(result.jobs);
             status = 'ready';
             schedulePoll();
         } catch (error) {
-            if (disposed || scope.signal?.aborted || read !== reads) return;
+            if (disposed || suspended || scope.signal?.aborted || controller.signal.aborted || read !== reads) return;
             markLost();
             status = 'error';
             scheduleResync();
@@ -254,13 +265,30 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
         },
     };
 
-    scope.cleanup(() => {
-        disposed = true;
+    /** Stop every timer, stream and read in flight. */
+    function halt() {
         if (retryTimer !== null) timers.clearTimeout(retryTimer);
         if (pollTimer !== null) timers.clearTimeout(pollTimer);
         retryTimer = null;
         pollTimer = null;
+        reading?.abort();
+        reading = null;
         for (const id of [...streams.keys()]) closeStream(id);
+    }
+    const onPageHide = () => { suspended = true; halt(); };
+    const onPageShow = event => {
+        if (!suspended || !event.persisted) return;
+        suspended = false;
+        load();
+    };
+    lifecycle?.addEventListener('pagehide', onPageHide);
+    lifecycle?.addEventListener('pageshow', onPageShow);
+
+    scope.cleanup(() => {
+        disposed = true;
+        halt();
+        lifecycle?.removeEventListener('pagehide', onPageHide);
+        lifecycle?.removeEventListener('pageshow', onPageShow);
         listeners.clear();
     });
     return store;
