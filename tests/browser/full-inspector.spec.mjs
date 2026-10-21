@@ -167,6 +167,16 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await selectFile(page,'workflow-only.png');await expect(panel.locator('.panel-heading h2')).toHaveText('workflow-only.png');
     await expect(panel.locator('.chip:not(.blue)')).toHaveCount(1);await expect(panel.locator('.detail-inner > .tags button')).toHaveCount(0);
     await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
+    // D39 mixed scopes: each field follows its own source, so the prefix and the tag chips can disagree.
+    const tagRow=panel.locator('.detail-inner > .tags').last();
+    reads.patch=data=>{data.library={...data.library,status:'linked',category:'Subject',category_scope:'pair',tags_scope:'positive',tags:['alpha','beta']};};
+    await selectFile(page,'complete.png');
+    await expect(panel.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Recipe category: ');
+    await expect(tagRow.getByRole('button')).toHaveText(['alpha','beta']);
+    reads.patch=data=>{data.library={...data.library,status:'linked',category:'Subject',category_scope:'positive',tags_scope:'pair',tags:['alpha','beta']};};
+    await selectFile(page,'workflow-only.png');
+    await expect(panel.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Positive prompt category: ');
+    await expect(tagRow.locator('span.chip')).toHaveText(['alpha','beta']);await expect(tagRow.getByRole('button')).toHaveCount(0);
     // Loading and error states render in `.detail-inner` as `.small` text with the existing buttons.
     reads.patch=null;await page.unroute('**/images/inspect/**');
     await page.route('**/images/inspect/**',route=>route.fulfill({status:500,json:{success:false,error:'broken'}}));
