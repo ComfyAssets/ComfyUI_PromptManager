@@ -396,56 +396,67 @@ def seed_workspace_concept(
     rounds = math.ceil(total / len(CONCEPT_PROMPTS))
     now = time.time()
     images, runs = [], []
-    for round_index in range(rounds):
-        for prompt_index, prompt in enumerate(CONCEPT_PROMPTS):
-            index = round_index * len(CONCEPT_PROMPTS) + prompt_index
-            if index >= total:
-                break
-            name = concept_filename(prompt, round_index)
-            path = folder / name
-            facts = write_concept_png(path, prompt_index, round_index)
-            variant, negative, seed = facts["variant"], facts["negative"], facts["seed"]
-            # The concept lists images newest first in this order.
-            stamp = now - 60 - index * 60
-            os.utime(path, (stamp, stamp))
-            owner = prompts[prompt_index]
-            image_id = db.link_image_to_prompt(owner["positive_id"], str(path))
-            pair_id = None if index < positive_links else owner["pair_ids"][variant]
-            if pair_id is not None:
-                db.link_image_to_pair(pair_id, image_id, {"source": "concept fixture"})
-            if concept_starred(prompt_index, round_index):
-                db.set_image_favorite(
-                    favorite_root, _favorite_relative_key(f"concepts/{name}")
-                )
-            context = RecipeContext(
-                "3", _snapshot(prompt.positive), _snapshot(negative), "inferred"
+    slots = [
+        (round_index, prompt_index, prompt)
+        for round_index in range(rounds)
+        for prompt_index, prompt in enumerate(CONCEPT_PROMPTS)
+        if round_index * len(CONCEPT_PROMPTS) + prompt_index < total
+    ]
+    # Linked and recorded oldest first, as real runs arrive, so link and run ids
+    # grow with time and every newest-first read (by id or by mtime) lists the
+    # concept's order (app.js:180-239). The manifest keeps the concept's order.
+    for round_index, prompt_index, prompt in reversed(slots):
+        index = round_index * len(CONCEPT_PROMPTS) + prompt_index
+        name = concept_filename(prompt, round_index)
+        path = folder / name
+        facts = write_concept_png(path, prompt_index, round_index)
+        variant, negative, seed = facts["variant"], facts["negative"], facts["seed"]
+        # The concept lists images newest first in this order.
+        stamp = now - 60 - index * 60
+        os.utime(path, (stamp, stamp))
+        owner = prompts[prompt_index]
+        image_id = db.link_image_to_prompt(owner["positive_id"], str(path))
+        pair_id = None if index < positive_links else owner["pair_ids"][variant]
+        if pair_id is not None:
+            db.link_image_to_pair(pair_id, image_id, {"source": "concept fixture"})
+            # Real pair counting: each image is one run of its pair, as the
+            # concept's "<name> · N runs" counts its images (app.js a598, D26).
+            db.record_prompt_pair_use(pair_id)
+        if concept_starred(prompt_index, round_index):
+            db.set_image_favorite(
+                favorite_root, _favorite_relative_key(f"concepts/{name}")
             )
-            reference = OutputReference(
-                "4", 0, "output", "concepts", name, "posix", roots.output_key
+        context = RecipeContext(
+            "3", _snapshot(prompt.positive), _snapshot(negative), "inferred"
+        )
+        reference = OutputReference(
+            "4", 0, "output", "concepts", name, "posix", roots.output_key
+        )
+        runs.append(
+            _record_run(
+                api,
+                epoch=epoch,
+                item=index,
+                context=context,
+                output=reference,
+                observed_at=int(stamp * 1000),
             )
-            runs.append(
-                _record_run(
-                    api,
-                    epoch=epoch,
-                    item=index,
-                    context=context,
-                    output=reference,
-                    observed_at=int(stamp * 1000),
-                )
-            )
-            images.append(
-                {
-                    "filename": name,
-                    "image_id": image_id,
-                    "pair_id": pair_id,
-                    "prompt": prompt.id,
-                    "variant": variant,
-                    "seed": seed,
-                    "path": f"concepts/{name}",
-                    "width": facts["width"],
-                    "height": facts["height"],
-                }
-            )
+        )
+        images.append(
+            {
+                "filename": name,
+                "image_id": image_id,
+                "pair_id": pair_id,
+                "prompt": prompt.id,
+                "variant": variant,
+                "seed": seed,
+                "path": f"concepts/{name}",
+                "width": facts["width"],
+                "height": facts["height"],
+            }
+        )
+    images.reverse()
+    runs.reverse()
     seedless = []
     for number in range(seedless_images):
         name = f"seedless_{number + 1:05}.png"

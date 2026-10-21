@@ -219,6 +219,9 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space
 /* #249 D24: the history summary's prompt blocks sit in `article.surface` as the concept's do (app.js a598); the mount
    point keeps its "Saved prompt texts" region name. */
 .library-history article.surface > .prompt-inspector { display: contents; /* D24 */ }
+/* #249 D25: each compared negative's block sits in the concept's `.compare-item` (app.js a600), so its mount point is
+   transparent and adds no margin. */
+.compare-item > .prompt-inspector { display: contents; /* D25 */ }
 /* #249 D23: a real title can be long or one unbroken word; it wraps inside the title row (the toolkit's buttons never
    wrap), while the category chip keeps whole words beside it and wraps only a name wider than its share of the row. */
 .card-title button { min-width: 0; white-space: normal; overflow-wrap: anywhere; /* D23 */ }

@@ -14,9 +14,10 @@ export const canonicalDifferences = {
     'Recorded run exposes exact frozen evidence; Repeat run is illustrative',
     'Current-file candidates disclose unknown identity and context membership',
     ],
+    // Closed by #249: the gallery's checkbox is Images-only (#259) and the role blocks are the concept's (PR D, F); the
+    // exact history comparison is tests/browser/history-concept.spec.mjs.
     remainingApplicationPolish: [
-        'Gallery card select checkbox (#249 D8 follow-up) and tag button (#249 D9, image-annotations slice) remain outside #209',
-        'Shared role-block spacing, padding and glyph styling remain outside #209; exact role order/actions and evidence disclosure are covered',
+        'Gallery card tag button (#249 D9, image-annotations slice) remains outside #209',
         'Production keeps mobile toolbar inside media panel and readable scrolling details; the concept toolbar collision is not reproduced',
     ],
 };
@@ -33,29 +34,27 @@ export async function captureCanonicalState(page, testInfo, name, selector) {
     await testInfo.attach(name, { path, contentType: 'image/png' });
 }
 
+const CONCEPT_HISTORY_SELECTORS = Object.freeze({
+    surface: 'article.surface', timeline: '.timeline', positive: '.positive-lane', branch: '.variant-lane',
+    label: '.variant-lane > span', dot: '.variant-dot[aria-pressed="true"]', role: 'article.surface .prompt-section',
+    positiveLabel: '.positive-lane span',
+    prompt: 'article.surface .prompt-text', gallery: '.history-gallery',
+    heading: '.timeline-panel h2', intro: '.timeline-panel .panel-heading .small',
+    footer: '.timeline-lower', all: '.timeline-lower button',
+    repeat: '.timeline .run-dot:not([hidden])',
+});
+const RECORDED_HISTORY_SELECTORS = Object.freeze({
+    recordedPositiveLabel: '.history-positive-lane span', recordedBranch: '.history-context-branch',
+    recordedHeading: '.recorded-history h2', recordedTimeline: '.history-timeline', recordedCanvas: '.history-canvas',
+    recordedPositive: '.history-positive-lane', recordedLabel: '.history-context-label',
+    recordedAnchor: '.history-context-anchor', recordedRepeat: '.history-run-marker:not(.history-context-anchor)',
+    recordedMarker: '.history-run-marker', recordedColumn: '.history-run-column',
+});
+
 export async function historyGeometry(page, production) {
-    const selectors = production ? {
-        surface: '.library-history article.surface', timeline: '.library-history .timeline', positive: '.library-history .positive-lane',
-        branch: '.library-history .variant-lane', label: '.library-history .variant-lane > span', dot: '.library-history .variant-dot[aria-pressed="true"]',
-        positiveLabel: '.library-history .positive-lane span',
-        role: '[aria-label="Saved prompt texts"] .prompt-section',
-        prompt: '[aria-label="Saved prompt texts"] .prompt-text', gallery: '.library-history .history-gallery',
-        heading: '.library-history .timeline-panel h2', intro: '.library-history .timeline-panel .panel-heading .small',
-        footer: '.library-history .timeline-lower', all: '.library-history .timeline-lower button',
-        recordedPositiveLabel: '.history-positive-lane span', recordedBranch: '.history-context-branch',
-        recordedHeading: '.recorded-history h2', recordedTimeline: '.history-timeline', recordedCanvas: '.history-canvas',
-        recordedPositive: '.history-positive-lane', recordedLabel: '.history-context-label',
-        recordedAnchor: '.history-context-anchor', recordedRepeat: '.history-run-marker:not(.history-context-anchor)',
-        recordedMarker: '.history-run-marker', recordedColumn: '.history-run-column',
-    } : {
-        surface: '.surface', timeline: '.timeline', positive: '.positive-lane', branch: '.variant-lane',
-        label: '.variant-lane span', dot: '.variant-dot[aria-pressed="true"]', role: '.surface .prompt-section',
-        positiveLabel: '.positive-lane span',
-        prompt: '.surface .prompt-text', gallery: '.history-gallery',
-        heading: '.timeline-panel h2', intro: '.timeline-panel .panel-heading .small',
-        footer: '.timeline-lower', all: '.timeline-lower button',
-        repeat: '.timeline .run-dot',
-    };
+    // Production renders the concept's history classes (#249 PR F), so both documents use the concept's selectors;
+    // production adds the recorded executions (#209), which the concept does not have.
+    const selectors = production ? { ...CONCEPT_HISTORY_SELECTORS, ...RECORDED_HISTORY_SELECTORS } : CONCEPT_HISTORY_SELECTORS;
     return page.evaluate(selectors => ({ pointerCoarse: matchMedia('(pointer: coarse)').matches,
         ...Object.fromEntries(Object.entries(selectors).map(([key, selector]) => {
         const nodes = [...document.querySelectorAll(selector)];

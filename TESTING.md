@@ -855,6 +855,36 @@ The run dot reads `GET /prompt_manager/library/{positive_id}/history/pairs/{pair
 (see "Chronological Library history"), and each lane's "N runs" is the pair's
 `run_count` (see "Workspace data fields").
 
+`tests/browser/history-concept.spec.mjs` (#249 PR F-b, F5) compares this page with the
+immutable concept's `#prompt/alpine` on the concept fixture, at 1600×1100 and 390×844 in
+both themes and motion settings, on Chromium and touch: the heading, the summary, the
+variants panel, the comparison (Compare negatives pressed) and the shared gallery's
+place and heading, all measured by `inventoryOf`'s `history` section with the concept's
+selectors in both documents, with "Clean architecture" selected (the middle lane in
+either order). The fixture links and records its images oldest first, so ids grow with
+time as real runs do, and counts one pair use per image, which gives the concept's
+"Quality baseline · 2 runs" and its run dot. `mapHistoryConcept` applies D24 (the four
+recorded runs give the concept's own "4 tracked runs", asserted on both), D45 (the
+visually hidden "3 of 3 saved negative variants" status, and its wrap rules applied to
+the concept at runtime), D35 and D46 (the concept's lanes reordered newest first with
+"1 run", laid out by the browser), D46's Baseline/Selected action names, #235's Show
+archived button (added to the concept at runtime) and D47 (the gallery's body is the
+Images collection, so its height is not compared). D25: each compared block mounts in a
+`display: contents` child of the concept's `.compare-item`, so the item carries no
+production class or margin. Behaviors are compared in both documents: a red dot changes
+the negative block and the gallery, Compare toggles `aria-pressed`, All images opens a
+dialog with the positive's four images, the run dot opens a dialog (D26: Recorded run
+where the concept shows Repeat run), the heading send previews the selected pair, and
+← Prompt library navigates. `history comparison detects mutations` injects
+`.ca-tools .variant-dot { width: 20px }` and removes Compare negatives. The older
+`history-canonical-comparison.mjs` stays for `workspace-visual.spec.mjs`'s recorded
+executions (#209) checks; its production selectors are now the concept's.
+
+```sh
+npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
+  workspace-history.spec.mjs --project chromium --project touch --project firefox --project webkit
+```
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no

@@ -486,9 +486,10 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const disposeCompareBlocks=()=>{for(const item of compareBlocks)item.dispose();compareBlocks=[];};
             content.cleanup(disposeCompareBlocks);
             function compareBlock(text,label) {
-                const item=el('div',undefined,'compare-item');
+                // The concept's `.compare-item` holds the block itself; the blocks mount in a transparent child (D25).
+                const item=el('div',undefined,'compare-item'),mount=el('div');item.append(mount);
                 // D46: the two blocks are named Baseline and Selected, so no region or action name repeats on the page.
-                compareBlocks.push(mountPromptBlocks(item,{prompts:{negative:{status:'resolved',text,source:'library'}},roles:['negative'],sender,parentScope:content,includePairAction:false,contextLabel:label,title:displayTitle(detail.positive)}));
+                compareBlocks.push(mountPromptBlocks(mount,{prompts:{negative:{status:'resolved',text,source:'library'}},roles:['negative'],sender,parentScope:content,includePairAction:false,contextLabel:label,title:displayTitle(detail.positive)}));
                 compareBlocks.at(-1).setState({prompts:{negative:{status:'resolved',text,source:'library'}},actionsEnabled:savedReadState==='current'});
                 return item;
             }
