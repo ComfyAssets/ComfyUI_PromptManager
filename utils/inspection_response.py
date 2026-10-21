@@ -290,6 +290,8 @@ def _file_projection(file: dict, inspection: "InspectionRead | None") -> dict:
 
 
 def _blank(value: str | bytes | None) -> bool:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
     return value is None or not value.strip()
 
 

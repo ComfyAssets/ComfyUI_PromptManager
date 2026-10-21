@@ -374,6 +374,51 @@ class CurrentLocationTests(unittest.TestCase):
                     expected,
                 )
 
+    def test_gallery_blank_recipe_category_and_skipped_positive_tags_query(self):
+        mod = self.module("database.history_gallery")
+        db = PromptDatabase(str(self.base / "blank.db"))
+        self.addCleanup(db.close_all)
+        cases = (
+            ("  ", ["recipe"], 0),
+            ("\u3000", [], 1),
+            ("\u00a0 ", ["recipe"], 0),
+        )
+        for index, (blank, recipe_tags, positive_tag_queries) in enumerate(cases):
+            with self.subTest(case=index):
+                text = f"blank owner {index}"
+                positive = db.save_prompt(
+                    text,
+                    prompt_hash=generate_prompt_hash(text),
+                    category="Positive cat",
+                )
+                db.set_prompt_tags(positive, ["positive"])
+                pair = db.save_prompt_pair(text, "noise", tags=recipe_tags)
+                path = make_png(self.output / f"blank-{index}.png")
+                locator = os.path.normcase(str(path))
+                image = db.link_image_to_prompt(positive, str(path))
+                db.link_image_to_pair(pair, image, {"source": "fixture"})
+                conn = db.model.get_connection()
+                # Legacy rows can hold a blank-looking category the writers now trim.
+                conn.execute(
+                    "UPDATE prompt_pairs SET category=? WHERE id=?", (blank, pair)
+                )
+                conn.commit()
+                statements = []
+                conn.set_trace_callback(statements.append)
+                self.addCleanup(conn.set_trace_callback, None)
+                with db.recorded_history_snapshot():
+                    result = mod.read_history_gallery(conn, (locator,))
+                conn.set_trace_callback(None)
+                library = result[locator]["library"]
+                self.assertEqual(library["category"], "Positive cat")
+                self.assertEqual(library["category_scope"], "positive")
+                tag_queries = [
+                    statement
+                    for statement in statements
+                    if "FROM prompt_tags pt" in statement
+                ]
+                self.assertEqual(len(tag_queries), positive_tag_queries, statements)
+
     def test_host_root_failure_and_removal_do_not_search_another_root(self):
         make_png(self.output / "image.png")
         make_png(self.temp / "image.png")
