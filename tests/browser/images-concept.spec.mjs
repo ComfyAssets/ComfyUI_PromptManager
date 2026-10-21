@@ -149,12 +149,15 @@ function compareLoadingRow(reference,actual,count) {
     return diffInventory(unplaced(mapContinuation(reference,{loaded,total})),unplaced(actual));
 }
 
-/** D15: the Import dialog's two real operations, with the ruled intro and the Rescan wording. */
+/**
+ * D15: the Import dialog's real operations, with the ruled intro and the Rescan wording. D55: the concept's own "Scan an
+ * output folder → Review scan" row follows Rescan as "Scan for metadata", opening the concept's "Review metadata scan".
+ */
 function mapImportConcept(reference) {
     return {...reference,
         intro:{...reference.intro,text:'Image inspection and output scanning have different effects. Choose the workflow you want.'},
-        rows:reference.rows.filter(row=>row.title!=='Import portable recipes').map(row=>row.title==='Scan an output folder'
-            ?{...row,description:'Find files added or removed in the output folders.',buttons:['Rescan']}:row)};
+        rows:reference.rows.filter(row=>row.title!=='Import portable recipes').flatMap(row=>row.title==='Scan an output folder'
+            ?[{...row,description:'Find files added or removed in the output folders.',buttons:['Rescan']},{...row,title:'Scan for metadata'}]:[row])};
 }
 
 const SECTIONS=['heading','toolbar','filterRow','bulkbar','caption','grid','cards','continuation','panel','noPageScroll'];

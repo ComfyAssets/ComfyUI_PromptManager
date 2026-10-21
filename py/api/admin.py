@@ -190,7 +190,7 @@ def _plural(count, word):
 
 def _scan_status_line(done, total, batches, elapsed):
     """ "Processing file N of M", with an estimate once enough batches ran."""
-    line = f"Processing file {done} of {total}"
+    line = f"Processing file {done:,} of {total:,}"
     if batches < MIN_BATCHES_FOR_ESTIMATE or done <= 0 or done >= total:
         return line
     minutes = max(1, math.ceil(elapsed / done * (total - done) / 60))

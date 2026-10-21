@@ -8,7 +8,10 @@
  *   mock-status note because every field is a real filter, and no "Prompt evidence" field because evidence is only
  *   known per file (D14). Clear also clears the toolbar category, as the concept's does; the page applies it.
  * - "Import & inspect" (a1483–1491): only the real operations, Inspect a local image and Scan an output folder →
- *   Rescan; no "Import portable recipes" (D15). Rescan shows its running state (aria-disabled "Rescanning…").
+ *   Rescan; no "Import portable recipes" (D15). Rescan shows its running state (aria-disabled "Rescanning…"). D55: the
+ *   concept's own "Scan an output folder → Review scan" row follows as "Scan for metadata".
+ * - "Review metadata scan" (a1428–1432 `scan-review`, D55): Sources and Scope in a `dl.meta-grid`, the concept's
+ *   sentence, a backup `.notice` ("Back up now") and Cancel / Start scan; no sample-plan note.
  * - "Copy prompt" (a1223–1241): the select-to-copy fallback when the clipboard is unavailable (D22).
  * - One-value input (a1138 `simpleInput`): a "Category"-style field (`input#action-input`) and Cancel / a primary
  *   action; used by the Images selection bar's "Set category" (#249 D8) and the toolbar's Save view.
@@ -230,16 +233,23 @@ const RESCAN_LABEL = 'Rescan';
 const RESCAN_BUSY_LABEL = 'Rescanning…';
 
 /**
- * "Import & inspect" with the two real operations (D15). While `rescanBusy`, Rescan reads "Rescanning…" and is
+ * "Import & inspect" with the real operations (D15). While `rescanBusy`, Rescan reads "Rescanning…" and is
  * aria-disabled, so a second press is visibly ignored. Returns `{setRescanBusy}` for the page to end that state.
+ * With `onMetadataScan`, the concept's "Review scan" row follows as "Scan for metadata" (D55).
  */
-export function openImportDialog({ scope, onInspect, onRescan, trigger = null, rescanBusy = false }) {
+export function openImportDialog({ scope, onInspect, onRescan, onMetadataScan = null, trigger = null, rescanBusy = false }) {
     requireScope(scope);
-    requireCallbacks({ onInspect, onRescan });
+    requireCallbacks({ onInspect, onRescan, ...(onMetadataScan ? { onMetadataScan } : {}) });
     const list = el('div', undefined, 'operation-list');
     const inspect = operation('Inspect a local image', 'Read embedded metadata before deciding to add it.', 'Open inspector', onInspect);
     const rescan = operation('Scan an output folder', 'Find files added or removed in the output folders.', RESCAN_LABEL, onRescan);
     list.append(inspect.row, rescan.row);
+    if (onMetadataScan) {
+        // The opened review dialog replaces this one in the shell, so its Cancel returns focus to Import.
+        const review = operation('Scan for metadata', 'Discover and enrich existing files using the configured sources.',
+            'Review scan', () => onMetadataScan(trigger));
+        list.append(review.row);
+    }
     function setRescanBusy(busy) {
         rescan.action.textContent = busy ? RESCAN_BUSY_LABEL : RESCAN_LABEL;
         if (busy) rescan.action.setAttribute('aria-disabled', 'true');
@@ -308,4 +318,56 @@ export function openContentDialog({ scope, title, nodes, onClose = null, trigger
     if (!Array.isArray(nodes) || nodes.some(node => !node || typeof node !== 'object')) throw new TypeError('The dialog needs its nodes');
     if (onClose !== null && typeof onClose !== 'function') throw new TypeError('The dialog onClose must be a function');
     show(title, nodes, { scope, trigger, onClose });
+}
+
+export const SCAN_REVIEW_SENTENCE = 'Enrich positive / negative associations, reuse canonical text and report unchanged files. ' +
+    'Do not inflate run counts or recreate existing thumbnails.';
+const BACKUP_LABEL = 'Back up now';
+const BACKUP_BUSY_LABEL = 'Backing up…';
+
+/**
+ * The concept's "Review metadata scan" (`scan-review`, D55). `sources` is the number of output folders the scan reads;
+ * the scope is fixed to "All files" in Activity-1. `onBackup` runs the database backup (the button is aria-disabled
+ * and reads "Backing up…" until it settles, and the dialog stays open); Start scan closes the dialog, then `onStart`.
+ */
+export function openScanReviewDialog({ scope, sources, onBackup, onStart, trigger = null }) {
+    requireScope(scope);
+    requireCallbacks({ onBackup, onStart });
+    if (!Number.isSafeInteger(sources) || sources < 0) throw new TypeError('The scan review needs its source count');
+    const grid = el('dl', undefined, 'meta-grid');
+    for (const [term, value] of [['Sources', `${sources.toLocaleString()} output ${sources === 1 ? 'folder' : 'folders'}`],
+        ['Scope', 'All files']]) {
+        const entry = el('div');
+        entry.append(el('dt', term), el('dd', value));
+        grid.append(entry);
+    }
+    const notice = el('div', undefined, 'notice');
+    const copy = el('div');
+    copy.append(el('h3', 'Back up the database first (recommended)'),
+        el('p', 'Downloads a copy of the prompts database before the scan changes any records.'));
+    const backupActions = el('div', undefined, 'row-actions');
+    const backup = createButton(BACKUP_LABEL);
+    backupActions.append(backup);
+    notice.append(copy, backupActions);
+    backup.addEventListener('click', async () => {
+        if (backup.getAttribute('aria-disabled') === 'true') return;
+        backup.setAttribute('aria-disabled', 'true');
+        backup.textContent = BACKUP_BUSY_LABEL;
+        try {
+            await onBackup();
+        } finally {
+            backup.removeAttribute('aria-disabled');
+            backup.textContent = BACKUP_LABEL;
+        }
+    });
+    const cancel = createButton('Cancel');
+    const start = createButton('Start scan', 'ca-primary');
+    cancel.addEventListener('click', () => finish());
+    start.addEventListener('click', () => {
+        finish();
+        onStart();
+    });
+    const actions = el('div', undefined, 'dialog-actions');
+    actions.append(cancel, start);
+    show('Review metadata scan', [grid, el('p', SCAN_REVIEW_SENTENCE, 'small'), notice, actions], { scope, trigger });
 }

@@ -13,6 +13,7 @@ import { closeWorkspaceDialog } from './workspace-dialogs.mjs';
 import { createSavedViews, openSaveViewDialog, openEditViewDialog, savedViewHash } from './saved-views.mjs';
 import { createActivityStore } from './activity-store.mjs';
 import { mountActivityPage, mountActivityTopbar } from './activity.mjs';
+import { mountActivityJobView } from './activity-job-view.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -217,7 +218,7 @@ function mountWorkspace() {
         if (route.id === 'images' || route.id === 'favorites') {
             mountNewPromptAction(main, api, view);
             images = mountImages(main, api, view, {savedState:saved?.state, favorites:route.id === 'favorites',
-                onSaveView:saveView('images', view)});
+                onSaveView:saveView('images', view), activity});
             return;
         }
         if (route.id === 'library') {
@@ -229,7 +230,9 @@ function mountWorkspace() {
             return;
         }
         if (route.id === 'activity') {
-            mountActivityPage(main, { store: activity, scope: view, jobId: route.jobId });
+            // D56: `#/activity/<id>` is that job's own view; `#/activity` lists the session's jobs.
+            if (route.jobId) mountActivityJobView(main, { store: activity, scope: view, api, jobId: route.jobId });
+            else mountActivityPage(main, { store: activity, scope: view });
             return;
         }
         if (isHandoff(route)) {

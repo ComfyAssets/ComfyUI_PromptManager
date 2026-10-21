@@ -2180,7 +2180,7 @@ class TestScanStatusLine(unittest.TestCase):
         )
         self.assertEqual(
             _scan_status_line(100, 1000, 2, 30.0),
-            "Processing file 100 of 1000 · about 5 min left",
+            "Processing file 100 of 1,000 · about 5 min left",
         )
         self.assertEqual(
             _scan_status_line(100, 120, 2, 1.0),

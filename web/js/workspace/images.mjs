@@ -12,6 +12,7 @@ import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
 import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
+import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
 
@@ -112,7 +113,7 @@ export function onFavoriteChange(listener) {
  * Images last visit.
  */
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null, savedState = null,
-    favorites = false, onSaveView = () => {}} = {}) {
+    favorites = false, onSaveView = () => {}, activity = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -163,7 +164,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         scope.cleanup(() => importButton.remove());
         scope.listen(importButton, 'click', () => {
             importDialog = openImportDialog({scope, trigger:importButton, rescanBusy:rescanning,
-                onInspect:() => { window.location.hash = '#/inspect'; }, onRescan:rescan});
+                onInspect:() => { window.location.hash = '#/inspect'; }, onRescan:rescan,
+                // D55: Scan for metadata reviews the session scan job over every discovered source.
+                onMetadataScan:activity ? trigger => openMetadataScan({scope, store:activity, sources:roots.length, trigger}) : null});
         });
     }
     // The shared concept toolbar: search (filename, linked prompt text, title and tags), category and sort (D12–D14).

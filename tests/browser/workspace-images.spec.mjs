@@ -2013,3 +2013,50 @@ test('Set category limits the field to the server length, shows the server count
     await expect(bulkbar(page)).toBeEmpty();
     expect(answers).toHaveLength(0);
 });
+
+// Activity-1 Task 3 (D55): Import → "Scan for metadata" → Review scan opens the concept's "Review metadata scan".
+const scanReview = page => page.getByRole('dialog', { name: 'Review metadata scan', exact: true });
+async function openScanReview(page) {
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    const row = importDialog(page).locator('.operation').filter({ has: page.getByRole('heading', { name: 'Scan for metadata', exact: true }) });
+    await row.getByRole('button', { name: 'Review scan', exact: true }).click();
+    await expect(scanReview(page)).toBeVisible();
+}
+
+test('scan for metadata opens the review dialog from Import', async ({ page, request }) => {
+    await expect(await request.post('/__test__/jobs/restart')).toBeOK();
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    // Rescan stays the quick refresh; the metadata scan is its own row under it.
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await expect(importDialog(page).locator('.operation h3')).toHaveText(['Inspect a local image', 'Scan an output folder', 'Scan for metadata']);
+    await expect(importDialog(page).locator('.operation').nth(2).locator('p')).toHaveText('Discover and enrich existing files using the configured sources.');
+    await page.keyboard.press('Escape');
+    await openScanReview(page);
+    const dialog = scanReview(page);
+    await expect(dialog.locator('dl.meta-grid > div > dt')).toHaveText(['Sources', 'Scope']);
+    await expect(dialog.locator('dl.meta-grid > div > dd')).toHaveText(['2 output folders', 'All files']);
+    await expect(dialog.locator('#modal-body > p.small')).toHaveText('Enrich positive / negative associations, reuse canonical text and report unchanged files. Do not inflate run counts or recreate existing thumbnails.');
+    await expect(dialog.locator('.notice h3')).toHaveText('Back up the database first (recommended)');
+    await expect(dialog.locator('.dialog-actions button')).toHaveText(['Cancel', 'Start scan']);
+    await expect(dialog.getByRole('button', { name: 'Start scan', exact: true })).toHaveClass(/ca-primary/);
+
+    // Back up now downloads the existing backup, toasts, and keeps the dialog open for the scan.
+    const download = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: 'Back up now', exact: true }).click();
+    expect((await download).suggestedFilename()).toMatch(/^prompts_backup_\d{8}_\d{6}\.db$/);
+    await expect(toast(page)).toHaveText('Database backup downloaded.');
+    await expect(dialog).toBeVisible();
+    // A failed backup says so and downloads nothing.
+    await page.route('**/prompt_manager/backup', route => route.fulfill({ status: 500, json: { success: false, error: 'disk full' } }));
+    await dialog.getByRole('button', { name: 'Back up now', exact: true }).click();
+    await expect(toast(page)).toHaveText('The database could not be backed up. Try again.');
+
+    // Cancel closes it and starts nothing.
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(scanReview(page)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeFocused();
+    const jobs = await (await request.get('/prompt_manager/jobs')).json();
+    expect(jobs.jobs).toEqual([]);
+});

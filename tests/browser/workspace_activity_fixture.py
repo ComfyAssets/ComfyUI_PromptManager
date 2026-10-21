@@ -5,8 +5,11 @@ reading files, so a test sets its progress and counters exactly:
 
 - ``POST /__test__/jobs/start`` starts one (``kind``, ``title``, ``total``,
   ``output_folders``) and returns its summary, or 409 while one runs;
-- ``POST /__test__/jobs/{id}/step`` sets ``processed`` (and ``total``) and
-  merges ``counters``, then publishes the progress to every subscriber;
+- ``POST /__test__/jobs/{id}/step`` records ``records`` (``{group, path,
+  root, detail}`` file outcomes, counted, listed and logged as the scan
+  records them) and ``bulk`` (``{group, count, root}``: ``count`` numbered
+  rows), sets ``processed`` (and ``total``) and ``counters``, then publishes
+  the progress to every subscriber;
 - ``POST /__test__/jobs/{id}/finish`` ends it as ``finished``, ``cancelled``
   or ``failed``; a cancel through the real route ends it ``cancelled``;
 - ``POST /__test__/jobs/restart`` acts out a ComfyUI restart: the open job
@@ -21,6 +24,46 @@ from aiohttp import web
 EVENTS_PATH = re.compile(r"^/prompt_manager/jobs/[0-9a-f]{32}/events$")
 FINAL_STATES = {"finished", "cancelled", "failed"}
 POLL_SECONDS = 0.02
+
+
+PREFIXES = {"added": "+", "known": "=", "review": "?", "errors": "!"}
+PREFIXES["no_metadata"] = "-"
+
+
+def outcome_records(data):
+    """The step's file outcomes: its ``records``, then its ``bulk`` rows."""
+    records = data.get("records", [])
+    bulk = data.get("bulk")
+    if not isinstance(records, list):
+        raise web.HTTPBadRequest()
+    rows = []
+    for record in records:
+        if not isinstance(record, dict) or record.get("group") not in PREFIXES:
+            raise web.HTTPBadRequest()
+        rows.append(
+            {
+                "group": record["group"],
+                "path": str(record.get("path", "")),
+                "root": str(record.get("root", "output")),
+                "detail": str(record.get("detail", "")),
+            }
+        )
+    if bulk is not None:
+        if not isinstance(bulk, dict) or bulk.get("group") not in PREFIXES:
+            raise web.HTTPBadRequest()
+        total = bulk.get("count")
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise web.HTTPBadRequest()
+        rows.extend(
+            {
+                "group": bulk["group"],
+                "path": f"bulk/file_{index:05d}.png",
+                "root": str(bulk.get("root", "output")),
+                "detail": f"Bulk row {index}",
+            }
+            for index in range(total)
+        )
+    return rows
 
 
 def register_activity_commands(app, routes, api):
@@ -102,6 +145,11 @@ def register_activity_commands(app, routes, api):
         counters = data.get("counters", {})
         if not isinstance(counters, dict) or set(counters) - set(job.counters):
             raise web.HTTPBadRequest()
+        for record in outcome_records(data):
+            group = record["group"]
+            path = record["path"]
+            detail = record["detail"]
+            job.record(group, record, f"{PREFIXES[group]} {path} · {detail}")
         for key, value in counters.items():
             job.counters[key] = count(value)
         progress = processed * 100 // total if total else 0

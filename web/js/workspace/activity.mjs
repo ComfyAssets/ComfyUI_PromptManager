@@ -7,6 +7,7 @@
  *   chip (prototype copy).
  * - D53: while a job runs, the progress pill (`a.activity-pill`, the approved mockup's) sits before the button on every
  *   page: "Scanning · 42% · 8,240 / 19,622" and a mini bar, linking `#/activity/<id>`.
+ * - D56: each item's title links its job's own view (activity-job-view.mjs).
  * - D54: each `.activity-item` is a real job. Its chip names the state (green "Completed", or blue "Running",
  *   "Cancelled", "Failed", "Ended"), its line says when and what, and a running job shows its `<progress>` and
  *   "Cancel job" (no "Simulate completion").
@@ -107,6 +108,10 @@ function itemFor(job, scope) {
     item.dataset.jobId = job.id;
     const heading = element('div', undefined, 'panel-heading');
     const title = element('h3');
+    // D56: the title opens the job's own view.
+    const link = element('a');
+    link.href = `#/activity/${job.id}`;
+    title.append(link);
     const chip = element('span');
     heading.append(title, chip);
     const detail = element('p');
@@ -129,7 +134,7 @@ function itemFor(job, scope) {
     });
     item.update = next => {
         const [tone, state] = CHIPS[next.state];
-        title.textContent = `${next.state === 'finished' ? '✓' : '○'} ${next.title}`;
+        link.textContent = `${next.state === 'finished' ? '✓' : '○'} ${next.title}`;
         chip.className = `chip ${tone}`;
         chip.textContent = state;
         detail.textContent = jobDetail(next);
@@ -148,15 +153,14 @@ function itemFor(job, scope) {
     return item;
 }
 
-/** The Activity page: the concept's "Recent work" list of this session's jobs. `jobId` marks one job's item. */
-export function mountActivityPage(main, { store, scope, jobId = null }) {
+/** The Activity page: the concept's "Recent work" list of this session's jobs (one job's view is D56). */
+export function mountActivityPage(main, { store, scope }) {
     pageHeading(main).description.textContent = ACTIVITY_DESCRIPTION;
     const section = element('section', undefined, 'surface');
     const status = element('p', undefined, 'empty-state');
     section.append(element('h2', 'Recent work'));
     main.append(section);
     const items = new Map();
-    let revealed = false;
     const render = () => {
         const jobs = store.jobs();
         for (const [id, item] of items) if (!jobs.some(job => job.id === id)) { item.remove(); items.delete(id); }
@@ -168,7 +172,6 @@ export function mountActivityPage(main, { store, scope, jobId = null }) {
                 items.set(job.id, item);
             }
             item.update(job);
-            if (job.id === jobId) item.setAttribute('aria-current', 'true');
             // Only a node out of place moves, so a focused Cancel job keeps its focus across updates.
             const at = section.children[index + 1];
             if (at !== item) section.insertBefore(item, at ?? null);
@@ -179,11 +182,6 @@ export function mountActivityPage(main, { store, scope, jobId = null }) {
         else status.removeAttribute('role');
         if (jobs.length || store.status === 'idle') status.remove();
         else if (!status.isConnected) section.append(status);
-        const marked = jobId && items.get(jobId);
-        if (marked && !revealed) {
-            revealed = true;
-            marked.scrollIntoView({ block: 'nearest' });
-        }
     };
     scope.cleanup(store.subscribe(render));
     render();
