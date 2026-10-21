@@ -185,7 +185,9 @@ function measureJobView() {
             search: css(results.querySelector('.search-field'), 'maxWidth'),
             term: css(term, 'marginTop', 'borderTopWidth', 'borderTopLeftRadius', 'overflow'),
             summary: css(term.querySelector('summary'), 'paddingTop', 'paddingLeft', 'fontSize', 'cursor'),
-            pre: css(pre, 'marginTop', 'paddingTop', 'paddingLeft', 'maxHeight', 'fontSize', 'lineHeight', 'overflow'),
+            // WebKit reports the 1.7 line height of 11px as 18.700001px; compare it to the hundredth of a pixel.
+            pre: { ...css(pre, 'marginTop', 'paddingTop', 'paddingLeft', 'maxHeight', 'fontSize', 'overflow'),
+                lineHeight: `${Math.round(parseFloat(getComputedStyle(pre).lineHeight) * 100) / 100}px` },
         },
         // Mockup colours: the pressed outcome takes the accent border on the soft blue, the tiles their tone.
         pressed: (() => {
