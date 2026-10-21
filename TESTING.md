@@ -225,6 +225,19 @@ managed host with both renderer startup configurations.
 
 The shared inline and collection inspector reads the current rooted file's supported
 embedded records, exact generation facts and recorded or inferred prompt evidence.
+It renders in two concept surfaces (#249 D20–D22, D38). The Images side panel shows
+only the concept content: cover, title, filename, the evidence badge with a category
+chip, the + and − prompt blocks with copy and send, tag chips (the linked positive's
+own tags filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
+"Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
+scrolls inside the window. The viewer's details (`#viewer-details`) repeat that
+content without the cover, then "File & provenance" (the honest file facts, the
+`Prompt evidence` line, Download original and, for a listed file, D38's local-only
+"Show in folder" after the Path) and "Workflow & raw metadata" (raw records and their
+two downloads), then the pair send and Prompt history buttons. D22 words an empty
+positive explicitly and makes confirmed prompt text focusable.
+`tests/browser/inspector-concept.spec.mjs` compares both surfaces with the concept
+(see the D20–D39 notes under Images).
 `tests/browser/full-inspector.spec.mjs` covers original/metadata/workflow downloads,
 response limits, source changes, nested sending, matched dark/light and mobile
 geometry, and the loaded-collection viewer. `viewer matches the concept shell and
