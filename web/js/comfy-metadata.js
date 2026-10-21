@@ -212,12 +212,17 @@
         return undefined;
     }
 
+    /** The sampler the legacy parse reads: a custom sampler's guider, else the first sampler. */
+    function selectSampler(ctx, nodes) {
+        const custom = nodes.find(isCustomSampler);
+        const [, guider] = custom ? enter(ctx, custom.inputs.guider, new Set()) : [];
+        return { custom, sampler: isSampler(guider) ? guider : nodes.find(isSampler) };
+    }
+
     function fromPromptGraph(graph, workflow) {
         const ctx = createContext(graph, workflow);
         const nodes = Object.values(graph);
-        const custom = nodes.find(isCustomSampler);
-        const [, guider] = custom ? enter(ctx, custom.inputs.guider, new Set()) : [];
-        const sampler = isSampler(guider) ? guider : nodes.find(isSampler);
+        const { custom, sampler } = selectSampler(ctx, nodes);
         if (!sampler) {
             const loose = nodes.find((n) => n && n.inputs && /ksampler/i.test(n.class_type || ""));
             const inputs = (loose && loose.inputs) || {};
@@ -400,6 +405,26 @@
             merged[key] = hasValue(value) ? value : PLACEHOLDERS[key];
         }
         return merged;
+    }
+
+    /**
+     * Where `extractGenerationParams` reads its negative from (#249): the graph it used
+     * (the API graph, else the workflow converted the same way) and the read sampler's
+     * `negative` link, or null when it found no negative. It changes no reading.
+     */
+    function legacyNegativeSource(comfyData) {
+        const data = comfyData || {};
+        const sources = [];
+        if (data.prompt && typeof data.prompt === "object") sources.push([data.prompt, data.workflow]);
+        if (data.workflow) sources.push([workflowToGraph(data.workflow), null]);
+        for (const [graph, workflow] of sources) {
+            const ctx = createContext(graph, workflow);
+            const { sampler } = selectSampler(ctx, Object.values(graph));
+            if (sampler && hasValue(traceConditioning(ctx, sampler.inputs.negative, "negative"))) {
+                return { graph, link: sampler.inputs.negative };
+            }
+        }
+        return null;
     }
 
     const FACT_FIELDS = ["seed", "steps", "cfg", "sampler", "scheduler", "model"];
@@ -631,6 +656,8 @@
      * until PR3), and unresolved or absent over several listed samplers, merge the same
      * way across every listed sampler and its stages. Otherwise (no resolution, or one
      * listed sampler) exactly one listed sampler supplies them; several leave every field ambiguous.
+     * A resolved pair without a named sampler (identical branches, #249) merges like
+     * ambiguous when several samplers are listed.
      */
     function graphFacts(graph, source, resolution) {
         if (!object(graph)) return factSet("unresolved", source);
@@ -650,8 +677,9 @@
         }
         const candidates = entries.filter(([id]) => samplerEntry(graph, id));
         // Review I-1: an unresolved or absent prompt does not make the run's settings
-        // unknown, so several listed samplers merge the same way.
-        if (state === "ambiguous" || ((state === "unresolved" || state === "absent") && candidates.length > 1)) {
+        // unknown, so several listed samplers merge the same way. So does a pair the
+        // server resolved across several branches without naming one (#249).
+        if (state === "ambiguous" || (["unresolved", "absent", "resolved"].includes(state) && candidates.length > 1)) {
             // The server's branches: every listed sampler, a detailer judged with its stages.
             const stages = new Set();
             if (!candidates.length || !candidates.every(([id]) => collectStages(graph, id, new Set(), stages, { visits: 0 }))) return factSet("unresolved", source);
@@ -758,7 +786,7 @@
         return factSet(metadataStatus === "available" || metadataStatus === "absent" ? "not-recorded" : "unresolved");
     }
 
-    const api = { extractGenerationParams, extractGenerationFacts, PLACEHOLDERS };
+    const api = { extractGenerationParams, extractGenerationFacts, legacyNegativeSource, PLACEHOLDERS };
     // For the semantics sync test only; not part of the legacy page contract.
     Object.defineProperty(api, "_factsTables", {
         value: Object.freeze({

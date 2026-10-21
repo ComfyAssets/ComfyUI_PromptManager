@@ -1921,7 +1921,7 @@ test('Set category without a linked image posts nothing and opens no dialog', as
     await page.route(categoryRoute, route => { posted += 1; return route.continue(); });
     await checkbox(cards(page).last(), 'same.png').check();
     await categoryButton(page).click();
-    await expect(toast(page)).toHaveText('None of the selected images has a linked prompt.');
+    await expect(toast(page)).toHaveText("None of the selected images is linked to a saved prompt, so there is no prompt category to set.");
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     expect(posted).toBe(0);
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');

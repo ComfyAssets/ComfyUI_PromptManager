@@ -17,8 +17,9 @@ ComfyUI, database or configuration dependencies; its only file read is the
 inspection profile's node semantics table (``utils.inspection_semantics``).
 
 Two ``ResolverProfile`` values exist. ``DEFAULT_PROFILE`` (ingestion: scan, live
-monitor, admin import) keeps the historical behavior exactly, including the
-500-node gate, and only adds ``reason_code: None``. ``INSPECTION_PROFILE`` bounds
+monitor, admin import) keeps the historical behavior, including the 500-node
+gate, and only adds ``reason_code: None``; both profiles resolve several sampler
+branches that share one exact pair to that pair (#249). ``INSPECTION_PROFILE`` bounds
 work instead of graph size: a per-candidate visit allowance, a total visit budget
 shared by every candidate and attribution walk, a node ceiling backstop, and
 bounds on built provenance and text. It also names why a result is not resolved
@@ -187,6 +188,8 @@ _MAX_BRANCH_CANDIDATES = 32
 _RUNTIME_REASON = "Text is decided at run time"
 # Uncoded outcomes the inspector explains by their exact reason.
 EMPTY_POSITIVE_REASON = "Positive prompt is empty"
+# Several sampler branches, every one resolved to the same pair (#249).
+IDENTICAL_BRANCHES_REASON = "Every sampler branch uses the same prompt pair"
 MULTISTAGE_UNATTRIBUTED_REASON = "Multistage sampler ancestry is ambiguous"
 _INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
 # Before 3.2.3 a save patch overwrote every PromptManager node's saved ``text``
@@ -1656,8 +1659,10 @@ def resolve_prompt_pair(
 
     Accepts ``{"prompt": api_graph, "parameters": optional_a1111_text}`` or a
     direct API graph. An optional saver/sampler node ID anchors branch selection.
-    Unanchored multiple samplers are ambiguous, even when their texts are equal
-    (the inspection profile first drops stages that only reach previews).
+    Unanchored multiple samplers are ambiguous unless every branch resolves to
+    the same texts and recipes; then that shared pair is resolved with no
+    ``sampler_id`` (the inspection profile first drops stages that only reach
+    previews).
     ``profile`` selects the bounds; explicit ``max_*`` keywords override it.
     """
     profile = _profile_with(profile, max_visits, max_depth, max_text_length)
@@ -1781,12 +1786,48 @@ def _resolve(
     if not sampler_ids:
         return _no_sampler(normalized, profile)
     if len(sampler_ids) > 1:
+        candidates = [resolver.pair(node_id) for node_id in sampler_ids]
+        shared = _shared_pair(candidates)
+        if shared is not None:
+            return shared
         return _result(
             "ambiguous",
             reason="Multiple sampler branches",
-            candidates=[resolver.pair(node_id) for node_id in sampler_ids],
+            candidates=candidates,
         )
     return resolver.pair(sampler_ids[0])
+
+
+def _recipe_key(result: Dict[str, Any]) -> tuple:
+    """What a reader sees of a result, plus each side's stored recipe."""
+    return _outcome_key(result) + tuple(
+        result[role]["storage_text"] if isinstance(result[role], dict) else None
+        for role in ("positive", "negative")
+    )
+
+
+def _shared_pair(candidates: list) -> Optional[Dict[str, Any]]:
+    """The one pair every sampler branch resolved to, or None (#249).
+
+    A compare grid runs several samplers on one positive and one negative: the
+    prompt is certain even though no single branch made the image. Every branch
+    must be resolved with identical texts and recipes; any other mix stays
+    ambiguous. No sampler is named, since none alone made the output; the sides
+    (and their provenance) are the first branch's, and every branch stays listed
+    in ``candidates`` as the evidence.
+    """
+    first = candidates[0]
+    if first["state"] != "resolved":
+        return None
+    if len({_recipe_key(item) for item in candidates}) != 1:
+        return None
+    return _result(
+        "resolved",
+        positive=first["positive"],
+        negative=first["negative"],
+        reason=IDENTICAL_BRANCHES_REASON,
+        candidates=candidates,
+    )
 
 
 # Bounds for walking a UI workflow's subgraph instances (R1 only).

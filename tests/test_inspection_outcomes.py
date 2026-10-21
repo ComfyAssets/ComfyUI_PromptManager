@@ -254,7 +254,9 @@ class TestOutcomeMessages(unittest.TestCase):
     def test_candidates_and_absence_keep_their_status_lines(self):
         graph = _runtime()
         graph["7"] = _encode("positive")
-        graph["5"] = _ksampler()
+        # A second sampler with its own prompt (#249: identical ones resolve).
+        graph["8"] = _encode("other positive")
+        graph["5"] = _ksampler("8")
         evidence = inspect_prompt_evidence({"prompt": graph})
         self.assertEqual(evidence["resolution"]["state"], "ambiguous")
         self.assertEqual(_messages(evidence), {"positive": None, "negative": None})

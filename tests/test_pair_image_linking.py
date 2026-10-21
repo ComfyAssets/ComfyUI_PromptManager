@@ -51,11 +51,34 @@ class TestPairImageLinking(unittest.TestCase):
         self.assertEqual(pairs[0]["image_count"], 1)
         self.assertEqual(pairs[0]["run_count"], 0)
 
+    def test_parallel_identical_branches_create_their_shared_pair(self):
+        # #249: two samplers on one positive and one negative are one certain pair.
+        meta = metadata()
+        meta["prompt"]["4"] = {
+            "class_type": "KSampler",
+            "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+        }
+        self.handler.link_image_to_prompt(self.path, {"id": self.pid}, meta)
+        pairs = self.db.list_prompt_pairs()["pairs"]
+        self.assertEqual(
+            [(p["positive_text"], p["negative_text"]) for p in pairs], [("cat", "blur")]
+        )
+        self.assertEqual(pairs[0]["image_count"], 1)
+        self.assertEqual(pairs[0]["run_count"], 0)
+
     def test_stale_context_or_ambiguous_metadata_does_not_create_pair(self):
         meta = metadata(positive="dog")
         self.handler.link_image_to_prompt(self.path, {"id": self.pid}, meta)
         self.assertEqual(self.db.list_prompt_pairs()["total"], 0)
         meta = metadata()
-        meta["prompt"]["4"] = meta["prompt"]["3"]
+        # Two samplers with different positives (#249: identical ones resolve).
+        meta["prompt"]["5"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "dog"},
+        }
+        meta["prompt"]["4"] = {
+            "class_type": "KSampler",
+            "inputs": {"positive": ["5", 0], "negative": ["2", 0]},
+        }
         self.handler.link_image_to_prompt(self.path + "2", {"id": self.pid}, meta)
         self.assertEqual(self.db.list_prompt_pairs()["total"], 0)

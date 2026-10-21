@@ -174,6 +174,55 @@ function comfyMetadata() {
     return globalThis.ComfyMetadata || globalThis.window?.ComfyMetadata;
 }
 
+// #249: the legacy parse follows ConditioningZeroOut back to its input, so it reads the
+// positive text as the negative. Only the negative it actually read is checked: a direct
+// zero-out shows the server's zeroed state; a zero-out elsewhere on
+// that path, or a subgraph instance whose definition holds one, leaves the negative
+// unfilled. Any other negative keeps the legacy fill, so this page never shows less.
+const ZERO_OUT = 'ConditioningZeroOut';
+const ZEROED_NEGATIVE = Object.freeze({ status: 'resolved', text: '', source: 'zeroed-conditioning' });
+const MAX_NEGATIVE_VISITS = 2000;
+const MODE_MUTED = 2, MODE_BYPASSED = 4;
+const isLink = value => Array.isArray(value) && value.length === 2 && ['string', 'number'].includes(typeof value[0]);
+
+/** Subgraph definition IDs that run a zero-out, directly or through a nested instance. */
+function zeroOutSubgraphs(workflow) {
+    const definitions = Array.isArray(workflow?.definitions?.subgraphs) ? workflow.definitions.subgraphs.filter(object) : [];
+    const active = item => Array.isArray(item.nodes) ? item.nodes.filter(node => object(node) && ![MODE_MUTED, MODE_BYPASSED].includes(node.mode)) : [];
+    const found = new Set();
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const item of definitions) {
+            if (found.has(item.id) || !active(item).some(node => node.type === ZERO_OUT || found.has(node.type))) continue;
+            found.add(item.id); changed = true;
+        }
+    }
+    return found;
+}
+
+/** 'zeroed', 'undecided' (do not fill), or null (the legacy fill applies). */
+function zeroOutNegative(source, workflow) {
+    if (!source || !object(source.graph) || !isLink(source.link)) return null;
+    const { graph } = source, subgraphs = zeroOutSubgraphs(workflow);
+    const zeroing = node => node.class_type === ZERO_OUT || subgraphs.has(node.class_type);
+    if (!Object.values(graph).some(node => object(node) && zeroing(node))) return null;
+    const node = graph[String(source.link[0])];
+    if (!object(node)) return 'undecided';
+    if (node.class_type === ZERO_OUT) return 'zeroed';
+    // One bounded walk upstream; an index pointer keeps it linear in the nodes visited.
+    const queue = [node], seen = new Set();
+    for (let index = 0; index < queue.length; index++) {
+        const current = queue[index];
+        if (zeroing(current) || seen.size >= MAX_NEGATIVE_VISITS) return 'undecided';
+        for (const value of object(current.inputs) ? Object.values(current.inputs) : []) {
+            const id = isLink(value) ? String(value[0]) : null;
+            if (id === null || seen.has(id) || !object(graph[id])) continue;
+            seen.add(id); queue.push(graph[id]);
+        }
+    }
+    return null;
+}
+
 function withWorkflowParams(record, parser = comfyMetadata()) {
     const graph = record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null;
     const workflow = record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null;
@@ -184,14 +233,24 @@ function withWorkflowParams(record, parser = comfyMetadata()) {
     const found = key => typeof params[key] === 'string' || typeof params[key] === 'number' ?
         String(params[key]) !== '' && params[key] !== parser.PLACEHOLDERS?.[key] : false;
     const prompts = { ...record.prompts };
+    const read = prompts.negative?.status === 'resolved' || typeof parser.legacyNegativeSource !== 'function' ? null :
+        parser.legacyNegativeSource({ prompt: graph, workflow });
+    const zeroed = zeroOutNegative(read, workflow);
     for (const [role, key] of [['positive', 'positivePrompt'], ['negative', 'negativePrompt']]) {
         const current = prompts[role];
-        if (!found(key) || current?.status === 'resolved') continue;
+        if (current?.status === 'resolved') continue;
+        if (role === 'negative' && zeroed !== null) {
+            if (zeroed === 'zeroed') prompts.negative = { ...ZEROED_NEGATIVE };
+            continue;
+        }
+        if (!found(key)) continue;
         prompts[role] = { status: 'resolved', text: params[key], source: 'graph-inferred' };
     }
     record.prompts = prompts;
     for (const [field, key] of LEGACY_FACTS) {
         // Only open answers are filled: a known value or a definite "not recorded" stays.
+        // An ambiguous field (e.g. a compare grid's per-branch model) is filled too, on
+        // purpose: the legacy pages show this value, and this page never shows less.
         if (!found(key) || !['unresolved', 'ambiguous'].includes(record.generation[field]?.status)) continue;
         record.generation[field] = { status: 'known', value: String(params[key]), source: graph ? 'api-graph' : 'workflow', evidence: 'configuration', reason: null, sampler_id: null };
     }
