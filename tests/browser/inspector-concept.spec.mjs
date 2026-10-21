@@ -5,16 +5,15 @@ import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInve
 
 // Task D4 of #249: the Images side panel (app.js imageDetails a400–414) and the viewer's full details (imageDetails(i,
 // true)) against the immutable concept, on the concept-shaped real fixture, at 1600x1100 and 390x844 in both themes.
-// Both documents select the first listed image, alpine_00001.png (D19: the first load selects it), which the fixture
-// links to its positive prompt alone (`positive_links`, D39), so its panel shows the positive's own category and tags
-// as the concept's does. The panel's box in the gallery layout is the Images spec's. Paired captures are artifacts only;
-// there are no PNG baselines.
+// Both documents select the first listed image, alpine_00001.png (D19: the first load selects it). The fixture links it
+// to a recipe without a category or tags, so (D39, ruled 2026-10-21) its panel falls back to the positive's own category
+// and tags, as the concept's does. The panel's box in the gallery layout is the Images spec's. Paired captures are
+// artifacts only; there are no PNG baselines.
 test.use({locale:'en-US',timezoneId:'UTC'});
 
 const CARDS='.gallery-body > .image-grid > .media-card';
 const TITLE='Alpine observatory';
 const FIXTURE_IMAGES=24;
-const SEED={positive_links:1};
 // The concept's sticky panel never scrolls; production's scrolls inside the window above 700px (D20/D21 side panel).
 const PANEL_INSET=40;
 // D34: coarse pointers keep 40px targets for the viewer details' disclosure summaries and "Download original" (the
@@ -39,15 +38,15 @@ function withFocusablePrompts(inventory) {
     return {...inventory,controls,sections:inventory.sections.map(section=>({...section,text:{...section.text,tabIndex:0}}))};
 }
 
-/** D21: the category chip names its scope in a visually hidden prefix; here the linked positive's. */
+/** D21: the category chip names its scope in a visually hidden prefix; here the linked positive's (D39 fallback). */
 function withCategoryScope(inventory) {
     const [badge,category,...rest]=inventory.badges.chips;
     return {...inventory,badges:{...inventory.badges,chips:[badge,{...category,hidden:'Positive prompt category: '},...rest]}};
 }
 
 /**
- * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38 and D39 through the fixture's
- * `positive_links`); everything else must equal production. `reference.viewerPlain` is the concept's own full details
+ * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34 and D38); everything else must equal
+ * production. `reference.viewerPlain` is the concept's own full details
  * with its tag chips made plain (D20) and, under a coarse pointer, D34's targets, both at runtime: the browser lays out
  * what follows them, as the Images spec's removed toolbar items do.
  */
@@ -232,7 +231,7 @@ const historyOf=async page=>{
     return page.evaluate(()=>location.hash);
 };
 
-test.beforeEach(async({request},testInfo)=>{testInfo.manifest=await seedConcept(request,SEED);});
+test.beforeEach(async({request},testInfo)=>{testInfo.manifest=await seedConcept(request);});
 
 for(const [width,height] of SIZES)for(const theme of THEMES)test(`inspector panel geometry, tokens and controls match the concept ${width}x${height} ${theme}`,async({page,context,browserName},testInfo)=>{
     test.setTimeout(180_000);
@@ -303,15 +302,20 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`inspector pane
     expect.soft(production.history,'history').toBe(`#/library/${manifest.prompts[0].positive_id}`);
 });
 
-// D39: a recipe-linked image shows its recipe's own category and tags (#224), which the concept fixture's recipes do
-// not have, so its panel has neither (the concept shows the prompt's for every image).
-test('a recipe-linked image shows only its recipe metadata (D39)',async({page})=>{
+// D39 (ruled 2026-10-21): a recipe-linked image shows its recipe's own category and tags when set, otherwise its
+// positive's, field by field. The concept fixture's recipes have neither, so this recipe-linked image shows its
+// positive's, as the concept does, and its tag chips are Tags filter buttons again (D21: the positive's own tags).
+test('a recipe-linked image without recipe metadata shows its positive prompt metadata (D39)',async({page})=>{
     await page.setViewportSize({width:1600,height:1100});
     await openProductionPanel(page,'dark');
     await page.locator(CARDS).nth(1).locator('[aria-label^="Inspect"]').click();
     await expect(panelOf(page).locator('.panel-heading h2')).toHaveText('Quiet geometry');
-    await expect(panelOf(page).locator('.detail-inner > .tags')).toHaveCount(1);
-    await expect(panelOf(page).locator('.detail-inner > .tags .chip')).toHaveText(['Execution recorded']);
+    const rows=panelOf(page).locator('.detail-inner > .tags');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first().locator('.chip')).toHaveText(['Execution recorded','Positive prompt category: Architecture']);
+    await expect(rows.first().locator('.chip .ca-visually-hidden')).toHaveText('Positive prompt category: ');
+    await expect(rows.nth(1).locator('button.chip')).toHaveText(['editorial','minimal','warm_light']);
+    await expect(rows.nth(1).locator('span.chip')).toHaveCount(0);
     await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history']);
 });
 

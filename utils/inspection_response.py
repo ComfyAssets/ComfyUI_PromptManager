@@ -289,6 +289,37 @@ def _file_projection(file: dict, inspection: "InspectionRead | None") -> dict:
     return result
 
 
+def _blank(value: str | bytes | None) -> bool:
+    return value is None or not value.strip()
+
+
+def library_metadata(
+    positive_category: str | bytes | None,
+    positive_tags: list,
+    recipe: tuple | None = None,
+) -> dict:
+    """The panel's saved category and tags, each with the scope it came from.
+
+    D39 (maintainer ruling, 2026-10-21): a recipe-linked image shows the recipe's
+    own category and tags when set; otherwise each field separately falls back to
+    the linked positive prompt's, the values Set category writes and the Images
+    filters match. Tag sets are never merged. ``recipe`` is (category, tags).
+    """
+    category, category_scope = positive_category, "positive"
+    tags, tags_scope = positive_tags, "positive"
+    if recipe is not None:
+        if not _blank(recipe[0]):
+            category, category_scope = recipe[0], "pair"
+        if recipe[1]:
+            tags, tags_scope = recipe[1], "pair"
+    return {
+        "category": category,
+        "category_scope": category_scope,
+        "tags": tags,
+        "tags_scope": tags_scope,
+    }
+
+
 def _library_projection(library: dict) -> dict:
     status = library.get("status")
     result = {
@@ -307,9 +338,10 @@ def _library_projection(library: dict) -> dict:
         value = library.get(key)
         if value is None or isinstance(value, str):
             result[key] = value
-    scope = library.get("metadata_scope")
-    if scope in ("pair", "positive", None):
-        result["metadata_scope"] = scope
+    for key in ("category_scope", "tags_scope"):
+        scope = library.get(key)
+        if scope in ("pair", "positive", None):
+            result[key] = scope
     tags = library.get("tags")
     result["tags"] = (
         [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
@@ -323,7 +355,8 @@ def _library_projection(library: dict) -> dict:
             "title": None,
             "category": None,
             "tags": [],
-            "metadata_scope": None,
+            "category_scope": None,
+            "tags_scope": None,
         }
     return result
 

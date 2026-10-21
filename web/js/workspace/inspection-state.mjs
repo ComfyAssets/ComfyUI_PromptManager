@@ -153,8 +153,10 @@ function resolutionFor(value) {
 
 function libraryFor(value) {
     if (!object(value) || !['linked', 'none', 'ambiguous', 'unavailable', 'limited'].includes(value.status) || value.scope !== 'saved-library' ||
-        !Array.isArray(value.tags) || value.tags.some(tag => typeof tag !== 'string') || ![null, 'pair', 'positive'].includes(value.metadata_scope)) throw new TypeError('Invalid inspection library');
-    const library = { status: value.status, scope: value.scope, tags: [...value.tags], metadata_scope: value.metadata_scope };
+        !Array.isArray(value.tags) || value.tags.some(tag => typeof tag !== 'string') ||
+        ![value.category_scope, value.tags_scope].every(scope => [null, 'pair', 'positive'].includes(scope))) throw new TypeError('Invalid inspection library');
+    // D39: each field names its own source, so a recipe's category can sit beside its positive's tags.
+    const library = { status: value.status, scope: value.scope, tags: [...value.tags], category_scope: value.category_scope, tags_scope: value.tags_scope };
     for (const key of ['positive_id', 'pair_id', 'title', 'category']) {
         const item = value[key] ?? null;
         if (item !== null && (key.endsWith('_id') ? !Number.isSafeInteger(item) || item <= 0 : typeof item !== 'string')) throw new TypeError('Invalid inspection library field');

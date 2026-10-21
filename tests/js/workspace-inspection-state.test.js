@@ -27,7 +27,7 @@ function envelope(entry = image()) {
             workflow_graph: { status: 'absent', value: null }, parameters: null,
         },
         resolution: { state: 'ambiguous', sampler_id: null, reason: 'unknown negative' },
-        library: { status: 'linked', scope: 'saved-library', positive_id: 7, pair_id: 8, title: 'Recipe', category: 'Subject', tags: ['cat'], metadata_scope: 'pair' },
+        library: { status: 'linked', scope: 'saved-library', positive_id: 7, pair_id: 8, title: 'Recipe', category: 'Subject', tags: ['cat'], category_scope: 'pair', tags_scope: 'pair' },
     };
 }
 function pendingApi() {

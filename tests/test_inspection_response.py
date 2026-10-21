@@ -77,7 +77,8 @@ def encode(read, *, prompts=None, file=None, library=None):
             "title": None,
             "category": None,
             "tags": [],
-            "metadata_scope": None,
+            "category_scope": None,
+            "tags_scope": None,
         },
     )
 

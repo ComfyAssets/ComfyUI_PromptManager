@@ -36,7 +36,10 @@ try:
     from ...database.models import normalize_image_path
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
-    from ...utils.inspection_response import encode_inspection_response
+    from ...utils.inspection_response import (
+        encode_inspection_response,
+        library_metadata,
+    )
     from ...utils.prompt_inspector import MetadataReadError, read_inspection_file
     from ...utils.file_reveal import (
         OpenerUnavailable,
@@ -52,7 +55,10 @@ except ImportError:
     from database.models import normalize_image_path
     from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
-    from utils.inspection_response import encode_inspection_response
+    from utils.inspection_response import (
+        encode_inspection_response,
+        library_metadata,
+    )
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.file_reveal import (
         OpenerUnavailable,
@@ -2464,7 +2470,8 @@ class ImageRoutesMixin:
             "title": None,
             "category": None,
             "tags": [],
-            "metadata_scope": None,
+            "category_scope": None,
+            "tags_scope": None,
         }
         if not isinstance(saved, dict) or not saved:
             return result
@@ -2472,23 +2479,19 @@ class ImageRoutesMixin:
             result["status"] = "ambiguous"
             return result
         pair = saved.get("pair")
-        if isinstance(pair, dict):
-            result.update(
-                status="linked",
-                positive_id=pair.get("positive_prompt_id"),
-                pair_id=pair.get("id"),
-                category=pair.get("category"),
-                tags=pair.get("tags"),
-                metadata_scope="pair",
-            )
-        else:
-            result.update(
-                status="linked",
-                positive_id=saved.get("prompt_id"),
-                category=saved.get("category"),
-                tags=saved.get("tags"),
-                metadata_scope="positive",
-            )
+        recipe = isinstance(pair, dict)
+        result.update(
+            status="linked",
+            positive_id=(
+                pair.get("positive_prompt_id") if recipe else saved.get("prompt_id")
+            ),
+            pair_id=pair.get("id") if recipe else None,
+            **library_metadata(
+                saved.get("category"),
+                saved.get("tags"),
+                (pair.get("category"), pair.get("tags")) if recipe else None,
+            ),
+        )
         return result
 
     async def get_image_prompt(self, request):

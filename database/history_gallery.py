@@ -4,9 +4,17 @@ import os
 import sqlite3
 
 try:
-    from ..utils.inspection_response import MAX_LIBRARY_BYTES, _library_projection
+    from ..utils.inspection_response import (
+        MAX_LIBRARY_BYTES,
+        _library_projection,
+        library_metadata,
+    )
 except ImportError:
-    from utils.inspection_response import MAX_LIBRARY_BYTES, _library_projection
+    from utils.inspection_response import (
+        MAX_LIBRARY_BYTES,
+        _library_projection,
+        library_metadata,
+    )
 
 
 def _display_bytes(value: bytes | None) -> str | None:
@@ -52,15 +60,21 @@ def _saved_projection(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[dict,
         return saved, _library_projection({"status": "limited"})
     pair = pairs[0] if pairs else None
     title = pair["title"] if pair is not None else None
-    category = pair["category"] if pair is not None else row["category"]
-    tags, limited = _tags(
-        conn,
-        pair["id"] if pair is not None else row["prompt_id"],
-        pair=pair is not None,
+    recipe_tags, limited = (
+        _tags(conn, pair["id"], pair=True) if pair is not None else ([], False)
+    )
+    positive_tags = []
+    if not recipe_tags and not limited:
+        # D39: only read the positive's tags when they are what the panel shows.
+        positive_tags, limited = _tags(conn, row["prompt_id"], pair=False)
+    metadata = library_metadata(
+        row["category"],
+        positive_tags,
+        (pair["category"], recipe_tags) if pair is not None else None,
     )
     limited = limited or any(
         value is not None and len(value) > MAX_LIBRARY_BYTES
-        for value in (title, category)
+        for value in (title, metadata["category"])
     )
     if pair is not None:
         saved["pair"] = {
@@ -73,9 +87,8 @@ def _saved_projection(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[dict,
             "positive_id": row["prompt_id"],
             "pair_id": pair["id"] if pair is not None else None,
             "title": _display_bytes(title),
-            "category": _display_bytes(category),
-            "tags": tags,
-            "metadata_scope": "pair" if pair is not None else "positive",
+            **metadata,
+            "category": _display_bytes(metadata["category"]),
         }
     )
     if limited:
