@@ -243,7 +243,8 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     const provenance=details.locator('details').first();await provenance.locator('summary').click();
     await expect(provenance.locator('p.small').first()).toHaveText('Current file at this source; historical bytes are not verified.');
     await expect(provenance.locator('dl.meta-grid dt')).toHaveText(['Source','Path','Size','Dimensions','Format','Media type','Modified']);
-    await expect(provenance.locator('dl.meta-grid dd').nth(1)).toHaveText('inspector/complete.png');
+    // D38: the Path value stays text, with "Show in folder" right after it.
+    await expect(provenance.locator('dl.meta-grid dd').nth(1)).toHaveText('inspector/complete.png Show in folder');
     await expect(provenance.getByText('Prompt evidence: workflow inferred',{exact:true})).toBeVisible();
     await expect(provenance.getByText('Saved association; not verified against current file',{exact:true})).toBeVisible();
     await expect(provenance.getByRole('link',{name:'Download original',exact:true})).toBeVisible();
@@ -271,6 +272,41 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     await expect(page.locator('#viewer-dialog')).toHaveCount(0);
 });
 
+// D38 Show in folder: a listed file's Path offers it; the stubbed opener records what the route resolved.
+test('Show in folder asks the server to open the listed file and announces each outcome',async({page,request})=>{
+    await fullFixture(page,request);
+    await expect(inspector(page).getByRole('button',{name:/in folder$/})).toHaveCount(0);
+    const details=await viewerDetails(page,'complete.png');
+    const provenance=details.locator('details').first();await provenance.locator('summary').click();
+    const path=provenance.locator('dl.meta-grid > div').nth(1);await expect(path.locator('dt')).toHaveText('Path');
+    const show=path.locator('dd > button');
+    await expect(show).toHaveText('Show in folder');await expect(show).toHaveAccessibleName('Show complete.png in folder');
+    const toast=page.locator('#workspace-toast');
+    const [sent]=await Promise.all([page.waitForRequest(entry=>entry.url().endsWith('/prompt_manager/images/reveal')),show.click()]);
+    expect(sent.method()).toBe('POST');
+    // The route takes only a same-origin JSON request, as a real browser sends it.
+    const sentHeaders=await sent.allHeaders();
+    expect(sentHeaders.origin).toBe(new URL(page.url()).origin);expect(sentHeaders['content-type']).toBe('application/json');
+    const body=sent.postDataJSON();
+    expect(Object.keys(body).sort()).toEqual(['path','root_index','root_scope']);
+    expect(body).toMatchObject({root_index:0,path:'inspector/complete.png'});expect(body.root_scope).toMatch(/^[0-9a-f]{64}$/);
+    await expect(toast).toHaveText('Opened the folder on this computer.');
+    const opened=async()=>(await (await request.get('/__test__/reveal')).json()).opened;
+    expect(await opened()).toEqual(['output/inspector/complete.png']);
+    for (const [outcome,message] of [['unavailable','No file manager is available on this computer.'],['fail','The folder could not be opened. Try again.']]) {
+        await expect(await request.post('/__test__/reveal',{data:{outcome}})).toBeOK();
+        await show.click();await expect(toast).toHaveText(message);
+    }
+    // A reveal already in progress answers 429 busy.
+    await page.route('**/prompt_manager/images/reveal',route=>route.fulfill({status:429,contentType:'application/json',body:JSON.stringify({success:false,code:'busy',error:'The folder is already opening.'})}));
+    await show.click();await expect(toast).toHaveText('The folder is already opening.');
+    await page.unroute('**/prompt_manager/images/reveal');
+    // A proxied request counts as remote, so the real route answers 403 not-local.
+    await expect(await request.post('/__test__/reveal',{data:{outcome:'opened'}})).toBeOK();
+    await page.route('**/prompt_manager/images/reveal',route=>route.continue({headers:{...route.request().headers(),'x-forwarded-for':'203.0.113.7'}}));
+    await show.click();await expect(toast).toHaveText('Show in folder works only in a browser on the computer running ComfyUI.');
+    expect(await opened()).toEqual(['output/inspector/complete.png']);
+});
 test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);
     await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');await expect(panel.locator('.detail-inner > p.small')).toHaveText('complete.png');
@@ -278,12 +314,12 @@ test('full inspector shows six facts and scoped provenance',async({page,request}
     expect(await panel.locator('.detail-inner').evaluate(node=>getComputedStyle(node).padding)).toBe('17px');
     if (!await page.evaluate(()=>matchMedia('(pointer: coarse)').matches)) {
         // The concept's prompt actions (`.prompt-actions button.icon-btn`) measure 31×31 in the mock.
-        const copy=await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).boundingBox();expect(copy.width).toBe(31);expect(copy.height).toBe(31);
+        const copy=await panel.getByRole('button',{name:/^Copy positive prompt: /}).boundingBox();expect(copy.width).toBe(31);expect(copy.height).toBe(31);
     }
     await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
     await expect(panel.locator('.meta-grid dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');await expect(panel.getByRole('heading',{name:'empty.png',exact:true})).toBeVisible();
-    await expect(panel.getByRole('button',{name:'Send negative prompt to ComfyUI',exact:true})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
+    await expect(panel.getByRole('button',{name:/^Send negative prompt to ComfyUI: /})).toHaveCount(0);await expect(panel).toContainText('Not recorded in this file.');await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
     await selectFile(page,'explicit-empty.png');await expect(panel.locator('.prompt-section.negative p.prompt-text')).toHaveText('No negative prompt (explicitly empty)');await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(1);
     // Provenance lives in the viewer's full details (D20): one "Prompt evidence" line replaces the per-fact source lines.
     const details=await viewerDetails(page,'complete.png');
@@ -356,7 +392,7 @@ test('full inspector keeps long literal content reachable on mobile',async({page
     const literal='<svg onload="window.executed=true"><image href="https://invalid.test/never"/></svg></pre>'+'verylongmodelpath/'.repeat(30);
     let external=0;await page.route('https://invalid.test/**',route=>{external++;return route.abort();});
     await page.route('**/images/inspect/**',async route=>{const response=await route.fetch();const data=await response.json();data.metadata.raw.parameters=literal;data.metadata.record_formats.parameters='original-text';data.metadata.parameters=literal;data.metadata.prompt_graph.value['4'].inputs.ckpt_name=literal;await route.fulfill({response,json:data});});
-    await page.setViewportSize({width:390,height:844});await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('fine geometry and light.');await panel.getByRole('button',{name:'Copy positive prompt',exact:true}).click();const fallback=page.getByRole('dialog',{name:'Copy prompt',exact:true});await expect(fallback.getByRole('textbox')).toHaveValue(/^Inspector portrait 猫 😀\nFull prompt context, fine geometry and light\./);await page.keyboard.press('Escape');await expect(fallback).toBeHidden();
+    await page.setViewportSize({width:390,height:844});await fullFixture(page,request);const panel=inspector(page);await expect(panel.locator('.prompt-section.positive p.prompt-text')).toContainText('fine geometry and light.');await panel.getByRole('button',{name:/^Copy positive prompt: /}).click();const fallback=page.getByRole('dialog',{name:'Copy prompt',exact:true});await expect(fallback.getByRole('textbox')).toHaveValue(/^Inspector portrait 猫 😀\nFull prompt context, fine geometry and light\./);await page.keyboard.press('Escape');await expect(fallback).toBeHidden();
     await expect(panel.locator('.meta-grid dd').last()).toHaveText(literal);
     for(const zoom of [1,2]) {await page.evaluate(zoom=>{document.documentElement.style.zoom=String(zoom);},zoom);await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);const footer=panel.locator('.detail-footer button.send');await footer.focus();await expect(footer).toBeFocused();}
     await page.evaluate(()=>{document.documentElement.style.zoom='1';});
@@ -719,7 +755,7 @@ test('slideshow interaction visibility sender and disposal clear intent',async({
     for(const action of [
         ()=>modal.locator('.prompt-section.positive p.prompt-text').click(),
         ()=>modal.locator('#viewer-details').dispatchEvent('wheel',{deltaY:100}),
-        ()=>modal.getByRole('button',{name:'Copy positive prompt',exact:true}).click(),
+        ()=>modal.getByRole('button',{name:/^Copy positive prompt: /}).click(),
         async()=>{await modal.getByText('Workflow & raw metadata',{exact:true}).click();await downloadText(page,modal.getByRole('button',{name:'Download metadata JSON',exact:true}));},
         async()=>{await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});},
         async()=>{const trigger=modal.getByRole('button',{name:/^Send prompt pair to ComfyUI: /});await trigger.click();await expect(page.getByRole('dialog',{name:'Send to ComfyUI',exact:true})).toBeVisible();await page.keyboard.press('Escape');await expect(trigger).toBeFocused();},

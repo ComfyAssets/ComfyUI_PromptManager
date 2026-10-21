@@ -232,7 +232,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }});
     if (bar) main.append(bar.element);
     main.append(body);
-    const mediaViewer = createMediaViewer({container:main,parentScope:scope,inspectionController:inspection,sender,
+    const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
         onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
@@ -649,14 +649,25 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (scope.signal.aborted) return;
             renderLoadStatus();
             if (found) reset();
-            if (!scope.signal.aborted) showWorkspaceToast(rescanFinished(result));
+            if (!scope.signal.aborted) announceRescan(rescanFinished(result));
         } catch {
             // A failed rescan leaves the collection and any discovery alert as they were.
-            if (!scope.signal.aborted) showWorkspaceToast(RESCAN_FAILED);
+            if (!scope.signal.aborted) announceRescan(RESCAN_FAILED);
         } finally {
             rescanning = false;
             importDialog?.setRescanBusy(false);
         }
+    }
+    /**
+     * D42: the concept's toast stays fixed at the bottom, so a discovery alert the rescan leaves is scrolled clear of
+     * the toast's band (its `scroll-margin-block-end`) only when it is in that band; elsewhere the page stays put.
+     */
+    function announceRescan(message) {
+        showWorkspaceToast(message);
+        if (optionsStatus.hidden) return;
+        const {top, bottom} = optionsStatus.getBoundingClientRect();
+        const band = parseFloat(getComputedStyle(optionsStatus).scrollMarginBlockEnd) || 0;
+        if (bottom > innerHeight - band && top < innerHeight) optionsStatus.scrollIntoView({block:'nearest', inline:'nearest'});
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;

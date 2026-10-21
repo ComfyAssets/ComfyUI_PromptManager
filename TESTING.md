@@ -225,6 +225,19 @@ managed host with both renderer startup configurations.
 
 The shared inline and collection inspector reads the current rooted file's supported
 embedded records, exact generation facts and recorded or inferred prompt evidence.
+It renders in two concept surfaces (#249 D20–D22, D38). The Images side panel shows
+only the concept content: cover, title, filename, the evidence badge with a category
+chip, the + and − prompt blocks with copy and send, tag chips (the linked positive's
+own tags filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
+"Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
+scrolls inside the window. The viewer's details (`#viewer-details`) repeat that
+content without the cover, then "File & provenance" (the honest file facts, the
+`Prompt evidence` line, Download original and, for a listed file, D38's local-only
+"Show in folder" after the Path) and "Workflow & raw metadata" (raw records and their
+two downloads), then the pair send and Prompt history buttons. D22 words an empty
+positive explicitly and makes confirmed prompt text focusable.
+`tests/browser/inspector-concept.spec.mjs` compares both surfaces with the concept
+(see the D20–D39 notes under Images).
 `tests/browser/full-inspector.spec.mjs` covers original/metadata/workflow downloads,
 response limits, source changes, nested sending, matched dark/light and mobile
 geometry, and the loaded-collection viewer. `viewer matches the concept shell and
@@ -592,6 +605,90 @@ Recorded deviations on this page (spec §8):
 - **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
   applies its negative wording to both roles), and a confirmed `p.prompt-text` is
   focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
+- **D38 Show in folder** (maintainer decision 2026-10-20, beyond the mock): in the
+  viewer's File & provenance the Path value stays text, followed in its `dd` by a
+  "Show in folder" button (`Show <filename> in folder`), only for a listed file
+  (`root_index`, `root_scope`, `path`), so never in the side panel or a recorded run.
+  It POSTs that identity as JSON to `/prompt_manager/images/reveal` and toasts:
+
+  | Result | Toast |
+  |---|---|
+  | Success | "Opened the folder on this computer." |
+  | 403 `not-local` | "Show in folder works only in a browser on the computer running ComfyUI." |
+  | 501 `unavailable` | "No file manager is available on this computer." |
+  | 429 `busy` | "The folder is already opening." |
+  | Anything else (415, 404, 409, 500, offline) | "The folder could not be opened. Try again." |
+
+  The route is local-only. It answers 403 `not-local` unless all of these hold: no
+  forwarding-style header (`Forwarded`, `Via`, `X-Real-IP`, `CF-Connecting-IP`,
+  `True-Client-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `Fastly-Client-IP`, and any
+  `X-Forwarded-*`, `X-Original-*` or `*-Client-IP`); a loopback `request.remote`; a
+  loopback `Host` (`localhost`, `*.localhost` or a loopback address, against DNS
+  rebinding); an `Origin` equal to the request's own scheme, host and port (absent,
+  `null`, another port or another scheme is refused; browsers send `Origin` on every
+  fetch POST); and, when sent, `Sec-Fetch-Site: same-origin`. A body that is not
+  `application/json` is 415 `unsupported-media-type`, so any cross-origin request
+  needs a CORS preflight. The body is strict (an int root, a 64-hex scope, a bounded
+  relative path; absolute, drive and `..` paths are 400), the scope goes through
+  `_gallery_scope_error` (409 `source-changed`), and the path resolves only inside
+  that root to a regular media file (403/404; a resolution `OSError` such as
+  `ENAMETOOLONG` is the same JSON 404, and the client's path is never logged at error
+  level). One reveal runs at a time per process with a 1 s cooldown after it
+  (`RevealGate`, 429 `busy`), on its own single worker (`reveal_executor`), never
+  ComfyUI's default executor. Just before launching, `utils/file_reveal.py` re-checks
+  that the real path is still a regular file inside the root (a swapped parent is
+  404). Windows starts no process: `ILCreateFromPathW` and
+  `SHOpenFolderAndSelectItems` select the file through the shell API (Explorer's own
+  command line splits on commas, so a path like `output\a,\Windows\...` must never
+  reach it), falling back to `os.startfile(folder, "explore")`. macOS runs
+  `/usr/bin/open -R`; Linux asks FileManager1 `ShowItems` with `dbus-send
+  --print-reply --reply-timeout=2000` (a real reply or a fallback) and else runs
+  `xdg-open` on the folder. Those openers are argv lists resolved only on a fixed
+  system PATH, with no shell, DEVNULL streams, `close_fds`, their own session, a
+  minimal environment (no venv PATH, PYTHONPATH or API keys) and a daemon-thread
+  reaper. `tests/test_image_reveal.py` mocks `Popen`, `sys.platform`, `shutil.which`,
+  the shell API and `os.startfile`; the browser server's opener is a stub
+  (`POST`/`GET /__test__/reveal`) with no cooldown. The inspector comparison reads
+  closed disclosures as hidden, so the button needs no mapping there.
+
+  Residual risk, accepted: a reverse proxy or tunnel that adds no forwarding header
+  (a bare nginx `proxy_pass` to 127.0.0.1, `ssh -R`, `socat`) cannot be told apart
+  from a local client, and a non-browser client behind it can forge a matching
+  `Host` and `Origin`. Such a client can open a folder of a listed file on the host's
+  screen, at most once a second, and learn whether that file exists (which the
+  listing routes already tell it). Operators who expose ComfyUI that way accept this.
+- **D39**: a recipe-linked image shows its recipe's own category and tags (#224), not
+  its positive's. The concept shows the prompt's category and tags for every image;
+  the concept fixture's recipes have neither, so their images show no category chip
+  and no tag row. `positive_links` on `/__test__/concept/reset` links the newest
+  images to their positive alone, so the inspector comparison sees the positive's
+  category ("Positive prompt category: " hidden prefix, D21) and tag filters.
+- **D42**: the concept never shows a toast and a page alert together. Production keeps
+  the concept's fixed toast (centred, 22px from the bottom, 12px at 700px and below)
+  and, when an Import → Rescan toast leaves the Images discovery alert
+  (`.options-status`), scrolls that alert into view only as far as needed, with
+  `scroll-margin-block-end: 96px`, so it is never under the toast.
+  `Rescan toast does not cover the discovery alert it leaves` ends the window inside
+  the toast's band at 1600 and 390 pixels and measures both boxes.
+
+`tests/browser/inspector-concept.spec.mjs` compares the side panel and the viewer's
+full details (#249 D4) for alpine_00001.png, at 1600x1100 and 390x844 in both themes:
+structure, cover, heading, filename, badges, prompt blocks (role labels, actions,
+text), tag chips, facts, footer, the viewer's disclosures and pair actions, and every
+offered control's name and minimum height. Each role's copy and send are named after
+the prompt, as the concept's are ("Copy positive prompt: <title>"). The concept loads
+all 24 fixture images first (D37). Behaviors: copy shows "Prompt copied." (or the
+same "Copy prompt" dialog in both); the pair send previews both roles in the concept
+and is applied and acknowledged by a test ComfyUI tab in production; the `cinematic`
+chip sets the Images Tags filter (D21: the concept searches the word, which also
+matches the untagged forest prompt's text); Prompt history goes to
+`#/library/<positive id>` (the concept's `#prompt/<id>`). `mapInspectorConcept`
+applies D3 (the `.file-inspector` class of the production-only rules), D20 (the
+viewer's plain tag chips, laid out by the concept page itself with its chips made
+plain at runtime), the D20/D21 side-panel scroll (`overflow: auto`,
+`max-height: calc(100dvh - 40px)` above 700px), D21 (the category's hidden scope
+prefix) and D22 (focusable prompt text). `inspector comparison detects mutations`
+changes `.prompt-heading .role-label` letter spacing and removes `.detail-footer`.
 
 Manual check (quick), after a browser refresh on Images: hover an image (it zooms);
 click it (the viewer reads "<title> · <filename>"; Escape closes it); press a card's
@@ -601,7 +698,7 @@ saved file.
 
 ```sh
 npm run --prefix tools/vendor test:workflows -- images-concept.spec.mjs \
-  workspace-images.spec.mjs full-inspector.spec.mjs \
+  workspace-images.spec.mjs full-inspector.spec.mjs inspector-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 

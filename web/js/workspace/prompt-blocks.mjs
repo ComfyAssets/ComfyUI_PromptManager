@@ -35,10 +35,10 @@ function childScope(parentScope) {
 export function mountPromptBlocks(container, {prompts, sender, parentScope, roles:visibleRoles = ['positive', 'negative'], onRetry, includePairAction = true, contextLabel = '', title = '', copyFallback = openCopyFallback}) {
     // A nested set of blocks (the current file inside a recorded run) names its regions and actions with a
     // context so assistive technology never meets two identically named prompt regions in one dialog.
-    const named = label => contextLabel ? `${contextLabel} ${label.toLowerCase()} prompt` : `${label} prompt`;
+    const named = roleLabel => contextLabel ? `${contextLabel} ${roleLabel.toLowerCase()} prompt` : `${roleLabel} prompt`;
     const action = role => contextLabel ? `${contextLabel[0].toLowerCase()}${contextLabel.slice(1)} ${role} prompt` : `${role} prompt`;
-    // The concept names a role's copy and send after the prompt they act on (app.js a298–302): "…: <title>".
-    const subject = title ? `: ${title}` : '';
+    // A card among many names its actions after its prompt, as the concept's do (app.js a298–302: "Copy positive prompt: <title>").
+    const actionName = (verb, role, rest = '') => `${verb} ${action(role)}${rest}${title ? `: ${title}` : ''}`;
     if (parentScope.signal.aborted) return {update() {}, setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     container.classList.add('prompt-inspector');
@@ -94,12 +94,12 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
             if (Object.hasOwn(roles, role)) {
                 const actions = el('div', undefined, 'prompt-actions');
                 const copy = createButton('', 'icon-btn');
-                copy.setAttribute('aria-label', `Copy ${action(role)}${subject}`);
+                copy.setAttribute('aria-label', actionName('Copy', role));
                 copy.append(createWorkspaceIcon('copy'));
                 copy.dataset.copyRole = role;
                 copy.disabled = !actionsEnabled;
                 const send = createButton('', 'send icon-btn');
-                send.setAttribute('aria-label', `Send ${action(role)} to ComfyUI${subject}`);
+                send.setAttribute('aria-label', actionName('Send', role, ' to ComfyUI'));
                 send.append(createWorkspaceIcon('send'));
                 send.dataset.sendRole = role;
                 send.disabled = !actionsEnabled;

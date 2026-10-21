@@ -174,7 +174,9 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 @container images-page (inline-size < 600px) {
     .image-workspace { grid-template-columns: minmax(0, 1fr); }
 }
-.options-status { font-size: 12px; padding-inline: 4px; }
+/* #249 D42: a discovery alert a rescan leaves scrolls clear of the concept's fixed toast (22px inset, 12px at 700px and
+   below, two 12px lines at 390px), never under it; the toast itself keeps the concept's placement. */
+.options-status { font-size: 12px; padding-inline: 4px; scroll-margin-block-end: 96px; /* D42 */ }
 /* Until their pages rebuild (PR F history): the history page's and the recorded run's prompt blocks keep their
    spacing (on the shelf's cards `.prompt-inspector` is `display: contents`, so its margin is inert there), the Archive
    negative dialog keeps `section.prompt-block`, and the shared prompt sender keeps its dialog and send button. */
