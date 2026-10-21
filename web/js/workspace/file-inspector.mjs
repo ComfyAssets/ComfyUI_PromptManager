@@ -107,7 +107,8 @@ function disclosure(label) {
 function definitionList(entries, className) {
     const list = el('dl', undefined, className);
     for (const [label, value] of entries) {
-        const row = el('div'); row.append(el('dt', label), el('dd', value ?? 'Not available')); list.append(row);
+        // A value is its text, or a prepared `dd` (one a caller keeps to add to, such as D38's Path).
+        const row = el('div'); row.append(el('dt', label), typeof value === 'object' && value !== null ? value : el('dd', value ?? 'Not available')); list.append(row);
     }
     return list;
 }
@@ -261,16 +262,17 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         const {file, library} = record, section = disclosure('File & provenance');
         const reported = record.identity.kind === 'reported-location';
         section.append(el('p', reported ? 'Current file at the reported location · identity unverified' : 'Current file at this source; historical bytes are not verified.', 'small'));
+        const path = el('dd', record.identity.path ?? 'Not available');
         const facts = file && definitionList([
-            ['Source', file.source_label], ['Path', record.identity.path], ['Size', formatBytes(file.size)],
+            ['Source', file.source_label], ['Path', path], ['Size', formatBytes(file.size)],
             ['Dimensions', file.width && file.height ? `${file.width} × ${file.height}` : null],
             ['Format', file.format || `${extensionOf(record)} extension`], ['Media type', file.media_type],
             ['Modified', file.modified_time !== null ? new Date(file.modified_time * 1000).toLocaleString() : null],
         ], 'meta-grid');
         if (facts) {
-            // D38: "Show in folder" follows the Path value (the second row).
+            // D38: "Show in folder" follows the Path value.
             const target = api ? revealTarget(record.identity) : null;
-            if (target) facts.children[1].lastChild.append(' ', revealButton(target));
+            if (target) path.append(' ', revealButton(target));
             section.append(facts);
         } else section.append(el('p', 'Current file observations are unavailable for this inspection response.', 'small'));
         // The concept's "Prompt evidence: execution recorded" line, in the D21 badge's words; no badge, no line.
