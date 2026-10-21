@@ -538,6 +538,136 @@ test('a definite server prompt is kept even when the legacy parser reads it diff
     assert.equal(record.prompts.positive.text, 'a lighthouse at dusk, oil painting');
 });
 
+// #249: a LoRA compare grid. Every sampler's negative is a ConditioningZeroOut of the
+// positive encode; the legacy parser follows the zero-out back to the positive text.
+function zeroedGridGraph(samplers = 3) {
+    const graph = {
+        1: { class_type: 'UNETLoader', inputs: { unet_name: 'base.safetensors', weight_dtype: 'default' } },
+        2: { class_type: 'CLIPLoader', inputs: { clip_name: 'te.safetensors', type: 'stable_diffusion' } },
+        4: { class_type: 'CLIPTextEncode', inputs: { text: 'a woman holding a coffee cup', clip: ['2', 0] } },
+        5: { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+        6: { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512, batch_size: 1 } },
+    };
+    for (let index = 0; index < samplers; index++) {
+        graph[`1${index}`] = { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: `epoch_${index}.safetensors`, strength_model: 1, model: ['1', 0] } };
+        graph[`2${index}`] = { class_type: 'KSampler', inputs: { seed: 42, steps: 8, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+            model: [`1${index}`, 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } };
+    }
+    return graph;
+}
+
+function undecided(graph) {
+    const entry = image(), data = envelope(entry);
+    data.prompts = { positive: { status: 'ambiguous', text: null, source: null }, negative: { status: 'ambiguous', text: null, source: null } };
+    data.metadata.prompt_graph = { status: 'parsed', value: graph };
+    data.resolution = { state: 'ambiguous', sampler_id: null, reason: 'Multiple sampler branches' };
+    return contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+}
+
+test('a zeroed negative is never filled with the positive text from the legacy parse (#249)', t => {
+    const parser = require('../../web/js/comfy-metadata.js');
+    globalThis.ComfyMetadata = parser;
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    // The legacy pages keep their reading: the zero-out passes the positive through.
+    assert.equal(parser.extractGenerationParams({ prompt: zeroedGridGraph() }).negativePrompt, 'a woman holding a coffee cup');
+    const record = undecided(zeroedGridGraph());
+    assert.deepEqual(record.prompts.positive, { status: 'resolved', text: 'a woman holding a coffee cup', source: 'graph-inferred' });
+    assert.deepEqual(record.prompts.negative, { status: 'resolved', text: '', source: 'zeroed-conditioning' });
+    // Behind an API-graph Reroute the legacy parse reads no negative, so there is nothing
+    // to correct: the server's answer stays.
+    const rerouted = zeroedGridGraph(1);
+    rerouted[7] = { class_type: 'Reroute', inputs: { value: ['5', 0] } };
+    rerouted[20].inputs.negative = ['7', 0];
+    assert.equal(parser.legacyNegativeSource({ prompt: rerouted }), null);
+    assert.deepEqual(undecided(rerouted).prompts.negative, { status: 'ambiguous', text: null, source: null });
+});
+
+test('the zero-out check follows the sampler the legacy parse read (#249)', t => {
+    const parser = require('../../web/js/comfy-metadata.js');
+    globalThis.ComfyMetadata = parser;
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    const zeroed = { status: 'resolved', text: '', source: 'zeroed-conditioning' };
+    // The legacy parse reads the first sampler (20): its negative is the zero-out.
+    const mixed = zeroedGridGraph(2);
+    mixed[8] = { class_type: 'CLIPTextEncode', inputs: { text: 'blurry', clip: ['2', 0] } };
+    mixed[21].inputs.negative = ['8', 0];
+    assert.deepEqual(undecided(mixed).prompts.negative, zeroed);
+    // Reversed: the sampler it reads encodes "blurry", which it showed before and still does.
+    const reversed = zeroedGridGraph(2);
+    reversed[8] = { class_type: 'CLIPTextEncode', inputs: { text: 'blurry', clip: ['2', 0] } };
+    reversed[20].inputs.negative = ['8', 0];
+    assert.equal(parser.extractGenerationParams({ prompt: reversed }).negativePrompt, 'blurry');
+    assert.deepEqual(undecided(reversed).prompts.negative, { status: 'resolved', text: 'blurry', source: 'graph-inferred' });
+    // The positive fills from the legacy parse in both cases.
+    assert.equal(undecided(mixed).prompts.positive.text, 'a woman holding a coffee cup');
+    assert.equal(undecided(reversed).prompts.positive.text, 'a woman holding a coffee cup');
+});
+
+test('a zero-out mixed into the read negative leaves it as the server left it (#249)', t => {
+    globalThis.ComfyMetadata = require('../../web/js/comfy-metadata.js');
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    // A zero-out combined with another conditioning is not an empty negative.
+    const combined = zeroedGridGraph(1);
+    combined[8] = { class_type: 'CLIPTextEncode', inputs: { text: 'blurry', clip: ['2', 0] } };
+    combined[9] = { class_type: 'ConditioningCombine', inputs: { conditioning_1: ['5', 0], conditioning_2: ['8', 0] } };
+    combined[20].inputs.negative = ['9', 0];
+    assert.deepEqual(undecided(combined).prompts.negative, { status: 'ambiguous', text: null, source: null });
+});
+
+function workflowOnly(workflow) {
+    const entry = image(), data = envelope(entry);
+    data.prompts = { positive: { status: 'unresolved', text: null, source: null }, negative: { status: 'unresolved', text: null, source: null } };
+    Object.assign(data.metadata, { raw: { workflow: JSON.stringify(workflow) }, record_formats: { workflow: 'reserialized-json' },
+        prompt_graph: { status: 'absent', value: null }, workflow_graph: { status: 'parsed', value: workflow } });
+    return contract('toInspectionRecord')(data, entry, extractGenerationFacts);
+}
+
+// A UI workflow: encode 4 -> zero-out 5 -> sampler 3's negative, encode 4 -> positive.
+function zeroedWorkflow({ zeroMode = 0, extraNodes = [], extraLinks = [], negativeLink = 3 } = {}) {
+    return { nodes: [
+        { id: 4, type: 'CLIPTextEncode', inputs: [], outputs: [{ links: [1, 2] }], widgets_values: ['a woman holding a coffee cup'] },
+        { id: 5, type: 'ConditioningZeroOut', mode: zeroMode, inputs: [{ name: 'conditioning', type: 'CONDITIONING', link: 1 }], outputs: [{ links: [3] }] },
+        { id: 1, type: 'UNETLoader', inputs: [], outputs: [{ links: [4] }], widgets_values: ['base.safetensors', 'default'] },
+        { id: 3, type: 'KSampler', inputs: [{ name: 'model', link: 4 }, { name: 'positive', link: 2 }, { name: 'negative', link: negativeLink }], widgets_values: [42, 'fixed', 8, 1, 'euler', 'simple', 1] },
+        ...extraNodes,
+    ], links: [[1, 4, 0, 5, 0, 'CONDITIONING'], [2, 4, 0, 3, 1, 'CONDITIONING'], [3, 5, 0, 3, 2, 'CONDITIONING'], [4, 1, 0, 3, 0, 'MODEL'], ...extraLinks] };
+}
+
+test('workflow-only files follow the legacy reading of their zero-out (#249)', t => {
+    const parser = require('../../web/js/comfy-metadata.js');
+    globalThis.ComfyMetadata = parser;
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    // A connected zero-out on the read sampler's negative is the zeroed empty negative.
+    const direct = zeroedWorkflow();
+    assert.equal(parser.extractGenerationParams({ workflow: direct }).negativePrompt, 'a woman holding a coffee cup', 'the legacy parse would fill it');
+    assert.deepEqual(workflowOnly(direct).prompts.negative, { status: 'resolved', text: '', source: 'zeroed-conditioning' });
+    // A bypassed zero-out (mode 4) passes its conditioning through: the legacy reading is right.
+    const bypassed = workflowOnly(zeroedWorkflow({ zeroMode: 4 }));
+    assert.deepEqual(bypassed.prompts.negative, { status: 'resolved', text: 'a woman holding a coffee cup', source: 'graph-inferred' });
+    // An unconnected zero-out beside a text negative changes nothing.
+    const unconnected = workflowOnly(zeroedWorkflow({ negativeLink: 6,
+        extraNodes: [{ id: 6, type: 'CLIPTextEncode', inputs: [], outputs: [{ links: [6] }], widgets_values: ['blurry'] }],
+        extraLinks: [[6, 6, 0, 3, 2, 'CONDITIONING']] }));
+    assert.deepEqual(unconnected.prompts.negative, { status: 'resolved', text: 'blurry', source: 'graph-inferred' });
+});
+
+test('a negative read through a subgraph holding a zero-out is not filled (#249)', t => {
+    const parser = require('../../web/js/comfy-metadata.js');
+    globalThis.ComfyMetadata = parser;
+    t.after(() => { delete globalThis.ComfyMetadata; });
+    // The sampler's negative comes from a subgraph instance whose definition zeroes it.
+    const definition = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const workflow = zeroedWorkflow({ negativeLink: 7,
+        extraNodes: [{ id: 9, type: definition, inputs: [{ name: 'conditioning', type: 'CONDITIONING', link: 8 }], outputs: [{ links: [7] }] }],
+        extraLinks: [[7, 9, 0, 3, 2, 'CONDITIONING'], [8, 4, 0, 9, 0, 'CONDITIONING']] });
+    workflow.definitions = { subgraphs: [{ id: definition, nodes: [{ id: 1, type: 'ConditioningZeroOut', inputs: [], outputs: [] }], links: [] }] };
+    assert.equal(parser.extractGenerationParams({ workflow }).negativePrompt, 'a woman holding a coffee cup', 'the legacy parse would fill it');
+    assert.deepEqual(workflowOnly(workflow).prompts.negative, { status: 'unresolved', text: null, source: null });
+    // The same instance of a definition without a zero-out keeps the legacy fill.
+    workflow.definitions.subgraphs[0].nodes[0].type = 'Reroute';
+    assert.equal(workflowOnly(workflow).prompts.negative.text, 'a woman holding a coffee cup');
+});
+
 test('callers without the browser global pass the legacy parser explicitly', () => {
     const parser = require('../../web/js/comfy-metadata.js');
     const entry = image(), data = envelope(entry);

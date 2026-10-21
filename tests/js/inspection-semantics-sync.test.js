@@ -30,7 +30,7 @@ test("facts guider providers are guiders in the semantics table", () => {
 });
 
 test("the facts tables are not part of the legacy page contract", () => {
-    assert.deepStrictEqual(Object.keys(metadata).filter(key => !key.startsWith("_")).sort(), ["PLACEHOLDERS", "extractGenerationFacts", "extractGenerationParams"]);
+    assert.deepStrictEqual(Object.keys(metadata).filter(key => !key.startsWith("_")).sort(), ["PLACEHOLDERS", "extractGenerationFacts", "extractGenerationParams", "legacyNegativeSource"]);
     assert.ok(Object.isFrozen(metadata._factsTables));
 });
 
