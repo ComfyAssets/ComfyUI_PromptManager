@@ -15,6 +15,7 @@
     "test:comfyui": "playwright test --config comfyui.config.mjs",
     "test:executions": "playwright test --config playwright.execution.config.mjs",
     "test:coverage": "node frontend-coverage.mjs",
+    "coverage:baseline-check": "node coverage-baseline-check.mjs",
     "coverage:update": "node frontend-coverage.mjs --update-baseline",
     "test:compat": "playwright test --config pack-compat.config.mjs"
   },

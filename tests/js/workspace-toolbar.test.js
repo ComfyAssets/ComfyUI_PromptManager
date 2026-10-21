@@ -342,6 +342,56 @@ test('refine dialog round-trips values and clear resets them', async () => {
     }
 });
 
+test('Refine lists options discovered after it opened and keeps the wanted values', async () => {
+    const { openRefineDialog, openImportDialog, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        let bySource = {};
+        const optionsFor = source => [['', 'All output folders'], ...(bySource[source] ?? []).map(path => [path, path])];
+        const fields = [{ key: 'source', options: [['all', 'All sources']] }, { key: 'folder', options: optionsFor('all'), optionsFor },
+            REFINE_FIELDS[2]];
+        const applied = [];
+        const refine = openRefineDialog({ scope, fields, values: { source: '1', folder: 'temp-only', media: 'video' },
+            onApply: value => applied.push(value), onClear() {} });
+        const [source, folder, media] = byId(dom, 'modal-body').children.filter(child => child.className === 'field')
+            .map(field => field.children[1]);
+        // Opened before discovery: only the cleared values.
+        assert.deepEqual(optionPairs(source), [['all', 'All sources']]);
+        assert.equal(source.value, 'all');
+        assert.equal(folder.value, '');
+        bySource = { all: ['portraits', 'temp-only'], 0: ['portraits'], 1: ['temp-only'] };
+        refine.setOptions('source', [['all', 'All sources'], ['0', 'output'], ['1', 'archive']]);
+        // The values it opened with, now offered, and the chosen Source's folders.
+        assert.deepEqual(optionPairs(source).map(([value]) => value), ['all', '0', '1']);
+        assert.equal(source.value, '1');
+        assert.deepEqual(optionPairs(folder), [['', 'All output folders'], ['temp-only', 'temp-only']]);
+        assert.equal(folder.value, 'temp-only');
+        // A choice made since wins over the opening value; tags and unknown keys are ignored.
+        source.value = '0';
+        source.dispatchEvent(new Event('change'));
+        refine.setOptions('source', [['all', 'All sources'], ['0', 'output'], ['1', 'archive']]);
+        refine.setOptions('tags', [['x', 'x']]);
+        assert.equal(source.value, '0');
+        assert.deepEqual(optionPairs(folder).map(([value]) => value), ['', 'portraits']);
+        assert.equal(media.value, 'video');
+        button(byId(dom, 'modal-body'), 'Apply filters').click();
+        assert.deepEqual(applied, [{ source: '0', folder: '', media: 'video' }]);
+        // Closed: a late discovery leaves the shell alone.
+        refine.setOptions('source', [['all', 'All sources']]);
+        assert.equal(source.options.length, 3);
+        // Replaced by another dialog: the same.
+        const again = openRefineDialog({ scope, fields, values: {}, onApply() {}, onClear() {} });
+        openImportDialog({ scope, onInspect() {}, onRescan() {} });
+        again.setOptions('source', [['all', 'All sources'], ['9', 'late']]);
+        assert.equal(byId(dom, 'modal-title').textContent, 'Import & inspect');
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
 test('the Folder list follows the chosen Source', async () => {
     const { openRefineDialog, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();

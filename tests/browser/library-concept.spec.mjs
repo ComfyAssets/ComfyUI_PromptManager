@@ -158,6 +158,10 @@ async function filteredOf(page,apply,undo) {
     await apply();
     await expect.poll(()=>captionOf(page)).not.toBe(before);
     await expect.poll(()=>page.locator(CARDS).count()).toBeLessThan(CONCEPT_PROMPTS);
+    // Production empties the shelf when the filter applies, writes the answer's caption at once and places its cards
+    // in the next animation frame (one paint for a viewer), so the empty shelf already counts as "fewer": read the
+    // titles only after that frame, as the Images and Inspector comparisons do.
+    await settle(page);
     const result={caption:await captionOf(page),titles:await titlesOf(page)};
     await undo();
     await expect.poll(()=>captionOf(page)).toBe(before);
