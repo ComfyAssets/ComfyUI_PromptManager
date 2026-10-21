@@ -16,8 +16,10 @@ const sortBy = page => page.getByRole('combobox', { name: 'Sort results', exact:
 const caption = page => page.locator('.section-caption');
 const refineDialog = page => page.getByRole('dialog', { name: 'Refine this view', exact: true });
 const importDialog = page => page.getByRole('dialog', { name: 'Import & inspect', exact: true });
+// D44: the Filters button reads "Filters · N" while N Refine filters are active.
+const filtersButton = page => page.locator('#workspace-main search.toolbar').getByRole('button', { name: /^Filters(?: · \d+)?$/ });
 async function refine(page, values) {
-    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    await filtersButton(page).click();
     const dialog = refineDialog(page);
     for (const [label, value] of Object.entries(values)) {
         const control = dialog.getByLabel(label, { exact: true });
@@ -266,8 +268,9 @@ test('returning to Images restores the filtered stream, layout, selection and sc
     await expect(cards(page)).toHaveCount(80);
     await expect(details(page).getByRole('heading', { level: 2 })).toHaveText(selectedTitle);
     await expect.poll(async () => Math.abs((await page.evaluate(() => window.scrollY)) - previousScroll)).toBeLessThan(120);
-    // Checked last: closing the dialog focuses Filters, which scrolls the toolbar into view.
-    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    // Checked last: closing the dialog focuses Filters, which scrolls the toolbar into view. The restored Source
+    // still counts (D44).
+    await page.getByRole('button', { name: 'Filters · 1', exact: true }).click();
     await expect(refineDialog(page).getByLabel('Source', { exact: true })).toHaveValue('0');
     await page.keyboard.press('Escape');
     await expect(refineDialog(page)).toBeHidden();
@@ -521,7 +524,7 @@ async function staleSourceRecovery(page, request, roots) {
     await page.goto(workspace);
     const source = refineDialog(page).getByLabel('Source', { exact: true });
     const folder = refineDialog(page).getByLabel('Folder', { exact: true });
-    const filters = page.getByRole('button', { name: 'Filters', exact: true });
+    const filters = filtersButton(page);
     await filters.click();await expect(folder.locator('option[value="bulk"]')).toHaveCount(1);await page.keyboard.press('Escape');
     await refine(page, { Source: '0', Folder: 'bulk' });
     const configured = page.waitForResponse(response => {
@@ -566,7 +569,9 @@ for (const [name, roots] of [['reordered', ['input', 'output']], ['removed', ['i
             expect(recovery.pages.map(url => url.search)).toEqual([]);expect(recovery.inspections).toEqual([]);
             await expect(page.locator('.filter-row span.chip')).toHaveText('All output folders');
             for (const name of ['Filter by category', 'Sort results']) await expect(page.getByRole('combobox', { name, exact: true })).toBeDisabled();
-            for (const name of ['Filters', 'Import']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+            // D44: recovery clears Source and Folder; the Media filter stays and still counts.
+            await expect(recovery.filters).toHaveText('Filters · 1');await expect(recovery.filters).toBeDisabled();
+            await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeDisabled();
             await expect(search(page)).toBeDisabled();
             await expect(page.getByRole('button', { name: 'Load more images', exact: true })).toBeDisabled();
             await page.getByRole('button', { name: 'Load more images', exact: true }).evaluate(node => node.click());await recovery.filters.evaluate(node => node.click());await sortBy(page).dispatchEvent('change');
@@ -830,10 +835,13 @@ test('images toolbar and filter row match the concept controls', async ({ page, 
     await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('');
     await expect(cards(page)).toHaveCount(2);
 
+    await expect(filtersButton(page)).toHaveText('Filters');
     await refine(page, { Source: '1', Folder: 'shared', Media: 'image' });
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
     await expect(row.locator(':scope > span.chip')).toHaveText(`${roots[1].label} · shared`);
+    // D44: Source, Folder and Media each count once; the toolbar category is not a Refine filter.
+    await expect(filtersButton(page)).toHaveText('Filters · 3');
     await refine(page, { Media: 'video' });
     await expect(cards(page)).toHaveCount(0);
     await refine(page, { Source: 'all', Folder: '', Media: 'all', Tags: 'cats' });
@@ -842,11 +850,13 @@ test('images toolbar and filter row match the concept controls', async ({ page, 
     await expect(row.locator(':scope > span.chip')).toHaveText('All output folders');
     await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('Landscapes');
     await expect(cards(page)).toHaveCount(0);
-    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    await expect(filtersButton(page)).toHaveText('Filters · 1');
+    await page.getByRole('button', { name: 'Filters · 1', exact: true }).click();
     await expect(refineDialog(page).getByLabel('Tags', { exact: true })).toHaveValue('cats');
     await refineDialog(page).getByRole('button', { name: 'Clear filters', exact: true }).click();
     await expect(page.getByRole('combobox', { name: 'Filter by category', exact: true })).toHaveValue('');
     await expect(cards(page)).toHaveCount(2);
+    await expect(page.getByRole('button', { name: 'Filters', exact: true })).toBeFocused();
 
     const rescans = [];
     page.on('request', request => { if (request.url().includes('/prompt_manager/gallery/rescan')) rescans.push(request.method()); });
@@ -1495,8 +1505,8 @@ test('Refine offers only the chosen source folders', async ({ page, request }) =
     await refineDialog(page).getByRole('button', { name: 'Apply filters', exact: true }).click();
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page)).toHaveAttribute('data-image-key', '1:shared/same.png');
-    // Reopened on that Source, the dialog again lists only its folders.
-    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    // Reopened on that Source, the dialog again lists only its folders. Source and Folder count (D44).
+    await page.getByRole('button', { name: 'Filters · 2', exact: true }).click();
     expect(await values()).toEqual(['', 'shared']);
 });
 

@@ -381,6 +381,47 @@ class TestLibraryAPI(ImageAPITestCase):
         # D10/D20: the linked positive's title; "Pair title" names the variant.
         self.assertEqual(result["library"]["title"], "Positive title")
 
+    async def test_library_gallery_reports_favorites_with_one_lookup_per_page(self):
+        # The Library-embedded media cards carry the Images star (#249 PR E):
+        # favorites come from the store keyed by root and relative path.
+        pair = self.api.db.save_prompt_pair("Cat", "Noise")
+        positive = self.api.db.get_prompt_pair(pair)["positive_prompt_id"]
+        for index in range(5):
+            path = make_png(self.output_dir / "sub" / f"{index}.png")
+            image = self.api.db.link_image_to_prompt(positive, str(path))
+            self.api.db.link_image_to_pair(pair, image, {"source": "fixture"})
+        response = await self.client.put(
+            "/prompt_manager/images/favorite",
+            json={"root_index": 0, "path": "sub/3.png"},
+        )
+        self.assertEqual(response.status, 200)
+        lookups = []
+        original = self.api.db.get_image_favorites
+
+        def counted(root_key, paths):
+            lookups.append(list(paths))
+            return original(root_key, paths)
+
+        with patch.object(self.api.db, "get_image_favorites", side_effect=counted):
+            _, gallery = await self.get(f"/{positive}/images", pair_id=pair)
+        stars = {image["path"]: image["favorite"] for image in gallery["images"]}
+        self.assertEqual(stars, {f"sub/{index}.png": index == 3 for index in range(5)})
+        # One batched read per page, never one per card.
+        self.assertEqual([len(paths) for paths in lookups], [5])
+        # Shelf previews show no star and read no favorites.
+        lookups.clear()
+        with patch.object(self.api.db, "get_image_favorites", side_effect=counted):
+            _, listing = await self.get()
+        self.assertEqual(lookups, [])
+        self.assertNotIn("favorite", listing["items"][0]["previews"][0])
+        response = await self.client.delete(
+            "/prompt_manager/images/favorite",
+            json={"root_index": 0, "path": "sub/3.png"},
+        )
+        self.assertEqual(response.status, 200)
+        _, gallery = await self.get(f"/{positive}/images", pair_id=pair)
+        self.assertFalse(any(image["favorite"] for image in gallery["images"]))
+
     async def test_epoch_scoped_all_library_cursors(self):
         from database.execution_history_schema import rotate_history_epoch
 

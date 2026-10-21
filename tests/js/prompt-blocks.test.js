@@ -158,6 +158,14 @@ test('a title names each role action after its prompt as the concept does',()=>{
     }finally{scope.dispose();f.restore();}
 });
 
+test('a title names each action after its prompt (concept "Copy positive prompt: <title>") while regions keep their names',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},title:'Alpine observatory',roles:['positive'],prompts:{positive:record('p')}});
+        const labels=f.walk(container,node=>node.attributes['aria-label']).map(node=>node.attributes['aria-label']);
+        assert.deepEqual(labels,['Positive prompt','Copy positive prompt: Alpine observatory','Send positive prompt to ComfyUI: Alpine observatory']);
+    }finally{scope.dispose();f.restore();}
+});
 const shape=node=>({tag:node.tagName,className:node.className,...(node.attributes['aria-label']?{label:node.attributes['aria-label']}:{}),
     ...(node.children.length?{children:node.children.filter(child=>child.tagName!=='svg').map(shape)}:{text:node.textContent})});
 test('prompt block emits concept markup without a source line',()=>{

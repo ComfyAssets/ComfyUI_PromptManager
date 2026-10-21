@@ -188,7 +188,8 @@ test('tag chip filters Images by that tag',async({page,request})=>{
     await expect(page.locator('article[data-image-key="0:inspector/workflow-only.png"]')).toBeVisible();
     await expect(page.locator('article[data-image-key="0:inspector/complete.png"]')).toBeVisible();
     await expect(page.locator('article[data-image-key="0:inspector/empty.png"]')).toHaveCount(0);
-    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    // #249 D44: the chip's Tags filter shows on the toolbar's Filters button.
+    await page.getByRole('button',{name:'Filters · 1',exact:true}).click();
     await expect(page.getByRole('dialog').getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('geometric');
 });
 
@@ -610,7 +611,8 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     await mediaStage(page).focus();await page.keyboard.press('ArrowRight');await expect(position(page)).toHaveText(`2 of 160 loaded: ${loaded[1].filename}`);
     expect(pages).toBe(0);await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();
     await expect(opener).toBeFocused();
-    await page.getByRole('button',{name:'Filters',exact:true}).click();
+    // #249 D44: Source and Folder are active.
+    await page.getByRole('button',{name:'Filters · 2',exact:true}).click();
     await refine.getByLabel('Source',{exact:true}).selectOption('1');await refine.getByLabel('Folder',{exact:true}).selectOption('inspector');
     await refine.getByRole('button',{name:'Apply filters',exact:true}).click();
     await selectFile(page,'complete.png',1);await openCollection(page);await expect(position(page)).toHaveText('1 of 1 loaded: complete.png');

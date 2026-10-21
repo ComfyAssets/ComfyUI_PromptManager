@@ -40,3 +40,29 @@ export function visibleLibraryRows(rows, top, viewportHeight, focusedIndex = -1)
     }
     return [...visible].sort((a, b) => a - b);
 }
+
+// #249 D23: the card footer's words. English month names as the concept's copy, independent of the browser locale.
+const MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+const DAY_MS = 86400000;
+/** The local calendar day as a UTC day number, so a DST change never makes a day 23 or 25 hours long. */
+const localDay = date => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS;
+
+/** "Used today", "Used yesterday", "Used N days ago" (under a week), "Used <Mon D>" (", <YYYY>" in another year), or "Not used yet". */
+export function usedLabel(lastUsedAt, now = new Date()) {
+    const used = typeof lastUsedAt === 'string' && lastUsedAt ? new Date(lastUsedAt) : null;
+    if (!used || Number.isNaN(used.getTime())) return 'Not used yet';
+    // A server clock ahead of this browser is not a future use.
+    const days = Math.max(0, localDay(now) - localDay(used));
+    if (days === 0) return 'Used today';
+    if (days === 1) return 'Used yesterday';
+    if (days < 7) return `Used ${days} days ago`;
+    // A use in another calendar year names it ("Used Oct 21, 2025"), so it never reads as this year's date.
+    const year = used.getFullYear() === now.getFullYear() ? '' : `, ${used.getFullYear()}`;
+    return `Used ${MONTHS[used.getMonth()]} ${used.getDate()}${year}`;
+}
+
+/** The concept's stars (`★` × rating) with their visually hidden reading; an unrated parent shows neither. */
+export function ratingLabel(rating) {
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return {stars: '', hidden: ''};
+    return {stars: '★'.repeat(rating), hidden: `Rated ${rating} out of 5`};
+}

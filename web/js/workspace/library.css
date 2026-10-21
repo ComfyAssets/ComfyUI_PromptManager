@@ -1,33 +1,8 @@
 main.library-main { --library-positive: #73dda9; }
-.library-main :where(.library-shelf, .library-history, .library-card, .library-card-content, .library-card-prompts, .library-linked-images) { min-inline-size: 0; }
-.library-main .library-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-block: 0 20px; }
-.library-main .library-toolbar .ca-field { position: relative; display: flex; min-inline-size: 0; flex: 1 1 140px; align-items: stretch; }
-.library-main .library-toolbar .ca-field:first-child { flex: 3 1 250px; }
-.library-main .library-toolbar .ca-field > span { position: absolute; inline-size: 1px; block-size: 1px; padding: 0; margin: -1px; overflow: clip; clip-path: inset(50%); white-space: nowrap; }
-.library-main .library-toolbar :where(input, select, button), .ca-tools .library-main .library-toolbar > button { box-sizing: border-box; inline-size: 100%; min-inline-size: 0; block-size: 36px; min-block-size: 36px; font-size: 12px; }
-.ca-tools .library-main .library-toolbar > button { inline-size: auto; }
-.library-main .library-caption { display: flex; justify-content: space-between; font-size: 10px; color: var(--ca-muted); margin-block: 0 13px; }
+.library-main :where(.library-shelf, .library-history, .library-linked-images) { min-inline-size: 0; }
 .library-main .library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; overflow-anchor: none; }
 .library-main .library-row { grid-column: 1 / -1; display: grid; grid-template-columns: inherit; gap: 18px; min-inline-size: 0; }
-.library-main .library-card { box-sizing: border-box; display: grid; grid-template-rows: 170px 1fr auto; min-inline-size: 0; border: 1px solid var(--ca-line); border-radius: 8px; background: var(--ca-surface); }
-.library-main .library-card-art { display: grid; grid-template-columns: 2fr 1fr; gap: 3px; block-size: 170px; border-radius: 7px 7px 0 0; background: var(--ca-field); overflow: clip; }
-.library-main .library-card-art img { display: block; inline-size: 100%; block-size: 170px; aspect-ratio: 4 / 3; object-fit: cover; }
-.library-main .library-card-art > :only-child { grid-column: 1 / -1; }
-.library-main .library-art-empty { display: grid; place-content: center; min-inline-size: 0; font-size: 12px; color: var(--ca-muted); }
-.library-main .library-card-content { min-block-size: 0; display: flex; flex-direction: column; gap: 10px; padding: 18px; }
-.library-main .library-card-title { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-.library-main .library-card-title h2 { margin: 0; font-size: 16px; font-weight: 600; min-inline-size: 0; overflow-wrap: anywhere; }
-.library-main .library-title-link { color: var(--ca-text); text-decoration: none; }
-.library-main .library-title-link:hover { color: var(--ca-accent); }
-.library-main .library-card-prompts .prompt-section { margin: 0; padding-block: 10px 0; }
-.library-main .library-card-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-size: 10px; color: var(--ca-muted); }
 .library-main .library-chip { display: inline-block; max-inline-size: 100%; padding: 3px 8px; border: 1px solid var(--ca-line); border-radius: 4px; font-size: 10px; color: var(--ca-muted); background: var(--ca-field); overflow-wrap: anywhere; }
-.library-main .library-chip-negative { color: var(--ca-error-text); border-color: color-mix(in srgb, var(--ca-error) 35%, var(--ca-line)); }
-.library-main .library-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.library-main .library-card-footer { padding: 11px 18px; border-block-start: 1px solid var(--ca-line); display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 10px; }
-.library-main .library-rating { color: var(--ca-muted); }
-.library-main .library-history-link { display: inline-flex; align-items: center; gap: 7px; color: var(--ca-accent); }
-.library-main .library-history-link svg { inline-size: 18px; block-size: 18px; }
 .library-main .library-row-spacer { grid-column: 1 / -1; pointer-events: none; }
 .library-main .library-continuation { padding-block: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .library-main .library-status { flex: 1 1 240px; color: var(--ca-muted); }
@@ -42,7 +17,7 @@ main.library-main { --library-positive: #73dda9; }
 .library-main .library-shared-gallery { margin-block-start: 24px; }
 .library-main .library-variant-context { color: var(--ca-muted); font-size: 12px; }
 @media (min-width: 1700px) { .library-main .library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 700px) { .library-main .library-grid { grid-template-columns: minmax(0, 1fr); } .library-main .library-surface { padding: 16px; } .library-main .library-card-title { flex-wrap: wrap; gap: 6px; } .library-main .library-toolbar { gap: 8px; } .library-main .library-toolbar .ca-field:first-child { flex-basis: 100%; } .library-main .library-card { grid-template-rows: 150px 1fr auto; } .library-main .library-card-art, .library-main .library-card-art img { block-size: 150px; } .library-main .library-card-content { padding: 15px; } }
+@media (max-width: 700px) { .library-main .library-grid { grid-template-columns: minmax(0, 1fr); } .library-main .library-surface { padding: 16px; } }
 
 [data-ca-theme="light"] main.library-main { --library-positive: #176b46; }
 
@@ -124,11 +99,12 @@ main.library-main { --library-negative: #ff8c98; }
 }
 
 /* Panel actions follow the concept (style.css 294-300, 540-549); the page heading is the concept's own (Task A5).
-   These .row-actions rules restyle the concept's own selector and are retired in PR E (library cards). */
-.library-main .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.ca-tools .library-main .row-actions button { min-block-size: 32px; font-size: 12px; max-inline-size: 100%; white-space: normal; }
+   These .row-actions rules restyle the concept's own selector for the history panels only (the shelf's card footer
+   keeps the concept's) and are retired in PR F (history). */
+.library-main .library-history .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ca-tools .library-main .library-history .row-actions button { min-block-size: 32px; font-size: 12px; max-inline-size: 100%; white-space: normal; }
 .library-main .library-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-block-end: 12px; }
-@media (pointer: coarse) { .ca-tools .library-main .row-actions button { min-block-size: 40px; } }
+@media (pointer: coarse) { .ca-tools .library-main .library-history .row-actions button { min-block-size: 40px; } }
 /* Archived pairs: the existing lane at reduced emphasis (the existing .6 disabled-marker opacity); text stays at full contrast. */
 .library-main .library-variant-archived::before, .ca-tools .library-main .library-variant-archived .library-variant-dot { opacity: .6; }
 .ca-tools .library-main .library-variant-restore { position: static; margin-inline-start: 8px; min-block-size: 24px; padding: 2px 8px; font-size: 10px; vertical-align: middle; }

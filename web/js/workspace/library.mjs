@@ -1,4 +1,4 @@
-import {createScope,createButton,createField,createSelect} from '../shared/toolkit/core.js';
+import {createScope,createButton} from '../shared/toolkit/core.js';
 import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
@@ -6,11 +6,13 @@ import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './libr
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
-import {layoutLibraryRows,visibleLibraryRows} from './library-layout.mjs';
+import {layoutLibraryRows,visibleLibraryRows,usedLabel,ratingLabel} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
 import {pageHeading} from './heading.mjs';
+import {mountToolbar} from './toolbar.mjs';
+import {openRefineDialog} from './workspace-dialogs.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -23,11 +25,13 @@ const selectedPairs=new Map();
 // Parent metadata a reuse did not apply, kept for an explicit Edit metadata action.
 const metadataDrafts=new Map();
 const archivedVisible=new Map();
+// The concept's three sorts first, then the Library's appended Oldest first (D14).
+const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
+const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';
 const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative variants.';
 function el(tag,text,className) {
     const node=document.createElement(tag);if(text!==undefined) node.textContent=text;if(className) node.className=className;return node;
 }
-function link(text,href,className) {const node=el('a',text,className);node.href=href;return node;}
 // Cut at 80 UTF-16 units, never inside a surrogate pair (database/library.py titled() matches).
 export function libraryTitle(text) {
     const first=text.split('\n')[0].trim();
@@ -144,20 +148,22 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         const restorable=visit?.state?visit:null;
         const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters};
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
-        const toolbar=el('search',undefined,'library-toolbar');
-        const search=el('input');search.type='search';search.placeholder='Search prompts and saved negatives…';search.value=filters.text;search.maxLength=500;
-        const category=createSelect([['','All categories']], '');category.value=filters.category;
-        const tags=el('input');tags.type='text';tags.placeholder='Comma-separated tags';tags.value=filters.tags.join(', ');tags.maxLength=2000;
-        const sort=createSelect([['newest','Recently added'],['oldest','Oldest first'],['name','Prompt A–Z'],['rating','Highest rated']], '');sort.value=filters.sort;
-        const refresh=createButton('Refresh library');
-        toolbar.append(createField('Search prompts',search,'library-search'),createField('Category',category,'library-category'),createField('Tags',tags,'library-tags'),createField('Sort',sort,'library-sort'),refresh);
+        // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
+        // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
+        const toolbarScope=createScope();
+        // D44: Filters reads "Filters · 1" while a Tags filter (from Refine or a Browse) narrows the shelf.
+        const refinements=()=>filters.tags.length?1:0;
+        const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
+            value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters});
         const optionsStatus=el('p','','library-options-status');optionsStatus.hidden=true;optionsStatus.setAttribute('role','alert');
-        const caption=el('p','','library-caption');caption.setAttribute('role','status');
+        // The concept caption (app.js renderLibrary a586): the filtered set's parents and their negative variants.
+        const caption=el('div',undefined,'section-caption');const captionCount=el('span');caption.append(captionCount,el('span','Images are grouped by positive prompt'));caption.hidden=true;
+        // The count is announced when it changes; a reload keeps the last count shown, so nothing else re-announces it.
+        captionCount.setAttribute('role','status');
         const grid=el('div',undefined,'library-grid');grid.setAttribute('role','list');grid.setAttribute('aria-label','Positive prompts');
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
-        const legacy=link('Current prompt library',window.ApiClient.resolveUrl('/prompt_manager/admin'),'workspace-link');
         const actions=headingActions(main,section);
         const exportButton=createButton('Export');exportButton.setAttribute('aria-label','Export full Library JSON');
         const newPrompt=createButton('+ New prompt','ca-primary');actions.append(exportButton,newPrompt);
@@ -184,7 +190,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         }
         scope.listen(exportButton,'click',exportLibrary);
         headingDescription(main,section,'One positive. Reusable negatives. Every experiment stays connected.');
-        continuation.append(message,retry,more);section.append(toolbar,optionsStatus,exportStatus,caption,grid,continuation,legacy);main.append(section);
+        // Nothing follows the grid in the concept; the legacy Library stays one click away on Overview (spec §5).
+        continuation.append(message,retry,more);section.append(optionsStatus,exportStatus,caption,grid,continuation);main.append(section);
         const cards=new Map(), rowNodes=new Map(), spacers=new Map(), heights=new Map(), pendingMeasurements=new Map();
         let state,frame=0,loadFrame=0,observer,optionsRequest,focusOverride=-1;
         const columns=()=>window.innerWidth>=1700?3:window.innerWidth<=700?1:2;
@@ -195,29 +202,37 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         if(restorable?.layout?.inlineSize===inlineSize && restorable.layout.columns===columnCount) for(const [id,height] of restorable.layout.heights) heights.set(id,height);
         const hiddenSave=restorable?null:savedParentId;savedParentId=null;
         function removeCard(card) {measurementObserver?.unobserve(card.node);pendingMeasurements.delete(Number(card.node.dataset.promptId));card.blocks.dispose();card.node.remove();}
+        /** The concept's prompt card (app.js renderLibrary a586) with real counts, last use and rating (#249 D23). */
         function cardFor(item,index) {
-            const article=el('article',undefined,'library-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
-            const art=el('div',undefined,'library-card-art');art.setAttribute('aria-hidden','true');
+            const article=el('article',undefined,'prompt-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
+            const art=el('div',undefined,'card-art');art.setAttribute('aria-hidden','true');
             const previews=item.previews || [];
             for(const image of previews.slice(0,2)) {
-                if(image.is_video && !image.thumbnail_url) art.append(el('span','Video preview','library-art-empty'));
+                if(image.is_video && !image.thumbnail_url) art.append(el('span','Video preview','small'));
                 else {
                     const img=el('img');img.src=window.ApiClient.resolveUrl(image.thumbnail_url || image.url);img.alt='';img.loading='lazy';img.decoding='async';img.width=image.width || 800;img.height=image.height || 600;art.append(img);
                 }
             }
-            if(!previews.length) art.append(el('span','No available image previews','library-art-empty'));
-            const content=el('div',undefined,'library-card-content');
-            const heading=el('header',undefined,'library-card-title');
-            const name=link(displayTitle(item),`#/library/${item.id}`,'library-title-link');const h2=el('h2');h2.append(name);
-            heading.append(h2,el('span',item.category || 'Uncategorized','library-chip'));
-            const prompts=el('div',undefined,'library-card-prompts');
-            const blocks=mountPromptBlocks(prompts,{prompts:{positive:{status:'resolved',text:item.text,source:'library'}},sender,parentScope:scope,roles:['positive']});
-            const stats=el('div',undefined,'library-card-meta');stats.append(el('span',item.variant_count?countOf(item.variant_count,'saved negative variant'):'No saved negatives','library-chip library-chip-negative'),el('span',countOf(item.image_count,'linked image')));
-            const vocabulary=el('div',undefined,'library-tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'library-chip'));
-            content.append(heading,prompts,stats,vocabulary);
-            const footer=el('footer',undefined,'library-card-footer');
-            const rating=el('span',item.rating?'★'.repeat(item.rating)+'☆'.repeat(5-item.rating):'Unrated','library-rating');rating.setAttribute('role','img');rating.setAttribute('aria-label',item.rating?`Rated ${item.rating} out of 5`:'Unrated');footer.append(rating);
-            const history=link('',`#/library/${item.id}`,'library-history-link');history.append(createWorkspaceIcon('branch'),el('span','Explore history'));footer.append(history);
+            if(!previews.length) art.append(el('span','No available image previews','small'));
+            const name=displayTitle(item);
+            const content=el('div',undefined,'card-content');
+            const heading=el('div',undefined,'card-title');const open=createButton(name);open.dataset.history='';
+            heading.append(open,el('span',item.category || 'Uncategorized','chip'));
+            const prompts=el('div');
+            const blocks=mountPromptBlocks(prompts,{prompts:{positive:{status:'resolved',text:item.text,source:'library'}},sender,parentScope:scope,roles:['positive'],title:name});
+            const meta=el('div',undefined,'card-meta');
+            meta.append(el('span',`\u2212 ${countOf(item.variant_count,'negative variant')}`,'chip red'),el('span',countOf(item.run_count ?? 0,'run')),el('span',countOf(item.image_count,'image')));
+            const vocabulary=el('div',undefined,'tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'chip'));
+            content.append(heading,prompts,meta,vocabulary);
+            const footer=el('div',undefined,'card-footer');
+            const {stars,hidden}=ratingLabel(item.rating), used=usedLabel(item.last_used_at);
+            const facts=el('span');
+            if(stars) {const shown=el('span',stars);shown.setAttribute('aria-hidden','true');facts.append(shown,el('span',hidden,'ca-visually-hidden'),` \u00b7 ${used}`);}
+            else facts.textContent=used;
+            const actions=el('div',undefined,'row-actions');
+            const send=createButton('','send icon-btn');send.setAttribute('aria-label',`Send positive prompt to ComfyUI: ${name}`);send.append(createWorkspaceIcon('send'));send.dataset.sendPositive='';
+            const explore=createButton('');explore.append(createWorkspaceIcon('branch'),' Explore history');explore.dataset.history='';
+            actions.append(send,explore);footer.append(facts,actions);
             article.append(art,content,footer);article.dataset.index=index;return {node:article,blocks};
         }
         function captureAnchor() {
@@ -285,7 +300,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             }
             pendingMeasurements.clear();
             const restore=dirty?(pendingAnchor || anchor):null;
-            if(dirty) {layout=layoutLibraryRows(state.items.map(item=>heights.get(item.id)??null),columnCount,{estimate:columnCount===1?448:468});dirty=false;}
+            if(dirty) {layout=layoutLibraryRows(state.items.map(item=>heights.get(item.id)??null),columnCount,{estimate:columnCount===1?422:448});dirty=false;}
             const index=restore?indexesById.get(restore.id):undefined;
             const target=index===undefined?undefined:Math.max(0,layout.rows[Math.floor(index/columnCount)].top-restore.offset);
             renderWindow(target);
@@ -315,14 +330,21 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         function focusCard(index,last=false) {
             if(index<0 || index>=state.items.length) return;
             if(dirty) {cancelAnimationFrame(frame);flush();}focusOverride=index;renderWindow();const card=cards.get(state.items[index].id).node;
-            const controls=card.querySelectorAll('a,button');(last?controls[controls.length-1]:controls[0]).focus();card.scrollIntoView({block:'nearest'});focusOverride=-1;renderWindow();
+            const controls=card.querySelectorAll('button');(last?controls[controls.length-1]:controls[0]).focus();card.scrollIntoView({block:'nearest'});focusOverride=-1;renderWindow();
         }
+        // The title and Explore history open the prompt's history; the footer send sends the full positive (D23).
+        scope.listen(grid,'click',event=>{
+            const card=event.target.closest('article[data-prompt-id]');if(!card) return;
+            const item=state?.items[indexesById.get(Number(card.dataset.promptId))];if(!item) return;
+            if(event.target.closest('[data-history]')) window.location.hash=`#/library/${item.id}`;
+            const send=event.target.closest('[data-send-positive]');if(send) sender.open({positive:item.text},send);
+        });
         scope.listen(grid,'keydown',event=>{
             const card=event.target.closest('article[data-prompt-id]');if(!card) return;
             const index=Number(card.dataset.index);
-            if(event.target.matches('a') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1));}
+            if(event.target.matches('[data-history]') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1));}
             else if(event.key==='Tab') {
-                const controls=card.querySelectorAll('a,button');const next=index+(event.shiftKey?-1:1);
+                const controls=card.querySelectorAll('button');const next=index+(event.shiftKey?-1:1);
                 const edge=event.shiftKey?controls[0]:controls[controls.length-1];
                 if(event.target===edge && state.items[next] && !cards.has(state.items[next].id)) {event.preventDefault();focusCard(next,event.shiftKey);}
             }
@@ -337,9 +359,12 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 } else if(retainedAnchor) {pendingAnchor=retainedAnchor;retainedAnchor=null;}
             }
             state=next;
-            caption.textContent=`${next.items.length} of ${next.total} positive prompts · Images are grouped by positive prompt`;
+            if(next.variantTotal!==null) {
+                const count=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
+                if(captionCount.textContent!==count) captionCount.textContent=count;caption.hidden=false;
+            }
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
-            message.textContent=(next.error?'Prompt library could not be loaded. Retry or refresh.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
+            message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
             schedule();scheduleLoad();
         }
@@ -354,14 +379,29 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             optionsRequest?.abort();const request=optionsRequest=new AbortController();
             try {
                 const data=await api.get('/prompt_manager/library/options',{signal:request.signal});if(scope.signal.aborted || optionsRequest!==request) return;
-                const values=[...new Set([...data.categories,filters.category].filter(Boolean))];category.replaceChildren(new Option('All categories',''),...values.map(value=>new Option(value,value)));category.value=filters.category;optionsStatus.hidden=true;
-            } catch {if(!scope.signal.aborted && optionsRequest===request) {optionsStatus.textContent='Categories could not be loaded. Refresh library to retry.';optionsStatus.hidden=false;}}
+                toolbar.setCategories([...data.categories,filters.category]);toolbar.setValue({category:filters.category});optionsStatus.hidden=true;
+            } catch {if(!scope.signal.aborted && optionsRequest===request) {optionsStatus.textContent=CATEGORIES_FAILED;optionsStatus.hidden=false;}}
         }
-        const reset=()=>{restoreScrollY=null;return stream.reset(filters);};
-        scope.listen(search,'input',scope.debounce(()=>{filters.text=search.value.trim();reset();},200));
-        scope.listen(tags,'input',scope.debounce(()=>{filters.tags=[...new Set(tags.value.split(',').map(tag=>tag.trim()).filter(Boolean))];reset();},200));
-        scope.listen(category,'change',()=>{filters.category=category.value;reset();});scope.listen(sort,'change',()=>{filters.sort=sort.value;reset();});
-        scope.listen(refresh,'click',()=>{loadCategories();reset();});scope.listen(more,'click',()=>stream.loadMore());scope.listen(retry,'click',()=>stream.loadMore());
+        const reset=()=>{restoreScrollY=null;toolbar.setActiveFilters(refinements());return stream.reset(filters);};
+        /** A toolbar report; a debounced search that lands after a select already applied the same values reloads nothing. */
+        function applyToolbar(value) {
+            const next={text:value.q.trim(),category:value.category,sort:value.sort};
+            if(Object.entries(next).every(([key,item])=>filters[key]===item)) return;
+            Object.assign(filters,next);reset();
+        }
+        /** "Refine this view" with the Library's one extra filter, Tags (D14); Clear also clears the toolbar category. */
+        function openFilters(trigger) {
+            openRefineDialog({scope,trigger,fields:[{key:'tags'}],values:{tags:filters.tags.join(', ')},onApply:applyRefinement,
+                onClear:cleared=>{toolbar.setValue({category:cleared.category});applyRefinement(cleared);}});
+        }
+        function applyRefinement({tags,category=filters.category}) {
+            const next=[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
+            if(category===filters.category && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
+            filters.category=category;filters.tags=next;reset();
+        }
+        scope.listen(more,'click',()=>stream.loadMore());
+        // Retry also re-reads a category list that failed (D15: Refresh is gone).
+        scope.listen(retry,'click',()=>{if(!optionsStatus.hidden)loadCategories();stream.loadMore();});
         scope.listen(window,'scroll',()=>{reconcileScroll();schedule();});
         // Mobile viewport resizing can adjust scroll before delivering its resize event.
         scope.listen(window,'resize',()=>{pendingAnchor ||= anchor;observedScrollY=window.scrollY;schedule();});
@@ -369,7 +409,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
             const savedFilters={...filters,tags:[...filters.tags]},savedAnchor=pendingAnchor || anchor || captureAnchor();
             // A write while mounted makes this stream stale: keep only what still means something.
             shelfVisit=mountedGeneration!==writeGeneration?{filters:savedFilters,anchor:savedAnchor}:state?{filters:savedFilters,state,scrollY:window.scrollY,layout:{inlineSize,columns:columnCount,heights:[...heights],anchor:savedAnchor}}:null;
-            stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
+            toolbarScope.dispose();stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
         loadCategories();if(restorable) {render(stream.state);if(restorable.state.loading || restorable.state.error)stream.loadMore();} else reset();
     }
 

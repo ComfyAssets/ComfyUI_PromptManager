@@ -456,8 +456,8 @@ test('library heading offers Export then + New prompt, and New opens the saved p
     await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]').first()).toBeVisible();
     const actions=headingActions(page).locator('button');
     expect(await visibleNames(actions)).toEqual(['Export','+ New prompt']);
-    // One linked image is counted in the singular.
-    const f=page.fixture;await expect(page.locator(`article[data-prompt-id="${f.positive_id}"]`).getByText('1 linked image',{exact:true})).toHaveCount(1);
+    // One image is counted in the singular.
+    const f=page.fixture;await expect(page.locator(`article[data-prompt-id="${f.positive_id}"]`).getByText('1 image',{exact:true})).toHaveCount(1);
     await expect(actions.nth(0)).toHaveAccessibleName('Export full Library JSON');await expect(actions.nth(0)).not.toHaveClass(/ca-primary/);
     await expect(actions.nth(1)).toHaveClass(/\bca-primary\b/);
     for(const index of [0,1])expect((await actions.nth(index).boundingBox()).height).toBeGreaterThanOrEqual(32);
@@ -472,7 +472,7 @@ test('library heading offers Export then + New prompt, and New opens the saved p
     // Exactly one saved negative is counted in the singular, in history and on the shelf card.
     await expect(variantsPanel(page).getByText('1 of 1 saved negative variant',{exact:true})).toHaveCount(1);
     await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-    await expect(page.locator(`article[data-prompt-id="${created.id}"]`).getByText('1 saved negative variant',{exact:true})).toHaveCount(1);
+    await expect(page.locator(`article[data-prompt-id="${created.id}"]`).getByText('− 1 negative variant',{exact:true})).toHaveCount(1);
     expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library']);
 });
 
@@ -698,14 +698,14 @@ test('archive hides a pair, Show archived finds it and Restore keeps it selected
 });
 
 test('filter hidden save resets shelf cursor and measured heights retaining anchor',async({page})=>{
-    await page.goto(`${workspace}#/library`);await page.getByRole('searchbox',{name:'Search prompts',exact:true}).fill('Standalone');
+    await page.goto(`${workspace}#/library`);await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('Standalone');
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
     const shelfReads=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library'&&item.method()==='GET')shelfReads.push(url.searchParams);});
     await page.getByRole('button',{name:'+ New prompt',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
     await field(dialog,'Title').fill('Hidden by filter');await field(dialog,'Positive prompt').fill('Lighthouse in heavy rain');await button(dialog,'Save').click();
     await expect(page).toHaveURL(/#\/library\/\d+$/);await expect(page.locator('#workspace-main h1')).toHaveText('Hidden by filter');
     await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
-    await expect(page.getByRole('searchbox',{name:'Search prompts',exact:true})).toHaveValue('Standalone');
+    await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('Standalone');
     await expect(page.locator('article[data-prompt-id]')).toHaveCount(1);
     await expect(page.getByText('The saved prompt is hidden by the current filters.',{exact:false})).toBeVisible();
     expect(shelfReads.length).toBeGreaterThan(0);expect(shelfReads.every(params=>!params.has('cursor'))).toBe(true);

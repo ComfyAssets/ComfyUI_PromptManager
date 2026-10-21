@@ -22,8 +22,8 @@ test('native library sends the selected saved pair into a real ComfyUI destinati
     const workspace=await context.newPage();const errors=[];workspace.on('pageerror',error=>errors.push(error.message));
     try {
         await workspace.goto('/prompt_manager/workspace#/library');
-        await workspace.getByRole('searchbox',{name:'Search prompts',exact:true}).fill(positive);
-        await workspace.locator('article[data-prompt-id]').filter({has:workspace.getByText(positive,{exact:true})}).getByRole('link',{name:'Explore history',exact:true}).click();
+        await workspace.getByRole('searchbox',{name:'Search workspace',exact:true}).fill(positive);
+        await workspace.locator('article[data-prompt-id]').filter({has:workspace.getByText(positive,{exact:true})}).getByRole('button',{name:'Explore history',exact:true}).click();
         const history=workspace.getByRole('region',{name:'Prompt history',exact:true});
         await history.getByRole('button',{name:'Select negative variant 1',exact:true}).click();
         await expect(history.getByRole('region',{name:'Saved prompt texts',exact:true}).getByRole('region',{name:'Negative prompt',exact:true})).toContainText(negative);

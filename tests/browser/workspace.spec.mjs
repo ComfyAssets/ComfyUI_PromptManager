@@ -13,7 +13,8 @@ const routes = [
     ['overview', 'Overview', null],
     // D29: Images no longer links the legacy gallery; Overview's tool cards still do.
     ['images', 'Images', null],
-    ['library', 'Prompt library', '/prompt_manager/admin'],
+    // #249 E3: the shelf no longer links the legacy Library; Overview's tool card still does.
+    ['library', 'Prompt library', null],
     ['tags', 'Tags & categories', null],
     ['inspect', 'Inspect a file', '/prompt_manager/gallery.html'],
     ['system', 'System', '/prompt_manager/admin'],
@@ -81,8 +82,11 @@ test('all shell destinations deep-link, reload and expose working existing appli
         await page.reload();
         await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
     }
-    // D29: the legacy image gallery is reached from Overview's tool card, not from Images.
+    // D29 and #249 E3: the legacy gallery and Library are reached from Overview's tool cards, not from their pages.
     await page.goto(`${workspace}#/overview`);
+    const library = page.locator('#workspace-main').getByRole('link', { name: 'Open existing prompt library', exact: true });
+    await expect(library).toHaveAttribute('href', '/prompt_manager/admin');
+    await expect(await request.get('/prompt_manager/admin')).toBeOK();
     const gallery = page.locator('#workspace-main').getByRole('link', { name: 'Open existing image gallery', exact: true });
     await expect(gallery).toHaveAttribute('href', '/prompt_manager/gallery');
     await expect(await request.get('/prompt_manager/gallery')).toBeOK();

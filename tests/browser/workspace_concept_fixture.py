@@ -359,7 +359,9 @@ def seed_workspace_concept(
     db = api.db
     epoch = db.get_execution_epoch()
     prompts = []
-    for prompt in CONCEPT_PROMPTS:
+    # The concept lists its prompts most recent first (renderLibrary under Recently
+    # added keeps the array order), so they are created last to first.
+    for prompt in reversed(CONCEPT_PROMPTS):
         first_name, first_text = prompt.negatives[0]
         receipt = db.create_library_recipe(
             prompt.positive,
@@ -379,8 +381,8 @@ def seed_workspace_concept(
             pair_ids.append(db.save_prompt_pair(prompt.positive, text, title=name))
         # Real queue-hook counting (D23): four runs, the last one now.
         db.record_prompt_use(positive_id, times=CONCEPT_RUN_COUNT)
-        prompts.append(
-            {"id": prompt.id, "positive_id": positive_id, "pair_ids": pair_ids}
+        prompts.insert(
+            0, {"id": prompt.id, "positive_id": positive_id, "pair_ids": pair_ids}
         )
 
     folder = root / "output" / "concepts"
