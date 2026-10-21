@@ -38,6 +38,11 @@ try:
     from ...utils.parallel import map_parallel
     from ...utils.inspection_response import encode_inspection_response
     from ...utils.prompt_inspector import MetadataReadError, read_inspection_file
+    from ...utils.file_reveal import (
+        OpenerUnavailable,
+        is_local_request,
+        reveal_in_file_manager,
+    )
 except ImportError:
     from database.image_favorites import MAX_KEY_LENGTH
     from database.library import display_title
@@ -46,6 +51,11 @@ except ImportError:
     from utils.parallel import map_parallel
     from utils.inspection_response import encode_inspection_response
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
+    from utils.file_reveal import (
+        OpenerUnavailable,
+        is_local_request,
+        reveal_in_file_manager,
+    )
 
 
 IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
@@ -522,6 +532,45 @@ def _favorite_target(data: Mapping, roots: list[Path]):
     return (index, relative), None
 
 
+def _reveal_target(data: Mapping):
+    """``((index, scope, relative), None)`` for a reveal body, else an error.
+
+    Only the listing identity is accepted: an int root index, the root's
+    64-hex scope and a bounded root-relative path, never an absolute,
+    drive-qualified or ``..`` path.
+    """
+    index, scope, relative = (
+        data.get("root_index"),
+        data.get("root_scope"),
+        data.get("path"),
+    )
+    if type(index) is not int or index < 0:
+        return None, bad_request("Invalid gallery root")
+    if not isinstance(scope, str) or re.fullmatch(r"[0-9a-f]{64}", scope) is None:
+        return None, bad_request("Invalid gallery root scope")
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or len(relative) > MAX_FAVORITE_PATH
+        or "\0" in relative
+        or _has_traversal(relative)
+        or re.match(r"^[a-zA-Z]:", relative)
+    ):
+        return None, bad_request("path must be a relative media path")
+    return (index, scope, relative), None
+
+
+def _not_local():
+    return web.json_response(
+        {
+            "success": False,
+            "code": "not-local",
+            "error": "Show in folder works only on the computer running ComfyUI.",
+        },
+        status=403,
+    )
+
+
 # The path module whose case rules key favorites (tests swap in ntpath).
 _path_flavor = os.path
 
@@ -827,6 +876,11 @@ class ImageRoutesMixin:
         @routes.delete("/prompt_manager/images/favorite")
         async def clear_image_favorite_route(request):
             return await self.update_image_favorite(request, favorite=False)
+
+        # POST, local-only: opens this computer's file manager (D38).
+        @routes.post("/prompt_manager/images/reveal")
+        async def reveal_image_route(request):
+            return await self.reveal_image(request)
 
         # POST: drops the server-side listing cache and rewalks the output roots.
         @routes.post("/prompt_manager/gallery/rescan")
@@ -2155,6 +2209,66 @@ class ImageRoutesMixin:
                 "path": listed or relative,
             }
         )
+
+    # Swapped by tests and the disposable browser server; never a shell.
+    _reveal_opener = staticmethod(reveal_in_file_manager)
+
+    @staticmethod
+    def _reveal_path(relative: str, root: Path) -> Path | None:
+        """The real path of a regular media file under *root*, else None."""
+        resolved = ImageRoutesMixin._resolve_client_media_path(relative, [root])
+        if resolved is None or _media_access_error(resolved, [root]) is not None:
+            return None
+        real = Path(os.path.realpath(resolved))
+        return real if real.is_file() and _is_within(real, root) else None
+
+    async def reveal_image(self, request):
+        """POST ``{root_index, root_scope, path}``: show the file in its folder.
+
+        Local-only (no proxy header, loopback client and Host): the browser
+        must run on the computer whose file manager opens.
+        """
+        if not is_local_request(request.remote, request.headers):
+            return _not_local()
+        data, error = await _json_body_or_error(request)
+        if error is not None:
+            return error
+        target, error = _reveal_target(data)
+        if error is not None:
+            return error
+        index, scope, relative = target
+        roots = list(self._get_all_output_dirs())
+        error = self._gallery_scope_error(
+            {"root_scope": scope, "root": str(index)}, roots
+        )
+        if error is not None:
+            return error
+        root = roots[index]
+        if Path(relative).suffix.lower() not in SERVABLE_EXTENSIONS:
+            return _forbidden("Only media files can be shown")
+        path = await self._run_in_executor(self._reveal_path, relative, root)
+        if path is None:
+            return web.json_response(
+                {"success": False, "error": "Image file not found"}, status=404
+            )
+        try:
+            await self._run_in_executor(self._reveal_opener, path)
+        except OpenerUnavailable:
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "unavailable",
+                    "error": "No file manager is available on this computer.",
+                },
+                status=501,
+            )
+        except Exception:
+            self.logger.exception("Show in folder failed")
+            return web.json_response(
+                {"success": False, "error": "The folder could not be opened."},
+                status=500,
+            )
+        return web.json_response({"success": True})
 
     def _favorite_listing(self, root: Path, files: list) -> dict[str, str]:
         """``{relative key: listing POSIX spelling}`` for one root's scan.
