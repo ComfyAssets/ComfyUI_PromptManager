@@ -17,7 +17,6 @@ from PIL.PngImagePlugin import PngInfo
 from tests.browser.workspace_concept_fixture import (
     MAX_EXTRA_IMAGES as CONCEPT_MAX_EXTRA_IMAGES,
     MAX_SEEDLESS_IMAGES as CONCEPT_MAX_SEEDLESS_IMAGES,
-    MAX_POSITIVE_LINKS as CONCEPT_MAX_POSITIVE_LINKS,
     seed_workspace_concept,
 )
 from tests.browser.workspace_visual_fixture import seed_workspace_visual
@@ -443,7 +442,6 @@ def create_app(root: Path) -> web.Application:
         limits = {
             "extra_images": CONCEPT_MAX_EXTRA_IMAGES,
             "seedless_images": CONCEPT_MAX_SEEDLESS_IMAGES,
-            "positive_links": CONCEPT_MAX_POSITIVE_LINKS,
         }
         if (
             request.query
@@ -467,7 +465,6 @@ def create_app(root: Path) -> web.Application:
                 root,
                 extra_images=data.get("extra_images", 0),
                 seedless_images=data.get("seedless_images", 0),
-                positive_links=data.get("positive_links", 0),
             )
         )
         return web.json_response({"success": True, **manifest})

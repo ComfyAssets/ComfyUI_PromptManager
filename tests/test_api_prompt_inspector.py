@@ -1302,6 +1302,64 @@ class TestPromptInspector(ImageAPITestCase):
         )
         roots.assert_called_once_with()
 
+    async def test_recipe_link_falls_back_to_positive_category_and_tags_per_field(
+        self,
+    ):
+        # D39 ruling (2026-10-21): a recipe's own category and tags win when set;
+        # otherwise each field falls back to the linked positive's, separately, and
+        # the scopes say where each value came from (no merging of tag sets).
+        cases = (
+            ("Recipe cat", ["recipe"], "Recipe cat", "pair", ["recipe"], "pair"),
+            (None, [], "Positive cat", "positive", ["positive"], "positive"),
+            ("  ", [], "Positive cat", "positive", ["positive"], "positive"),
+            ("Recipe cat", [], "Recipe cat", "pair", ["positive"], "positive"),
+            (None, ["recipe"], "Positive cat", "positive", ["recipe"], "pair"),
+        )
+        for index, case in enumerate(cases):
+            recipe_category, recipe_tags = case[:2]
+            category, category_scope, tags, tags_scope = case[2:]
+            with self.subTest(case=index):
+                text = f"Fallback owner {index}"
+                positive = self._save_prompt(
+                    text, category="Positive cat", tags=["positive"]
+                )
+                pair = self.api.db.save_prompt_pair(
+                    text,
+                    f"Fallback noise {index}",
+                    category=recipe_category,
+                    tags=recipe_tags,
+                )
+                self.assertEqual(
+                    self.api.db.get_prompt_pair(pair)["positive_prompt_id"], positive
+                )
+                filename = f"fallback-{index}.png"
+                path = png(self.output_dir / filename)
+                image = self.api.db.link_image_to_prompt(positive, str(path))
+                self.api.db.link_image_to_pair(pair, image, {"source": "fixture"})
+                response, result = await self.inspect(filename)
+                self.assertEqual(response.status, 200)
+                library = result["library"]
+                self.assertEqual(library["status"], "linked")
+                self.assertEqual(library["pair_id"], pair)
+                self.assertEqual(library["category"], category)
+                self.assertEqual(library["category_scope"], category_scope)
+                self.assertEqual(library["tags"], tags)
+                self.assertEqual(library["tags_scope"], tags_scope)
+                self.assertNotIn("metadata_scope", library)
+
+    async def test_positive_only_link_keeps_positive_scopes(self):
+        positive = self._save_prompt("Solo owner", tags=["solo"])
+        path = png(self.output_dir / "solo.png")
+        self.api.db.link_image_to_prompt(positive, str(path))
+        response, result = await self.inspect("solo.png")
+        self.assertEqual(response.status, 200)
+        library = result["library"]
+        self.assertEqual(library["pair_id"], None)
+        self.assertEqual(library["category"], None)
+        self.assertEqual(library["category_scope"], "positive")
+        self.assertEqual(library["tags"], ["solo"])
+        self.assertEqual(library["tags_scope"], "positive")
+
     async def test_exact_saved_association_ambiguity_preserves_physical_file_evidence(
         self,
     ):
@@ -1340,8 +1398,9 @@ class TestPromptInspector(ImageAPITestCase):
                     if count == 1:
                         self.assertEqual(result["library"]["positive_id"], positive)
                         self.assertEqual(
-                            result["library"]["metadata_scope"], "positive"
+                            result["library"]["category_scope"], "positive"
                         )
+                        self.assertEqual(result["library"]["tags_scope"], "positive")
                         self.assertEqual(result["library"]["category"], "Category 1")
                         self.assertEqual(result["library"]["tags"], ["owner-1"])
                         if not readable:
@@ -1361,7 +1420,8 @@ class TestPromptInspector(ImageAPITestCase):
                         "title": None,
                         "category": None,
                         "tags": [],
-                        "metadata_scope": None,
+                        "category_scope": None,
+                        "tags_scope": None,
                     },
                 )
                 for field in (

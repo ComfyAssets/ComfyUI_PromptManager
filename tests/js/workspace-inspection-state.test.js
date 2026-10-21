@@ -27,7 +27,7 @@ function envelope(entry = image()) {
             workflow_graph: { status: 'absent', value: null }, parameters: null,
         },
         resolution: { state: 'ambiguous', sampler_id: null, reason: 'unknown negative' },
-        library: { status: 'linked', scope: 'saved-library', positive_id: 7, pair_id: 8, title: 'Recipe', category: 'Subject', tags: ['cat'], metadata_scope: 'pair' },
+        library: { status: 'linked', scope: 'saved-library', positive_id: 7, pair_id: 8, title: 'Recipe', category: 'Subject', tags: ['cat'], category_scope: 'pair', tags_scope: 'pair' },
     };
 }
 function pendingApi() {
@@ -276,6 +276,10 @@ test('record rejects root path media and invalid versioned fields with retryable
         data => { data.file.size = -1; }, data => { data.library.positive_id = 9007199254740992; },
         data => { data.metadata.prompt_graph = { status: 'limited', value: {} }; },
         data => { data.resolution.sampler_id = {}; },
+        data => { data.library.tags_scope = 'recipe'; },
+        data => { data.library.category_scope = 'recipe'; },
+        data => { delete data.library.category_scope; },
+        data => { delete data.library.tags_scope; },
     ]) {
         const data = envelope(); mutate(data);
         assert.throws(() => toRecord(data, image(), extractGenerationFacts), error => error instanceof TypeError && !error.refreshRequired);

@@ -36,7 +36,8 @@ LIBRARY = {
     "title": None,
     "category": None,
     "tags": [],
-    "metadata_scope": None,
+    "category_scope": None,
+    "tags_scope": None,
 }
 NODE_TIMEOUT_SECONDS = 120
 

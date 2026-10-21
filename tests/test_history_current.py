@@ -16,6 +16,7 @@ from tests.test_api_images import make_png
 from database.operations import PromptDatabase
 from py.config import GalleryConfig
 from utils.execution_outputs import snapshot_output_roots
+from utils.hashing import generate_prompt_hash
 
 
 class CurrentLocationTests(unittest.TestCase):
@@ -330,6 +331,93 @@ class CurrentLocationTests(unittest.TestCase):
         self.assertEqual(result[unique_locator]["gallery_match"], "unique")
         self.assertEqual(result[unique_locator]["library"]["status"], "limited")
         self.assertIsNone(result[unique_locator]["library"].get("pair_id"))
+
+    def test_gallery_recipe_display_falls_back_to_positive_per_field(self):
+        # D39 ruling (2026-10-21), shared with the Images inspector.
+        mod = self.module("database.history_gallery")
+        db = PromptDatabase(str(self.base / "gallery.db"))
+        self.addCleanup(db.close_all)
+        cases = (
+            ("Recipe cat", ["recipe"], ("Recipe cat", "pair", ["recipe"], "pair")),
+            (None, [], ("Positive cat", "positive", ["positive"], "positive")),
+            ("Recipe cat", [], ("Recipe cat", "pair", ["positive"], "positive")),
+            ("", ["recipe"], ("Positive cat", "positive", ["recipe"], "pair")),
+        )
+        for index, (recipe_category, recipe_tags, expected) in enumerate(cases):
+            with self.subTest(case=index):
+                text = f"owner {index}"
+                positive = db.save_prompt(
+                    text,
+                    prompt_hash=generate_prompt_hash(text),
+                    category="Positive cat",
+                )
+                db.set_prompt_tags(positive, ["positive"])
+                pair = db.save_prompt_pair(
+                    text, "noise", category=recipe_category, tags=recipe_tags
+                )
+                path = make_png(self.output / f"fallback-{index}.png")
+                locator = os.path.normcase(str(path))
+                image = db.link_image_to_prompt(positive, str(path))
+                db.link_image_to_pair(pair, image, {"source": "fixture"})
+                conn = db.model.get_connection()
+                with db.recorded_history_snapshot():
+                    result = mod.read_history_gallery(conn, (locator,))
+                library = result[locator]["library"]
+                self.assertEqual(library["pair_id"], pair)
+                self.assertEqual(
+                    (
+                        library["category"],
+                        library["category_scope"],
+                        library["tags"],
+                        library["tags_scope"],
+                    ),
+                    expected,
+                )
+
+    def test_gallery_blank_recipe_category_and_skipped_positive_tags_query(self):
+        mod = self.module("database.history_gallery")
+        db = PromptDatabase(str(self.base / "blank.db"))
+        self.addCleanup(db.close_all)
+        cases = (
+            ("  ", ["recipe"], 0),
+            ("\u3000", [], 1),
+            ("\u00a0 ", ["recipe"], 0),
+        )
+        for index, (blank, recipe_tags, positive_tag_queries) in enumerate(cases):
+            with self.subTest(case=index):
+                text = f"blank owner {index}"
+                positive = db.save_prompt(
+                    text,
+                    prompt_hash=generate_prompt_hash(text),
+                    category="Positive cat",
+                )
+                db.set_prompt_tags(positive, ["positive"])
+                pair = db.save_prompt_pair(text, "noise", tags=recipe_tags)
+                path = make_png(self.output / f"blank-{index}.png")
+                locator = os.path.normcase(str(path))
+                image = db.link_image_to_prompt(positive, str(path))
+                db.link_image_to_pair(pair, image, {"source": "fixture"})
+                conn = db.model.get_connection()
+                # Legacy rows can hold a blank-looking category the writers now trim.
+                conn.execute(
+                    "UPDATE prompt_pairs SET category=? WHERE id=?", (blank, pair)
+                )
+                conn.commit()
+                statements = []
+                conn.set_trace_callback(statements.append)
+                self.addCleanup(conn.set_trace_callback, None)
+                with db.recorded_history_snapshot():
+                    result = mod.read_history_gallery(conn, (locator,))
+                conn.set_trace_callback(None)
+                library = result[locator]["library"]
+                self.assertEqual(library["category"], "Positive cat")
+                self.assertEqual(library["category_scope"], "positive")
+                tag_queries = [
+                    statement
+                    for statement in statements
+                    if "FROM prompt_tags pt" in statement
+                ]
+                self.assertEqual(len(tag_queries), positive_tag_queries, statements)
 
     def test_host_root_failure_and_removal_do_not_search_another_root(self):
         make_png(self.output / "image.png")
