@@ -8,6 +8,7 @@ import ctypes
 import os
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -80,16 +81,25 @@ class TestIsLocalRequest(unittest.TestCase):
 
 class TestRevealInFileManager(unittest.TestCase):
     def setUp(self):
-        self.path = Path(os.path.abspath(os.path.join(os.sep, "out", "sub", "a.png")))
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        self.root = Path(os.path.realpath(temp.name)) / "out"
+        self.path = self.root / "sub" / "a.png"
+        self.path.parent.mkdir(parents=True)
+        self.path.write_bytes(b"png")
         self.popen = patch.object(subprocess, "Popen").start()
+        self.reaped = patch.object(file_reveal, "_reap").start()
         self.addCleanup(patch.stopall)
 
+    def reveal(self, path=None):
+        reveal_in_file_manager(self.path if path is None else path, self.root)
+
     def which(self, available):
-        return patch.object(
-            file_reveal.shutil,
-            "which",
-            side_effect=lambda name: available.get(name),
-        )
+        def lookup(name, path=None):
+            self.assertEqual(path, file_reveal.SYSTEM_PATH)
+            return available.get(name)
+
+        return patch.object(file_reveal.shutil, "which", side_effect=lookup)
 
     def argv(self, call=0):
         return self.popen.call_args_list[call].args[0]
@@ -99,7 +109,9 @@ class TestRevealInFileManager(unittest.TestCase):
         for stream in ("stdin", "stdout", "stderr"):
             self.assertIs(options[stream], subprocess.DEVNULL)
         self.assertIs(options["close_fds"], True)
+        self.assertIs(options["start_new_session"], True)
         self.assertNotIn("shell", options)
+        self.assertEqual(options["env"]["PATH"], file_reveal.SYSTEM_PATH)
 
     def windows(self, selected=True, startfile=None):
         """Windows without Windows: the shell call and os.startfile injected."""
@@ -113,10 +125,12 @@ class TestRevealInFileManager(unittest.TestCase):
     def test_windows_selects_through_the_shell_api_without_a_process(self):
         # A comma path splits Explorer's own command line (security review H1);
         # the shell API takes the path as one value, unchanged.
-        path = Path(os.path.abspath(os.path.join(os.sep, "out", "a,", "b,c.png")))
+        path = self.root / "a," / "b,c.png"
+        path.parent.mkdir()
+        path.write_bytes(b"png")
         select, start, platform = self.windows(selected=True)
         with select as shell, start as startfile, platform:
-            reveal_in_file_manager(path)
+            self.reveal(path)
         shell.assert_called_once_with(path)
         startfile.assert_not_called()
         self.popen.assert_not_called()
@@ -124,7 +138,7 @@ class TestRevealInFileManager(unittest.TestCase):
     def test_windows_falls_back_to_opening_the_folder(self):
         select, start, platform = self.windows(selected=False)
         with select as shell, start as startfile, platform:
-            reveal_in_file_manager(self.path)
+            self.reveal()
         shell.assert_called_once_with(self.path)
         startfile.assert_called_once_with(str(self.path.parent), "explore")
         self.popen.assert_not_called()
@@ -134,7 +148,7 @@ class TestRevealInFileManager(unittest.TestCase):
             selected=False, startfile=MagicMock(side_effect=OSError("denied"))
         )
         with select, start, platform, self.assertRaises(OSError):
-            reveal_in_file_manager(self.path)
+            self.reveal()
         self.popen.assert_not_called()
 
     def test_windows_without_startfile_is_unavailable(self):
@@ -144,41 +158,93 @@ class TestRevealInFileManager(unittest.TestCase):
             patch.object(file_reveal.os, "startfile", None, create=True),
             self.assertRaises(OpenerUnavailable),
         ):
-            reveal_in_file_manager(self.path)
+            self.reveal()
         self.popen.assert_not_called()
 
-    def test_macos_reveals_with_open(self):
+    def test_macos_reveals_with_the_system_open(self):
         with (
             patch.object(file_reveal.sys, "platform", "darwin"),
-            self.which({"open": "/usr/bin/open"}),
+            patch.object(file_reveal, "_macos_open", return_value="/usr/bin/open"),
+            self.which({"open": "/planted/open"}),
         ):
-            reveal_in_file_manager(self.path)
+            self.reveal()
         self.assertEqual(self.argv(), ["/usr/bin/open", "-R", str(self.path)])
         self.assert_detached()
-        self.assertIs(self.popen.call_args.kwargs["start_new_session"], True)
         self.popen.return_value.wait.assert_not_called()
+        self.reaped.assert_called_once_with(self.popen.return_value)
+
+    def test_macos_open_is_the_fixed_system_path(self):
+        self.assertEqual(file_reveal.MACOS_OPEN, "/usr/bin/open")
+        with patch.object(file_reveal.os.path, "isfile", return_value=False):
+            self.assertIsNone(file_reveal._macos_open())
+        with (
+            patch.object(file_reveal.os.path, "isfile", return_value=True),
+            patch.object(file_reveal.os, "access", return_value=True),
+        ):
+            self.assertEqual(file_reveal._macos_open(), "/usr/bin/open")
+        with (
+            patch.object(file_reveal.sys, "platform", "darwin"),
+            patch.object(file_reveal, "_macos_open", return_value=None),
+            self.assertRaises(OpenerUnavailable),
+        ):
+            self.reveal()
+        self.popen.assert_not_called()
 
     def test_relative_path_lookup_never_counts(self):
         with (
-            patch.object(file_reveal.sys, "platform", "darwin"),
-            self.which({"open": "./open"}),
+            patch.object(file_reveal.sys, "platform", "linux"),
+            self.which({"dbus-send": "./dbus-send", "xdg-open": "bin/xdg-open"}),
             self.assertRaises(OpenerUnavailable),
         ):
-            reveal_in_file_manager(self.path)
+            self.reveal()
         self.popen.assert_not_called()
 
-    def test_linux_asks_the_file_manager_service_first(self):
+    def test_children_get_a_minimal_environment(self):
+        inherited = {
+            "PATH": "/venv/bin:/usr/bin",
+            "PYTHONPATH": "/comfy",
+            "LD_LIBRARY_PATH": "/venv/lib",
+            "VIRTUAL_ENV": "/venv",
+            "CIVITAI_API_KEY": "secret",
+            "HOME": "/home/u",
+            "DISPLAY": ":0",
+            "WAYLAND_DISPLAY": "wayland-0",
+            "XDG_RUNTIME_DIR": "/run/user/1000",
+            "XDG_CURRENT_DESKTOP": "KDE",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+            "LANG": "en_US.UTF-8",
+        }
+        with patch.dict(os.environ, inherited, clear=True):
+            env = file_reveal._child_env()
+        self.assertEqual(
+            env,
+            {
+                "PATH": file_reveal.SYSTEM_PATH,
+                "HOME": "/home/u",
+                "DISPLAY": ":0",
+                "WAYLAND_DISPLAY": "wayland-0",
+                "XDG_RUNTIME_DIR": "/run/user/1000",
+                "XDG_CURRENT_DESKTOP": "KDE",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+                "LANG": "en_US.UTF-8",
+            },
+        )
+        self.assertNotIn("/venv", file_reveal.SYSTEM_PATH)
+
+    def test_linux_asks_the_file_manager_service_and_waits_for_its_reply(self):
         self.popen.return_value.wait.return_value = 0
         with (
             patch.object(file_reveal.sys, "platform", "linux"),
             self.which({"dbus-send": "/usr/bin/dbus-send", "xdg-open": "/x"}),
         ):
-            reveal_in_file_manager(self.path)
+            self.reveal()
         self.assertEqual(
             self.argv(),
             [
                 "/usr/bin/dbus-send",
                 "--session",
+                "--print-reply",
+                "--reply-timeout=2000",
                 "--dest=org.freedesktop.FileManager1",
                 "--type=method_call",
                 "/org/freedesktop/FileManager1",
@@ -188,46 +254,45 @@ class TestRevealInFileManager(unittest.TestCase):
             ],
         )
         self.assertEqual(self.popen.call_count, 1)
+        self.popen.return_value.wait.assert_called_once_with(
+            timeout=file_reveal.DBUS_WAIT
+        )
         self.assert_detached()
-
-    def test_linux_slow_service_start_counts_as_delivered(self):
-        self.popen.return_value.wait.side_effect = subprocess.TimeoutExpired("d", 2)
-        with (
-            patch.object(file_reveal.sys, "platform", "linux"),
-            self.which({"dbus-send": "/usr/bin/dbus-send", "xdg-open": "/x"}),
-        ):
-            reveal_in_file_manager(self.path)
-        self.assertEqual(self.popen.call_count, 1)
+        self.reaped.assert_not_called()
 
     def test_linux_falls_back_to_xdg_open_on_the_folder(self):
+        both = {"dbus-send": "/usr/bin/dbus-send", "xdg-open": "/usr/bin/xdg-open"}
         cases = {
             "missing": ({"xdg-open": "/usr/bin/xdg-open"}, None),
-            "non-zero": (
-                {"dbus-send": "/usr/bin/dbus-send", "xdg-open": "/usr/bin/xdg-open"},
-                1,
-            ),
-            "start error": (
-                {"dbus-send": "/usr/bin/dbus-send", "xdg-open": "/usr/bin/xdg-open"},
-                OSError("no bus"),
-            ),
+            "no reply": (both, 1),
+            "start error": (both, OSError("no bus")),
+            "hung": (both, subprocess.TimeoutExpired("dbus-send", 3)),
         }
         for name, (available, outcome) in cases.items():
             with self.subTest(name):
                 self.popen.reset_mock(side_effect=True, return_value=True)
+                self.reaped.reset_mock()
+                dbus = MagicMock()
                 if isinstance(outcome, OSError):
                     self.popen.side_effect = [outcome, MagicMock()]
+                elif isinstance(outcome, subprocess.TimeoutExpired):
+                    dbus.wait.side_effect = [outcome, None]
+                    self.popen.side_effect = [dbus, MagicMock()]
                 else:
                     self.popen.return_value.wait.return_value = outcome
                 with (
                     patch.object(file_reveal.sys, "platform", "linux"),
                     self.which(available),
                 ):
-                    reveal_in_file_manager(self.path)
+                    self.reveal()
                 self.assertEqual(
                     self.popen.call_args.args[0],
                     ["/usr/bin/xdg-open", str(self.path.parent)],
                 )
                 self.assert_detached(self.popen.call_count - 1)
+                self.reaped.assert_called_once()
+                if name == "hung":
+                    dbus.kill.assert_called_once_with()
 
     def test_linux_without_any_opener_is_unavailable(self):
         with (
@@ -235,13 +300,59 @@ class TestRevealInFileManager(unittest.TestCase):
             self.which({}),
             self.assertRaises(OpenerUnavailable),
         ):
-            reveal_in_file_manager(self.path)
+            self.reveal()
         self.popen.assert_not_called()
 
     def test_relative_paths_are_refused(self):
         with self.assertRaises(ValueError):
-            reveal_in_file_manager(Path("sub/a.png"))
+            reveal_in_file_manager(Path("sub/a.png"), self.root)
         self.popen.assert_not_called()
+
+    def test_containment_is_rechecked_just_before_launching(self):
+        # A parent swapped for a symlink after the route resolved the path
+        # (security review L4) must not open a folder outside the root.
+        outside = self.root.parent / "elsewhere"
+        outside.mkdir()
+        (outside / "a.png").write_bytes(b"png")
+        (self.root / "sub" / "a.png").unlink()
+        (self.root / "sub").rmdir()
+        try:
+            os.symlink(outside, self.root / "sub", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        missing = self.root / "gone.png"
+        folder = self.root / "folder.png"
+        folder.mkdir()
+        for path in (self.path, missing, folder):
+            for platform in ("linux", "darwin", "win32"):
+                with (
+                    self.subTest(path=path.name, platform=platform),
+                    patch.object(file_reveal.sys, "platform", platform),
+                    patch.object(file_reveal, "_windows_select") as shell,
+                    self.assertRaises(file_reveal.RevealTargetChanged),
+                ):
+                    self.reveal(path)
+                shell.assert_not_called()
+        self.popen.assert_not_called()
+
+
+class TestReaping(unittest.TestCase):
+    def test_reap_waits_on_a_daemon_thread(self):
+        process = MagicMock()
+        with patch.object(file_reveal.threading, "Thread") as thread:
+            file_reveal._reap(process)
+        thread.assert_called_once()
+        kwargs = thread.call_args.kwargs
+        self.assertIs(kwargs["target"], process.wait)
+        self.assertIs(kwargs["daemon"], True)
+        thread.return_value.start.assert_called_once_with()
+
+    def test_reveal_runs_on_its_own_single_worker(self):
+        executor = file_reveal.reveal_executor()
+        self.assertIs(file_reveal.reveal_executor(), executor)
+        self.assertEqual(executor._max_workers, 1)
+        name = executor.submit(lambda: file_reveal.threading.current_thread().name)
+        self.assertTrue(name.result(timeout=5).startswith("pm-reveal"))
 
 
 class FakeShell:
@@ -350,13 +461,15 @@ class TestWindowsSelect(unittest.TestCase):
 class TestRevealRoute(ImageAPITestCase):
     async def get_application(self):
         app = await super().get_application()
-        self.opened = []
+        self.opened, self.roots, self.threads = [], [], []
         self.outcome = None
 
-        def opener(path):
+        def opener(path, root):
+            self.threads.append(file_reveal.threading.current_thread().name)
             if self.outcome is not None:
                 raise self.outcome
             self.opened.append(path)
+            self.roots.append(root)
 
         self.api._reveal_opener = opener
         return app
@@ -377,6 +490,16 @@ class TestRevealRoute(ImageAPITestCase):
         status, data = await self.post(self.body())
         self.assertEqual((status, data), (200, {"success": True}))
         self.assertEqual(self.opened, [Path(os.path.realpath(target))])
+        self.assertEqual(self.roots, [self.output_dir])
+        # Its own worker, never ComfyUI's shared default executor (L1).
+        self.assertTrue(self.threads[0].startswith("pm-reveal"), self.threads)
+
+    async def test_target_changed_before_launch_is_404(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        self.outcome = file_reveal.RevealTargetChanged()
+        status, data = await self.post(self.body())
+        self.assertEqual(status, 404)
+        self.assertEqual(data, {"success": False, "error": "Image file not found"})
 
     async def test_non_loopback_remote_is_not_local(self):
         make_png(self.output_dir / "sub" / "a.png")

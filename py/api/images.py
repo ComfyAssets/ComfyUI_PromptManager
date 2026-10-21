@@ -40,7 +40,9 @@ try:
     from ...utils.prompt_inspector import MetadataReadError, read_inspection_file
     from ...utils.file_reveal import (
         OpenerUnavailable,
+        RevealTargetChanged,
         is_local_request,
+        reveal_executor,
         reveal_in_file_manager,
     )
 except ImportError:
@@ -53,7 +55,9 @@ except ImportError:
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.file_reveal import (
         OpenerUnavailable,
+        RevealTargetChanged,
         is_local_request,
+        reveal_executor,
         reveal_in_file_manager,
     )
 
@@ -558,6 +562,12 @@ def _reveal_target(data: Mapping):
     ):
         return None, bad_request("path must be a relative media path")
     return (index, scope, relative), None
+
+
+def _reveal_not_found():
+    return web.json_response(
+        {"success": False, "error": "Image file not found"}, status=404
+    )
 
 
 def _not_local():
@@ -2248,11 +2258,13 @@ class ImageRoutesMixin:
             return _forbidden("Only media files can be shown")
         path = await self._run_in_executor(self._reveal_path, relative, root)
         if path is None:
-            return web.json_response(
-                {"success": False, "error": "Image file not found"}, status=404
-            )
+            return _reveal_not_found()
         try:
-            await self._run_in_executor(self._reveal_opener, path)
+            await asyncio.get_running_loop().run_in_executor(
+                reveal_executor(), self._reveal_opener, path, root
+            )
+        except RevealTargetChanged:
+            return _reveal_not_found()
         except OpenerUnavailable:
             return web.json_response(
                 {

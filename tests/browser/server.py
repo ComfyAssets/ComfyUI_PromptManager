@@ -90,7 +90,7 @@ def register_reveal_stub(routes, api, root: Path):
 
     state = {"outcome": "opened", "opened": []}
 
-    def opener(path: Path) -> None:
+    def opener(path: Path, gallery_root: Path) -> None:
         if state["outcome"] == "unavailable":
             raise OpenerUnavailable()
         if state["outcome"] == "fail":

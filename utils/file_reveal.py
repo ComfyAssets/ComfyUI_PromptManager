@@ -15,21 +15,66 @@ import shutil
 # starts a process (see _windows_select).
 import subprocess  # nosec B404
 import sys
+import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
 
 # A local reverse proxy makes every client look like loopback, so a request
 # that carries any of these counts as remote.
 PROXY_HEADERS = ("Forwarded", "X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host")
-# dbus-send exits at once when it cannot reach the session bus; a start that
-# outlives this is treated as delivered and is not waited on further.
-DBUS_START_TIMEOUT = 2.0
+# dbus-send waits this long for the FileManager1 reply, so its exit status
+# says whether a file manager really took the request.
+DBUS_REPLY_TIMEOUT_MS = 2000
+# The dbus-send process itself gets a little longer before it is killed.
+DBUS_WAIT = 3.0
 FILE_MANAGER_DEST = "org.freedesktop.FileManager1"
+# Openers are looked up here only, never on ComfyUI's (venv) PATH, and the
+# children get this as their PATH.
+SYSTEM_PATH = os.pathsep.join(
+    ("/usr/local/bin", "/usr/bin", "/bin", "/run/current-system/sw/bin")
+)
+MACOS_OPEN = "/usr/bin/open"
+# What a desktop opener needs from ComfyUI's environment; everything else
+# (venv PATH, PYTHONPATH, LD_LIBRARY_PATH, API keys) stays behind.
+CHILD_ENV_NAMES = (
+    "HOME",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XDG_RUNTIME_DIR",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_TYPE",
+    "XDG_DATA_DIRS",
+    "XDG_CONFIG_DIRS",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "LANG",
+    "LC_ALL",
+)
 
 
 class OpenerUnavailable(Exception):
     """No file manager can be started on this computer."""
+
+
+class RevealTargetChanged(Exception):
+    """The file is no longer a regular file inside its root."""
+
+
+_executor_lock = threading.Lock()
+_executor: ThreadPoolExecutor | None = None
+
+
+def reveal_executor() -> ThreadPoolExecutor:
+    """The one worker that runs openers, so a slow file manager or dbus reply
+    never holds a thread of ComfyUI's shared default executor."""
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="pm-reveal"
+            )
+        return _executor
 
 
 def _loopback_address(value: str | None) -> bool:
@@ -83,9 +128,46 @@ def is_local_request(remote: str | None, headers: Mapping) -> bool:
 
 
 def _executable(name: str) -> str | None:
-    """Absolute path of *name* on PATH; a relative PATH entry never counts."""
-    found = shutil.which(name)
+    """Absolute path of *name* on the fixed SYSTEM_PATH, never a relative hit."""
+    found = shutil.which(name, path=SYSTEM_PATH)
     return found if found and os.path.isabs(found) else None
+
+
+def _macos_open() -> str | None:
+    """macOS's own ``open``, at its fixed system path."""
+    if os.path.isfile(MACOS_OPEN) and os.access(MACOS_OPEN, os.X_OK):
+        return MACOS_OPEN
+    return None
+
+
+def _child_env() -> dict[str, str]:
+    env = {name: os.environ[name] for name in CHILD_ENV_NAMES if name in os.environ}
+    return {"PATH": SYSTEM_PATH, **env}
+
+
+def _reap(process: subprocess.Popen) -> None:
+    """Wait for *process* on a daemon thread, so it never lingers as a zombie
+    and is never waited on by the caller."""
+    threading.Thread(target=process.wait, name="pm-reveal-reaper", daemon=True).start()
+
+
+def _contained_file(path: Path, root: Path) -> Path:
+    """*path*'s real path when it is still a regular file inside *root*.
+
+    Run right before launching: a parent swapped for a symlink since the
+    route resolved the path must not open a folder outside the root.
+    """
+    real = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    try:
+        inside = os.path.commonpath(
+            [os.path.normcase(real), os.path.normcase(real_root)]
+        ) == os.path.normcase(real_root)
+    except ValueError:
+        inside = False
+    if not inside or real == real_root or not os.path.isfile(real):
+        raise RevealTargetChanged()
+    return Path(real)
 
 
 # HRESULTs as the signed 32-bit values ctypes.c_long returns.
@@ -171,6 +253,7 @@ def _launch(argv: list[str]) -> subprocess.Popen:
         "close_fds": True,
         # Its own session, so stopping ComfyUI does not take the window along.
         "start_new_session": True,
+        "env": _child_env(),
     }
     # POSIX only (Windows uses the shell API): argv[0] is an absolute opener,
     # the rest are fixed flags and one absolute path inside a gallery root,
@@ -179,13 +262,16 @@ def _launch(argv: list[str]) -> subprocess.Popen:
 
 
 def _show_items(path: Path) -> bool:
-    """Ask the freedesktop FileManager1 service to select *path*."""
+    """Ask the freedesktop FileManager1 service to select *path*; True only
+    when the service replied (``--print-reply`` makes the exit status real)."""
     dbus = _executable("dbus-send")
     if dbus is None:
         return False
     argv = [
         dbus,
         "--session",
+        "--print-reply",
+        f"--reply-timeout={DBUS_REPLY_TIMEOUT_MS}",
         f"--dest={FILE_MANAGER_DEST}",
         "--type=method_call",
         "/org/freedesktop/FileManager1",
@@ -198,32 +284,36 @@ def _show_items(path: Path) -> bool:
     except OSError:
         return False
     try:
-        return process.wait(timeout=DBUS_START_TIMEOUT) == 0
+        return process.wait(timeout=DBUS_WAIT) == 0
     except subprocess.TimeoutExpired:
-        return True
+        process.kill()
+        process.wait()
+        return False
 
 
-def reveal_in_file_manager(path: Path) -> None:
-    """Open the file manager at *path* (absolute, an existing regular file).
+def reveal_in_file_manager(path: Path, root: Path) -> None:
+    """Open the file manager at *path*, a regular file inside *root*.
 
-    Raises OpenerUnavailable when no opener exists and OSError when the one
-    found cannot start. Never waits on the file manager itself.
+    Re-checks that containment first (RevealTargetChanged). Raises
+    OpenerUnavailable when no opener exists and OSError when the one found
+    cannot start. Never waits on the file manager itself.
     """
     path = Path(path)
     if not path.is_absolute():
         raise ValueError("path must be absolute")
+    path = _contained_file(path, Path(root))
     if sys.platform == "win32":
         _reveal_windows(path)
         return
     if sys.platform == "darwin":
-        opener = _executable("open")
+        opener = _macos_open()
         if opener is None:
             raise OpenerUnavailable()
-        _launch([opener, "-R", str(path)])
+        _reap(_launch([opener, "-R", str(path)]))
         return
     if _show_items(path):
         return
     opener = _executable("xdg-open")
     if opener is None:
         raise OpenerUnavailable()
-    _launch([opener, str(path.parent)])
+    _reap(_launch([opener, str(path.parent)]))
