@@ -157,7 +157,7 @@ class TestJobRegistry(unittest.IsolatedAsyncioTestCase):
             "scan",
             "Scan for metadata",
             record_changing=True,
-            scope={"mode": "all"},
+            scope={"files": "new", "output_folders": 2},
             runner=_gated_runner(gate),
         )
         self.assertEqual(job.state, "running")
@@ -183,7 +183,7 @@ class TestJobRegistry(unittest.IsolatedAsyncioTestCase):
                 "log_length",
             },
         )
-        self.assertEqual(summary["scope"], {"mode": "all"})
+        self.assertEqual(summary["scope"], {"files": "new", "output_folders": 2})
         # What the detail would list, so a view reads it only when that changed.
         self.assertEqual((summary["listed"], summary["log_length"]), ({}, 0))
         self.assertIsNone(summary["finished_at"])
@@ -373,7 +373,12 @@ class TestJobOutcomesAndLog(unittest.TestCase):
             job.record("bogus", {"path": "a.png", "root": "output"}, "x")
 
     def test_detail_and_progress(self):
-        job = Job("scan", "Scan", scope={"mode": "all"}, groups=SCAN_GROUP_NAMES)
+        job = Job(
+            "scan",
+            "Scan",
+            scope={"files": "new", "output_folders": 2},
+            groups=SCAN_GROUP_NAMES,
+        )
         job.update(progress=150, status_line="Processing file 3 of 4", processed=3)
         job.update(total=4)
         job.record("known", {"path": "a.png", "root": "output"}, "= a.png")

@@ -207,6 +207,30 @@ def _scan_status_line(done, total, batches, elapsed):
     return f"{line} · about {minutes} min left"
 
 
+def _file_size(path):
+    """``path``'s size on disk, or None when it cannot be read."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def _with_file_size(canonical, media_file):
+    """Record the file's size in ``file_info`` unless the metadata carries one.
+
+    Stored as ``generated_images.file_size``; the "new" scan scope skips a known
+    file only while its size is unchanged.
+    """
+    info = canonical.get("file_info")
+    info = dict(info) if isinstance(info, dict) else {}
+    if info.get("size") is None:
+        size = _file_size(media_file)
+        if size is not None:
+            info["size"] = size
+    if info:
+        canonical["file_info"] = info
+
+
 def _scan_roots(output_dirs):
     """(absolute root, public label, listing index), the most specific first.
 
@@ -1560,9 +1584,7 @@ class AdminRoutesMixin:
             roots = _scan_roots(output_dirs)
             known = set()
             if media_files and job.scope.get("files") != "all":
-                known = await self._run_in_executor(
-                    self.db.get_known_resolved_paths, [str(f) for f in media_files]
-                )
+                known = await self._known_scan_files(job, media_files)
             async for event in self._scan_batches(
                 media_files, counts, job, roots, known
             ):
@@ -1585,6 +1607,23 @@ class AdminRoutesMixin:
                 "type": "error",
                 "message": "An internal error occurred. Check server logs for details.",
             }
+
+    async def _known_scan_files(self, job, media_files):
+        """The "new" scope's skip set; a failed read falls back to reading all."""
+        try:
+            return await self._run_in_executor(self._known_scan_files_sync, media_files)
+        except Exception:
+            self.logger.warning(
+                "Known files could not be read; the scan reads every file",
+                exc_info=True,
+            )
+            job.log_line("Known files could not be read · reading every file")
+            return set()
+
+    def _known_scan_files_sync(self, media_files):
+        """Stat each scanned file and ask the database which are known (blocking)."""
+        sizes = {str(media_file): _file_size(media_file) for media_file in media_files}
+        return self.db.get_known_resolved_paths(sizes)
 
     async def _scan_batches(self, media_files, counts, job, roots=(), known=()):
         """Process ``media_files`` in executor batches, updating ``counts`` in place.
@@ -1740,6 +1779,7 @@ class AdminRoutesMixin:
                     pass
         if not canonical.get("prompt") and not canonical.get("parameters"):
             return None
+        _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
         if resolution["state"] == "resolved":
             result = ingest_resolved_pair(

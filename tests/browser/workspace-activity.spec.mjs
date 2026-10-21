@@ -417,6 +417,7 @@ test('all files checkbox changes the scope line and the request', async ({ page 
     await expect(scopeValue).toHaveText('New and unresolved files');
     await expect(allFiles).not.toBeChecked();
     await expect(review.locator('.setting-row p')).toHaveText('Also read the files already linked to their prompt again.');
+    await expect(allFiles).toHaveAccessibleDescription('Also read the files already linked to their prompt again.');
     // Checking and unchecking switches the Scope value both ways.
     await allFiles.check();
     await expect(scopeValue).toHaveText('All files');
@@ -625,6 +626,9 @@ test('job view renders 200-row cap note', async ({ page, request }) => {
 
     // Review M12: with the list capped and the log closed, more files only update the counters; the detail is read
     // again only when the log opens with new lines.
+    // A read still due from opening the view (at most one per DETAIL_INTERVAL_MS, 1 s) lands first; Firefox is slow
+    // enough that it otherwise fell inside the window below.
+    await page.waitForTimeout(1200);
     const reads = [];
     page.on('request', item => { if (new URL(item.url()).pathname === `/prompt_manager/jobs/${job.id}`) reads.push(Date.now()); });
     await step(request, job.id, { processed: 300, bulk: { group: 'added', count: 40 } });
@@ -691,6 +695,8 @@ test('an unknown or restarted job view says so', async ({ page, request }) => {
     await expect(await request.post('/__test__/jobs/restart')).toBeOK();
     await expect(heading(page).locator('p.muted')).toHaveText(LOST);
     await expect(heading(page).getByRole('button', { name: 'Cancel scan', exact: true })).toHaveCount(0);
+    // A lost job has no report on the server (review M9): Download report is disabled rather than failing.
+    await expect(heading(page).getByRole('button', { name: 'Download report', exact: true })).toBeDisabled();
     // What was read before the restart stays on the page.
     await expect(fileRows(page)).toHaveCount(1);
     await expect(pill(page)).toBeHidden();
@@ -760,6 +766,13 @@ test('log keeps the reader\'s scroll position', async ({ page, request }) => {
     await step(request, job.id, { processed: 120, records: more(90, 30) });
     await expect(pre).toContainText('log/f_119.png');
     expect((await metrics()).top).toBe(40);
+    // Closed and opened again (review M6): every open starts at the newest line, also after lines arrived meanwhile.
+    await scanLog(page).locator('summary').click();
+    await expect(scanLog(page)).not.toHaveAttribute('open', '');
+    await step(request, job.id, { processed: 150, records: more(120, 30) });
+    await scanLog(page).locator('summary').click();
+    await expect(pre).toContainText('log/f_149.png');
+    await expect.poll(async () => { const m = await metrics(); return m.max > 0 && m.top >= m.max - 2; }).toBe(true);
 });
 
 test('a failed report download says so and leaves the button usable', async ({ page, request }) => {

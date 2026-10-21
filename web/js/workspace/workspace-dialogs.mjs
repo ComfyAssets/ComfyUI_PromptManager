@@ -373,7 +373,10 @@ export function openScanReviewDialog({ scope, sources, onBackup, onStart, trigge
     const optionText = el('div');
     const optionLabel = el('label', SCAN_SCOPE_LABELS.all);
     optionLabel.htmlFor = allFiles.id;
-    optionText.append(optionLabel, el('p', SCAN_ALL_FILES_HINT));
+    const hint = el('p', SCAN_ALL_FILES_HINT);
+    hint.id = 'scan-all-files-hint';
+    allFiles.setAttribute('aria-describedby', hint.id);
+    optionText.append(optionLabel, hint);
     option.append(optionText, toggle);
     const chosenScope = () => (allFiles.checked ? 'all' : 'new');
     allFiles.addEventListener('change', () => { values.Scope.textContent = SCAN_SCOPE_LABELS[chosenScope()]; });

@@ -11,7 +11,7 @@ const ID_C = 'c'.repeat(32);
 function summary(overrides = {}) {
     return { id: ID_A, kind: 'scan', title: 'Scan for metadata', state: 'running', started_at: 1000, finished_at: null,
         progress: 0, status_line: '', processed: 0, total: 0,
-        counters: { added: 0, known: 0, review: 0, no_metadata: 0, errors: 0 }, scope: { mode: 'all', output_folders: 2 },
+        counters: { added: 0, known: 0, review: 0, no_metadata: 0, errors: 0 }, scope: { files: 'new', output_folders: 2 },
         ...overrides };
 }
 

@@ -24,6 +24,7 @@ from py.config import GalleryConfig  # noqa: E402
 from utils.prompt_pair_resolver import resolve_prompt_pair  # noqa: E402
 
 SKIPPED_DETAIL = "Skipped · already linked"
+ON_DISK = object()  # _link_resolved: store the file's size on disk
 
 
 def _graph(text):
@@ -40,9 +41,17 @@ def _graph(text):
 class ScanScopeTestCase(AdminAPITestCase):
     """Helpers: link files the way the scan and the monitor do, spy on reads."""
 
-    def _link_resolved(self, path, text):
-        """``path`` linked with a resolved pair link (what a resolved scan writes)."""
+    def _link_resolved(self, path, text, size=ON_DISK):
+        """``path`` linked with a resolved pair link (what a resolved scan writes).
+
+        The row stores ``size`` as its file size: by default the file's size on
+        disk (None when the file does not exist).
+        """
+        if size is ON_DISK:
+            size = os.path.getsize(path) if os.path.exists(path) else None
         metadata = {"prompt": _graph(text)}
+        if size is not None:
+            metadata["file_info"] = {"size": size}
         result = ingest_resolved_pair(
             self.api.db, str(path), metadata, resolve_prompt_pair(metadata)
         )
@@ -182,6 +191,91 @@ class TestScanScope(ScanScopeTestCase):
         self.assertEqual(payloads[-1]["type"], "complete")
         self.assertEqual(payloads[-1]["unchanged"], 1)
 
+    async def test_file_replaced_at_a_known_path_is_reread_and_needs_review(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        path = self.output_dir / "out_00012.png"
+        _write_png(path, prompt_text="the first prompt")
+        self._link_resolved(path, "the first prompt")
+        before = os.path.getsize(path)
+        # ComfyUI reused the name for a new image with another prompt.
+        _write_png(path, prompt_text="a much longer second prompt for the same name")
+        self.assertNotEqual(os.path.getsize(path), before)
+        reads = self._spy_reads()
+
+        job = await self._scan()
+
+        self.assertEqual(reads, ["out_00012.png"])
+        self.assertEqual(job["counters"]["review"], 1)
+        self.assertEqual(job["counters"]["known"], 0)
+        self.assertIn("different prompt", job["outcomes"]["review"][0]["detail"])
+
+    async def test_scanned_files_store_their_size_so_the_next_new_scan_skips(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        _write_png(self.output_dir / "fresh.png", prompt_text="a fresh prompt")
+        first = await self._scan()
+        self.assertEqual(first["counters"]["added"], 1)
+        reads = self._spy_reads()
+
+        second = await self._scan()
+
+        self.assertEqual(reads, [])
+        self.assertEqual(second["outcomes"]["known"][0]["detail"], SKIPPED_DETAIL)
+
+    async def test_stored_null_size_is_reread(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        path = self.output_dir / "old.png"
+        _write_png(path, prompt_text="an old prompt")
+        self._link_resolved(path, "an old prompt", size=None)
+        reads = self._spy_reads()
+
+        job = await self._scan()
+
+        self.assertEqual(reads, ["old.png"])
+        # The read stores the size it was missing, so the file is known next time.
+        self.assertEqual(job["counters"]["added"], 1)
+        self.assertEqual(
+            self.api.db.get_known_resolved_paths({str(path): os.path.getsize(path)}),
+            {str(path)},
+        )
+
+    async def test_known_set_failure_falls_back_to_reading_every_file(self):
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        known = self.output_dir / "known.png"
+        _write_png(known, prompt_text="a red square")
+        self._link_resolved(known, "a red square")
+        reads = self._spy_reads()
+
+        def broken(files):
+            raise sqlite3.OperationalError("database is locked")
+
+        self.api.db.get_known_resolved_paths = broken
+        with self.assertLogs("prompt_manager.api", level="WARNING"):
+            job = await self._scan()
+
+        self.assertEqual(job["state"], "finished")
+        self.assertEqual(reads, ["known.png"])
+        self.assertIn(
+            "Known files could not be read · reading every file", "\n".join(job["log"])
+        )
+
+    async def test_empty_read_body_asks_for_the_default_scope(self):
+        """A chunked POST with no bytes can read a body: still the default."""
+        from py.api.job_routes import _scan_scope
+
+        class Request:
+            can_read_body = True
+
+            def __init__(self, text):
+                self._text = text
+
+            async def text(self):
+                return self._text
+
+        self.assertEqual(await _scan_scope(Request("")), "new")
+        self.assertEqual(await _scan_scope(Request("  \n")), "new")
+        self.assertEqual(await _scan_scope(Request('{"scope": "all"}')), "all")
+        self.assertIsNone(await _scan_scope(Request("{")))
+
     async def test_invalid_scope_is_refused(self):
         for body in ({"scope": "everything"}, {"scope": 1}, ["new"]):
             with self.subTest(body=body):
@@ -203,17 +297,50 @@ class TestKnownResolvedPaths(ScanScopeTestCase):
 
     async def test_returns_the_given_paths_that_are_known_and_resolved(self):
         known, fallback = self.output_dir / "known.png", self.output_dir / "fb.png"
-        self._link_resolved(known, "a red square")
+        self._link_resolved(known, "a red square", size=10)
         self._link_without_pair(fallback, "a fallback")
-        asked = [str(known), str(fallback), str(self.output_dir / "new.png")]
+        asked = {str(known): 10, str(fallback): 10, str(self.output_dir / "n.png"): 10}
 
         self.assertEqual(self.api.db.get_known_resolved_paths(asked), {str(known)})
-        self.assertEqual(self.api.db.get_known_resolved_paths([]), set())
+        self.assertEqual(self.api.db.get_known_resolved_paths({}), set())
+
+    async def test_size_must_match_and_a_stored_null_size_is_not_known(self):
+        same, other = self.output_dir / "same.png", self.output_dir / "other.png"
+        unknown = self.output_dir / "unknown.png"
+        self._link_resolved(same, "same size", size=10)
+        self._link_resolved(other, "other size", size=10)
+        self._link_resolved(unknown, "no stored size", size=None)
+        asked = {str(same): 10, str(other): 11, str(unknown): 10}
+
+        self.assertEqual(self.api.db.get_known_resolved_paths(asked), {str(same)})
+        # A file the walk could not stat is not known either.
+        self.assertEqual(self.api.db.get_known_resolved_paths({str(same): None}), set())
+
+    async def test_row_without_file_path_matches_through_image_path(self):
+        known = self.output_dir / "legacy.png"
+        self._link_resolved(known, "a legacy row", size=10)
+        with sqlite3.connect(self.api.db.model.db_path) as conn:
+            conn.execute("UPDATE generated_images SET file_path=NULL")
+        conn.close()
+
+        found = self.api.db.get_known_resolved_paths({str(known): 10})
+        self.assertEqual(found, {str(known)})
+
+    async def test_stored_spelling_is_normalized_like_the_scanned_path(self):
+        known = self.output_dir / "sub" / "known.png"
+        self._link_resolved(known, "a red square", size=10)
+        spelled = os.path.join(str(self.output_dir), "sub", "..", "sub", "known.png")
+        with sqlite3.connect(self.api.db.model.db_path) as conn:
+            conn.execute("UPDATE generated_images SET file_path=?", (spelled,))
+        conn.close()
+
+        found = self.api.db.get_known_resolved_paths({str(known): 10})
+        self.assertEqual(found, {str(known)})
 
     async def test_one_query_streamed_in_small_fetches(self):
         paths = [self.output_dir / f"{index}.png" for index in range(5)]
         for path in paths:
-            self._link_resolved(path, f"prompt {path.name}")
+            self._link_resolved(path, f"prompt {path.name}", size=10)
         original = self.api.db.model.get_connection
         opened = []
 
@@ -223,13 +350,13 @@ class TestKnownResolvedPaths(ScanScopeTestCase):
 
         self.api.db.model.get_connection = counting
         with patch.object(operations, "KNOWN_PATHS_FETCH_SIZE", 2):
-            found = self.api.db.get_known_resolved_paths([str(p) for p in paths])
+            found = self.api.db.get_known_resolved_paths({str(p): 10 for p in paths})
         self.assertEqual(found, {str(p) for p in paths})
         self.assertEqual(len(opened), 1)
 
     async def test_windows_path_case_matches_known_set(self):
         stored = self.output_dir / "Sub" / "Known.PNG"
-        self._link_resolved(stored, "a red square")
+        self._link_resolved(stored, "a red square", size=10)
         # A row written before paths were case-folded keeps its own spelling.
         with sqlite3.connect(self.api.db.model.db_path) as conn:
             conn.execute(
@@ -239,9 +366,9 @@ class TestKnownResolvedPaths(ScanScopeTestCase):
         asked = str(self.output_dir / "sub" / "known.png")
 
         with patch("os.path.normcase", lambda path: path.lower()):
-            self.assertEqual(self.api.db.get_known_resolved_paths([asked]), {asked})
+            self.assertEqual(self.api.db.get_known_resolved_paths({asked: 10}), {asked})
         if os.path.normcase("A") == "A":  # a case-sensitive platform
-            self.assertEqual(self.api.db.get_known_resolved_paths([asked]), set())
+            self.assertEqual(self.api.db.get_known_resolved_paths({asked: 10}), set())
 
 
 class TestSkippedOutcome(unittest.TestCase):

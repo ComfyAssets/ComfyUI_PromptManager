@@ -18,11 +18,12 @@ export const REPORT_FAILED = 'The report could not be downloaded. Try again.';
 const JOBS_REPORT_BASE = '/prompt_manager/jobs';
 export const START_FAILED = 'The scan could not start. Try again.';
 const FALLBACK_NAME = 'prompts_backup.db';
+const REPORT_FALLBACK_NAME = 'prompt-manager-report.json';
 
-/** The download name from a Content-Disposition header, or the fallback. */
-export function backupFilename(disposition) {
+/** The download name from a Content-Disposition header, or `fallback`. */
+export function backupFilename(disposition, fallback = FALLBACK_NAME) {
     const match = /filename="?([^";]+)"?/i.exec(disposition || '');
-    return match ? match[1] : FALLBACK_NAME;
+    return match ? match[1] : fallback;
 }
 
 /** Save a fetched response through a temporary link, named by `filename`. */
@@ -52,17 +53,22 @@ export async function downloadDatabaseBackup({ fetchUrl = window.ApiClient.fetch
     }
 }
 
-/** Download a job's JSON report (Activity-2, D59) through the api-client URL, so a proxy mount works; toasts the outcome. */
-export async function downloadJobReport(jobId, { fetchUrl = window.ApiClient.fetchUrl, notify = showWorkspaceToast } = {}) {
+/**
+ * Download a job's JSON report (Activity-2, D59) through the api-client URL, so a proxy mount works; toasts the outcome
+ * unless `signal` (the view's scope) was aborted meanwhile.
+ */
+export async function downloadJobReport(jobId, { fetchUrl = window.ApiClient.fetchUrl, notify = showWorkspaceToast,
+    signal = null } = {}) {
     try {
         const response = await fetchUrl(`${JOBS_REPORT_BASE}/${encodeURIComponent(jobId)}/report`);
         if (!response.ok) throw new Error(`Report failed with ${response.status}`);
         const blob = await response.blob();
-        saveResponse(blob, backupFilename(response.headers.get('Content-Disposition')).replace(FALLBACK_NAME, 'prompt-manager-report.json'));
-        notify(REPORT_DONE);
+        saveResponse(blob, backupFilename(response.headers.get('Content-Disposition'), REPORT_FALLBACK_NAME));
+        // The file is saved either way; a view left meanwhile (`signal` aborted) shows no toast.
+        if (!signal?.aborted) notify(REPORT_DONE);
         return true;
     } catch {
-        notify(REPORT_FAILED);
+        if (!signal?.aborted) notify(REPORT_FAILED);
         return false;
     }
 }

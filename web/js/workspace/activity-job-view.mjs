@@ -189,7 +189,6 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     let readTimer = null;
     let roots = null;
     let lastState = null;
-    let logOpened = false;
     // Set once this page's own list read answered, or the detail read said the job is unknown.
     let listedOnce = false;
     let notFound = false;
@@ -272,6 +271,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         document.title = `${job.title} · Prompt Manager`;
         parts.description.textContent = jobDetail(job);
         cancel.textContent = scan ? 'Cancel scan' : 'Cancel job';
+        // A job lost with the server has no report there (review M9).
+        const lost = job.state === 'lost';
+        if (lost && document.activeElement === download) parts.h1.focus();
+        download.disabled = lost;
         if (job.state === 'running') {
             if (!cancel.isConnected) parts.actions.append(cancel);
         } else if (cancel.isConnected) {
@@ -350,17 +353,19 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     }
 
     scope.listen(log, 'toggle', () => {
-        // A log opened for the first time starts at its newest line.
-        if (log.open && !logOpened) { logOpened = true; pre.scrollTop = pre.scrollHeight; }
+        // Every open starts at the newest line: while closed the log has no layout box (Firefox, WebKit), so a kept
+        // position would be lost anyway (review M6).
+        if (log.open) pre.scrollTop = pre.scrollHeight;
         const job = store.find(jobId);
         if (log.open && job && job.state !== 'lost' && detailChanged(job)) scheduleRead();
     });
 
     scope.listen(download, 'click', async () => {
-        if (download.getAttribute('aria-disabled') === 'true') return;
+        if (download.disabled || download.getAttribute('aria-disabled') === 'true') return;
         download.setAttribute('aria-disabled', 'true');
         try {
-            await downloadJobReport(jobId);
+            // A view left while the report downloads shows no toast (review M10).
+            await downloadJobReport(jobId, { signal: scope.signal });
         } finally {
             download.removeAttribute('aria-disabled');
         }

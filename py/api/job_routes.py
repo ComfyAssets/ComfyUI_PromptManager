@@ -24,12 +24,16 @@ def _bad_request(message):
 async def _scan_scope(request):
     """The requested scan scope ("new" or "all"), or None when the body is invalid.
 
-    An empty body, or one without ``scope``, asks for the default.
+    An empty body (also a chunked one with no bytes), or one without
+    ``scope``, asks for the default.
     """
     if not request.can_read_body:
         return DEFAULT_SCAN_SCOPE
+    text = await request.text()
+    if not text.strip():  # e.g. a chunked POST that sent no bytes
+        return DEFAULT_SCAN_SCOPE
     try:
-        body = await request.json()
+        body = json.loads(text)
     except ValueError:
         return None
     if not isinstance(body, dict):
