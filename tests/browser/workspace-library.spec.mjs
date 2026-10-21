@@ -219,7 +219,9 @@ test('empty shelf visits restore saved scroll without inventing a parent anchor'
     expect(await page.evaluate(()=>scrollY)).toBe(0);
     const anchor=await firstVisibleParent(page);expect(anchor).not.toBeNull();
     await cards(page).getByRole('button',{name:'Explore history',exact:true}).evaluate(node=>node.click());await expect(history(page)).toBeVisible();
-    await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
+    // A short phone window, so the one-card shelf can scroll far enough to put the parent back at its offset (nothing
+    // follows the shelf's continuation since the legacy link moved to Overview, #249 E3).
+    await page.setViewportSize({width:390,height:600});await page.getByRole('button',{name:'← Prompt library',exact:true}).click();
     await retainedParent(page,anchor);await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('Dog landscape');
 });
 

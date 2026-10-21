@@ -638,6 +638,39 @@ Recorded deviations on this page:
   filenames…" for parity with Images, although Library search matches positive text and
   titles and saved negative text and variant titles, not filenames or tags (Tags live in
   "Refine this view", D14).
+- **D42**: a card's tag chips come in the store's alphabetical order (`ORDER BY t.name`,
+  as everywhere tags are read); the concept lists each sample's tags in authored order.
+
+`tests/browser/library-concept.spec.mjs` compares the shelf (#249 E3) on the
+concept-shaped fixture, which creates the concept's prompts last to first so Recently
+added lists them in the concept's order: heading, toolbar, caption, grid and the six
+cards (art, title row, prompt block, meta, tags, footer) at 1600x1100 and 390x844 in
+both themes and motion settings, and the grid and cards at 1800x1100 (3 columns).
+Behaviors, in both documents: the title and Explore history open the prompt's history
+(its `h1` is the title), the footer send carries the positive only (a bridge host page
+records the roles production's preview asks for), copy writes the full positive with
+"Prompt copied.", and the "neon" search and the Landscapes category leave the same cards
+and caption. `mapLibraryConcept` applies D14 (Oldest first appended), D16 (no Save
+view; the toolbar flows again, checked against the concept without it), D23 (the
+title button's `min-width: 0`; "− 1 negative variant", measured on the concept with the
+singular at runtime; the spoken "Rated N out of 5"; the two-line clamp, which the
+concept's samples exceed at 390px, checked against the concept with the clamp rule
+applied), D35 (singular captions), D36 (sorted categories), D40 (the continuation after
+the grid) and D42 (sorted chips, checked against the concept with its chips sorted).
+Nothing else follows the grid: the legacy "Current prompt library" link moved to
+Overview's legacy cards, as "Current gallery" did (spec §5). `library comparison detects
+mutations` injects `.card-footer { padding: 2px }` and removes `.card-meta .chip.red`.
+
+Manual check (quick), after a browser refresh on Prompt library: each card shows the
+title with its category chip on one line, two lines of the positive with copy and send,
+"− N negative variants · N runs · N images" and the tags; the footer reads "★★★ · Used
+today" (or the real date) with send and "Explore history"; Filters → Tags still narrows
+the shelf.
+
+```sh
+npm run --prefix tools/vendor test:workflows -- library-concept.spec.mjs \
+  workspace-library.spec.mjs --project chromium --project touch --project firefox --project webkit
+```
 
 ## Workspace data fields for the concept pages (#249)
 

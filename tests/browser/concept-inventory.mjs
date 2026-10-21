@@ -15,6 +15,62 @@ export const MOTIONS=Object.freeze(['no-preference','reduce']);
 export const countCopy=text=>text.replace(/(^|\D)1 positive prompts\b/g,'$11 positive prompt')
     .replace(/(^|\D)1 more images\b/g,'$11 more image').replace(/(^|\D)1 images\b/g,'$11 image');
 
+/**
+ * The row's flex lines laid out again from the concept's own item boxes, in order: an item breaks to a new line when its
+ * hypothetical size (`flex-basis: 100%` → the row; a growing item → its min-width; otherwise its box) no longer fits
+ * after the line's items and gaps; a growing item (the search field, `flex: 1`) takes its line's free space; items pack
+ * from the start and centre in their line (`align-items: center`). The test proves this model on the concept rows first.
+ */
+export function reflow(row,items) {
+    const gap=parseFloat(row.columnGap)||0,rowGap=parseFloat(row.rowGap)||0;
+    // The unrounded boxes (`exact`); rounding happens once, on the result.
+    const rowWidth=row.exact?.width??row.width;
+    const exact=item=>item.exact??{left:item.left,width:item.width};
+    const grows=item=>parseFloat(item.flexGrow)>0;
+    const basis=item=>item.flexBasis==='100%'?rowWidth:grows(item)?parseFloat(item.minWidth)||0:exact(item).width;
+    const lines=[];
+    const order=row.items.filter(entry=>entry.shown);
+    for(const item of items.filter(entry=>entry.shown)) {
+        const line=lines.at(-1),used=line?line.reduce((sum,entry)=>sum+basis(entry)+gap,0):0;
+        // The slack is one layout unit (1/60px in Firefox), which float sums of the browser's boxes may exceed.
+        if(line&&used+basis(item)<=rowWidth+1/60)line.push(item);else lines.push([item]);
+    }
+    const placed=new Map();let top=0;
+    const sameLine=(a,b)=>a.top<b.top+b.height&&b.top<a.top+a.height;
+    const freeOf=line=>rowWidth-line.reduce((sum,item)=>sum+basis(item),0)-gap*(line.length-1);
+    for(const line of lines) {
+        const free=freeOf(line);
+        const growing=line.filter(grows);
+        const height=Math.max(...line.map(item=>item.height));
+        let x=0,previous=null;
+        for(const item of line) {
+            // A growing item keeps its concept width plus the space its line gained.
+            const width=growing.includes(item)?exact(item).width+(free-freeOf(order.filter(entry=>sameLine(entry,item))))/growing.length:exact(item).width;
+            // An item that followed the same neighbour on the same line in the concept keeps the concept's own spacing,
+            // moved by however much that neighbour grew; otherwise it follows the previous box and the gap.
+            const adjacent=previous&&order.indexOf(item)===order.indexOf(previous)+1&&sameLine(item,previous);
+            const before=previous&&placed.get(previous);
+            const left=line.indexOf(item)===0?0:adjacent?before.left+exact(item).left-exact(previous).left+before.width-exact(previous).width:x;
+            placed.set(item,{left,width,top:Math.round(top+(height-item.height)/2)});
+            x=left+width+gap;previous=item;
+        }
+        top+=height+rowGap;
+    }
+    const moved=item=>{
+        const box=placed.get(item);
+        if(!box)return item;
+        const grown=box.width-exact(item).width;
+        return {...item,left:Math.round(box.left),top:box.top,width:Math.round(box.width),
+            input:item.input&&{...item.input,width:Math.round((item.input.exact?.width??item.input.width)+grown)}};
+    };
+    return {...row,height:Math.round(top-rowGap),items:items.map(moved)};
+}
+
+/** A flex row without the items `isRemoved` picks; the remaining items flow again from the concept's boxes. */
+export function withoutItems(row,isRemoved) {
+    return reflow(row,row.items.filter(item=>!isRemoved(item)));
+}
+
 /** Seed the concept-shaped real fixture (tests/browser/workspace_concept_fixture.py) and return its manifest. */
 export async function seedConcept(request,data={}) {
     const response=await request.post('/__test__/concept/reset',{data});
@@ -95,7 +151,8 @@ export async function mutate(page,{css=null,remove=[]}={}) {
  * Inventory sections: {chrome, heading, toolbar, filterRow, bulkbar, caption, grid, cards, continuation, panel, library,
  * history, noPageScroll}. A section is null when its element is absent. The Images sections (toolbar … panel, #249 C7)
  * measure the concept's Images markup; `cards` holds the first six; `bulkbar` is the selection bar's place and, while
- * anything is checked, its `.bulkbar` row. Library and history stay null until PRs E and F.
+ * anything is checked, its `.bulkbar` row. `library` (#249 E3) holds the Prompt library's toolbar,
+ * caption, grid, first six cards and whatever follows the grid; history stays null until PR F.
  */
 export function inventoryOf(page,scope='main') {
     return page.evaluate(measureInventory,scope);
@@ -333,6 +390,57 @@ export function measureInventory(scope) {
     function bulkbarOf(bar) {
         return {id:bar.id||null,...relative(bar,main),children:bar.children.length,bar:when(bar.querySelector(':scope > .bulkbar'),rowOf)};
     }
+    // ---- Prompt library (#249 E3). The concept's main holds the toolbar, caption and grid; production's shelf wraps
+    // them in `section.library-shelf` and windows the cards into `.library-row`s (spec §3.4: "row windowing kept"),
+    // so every Library box is found by descendant and placed relative to `main` or its own card.
+    // A `display: contents` node has no box: its children stand in its place (the D23 prompt-block mount point).
+    const boxedChildren=node=>[...node.children].flatMap(child=>getComputedStyle(child).display==='contents'?boxedChildren(child):[child]);
+    function libraryCardOf(card,origin) {
+        const art=card.querySelector(':scope > .card-art'),content=card.querySelector(':scope > .card-content'),footer=card.querySelector(':scope > .card-footer');
+        const title=content?.querySelector(':scope > .card-title'),meta=content?.querySelector(':scope > .card-meta'),tags=content?.querySelector(':scope > .tags');
+        const section=content?.querySelector('.prompt-section'),heading=section?.querySelector(':scope > .prompt-heading');
+        const text=section?.querySelector(':scope > .prompt-text'),facts=footer?.querySelector(':scope > span'),actions=footer?.querySelector(':scope > .row-actions');
+        const lines=node=>Math.round(rect(node).height/parseFloat(getComputedStyle(node).lineHeight));
+        const spanOf=(node,parent)=>({tag:node.tagName.toLowerCase(),className:classes(node),text:textOf(node),...font(node),...edges(node),...relative(node,parent)});
+        return {tag:card.tagName.toLowerCase(),className:classes(card),...relative(card,origin),...edges(card),...css(card,'overflow','display','boxShadow'),
+            children:[...card.children].map(classes),
+            art:when(art,()=>({...relative(art,card),...css(art,'display','gridTemplateColumns','columnGap','rowGap','backgroundColor'),
+                items:[...art.children].map(node=>({tag:node.tagName.toLowerCase(),className:classes(node),alt:node.getAttribute('alt'),...relative(node,art),
+                    ...css(node,'objectFit')}))})),
+            content:when(content,()=>({...relative(content,card),...edges(content),children:boxedChildren(content).map(node=>`${node.tagName.toLowerCase()}.${classes(node)}`)})),
+            title:when(title,()=>({...layout(title),...edges(title),...relative(title,content),
+                items:[...title.children].map(node=>node.tagName==='BUTTON'?controlOf(node,title):spanOf(node,title))})),
+            section:when(section,()=>({className:classes(section),...relative(section,content),...edges(section),
+                label:when(heading?.querySelector('.role-label'),label=>({text:label.textContent,...font(label)})),
+                actions:when(heading?.querySelector('.prompt-actions'),group=>({...layout(group),...relative(group,section),
+                    buttons:[...group.children].map(node=>controlOf(node,group))})),
+                text:when(text,()=>({text:text.textContent,...font(text),...edges(text),...relative(text,section),lines:lines(text)}))})),
+            meta:when(meta,()=>({...layout(meta),...edges(meta),...font(meta),...relative(meta,content),items:[...meta.children].map(node=>spanOf(node,meta))})),
+            // A chip's unrounded place too, so a re-ordered row can be laid out again (`reflow`; `stripExact` removes it).
+            tags:when(tags,()=>({...layout(tags),...edges(tags),...relative(tags,content),exact:{width:rect(tags).width},
+                items:[...tags.children].map(node=>({...spanOf(node,tags),shown:shown(node),exact:{left:rect(node).left-rect(tags).left,width:rect(node).width}}))})),
+            footer:when(footer,()=>({...layout(footer),...edges(footer),...font(footer),...relative(footer,card),
+                // What is seen (hidden-only text left out) and what is spoken (aria-hidden text left out).
+                facts:when(facts,()=>({text:textOf(facts,'.ca-visually-hidden'),spoken:accessibleText(facts),...font(facts),...relative(facts,footer)})),
+                actions:when(actions,()=>({...layout(actions),...relative(actions,footer),buttons:[...actions.children].map(node=>controlOf(node,actions))}))}))};
+    }
+    function libraryOf() {
+        const grid=main?.querySelector('.library-grid');
+        if(!grid)return null;
+        const toolbar=main.querySelector('search.toolbar'),caption=main.querySelector('.section-caption');
+        const cards=[...grid.querySelectorAll('.prompt-card')];
+        // Whatever the page shows after the grid, in document order (the concept: nothing).
+        const trailing=[];
+        for(let node=grid;node&&node!==main;node=node.parentElement)
+            for(let next=node.nextElementSibling;next;next=next.nextElementSibling)if(shown(next))trailing.push({tag:next.tagName.toLowerCase(),className:classes(next),text:next.innerText.replace(/\s+/g,' ').trim()});
+        const style=getComputedStyle(grid);
+        return {toolbar:when(toolbar,rowOf),
+            caption:when(caption,()=>({...layout(caption),...edges(caption),...font(caption),...relative(caption,main),
+                spans:[...caption.children].filter(shown).map(span=>({tag:span.tagName.toLowerCase(),text:textOf(span),...font(span),
+                    top:relative(span,caption).top,height:relative(span,caption).height}))})),
+            grid:{columns:style.gridTemplateColumns.split(/\s+/).length,...css(grid,'columnGap','rowGap'),...relative(grid,main),cardCount:cards.length},
+            cards:cards.slice(0,6).map(card=>libraryCardOf(card,grid)),trailing};
+    }
     return {chrome:chromeOf(),heading:headingOf(),
         toolbar:when(main?.querySelector(':scope > search.toolbar'),rowOf),
         filterRow:when(main?.querySelector(':scope > .filter-row'),rowOf),
@@ -342,5 +450,5 @@ export function measureInventory(scope) {
         cards:grid?[...grid.querySelectorAll(':scope > .media-card')].slice(0,6).map(cardOf):null,
         continuation:when(continuation,continuationOf),
         panel:when(gallery,panelOf),
-        library:null,history:null,noPageScroll:document.documentElement.scrollWidth<=innerWidth+1};
+        library:libraryOf(),history:null,noPageScroll:document.documentElement.scrollWidth<=innerWidth+1};
 }

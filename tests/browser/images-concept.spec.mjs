@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy,reflow,withoutItems} from './concept-inventory.mjs';
 
 // Task C7 of #249: the production Images page against the immutable concept, on the concept-shaped real fixture (24
 // images of the concept's six prompts, its seeds, sizes and favorites). Heading, toolbar, filter row, caption, grid,
@@ -28,62 +28,6 @@ function captionDay(seconds,now=new Date()) {
     const name=days===0?'Today':days===1?'Yesterday':date.toLocaleDateString('en-US',{weekday:'long',timeZone:'UTC'});
     const options={month:'long',day:'numeric',timeZone:'UTC',...(date.getUTCFullYear()===now.getUTCFullYear()?{}:{year:'numeric'})};
     return `${name} · ${date.toLocaleDateString('en-US',options)}`;
-}
-
-/**
- * The row's flex lines laid out again from the concept's own item boxes, in order: an item breaks to a new line when its
- * hypothetical size (`flex-basis: 100%` → the row; a growing item → its min-width; otherwise its box) no longer fits
- * after the line's items and gaps; a growing item (the search field, `flex: 1`) takes its line's free space; items pack
- * from the start and centre in their line (`align-items: center`). The test proves this model on the concept rows first.
- */
-export function reflow(row,items) {
-    const gap=parseFloat(row.columnGap)||0,rowGap=parseFloat(row.rowGap)||0;
-    // The unrounded boxes (`exact`); rounding happens once, on the result.
-    const rowWidth=row.exact?.width??row.width;
-    const exact=item=>item.exact??{left:item.left,width:item.width};
-    const grows=item=>parseFloat(item.flexGrow)>0;
-    const basis=item=>item.flexBasis==='100%'?rowWidth:grows(item)?parseFloat(item.minWidth)||0:exact(item).width;
-    const lines=[];
-    const order=row.items.filter(entry=>entry.shown);
-    for(const item of items.filter(entry=>entry.shown)) {
-        const line=lines.at(-1),used=line?line.reduce((sum,entry)=>sum+basis(entry)+gap,0):0;
-        // The slack is one layout unit (1/60px in Firefox), which float sums of the browser's boxes may exceed.
-        if(line&&used+basis(item)<=rowWidth+1/60)line.push(item);else lines.push([item]);
-    }
-    const placed=new Map();let top=0;
-    const sameLine=(a,b)=>a.top<b.top+b.height&&b.top<a.top+a.height;
-    const freeOf=line=>rowWidth-line.reduce((sum,item)=>sum+basis(item),0)-gap*(line.length-1);
-    for(const line of lines) {
-        const free=freeOf(line);
-        const growing=line.filter(grows);
-        const height=Math.max(...line.map(item=>item.height));
-        let x=0,previous=null;
-        for(const item of line) {
-            // A growing item keeps its concept width plus the space its line gained.
-            const width=growing.includes(item)?exact(item).width+(free-freeOf(order.filter(entry=>sameLine(entry,item))))/growing.length:exact(item).width;
-            // An item that followed the same neighbour on the same line in the concept keeps the concept's own spacing,
-            // moved by however much that neighbour grew; otherwise it follows the previous box and the gap.
-            const adjacent=previous&&order.indexOf(item)===order.indexOf(previous)+1&&sameLine(item,previous);
-            const before=previous&&placed.get(previous);
-            const left=line.indexOf(item)===0?0:adjacent?before.left+exact(item).left-exact(previous).left+before.width-exact(previous).width:x;
-            placed.set(item,{left,width,top:Math.round(top+(height-item.height)/2)});
-            x=left+width+gap;previous=item;
-        }
-        top+=height+rowGap;
-    }
-    const moved=item=>{
-        const box=placed.get(item);
-        if(!box)return item;
-        const grown=box.width-exact(item).width;
-        return {...item,left:Math.round(box.left),top:box.top,width:Math.round(box.width),
-            input:item.input&&{...item.input,width:Math.round((item.input.exact?.width??item.input.width)+grown)}};
-    };
-    return {...row,height:Math.round(top-rowGap),items:items.map(moved)};
-}
-
-/** A flex row without the items `isRemoved` picks; the remaining items flow again from the concept's boxes. */
-function withoutItems(row,isRemoved) {
-    return reflow(row,row.items.filter(item=>!isRemoved(item)));
 }
 
 /** D8: the selection bar's real actions only; Add tags, Add to collection and Remove links… are left out. */

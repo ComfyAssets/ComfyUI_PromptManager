@@ -32,7 +32,6 @@ const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative varian
 function el(tag,text,className) {
     const node=document.createElement(tag);if(text!==undefined) node.textContent=text;if(className) node.className=className;return node;
 }
-function link(text,href,className) {const node=el('a',text,className);node.href=href;return node;}
 // Cut at 80 UTF-16 units, never inside a surrogate pair (database/library.py titled() matches).
 export function libraryTitle(text) {
     const first=text.split('\n')[0].trim();
@@ -161,7 +160,6 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
-        const legacy=link('Current prompt library',window.ApiClient.resolveUrl('/prompt_manager/admin'),'workspace-link');
         const actions=headingActions(main,section);
         const exportButton=createButton('Export');exportButton.setAttribute('aria-label','Export full Library JSON');
         const newPrompt=createButton('+ New prompt','ca-primary');actions.append(exportButton,newPrompt);
@@ -188,7 +186,8 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         }
         scope.listen(exportButton,'click',exportLibrary);
         headingDescription(main,section,'One positive. Reusable negatives. Every experiment stays connected.');
-        continuation.append(message,retry,more);section.append(optionsStatus,exportStatus,caption,grid,continuation,legacy);main.append(section);
+        // Nothing follows the grid in the concept; the legacy Library stays one click away on Overview (spec §5).
+        continuation.append(message,retry,more);section.append(optionsStatus,exportStatus,caption,grid,continuation);main.append(section);
         const cards=new Map(), rowNodes=new Map(), spacers=new Map(), heights=new Map(), pendingMeasurements=new Map();
         let state,frame=0,loadFrame=0,observer,optionsRequest,focusOverride=-1;
         const columns=()=>window.innerWidth>=1700?3:window.innerWidth<=700?1:2;
