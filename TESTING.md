@@ -829,6 +829,21 @@ Recorded deviations on this page:
   `negatives[0]`, its baseline: the first comparison reads "Baseline compared with
   <newest>" where the concept compares the baseline with itself. The history concept
   comparison (PR F-b, F5) maps this.
+- **D47** (#249 PR F-b): the shared gallery is the concept's `section.history-gallery`
+  (region "Shared gallery") with `.panel-heading` (h2 "Shared gallery", `span.small`
+  "<name> · same positive prompt") after the variants panel (and Compare), and
+  recorded executions (#209) follow it, as the concept has no recorded section. The
+  name is the lane's own name ("<title>", else "Negative variant N"), with " · Archived"
+  for an archived pair, and follows a rename. Its cards are the Images media cards: the
+  star wherever the read returns `favorite`, no checkbox or selection bar (Images only,
+  #259), the image opens the Viewer. A saved variant with no images shows the concept's
+  `.empty` "Saved variant · no runs yet." beside the grid (the concept puts it inside
+  `.image-grid`, which only holds positioned cards here). The embedded collection keeps
+  production's layout row, "Linked images" caption with "N loaded · N linked images"
+  and the selected-image side panel, which the concept's gallery does not show. With no
+  saved variant the page shows every image of the positive under "All images for this
+  positive, including unassigned images. …" and no empty copy (a state the concept
+  never reaches).
 
 The run dot reads `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest`
 (see "Chronological Library history"), and each lane's "N runs" is the pair's

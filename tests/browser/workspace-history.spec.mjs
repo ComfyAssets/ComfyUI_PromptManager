@@ -959,3 +959,47 @@ test('dot names never repeat for trimmed titles or titles that read like a fallb
     expect(new Set(names).size).toBe(names.length);
     expect(names).toEqual(['Select negative variant 1','Select negative variant 2','Select negative variant 3']);
 });
+// #249 F4: the concept's shared gallery (app.js a616-621, style.css 1546-1548) of PR C media cards (C3 activation).
+test('shared gallery uses concept cards, image opens the viewer, empty copy',async({page,request})=>{
+    const f=page.fixture;await open(page,f.canonical_id);
+    const section=gallery(page),heading=section.locator(':scope > .panel-heading');
+    expect(await section.evaluate(node=>`${node.tagName.toLowerCase()}.${node.className}`)).toBe('section.history-gallery');
+    await expect(heading.locator(':scope > h2')).toHaveText('Shared gallery');
+    // The page opens on the newest lane, a saved variant with no runs: the concept's empty copy.
+    await expect(heading.locator(':scope > span.small')).toHaveText('No negative · same positive prompt');
+    await expect(section.locator('.empty')).toHaveText('Saved variant · no runs yet.');await expect(section.locator('.empty')).toBeVisible();
+    await expect(section.locator('article[data-image-key]')).toHaveCount(0);
+    // As in the concept, the gallery follows the variants panel; recorded executions (#209) stay below it.
+    const order=await page.locator('.library-history').evaluate(node=>[...node.querySelectorAll('section[aria-label]')].map(item=>item.getAttribute('aria-label')).filter(name=>['Saved negative variants','Shared gallery','Recorded executions'].includes(name)));
+    expect(order).toEqual(['Saved negative variants','Shared gallery','Recorded executions']);
+    const dot=variantsPanel(page).getByRole('button',{name:'Select negative Quality baseline',exact:true});await dot.click();await expect(dot).toHaveAttribute('aria-pressed','true');
+    await expect(heading.locator(':scope > span.small')).toHaveText('Quality baseline · same positive prompt');
+    const cards=section.locator('article.media-card[data-image-key]');await expect(cards).toHaveCount(2);
+    await expect(section.locator('.empty')).toBeHidden();
+    const details=await(await request.get(`/prompt_manager/library/${f.canonical_id}`)).json();
+    const pair=details.variants.find(variant=>variant.title==='Quality baseline').id;
+    const listing=await(await request.get(`/prompt_manager/library/${f.canonical_id}/images?pair_id=${pair}`)).json();
+    const first=cards.first(),filename=(await first.locator('.image-open').getAttribute('aria-label')).replace(/^Open /,'');
+    const image=listing.images.find(item=>item.filename===filename);expect(typeof image.favorite).toBe('boolean');
+    // The concept card: art (open button + overlays), then the info row; the star where the read returns favorite and
+    // no checkbox (the selection bar stays Images-only, #259).
+    expect(await first.evaluate(node=>[...node.children].map(child=>child.className))).toEqual(['media-art','media-info']);
+    expect(await first.locator(':scope > .media-art').evaluate(node=>[...node.children].map(child=>`${child.tagName.toLowerCase()}.${child.className}`))).toEqual(['button.image-open','div.image-overlays']);
+    await expect(first.locator('.image-overlays input[type="checkbox"]')).toHaveCount(0);
+    const star=first.locator('.image-overlays > button.star-button');
+    await expect(star).toHaveAccessibleName(`Favorite ${filename}`);await expect(star).toHaveAttribute('aria-pressed',String(image.favorite));
+    await expect(star).toHaveText(image.favorite?'★':'☆');
+    await expect(first.locator('.media-info h3')).toHaveCount(1);
+    await expect(first.locator('.image-card-actions > button.icon-btn')).toHaveAccessibleName(`Inspect ${filename}`);
+    // C3 activation: the image opens the viewer and Escape returns focus to it.
+    const openButton=first.locator('.image-open');await openButton.click();
+    const viewer=page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
+    await page.keyboard.press('Escape');await expect(viewer).toBeHidden();await expect(openButton).toBeFocused();
+    await expect(section.locator(':scope > .panel-heading')).toHaveCSS('justify-content','space-between');
+    await expect(section).toHaveCSS('margin-top','24px');
+    // At 390px the heading stays inside the gallery and the page never scrolls sideways.
+    await page.setViewportSize({width:390,height:844});
+    await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    const [box,text]=await Promise.all([section.boundingBox(),heading.locator(':scope > span.small').boundingBox()]);
+    expect(text.x+text.width).toBeLessThanOrEqual(box.x+box.width+0.5);
+});

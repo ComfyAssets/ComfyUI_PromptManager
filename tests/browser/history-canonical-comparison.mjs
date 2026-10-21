@@ -39,7 +39,7 @@ export async function historyGeometry(page, production) {
         branch: '.library-history .variant-lane', label: '.library-history .variant-lane > span', dot: '.library-history .variant-dot[aria-pressed="true"]',
         positiveLabel: '.library-history .positive-lane span',
         role: '[aria-label="Saved prompt texts"] .prompt-section',
-        prompt: '[aria-label="Saved prompt texts"] .prompt-text', gallery: '.library-shared-gallery',
+        prompt: '[aria-label="Saved prompt texts"] .prompt-text', gallery: '.library-history .history-gallery',
         heading: '.library-history .timeline-panel h2', intro: '.library-history .timeline-panel .panel-heading .small',
         footer: '.library-history .timeline-lower', all: '.library-history .timeline-lower button',
         recordedPositiveLabel: '.history-positive-lane span', recordedBranch: '.history-context-branch',

@@ -96,7 +96,7 @@ function deliverFavorite(key, favorite) {
     for (const target of embeddedFavoriteTargets) target(key, favorite);
 }
 
-export function mountImages(main, api, parentScope, {embedded = false, fetchPage} = {}) {
+export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -213,10 +213,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const retry = createButton('Retry');
     continuation.append(message, more, retry);
     // The concept's empty collection (app.js updateImages), beside the grid because the grid only holds positioned cards.
-    const empty = el('div', 'No matching images. Try another search or category.', 'empty');
+    // An embedded gallery shows one only when its page names the concept's copy (the history gallery, app.js a620). /* D47 */
+    const showsEmpty = !embedded || typeof emptyText === 'string';
+    const empty = el('div', embedded ? emptyText : 'No matching images. Try another search or category.', 'empty');
     empty.hidden = true;
     collection.append(caption, grid);
-    if (!embedded) collection.append(empty);
+    if (showsEmpty) collection.append(empty);
     collection.append(continuation);
     // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).
     let focusAfterLoad = null;
@@ -524,7 +526,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         retry.hidden = !next.error;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
-        if (!embedded) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
+        if (showsEmpty) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
         if (focusAfterLoad !== null && !next.loading) settleLoadFocus(next);
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();

@@ -6,8 +6,6 @@ main.library-main { --library-positive: #73dda9; }
 .library-main .library-continuation { padding-block: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .library-main .library-status { flex: 1 1 240px; color: var(--ca-muted); }
 .library-main .library-surface { padding: 22px; background: var(--ca-surface); border: 1px solid var(--ca-line); border-radius: 7px; margin-block: 18px; }
-.library-main .library-shared-gallery { margin-block-start: 24px; }
-.library-main .library-variant-context { color: var(--ca-muted); font-size: 12px; }
 @media (min-width: 1700px) { .library-main .library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .library-main .library-grid { grid-template-columns: minmax(0, 1fr); } .library-main .library-surface { padding: 16px; } }
 

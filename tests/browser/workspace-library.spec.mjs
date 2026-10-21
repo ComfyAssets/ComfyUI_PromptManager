@@ -563,7 +563,7 @@ test('saved choices retain curved staggered lanes and the full negative immediat
     const values=await page.locator('.library-history .variant-lane').evaluateAll(nodes=>nodes.map(node=>({offset:parseFloat(getComputedStyle(node).marginInlineStart),radius:getComputedStyle(node,'::before').borderBottomLeftRadius})));
     expect(values).toEqual([{offset:38,radius:'22px'},{offset:85,radius:'22px'},{offset:132,radius:'22px'},{offset:179,radius:'22px'}]);
     const order=await page.locator('.library-history').evaluate(node=>[...node.querySelectorAll('section[aria-label]')].filter(section=>['Saved negative variants','Recorded executions','Shared gallery'].includes(section.getAttribute('aria-label'))).map(section=>section.getAttribute('aria-label')));
-    expect(order).toEqual(['Saved negative variants','Recorded executions','Shared gallery']);
+    expect(order).toEqual(['Saved negative variants','Shared gallery','Recorded executions']);
     const rows=await(await request.get('/prompt_manager/library')).json();const cat=rows.items.find(item=>item.text==='Cat portrait');
     const details=await(await request.get(`/prompt_manager/library/${cat.id}`)).json();
     const selected=details.variants[1].negative_text;
