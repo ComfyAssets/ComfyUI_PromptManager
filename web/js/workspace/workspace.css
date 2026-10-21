@@ -149,9 +149,9 @@ pre.prompt-text { background: none; padding: 0; border: 0; border-radius: 0; max
 
 /* Images side panel (#249 D2), production-only. Real prompts can be far longer than the concept's samples, so the sticky
    panel scrolls within the window and its footer stays reachable; where the concept unsticks it, it grows instead. */
-.detail-panel { min-inline-size: 0; max-block-size: calc(100dvh - 40px); overflow: auto; }
-@media (max-width: 700px) { .detail-panel { max-block-size: none; } }
-@container images-page (inline-size < 600px) { .detail-panel { position: static; max-block-size: none; } }
+.detail-panel { min-inline-size: 0; max-block-size: calc(100dvh - 40px); overflow: auto; /* D2 */ }
+@media (max-width: 700px) { .detail-panel { max-block-size: none; /* D2 */ } }
+@container images-page (inline-size < 600px) { .detail-panel { position: static; max-block-size: none; /* D2 */ } }
 /* #249 D2: the prompt blocks' mount point is transparent, so their sections sit in `.detail-inner` as the concept's do. */
 .detail-inner > .prompt-inspector { display: contents; }
 /* #249 D2: real titles and filenames can be one unbroken word; they wrap inside the 310px panel. */
