@@ -475,7 +475,7 @@ test('the inline current file names its prompts apart from the frozen run fields
     const current=dialog(page).getByRole('region',{name:'Current reported file',exact:true});await expect(current).toBeVisible();
     await expect(current.getByRole('region',{name:'Current file positive prompt',exact:true}).locator('p.prompt-text')).toHaveText('current file positive');
     await expect(current.getByRole('region',{name:'Current file negative prompt',exact:true}).locator('p.prompt-text')).toHaveText('current file negative');
-    await expect(current.getByRole('button',{name:'Copy current file positive prompt',exact:true})).toBeVisible();
+    await expect(current.getByRole('button',{name:/^Copy current file positive prompt: /})).toBeVisible();
     for(const role of ['Positive','Negative'])await expect(dialog(page).getByRole('region',{name:`${role} prompt`,exact:true})).toHaveCount(1);
     await expect(current.getByRole('region',{name:/^(Positive|Negative) prompt$/})).toHaveCount(0);
     expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(before);

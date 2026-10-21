@@ -157,6 +157,9 @@ CONCEPT_MODEL = "illustrative-model.safetensors"
 MAX_EXTRA_IMAGES = 120
 # Unlinked, seedless images (D11 "W × H · PNG") newer than the concept's, for D3 checks.
 MAX_SEEDLESS_IMAGES = 2
+# The newest images linked to their positive alone (no recipe), for the inspector's
+# positive-scope category and tag chips (D39).
+MAX_POSITIVE_LINKS = 6
 SEEDLESS_SIZE = (1536, 1152)
 SESSION = "5c1f9a7e-3f0b-4a55-9d0e-2b8c4f6a7d10"
 _TABLES = (
@@ -341,6 +344,7 @@ def seed_workspace_concept(
     *,
     extra_images: int = 0,
     seedless_images: int = 0,
+    positive_links: int = 0,
 ) -> dict:
     """Replace this server's disposable rows and files with the concept's data.
 
@@ -350,6 +354,7 @@ def seed_workspace_concept(
     """
     _bounded("extra_images", extra_images, MAX_EXTRA_IMAGES)
     _bounded("seedless_images", seedless_images, MAX_SEEDLESS_IMAGES)
+    _bounded("positive_links", positive_links, MAX_POSITIVE_LINKS)
     _clear(api, root)
     db = api.db
     epoch = db.get_execution_epoch()
@@ -405,8 +410,9 @@ def seed_workspace_concept(
             os.utime(path, (stamp, stamp))
             owner = prompts[prompt_index]
             image_id = db.link_image_to_prompt(owner["positive_id"], str(path))
-            pair_id = owner["pair_ids"][variant]
-            db.link_image_to_pair(pair_id, image_id, {"source": "concept fixture"})
+            pair_id = None if index < positive_links else owner["pair_ids"][variant]
+            if pair_id is not None:
+                db.link_image_to_pair(pair_id, image_id, {"source": "concept fixture"})
             if concept_starred(prompt_index, round_index):
                 db.set_image_favorite(
                     favorite_root, _favorite_relative_key(f"concepts/{name}")

@@ -144,6 +144,20 @@ test('a context label names nested prompt regions and actions apart from the fro
     }finally{scope.dispose();f.restore();}
 });
 
+test('a title names each role action after its prompt as the concept does',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:()=>{}},title:'Alpine observatory',prompts:{positive:record('p'),negative:record('n')}});
+        const actions=f.walk(container,node=>node.tagName==='button').map(node=>node.attributes['aria-label']);
+        assert.deepEqual(actions,['Copy positive prompt: Alpine observatory','Send positive prompt to ComfyUI: Alpine observatory',
+            'Copy negative prompt: Alpine observatory','Send negative prompt to ComfyUI: Alpine observatory','Send prompt pair']);
+        const nested=new f.Element('div');
+        module.mountPromptBlocks(nested,{parentScope:scope,sender:{open:()=>{}},contextLabel:'Current file',title:'Alpine observatory',includePairAction:false,prompts:{positive:record('p')}});
+        assert.deepEqual(f.walk(nested,node=>node.tagName==='button').map(node=>node.attributes['aria-label']),
+            ['Copy current file positive prompt: Alpine observatory','Send current file positive prompt to ComfyUI: Alpine observatory']);
+    }finally{scope.dispose();f.restore();}
+});
+
 test('a title names each action after its prompt (concept "Copy positive prompt: <title>") while regions keep their names',()=>{
     const f=dom(),scope=createScope(),container=new f.Element('div');
     try{
