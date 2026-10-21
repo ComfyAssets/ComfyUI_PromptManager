@@ -479,8 +479,14 @@ def seed_workspace_history(
         canonical_positive, canonical_negative, title="Quality baseline"
     )
     canonical_id = api.db.get_prompt_pair(canonical_pair)["positive_prompt_id"]
-    api.db.save_prompt_pair(canonical_positive, "flat light", title="Clean geometry")
+    clean_pair = api.db.save_prompt_pair(
+        canonical_positive, "flat light", title="Clean geometry"
+    )
     api.db.save_prompt_pair(canonical_positive, "", title="No negative")
+    # Queue-hook pair counts (#249 D26): both lanes show the repeat-run dot; only
+    # the baseline has a recorded execution, so Clean geometry opens Repeat run.
+    api.db.record_prompt_pair_use(canonical_pair, 2)
+    api.db.record_prompt_pair_use(clean_pair, 2)
     for number, name in enumerate(("canonical.png", "canonical-alt.png")):
         path = folder / name
         _write_art(path, number, canonical_positive, canonical_negative)
@@ -500,6 +506,8 @@ def seed_workspace_history(
         os.utime(path, (stamp, stamp))
         image_id = api.db.link_image_to_prompt(canonical_id, str(path))
         api.db.link_image_to_pair(canonical_pair, image_id, {"source": "fixture"})
+        if number:
+            api.db.link_image_to_pair(clean_pair, image_id, {"source": "fixture"})
     canonical_run = run(
         (
             RecipeContext(
@@ -529,6 +537,7 @@ def seed_workspace_history(
         "detail_image_id": current,
         "canonical_id": canonical_id,
         "canonical_pair": canonical_pair,
+        "clean_pair": clean_pair,
         "canonical_run": canonical_run,
         "canonical_positive": canonical_positive,
         "canonical_negative": canonical_negative,

@@ -7,13 +7,6 @@ main.library-main { --library-positive: #73dda9; }
 .library-main .library-continuation { padding-block: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .library-main .library-status { flex: 1 1 240px; color: var(--ca-muted); }
 .library-main .library-surface { padding: 22px; background: var(--ca-surface); border: 1px solid var(--ca-line); border-radius: 7px; margin-block: 18px; }
-.library-main .library-branches { padding: 18px 20px; border: 1px solid var(--ca-line); border-radius: 6px; background: var(--ca-field); margin-block: 16px; }
-.library-main .library-positive-lane { padding-block-end: 12px; border-block-end: 2px solid var(--library-positive); color: var(--library-positive); font-size: 12px; }
-.library-main .library-variant-lane { display: flex; align-items: center; gap: 16px; min-block-size: 57px; margin-inline-start: 18px; border-inline-start: 2px solid var(--ca-error); padding-inline-start: 18px; }
-.library-main .library-variant-lane span { min-inline-size: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--ca-muted); }
-.ca-tools .library-main .library-variant-dot { flex: 0 0 29px; inline-size: 29px; min-block-size: 29px; padding: 0; border-radius: 50%; background: var(--ca-error); border: 2px solid var(--ca-error); color: white; }
-.library-main .library-variant-dot[aria-pressed="true"] { outline: 3px solid var(--ca-focus); outline-offset: 4px; }
-.library-main .library-variants > button[aria-pressed="true"] { border-color: var(--ca-focus); }
 .library-main .library-shared-gallery { margin-block-start: 24px; }
 .library-main .library-variant-context { color: var(--ca-muted); font-size: 12px; }
 @media (min-width: 1700px) { .library-main .library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
@@ -25,24 +18,12 @@ main.library-main { --library-positive: #73dda9; }
 main.library-main { --library-negative: #ff8c98; }
 [data-ca-theme="light"] main.library-main { --library-negative: #b71931; }
 .library-main :where(.library-surface, .library-recorded-container, .recorded-history) { min-inline-size: 0; }
-.library-main .library-branches { overflow-x: auto; position: relative; }
-.library-main .library-positive-lane { position: relative; box-sizing: border-box; block-size: 40px; min-inline-size: 520px; margin: 17px 0 0; padding: 0 0 0 38px; border: 0; border-block-start: 2px solid var(--library-positive); font-size: 10px; line-height: 1.6; }
-.library-main .library-positive-lane::before, .history-positive-lane::before { content: "+"; position: absolute; inset-block-start: -13px; inset-inline-start: 0; border-radius: 50%; inline-size: 25px; block-size: 25px; background: var(--library-positive); color: #172b22; text-align: center; font-size: 14px; line-height: 21px; }
-.library-positive-lane > span, .history-positive-lane > span { position: absolute; inset-block-start: -25px; inset-inline-start: 38px; font-size: 10px; color: var(--library-positive); }
-.library-main .library-variants h2 { font-size: 14px; line-height: 1.5; margin: 0; }
-.library-main .library-variants > p.muted { font-size: 12px; line-height: 1.5; margin: 0 0 12px; }
-.library-main .library-panel-heading p.muted { font-size: 12px; line-height: 1.5; margin: 0; }
-.library-main .library-variants .library-branches { margin-block: 0; }
-.library-variant-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-block-start: 14px; }
-.library-variant-summary { display: flex; flex-wrap: wrap; gap: 6px; }
-.library-main .library-variant-summary > p { font-size: 12px; line-height: 1.5; margin: 0; }
-.ca-tools .library-variant-footer > button { margin-inline-start: auto; max-inline-size: 100%; white-space: normal; }
-.library-main .library-variant-lane { position: relative; display: block; box-sizing: border-box; min-inline-size: 520px; block-size: 57px; min-block-size: 57px; margin-inline-start: var(--lane-offset, 38px); padding: 0; border: 0; border-block-start: 2px solid color-mix(in srgb, var(--library-negative) 60%, transparent); }
-.library-main .library-variant-lane::before, .history-context-branch::before { content: ""; position: absolute; inset-block-start: -25px; inset-inline-start: -30px; inline-size: 30px; block-size: 25px; border-inline-start: 2px solid var(--library-negative); border-block-end: 2px solid var(--library-negative); border-end-start-radius: 22px; }
-.library-main .library-variant-lane span { position: absolute; inset-inline-start: 43px; inset-block-start: 6px; font-size: 10px; max-inline-size: 430px; }
-.ca-tools .library-main .library-variant-dot { position: absolute; inset-block-start: -16px; inset-inline-start: 0; inline-size: 29px; block-size: 29px; min-block-size: 29px; border-color: var(--library-negative); background: var(--library-negative); color: #38151b; font-size: 12px; }
+.history-positive-lane::before { content: "+"; position: absolute; inset-block-start: -13px; inset-inline-start: 0; border-radius: 50%; inline-size: 25px; block-size: 25px; background: var(--library-positive); color: #172b22; text-align: center; font-size: 14px; line-height: 21px; }
+.history-positive-lane > span { position: absolute; inset-block-start: -25px; inset-inline-start: 38px; font-size: 10px; color: var(--library-positive); }
+.history-context-branch::before { content: ""; position: absolute; inset-block-start: -25px; inset-inline-start: -30px; inline-size: 30px; block-size: 25px; border-inline-start: 2px solid var(--library-negative); border-block-end: 2px solid var(--library-negative); border-end-start-radius: 22px; }
 .history-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 14px; }
-.ca-tools .library-main :where(.library-variants, .history-toolbar) > button { max-inline-size: 100%; white-space: normal; }
+/* D45: the panel's paging buttons wrap like the recorded toolbar's. */
+.ca-tools .library-main :where(.timeline-panel, .history-toolbar) > button { max-inline-size: 100%; white-space: normal; }
 .recorded-history > .muted, .history-count, .history-scope, .history-status, .history-legend { font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
 .library-main .recorded-history > h2 { font-size: 14px; line-height: 1.5; }
 .library-main .recorded-history > h2 + p { font-size: 12px; line-height: 1.5; }
@@ -90,7 +71,8 @@ main.library-main { --library-negative: #ff8c98; }
     .ca-tools .history-run-marker { inline-size: 44px; block-size: 44px; min-inline-size: 44px; min-block-size: 44px; border: 0; background: transparent; color: transparent; }
     .ca-tools .history-run-marker::before { content: ""; position: absolute; inset: 16px; box-sizing: border-box; border: 2px solid var(--library-negative); border-radius: 50%; background: var(--ca-field); }
     .ca-tools .history-context-anchor::before { content: "−"; inset: 7.5px; inline-size: 29px; block-size: 29px; line-height: 25px; color: #38151b; background: var(--library-negative); }
-    .ca-tools .library-main .library-variant-dot::after { content: ""; position: absolute; inset: -9px; }
+    /* D45: a coarse pointer reaches the concept dot through a 47px target. */
+    .ca-tools .library-history .variant-dot::after { content: ""; position: absolute; inset: -9px; }
     .ca-tools .recorded-run-dialog :where(button, summary) { min-inline-size: 44px; min-block-size: 44px; }
 }
 @media (forced-colors: active) {
@@ -103,9 +85,12 @@ main.library-main { --library-negative: #ff8c98; }
    keeps the concept's) and are retired in PR F (history). */
 .library-main .library-history .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ca-tools .library-main .library-history .row-actions button { min-block-size: 32px; font-size: 12px; max-inline-size: 100%; white-space: normal; }
-.library-main .library-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-block-end: 12px; }
 @media (pointer: coarse) { .ca-tools .library-main .library-history .row-actions button { min-block-size: 40px; } }
-/* Archived pairs: the existing lane at reduced emphasis (the existing .6 disabled-marker opacity); text stays at full contrast. */
-.library-main .library-variant-archived::before, .ca-tools .library-main .library-variant-archived .library-variant-dot { opacity: .6; }
+/* D45: archived pairs (#235) are concept lanes at reduced emphasis (the .6 disabled-marker opacity); text stays at full contrast. */
+.library-history .variant-lane.library-variant-archived::before, .ca-tools .library-history .library-variant-archived .variant-dot { opacity: .6; }
 .ca-tools .library-main .library-variant-restore { position: static; margin-inline-start: 8px; min-block-size: 24px; padding: 2px 8px; font-size: 10px; vertical-align: middle; }
 @media (pointer: coarse) { .ca-tools .library-main .library-variant-restore { min-block-size: 40px; } }
+/* D45: at 390px and 200% zoom the panel heading and the legend row wrap, and the All images button wraps its label,
+   so the page never scrolls sideways (the retired production footer did the same). */
+.library-history .timeline-panel > .panel-heading, .library-history .timeline-lower { flex-wrap: wrap; }
+.ca-tools .library-history .timeline-lower > button { /* D45 */ max-inline-size: 100%; white-space: normal; }

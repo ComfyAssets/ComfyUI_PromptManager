@@ -565,6 +565,47 @@ test('an action may open the next dialog without the late close event closing it
     }
 });
 
+test('a content dialog shows page nodes and releases them once on close or replacement', async () => {
+    const { openContentDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        const trigger = new dom.Element('button');
+        dom.body.append(trigger);
+        let closed = 0;
+        const grid = new dom.Element('div');
+        openContentDialog({ scope, title: 'All images for this positive', nodes: [grid], trigger, onClose: () => closed++ });
+        assert.equal(byId(dom, 'modal-title').textContent, 'All images for this positive');
+        assert.deepEqual(byId(dom, 'modal-body').children, [grid]);
+        assert.equal(modal(dom).open, true);
+        modal(dom).dispatchEvent(new Event('cancel', { cancelable: true }));
+        assert.equal(closed, 1);
+        assert.equal(document.activeElement, trigger);
+        await tick();
+        assert.equal(closed, 1);
+        // Another dialog replacing the body releases it too, exactly once.
+        openContentDialog({ scope, title: 'Repeat run', nodes: [new dom.Element('p')], trigger, onClose: () => closed++ });
+        openCopyFallback('swap', { scope });
+        assert.equal(closed, 2);
+        closeWorkspaceDialog();
+        assert.equal(closed, 2);
+        // Disposing the page scope closes it.
+        openContentDialog({ scope, title: 'Repeat run', nodes: [], onClose: () => closed++ });
+        scope.dispose();
+        assert.equal(closed, 3);
+        assert.throws(() => openContentDialog({ title: 'x', nodes: [] }), /page scope/);
+        const other = (await coreModule).createScope();
+        assert.throws(() => openContentDialog({ scope: other, title: '', nodes: [] }), TypeError);
+        assert.throws(() => openContentDialog({ scope: other, title: 'x', nodes: [null] }), TypeError);
+        assert.throws(() => openContentDialog({ scope: other, title: 'x', nodes: [], onClose: 1 }), TypeError);
+        other.dispose();
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
 test('dialogs need the page scope and close with it', async () => {
     const { openRefineDialog, openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
     const { createScope } = await coreModule;

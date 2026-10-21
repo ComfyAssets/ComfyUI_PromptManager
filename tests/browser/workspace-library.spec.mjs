@@ -7,6 +7,7 @@ const history=page=>page.getByRole('region',{name:'Prompt history',exact:true});
 const saved=page=>history(page).getByRole('region',{name:'Saved prompt texts',exact:true});
 const gallery=page=>page.getByRole('region',{name:'Shared gallery',exact:true});
 const media=page=>gallery(page).locator('article[data-image-key]');
+const allImages=page=>page.getByRole('dialog',{name:'All images for this positive',exact:true});
 
 const refine=page=>page.getByRole('dialog',{name:'Refine this view',exact:true});
 /** The Library's Tags filter lives in "Refine this view" (#249 D14). */
@@ -28,8 +29,10 @@ async function openHistory(page,text='Cat portrait') {
     await cards(page).filter({has:page.getByText(text,{exact:true})}).getByRole('button',{name:'Explore history',exact:true}).click();
     await expect(history(page)).toBeVisible();
 }
+// The fixture's pairs are titled, so each dot is named by its title (#249 D45); these contracts address lanes by position.
+const variantDot=(page,index)=>history(page).locator('.timeline > .variant-lane').nth(index).locator(':scope > .variant-dot');
 async function selectVariant(page,index) {
-    const choice=history(page).getByRole('button',{name:`Select negative variant ${index+1}`,exact:true});
+    const choice=variantDot(page,index);
     await choice.click();await expect(choice).toHaveAttribute('aria-pressed','true');
 }
 
@@ -57,9 +60,10 @@ test('history displays the selected full negative beneath its positive and filte
     const data=await(await request.get(`/prompt_manager/library/${cat.id}`)).json();
     // The concept opens on the first negative variant and filters the gallery to it (app.js navigate: state.variant = 0).
     await page.goto(route);await openHistory(page);
-    await expect(history(page).getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(variantDot(page,0)).toHaveAttribute('aria-pressed','true');
     await expect(media(page)).toHaveCount(['blurry, watermark','low quality'].includes(data.variants[0].negative_text)?1:0);
-    await expect(history(page).getByRole('button',{name:'All images for this positive',exact:true})).toHaveAttribute('aria-pressed','false');
+    // #249 D26: All images for this positive opens a dialog; it is not a gallery filter.
+    await expect(history(page).getByRole('button',{name:'All images for this positive',exact:true})).not.toHaveAttribute('aria-pressed',/.*/);
     for(const negative of ['blurry, watermark','low quality','low contrast','']) {
         const index=data.variants.findIndex(variant=>variant.negative_text===negative);await selectVariant(page,index);
         const neg=saved(page).getByRole('region',{name:'Negative prompt',exact:true});
@@ -70,8 +74,10 @@ test('history displays the selected full negative beneath its positive and filte
         const order=await positive.evaluate((element)=>element.compareDocumentPosition(element.parentElement.querySelector('[aria-label="Negative prompt"]')));
         expect(order&4).toBeTruthy();
     }
-    await history(page).getByRole('button',{name:'All images for this positive',exact:true}).click();await expect(media(page)).toHaveCount(3);
-    expect(await media(page).evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey))).toEqual(expect.arrayContaining(['0:shared/same.png','1:shared/same.png','0:legacy-unassigned.png']));
+    await history(page).getByRole('button',{name:'All images for this positive',exact:true}).click();
+    const listing=allImages(page).locator('article[data-image-key]');await expect(listing).toHaveCount(3);
+    expect(await listing.evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey))).toEqual(expect.arrayContaining(['0:shared/same.png','1:shared/same.png','0:legacy-unassigned.png']));
+    await page.keyboard.press('Escape');await expect(allImages(page)).toHaveCount(0);
 });
 
 test('search, category and tag filters preserve their constraints and return standalone positives',async({page})=>{
@@ -200,8 +206,9 @@ test('the caption count is announced once per change and kept while the shelf re
 
 test('a Library-embedded media card stars its file and the star survives a reload',async({page})=>{
     await page.goto(route);await openHistory(page);
-    await history(page).getByRole('button',{name:'All images for this positive',exact:true}).click();await expect(media(page)).toHaveCount(3);
-    const card=gallery(page).locator('article[data-image-key="0:legacy-unassigned.png"]');
+    // The unassigned file is reached through the All images dialog (#249 D26).
+    await history(page).getByRole('button',{name:'All images for this positive',exact:true}).click();await expect(allImages(page).locator('article[data-image-key]')).toHaveCount(3);
+    const card=allImages(page).locator('article[data-image-key="0:legacy-unassigned.png"]');
     const star=card.getByRole('button',{name:'Favorite legacy-unassigned.png',exact:true});
     await expect(star).toHaveAttribute('aria-pressed','false');await expect(card.locator('input[type=checkbox]')).toHaveCount(0);
     await expect(page.locator('.bulkbar, #bulkbar')).toHaveCount(0);
@@ -210,7 +217,7 @@ test('a Library-embedded media card stars its file and the star survives a reloa
     await expect(star).toHaveAttribute('aria-pressed','true');await expect(star).toHaveText('★');
     await expect(page.getByText('Added to favorites.',{exact:true})).toBeVisible();
     await page.reload();await history(page).getByRole('button',{name:'All images for this positive',exact:true}).click();
-    await expect(gallery(page).locator('article[data-image-key="0:legacy-unassigned.png"]').getByRole('button',{name:'Favorite legacy-unassigned.png',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(allImages(page).locator('article[data-image-key="0:legacy-unassigned.png"]').getByRole('button',{name:'Favorite legacy-unassigned.png',exact:true})).toHaveAttribute('aria-pressed','true');
 });
 
 test('a sort change atomically discards old row geometry and renders changed parent data',async({page,request})=>{
@@ -327,10 +334,10 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
 test('large variant histories append bounded pages without replacing the selected negative',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{native_library:true,extra_variants:41}})).toBeOK();
     await page.goto(route);await openHistory(page);
-    const variants=history(page).getByRole('button',{name:/^Select negative variant \d+$/});await expect(variants).toHaveCount(40);
+    const variants=history(page).getByRole('button',{name:/^Select negative /});await expect(variants).toHaveCount(40);
     await selectVariant(page,0);const chosenNegative=await saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text').textContent();
     await history(page).getByRole('button',{name:'Load more negative variants',exact:true}).click();await expect(variants).toHaveCount(45);
-    await expect(history(page).getByRole('button',{name:'Select negative variant 1',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(variantDot(page,0)).toHaveAttribute('aria-pressed','true');
     await expect(saved(page).getByRole('region',{name:'Negative prompt',exact:true}).locator('p.prompt-text')).toHaveText(chosenNegative);
 });
 
@@ -553,7 +560,7 @@ test('saved choices retain curved staggered lanes and the full negative immediat
     await page.goto(route);await openHistory(page);await selectVariant(page,1);
     const positive=saved(page).getByRole('region',{name:'Positive prompt',exact:true});
     expect(await positive.evaluate(node=>node.nextElementSibling?.getAttribute('aria-label'))).toBe('Negative prompt');
-    const values=await page.locator('.library-variant-lane').evaluateAll(nodes=>nodes.map(node=>({offset:parseFloat(getComputedStyle(node).marginInlineStart),radius:getComputedStyle(node,'::before').borderBottomLeftRadius})));
+    const values=await page.locator('.library-history .variant-lane').evaluateAll(nodes=>nodes.map(node=>({offset:parseFloat(getComputedStyle(node).marginInlineStart),radius:getComputedStyle(node,'::before').borderBottomLeftRadius})));
     expect(values).toEqual([{offset:38,radius:'22px'},{offset:85,radius:'22px'},{offset:132,radius:'22px'},{offset:179,radius:'22px'}]);
     const order=await page.locator('.library-history').evaluate(node=>[...node.querySelectorAll('section[aria-label]')].filter(section=>['Saved negative variants','Recorded executions','Shared gallery'].includes(section.getAttribute('aria-label'))).map(section=>section.getAttribute('aria-label')));
     expect(order).toEqual(['Saved negative variants','Recorded executions','Shared gallery']);

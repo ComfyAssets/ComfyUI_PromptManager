@@ -31,7 +31,7 @@ function place(parent, node, before) {
 
 export function mountRecordedHistory(container, {api, positiveId, parentScope, sender, visit = {}, onParentRevalidate, onRecordedCount}) {
     const scope = createScope(), dispose = () => scope.dispose();
-    if (parentScope.signal.aborted) {dispose();return {dispose};}
+    if (parentScope.signal.aborted) {dispose();return {dispose, openRun:() => false};}
     parentScope.signal.addEventListener('abort', dispose, {once:true});
     scope.cleanup(() => parentScope.signal.removeEventListener('abort', dispose));
     const section = el('section', undefined, 'library-surface recorded-history');
@@ -221,5 +221,11 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
     });
     render(state);
     void controller.load();
-    return {dispose};
+    /** Open Recorded run for one run (the history run dot, #249 D26); false while recorded actions are unavailable. */
+    function openRun({runId, anchorId = null, contextId = null, trigger}) {
+        if (scope.signal.aborted || !state.actionsEnabled) return false;
+        runView.open({runId, anchorId, contextId, trigger});
+        return true;
+    }
+    return {dispose, openRun};
 }

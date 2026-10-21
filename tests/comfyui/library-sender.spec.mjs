@@ -25,7 +25,7 @@ test('native library sends the selected saved pair into a real ComfyUI destinati
         await workspace.getByRole('searchbox',{name:'Search workspace',exact:true}).fill(positive);
         await workspace.locator('article[data-prompt-id]').filter({has:workspace.getByText(positive,{exact:true})}).getByRole('button',{name:'Explore history',exact:true}).click();
         const history=workspace.getByRole('region',{name:'Prompt history',exact:true});
-        await history.getByRole('button',{name:'Select negative variant 1',exact:true}).click();
+        await history.getByRole('button',{name:'Select negative Host saved pair',exact:true}).click();
         await expect(history.getByRole('region',{name:'Saved prompt texts',exact:true}).getByRole('region',{name:'Negative prompt',exact:true})).toContainText(negative);
         // The pair send lives in the history heading, as in the approved concept.
         await workspace.locator('#workspace-main > .heading').getByRole('button',{name:`Send prompt pair to ComfyUI: ${positive}`,exact:true}).click();

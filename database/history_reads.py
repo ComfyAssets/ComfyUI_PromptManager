@@ -10,7 +10,7 @@ import re
 import sqlite3
 from typing import Iterator
 
-from .execution_contexts import content_digest
+from .execution_contexts import _hints, _values, content_digest
 from .execution_history import HistoryEpochChanged
 from .execution_outputs import _capture, _REFERENCE_COLUMNS
 from .library import _ELIGIBLE
@@ -98,6 +98,8 @@ _ORDER = (
     "r.observed_dequeue_at DESC,r.session_id COLLATE BINARY DESC,"
     "r.queue_item_id DESC,r.run_id COLLATE BINARY DESC"
 )
+# Stale-hint rows a newest-pair lookup inspects before it reports none.
+_PAIR_RUN_CANDIDATES = 16
 _MATCHING = (
     "SELECT DISTINCT rc.run_id FROM execution_prompt_snapshots s "
     "JOIN execution_contexts c ON c.positive_snapshot_id=s.snapshot_id "
@@ -409,6 +411,62 @@ class HistoryReadOperations:
         result["items"] = rows
         result["context_summaries"] = list(ordered.values())
         return result
+
+    def get_newest_pair_run(self, positive_id: int, pair_id: int) -> dict | None:
+        """The newest matching run whose current saved-pair hint names `pair_id`.
+
+        None when the positive is not an eligible saved prompt or the pair is
+        not one of its pairs; ``{"run": None}`` when no recorded run names it.
+        Only a hint captured in this epoch and still resolving to the same pair
+        counts, as in ``get_history_run``.
+        """
+        conn = self._history_connection()
+        saved = conn.execute(
+            "SELECT CASE WHEN typeof(p.text)='text' AND "
+            "length(CAST(p.text AS BLOB))<=65536 THEN p.text ELSE NULL END AS text "
+            f"FROM prompts p WHERE p.id=? AND ({_ELIGIBLE})",
+            (positive_id,),
+        ).fetchone()
+        if saved is None or (
+            conn.execute(
+                "SELECT 1 FROM prompt_pairs WHERE id=? AND positive_prompt_id=?",
+                (pair_id, positive_id),
+            ).fetchone()
+            is None
+        ):
+            return None
+        if saved["text"] is None:
+            return {"run": None}
+        epoch = self.get_execution_epoch()
+        candidates = conn.execute(
+            "SELECT r.run_id,rc.anchor_id,rc.context_id,"
+            "c.positive_snapshot_id,c.negative_snapshot_id "
+            "FROM execution_runs r JOIN execution_run_contexts rc "
+            "ON rc.run_id=r.run_id JOIN execution_contexts c "
+            "ON c.context_id=rc.context_id JOIN execution_prompt_snapshots s "
+            "ON s.snapshot_id=c.positive_snapshot_id "
+            "WHERE s.raw_text_id=? AND rc.pair_id=? AND rc.reference_epoch=? "
+            f"ORDER BY {_ORDER},rc.anchor_id COLLATE BINARY LIMIT ?",
+            (
+                content_digest("text", (saved["text"],)),
+                pair_id,
+                epoch,
+                _PAIR_RUN_CANDIDATES,
+            ),
+        ).fetchall()
+        for row in candidates:
+            positive = _values(conn, row["positive_snapshot_id"])
+            negative = _values(conn, row["negative_snapshot_id"])
+            if positive is None or positive["raw"] != saved["text"]:
+                continue
+            hints = _hints(conn, positive["raw"], negative["raw"] if negative else None)
+            if hints[2] == pair_id:
+                return {
+                    "run": {
+                        key: row[key] for key in ("run_id", "anchor_id", "context_id")
+                    }
+                }
+        return {"run": None}
 
     def get_history_run(self, run_id: str) -> dict | None:
         conn = self._history_connection()

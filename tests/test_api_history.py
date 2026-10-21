@@ -279,6 +279,36 @@ class HistoryAPITests(ImageAPITestCase):
             response, body, 409, "history-changed", {"action": "refresh-history"}
         )
 
+    async def test_newest_pair_run_route_names_the_run_or_none(self):
+        pair = self.api.db.save_prompt_pair("positive", "negative")
+        quiet = self.api.db.save_prompt_pair("positive", "quiet")
+        foreign = self.api.db.save_prompt_pair("elsewhere", "negative")
+        positive = self.api.db.get_prompt_pair(pair)["positive_prompt_id"]
+        self.capture(0, 100)
+        newest = self.capture(1, 200)
+        base = f"/prompt_manager/library/{positive}/history/pairs"
+        response = await self.client.get(f"{base}/{pair}/newest")
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(body["history_version"], 1)
+        self.assertEqual(body["history_epoch"], newest.storage_epoch)
+        self.assertEqual(body["run"]["run_id"], newest.run_id)
+        self.assertEqual(body["run"]["anchor_id"], "4")
+        response = await self.client.get(f"{base}/{quiet}/newest")
+        self.assertEqual((await response.json())["run"], None)
+        response = await self.client.get(f"{base}/{foreign}/newest")
+        self.assert_error(response, await response.json(), 404, "not-found")
+        response = await self.client.get(
+            f"/prompt_manager/library/999999/history/pairs/{pair}/newest"
+        )
+        self.assert_error(response, await response.json(), 404, "not-found")
+        for path in (f"{base}/0/newest", f"{base}/01/newest", f"{base}/true/newest"):
+            response = await self.client.get(path)
+            self.assert_error(response, await response.json(), 400, "invalid-request")
+        response = await self.client.get(f"{base}/{pair}/newest", params={"x": "1"})
+        self.assert_error(response, await response.json(), 400, "invalid-request")
+
     async def test_nullable_frozen_fields_and_every_recorded_time_remain_exact(self):
         start = make_start(
             SESSION,

@@ -913,3 +913,34 @@ class HistoryReadTests(unittest.TestCase):
                 db.list_history_outputs(
                     start.run_id, after=OutputPosition("0" * 64, (node, 0))
                 )
+
+    def test_newest_pair_run_follows_current_hints_in_the_raw_scope(self):
+        db = self.database()
+        pair_a = db.save_prompt_pair("positive", "A")
+        pair_b = db.save_prompt_pair("positive", "B")
+        quiet = db.save_prompt_pair("positive", "C")
+        other = db.save_prompt_pair("elsewhere", "A")
+        positive = db.get_prompt_pair(pair_a)["positive_prompt_id"]
+        self.capture(db, 0, bundle("A"), time=100)
+        newest = self.capture(db, 1, bundle("A"), time=200)
+        b = self.capture(db, 2, bundle("B"), time=300)
+        with db.recorded_history_snapshot():
+            found = db.get_newest_pair_run(positive, pair_a)
+            found_b = db.get_newest_pair_run(positive, pair_b)
+            none = db.get_newest_pair_run(positive, quiet)
+            foreign = db.get_newest_pair_run(positive, other)
+            missing = db.get_newest_pair_run(9999, pair_a)
+        self.assertEqual(found["run"]["run_id"], newest.run_id)
+        self.assertEqual(found["run"]["anchor_id"], "4")
+        self.assertRegex(found["run"]["context_id"], "^[0-9a-f]{64}$")
+        self.assertEqual(found_b["run"]["run_id"], b.run_id)
+        self.assertEqual(none, {"run": None})
+        self.assertIsNone(foreign)
+        self.assertIsNone(missing)
+        # A hint that no longer names the current pair is not followed.
+        db.delete_prompt_pair(pair_b)
+        recreated = db.save_prompt_pair("positive", "B")
+        with db.recorded_history_snapshot():
+            self.assertEqual(db.get_newest_pair_run(positive, recreated), {"run": None})
+        with self.assertRaises(sqlite3.ProgrammingError):
+            db.get_newest_pair_run(positive, pair_a)
