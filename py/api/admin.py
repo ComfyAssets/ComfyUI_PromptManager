@@ -6,16 +6,18 @@ from contextlib import closing
 import datetime
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from aiohttp import web
 
 from .prompts import thumbnail_url_for
-from .scan_job import ScanJob
+from .jobs import SCAN_GROUP_NAMES, SCAN_GROUPS, Job, JobBusy
 
 try:
     from ...utils.parallel import map_parallel
@@ -47,8 +49,10 @@ except ImportError:
 
 
 try:
+    from ...database.library import display_title
     from ...utils.hashing import generate_prompt_hash
 except ImportError:
+    from database.library import display_title
     from utils.hashing import generate_prompt_hash
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff")
@@ -136,6 +140,93 @@ async def _read_json(request):
 def _sse(payload):
     """Encode one server-sent event."""
     return f"data: {json.dumps(payload)}\n\n"
+
+
+SCAN_JOB_KIND = "scan"
+SCAN_JOB_TITLE = "Scan for metadata"
+# The legacy final event type of a scan and the job state it ends in.
+SCAN_FINAL_STATES = {
+    "complete": "finished",
+    "cancelled": "cancelled",
+    "error": "failed",
+}
+MIN_BATCHES_FOR_ESTIMATE = 2  # "about X min left" waits for this many batches
+# Log line prefix per outcome group (spec: + added, = known, ? review, ! error,
+# - no usable metadata).
+SCAN_LOG_PREFIXES = {
+    "added": "+",
+    "known": "=",
+    "review": "?",
+    "errors": "!",
+    "no_metadata": "-",
+}
+# What an outcome row says about a file: where it went (with the prompt's
+# title) or why it was skipped. "error" is a file whose ingestion raised;
+# None is a file without prompt metadata.
+SCAN_TITLED_DETAILS = {
+    "added": "Added to the Library as “{title}”",
+    "linked": "Linked to “{title}”",
+    "enriched": "Metadata added to “{title}”",
+    "unchanged": "Already linked to “{title}”",
+}
+SCAN_DETAILS = {
+    "added": "Added to the Library",
+    "linked": "Linked to an existing prompt",
+    "enriched": "Metadata added to its prompt",
+    "unchanged": "Already linked to its prompt",
+    "ambiguous": "Needs review: more than one prompt could match",
+    "unresolved": "Needs review: the prompt could not be traced in the workflow",
+    "conflict": "Needs review: already linked to a different prompt",
+    "failed": "Error: the prompt could not be stored",
+    "error": "Error: the file could not be processed (see the server log)",
+    "found": "Metadata found, but no prompt text to store",
+    None: "No prompt metadata in the file",
+}
+
+
+def _plural(count, word):
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def _scan_status_line(done, total, batches, elapsed):
+    """ "Processing file N of M", with an estimate once enough batches ran."""
+    line = f"Processing file {done} of {total}"
+    if batches < MIN_BATCHES_FOR_ESTIMATE or done <= 0 or done >= total:
+        return line
+    minutes = max(1, math.ceil(elapsed / done * (total - done) / 60))
+    return f"{line} · about {minutes} min left"
+
+
+def _scan_roots(output_dirs):
+    """(absolute root, public label) pairs, the most specific root first."""
+    public_path, _ = _public_helpers()
+    roots = [(os.path.abspath(str(d)), public_path(d)) for d in output_dirs]
+    return sorted(roots, key=lambda root: len(root[0]), reverse=True)
+
+
+def _scan_location(media_file, roots):
+    """``media_file`` relative to its output root, and that root's label."""
+    full = os.path.abspath(str(media_file))
+    folded = os.path.normcase(full)
+    for root, label in roots:
+        base = os.path.normcase(root).rstrip("\\/") + os.sep
+        if folded.startswith(base):
+            return Path(os.path.relpath(full, root)).as_posix(), label
+    return Path(full).name, ""
+
+
+def _scan_outcome(media_file, roots, status, title=None):
+    """The (group, row, log line) one scanned file records in its job."""
+    if status in SCAN_GROUPS:
+        group = SCAN_GROUPS[status]
+    else:
+        group = "errors" if status == "error" else "no_metadata"
+    template = SCAN_TITLED_DETAILS.get(status) if title else None
+    detail = template.format(title=title) if template else SCAN_DETAILS[status]
+    path, label = _scan_location(media_file, roots)
+    row = {"path": path, "root": label, "detail": detail}
+    where = f"{label}/{path}" if label else path
+    return group, row, f"{SCAN_LOG_PREFIXES[group]} {where} · {detail}"
 
 
 def _inspect_restore_upload(path):
@@ -437,7 +528,7 @@ class AdminRoutesMixin:
             guard = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
             if guard is None:
                 return self._long_job_busy_response("Duplicate scan or delete")
-            job = ScanJob()
+            job = Job("duplicates", "Duplicate scan")
             self._duplicate_job = job
             job.task = asyncio.ensure_future(self._run_duplicate_job(job, guard))
         return await self._stream_scan_job(request, job)
@@ -1319,14 +1410,18 @@ class AdminRoutesMixin:
     async def scan_images(self, request):
         """Scan ComfyUI output images for prompt metadata and add them to the database.
 
-        The scan runs as a background task that outlives this request, so a
-        closed tab never leaves a half-finished scan. Progress streams as
-        server-sent events; while a scan is running, a new request attaches
-        to it instead of starting another one.
+        The scan runs as the registry's ``scan`` job, which outlives this
+        request, so a closed tab never leaves a half-finished scan. Progress
+        streams as the legacy server-sent events; while a scan is running
+        (started here or from the workspace), a new request attaches to it
+        instead of starting another one.
         """
-        job = self._scan_job
-        if job is None or job.finished:
-            job = self._start_scan_job()
+        job = self._jobs.active(SCAN_JOB_KIND)
+        if job is None:
+            try:
+                job = self._start_scan_job()
+            except JobBusy as busy:
+                return self._long_job_busy_response(busy.running.title)
         return await self._stream_scan_job(request, job)
 
     async def cancel_scan(self, request):
@@ -1349,18 +1444,33 @@ class AdminRoutesMixin:
         )
 
     def _start_scan_job(self):
-        """Create the job record synchronously, then run the scan as a task."""
-        job = ScanJob()
+        """Register the scan job synchronously; its runner starts on the loop.
+
+        Raises JobBusy while another record-changing job runs.
+        """
+        job = self._jobs.start(
+            SCAN_JOB_KIND,
+            SCAN_JOB_TITLE,
+            record_changing=True,
+            scope={"mode": "all"},
+            runner=self._run_scan_job,
+            groups=SCAN_GROUP_NAMES,
+        )
         self._scan_job = job
-        job.task = asyncio.ensure_future(self._run_scan_job(job))
         return job
 
     async def _run_scan_job(self, job):
-        try:
-            async for payload in self._scan_images_events():
-                job.publish(payload)
-        finally:
-            job.finish()
+        final = None
+        async for payload in self._scan_images_events(job):
+            job.publish(payload)
+            final = payload.get("type")
+        state = SCAN_FINAL_STATES.get(final, "finished")
+        if state == "failed":
+            job.log_line(f"Scan failed · {job.status_line}")
+        else:
+            verb = "cancelled" if state == "cancelled" else "finished"
+            job.log_line(f"Scan {verb} · {_plural(job.processed, 'file')} processed")
+        job.finish(state)
 
     async def _stream_scan_job(self, request, job):
         """Stream ``job`` as SSE; stop quietly if the client goes away."""
@@ -1386,21 +1496,30 @@ class AdminRoutesMixin:
             )
         return response
 
-    async def _scan_images_events(self):
-        """Yield progress payloads while scanning every configured output directory."""
+    async def _scan_images_events(self, job):
+        """Yield progress payloads while scanning every configured output directory.
+
+        The payloads are the legacy SSE events, unchanged; ``job`` also gets
+        its status line, totals and one outcome per processed file.
+        """
         try:
             self.logger.info("Starting image scan operation")
             output_dirs = self._get_all_output_dirs()
             if not output_dirs:
                 self.logger.error("No output directories found")
-                yield {
-                    "type": "error",
-                    "message": "No output directories found. "
-                    "Configure scan directories in Settings.",
-                }
+                message = (
+                    "No output directories found. "
+                    "Configure scan directories in Settings."
+                )
+                job.update(status_line=message)
+                yield {"type": "error", "message": message}
                 return
 
             dir_names = [self._public_path(d) for d in output_dirs]
+            folders = _plural(len(output_dirs), "output folder")
+            job.scope["output_folders"] = len(output_dirs)
+            job.log_line(f"Scan started · {folders}")
+            job.update(status_line=f"Looking for media files in {folders}")
             yield self._scan_progress(
                 0, f"Scanning {len(output_dirs)} directory(ies) for media files..."
             )
@@ -1409,11 +1528,16 @@ class AdminRoutesMixin:
                 self._collect_output_media_sync, output_dirs
             )
             counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
+            job.update(
+                total=len(media_files),
+                status_line=_scan_status_line(0, len(media_files), 0, 0),
+            )
             if media_files:
                 yield self._scan_progress(
                     5, f"Found {len(media_files)} media files to process...", counts
                 )
-            async for event in self._scan_batches(media_files, counts):
+            roots = _scan_roots(output_dirs)
+            async for event in self._scan_batches(media_files, counts, job, roots):
                 yield event
 
             self.logger.info(
@@ -1421,37 +1545,55 @@ class AdminRoutesMixin:
                 f"found={counts['found']}, new_prompts_added={counts['added']}, "
                 f"images_linked_to_existing={counts['linked']}"
             )
-            job = self._scan_job
-            final_type = "cancelled" if job and job.cancelled else "complete"
+            final_type = "cancelled" if job.cancelled else "complete"
+            if final_type == "complete":
+                job.update(progress=100)
             yield {"type": final_type, **counts, "directories": dir_names}
 
         except Exception:
             self.logger.exception("Scan error")
+            job.update(status_line="The scan stopped on an internal error.")
             yield {
                 "type": "error",
                 "message": "An internal error occurred. Check server logs for details.",
             }
 
-    async def _scan_batches(self, media_files, counts):
+    async def _scan_batches(self, media_files, counts, job, roots=()):
         """Process ``media_files`` in executor batches, updating ``counts`` in place.
 
-        Yields one progress event per batch.
+        Records each file's outcome in ``job`` and yields one progress event
+        per batch.
         """
         total = len(media_files)
+        started = time.monotonic()
+        batches = 0
         for batch_start in range(0, total, SCAN_BATCH_SIZE):
-            if self._scan_job and self._scan_job.cancelled:
+            if job.cancelled:
                 return
             batch = media_files[batch_start : batch_start + SCAN_BATCH_SIZE]
             batch_results = await self._run_in_executor(
                 self._extract_batch_metadata_sync, batch
             )
+            outcomes = []
             batch_counts = await self._run_in_executor(
-                self._ingest_scan_batch_sync, batch_results
+                self._ingest_scan_batch_sync,
+                batch_results,
+                roots=roots,
+                outcomes=outcomes,
             )
             for key in counts:
                 counts[key] += batch_counts[key]
+            for group, row, log_line in outcomes:
+                job.record(group, row, log_line)
 
+            batches += 1
             done = min(batch_start + len(batch), total)
+            job.update(
+                processed=counts["processed"],
+                status_line=_scan_status_line(
+                    done, total, batches, time.monotonic() - started
+                ),
+            )
             yield self._scan_progress(
                 int(done / total * 100), f"Processing file {done}/{total}...", counts
             )
@@ -1490,9 +1632,19 @@ class AdminRoutesMixin:
 
         return map_parallel(extract, file_batch, PromptManagerConfig.WORKER_THREADS)
 
-    def _ingest_scan_batch_sync(self, batch_results):
-        """Store the prompts found in a metadata batch (blocking DB work)."""
+    def _ingest_scan_batch_sync(self, batch_results, roots=(), outcomes=None):
+        """Store the prompts found in a metadata batch (blocking DB work).
+
+        Returns the legacy counts. When ``outcomes`` is a list, every processed
+        file appends its ``(group, row, log_line)`` for the scan job, with the
+        path relative to its root in ``roots`` (see ``_scan_roots``).
+        """
         counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
+
+        def note(media_file, status, title=None):
+            if outcomes is not None:
+                outcomes.append(_scan_outcome(media_file, roots, status, title))
+
         for media_file, metadata in batch_results:
             if self._scan_job and self._scan_job.cancelled:
                 break
@@ -1502,25 +1654,21 @@ class AdminRoutesMixin:
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
                 counts["failed"] += 1
+                note(media_file, "error")
                 continue
             if outcome is None:
+                note(media_file, None)
                 continue
             counts["found"] += 1
             status = outcome["status"] if isinstance(outcome, dict) else outcome
-            if status in (
-                "added",
-                "linked",
-                "enriched",
-                "unchanged",
-                "ambiguous",
-                "unresolved",
-                "conflict",
-                "failed",
-            ):
+            if status in SCAN_GROUPS:
                 counts[status] += 1
             if isinstance(outcome, dict):
                 counts["pairs_added"] += outcome.get("pairs_added", 0)
                 counts["pair_links_added"] += outcome.get("links_added", 0)
+                note(media_file, status, outcome.get("title"))
+            else:
+                note(media_file, status)
         return counts
 
     @staticmethod
@@ -1539,7 +1687,13 @@ class AdminRoutesMixin:
         return positive.strip() or None
 
     def _ingest_scanned_file(self, media_file, metadata, detailed=False):
-        """Enrich exact pairs; retain legacy positive-only import for absent pairs."""
+        """Enrich exact pairs; retain legacy positive-only import for absent pairs.
+
+        Returns the file's scan status, or None without prompt metadata. With
+        ``detailed``, a stored or linked file returns a dict instead: its
+        ``status``, the prompt's display ``title`` and, for a resolved pair,
+        the pair counts.
+        """
         if not metadata:
             return None
         canonical = dict(metadata)
@@ -1557,7 +1711,12 @@ class AdminRoutesMixin:
             result = ingest_resolved_pair(
                 self.db, str(media_file), canonical, resolution
             )
-            return result if detailed else result["status"]
+            if not detailed:
+                return result["status"]
+            return {
+                **result,
+                "title": display_title((), resolution["positive"]["text"]),
+            }
         if canonical.get("prompt") and resolution["state"] in (
             "ambiguous",
             "unresolved",
@@ -1585,6 +1744,13 @@ class AdminRoutesMixin:
                 return "found"
             prompt_text = prompt_text.strip()
 
+        status = self._store_scanned_prompt(media_file, canonical, prompt_text)
+        if not detailed or status not in SCAN_TITLED_DETAILS:
+            return status
+        return {"status": status, "title": display_title((), prompt_text)}
+
+    def _store_scanned_prompt(self, media_file, canonical, prompt_text):
+        """Link ``media_file`` to ``prompt_text``'s prompt, saving it when new."""
         prompt_hash = generate_prompt_hash(prompt_text)
         existing = self.db.get_prompt_by_hash(prompt_hash)
         if existing:

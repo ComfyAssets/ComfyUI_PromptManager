@@ -6,6 +6,7 @@ Split into domain-specific mixins for maintainability:
 - AdminRoutesMixin: duplicates, stats, settings, diagnostics, maintenance, backup, scan
 - LoggingRoutesMixin: log management endpoints
 - AutotagRoutesMixin: auto-tagging model management and tagging
+- JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 """
 
 import asyncio
@@ -28,6 +29,8 @@ from .vocabulary import VocabularyRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
+from .job_routes import JobRoutesMixin
+from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
 from .lora_integration import LoraIntegrationMixin
@@ -252,6 +255,7 @@ class PromptManagerAPI(
     PromptRoutesMixin,
     ImageRoutesMixin,
     AdminRoutesMixin,
+    JobRoutesMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
@@ -297,9 +301,12 @@ class PromptManagerAPI(
         # _acquire_long_job(). Created lazily so no lock binds to an event
         # loop before the server's loop exists.
         self._long_jobs: dict = {}
-        # The current output scan (py/api/scan_job.ScanJob), if one was started.
+        # This session's jobs (py/api/jobs.py): the metadata scan, and later
+        # every other long operation the Activity page tracks.
+        self._jobs = JobRegistry(self.logger)
+        # The latest metadata scan job (also in self._jobs), if one was started.
         self._scan_job = None
-        # The current duplicate scan (also a ScanJob), if one was started.
+        # The current duplicate scan (a py/api/jobs.Job outside the registry).
         self._duplicate_job = None
 
         # Run cleanup on initialization to remove any existing duplicates
@@ -436,6 +443,7 @@ class PromptManagerAPI(
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
         self._register_admin_routes(routes)
+        self._register_job_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)
