@@ -73,11 +73,13 @@ test('overlay rules on concept selectors carry a decision marker', () => {
     assert.deepEqual(violations, []);
 });
 
-// Each kept page stylesheet is linted: a page rule on a concept selector is an override like the overlay's.
-test('kept page stylesheets mark their concept-selector overrides', () => {
-    for (const name of ['library.css']) {
-        const { violations } = lintOverlay(readFileSync(concept, 'utf8'), readFileSync(join(root, 'web/js/workspace', name), 'utf8'));
-        assert.deepEqual(violations, [], name);
+// #249 PR F-b Task 3: every page is rebuilt, so no rule waits for a page PR any more and the history page's
+// production-only rules live in the overlay in the concept's tokens (D48).
+test('the overlay keeps no rule waiting for a page rebuild', () => {
+    const css = readFileSync(join(root, 'web/js/workspace/workspace.css'), 'utf8');
+    for (const retired of ['until PR', 'PR D */', 'PR F */', 'PR E/F', 'until their pages rebuild', 'Interim page guards',
+        '.library-chip', '--library-positive', '--library-negative', '--prompt-role']) {
+        assert.equal(css.includes(retired), false, `${retired} is retired`);
     }
 });
 
@@ -100,22 +102,21 @@ test('only workspace.html loads workspace CSS', () => {
     assert.ok(offenders.every(path => path === 'web/workspace.html'), `unexpected consumers: ${offenders.join(', ')}`);
 });
 
-// Task A2 order: the concept's own order (toolkit, Viewer.js, concept) with the page stylesheets that their own PRs
-// retire, then the production overlay last.
-test('workspace.html loads controls, viewer, concept, page CSS and the overlay in order', () => {
+// Task A2 order: the concept's own order (toolkit, Viewer.js, concept), then the production overlay last; the page
+// stylesheets that waited for their PRs are all retired (PR F-b deleted the last, library.css).
+test('workspace.html loads controls, viewer, concept and the overlay in order', () => {
     const html = readFileSync(join(root, 'web/workspace.html'), 'utf8');
     const hrefs = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map(match => match[1]);
     assert.deepEqual(hrefs, [
         'js/shared/toolkit/controls.css',
         'lib/viewerjs/viewer.min.css',
         'js/workspace/concept.css',
-        'js/workspace/library.css',
         'js/workspace/workspace.css',
     ]);
 });
 
-test('the retired shell, vocabulary, editor, Images and inspector stylesheets stay deleted', () => {
-    for (const name of ['style.css', 'vocabulary.css', 'library-editor.css', 'images.css', 'inspector.css']) {
+test('the retired shell, vocabulary, editor, Images, inspector and library stylesheets stay deleted', () => {
+    for (const name of ['style.css', 'vocabulary.css', 'library-editor.css', 'images.css', 'inspector.css', 'library.css']) {
         assert.equal(existsSync(join(root, 'web/js/workspace', name)), false, `web/js/workspace/${name} must not come back`);
     }
 });

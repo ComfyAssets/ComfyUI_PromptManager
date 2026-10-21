@@ -137,18 +137,7 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     #viewer-toolbar > .media-download { font-size: 10px; /* D34: as the concept's `.viewer-toolbar button` */ }
 }
 
-/* Interim page guards: concept element rules (`.ca-tools dialog`, `pre`) now reach production dialogs and prompt text
-   that keep their own design until their page PR rebuilds them in concept markup. */
-.ca-tools dialog.prompt-sender { width: min(760px, calc(100% - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 22px; border-color: var(--ca-line); border-radius: 12px; } /* PR D */
-.ca-tools dialog.prompt-sender::backdrop { background: #000b; } /* PR D */
-.ca-tools dialog.recorded-run-dialog { width: min(1100px, calc(100% - 32px)); max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); padding: 22px; border-radius: 7px; } /* PR F */
 .prompt-text[tabindex]:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 3px; } /* production-only: a confirmed prompt stays keyboard-reachable (#249 D22) */
-@media (pointer: coarse) {
-    .ca-tools .recorded-history .history-toolbar button { min-height: 44px; } /* PR F: concept coarse buttons are 40px */
-}
-@media (max-width: 700px) {
-    .ca-tools dialog.recorded-run-dialog { padding: 16px; } /* PR F */
-}
 
 /* Images side panel (#249 D2), production-only. Real prompts can be far longer than the concept's samples, so the sticky
    panel scrolls within the window and its footer stays reachable; where the concept unsticks it, it grows instead. */
@@ -177,38 +166,6 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #249 D42: a discovery alert a rescan leaves scrolls clear of the concept's fixed toast (22px inset, 12px at 700px and
    below, two 12px lines at 390px), never under it; the toast itself keeps the concept's placement. */
 .options-status { font-size: 12px; padding-inline: 4px; scroll-margin-block-end: 96px; /* D42 */ }
-/* Until their pages rebuild (PR F history): the history page's and the recorded run's prompt blocks keep their
-   spacing (on the shelf's cards `.prompt-inspector` is `display: contents`, so its margin is inert there), the Archive
-   negative dialog keeps `section.prompt-block`, and the shared prompt sender keeps its dialog and send button. */
-.prompt-inspector { margin-block-start: 22px; min-inline-size: 0; }
-.prompt-block { border-block-start: 1px solid var(--ca-line); padding-block: 13px; min-inline-size: 0; }
-.prompt-negative { --prompt-role: #ff8c98; }
-[data-ca-theme="light"] .prompt-negative { --prompt-role: #b71931; }
-.prompt-block-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-.prompt-block h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; margin: 0; color: var(--prompt-role); }
-.prompt-empty, .prompt-block > .muted { font-size: 10px; }
-/* PR E/F: the Archive dialog and the frozen field provenance keep `pre.prompt-text`, guarded against the concept `pre` rule. */
-pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; margin-block: 10px; background: none; padding: 0; border: 0; border-radius: 0; max-height: none; overflow: visible; }
-.prompt-send-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ca-focus); }
-.prompt-send-button svg { inline-size: 16px; block-size: 16px; flex-shrink: 0; }
-.prompt-sender { background: var(--ca-surface); color: var(--ca-text); border: 1px solid var(--ca-line); border-radius: 12px; padding: 22px; inline-size: min(760px, calc(100% - 32px)); max-inline-size: none; max-block-size: calc(100dvh - 32px); overflow: auto; }
-.prompt-sender::backdrop { background: #000b; }
-.prompt-sender-header, .prompt-sender-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.prompt-sender-header h2 { font-size: 20px; margin: 0; }
-.prompt-sender-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-block: 20px; }
-.prompt-sender-options .ca-field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
-.prompt-sender select { inline-size: 100%; min-block-size: 38px; }
-.prompt-sender-status { font-size: 13px; line-height: 1.6; }
-.prompt-sender-status[role="alert"] { color: var(--ca-error-text); }
-.prompt-sender-preview { margin-block: 20px; min-inline-size: 0; }
-.prompt-sender-field { border: 1px solid var(--ca-line); border-radius: 7px; padding: 14px; margin-block: 12px; min-inline-size: 0; }
-.prompt-sender-field :where(pre, textarea), .prompt-sender-composition { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.65; max-inline-size: 100%; }
-.prompt-sender-field textarea { inline-size: 100%; min-block-size: 100px; resize: vertical; }
-.prompt-sender-composition { padding: 12px; background: var(--ca-field); border-radius: 6px; }
-.prompt-sender-actions { justify-content: flex-end; margin-block-start: 18px; }
-@media (max-width: 780px) {
-    .prompt-sender-options { grid-template-columns: minmax(0, 1fr); }
-}
 
 /* Prompt library cards (#249 PR E): the concept's `article.prompt-card` (s653–708) with real prompts, titles and media. */
 /* #249 D23: real prompts are far longer than the concept's samples, so the card clamps the positive to two lines; copy
@@ -230,3 +187,126 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; white-space
 /* #249 D23: a parent with one preview, or none, fills the art row instead of leaving the concept's second cell empty. */
 .prompt-card .card-art > :only-child { grid-column: 1 / -1; /* D23 */ }
 .prompt-card .card-art > .small { display: grid; place-content: center; min-width: 0; color: var(--ca-muted); /* D23 */ }
+
+/* Prompt library shelf (#249 PR E). #249 D3: rows stay windowed, as the Images grid's do; the concept's `.library-grid`
+   tracks and breakpoints lay them out, each row spans them, and appended rows never anchor the scroll. */
+.library-main .library-grid { overflow-anchor: none; /* D3 */ }
+.library-main .library-row { grid-column: 1 / -1; display: grid; grid-template-columns: inherit; gap: 18px; min-inline-size: 0; /* D3 */ }
+.library-main .library-row-spacer { grid-column: 1 / -1; pointer-events: none; /* D3 */ }
+/* #249 D40: the shelf's and history's production-only load, failure and continuation states. */
+.library-main .library-continuation { padding-block: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; /* D40 */ }
+.library-main .library-status { flex: 1 1 240px; color: var(--ca-muted); /* D40 */ }
+
+/* History variants panel (#249 PR F). */
+/* D45: the panel's actions wrap their labels at 390px and 200% zoom (the toolkit's buttons never wrap). */
+.ca-tools .library-main .library-history .row-actions button { max-inline-size: 100%; white-space: normal; /* D45 */ }
+/* D45: the panel's paging buttons wrap like the recorded toolbar's. */
+.ca-tools .library-main :where(.timeline-panel, .history-toolbar) > button { max-inline-size: 100%; white-space: normal; /* D45 */ }
+/* D45: archived pairs (#235) are concept lanes at reduced emphasis (the .6 disabled-marker opacity); text stays at full contrast. */
+.library-history .variant-lane.library-variant-archived::before, .ca-tools .library-history .library-variant-archived .variant-dot { opacity: .6; /* D45 */ }
+.ca-tools .library-main .library-variant-restore { position: static; margin-inline-start: 8px; min-block-size: 24px; padding: 2px 8px; font-size: 10px; vertical-align: middle; /* D45 */ }
+@media (pointer: coarse) { .ca-tools .library-main .library-variant-restore { min-block-size: 40px; /* D45 */ } }
+/* D45: at 390px and 200% zoom the panel heading and the legend row wrap, and the All images button wraps its label,
+   so the page never scrolls sideways (the retired production footer did the same). */
+.library-history .timeline-panel > .panel-heading, .library-history .timeline-lower { flex-wrap: wrap; /* D45 */ }
+/* D45: while the repeat-run dot shows (left: 190px), the lane text wraps inside the 57px lane before it (43px + 139px). */
+.library-history .variant-lane:has(> .run-dot:not([hidden])) > span { max-inline-size: 139px; overflow-wrap: anywhere; /* D45 */ }
+.ca-tools .library-history .timeline-lower > button { max-inline-size: 100%; white-space: normal; /* D45 */ }
+@media (pointer: coarse) {
+    /* D45: a coarse pointer reaches the concept dot through a 47px target. */
+    .ca-tools .library-history .variant-dot::after { content: ""; position: absolute; inset: -9px; }
+    /* D45: the 12px repeat-run dot (8px inside its border) gets a 44px coarse target the same way. */
+    .ca-tools .library-history .run-dot::after { content: ""; position: absolute; inset: -18px; }
+}
+
+/* #249 D48: production surfaces the concept never shows keep their own rules, in the concept's tokens: recorded
+   executions and the Recorded run dialog (#209, D26), the Archive negative confirmation (#235) and the acknowledged
+   prompt sender (spec §2.2). The dialog rules name `dialog` so they win over the concept's `.ca-tools dialog`. */
+/* D48: recorded executions (#209) below the shared gallery. */
+.library-main .library-surface { padding: 22px; background: var(--ca-surface); border: 1px solid var(--ca-line); border-radius: 7px; margin-block: 18px; /* D48 */ }
+.history-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 14px; /* D48 */ }
+.recorded-history > .muted, .history-count, .history-scope, .history-status, .history-legend { font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; /* D48 */ }
+.library-main .recorded-history > h2 { font-size: 14px; line-height: 1.5; /* D48 */ }
+.library-main .recorded-history > h2 + p { font-size: 12px; line-height: 1.5; /* D48 */ }
+.history-timeline { position: relative; box-sizing: border-box; inline-size: 100%; max-inline-size: 100%; max-block-size: 490px; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border: 1px solid var(--ca-line); border-radius: 6px; background: var(--ca-field); /* D48 */ }
+.history-canvas { position: relative; min-inline-size: calc(100% - 40px); margin: 18px 20px; /* D48 */ }
+.history-positive-lane { position: absolute; inset-block-start: 17px; inset-inline: 0; border-block-start: 2px solid var(--green); color: var(--green); font-size: 10px; line-height: 1.6; padding-inline-start: 38px; /* D48 */ }
+.history-positive-lane::before { content: "+"; position: absolute; inset-block-start: -13px; inset-inline-start: 0; border-radius: 50%; inline-size: 25px; block-size: 25px; background: var(--green); color: #172b22; text-align: center; font-size: 14px; line-height: 21px; /* D48 */ }
+.history-positive-lane > span { position: absolute; inset-block-start: -25px; inset-inline-start: 38px; font-size: 10px; color: var(--green); /* D48 */ }
+.history-earlier-edge { position: absolute; inset: 0 auto 0 0; inline-size: 1px; /* D48 */ }
+.history-context-branch { position: absolute; inset-inline-end: 0; block-size: 57px; border-block-start: 2px solid color-mix(in srgb, var(--red) 60%, transparent); /* D48 */ }
+.history-context-branch::before { content: ""; position: absolute; inset-block-start: -25px; inset-inline-start: -30px; inline-size: 30px; block-size: 25px; border-inline-start: 2px solid var(--red); border-block-end: 2px solid var(--red); border-end-start-radius: 22px; /* D48 */ }
+.history-context-label { position: absolute; inset-inline-start: 43px; inset-block-start: 6px; inline-size: 370px; max-inline-size: calc(100% - 43px); font-size: 10px; line-height: 1.5; color: var(--ca-muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: clip; /* D48 */ }
+.history-run-list { position: absolute; inset: 0; margin: 0; padding: 0; list-style: none; /* D48 */ }
+.history-run-column { position: absolute; inset-block: 0; inline-size: 64px; pointer-events: none; /* D48 */ }
+.history-position { position: absolute; inset-block-start: 41px; font-size: 10px; color: var(--ca-muted); /* D48 */ }
+.ca-tools .history-run-marker { position: absolute; pointer-events: auto; transform: translate(-50%, -50%); inline-size: 12px; block-size: 12px; min-inline-size: 12px; min-block-size: 12px; border: 2px solid var(--red); border-radius: 50%; background: var(--ca-field); padding: 0; color: var(--ca-field); font-size: 16px; line-height: 1; /* D48 */ }
+.ca-tools .history-context-anchor { inline-size: 29px; block-size: 29px; min-inline-size: 29px; min-block-size: 29px; background: var(--red); color: #38151b; font-size: 12px; /* D48 */ }
+.history-run-marker[aria-pressed="true"], .history-run-marker:focus-visible { outline: 3px solid var(--ca-focus); outline-offset: 4px; /* D48 */ }
+.history-run-marker[aria-disabled="true"] { opacity: .6; cursor: progress; /* D48 */ }
+/* D48: the Recorded run dialog (#209, D26). */
+.ca-tools dialog.recorded-run-dialog { box-sizing: border-box; inline-size: min(1100px, calc(100% - 32px)); max-inline-size: calc(100% - 32px); max-block-size: calc(100dvh - 32px); padding: 22px; border-radius: 7px; overscroll-behavior: contain; scrollbar-gutter: stable; overflow-wrap: anywhere; /* D48 */ }
+.recorded-run-dialog::backdrop { background: #0009; /* D48 */ }
+.recorded-run-header { display: flex; gap: 12px; align-items: center; justify-content: space-between; /* D48 */ }
+.recorded-run-header h2 { font-size: 20px; /* D48 */ }
+.recorded-run-body, .recorded-run-body > section { min-inline-size: 0; /* D48 */ }
+.recorded-run-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; font-size: 12px; /* D48 */ }
+.recorded-run-facts dt { color: var(--ca-muted); font-size: 10px; /* D48 */ }
+.recorded-run-facts dd { margin: 4px 0 0; white-space: pre-wrap; /* D48 */ }
+.recorded-run-anchors, .recorded-run-mode { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 18px; /* D48 */ }
+.recorded-run-dialog [aria-pressed="true"] { outline: 2px solid var(--ca-focus); outline-offset: 2px; /* D48 */ }
+.recorded-run-dialog :where(.muted:not(.prompt-text), .recorded-output-status) { font-size: 11px; line-height: 1.65; /* D48 */ }
+/* D48: the current file's prompt blocks sit below the dialog's evidence line (elsewhere their mount point is `display: contents`). */
+.recorded-run-dialog .prompt-inspector { margin-block-start: 22px; /* D48 */ }
+.recorded-provenance { border-block-start: 1px solid var(--ca-line); padding-block-start: 12px; margin-block: 18px; /* D48 */ }
+.recorded-outputs { margin-block: 24px; /* D48 */ }
+.recorded-receipts { list-style: decimal; padding-inline-start: 24px; /* D48 */ }
+.recorded-receipt { border: 1px solid var(--ca-line); border-radius: 5px; padding: 12px; margin-block: 10px; font-size: 12px; /* D48 */ }
+.recorded-receipt > div { margin-block-end: 10px; /* D48 */ }
+.recorded-receipt[aria-current="true"] { outline: 2px solid var(--ca-focus); outline-offset: 2px; /* D48 */ }
+.recorded-current-file { border-block-start: 1px solid var(--ca-line); padding-block-start: 16px; /* D48 */ }
+/* D48: the frozen field provenance and the Archive confirmation show stored text in `pre.prompt-text`, not as the
+   concept's code `pre`. */
+pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-block: 10px; background: none; padding: 0; border: 0; border-radius: 0; max-height: none; overflow: visible; /* D48 */ }
+/* D48: the Archive negative confirmation's negative block (#235). */
+.prompt-block { border-block-start: 1px solid var(--ca-line); padding-block: 13px; min-inline-size: 0; /* D48 */ }
+.prompt-block-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; /* D48 */ }
+.prompt-block.prompt-negative h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; margin: 0; color: var(--red); /* D48 */ }
+.prompt-empty { font-size: 10px; /* D48 */ }
+/* D48: the acknowledged prompt sender (prompt-sender.mjs) and its labelled pair send button. */
+.prompt-send-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--ca-focus); /* D48 */ }
+.prompt-send-button svg { inline-size: 16px; block-size: 16px; flex-shrink: 0; /* D48 */ }
+.ca-tools dialog.prompt-sender { inline-size: min(760px, calc(100% - 32px)); max-inline-size: none; max-block-size: calc(100dvh - 32px); padding: 22px; border-color: var(--ca-line); border-radius: 12px; /* D48 */ }
+.ca-tools dialog.prompt-sender::backdrop { background: #000b; /* D48 */ }
+.prompt-sender-header, .prompt-sender-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; /* D48 */ }
+.prompt-sender-header h2 { font-size: 20px; /* D48 */ }
+.prompt-sender-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-block: 20px; /* D48 */ }
+.prompt-sender-options .ca-field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; /* D48 */ }
+.prompt-sender select { inline-size: 100%; min-block-size: 38px; /* D48 */ }
+.prompt-sender-status { font-size: 13px; line-height: 1.6; /* D48 */ }
+.prompt-sender-status[role="alert"] { color: var(--ca-error-text); /* D48 */ }
+.prompt-sender-preview { margin-block: 20px; min-inline-size: 0; /* D48 */ }
+.prompt-sender-field { border: 1px solid var(--ca-line); border-radius: 7px; padding: 14px; margin-block: 12px; min-inline-size: 0; /* D48 */ }
+.prompt-sender-field :where(pre, textarea), .prompt-sender-composition { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.65; max-inline-size: 100%; /* D48 */ }
+.prompt-sender-field textarea { inline-size: 100%; min-block-size: 100px; resize: vertical; /* D48 */ }
+.prompt-sender-composition { padding: 12px; background: var(--ca-field); border-radius: 6px; /* D48 */ }
+.prompt-sender-actions { justify-content: flex-end; margin-block-start: 18px; /* D48 */ }
+@media (max-width: 780px) {
+    .prompt-sender-options { grid-template-columns: minmax(0, 1fr); /* D48 */ }
+}
+@media (max-width: 700px) {
+    .ca-tools dialog.recorded-run-dialog { padding: 16px; /* D48 */ }
+    .recorded-run-facts { grid-template-columns: minmax(0, 1fr); /* D48 */ }
+}
+@media (pointer: coarse) {
+    /* D48: the recorded toolbar, its scope disclosure and the dialog's controls keep 44px targets (concept coarse buttons are 40px). */
+    .ca-tools .recorded-history :is(.history-toolbar button, .history-scope summary) { min-inline-size: 44px; min-block-size: 44px; }
+    .ca-tools .history-run-marker { inline-size: 44px; block-size: 44px; min-inline-size: 44px; min-block-size: 44px; border: 0; background: transparent; color: transparent; }
+    .ca-tools .history-run-marker::before { content: ""; position: absolute; inset: 16px; box-sizing: border-box; border: 2px solid var(--red); border-radius: 50%; background: var(--ca-field); }
+    .ca-tools .history-context-anchor::before { content: "−"; inset: 7.5px; inline-size: 29px; block-size: 29px; line-height: 25px; color: #38151b; background: var(--red); }
+    .ca-tools .recorded-run-dialog :where(button, summary) { min-inline-size: 44px; min-block-size: 44px; }
+}
+@media (forced-colors: active) {
+    .history-context-branch, .history-context-branch::before, .history-run-marker, .history-run-marker::before { border-color: CanvasText; }
+    .history-run-marker[aria-pressed="true"] { outline-color: Highlight; }
+}

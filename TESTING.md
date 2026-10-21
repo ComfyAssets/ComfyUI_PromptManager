@@ -361,8 +361,8 @@ of the approved concept's `docs/concepts/workspace/style.css`. Never edit the co
 it is only rewritten from the concept with `npm run --prefix tools/vendor sync:concept`.
 `npm run --prefix tools/vendor check` runs `sync-concept-css.mjs --check`, which fails
 on a missing copy or names the first differing byte. `workspace.html` loads, in order,
-the toolkit controls, Viewer.js, `concept.css`, the page stylesheets that their own
-PRs retire, and the production overlay `workspace.css` last.
+the toolkit controls, Viewer.js, `concept.css` and the production overlay `workspace.css`
+last; every page stylesheet that waited for its page PR is retired.
 `tests/vendor/concept-css.test.mjs` asserts that order, the drift check, and that no
 other page or canvas script loads workspace CSS.
 
@@ -373,19 +373,28 @@ D-number must be one of this spec's (#249): a comment that cites any other issue
 as `D5 (#245)`, is that issue's ruling and is not a marker, so write `#245 decision 5`
 for those. The lint test fails if `workspace.css` is missing. The match is by exact
 selector, so a narrower selector over a concept rule (for example
-`.ca-tools dialog.prompt-sender`) passes the lint. Such rules, and the page-stylesheet
-leftovers such as `library.css` `.row-actions`, name the PR that retires them, by
-convention.
+`.ca-tools dialog.prompt-sender`) passes the lint; by convention such rules carry a
+marker too.
 
-The lint also runs over every page stylesheet that loads before the overlay and is
-still kept (`library.css`; test `kept page stylesheets mark their concept-selector
-overrides`). PR D deleted `images.css` and `inspector.css` (test `the retired shell,
-vocabulary, editor, Images and inspector stylesheets stay deleted`); their few
-production-only rules with a live consumer (inspector wrapping and the inert download,
-the narrow Images container, the Library and recorded-run prompt blocks, the Archive
-negative's `section.prompt-block`, the prompt sender) moved to the overlay under
-`#249 D3`, and `the overlay keeps no retired Images page or inspector rules` keeps the
-replaced card, filter, toolbar, preview, facts and inspector rules out.
+PR D deleted `images.css` and `inspector.css`, and PR F-b deleted `library.css`, the
+last page stylesheet (test `the retired shell, vocabulary, editor, Images, inspector and
+library stylesheets stay deleted`). `the overlay keeps no retired Images page or
+inspector rules` keeps the replaced card, filter, toolbar, preview, facts and inspector
+rules out, and `the overlay keeps no rule waiting for a page rebuild` keeps out the
+interim guards and the history page's private role colors. Every rule that stayed has
+a live consumer and a marker: the Library rows windowed (D3) and the shelf's states
+(D40), the history panel's wrap, archived-lane and coarse-target rules (D45), and under
+**D48** the production surfaces the concept never shows, drawn in the concept's tokens
+(`--green`, `--red`, `--ca-*`): recorded executions and the Recorded run dialog (#209,
+D26), `pre.prompt-text` for stored text in the frozen field provenance and the Archive
+negative confirmation, whose `section.prompt-block` (#235) keeps its rules too, and the
+acknowledged prompt sender (spec §2.2). Rules that repeated the concept
+(the `.library-grid` tracks and breakpoints, the history `.row-actions` flex row and
+button size, `summary` cursors, `h2` margins, the sender and Recorded run dialogs'
+colors and border) or had no effect (`min-inline-size` on block children, a
+`.recorded-run-dialog pre` limit, a 700px padding that a later rule overrode) were
+deleted; the workspace browser specs on Chromium and the concept specs on touch prove
+the pages unchanged.
 
 **Comparison method.** Production must equal the concept except for the recorded
 deviations in the #249 design (spec §8, D-numbers). It is never compared against
@@ -853,6 +862,11 @@ Recorded deviations on this page:
   The Images page keeps its caption. With no saved variant the page shows every image
   of the positive under "All images for this positive, including unassigned images. …"
   and no empty copy (a state the concept never reaches).
+- **D48** (#249 PR F-b): production surfaces the concept never shows keep their own
+  overlay rules, drawn in the concept's tokens: recorded executions and the Recorded run
+  dialog (#209, D26), the Archive negative confirmation (#235) and the acknowledged
+  prompt sender (spec §2.2). With `library.css` retired, these rules live in
+  `workspace.css` (see "Concept shell and comparison method").
 
 The run dot reads `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest`
 (see "Chronological Library history"), and each lane's "N runs" is the pair's
@@ -1320,8 +1334,10 @@ Initial production acceptance requires maintainer inspection of paired PNGs and
 geometry; never update snapshots automatically or mask content to bless a gap.
 Data-dependent text/images/counts and the clearly labeled saved/frozen/current
 distinctions are documented in the comparison helper. The Images card tag
-button (#249 D9) and shared role-block
-spacing/padding/glyph polish remain outside #209. The
+button (#249 D9) remains outside #209; every prompt block now renders the concept's
+`section.prompt-section` (D22), so the shared role-block spacing, padding and glyph
+gap is closed, and only the production-only surfaces above keep their own rules
+(D48). The
 responsive production Viewer keeps its toolbar in the media panel and prompt details readable rather than reproducing the concept's
 mobile toolbar collision. These are explicit remaining visual differences, not
 a whole-application or full-gallery/Viewer pixel-parity claim.

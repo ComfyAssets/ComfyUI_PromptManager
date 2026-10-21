@@ -99,7 +99,7 @@ async function openProductionHistory(page,theme,motion,positiveId) {
     await selectVariant(page,SELECTED);
 }
 
-// D45: the recorded production rules that lay the panel out (library.css): the panel heading and the legend row wrap,
+// D45: the recorded production rules that lay the panel out (workspace.css): the panel heading and the legend row wrap,
 // All images wraps its label, and a lane's text wraps before a shown repeat-run dot. Applied to the concept so the browser
 // lays out what follows; at 1600px nothing wraps.
 const D45_LAYOUT=`.timeline-panel > .panel-heading, .timeline-lower { flex-wrap: wrap; }

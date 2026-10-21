@@ -899,7 +899,7 @@ test('long and error states retain footer focus and reflow',async({page})=>{
 
 // Task A2: the editor dialogs keep matching the concept on the concept base stylesheet, with library-editor.css retired.
 const CONCEPT_BASE=['js/shared/toolkit/controls.css','lib/viewerjs/viewer.min.css','js/workspace/concept.css',
-    'js/workspace/library.css','js/workspace/workspace.css'];
+    'js/workspace/workspace.css'];
 for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`concept base keeps the tags screen and editor dialogs equal to the concept ${width} ${theme}`,async({page})=>{
     await page.setViewportSize({width,height});const f=page.fixture;const references={};
     for(const mode of Object.keys(conceptModes)) {
