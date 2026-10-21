@@ -47,7 +47,7 @@ const DAY_MS = 86400000;
 /** The local calendar day as a UTC day number, so a DST change never makes a day 23 or 25 hours long. */
 const localDay = date => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS;
 
-/** "Used today", "Used yesterday", "Used N days ago" (under a week), "Used <Mon D>", or "Not used yet" without a valid time. */
+/** "Used today", "Used yesterday", "Used N days ago" (under a week), "Used <Mon D>" (", <YYYY>" in another year), or "Not used yet". */
 export function usedLabel(lastUsedAt, now = new Date()) {
     const used = typeof lastUsedAt === 'string' && lastUsedAt ? new Date(lastUsedAt) : null;
     if (!used || Number.isNaN(used.getTime())) return 'Not used yet';
@@ -56,7 +56,9 @@ export function usedLabel(lastUsedAt, now = new Date()) {
     if (days === 0) return 'Used today';
     if (days === 1) return 'Used yesterday';
     if (days < 7) return `Used ${days} days ago`;
-    return `Used ${MONTHS[used.getMonth()]} ${used.getDate()}`;
+    // A use in another calendar year names it ("Used Oct 21, 2025"), so it never reads as this year's date.
+    const year = used.getFullYear() === now.getFullYear() ? '' : `, ${used.getFullYear()}`;
+    return `Used ${MONTHS[used.getMonth()]} ${used.getDate()}${year}`;
 }
 
 /** The concept's stars (`★` × rating) with their visually hidden reading; an unrated parent shows neither. */

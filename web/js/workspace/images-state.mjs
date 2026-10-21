@@ -210,6 +210,11 @@ export function scopeLabel({ root = 'all', subfolder = '' }, roots = []) {
     return `${source} · ${subfolder || 'All output folders'}`;
 }
 
+/** D44: how many "Refine this view" filters (Source, Folder, Media, Tags) narrow the view, for the Filters label. */
+export function activeRefinements({ root = 'all', subfolder = '', media = 'all', tags = [] }) {
+    return [root !== 'all' && root !== '', Boolean(subfolder), media !== 'all', tags.length > 0].filter(Boolean).length;
+}
+
 /** D10: a card shows its confirmed linked positive's display title; any other link status shows the filename. */
 export function cardTitle(image) {
     const title = image.linked?.status === 'linked' ? image.linked.title : null;

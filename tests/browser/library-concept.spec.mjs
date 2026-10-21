@@ -34,11 +34,11 @@ export function mapLibraryConcept(reference) {
         meta:card.meta.items[0]?.text===PLURAL_ONE?reference.oracle.meta[index]:card.meta,
         // D23: a long title wraps inside the title row, so the title button may shrink below its text (`min-width: 0`).
         title:{...card.title,items:card.title.items.map(item=>item.tag==='button'?{...item,minWidth:'0px'}:item)},
-        // D42: tag chips come in the store's alphabetical order; the row flows again from the concept's own chips.
+        // D43: tag chips come in the store's alphabetical order; the row flows again from the concept's own chips.
         tags:sortedTags(card.tags),
         // D23: the stars are aria-hidden, with a visually hidden "Rated N out of 5" spoken in their place. The fixture's
-        // run_count (4) and last_used_at (now) give the concept's own "4 runs" and "Used today", and its texts are short,
-        // so the two-line clamp changes nothing here.
+        // run_count (4) and last_used_at (now) give the concept's own "4 runs" and "Used today". The two-line clamp is
+        // applied below through `clampedCards`, measured on the concept with `CLAMP_CSS` (its samples wrap at 390px).
         footer:{...card.footer,facts:{...card.footer.facts,spoken:card.footer.facts.spoken.replace(/^(★+)/,stars=>`Rated ${stars.length} out of 5`)}}}));
     return {...reference,library:{...library,toolbar,
         // D35: the caption uses the singular for one.
@@ -78,7 +78,7 @@ export function clampedCards({grid,cards}) {
         cards:shrunk.map(({card},index)=>({...card,top:card.top-above(cards[index].top)}))};
 }
 
-/** D42: a `.tags` row with its chips in alphabetical order, laid out again from the concept's chip boxes. */
+/** D43: a `.tags` row with its chips in alphabetical order, laid out again from the concept's chip boxes. */
 export function sortedTags(tags) {
     return reflow(tags,[...tags.items].sort((a,b)=>nocase(a.text,b.text)));
 }
@@ -125,7 +125,7 @@ async function conceptInventory(page) {
     return {...reference,oracle:{meta}};
 }
 
-/** The concept page with each card's tag chips in alphabetical order (the D42 oracle); returns the undo. */
+/** The concept page with each card's tag chips in alphabetical order (the D43 oracle); returns the undo. */
 async function sortConceptTags(page) {
     await page.evaluate(()=>{
         const nocase=(a,b)=>{const x=a.textContent.toLowerCase(),y=b.textContent.toLowerCase();return x<y?-1:x>y?1:0;};
@@ -259,7 +259,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`library geomet
             const restoreClamp=await mutate(page,{css:CLAMP_CSS});
             const clamped=(await inventoryOf(page,'#main')).library;
             await restoreClamp();
-            // ...and with every card's tag chips put in alphabetical order (D42).
+            // ...and with every card's tag chips put in alphabetical order (D43).
             const restoreTags=await sortConceptTags(page);
             const sorted=(await inventoryOf(page,'#main')).library.cards.map(card=>card.tags);
             await restoreTags();

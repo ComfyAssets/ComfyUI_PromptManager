@@ -151,11 +151,15 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
         const toolbarScope=createScope();
+        // D44: Filters reads "Filters · 1" while a Tags filter (from Refine or a Browse) narrows the shelf.
+        const refinements=()=>filters.tags.length?1:0;
         const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
-            value:{q:filters.text,category:filters.category,sort:filters.sort},onChange:applyToolbar,onFilters:openFilters});
+            value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters});
         const optionsStatus=el('p','','library-options-status');optionsStatus.hidden=true;optionsStatus.setAttribute('role','alert');
         // The concept caption (app.js renderLibrary a586): the filtered set's parents and their negative variants.
         const caption=el('div',undefined,'section-caption');const captionCount=el('span');caption.append(captionCount,el('span','Images are grouped by positive prompt'));caption.hidden=true;
+        // The count is announced when it changes; a reload keeps the last count shown, so nothing else re-announces it.
+        captionCount.setAttribute('role','status');
         const grid=el('div',undefined,'library-grid');grid.setAttribute('role','list');grid.setAttribute('aria-label','Positive prompts');
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
@@ -355,7 +359,10 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 } else if(retainedAnchor) {pendingAnchor=retainedAnchor;retainedAnchor=null;}
             }
             state=next;
-            caption.hidden=next.variantTotal===null;if(next.variantTotal!==null) captionCount.textContent=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
+            if(next.variantTotal!==null) {
+                const count=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
+                if(captionCount.textContent!==count) captionCount.textContent=count;caption.hidden=false;
+            }
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
             message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
@@ -375,7 +382,7 @@ export function mountLibrary(main,api,parentScope,{positiveId}={}) {
                 toolbar.setCategories([...data.categories,filters.category]);toolbar.setValue({category:filters.category});optionsStatus.hidden=true;
             } catch {if(!scope.signal.aborted && optionsRequest===request) {optionsStatus.textContent=CATEGORIES_FAILED;optionsStatus.hidden=false;}}
         }
-        const reset=()=>{restoreScrollY=null;return stream.reset(filters);};
+        const reset=()=>{restoreScrollY=null;toolbar.setActiveFilters(refinements());return stream.reset(filters);};
         /** A toolbar report; a debounced search that lands after a select already applied the same values reloads nothing. */
         function applyToolbar(value) {
             const next={text:value.q.trim(),category:value.category,sort:value.sort};

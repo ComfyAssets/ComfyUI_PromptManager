@@ -23,6 +23,9 @@ test('used label boundaries in UTC and local time', async () => {
         assert.equal(usedLabel('2026-10-14T00:00:00Z', now), 'Used 6 days ago');
         assert.equal(usedLabel('2026-10-13T23:59:59Z', now), 'Used Oct 13');
         assert.equal(usedLabel('2026-01-02T08:00:00Z', now), 'Used Jan 2');
+        // D23: a use in another calendar year names its year, so last year's Oct 21 never reads as this year's.
+        assert.equal(usedLabel('2025-10-21T08:00:00Z', now), 'Used Oct 21, 2025');
+        assert.equal(usedLabel('2025-12-31T23:59:59Z', now), 'Used Dec 31, 2025');
         // A clock ahead of this browser is not a future use: it reads as today.
         assert.equal(usedLabel('2026-10-21T09:00:00Z', now), 'Used today');
     });

@@ -11,7 +11,8 @@ const media=page=>gallery(page).locator('article[data-image-key]');
 const refine=page=>page.getByRole('dialog',{name:'Refine this view',exact:true});
 /** The Library's Tags filter lives in "Refine this view" (#249 D14). */
 async function applyTags(page,tags) {
-    await page.locator('#workspace-main search.toolbar').getByRole('button',{name:'Filters',exact:true}).click();
+    // D44: Filters reads "Filters · 1" while a Tags filter is active.
+    await page.locator('#workspace-main search.toolbar').getByRole('button',{name:/^Filters(?: · 1)?$/}).click();
     await refine(page).getByRole('textbox',{name:'Tags',exact:true}).fill(tags);
     await refine(page).getByRole('button',{name:'Apply filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
 }
@@ -104,6 +105,30 @@ test('library infinite loading keeps unique parents and keyboard-accessible hist
     await explore.focus();await expect(explore).toBeFocused();await page.keyboard.press('Enter');await expect(history(page)).toBeVisible();
 });
 
+// D40/D15: with no Refresh, Retry also re-reads a category list that failed with the shelf.
+test('Retry re-reads a failed category list with the shelf',async({page})=>{
+    let fail=true;const reads=[];
+    await page.route(url=>['/prompt_manager/library','/prompt_manager/library/options'].includes(url.pathname),async request=>{
+        reads.push(new URL(request.request().url()).pathname);
+        if(fail)return request.fulfill({status:503,json:{success:false,error:'Unavailable'}});
+        await request.continue().catch(()=>{});
+    });
+    await page.goto(route);
+    const retry=page.getByRole('button',{name:'Retry prompt library',exact:true});await expect(retry).toBeVisible();
+    const categoriesFailed=page.getByRole('alert').filter({hasText:'Categories could not be loaded. Open the Prompt library again to retry.'});
+    await expect(categoriesFailed).toBeVisible();
+    fail=false;reads.length=0;await retry.click();await expect(cards(page)).toHaveCount(3);
+    await expect(categoriesFailed).toBeHidden();
+    await expect(page.getByRole('combobox',{name:'Filter by category',exact:true}).locator('option',{hasText:'Portraits'})).toHaveCount(1);
+    expect(reads).toContain('/prompt_manager/library/options');
+    // Apply with the same Tags, and a search that lands on the values already shown, reload nothing.
+    reads.length=0;
+    await page.locator('#workspace-main search.toolbar').getByRole('button',{name:'Filters',exact:true}).click();
+    await refine(page).getByRole('button',{name:'Apply filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
+    const search=page.getByRole('searchbox',{name:'Search workspace',exact:true});await search.fill(' ');
+    await page.waitForTimeout(400);expect(reads).toEqual([]);await expect(cards(page)).toHaveCount(3);
+});
+
 test('failed library reads retry while late search responses cannot overwrite newer results',async({page})=>{
     let fail=true;let release;const hold=new Promise(resolve=>{release=resolve;});
     await page.route('**/prompt_manager/library?*',async request=>{
@@ -131,7 +156,9 @@ test('library toolbar matches the concept and tags live in Refine this view',asy
     await expect(page.locator('.library-shelf > search.toolbar:first-child')).toHaveCount(1);
     // Tags apply from the dialog only; Clear clears them and the toolbar category, as the concept's does.
     await page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('Portraits');await applyTags(page,'studio');await expect(cards(page)).toHaveCount(1);
-    await toolbar.getByRole('button',{name:'Filters',exact:true}).click();
+    // D44: the active Tags filter shows on the button; the category is the toolbar's own and is not counted.
+    await expect(toolbar.getByRole('button')).toHaveText(['Filters · 1']);
+    await toolbar.getByRole('button',{name:'Filters · 1',exact:true}).click();
     await expect(refine(page).locator('.field label')).toHaveText(['Tags']);await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('studio');
     await refine(page).getByRole('button',{name:'Clear filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
     await expect(toolbar.getByRole('button',{name:'Filters',exact:true})).toBeFocused();
@@ -150,6 +177,25 @@ test('caption counts equal the filtered cards',async({page,request})=>{
         await expect(cards(page)).toHaveCount(count);
         await expect(caption.locator('span')).toHaveText([`${count} positive prompt${count===1?'':'s'} · ${variants} negative variant${variants===1?'':'s'}`,'Images are grouped by positive prompt']);
     }
+});
+
+// #249 final review M5: the count is a status region, written only when it changes, so Load more never re-announces it.
+test('the caption count is announced once per change and kept while the shelf reloads',async({page,request})=>{
+    await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}});
+    await page.goto(route);const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+    const count=page.locator('#workspace-main .section-caption > span').first();
+    await expect(count).toHaveAttribute('role','status');await expect(count).toHaveText(/^203 positive prompts · \d+ negative variants?$/);
+    await count.evaluate(node=>{window.__countWrites=0;new MutationObserver(records=>{window.__countWrites+=records.length;}).observe(node,{childList:true,characterData:true,subtree:true});});
+    await loadShelfPages(page,more,1);
+    expect(await page.evaluate(()=>window.__countWrites)).toBe(0);
+    // A filter change keeps the last count shown while the next page loads, then writes the new one.
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    await page.route(url=>url.pathname==='/prompt_manager/library'&&url.searchParams.get('category')==='Portraits',async route=>{await held;await route.continue();});
+    await page.getByRole('combobox',{name:'Filter by category',exact:true}).selectOption('Portraits');
+    await expect(page.locator('.library-status')).toHaveText('Loading prompt library…');
+    await expect(page.locator('#workspace-main .section-caption')).toBeVisible();await expect(count).toHaveText(/^203 positive prompts/);
+    release();await expect(count).not.toHaveText(/^203 /);
+    expect(await page.evaluate(()=>window.__countWrites)).toBeGreaterThan(0);
 });
 
 test('a Library-embedded media card stars its file and the star survives a reload',async({page})=>{

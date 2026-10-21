@@ -1,5 +1,5 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
 import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
@@ -144,6 +144,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // The shared concept toolbar: search (filename, linked prompt text, title and tags), category and sort (D12–D14).
     const toolbar = embedded ? null : mountToolbar(main, {scope, categories:filters.category ? [filters.category] : [],
         sorts:IMAGE_SORT_OPTIONS, value:{q:filters.q, category:filters.category, sort:filters.sort},
+        activeFilters:activeRefinements(filters),
         onChange:value => {
             if (recovering) return;
             const next = {q:value.q.trim(), category:value.category, sort:value.sort};
@@ -572,6 +573,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     }
     function updateScope() {
         scopeText.textContent = ` ${scopeLabel(filters, roots)}`;
+        toolbar?.setActiveFilters(activeRefinements(filters));
     }
     function reset() {
         mediaViewer.stopSlideshow();

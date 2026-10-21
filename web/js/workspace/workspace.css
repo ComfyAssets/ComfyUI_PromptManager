@@ -175,9 +175,9 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .image-workspace { grid-template-columns: minmax(0, 1fr); }
 }
 .options-status { font-size: 12px; padding-inline: 4px; }
-/* Until their pages rebuild (PR E Library, PR F history): the Library's and the recorded run's prompt blocks keep
-   their spacing, the Archive negative dialog keeps `section.prompt-block`, and the shared prompt sender keeps its
-   dialog and send button. */
+/* Until their pages rebuild (PR F history): the history page's and the recorded run's prompt blocks keep their
+   spacing (on the shelf's cards `.prompt-inspector` is `display: contents`, so its margin is inert there), the Archive
+   negative dialog keeps `section.prompt-block`, and the shared prompt sender keeps its dialog and send button. */
 .prompt-inspector { margin-block-start: 22px; min-inline-size: 0; }
 .prompt-block { border-block-start: 1px solid var(--ca-line); padding-block: 13px; min-inline-size: 0; }
 .prompt-negative { --prompt-role: #ff8c98; }

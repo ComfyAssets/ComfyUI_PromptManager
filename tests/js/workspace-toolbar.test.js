@@ -611,3 +611,30 @@ test('every route change closes the shared workspace dialog', async () => {
     const body = render.slice(0, render.indexOf('viewScope = createScope();'));
     assert.match(body, /closeWorkspaceDialog\(\);/, 'render closes the dialog before the next page mounts');
 });
+
+// D44: the concept has no indicator, so a filter set in "Refine this view" (or by Browse) was invisible on the page.
+test('the Filters button shows the active refinement count', async () => {
+    const { mountToolbar } = await toolbarModule;
+    const { createScope } = await import('../../web/js/shared/toolkit/core.js');
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        const container = new dom.Element('div');
+        const toolbar = mountToolbar(container, { scope, categories: [], sorts: [['newest', 'Recently added']],
+            activeFilters: 2, onChange() {}, onFilters() {} });
+        const filtersButton = container.children[0].children[3];
+        // The visible text is the accessible name, so the count is spoken too.
+        assert.equal(filtersButton.textContent, 'Filters · 2');
+        toolbar.setActiveFilters(1);
+        assert.equal(filtersButton.textContent, 'Filters · 1');
+        toolbar.setActiveFilters(0);
+        assert.equal(filtersButton.textContent, 'Filters');
+        for (const bad of [-1, 1.5, '1', null, Number.NaN]) assert.throws(() => toolbar.setActiveFilters(bad), TypeError);
+        assert.equal(filtersButton.textContent, 'Filters');
+        assert.throws(() => mountToolbar(new dom.Element('div'), { scope, categories: [], sorts: [['newest', 'Recently added']],
+            activeFilters: -1, onChange() {}, onFilters() {} }), TypeError);
+    } finally {
+        scope.dispose();
+        dom.restore();
+    }
+});
