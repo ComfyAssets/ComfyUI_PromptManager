@@ -26,7 +26,12 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
-    timeout-minutes: 25
+    # This job runs every page workflow twice (chromium, then touch) on one worker with V8 coverage on, so it
+    # takes about twice a single-browser job. Measured 2026-10-20: whole job 18m26s-24m57s (main 5ded3cf
+    # 22m15s; PR head 6359999 was cancelled at the old 25-minute limit while still passing), coverage step
+    # alone 20m55s-22m17s+, against ~12-15 minutes for the firefox/webkit jobs. 40 minutes leaves headroom
+    # for suite growth while still stopping a hung run; re-measure if a run passes 30 minutes.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache

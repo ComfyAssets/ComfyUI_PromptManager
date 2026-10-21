@@ -410,7 +410,12 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images page ge
         await openProductionLoaded(page,theme,motion,total);
         const before=await page.locator(CARDS).count();
         const loadingRow=(await inventoryOf(page,'#workspace-main')).continuation,loadingCount=await countText(page);
-        await page.getByRole('button',{name:'Load more images',exact:true}).click();
+        // A dispatched press, as on the concept side: a pointer click scrolls the row into view first, and the page's
+        // own observer (rootMargin 250px) can append the final batch and hide the button before the click lands
+        // (WebKit, run 39512528039). The button must still be the enabled one the user would press.
+        const more=page.getByRole('button',{name:'Load more images',exact:true});
+        await expect(more).toBeVisible();await expect(more).toHaveAttribute('aria-disabled','false');
+        await more.dispatchEvent('click');
         await expect(page.locator('#result-count')).toHaveText(new RegExp(`^${total} of ${total} images`));
         result[motion].productionLoad={before,after:await page.locator(CARDS).count(),toast:await toastText(page),count:await countText(page)};
         result[motion].loadingDiff=compareLoadingRow(result[motion].conceptLoad.loadingRow,loadingRow,loadingCount);
