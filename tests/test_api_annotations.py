@@ -11,27 +11,14 @@ import hashlib
 import json
 import os
 import sqlite3
-import sys
 import tempfile
 import threading
-import types
 import unittest
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from aiohttp.test_utils import make_mocked_request
-
-# Discovery imports this module before tests/test_api_autotag.py, whose
-# ``folder_paths`` stub (a real module, so ``patch(..., create=True)`` can add
-# and remove attributes) the later modules rely on. Install the same stub
-# before test_api_images would install a MagicMock in its place.
-if "folder_paths" not in sys.modules:
-    _stub = types.ModuleType("folder_paths")
-    _stub.models_dir = tempfile.gettempdir()
-    _stub.base_path = tempfile.gettempdir()
-    _stub.get_output_directory = tempfile.gettempdir
-    sys.modules["folder_paths"] = _stub
 
 try:
     from test_api_images import ImageAPITestCase, make_png

@@ -11,7 +11,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import types
 import unittest
 from unittest.mock import MagicMock
 from pathlib import Path
@@ -23,12 +22,12 @@ sys.modules.setdefault("server", _mock_server)  # py.config imports it at module
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-if "folder_paths" not in sys.modules:
-    _stub = types.ModuleType("folder_paths")
-    _stub.models_dir = tempfile.gettempdir()
-    _stub.base_path = tempfile.gettempdir()
-    _stub.get_output_directory = tempfile.gettempdir
-    sys.modules["folder_paths"] = _stub
+try:
+    from host_stubs import install_folder_paths_stub
+except ImportError:  # imported as tests.test_api_autotag
+    from tests.host_stubs import install_folder_paths_stub
+
+install_folder_paths_stub()
 
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
