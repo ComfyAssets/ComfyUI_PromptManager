@@ -14,6 +14,8 @@ import { createSavedViews, openSaveViewDialog, openEditViewDialog, savedViewHash
 import { createActivityStore } from './activity-store.mjs';
 import { mountActivityPage, mountActivityTopbar } from './activity.mjs';
 import { mountActivityJobView } from './activity-job-view.mjs';
+import { mountInspect } from './inspect.mjs';
+import { createPromptSender } from './prompt-sender.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -233,6 +235,12 @@ function mountWorkspace() {
             // D56: `#/activity/<id>` is that job's own view; `#/activity` lists the session's jobs.
             if (route.jobId) mountActivityJobView(main, { store: activity, scope: view, api, jobId: route.jobId });
             else mountActivityPage(main, { store: activity, scope: view });
+            return;
+        }
+        if (route.id === 'inspect') {
+            // The concept's Inspect a file (app.js renderMetadata): a local file, read only in this browser.
+            description.textContent = route.description;
+            mountInspect(main, { parentScope: view, api, sender: createPromptSender({ scope: view }) });
             return;
         }
         if (isHandoff(route)) {

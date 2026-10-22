@@ -162,10 +162,10 @@
     "statements": 97
   },
   "workspace/activity-scan.mjs": {
-    "lines": 95,
-    "branches": 64,
+    "lines": 96,
+    "branches": 73,
     "functions": 98,
-    "statements": 95
+    "statements": 96
   },
   "workspace/activity-store.mjs": {
     "lines": 98,
@@ -293,6 +293,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/inspect.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 92,
+    "statements": 98
+  },
   "workspace/inspection-state.mjs": {
     "lines": 98,
     "branches": 94,
@@ -331,7 +337,7 @@
   },
   "workspace/local-inspection.mjs": {
     "lines": 98,
-    "branches": 89,
+    "branches": 91,
     "functions": 98,
     "statements": 98
   },
@@ -340,6 +346,12 @@
     "branches": 96,
     "functions": 98,
     "statements": 97
+  },
+  "workspace/local-session.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/local-video.mjs": {
     "lines": 98,

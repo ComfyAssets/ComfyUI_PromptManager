@@ -16,7 +16,8 @@ const routes = [
     // #249 E3: the shelf no longer links the legacy Library; Overview's tool card still does.
     ['library', 'Prompt library', null],
     ['tags', 'Tags & categories', null],
-    ['inspect', 'Inspect a file', '/prompt_manager/gallery.html'],
+    // #249 local Inspect: the native Inspect a file page; Overview's tool card still links the legacy metadata page.
+    ['inspect', 'Inspect a file', null],
     ['system', 'System', '/prompt_manager/admin'],
     // #249 D51: SAVED VIEWS' Favorites, Images filtered to favorites.
     ['favorites', 'Favorites', null],
@@ -80,7 +81,8 @@ test('all shell destinations deep-link, reload and expose working existing appli
         const main = page.locator('#workspace-main');
         await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
         await expect(sidebarLink(page, label)).toHaveAttribute('aria-current', 'page');
-        if (route === 'tags') await expect(main.locator('.handoff')).toHaveCount(0);
+        if (route === 'tags' || route === 'inspect') await expect(main.locator('.handoff')).toHaveCount(0);
+        if (route === 'inspect') await expect(main.locator('#local-file')).toBeAttached();
         if (legacy) {
             await expect(main.locator(`a[href="${legacy}"]`)).toBeVisible();
             await expect(await request.get(legacy.split('#')[0])).toBeOK();
@@ -93,6 +95,10 @@ test('all shell destinations deep-link, reload and expose working existing appli
     const library = page.locator('#workspace-main').getByRole('link', { name: 'Open existing prompt library', exact: true });
     await expect(library).toHaveAttribute('href', '/prompt_manager/admin');
     await expect(await request.get('/prompt_manager/admin')).toBeOK();
+    // The legacy metadata page stays reachable from Overview beside the native Inspect page.
+    const metadata = page.locator('#workspace-main').getByRole('link', { name: 'Open existing metadata inspector', exact: true });
+    await expect(metadata).toHaveAttribute('href', '/prompt_manager/gallery.html');
+    await expect(await request.get('/prompt_manager/gallery.html')).toBeOK();
     const gallery = page.locator('#workspace-main').getByRole('link', { name: 'Open existing image gallery', exact: true });
     await expect(gallery).toHaveAttribute('href', '/prompt_manager/gallery');
     await expect(await request.get('/prompt_manager/gallery')).toBeOK();
