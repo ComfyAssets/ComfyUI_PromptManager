@@ -1642,3 +1642,82 @@ class TestPromptInspector(ImageAPITestCase):
                     lookup.assert_called_once_with(
                         str(path), False, report_ambiguity=True
                     )
+
+
+class TestInspectorImageTags(ImageAPITestCase):
+    """B3: the inspector envelope's ``image_tags`` facet (spec amendment S1)."""
+
+    inspect = TestPromptInspector.inspect
+
+    def tag(self, path, tags):
+        import hashlib
+        import os
+
+        stat = path.stat()
+        return self.api.db.replace_image_tags(
+            locator=os.path.normcase(os.path.realpath(path)),
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            expected_epoch=self.api.db.get_execution_epoch(),
+            expected_tag_revision=0,
+            tags=tags,
+        )
+
+    async def test_inspector_reports_current_none_and_unavailable_image_tags(self):
+        import os
+
+        tagged = png(self.output_dir / "sub" / "tagged.png", prompt=graph())
+        changed = png(self.output_dir / "changed.png", prompt=graph())
+        png(self.output_dir / "untagged.png", prompt=graph())
+        empty = png(self.output_dir / "empty.png", prompt=graph())
+        self.tag(tagged, ["dunes", "warm_light"])
+        self.tag(changed, ["dunes"])
+        self.tag(empty, [])
+        stat = changed.stat()
+        os.utime(changed, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        response, envelope = await self.inspect("sub/tagged.png")
+        self.assertEqual(response.status, 200, envelope)
+        self.assertEqual(
+            envelope.get("image_tags"),
+            {"state": "current", "tags": ["dunes", "warm_light"]},
+        )
+        # The tags never change the Library facts of the prompt link.
+        self.assertEqual(envelope["library"]["tags"], [])
+        _, changed_body = await self.inspect("changed.png")
+        self.assertEqual(changed_body.get("image_tags"), {"state": "none", "tags": []})
+        _, untagged = await self.inspect("untagged.png")
+        self.assertEqual(untagged.get("image_tags"), {"state": "none", "tags": []})
+        _, saved_empty = await self.inspect("empty.png")
+        self.assertEqual(
+            saved_empty.get("image_tags"), {"state": "current", "tags": []}
+        )
+        with patch.object(
+            self.api.db, "current_image_tags", side_effect=RuntimeError("boom")
+        ):
+            with self.assertLogs("prompt_manager", level="WARNING"):
+                response, failed = await self.inspect("sub/tagged.png")
+        self.assertEqual(response.status, 200, failed)
+        self.assertEqual(failed.get("image_tags"), {"state": "unavailable", "tags": []})
+        self.assertEqual(failed["prompts"], envelope["prompts"])
+        self.assertNotIn(str(self.comfy_dir), json.dumps(envelope))
+
+    async def test_inspector_image_tags_use_the_inspection_stable_stat(self):
+        tagged = png(self.output_dir / "tagged.png", prompt=graph())
+        self.tag(tagged, ["dunes"])
+        stat = tagged.stat()
+        seen = []
+        real = self.api.db.current_image_tags
+
+        def spy(stats):
+            seen.append(dict(stats))
+            return real(stats)
+
+        with patch.object(self.api.db, "current_image_tags", side_effect=spy):
+            _, body = await self.inspect("tagged.png")
+        self.assertEqual(
+            body.get("image_tags"), {"state": "current", "tags": ["dunes"]}
+        )
+        self.assertEqual(list(seen[0].values()), [(stat.st_size, stat.st_mtime_ns)])
+        self.assertEqual(len(seen), 1)

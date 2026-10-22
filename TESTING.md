@@ -1389,6 +1389,12 @@ impact and command receipts report `image_count` / `images` /
 (spec amendment S1) use a byte record only while the file's current
 `(size, mtime_ns)` equals its verified fingerprint; an in-place rewrite that
 preserves both keeps the old set matching until the file is next observed. The
+Images Tags filter (a file matches when every tag is on its linked positive or
+its current image tag set) and `q` search stream the tagged records once and
+stat only the listed files whose records carry a filter tag or a `q` hit; the
+inspector's `image_tags` facet (`current` / `none` / `unavailable`) uses the
+inspection's own stable stat (`tests/test_api_workspace_images.py`
+`TestWorkspaceImageTags`, `tests/test_api_prompt_inspector.py`). The
 browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
 `media_annotation_files` on reset and never the metadata row.
 

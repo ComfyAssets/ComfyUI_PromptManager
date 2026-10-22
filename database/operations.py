@@ -232,6 +232,23 @@ JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
 WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
     SELECT 1 FROM generated_images other
     WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END"""
+# The linked positive of each given path (one unambiguous link, pair scope as
+# in _LINK_FILTER_SQL) with its category; {hit} as in link_filter_query. Used
+# for the few files whose current image tags meet a Tags filter (#249 B3).
+_LINK_FACTS_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id, p.category
+FROM generated_images gi
+LEFT JOIN prompt_pairs pp ON pp.id = (
+    SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
+    FROM image_prompt_pairs ip WHERE ip.image_id = gi.id)
+JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
+WHERE gi.file_path IN ({marks}) AND NOT EXISTS (
+    SELECT 1 FROM generated_images other
+    WHERE other.file_path = gi.file_path AND other.id <> gi.id)"""
+_POSITIVE_TAG_NAMES_SQL = (
+    "SELECT pt.prompt_id, t.name FROM prompt_tags pt JOIN tags t "
+    "ON t.id = pt.tag_id WHERE pt.prompt_id IN ({marks})"
+)
+_FACTS_CHUNK = 500
 # The positive's text, its Library title or one of its tag names contains
 # :pattern (LIKE, so ASCII case is ignored as in Library search). A pair's own
 # title names its negative variant and is never searched (#249 D12).
@@ -2449,6 +2466,46 @@ class PromptDatabase(
                 if wanted is None or path in wanted:
                     matches[path] = (bool(matched), rating, positive)
         return matches
+
+    def get_image_link_facts(
+        self, paths: List[str], q: str = ""
+    ) -> Dict[str, Tuple[bool, Optional[int], int, Optional[str], Tuple[str, ...]]]:
+        """Map each normalized path with one unambiguous link to its positive's
+        (hit, rating, positive id, category, tag names).
+
+        The link is resolved as in get_image_link_matches, and ``hit`` says
+        whether *q* occurs in the positive's text, Library title or a tag
+        name (always true without *q*). Paths go in chunks of 500 through the
+        ``file_path`` index; the tag names are read for those positives only.
+        """
+        hit, params = "1", {}
+        if q:
+            hit = _LINK_FILTER_HIT
+            params["pattern"] = f"%{escape_like(q)}%"
+        rows: Dict[str, Tuple[bool, Optional[int], int, Optional[str]]] = {}
+        names: Dict[int, List[str]] = {}
+        unique = list(dict.fromkeys(paths))
+        with self.model.get_connection() as conn:
+            for start in range(0, len(unique), _FACTS_CHUNK):
+                chunk = unique[start : start + _FACTS_CHUNK]
+                bound = {f"path{i}": path for i, path in enumerate(chunk)}
+                marks = ",".join(f":{key}" for key in bound)
+                sql = _LINK_FACTS_SQL.format(hit=hit, marks=marks)
+                for path, rating, matched, positive, category in conn.execute(
+                    sql, {**params, **bound}
+                ):
+                    rows[path] = (bool(matched), rating, positive, category)
+            positives = sorted({row[2] for row in rows.values()})
+            for start in range(0, len(positives), _FACTS_CHUNK):
+                chunk = positives[start : start + _FACTS_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                for positive, name in conn.execute(
+                    _POSITIVE_TAG_NAMES_SQL.format(marks=marks), chunk
+                ):
+                    names.setdefault(positive, []).append(name)
+        return {
+            path: (*row, tuple(names.get(row[2], ()))) for path, row in rows.items()
+        }
 
     def get_image_paths_matching(
         self, q: str, category: Optional[str], tags: List[str]

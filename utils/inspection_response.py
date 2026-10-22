@@ -6,12 +6,16 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from .inspection_outcomes import MESSAGE_LENGTH, project_resolution
+from .validators import validate_tags
 
 if TYPE_CHECKING:
     from .prompt_inspector import InspectionRead
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_LIBRARY_BYTES = 32 * 1024
+# The image tag set cap (database/annotations.py MAX_IMAGE_TAGS).
+MAX_IMAGE_TAGS = 100
+_IMAGE_TAG_STATES = frozenset({"current", "none", "unavailable"})
 _MAX_SAFE_INTEGER = 2**53 - 1
 _RECORD_KEYS = frozenset(
     {"prompt", "workflow", "parameters", "comfyassets_prompt_pairs"}
@@ -363,6 +367,35 @@ def _library_projection(library: dict) -> dict:
     return result
 
 
+def _image_tag_name(value: object) -> bool:
+    if not isinstance(value, str) or value != value.strip() or "," in value:
+        return False
+    try:
+        return validate_tags([value])
+    except ValueError:
+        return False
+
+
+def project_image_tags(facet: object) -> dict:
+    """The ``image_tags`` facet as the client accepts it, else unavailable.
+
+    ``current`` carries the byte record's names (at most 100 valid vocabulary
+    names); ``none`` and ``unavailable`` carry no names. Anything else, extra
+    keys included, is reported as ``unavailable`` rather than passed on.
+    """
+    unavailable = {"state": "unavailable", "tags": []}
+    if not isinstance(facet, dict) or set(facet) != {"state", "tags"}:
+        return unavailable
+    state, tags = facet["state"], facet["tags"]
+    if state not in _IMAGE_TAG_STATES or not isinstance(tags, list):
+        return unavailable
+    if state != "current" and tags:
+        return unavailable
+    if len(tags) > MAX_IMAGE_TAGS or not all(_image_tag_name(tag) for tag in tags):
+        return unavailable
+    return {"state": state, "tags": list(tags)}
+
+
 def _bounded_message(value: Any) -> Optional[str]:
     """A role line as the client accepts it: 1 to 512 UTF-16 code units."""
     if not isinstance(value, str) or not value:
@@ -394,6 +427,7 @@ def _encode_inspection(
     resolution: dict,
     inspection: "InspectionRead | None",
     library: dict,
+    image_tags: dict | None = None,
 ) -> bytes:
     """Serialize exactly once per budget step, preserving identity and roles."""
     metadata = _metadata(inspection)
@@ -407,6 +441,8 @@ def _encode_inspection(
         "metadata": metadata,
         "library": _library_projection(library),
     }
+    if image_tags is not None:
+        response["image_tags"] = project_image_tags(image_tags)
     body = _bytes(response)
     # Omission order keeps prompt evidence longest: the workflow graph first,
     # then the prompt graph, then all raw records atomically.
@@ -438,8 +474,12 @@ def encode_inspection_response(
     resolution: dict,
     inspection: "InspectionRead | None",
     library: dict,
+    image_tags: dict | None = None,
 ) -> bytes:
-    """Preserve the existing rooted wire and its bounded metadata projection."""
+    """Preserve the existing rooted wire and its bounded metadata projection.
+
+    *image_tags*, when given, adds the validated ``image_tags`` facet (B3).
+    """
     return _encode_inspection(
         identity={"root_scope": root_scope, "image": image},
         file=file,
@@ -447,6 +487,7 @@ def encode_inspection_response(
         resolution=resolution,
         inspection=inspection,
         library=library,
+        image_tags=image_tags,
     )
 
 

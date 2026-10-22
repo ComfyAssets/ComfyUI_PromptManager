@@ -14,7 +14,7 @@ import urllib.parse
 from bisect import bisect_left, bisect_right
 from collections.abc import Mapping
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from aiohttp import web
 from PIL import Image, UnidentifiedImageError
@@ -418,6 +418,29 @@ def _listed(path: Path, mtime: float, root: Path, index: int) -> _Listed:
     )
 
 
+class _ImageTagMatch(NamedTuple):
+    """How one listed file's current image tags meet the filters (#249 B3)."""
+
+    tags: bool  # every filter tag is in its image tags or linked positive tags
+    query: bool  # ``q`` is a case-folded substring of one image tag name
+    link: tuple | None  # (hit, rating, positive id) of its unambiguous link
+
+
+def _current_fingerprint(path: Path) -> tuple[int, int] | None:
+    """The file's present ``(st_size, st_mtime_ns)``; None when it is gone."""
+    try:
+        observed = os.stat(path)
+    except OSError:
+        return None
+    return observed.st_size, observed.st_mtime_ns
+
+
+def _image_tags_relevant(names: list, wanted: set, query: str) -> bool:
+    if wanted and not wanted.isdisjoint(names):
+        return True
+    return bool(query) and any(query in name.casefold() for name in names)
+
+
 def _workspace_key(entry: tuple, order: str) -> tuple:
     """The keyset sort key of *entry* (a _Listed or a 4-tuple entry)."""
     if not isinstance(entry, _Listed):
@@ -752,6 +775,7 @@ def _filtered_page(
     filters: dict,
     links: dict | None,
     favorites: frozenset | None = None,
+    image_tags: dict | None = None,
 ) -> tuple[int, list, int | None]:
     """Count the *entries* the filters admit and take *size* from *start* on.
 
@@ -761,6 +785,9 @@ def _filtered_page(
     or a linked-positive hit. Returns the total, the page and the number of
     distinct linked positives among all admitted entries (None without links).
     *favorites*, when given, admits only those listed paths (``favorites=1``).
+    *image_tags* maps normalized paths to their _ImageTagMatch: a tag filter
+    also admits a file whose current image tags (with its linked positive's
+    tags) carry every tag, and ``q`` also admits an image tag name hit.
     """
     query, media, folder = filters["query"], filters["media"], filters["folder"]
     members_only = filters["category"] is not None or bool(filters["tags"])
@@ -780,9 +807,15 @@ def _filtered_page(
         if favorites is not None and entry.path not in favorites:
             continue
         match = None if links is None else links.get(entry.normalized)
-        if members_only and match is None:
+        image = None if image_tags is None else image_tags.get(entry.normalized)
+        if members_only and match is None and not (image and image.tags):
             continue
-        if query and query not in entry.folded and not (match and match[0]):
+        if (
+            query
+            and query not in entry.folded
+            and not (match and match[0])
+            and not (image and image.query)
+        ):
             continue
         total += 1
         if match is not None:
@@ -1276,6 +1309,80 @@ class ImageRoutesMixin:
                 )
         return orders[order]
 
+    def _workspace_locators(self, listings: list[tuple]) -> dict:
+        """The selected listing's private locators -> _Listed (cached).
+
+        A locator is ``normcase(join(realpath(root), relative))``, the key
+        image tags are stored under (database/annotations.py); the listing
+        never follows symlinks, so it equals the listed file's own locator.
+        """
+        orders = self._workspace_orders(listings)
+        reals = tuple(os.path.realpath(root) for _index, root, _files in listings)
+        key = ("locators", reals)
+        if key not in orders:
+            located = {}
+            for (index, root, files), real in zip(listings, reals):
+                prefix = os.path.join(str(root), "")
+                for entry in self._workspace_listed(index, root, files):
+                    text = str(entry.path)
+                    relative = (
+                        text[len(prefix) :]
+                        if text.startswith(prefix)
+                        else str(entry.path.relative_to(root))
+                    )
+                    located[os.path.normcase(os.path.join(real, relative))] = entry
+            orders[key] = located
+        return orders[key]
+
+    def _image_tag_matches(self, listings: list[tuple], filters: dict) -> dict:
+        """Normalized path -> _ImageTagMatch for files whose image tags count.
+
+        Streams the tagged byte records once and keeps only listed locators
+        carrying a filter tag or a ``q`` hit; only those candidates are
+        stat'ed (never every listed file), and a candidate's tags count only
+        while a byte record is verified at its present ``(size, mtime_ns)``
+        (spec amendment S1). Under a Tags filter the candidates' linked
+        positives are read too, so their tags and category combine.
+        """
+        tags, query, category = filters["tags"], filters["query"], filters["category"]
+        wanted = set(tags)
+        located = self._workspace_locators(listings)
+        candidates = {}
+        records = self.db.iter_image_tag_records()
+        try:
+            for locator, _size, _mtime_ns, names in records:
+                entry = located.get(locator)
+                if entry is not None and locator not in candidates:
+                    if _image_tags_relevant(names, wanted, query):
+                        candidates[locator] = entry
+        finally:
+            records.close()
+        stats = {}
+        for locator, entry in candidates.items():
+            fingerprint = _current_fingerprint(entry.path)
+            if fingerprint is not None:
+                stats[locator] = fingerprint
+        current = self.db.current_image_tags(stats) if stats else {}
+        facts = {}
+        if wanted and current:
+            facts = self.db.get_image_link_facts(
+                [candidates[locator].normalized for locator in current],
+                filters["text"],
+            )
+        matches = {}
+        for locator, names in current.items():
+            entry = candidates[locator]
+            link = facts.get(entry.normalized)
+            carried = set(names).union(link[4] if link else ())
+            matches[entry.normalized] = _ImageTagMatch(
+                bool(wanted)
+                and wanted <= carried
+                and (category is None or (link is not None and link[3] == category)),
+                bool(query) and any(query in name.casefold() for name in names),
+                link[:3] if link else None,
+            )
+        return matches
+
     def _select_workspace_page(
         self,
         listings: list[tuple],
@@ -1328,6 +1435,30 @@ class ImageRoutesMixin:
                     ),
                     exc_info=True,
                 )
+        image_tags = None
+        if filters["query"] or tags:
+            try:
+                image_tags = self._image_tag_matches(listings, filters)
+            except Exception:
+                # A Tags filter cannot be served without them (as without the
+                # links); a search then matches without image tags.
+                if tags:
+                    raise
+                self.logger.warning(
+                    "Workspace image tags could not be read; searching without "
+                    "image tags",
+                    exc_info=True,
+                )
+        if image_tags and links is not None:
+            # A linked file admitted through its image tags keeps its rating
+            # and counts its positive.
+            admitted = {
+                path: match.link
+                for path, match in image_tags.items()
+                if match.tags and match.link is not None and path not in links
+            }
+            if admitted:
+                links = {**links, **admitted}
         if order == "rating":
 
             def rank(entry):
@@ -1360,7 +1491,7 @@ class ImageRoutesMixin:
             self._workspace_favorite_paths(listings) if filters["favorites"] else None
         )
         total, page, positive_count = _filtered_page(
-            entries, start, limit + 1, filters, links, favorites
+            entries, start, limit + 1, filters, links, favorites, image_tags
         )
         if not needed and after is not None:
             positive_count = _COUNT_OMITTED
@@ -2467,6 +2598,9 @@ class ImageRoutesMixin:
                         library=self._inspection_library(
                             saved, unavailable=unavailable
                         ),
+                        image_tags=self._inspection_image_tags(
+                            roots[index], Path(relative).parts
+                        ),
                     )
                 except CurrentFileChanged:
                     return None
@@ -2504,6 +2638,28 @@ class ImageRoutesMixin:
             return web.json_response(
                 {"success": False, "error": "Prompt inspection failed"}, status=500
             )
+
+    def _inspection_image_tags(self, root: Path, parts: tuple) -> Callable:
+        """The inspector's ``image_tags`` reader for one rooted file (S1).
+
+        The returned function takes the inspection's own stable stat and
+        answers ``current`` only for a byte record verified at exactly that
+        ``(size, mtime_ns)``; a failed read is ``unavailable``, never an error.
+        """
+        locator = os.path.normcase(os.path.join(os.path.realpath(root), *parts))
+
+        def read(size: int, mtime_ns: int) -> dict:
+            try:
+                found = self.db.current_image_tags({locator: (size, mtime_ns)})
+            except Exception:
+                self.logger.warning("Inspection image tags could not be read")
+                return {"state": "unavailable", "tags": []}
+            tags = found.get(locator)
+            if tags is None:
+                return {"state": "none", "tags": []}
+            return {"state": "current", "tags": list(tags)}
+
+        return read
 
     def _inspection_library(self, saved: dict | None, *, unavailable: bool) -> dict:
         """The inspector's Library facts; the route sets the title afterwards."""
