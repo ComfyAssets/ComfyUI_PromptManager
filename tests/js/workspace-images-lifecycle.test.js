@@ -21,3 +21,12 @@ test('Images mounted after its parent is aborted creates no DOM, requests or obs
         for(const [key,descriptor] of originals) {if(descriptor) Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}
     }
 });
+
+test('Images mounted after its parent is aborted follows no tag saves', async () => {
+    const tagging = await import('../../web/js/workspace/image-tagging.mjs').catch(() => null);
+    assert.ok(tagging, 'image-tagging.mjs is not implemented');
+    const before = tagging.imageTagsListenerCount();
+    const parent = createScope(); parent.dispose();
+    mountImages({}, {get() { assert.fail('Request started after parent disposal'); }}, parent, {embedded: true, fetchPage() {}}).dispose();
+    assert.equal(tagging.imageTagsListenerCount(), before);
+});

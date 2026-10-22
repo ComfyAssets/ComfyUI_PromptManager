@@ -59,12 +59,12 @@ function mapBulkbar(bulkbar,rise) {
 }
 
 /**
- * A list row's info once D9 narrows its actions to `actionsWidth`, from the concept's boxes:
+ * A list row's info with its actions `actionsWidth` wide, from the concept's boxes:
  * - D3 (the measurable list row, `.list-grid .media-info` in the overlay): the info fills the row beside the art and may
  *   shrink below a long nowrap title (`min-width: 0`), so it is the card's inner width less the art, and the actions
  *   end at its right padding; it keeps its own height (text or actions plus padding), centred in the row the concept
  *   stretches it across, so the text, centred in either, moves only by half the lines it lost;
- * - D9: the wider text column fits a subtitle the concept wrapped when its one-line width (`maxContent`) now fits.
+ * - the text column fits a subtitle the concept wrapped when its one-line width (`maxContent`) now fits.
  */
 function listInfo(card,actionsWidth) {
     const {info}=card,{copy,p}=info;
@@ -109,21 +109,16 @@ export function mapImagesConcept(reference,{manifest,now=new Date()}) {
     const cards=reference.cards.map(card=>{
         const filename=card.open.label.replace(/^Open /,'');
         const actions=card.info.actions;
-        const tag=actions.buttons.find(button=>button.label?.startsWith('Tag or auto-tag '));
-        // D9: no Tag button until the image-annotations slice; the actions group narrows by its box and gap.
-        const freed=tag?tag.width+parseFloat(actions.columnGap):0;
         // D3: a list row's info keeps its own height (text or actions plus its padding) so bounded rendering can measure
         // it, centred in the row the concept stretches it across; the text and the actions keep their place.
-        const actionsWidth=actions.width-freed;
-        const listRow=list?listInfo(card,actionsWidth):{};
+        const listRow=list?listInfo(card,actions.width):{};
         return {...card,
             // D29: the concept's alt adds its demo-only " · sample illustration N" to the card title.
             img:{...card.img,alt:card.img.alt.replace(/ · sample illustration \d+$/,'')},
             info:{...card.info,...listRow.info,copy:{...card.info.copy,...listRow.copy},p:{...card.info.p,...listRow.p},
                 // D10: the title keeps the file's relative path (the fixture manifest's) in `title`.
                 h3:{...card.info.h3,title:paths.get(filename)??null},
-                actions:{...actions,width:actionsWidth,left:listRow.actionsLeft??actions.left+freed,
-                    buttons:actions.buttons.filter(button=>button!==tag)}}};
+                actions:{...actions,left:listRow.actionsLeft??actions.left}}};
     });
     // D17: the right-hand date is the newest result's day under Recently added, here the fixture's newest mtime.
     // D35: the count line uses the singular for one.
@@ -538,8 +533,9 @@ test('one image appended by scrolling reads in the singular',async({page,request
 });
 
 // D3 (one footer height for the collection): bounded rendering cannot measure unrendered cards, so every row reserves
-// the tallest measured footer. Two seedless files (D11 "W × H · PNG", one line) form the first row at 390px, where
-// every concept subtitle wraps: their row is as tall as the wrapped rows, and every concept row moves down by one.
+// the tallest measured footer. Two seedless files (D11 "W × H · PNG", one line: a short "96 × 72" beside Info and Tag)
+// form the first row at 390px, where every concept subtitle wraps: their row is as tall as the wrapped rows, and every
+// concept row moves down by one.
 test('one footer height for the collection (D3)',async({page,request})=>{
     // A second fixture seed (dozens of PNGs and their thumbnails) runs inside the test.
     test.setTimeout(120_000);
@@ -548,7 +544,7 @@ test('one footer height for the collection (D3)',async({page,request})=>{
     const reference=await inventoryOf(page,'#main');
     expect(reference.grid.columns).toBe(2);
     expect(reference.cards.every(card=>card.info.p.height>parseFloat(card.info.p.lineHeight))).toBe(true);
-    const manifest=await seedConcept(request,{seedless_images:2});
+    const manifest=await seedConcept(request,{seedless_images:2,short_seedless:true});
     await openProductionLoaded(page,'dark','no-preference',FIXTURE_IMAGES+2);
     const actual=await inventoryOf(page,'#workspace-main');
     const box=card=>({left:card.left,top:card.top,width:card.width,height:card.height});
@@ -557,7 +553,10 @@ test('one footer height for the collection (D3)',async({page,request})=>{
         ...reference.cards.slice(0,4).map(card=>({...box(card),top:card.top+pitch}))]);
     const seedless=actual.cards.slice(0,2);
     expect(seedless.map(card=>card.open.label)).toEqual(manifest.seedless.map(image=>`Open ${image.filename}`));
-    expect(seedless.map(card=>card.info.p.text)).toEqual(['1536 × 1152 · PNG','1536 × 1152 · PNG']);
+    expect(seedless.map(card=>card.info.p.text)).toEqual(['96 × 72 · PNG','96 × 72 · PNG']);
     // Their own footer is one line shorter than the row it reserves.
-    for(const card of seedless)expect(card.info.height).toBeLessThan(reference.cards[0].info.height);
+    for(const card of seedless) {
+        expect(card.info.p.height).toBeLessThanOrEqual(parseFloat(card.info.p.lineHeight)+0.5);
+        expect(card.info.height).toBeLessThan(reference.cards[0].info.height);
+    }
 });

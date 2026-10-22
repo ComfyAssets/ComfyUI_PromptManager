@@ -86,3 +86,34 @@ test('Show in folder outcomes use the D38 toasts',async()=>{
     for(const error of [{status:403,code:null},{status:409,code:'source-changed'},{status:415,code:'unsupported-media-type'},{status:429,code:null},{status:500},new TypeError('offline')])
         assert.equal(revealOutcome(error),'The folder could not be opened. Try again.');
 });
+
+// #249 PR C Task C3 (D88): one chip row, the file's current image tags first, then D21's linked tags not already shown.
+function tagged(imageTags, library = {status:'linked', tags:['Minimal', 'warm_light', 'editorial'], tags_scope:'positive'}) {
+    return {...record(), imageTags, library};
+}
+test('renders current image tags before linked tags without duplicates', async () => {
+    const {inspectorTagChips} = await load();
+    assert.equal(typeof inspectorTagChips, 'function', 'inspectorTagChips is exported');
+    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['dunes', 'minimal']}), {filterable:true}),
+        [{name:'dunes', filter:true}, {name:'minimal', filter:true}, {name:'warm_light', filter:true}, {name:'editorial', filter:true}]);
+    // D21's rule still decides the linked chips: a recipe's own tags stay plain, an image tag stays a filter.
+    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['Editorial']}, {status:'linked', tags:['editorial', 'cover'], tags_scope:'pair'}), {filterable:true}),
+        [{name:'Editorial', filter:true}, {name:'cover', filter:false}]);
+    // An unlinked file shows only its own tags; a facet-less record (history, local) only the linked ones.
+    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['loose']}, {status:'none', tags:[], tags_scope:null}), {filterable:true}), [{name:'loose', filter:true}]);
+    assert.deepEqual(inspectorTagChips(tagged(null), {filterable:true}).map(chip => chip.name), ['Minimal', 'warm_light', 'editorial']);
+    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:[]}, {status:'ambiguous', tags:['x'], tags_scope:'positive'}), {filterable:true}), []);
+});
+test('image tag chips filter in the panel and are plain in the viewer', async () => {
+    const {inspectorTagChips} = await load();
+    const source = tagged({state:'current', tags:['dunes']});
+    assert.deepEqual(inspectorTagChips(source, {filterable:true}).map(chip => chip.filter), [true, true, true, true]);
+    assert.deepEqual(inspectorTagChips(source, {filterable:false}).map(chip => chip.filter), [false, false, false, false]);
+});
+test('none and unavailable render no image chips', async () => {
+    const {inspectorTagChips} = await load();
+    for (const state of ['none', 'unavailable']) {
+        assert.deepEqual(inspectorTagChips(tagged({state, tags:[]}), {filterable:true}).map(chip => chip.name), ['Minimal', 'warm_light', 'editorial']);
+        assert.deepEqual(inspectorTagChips(tagged({state, tags:[]}, {status:'none', tags:[], tags_scope:null}), {filterable:true}), []);
+    }
+});

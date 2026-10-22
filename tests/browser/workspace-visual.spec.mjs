@@ -107,7 +107,7 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['
         await expect(roles.getByRole('button', { name: 'Send prompt pair', exact: true })).toHaveCount(0);
         await expect(page.locator('#workspace-main > .heading button.send')).toBeEnabled();
         await expect(page.locator('.library-history .history-gallery article[data-image-key]')).toHaveCount(2);
-        await page.locator('.library-history .history-gallery .image-card-actions button').first().click();
+        await page.locator('.library-history .history-gallery .image-card-actions button:first-child').first().click();
         await expect(page.getByRole('complementary', { name: 'Selected image details', exact: true })).toContainText('canonical-alt.png');
         await page.locator('.library-history .history-gallery .media-card.selected .image-open').click();
         await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');
@@ -296,7 +296,7 @@ async function containedImageContent(page) {
         const failures = [];
         for (const card of nodes) {
             const outer = card.getBoundingClientRect();
-            for (const selector of ['.media-info', '.media-info h3', '.media-info p', '.image-card-actions button']) {
+            for (const selector of ['.media-info', '.media-info h3', '.media-info p', '.image-card-actions']) {
                 const node = card.querySelector(selector), box = node.getBoundingClientRect();
                 if (box.width <= 0 || box.height <= 0 || box.left < outer.left - 1 || box.right > outer.right + 1 ||
                     box.top < outer.top - 1 || box.bottom > outer.bottom + 1 ||
@@ -306,7 +306,7 @@ async function containedImageContent(page) {
                         content: { left: box.left, right: box.right, top: box.top, bottom: box.bottom } });
                 }
             }
-            const action = card.querySelector('.image-card-actions button').getBoundingClientRect();
+            const action = card.querySelector('.image-card-actions').getBoundingClientRect();
             const range = document.createRange(); range.selectNodeContents(card.querySelector('.media-info p'));
             for (const text of range.getClientRects()) {
                 if (Math.min(text.right, action.right) - Math.max(text.left, action.left) > .5 &&
@@ -351,7 +351,7 @@ for (const [width, height] of [[390, 844], [1600, 1100]]) for (const layout of [
             const filename = (await longCard.locator('.image-open').getAttribute('aria-label')).replace(/^Open /, '');
             expect(filename).toMatch(/layered-context-.*\.png/);
             // D19: Info selects into the panel; the image itself opens the viewer.
-            await longCard.locator('.image-card-actions button').focus(); await page.keyboard.press('Enter');
+            await longCard.locator('.image-card-actions button:first-child').focus(); await page.keyboard.press('Enter');
             await expect(page.locator('.detail-panel .panel-heading h2')).toHaveText(filename);
             // D19: the card image, not the panel, opens the viewer.
             const fullPreview = longCard.locator('.image-open');
@@ -420,7 +420,7 @@ test('supplemental extreme zoom grows real footers preserves the visible anchor 
     await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
     await expect.poll(() => cards.nth(1).evaluate(node => node.offsetLeft)).toBe(0);
     const selected = cards.nth(16), key = await selected.getAttribute('data-image-key');
-    await selected.locator('.image-card-actions button').click(); await selected.locator('.image-open').focus();
+    await selected.locator('.image-card-actions button:first-child').click(); await selected.locator('.image-open').focus();
     const filename = (await selected.locator('.image-open').getAttribute('aria-label')).replace(/^Open /, '');
     await selected.evaluate(node => scrollBy(0, node.getBoundingClientRect().top - 120));
     await page.evaluate(() => {
@@ -497,7 +497,7 @@ test('supplemental wrapped real footer reservation survives append without movin
     await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${workspace}#/images`);
     const cards = page.locator('article[data-image-key]'), grid = page.locator('.image-grid');
     await expect(cards).toHaveCount(40);
-    await cards.first().locator('.image-card-actions button').click();
+    await cards.first().locator('.image-card-actions button:first-child').click();
     const selectedKey = await cards.first().getAttribute('data-image-key');
     await page.evaluate(() => { document.documentElement.style.zoom = '4'; });
     await expect.poll(() => grid.evaluate(node => Number.parseFloat(node.style.getPropertyValue('--image-footer-height')))).toBeGreaterThan(54);
@@ -609,7 +609,7 @@ test('Images visual layouts retain real delayed media long filenames and loaded 
         await page.setViewportSize({width,height});
         for (const theme of ['dark','light']) {
             await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
-            await page.locator('.media-card .image-card-actions button').first().click();
+            await page.locator('.media-card .image-card-actions button:first-child').first().click();
             await expect(page.locator('.detail-panel .panel-heading h2')).toHaveText('study-01.png');
             for (const layout of ['Grid','List','Masonry']) {
                 await page.getByRole('button',{name:layout,exact:true}).click();await page.evaluate(()=>scrollTo(0,0));
@@ -621,7 +621,7 @@ test('Images visual layouts retain real delayed media long filenames and loaded 
             const longCard=page.locator('article[data-image-key]').filter({has:page.locator('[aria-label^="Open a-very-long-geometric-composition-"]')});
             const longName=(await longCard.locator('.image-open').getAttribute('aria-label')).replace(/^Open /,'');
             expect(longName).toMatch(/layered-context-.*\.png/);
-            await longCard.locator('.image-card-actions button').click();
+            await longCard.locator('.image-card-actions button:first-child').click();
             await expect(page.locator('.detail-panel .panel-heading h2')).toHaveText(longName);
             await orderedMedia(page);
             await attachEvidence(page,testInfo,`after-images-loaded-scroll-${width}-${theme}`,false);

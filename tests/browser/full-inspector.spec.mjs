@@ -92,7 +92,7 @@ test('inspection wire preserves exact rooted envelope', async ({ request }) => {
 const inspector=page=>page.locator('.detail-panel');
 /** D19: the selected card's image opens the viewer (the side panel has no full-preview cover). */
 const openSelected=page=>page.locator('.media-card.selected .image-open').click();
-const selectFile=async(page,name,root=0)=>page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-card-actions button`).click();
+const selectFile=async(page,name,root=0)=>page.locator(`article[data-image-key="${root}:inspector/${name}"] .image-card-actions button:first-child`).click();
 async function fullFixture(page,request) {
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');await selectFile(page,'complete.png');
@@ -460,7 +460,7 @@ test('full inspector labels container representations and releases action URLs',
 test('full inspector distinguishes missing, limited and legacy unknown generation facts',async({page,request})=>{
     await fullFixture(page,request);const panel=inspector(page);
     await selectFile(page,'empty.png');await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
-    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-card-actions button').click();await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
+    await page.locator('article[data-image-key="0:architecture/study-01.png"] .image-card-actions button:first-child').click();await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
     await selectFile(page,'control-heavy.png');
     const explanation='Configuration exceeds inspection limits; download the original file to inspect it locally.';
     await expect(panel.getByText(explanation,{exact:true})).toHaveCount(1);await expect(panel.getByText(explanation,{exact:true})).toBeVisible();
@@ -637,7 +637,7 @@ test('collection viewer follows filtered loaded order beyond mounted cards',asyn
     // #249 D26: the whole positive's images are in the All images dialog's own embedded gallery.
     await page.getByRole('button',{name:'All images for this positive',exact:true}).click();
     const listing=page.getByRole('dialog',{name:'All images for this positive',exact:true});
-    await listing.locator('article[data-image-key="0:inspector/complete.png"] .image-card-actions button').click();
+    await listing.locator('article[data-image-key="0:inspector/complete.png"] .image-card-actions button:first-child').click();
     await listing.locator('.media-card.selected .image-open').click();await expect(mediaDialog(page).locator('.viewer-canvas img')).toBeVisible();
     await expect(position(page)).toContainText('of 2 loaded:');
 });
@@ -930,7 +930,7 @@ test('collection viewer matches approved responsive frame',async({page,request},
     await page.screenshot({path:testInfo.outputPath('viewer-mobile-wider-font-2x.png')});
     await modal.getByRole('button',{name:'Close image viewer',exact:true}).click();await page.evaluate(()=>{document.documentElement.style.zoom='1';});await settleViewport(390);
     const longFiles=await(await request.get('/prompt_manager/images/output?mode=workspace&q=a-very-long&limit=40')).json();const long=longFiles.images[0];
-    await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-card-actions button`).click();await openCollection(page);
+    await page.locator(`article[data-image-key="${long.root_index}:${long.path}"] .image-card-actions button:first-child`).click();await openCollection(page);
     await page.evaluate(()=>{document.documentElement.style.zoom='2';});await settleViewport(390);await modal.evaluate(node=>{node.scrollTop=0;});
     await expect(modal.getByRole('button',{name:'Close image viewer',exact:true})).toBeInViewport();
 });
