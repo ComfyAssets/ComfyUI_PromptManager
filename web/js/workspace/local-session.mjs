@@ -164,6 +164,8 @@ export function createLocalSession({
             classify(file, generation, current.signal);
             return 'accepted';
         },
+        /** Ends the current selection as page leave does; the session stays usable. */
+        clear: leave,
         retry() {
             if (disposed || !handle) return undefined;
             return controller.retry();

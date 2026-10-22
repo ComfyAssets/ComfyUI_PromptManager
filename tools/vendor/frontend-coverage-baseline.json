@@ -162,10 +162,10 @@
     "statements": 97
   },
   "workspace/activity-scan.mjs": {
-    "lines": 96,
-    "branches": 73,
+    "lines": 95,
+    "branches": 64,
     "functions": 98,
-    "statements": 96
+    "statements": 95
   },
   "workspace/activity-store.mjs": {
     "lines": 98,
@@ -283,8 +283,8 @@
   },
   "workspace/inspect.mjs": {
     "lines": 98,
-    "branches": 90,
-    "functions": 88,
+    "branches": 92,
+    "functions": 92,
     "statements": 98
   },
   "workspace/inspection-state.mjs": {

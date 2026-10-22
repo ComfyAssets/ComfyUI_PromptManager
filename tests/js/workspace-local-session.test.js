@@ -389,4 +389,20 @@ test("dispose, parent abort and page leave each release the URL once", async () 
     assert.equal((await recorded(third.session.controller)).record.prompts.positive.text, "after return");
     third.session.dispose();
     assert.equal(third.urls.revoked.length, 2);
+    // A page that owns page leave passes no pageTarget and ends the selection with clear(), as pagehide would.
+    const owned = session({ overrides: { pageTarget: null } });
+    owned.session.select([pngFile("a.png")]);
+    await recorded(owned.session.controller);
+    assert.equal(owned.page.listeners.size, 0, "no pagehide listener of its own");
+    owned.session.clear();
+    assert.deepEqual(owned.urls.revoked, [owned.urls.created[0].url]);
+    assert.equal(owned.session.entry, null);
+    assert.equal(owned.session.state.phase, "empty");
+    owned.session.clear();
+    assert.equal(owned.urls.revoked.length, 1, "clear is idempotent");
+    assert.equal(owned.session.select([pngFile("b.png")]), "accepted");
+    await recorded(owned.session.controller);
+    owned.session.dispose();
+    owned.session.clear();
+    assert.equal(owned.urls.revoked.length, 2);
 });

@@ -16,7 +16,7 @@ test('disposed media viewer touches no DOM observers or requests', () => {
         const view = module.createMediaViewer({container:forbidden,parentScope,inspectionController:forbidden,sender:forbidden,
             onSelect:() => assert.fail('Disposed viewer selected an entry'),onRefresh:() => assert.fail('Disposed viewer refreshed')});
         if (!aborted) view.dispose();
-        view.open(forbidden); view.stopSlideshow?.(); view.dispose(); view.dispose(); parentScope.dispose();
+        view.open(forbidden); view.stopSlideshow?.(); view.close(); view.dispose(); view.dispose(); parentScope.dispose();
     }
 });
 

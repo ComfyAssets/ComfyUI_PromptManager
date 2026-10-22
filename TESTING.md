@@ -1468,8 +1468,11 @@ beacon, WebSocket, EventSource); Inspect writes nothing to `localStorage`,
 `sessionStorage` or IndexedDB; only an explicit Send crosses the host bridge, and its
 payload carries neither the `blob:` URL nor the filename; no console message names the
 file or quotes its prompts (asserted on the managed host). The selection's `blob:` URL belongs to one local session and is revoked once,
-on replacement, route change, unmount or `pagehide`, never while an element holds it
-(`URLs and media end with their owning session`).
+on replacement, route change, unmount or `pagehide`, never while an element in the page holds it: the inline preview
+and, when it is open, the viewer drop their media first. The page, not the session, owns `pagehide`: it closes the
+viewer, releases the inline media, then ends the selection and clears the chooser, so a page restored from the
+back-forward cache shows an empty chooser beside the empty selection (`URLs and media end with their owning
+session`, which also leaves with the viewer open).
 
 Recorded deviations on this page (maintainer rulings LI-3, LI-6; plan "Mock inventory and
 mapped differences"):
@@ -1488,10 +1491,18 @@ mapped differences"):
   video previews in the same `#local-preview` slot as `video.local-file-preview` with
   native `controls`, `playsInline`, `preload="metadata"` and `muted`, never autoplays
   inline, and is paused, has its `src` removed and is removed from the page on replacement
-  or dispose, before its URL is revoked. A settled video (metadata read, or failed) is then
-  reset with `load()`; one still starting is not, because WebKit (GStreamer) blocked the
-  page when such a pipeline was reset (`replacing a video that just started loading never
-  blocks the page`).
+  or dispose, before its URL is revoked. Each preview owns its listeners, so the page never
+  pins a released node. A settled video (metadata read, or failed) is then reset with
+  `load()` at once; one still starting is reset only once it reports metadata or an error,
+  because WebKit (GStreamer) blocked the page when such a pipeline was reset (`replacing a
+  video that just started loading never blocks the page`, `a video replaced while still
+  starting is reset once it settles`). A WebKit load cut off by the revoked URL usually
+  stalls and never settles; a fallback then only drops the waiting listeners. The viewer's
+  own video teardown was checked the same way (`closing the viewer on a video that just
+  started never blocks the page`, 15 fresh pages on WebKit) and needed no change.
+  Follow-up: on WebKit, a video released exactly at its `loadstart` sometimes blocks the
+  page, with or without any reset and also before the deferred reset (2 of 24 runs in the
+  pinned image), so the `loadstart` spec is skipped on WebKit until that is investigated.
 - **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
   concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose
   one image or video file.", "This file type cannot be previewed or inspected here.
@@ -1499,6 +1510,11 @@ mapped differences"):
   original remain available in the viewer." and "Embedded metadata could not be read."
   (the shared inspector's own copy) are `role="alert"`; "Metadata in AVI and WMV files
   is not read here. The preview and the original remain available." is `role="status"`.
+  A rejected chooser or drop ("Drop one file at a time.", folders, an unsupported drop)
+  keeps the selection and its status line: its alert is a second line after it, removed
+  by the next selection attempt or after the concept's toast interval (6.5 s). The toast
+  "Local preview only…; metadata is available above." shows only for a selection whose
+  status is empty or the AVI/WMV note, never beside an unreadable or failed preview.
 - **D64** (drop, LI-6): `dragover`/`drop` on `.file-drop` accept exactly one File, read
   only `dataTransfer.files`/`items` (never its strings) and change nothing visually.
   While the page is mounted, `window` `dragover`/`drop` call `preventDefault`, so a missed
@@ -1514,7 +1530,9 @@ mapped differences"):
 
 The chooser keeps naming the chosen file, as the concept's does: it is cleared as the
 picker opens (so choosing the same file again is a new selection), not after `change`,
-and an accepted drop clears it so it never names a replaced file.
+and named again with the current File (through a `DataTransfer`, which fires no
+`change`) when the picker is cancelled. An accepted drop names the dropped file, so the
+chooser never names a replaced file and never reads "No file chosen" beside a selection.
 
 Legacy floor (`web/metadata.html`), dispositions:
 - PNG by chooser and by drop: kept (`#local-file`, D64).
@@ -1556,6 +1574,9 @@ Nodes 2.0, switching both ways with a graph reload each time. Each send previews
 node's current and new roles, writes exactly those roles, and neither queues nor loads a
 workflow. A connected `negative_text` input rejects the whole preview with no change. The
 workspace page makes no non-GET request and logs neither filename nor prompt text.
+Follow-up (pair node, separate investigation): the node's `text` widget ignored a value
+set after a `PrimitiveString` linked `negative_text` (it kept its prior value), so this spec
+and `library-sender.spec.mjs` set the positive before connecting the negative input.
 
 ```sh
 node --test tests/js/workspace-local-session.test.js tests/js/workspace-state.test.js

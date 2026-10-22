@@ -8,7 +8,7 @@ import { createWorkspaceIcon } from './icons.mjs';
 import { createLocalSession, LOCAL_SESSION_MESSAGES } from './local-session.mjs';
 import { localFileAdapter } from './local-inspection.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
-import { showWorkspaceToast } from './toast.mjs';
+import { showWorkspaceToast, TOAST_MS } from './toast.mjs';
 
 /** D60/D61 copy (maintainer ruling LI-3). */
 export const INSPECT_COPY = Object.freeze({
@@ -37,17 +37,38 @@ function element(tag, className, text) {
     return node;
 }
 
+// The status shown for the selection; AVI/WMV's note and an empty status keep the toast's "metadata is available".
+const TOASTABLE = new Set(['', LOCAL_SESSION_MESSAGES.containerOnly]);
+// How long a released video still starting may take to settle before its deferred reset is dropped.
+const DEFERRED_RESET_MS = 15000;
+
 /**
- * Stops a preview from holding its blob: URL: media is paused and its src dropped before the session revokes the URL.
- * A settled video (metadata read, or failed) is then reset with load() to free its decoder at once. A video still
- * starting is not: WebKit (GStreamer) blocked the page when such a pipeline was reset, so it is left to be collected.
+ * Resets a released video once it settles. Removing `src` alone never aborts a load already under way, and WebKit
+ * (GStreamer) blocked the page when a pipeline still starting was reset, so load() waits for metadata or an error.
+ * The fallback only drops the waiting listeners (a WebKit load cut off by the revoked URL stalls and never settles),
+ * so the detached node is never pinned.
  */
-function releaseMedia(node) {
-    if (!node) return;
+function resetWhenSettled(node) {
+    const waiting = new AbortController();
+    const fallback = setTimeout(() => waiting.abort(), DEFERRED_RESET_MS);
+    const reset = () => { waiting.abort(); clearTimeout(fallback); node.load(); };
+    for (const type of ['loadedmetadata', 'error']) node.addEventListener(type, reset, { once: true, signal: waiting.signal });
+}
+
+/**
+ * Stops a preview from holding its blob: URL: its own listeners end, media is paused and its src dropped before the
+ * session revokes the URL, and the node leaves the page. A settled video (metadata read, or failed) is then reset with
+ * load() to free its decoder at once; one still starting is reset as soon as it settles.
+ */
+function releaseMedia(preview) {
+    if (!preview) return;
+    const { node, listeners } = preview;
+    listeners.abort();
     if (node instanceof HTMLMediaElement) {
         const settled = node.readyState >= HTMLMediaElement.HAVE_METADATA || node.error !== null;
         node.pause(); node.removeAttribute('src');
         if (settled) node.load();
+        else resetWhenSettled(node);
     } else node.removeAttribute('src');
     node.remove();
 }
@@ -85,19 +106,44 @@ export function mountInspect(main, { parentScope, api, sender }) {
     scope.cleanup(() => open.remove());
 
     // The session ends after the viewer has closed and the inline media is gone, so no element holds its URL then.
+    // The page owns page leave for the same reason: the session listens for no `pagehide` of its own.
     const sessionScope = createScope();
-    const session = createLocalSession({ parentScope: sessionScope });
+    const session = createLocalSession({ parentScope: sessionScope, pageTarget: null });
     const viewer = createMediaViewer({ api, container: main, parentScope: scope, inspectionController: session.controller, sender,
         adapter: localFileAdapter, onRestoreFocus: () => { if (open.isConnected) open.focus({ preventScroll: true }); } });
 
-    let media = null, mediaUrl = null, statusLine = null, announced = null;
+    let media = null, mediaUrl = null, statusLine = null, rejectionLine = null, rejectionTimer = 0, announced = null, chosen = null;
+    function statusElement(message) {
+        // /* D63 */ one status line for the states the mock never shows.
+        const line = element('p', 'small spaced-16', message);
+        line.setAttribute('role', ALERTS.has(message) ? 'alert' : 'status');
+        return line;
+    }
     function showStatus(message) {
         statusLine?.remove(); statusLine = null;
         if (!message) return;
-        // /* D63 */ one status line for the states the mock never shows.
-        statusLine = element('p', 'small spaced-16', message);
-        statusLine.setAttribute('role', ALERTS.has(message) ? 'alert' : 'status');
-        preview.append(statusLine);
+        statusLine = statusElement(message);
+        preview.insertBefore(statusLine, rejectionLine);
+    }
+    function clearRejection() {
+        clearTimeout(rejectionTimer); rejectionTimer = 0;
+        rejectionLine?.remove(); rejectionLine = null;
+    }
+    // /* D63 */ a rejected chooser or drop keeps the selection and its status: its alert is a second line that ends
+    // with the next selection attempt or after the concept's toast interval.
+    function showRejection(message) {
+        clearRejection();
+        rejectionLine = statusElement(message);
+        preview.append(rejectionLine);
+        rejectionTimer = setTimeout(clearRejection, TOAST_MS);
+    }
+    scope.cleanup(clearRejection);
+    /** Keeps the chooser naming the current selection; assigning `files` fires no `change`. */
+    function nameChosen() {
+        if (!chosen) return;
+        const transfer = new DataTransfer();
+        transfer.items.add(chosen);
+        input.files = transfer.files;
     }
     function setAvailable(available) {
         open.setAttribute('aria-disabled', String(!available));
@@ -111,6 +157,8 @@ export function mountInspect(main, { parentScope, api, sender }) {
         if (!url) return;
         const video = state.preview.media === 'video';
         const node = element(video ? 'video' : 'img', 'local-file-preview');
+        // Each preview owns its listeners, so a released node is never held by the page.
+        const current = { node, listeners: new AbortController() };
         if (video) {
             // /* D62 */ native controls, no inline autoplay.
             node.controls = true; node.playsInline = true; node.preload = 'metadata'; node.muted = true;
@@ -118,13 +166,13 @@ export function mountInspect(main, { parentScope, api, sender }) {
             node.alt = 'Local file preview';
         }
         // /* D65 */ the URL is not revoked on load: the viewer and Download original use it.
+        // The listener ends with the node's release, so it only fires for the current preview.
         node.addEventListener('error', () => {
-            if (media !== node) return;
-            releaseMedia(node); media = null;
+            releaseMedia(current); media = null;
             showStatus(LOCAL_SESSION_MESSAGES.previewFailed);
-        }, { once: true, signal: scope.signal });
+        }, { once: true, signal: current.listeners.signal });
         node.src = url;
-        media = node;
+        media = current;
         preview.prepend(node);
     }
     scope.cleanup(session.subscribe(state => {
@@ -134,7 +182,8 @@ export function mountInspect(main, { parentScope, api, sender }) {
         setAvailable(state.phase === 'ready' && !!entry);
         if (state.phase === 'ready' && entry && announced !== entry.key) {
             announced = entry.key;
-            showWorkspaceToast(INSPECT_COPY.toast);
+            // An unreadable or failed preview says so in its alert; the toast never claims metadata is available.
+            if (TOASTABLE.has(state.message)) showWorkspaceToast(INSPECT_COPY.toast);
         }
     }));
     // A replacement or page leave revokes the URL after this subscriber dropped the media; a dispose closes the
@@ -143,17 +192,32 @@ export function mountInspect(main, { parentScope, api, sender }) {
     scope.cleanup(() => { releaseMedia(media); media = null; mediaUrl = null; });
     scope.cleanup(() => sessionScope.dispose());
 
-    function choose(source) {
+    // Page leave: the viewer closes and the inline media goes before the session revokes the URL, and the chooser is
+    // cleared, so a page restored from the back-forward cache never names a file beside the empty selection.
+    function leave() {
+        clearRejection();
+        viewer.close();
+        releaseMedia(media); media = null; mediaUrl = null;
+        session.clear();
+        chosen = null; input.value = '';
+    }
+    scope.listen(window, 'pagehide', leave);
+
+    function choose(source, file) {
+        clearRejection();
         const outcome = session.select(source);
-        if (REJECTIONS[outcome]) showStatus(REJECTIONS[outcome]);
+        if (outcome === 'accepted') chosen = file;
+        if (REJECTIONS[outcome]) showRejection(REJECTIONS[outcome]);
         return outcome;
     }
     // The chooser keeps showing the chosen name, as in the concept; it is cleared as the picker opens, so choosing
-    // the same file again is a new selection.
-    scope.listen(input, 'click', () => { input.value = ''; });
+    // the same file again is a new selection, and named again when the picker is cancelled.
+    scope.listen(input, 'click', () => { clearRejection(); input.value = ''; });
+    scope.listen(input, 'cancel', () => nameChosen());
     scope.listen(input, 'change', () => {
         // A cancelled chooser carries no files: the page stays as it is.
-        choose(input.files?.length ? input.files : null);
+        if (!input.files?.length) { choose(null); nameChosen(); return; }
+        choose(input.files, input.files[0]);
     });
     // /* D64 */ drop on the area, with no visual change; only `dataTransfer.files` is read, never its strings.
     scope.listen(area, 'dragover', event => {
@@ -164,8 +228,8 @@ export function mountInspect(main, { parentScope, api, sender }) {
         event.preventDefault();
         if (document.querySelector('dialog[open]')) return;
         const transfer = event.dataTransfer;
-        // A dropped file replaces the chosen one, so the chooser no longer names the old file.
-        if (choose(transfer ? { files: transfer.files, items: transfer.items } : null) === 'accepted') input.value = '';
+        // A dropped file replaces the chosen one, so the chooser names the dropped file, never the old one.
+        if (choose(transfer ? { files: transfer.files, items: transfer.items } : null, transfer?.files?.[0]) === 'accepted') nameChosen();
     });
     // A drop that misses the area never navigates away from the page while it is mounted.
     for (const type of ['dragover', 'drop']) scope.listen(window, type, event => event.preventDefault());

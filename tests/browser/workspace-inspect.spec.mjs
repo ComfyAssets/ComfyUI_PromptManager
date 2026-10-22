@@ -227,6 +227,8 @@ test('drop accepts exactly one File and never navigates', async ({ page }) => {
     expect(await drop(page, '.file-drop', { files: [parityPng('f02.png')] })).toEqual({ over: true, drop: true });
     await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
     await expect(page.locator('#workspace-toast')).toHaveText(TOAST);
+    // The chooser names the dropped file, never the one it replaced and never "No file chosen".
+    expect(await chooser(page).evaluate(node => [...node.files].map(file => file.name))).toEqual(['f02.png']);
     const first = await preview(page).locator('img').getAttribute('src');
     // Two files, a link and markup keep the selection and say why.
     await drop(page, '.file-drop', { files: [parityPng('f02.png'), parityPng('f03.png')] });
@@ -256,10 +258,16 @@ test('cancel and same-file reselect', async ({ page }) => {
     await expect(preview(page).locator('img')).toHaveAttribute('src', first);
     await expect(status(page)).toHaveCount(0);
     await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    // Opening the picker and cancelling it keeps naming the live selection (modern engines fire `cancel`, not `change`).
+    await chooser(page).dispatchEvent('click');
+    await chooser(page).dispatchEvent('cancel');
+    expect(await chooser(page).evaluate(node => [...node.files].map(file => file.name))).toEqual(['f02.png']);
+    await expect(preview(page).locator('img')).toHaveAttribute('src', first);
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
     // The same file again is a new selection with its own URL; the old one is released. Opening the picker clears
     // the chooser, so the browser reports the same file as a change.
-    await chooser(page).dispatchEvent('click');
-    await expect(chooser(page)).toHaveJSProperty('value', '');
+    // (Read in the same task: a picker the click opens is cancelled by the harness, which names the file again.)
+    expect(await chooser(page).evaluate(node => { node.dispatchEvent(new MouseEvent('click')); return node.value; })).toBe('');
     await choose(page, parityPng('f02.png'));
     await expect(preview(page).locator('img')).not.toHaveAttribute('src', first);
     await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
@@ -325,6 +333,40 @@ test('local video plays inline and in the viewer with real tags', async ({ page,
     if (browserName !== 'webkit') await expect.poll(() => viewer(page).locator('#viewer-stage video').evaluate(node => node.readyState >= 1)).toBe(true);
 });
 
+test('the toast and a rejected drop never contradict the status line', async ({ page }) => {
+    // A file whose bytes are gone after choosing: the status says its metadata cannot be read, so no toast says it is
+    // available.
+    await page.addInitScript(() => {
+        const slice = Blob.prototype.slice;
+        Blob.prototype.slice = function (...args) {
+            if (this.name === 'gone.png') return { arrayBuffer: () => Promise.reject(new DOMException('The file is gone', 'NotReadableError')) };
+            return slice.apply(this, args);
+        };
+    });
+    await openInspect(page);
+    await choose(page, parityPng('f02.png', 'gone.png'));
+    await expect(status(page)).toHaveText('Embedded metadata could not be read.');
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    await expect(page.locator('#workspace-toast')).toHaveText('');
+    // A rejected drop is its own alert beside the selection's status, which it never replaces, and it ends with the
+    // concept's toast interval.
+    await choose(page, undecodableMp4());
+    const failed = status(page).filter({ hasText: COPY.previewFailed });
+    await expect(failed).toHaveCount(1);
+    await drop(page, '.file-drop', { files: [parityPng('f02.png'), parityPng('f03.png')] });
+    const rejected = status(page).filter({ hasText: COPY.multiple });
+    await expect(rejected).toHaveAttribute('role', 'alert');
+    await expect(failed).toHaveCount(1);
+    await expect(rejected).toHaveCount(0, { timeout: 15000 });
+    await expect(status(page)).toHaveText([COPY.previewFailed]);
+    // The next selection attempt ends a rejection at once.
+    await drop(page, '.file-drop', { files: [parityPng('f02.png'), parityPng('f03.png')] });
+    await expect(rejected).toHaveCount(1);
+    await chooser(page).dispatchEvent('click');
+    await chooser(page).dispatchEvent('cancel');
+    await expect(status(page)).toHaveText([COPY.previewFailed]);
+});
+
 test('undecodable video keeps container metadata', async ({ page }) => {
     await openInspect(page);
     // A real MP4 whose sample entry names a codec no engine decodes; its container tags are intact.
@@ -337,22 +379,25 @@ test('undecodable video keeps container metadata', async ({ page }) => {
     await expect(rail(page).locator('.meta-grid').first().locator('dd').first()).toHaveText('7');
 });
 
+/** Records, for each revoked URL, how many elements (inline or in the viewer) still held it, and counts resets. */
+const trackReleases = page => page.evaluate(() => {
+    window.__released = [];
+    const revoke = URL.revokeObjectURL;
+    URL.revokeObjectURL = url => {
+        const live = [...document.querySelectorAll('img, video')].filter(node => node.getAttribute('src') === url);
+        window.__released.push({ url, live: live.length });
+        return revoke(url);
+    };
+    const load = HTMLMediaElement.prototype.load;
+    window.__loads = 0;
+    HTMLMediaElement.prototype.load = function () { if (!this.hasAttribute('src')) window.__loads++; return load.call(this); };
+});
+
 test('URLs and media end with their owning session', async ({ page }) => {
     await instrument(page);
     await openInspect(page);
     // Every release pauses the media and drops its src before the URL is revoked.
-    await page.evaluate(() => {
-        window.__released = [];
-        const revoke = URL.revokeObjectURL;
-        URL.revokeObjectURL = url => {
-            const live = [...document.querySelectorAll('#local-preview img, #local-preview video')].filter(node => node.getAttribute('src') === url);
-            window.__released.push({ url, live: live.length });
-            return revoke(url);
-        };
-        const load = HTMLMediaElement.prototype.load;
-        window.__loads = 0;
-        HTMLMediaElement.prototype.load = function () { if (!this.hasAttribute('src')) window.__loads++; return load.call(this); };
-    });
+    await trackReleases(page);
     await choose(page, localFixture('core-tags.webm', 'video/webm'));
     await expect(preview(page).locator('video')).toBeVisible();
     // A settled video (metadata read, or failed) is reset with load() when it is released.
@@ -391,6 +436,26 @@ test('URLs and media end with their owning session', async ({ page }) => {
     state = await urls(page);
     expect(state.created).toHaveLength(8);
     expect(state.revoked.filter(url => url === state.created[7])).toHaveLength(1);
+    // Page leave with the viewer open, on a page loaded at Inspect (so its listeners precede the shell's): the viewer
+    // closes and releases its media before the URL is revoked, and a page restored from the back-forward cache shows
+    // an empty chooser beside the empty selection.
+    await page.reload();
+    await expect(chooser(page)).toBeAttached();
+    await trackReleases(page);
+    await choose(page, parityPng('f02.png', 'leave-open.png'));
+    await openViewer(page);
+    await expect(viewer(page).getByRole('button', { name: 'Zoom in', exact: true })).toHaveAttribute('aria-disabled', 'false');
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    await expect(page.locator('dialog')).toHaveCount(0);
+    state = await urls(page);
+    expect(state.created).toHaveLength(1);
+    expect(state.revoked).toEqual(state.created);
+    expect(await page.evaluate(() => window.__released)).toEqual([{ url: state.created[0], live: 0 }]);
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await expect(chooser(page)).toBeAttached();
+    expect(await chooser(page).evaluate(node => ({ value: node.value, files: node.files.length }))).toEqual({ value: '', files: 0 });
+    await expect(preview(page).locator('img, video')).toHaveCount(0);
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'true');
 });
 
 test('replacing a video that just started loading never blocks the page', async ({ context, browserName }) => {
@@ -408,6 +473,86 @@ test('replacing a video that just started loading never blocks the page', async 
             await chooser(page).setInputFiles(parityPng('f02.png'), { timeout: 8000 });
             await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
             await expect(preview(page).locator('video')).toHaveCount(0);
+            if (attempt === 0) await saveCoverage(page, browserName);
+        } finally {
+            await page.close();
+        }
+    }
+});
+
+test('a video replaced while still starting is reset once it settles', async ({ context, browserName }) => {
+    // A WebKit (GStreamer) video released exactly at its `loadstart` sometimes blocks the page, with or without any
+    // reset and also with the code before the deferred reset (2 of 24 runs); tracked in TESTING.md (D62). WebKit's
+    // no-hang guard is `replacing a video that just started loading never blocks the page`.
+    test.skip(browserName === 'webkit', 'WebKit release at loadstart is a tracked follow-up (D62)');
+    test.setTimeout(120000);
+    // The video is replaced from its own `loadstart` (readyState HAVE_NOTHING). It leaves the page with no src before
+    // its URL is revoked, and is reset (load() with no src, which frees its decoder) only once it reports metadata or
+    // an error, so the page never blocks. Fresh pages share one browser process.
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const page = await context.newPage();
+        try {
+            if (attempt === 0) await startCoverage(page, browserName);
+            await page.addInitScript(() => {
+                const load = HTMLMediaElement.prototype.load;
+                HTMLMediaElement.prototype.load = function () { if (!this.hasAttribute('src')) this.__resets = (this.__resets ?? 0) + 1; return load.call(this); };
+                const revoke = URL.revokeObjectURL;
+                URL.revokeObjectURL = url => {
+                    const starting = window.__starting;
+                    if (url === starting?.url) starting.revoked = { src: starting.node.hasAttribute('src'), connected: starting.node.isConnected, resets: starting.node.__resets ?? 0 };
+                    return revoke(url);
+                };
+            });
+            await openInspect(page);
+            await page.evaluate(() => {
+                const input = document.querySelector('#local-file'), slot = document.querySelector('#local-preview');
+                new MutationObserver((records, observer) => {
+                    const video = slot.querySelector('video');
+                    if (!video) return;
+                    observer.disconnect();
+                    video.addEventListener('loadstart', () => {
+                        window.__starting = { node: video, url: video.getAttribute('src'), readyState: video.readyState };
+                        input.files = window.__pngFiles; input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }, { once: true });
+                }).observe(slot, { childList: true });
+            });
+            const png = parityPng('f02.png');
+            await page.evaluate(bytes => {
+                const transfer = new DataTransfer();
+                transfer.items.add(new File([new Uint8Array(bytes)], 'f02.png', { type: 'image/png' }));
+                window.__pngFiles = transfer.files;
+            }, [...png.buffer]);
+            await choose(page, localFixture('core-tags.webm', 'video/webm'));
+            await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
+            await expect(preview(page).locator('video')).toHaveCount(0);
+            // Released while starting, and never reset synchronously: the URL went once the node had no src.
+            expect(await page.evaluate(() => ({ readyState: window.__starting.readyState, revoked: window.__starting.revoked })))
+                .toEqual({ readyState: 0, revoked: { src: false, connected: false, resets: 0 } });
+            await expect.poll(() => page.evaluate(() => window.__starting.node.__resets ?? 0), { timeout: 15000 }).toBe(1);
+            // The page still answers.
+            await chooser(page).setInputFiles(parityPng('f02.png', 'after.png'), { timeout: 8000 });
+            await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
+            if (attempt === 0) await saveCoverage(page, browserName);
+        } finally {
+            await page.close();
+        }
+    }
+});
+
+test('closing the viewer on a video that just started never blocks the page', async ({ context, browserName }) => {
+    test.setTimeout(180000);
+    // The viewer's video teardown resets its element; on WebKit a reset of a still-starting pipeline blocked the page.
+    for (let attempt = 0; attempt < 15; attempt++) {
+        const page = await context.newPage();
+        try {
+            if (attempt === 0) await startCoverage(page, browserName);
+            await openInspect(page);
+            await choose(page, localFixture('core-tags.webm', 'video/webm'));
+            await openViewer(page);
+            await page.keyboard.press('Escape');
+            await expect(viewer(page)).toHaveCount(0, { timeout: 8000 });
+            await chooser(page).setInputFiles(parityPng('f02.png'), { timeout: 8000 });
+            await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
             if (attempt === 0) await saveCoverage(page, browserName);
         } finally {
             await page.close();

@@ -24,7 +24,9 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
     const stopSlideshow = () => active?.stop();
-    if (parentScope.signal.aborted) { scope.dispose(); return {open() {},dispose,stopSlideshow}; }
+    // Closes an open viewer without restoring focus (page leave); the viewer stays usable.
+    const close = () => active?.close(false);
+    if (parentScope.signal.aborted) { scope.dispose(); return {open() {},close,dispose,stopSlideshow}; }
     parentScope.signal.addEventListener('abort',dispose,{once:true});
     scope.cleanup(() => parentScope.signal.removeEventListener('abort',dispose));
     scope.cleanup(() => active?.close(false));
@@ -240,5 +242,5 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
             if (state.record?.identity.key === currentKey && state.record.library?.title) title.textContent = `${state.record.library.title} · ${entry.filename}`;
         }));
     }
-    return {open,dispose,stopSlideshow};
+    return {open,close,dispose,stopSlideshow};
 }
