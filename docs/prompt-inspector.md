@@ -33,7 +33,8 @@ unresolved rather than becoming sendable placeholder text. Videos are read from
 one container carrier: the per-key tags written by core SaveVideo/SaveWEBM and
 current VideoHelperSuite (`prompt`, `workflow`, `parameters`,
 `comfyassets_prompt_pairs`), else the old VideoHelperSuite `comment` envelope,
-else `description`. The scan reads the same carrier, so Images and ingestion
-agree on a video's prompts (see TESTING.md for the order and budgets).
+else `description`. The admin scan reads the same carrier, so Images and
+ingestion agree on a video's prompts (see TESTING.md for the order and budgets;
+the live monitor processes images only).
 
 Python route changes require restarting ComfyUI. Browser assets require a refresh.

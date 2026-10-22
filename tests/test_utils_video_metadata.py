@@ -33,11 +33,13 @@ HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 GRAPH = json.dumps({"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}}})
 
 
-def write_video(path, **tags):
+def write_video(path, metadata_tags=True, **tags):
     """Write a tiny black video carrying one container tag per keyword.
 
-    MP4 keeps arbitrary keys only with ``use_metadata_tags``, the movflag the
-    core SaveVideo node sets; Matroska and WebM upper-case the key names.
+    MP4 keeps arbitrary keys only with ``use_metadata_tags`` (mdta atoms), the
+    movflag the core SaveVideo node sets; without it ffmpeg writes the legacy
+    ilst atoms (``comment`` becomes ``©cmt``) that old VideoHelperSuite files
+    carry. Matroska and WebM upper-case the key names.
     """
     command = [
         "ffmpeg",
@@ -48,7 +50,7 @@ def write_video(path, **tags):
         "-i",
         "color=c=black:s=16x16:d=0.2",
     ]
-    if str(path).lower().endswith((".mp4", ".mov", ".m4v")):
+    if metadata_tags and str(path).lower().endswith((".mp4", ".mov", ".m4v")):
         command += ["-movflags", "use_metadata_tags"]
     for key, value in tags.items():
         command += ["-metadata", f"{key}={value}"]
@@ -56,8 +58,8 @@ def write_video(path, **tags):
 
 
 def write_mp4(path, comment):
-    """Write a tiny black video carrying ``comment`` in its container tags."""
-    write_video(path, comment=comment)
+    """Write a tiny black MP4 with ``comment`` in its legacy ilst ``©cmt`` atom."""
+    write_video(path, metadata_tags=False, comment=comment)
 
 
 class TestMetadataFromTags(unittest.TestCase):
@@ -106,20 +108,29 @@ class TestSelectVideoCarrier(unittest.TestCase):
             formats, {"prompt": "original-text", "workflow": "original-text"}
         )
         self.assertIsNone(carrier)
-        folded = {"COMMENT": json.dumps({"prompt": GRAPH})}
-        self.assertEqual(select_video_carrier(folded)[0], {"prompt": GRAPH})
+        # Envelope keys are read exactly as legacy did: no fold, so a Matroska
+        # upper-cased COMMENT is not an envelope.
+        self.assertIsNone(
+            select_video_carrier({"COMMENT": json.dumps({"prompt": GRAPH})})
+        )
 
     def test_folded_duplicate_keys_fail(self):
         for tags in (
             {"PROMPT": GRAPH, "prompt": json.dumps({"9": {}})},
             {"Workflow": self.WORKFLOW, "WORKFLOW": "{}", "prompt": GRAPH},
-            {"comment": json.dumps({"prompt": GRAPH}), "COMMENT": "{}"},
         ):
             with self.assertRaises(DuplicateVideoTagError):
                 select_video_carrier(tags)
         # Byte-identical duplicates are one record, as for PNG text chunks.
         metadata, _, _ = select_video_carrier({"PROMPT": GRAPH, "prompt": GRAPH})
         self.assertEqual(metadata, {"prompt": GRAPH})
+        # Envelope keys never fold, so a foreign COMMENT note is not a duplicate.
+        envelope = json.dumps({"prompt": GRAPH})
+        metadata, _, carrier = select_video_carrier(
+            {"comment": envelope, "COMMENT": "a free-text note"}
+        )
+        self.assertEqual(metadata, {"prompt": GRAPH})
+        self.assertEqual(carrier, envelope)
 
     def test_comment_envelope_still_read(self):
         envelope = json.dumps({"prompt": GRAPH, "workflow": {"nodes": []}})
@@ -349,6 +360,29 @@ class TestReadVideoMetadataWithRealFfprobe(unittest.TestCase):
                 {"prompt": GRAPH, "workflow": '{"nodes":[]}'},
                 name,
             )
+
+    def test_legacy_ilst_comment_atom_is_read(self):
+        path = os.path.join(self.tmpdir, "vhs.mp4")
+        write_mp4(path, json.dumps({"prompt": GRAPH}))
+        probe = subprocess.run(
+            [
+                shutil.which("ffprobe"),
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format_tags",
+                "-of",
+                "json",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        tags = json.loads(probe.stdout)["format"]["tags"]
+        self.assertIn("comment", tags)
+        self.assertEqual(read_video_metadata(path), {"prompt": GRAPH})
 
     def test_video_without_a_comment_is_empty(self):
         path = os.path.join(self.tmpdir, "plain.mp4")

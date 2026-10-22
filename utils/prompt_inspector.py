@@ -44,12 +44,16 @@ WORKFLOW_METADATA_BYTES = 4 * 1024 * 1024
 # repeated chunks cost bounded I/O instead of file size.
 DUPLICATE_WORKFLOW_BYTES = 2 * WORKFLOW_METADATA_BYTES
 DUPLICATE_ROLE_BYTES = 2 * ROLE_METADATA_BYTES
-# ffprobe stdout bounds: every carrier tag fits the role and workflow budgets
-# plus 64 KiB of JSON envelope; past that only the per-key ``workflow`` tag can
-# be dropped, so the re-probe asks for role and envelope tags within the role
+# ffprobe stdout bounds. ffprobe JSON-escapes tag text (at most doubling it),
+# and the decoded per-record budgets below are the only gate that may make a
+# record fail or ``limited``: a video must read exactly as the identical PNG.
+# So the first probe allows twice the role and workflow budgets plus 64 KiB of
+# JSON envelope; past that only the per-key ``workflow`` tag can be dropped,
+# and the re-probe asks for role and envelope tags within twice the role
 # budget (an envelope cannot be split, so an over-budget one fails the read).
 MAX_METADATA_BYTES = ROLE_METADATA_BYTES
-VIDEO_PROBE_BYTES = ROLE_METADATA_BYTES + WORKFLOW_METADATA_BYTES + 64 * 1024
+VIDEO_PROBE_BYTES = 2 * (ROLE_METADATA_BYTES + WORKFLOW_METADATA_BYTES) + 64 * 1024
+VIDEO_REPROBE_BYTES = 2 * ROLE_METADATA_BYTES + 64 * 1024
 VIDEO_PROBE_SECONDS = 3
 _VIDEO_ROLE_PROBE_KEYS = ROLE_TAG_KEYS + ENVELOPE_TAG_KEYS
 MAX_KEYWORD_BYTES = 80  # a 1-79 byte PNG keyword plus its NUL separator
@@ -344,7 +348,9 @@ def _video_metadata(path: Path) -> _VideoInspection:
     limited = frozenset()
     raw = _probe_video_tags(probe, path, VIDEO_TAG_KEYS, VIDEO_PROBE_BYTES)
     if raw is None:
-        raw = _probe_video_tags(probe, path, _VIDEO_ROLE_PROBE_KEYS, MAX_METADATA_BYTES)
+        raw = _probe_video_tags(
+            probe, path, _VIDEO_ROLE_PROBE_KEYS, VIDEO_REPROBE_BYTES
+        )
         if raw is None:
             raise MetadataReadError("Video metadata exceeds inspection limits")
         # Only the per-key workflow tag was left out, so it is the record over

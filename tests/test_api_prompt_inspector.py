@@ -35,11 +35,13 @@ def graph(positive="portrait", negative="blurry"):
     }
 
 
-def write_video(path, **tags):
+def write_video(path, metadata_tags=True, **tags):
     """Tiny black clip carrying one container tag per keyword (needs ffmpeg).
 
-    MP4 keeps arbitrary keys only with ``use_metadata_tags``, the movflag the
-    core SaveVideo node sets; Matroska and WebM upper-case the key names.
+    MP4 keeps arbitrary keys only with ``use_metadata_tags`` (mdta atoms), the
+    movflag the core SaveVideo node sets; without it ffmpeg writes the legacy
+    ilst atoms that old VideoHelperSuite files carry. Matroska and WebM
+    upper-case the key names.
     """
     command = [
         "ffmpeg",
@@ -50,7 +52,7 @@ def write_video(path, **tags):
         "-i",
         "color=c=black:s=16x16:d=0.2",
     ]
-    if path.suffix.lower() in (".mp4", ".mov", ".m4v"):
+    if metadata_tags and path.suffix.lower() in (".mp4", ".mov", ".m4v"):
         command += ["-movflags", "use_metadata_tags"]
     for key, value in tags.items():
         command += ["-metadata", f"{key}={value}"]
@@ -365,7 +367,7 @@ class TestPromptInspector(ImageAPITestCase):
     async def test_corrupt_truncated_duplicate_and_expanding_metadata_fail_closed(self):
         import struct
         import zlib
-        from utils.prompt_inspector import MAX_METADATA_BYTES
+        from utils.prompt_inspector import VIDEO_REPROBE_BYTES
 
         path = self.output_dir / "image.png"
         base = png(path, prompt=graph()).read_bytes()
@@ -378,8 +380,8 @@ class TestPromptInspector(ImageAPITestCase):
         cases.append(bytes(broken))
         for kind, payload in (
             (b"tEXt", b"prompt\0{}"),
-            (b"zTXt", b"prompt\0\0" + zlib.compress(b"x" * (MAX_METADATA_BYTES + 1))),
-            (b"tEXt", b"prompt\0" + b"x" * (MAX_METADATA_BYTES + 1)),
+            (b"zTXt", b"prompt\0\0" + zlib.compress(b"x" * (VIDEO_REPROBE_BYTES + 1))),
+            (b"tEXt", b"prompt\0" + b"x" * (VIDEO_REPROBE_BYTES + 1)),
             (b"tEXt", b"bad-key-without-separator"),
             (b"zTXt", b"prompt\0\1bad-compression"),
             (b"iTXt", b"prompt\0\2\0\0\0text"),
@@ -438,7 +440,7 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(result["prompts"]["positive"]["status"], "absent")
 
     async def test_video_inspection_uses_bounded_container_evidence(self):
-        from utils.prompt_inspector import MAX_METADATA_BYTES, VIDEO_PROBE_BYTES
+        from utils.prompt_inspector import VIDEO_PROBE_BYTES, VIDEO_REPROBE_BYTES
 
         (self.output_dir / "clip.mp4").write_bytes(b"video fixture")
         metadata = {"prompt": graph("Video portrait", "")}
@@ -467,7 +469,7 @@ class TestPromptInspector(ImageAPITestCase):
         # re-probe overflows too and the read fails instead of guessing.
         processes = [
             probe_process(b"x" * (VIDEO_PROBE_BYTES + 1)),
-            probe_process(b"x" * (MAX_METADATA_BYTES + 1)),
+            probe_process(b"x" * (VIDEO_REPROBE_BYTES + 1)),
         ]
         with (
             patch("utils.prompt_inspector.ffprobe_path", return_value="/tool/ffprobe"),
@@ -1049,9 +1051,10 @@ class TestPromptInspector(ImageAPITestCase):
                 {"prompt": "original-text", "workflow": "original-text"},
                 name,
             )
-        # Old VideoHelperSuite envelope, unchanged.
+        # Old VideoHelperSuite envelope in the legacy ilst comment atom, unchanged.
         write_video(
             self.output_dir / "vhs.mp4",
+            metadata_tags=False,
             comment=json.dumps({"prompt": json.loads(source), "workflow": {"v": 1}}),
         )
         _, result = await self.inspect("vhs.mp4")
@@ -1063,7 +1066,7 @@ class TestPromptInspector(ImageAPITestCase):
         self.assertEqual(result["metadata"]["workflow_graph"]["value"], {"v": 1})
 
     async def test_video_oversize_workflow_reprobes_role_only_and_marks_limited(self):
-        from utils.prompt_inspector import MAX_METADATA_BYTES, VIDEO_PROBE_BYTES
+        from utils.prompt_inspector import VIDEO_PROBE_BYTES, VIDEO_REPROBE_BYTES
 
         path = self.output_dir / "clip.mp4"
         path.write_bytes(b"fixture")
@@ -1093,7 +1096,7 @@ class TestPromptInspector(ImageAPITestCase):
             "comment,description",
         )
         self.assertEqual(processes[0].stdout.requested_size, VIDEO_PROBE_BYTES + 1)
-        self.assertEqual(processes[1].stdout.requested_size, MAX_METADATA_BYTES + 1)
+        self.assertEqual(processes[1].stdout.requested_size, VIDEO_REPROBE_BYTES + 1)
         for process in processes:
             self.assertTrue(process.stdout.closed)
             process.wait.assert_called()

@@ -60,19 +60,23 @@ class DuplicateVideoTagError(ValueError):
 
 
 def _folded_tags(tags: dict) -> dict:
-    """Known tags keyed by ASCII-lowercased name.
+    """Known tags keyed by their carrier name.
 
-    Matroska muxers upper-case tag names and ffprobe reports them as written,
-    so the fold happens here. Two tags folding to one key are a duplicate
-    record: byte-identical duplicates are one record (as for PNG text chunks),
-    differing ones fail the read.
+    Per-key prompt carriers fold ASCII case: Matroska muxers upper-case tag
+    names and ffprobe reports them as written. Two tags folding to one key are
+    a duplicate record: byte-identical duplicates are one record (as for PNG
+    text chunks), differing ones fail the read. Envelope keys (``comment``,
+    ``description``) are read exactly as the legacy readers did, never folded.
     """
     folded = {}
     for key, value in tags.items():
         if not isinstance(key, str):
             continue
+        if key in ENVELOPE_TAG_KEYS:
+            folded[key] = value
+            continue
         name = key.lower()
-        if name not in VIDEO_TAG_KEYS:
+        if name not in METADATA_TAG_KEYS:
             continue
         if name in folded and folded[name] != value:
             raise DuplicateVideoTagError(f"Duplicate video metadata tag: {name}")

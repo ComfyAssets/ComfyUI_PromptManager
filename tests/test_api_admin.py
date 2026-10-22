@@ -2476,7 +2476,8 @@ def _write_mp4(path, comment):
 
 
 class TestScanReadsVideos(AdminAPITestCase):
-    """Videos saved by ComfyUI carry the graph in their comment tag."""
+    """Videos carry the graph in per-key container tags (current savers) or in
+    the old VideoHelperSuite comment envelope; the scan reads one carrier."""
 
     def setUp(self):
         super().setUp()

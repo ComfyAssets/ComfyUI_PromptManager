@@ -823,6 +823,88 @@ def _png_with_chunks(path, chunks):
     return path
 
 
+class TestVideoProbeBoundsMatchPngBudgets(unittest.TestCase):
+    """ffprobe escapes tag text; the stdout bounds must never gate a record
+    that the identical PNG reads within its decoded budget (I3)."""
+
+    @staticmethod
+    def _dense(size):
+        # Quote-dense JSON text: every other byte escapes, so ffprobe's JSON
+        # output is close to twice the decoded size.
+        unit = '{"k":"v",' + "".join('"' for _ in range(6)) + "}"
+        return (unit * (size // len(unit) + 1))[:size]
+
+    def _video_read(self, path, tags, bound):
+        payload = json.dumps({"format": {"tags": tags}}).encode()
+        self.assertGreater(len(payload), bound)
+        process = MagicMock()
+        process.stdout = io.BytesIO(payload)
+        process.poll.return_value = 0
+        process.returncode = 0
+        with (
+            patch("utils.prompt_inspector.ffprobe_path", return_value="/tool/ffprobe"),
+            patch(
+                "utils.prompt_inspector.subprocess.Popen", return_value=process
+            ) as spawn,
+        ):
+            read = read_inspection_file(path)
+        self.assertEqual(spawn.call_count, 1)
+        self.assertTrue(process.stdout.closed)
+        return read
+
+    def test_near_budget_records_read_the_same_as_png(self):
+        from utils.prompt_inspector import (
+            ROLE_METADATA_BYTES,
+            VIDEO_PROBE_BYTES,
+            VIDEO_REPROBE_BYTES,
+            WORKFLOW_METADATA_BYTES,
+        )
+
+        prompt = self._dense(ROLE_METADATA_BYTES - 1024)
+        workflow = self._dense(WORKFLOW_METADATA_BYTES - 1024)
+        with tempfile.TemporaryDirectory() as directory:
+            png = _png_with_chunks(
+                Path(directory) / "same.png",
+                [
+                    _text_chunk(b"tEXt", "prompt", prompt.encode("latin-1")),
+                    _text_chunk(b"tEXt", "workflow", workflow.encode("latin-1")),
+                ],
+            )
+            expected = read_inspection_file(png)
+            self.assertEqual(
+                expected.record_formats,
+                {"prompt": "original-text", "workflow": "original-text"},
+            )
+            video = Path(directory) / "same.mp4"
+            video.write_bytes(b"fixture")
+            # Escaped output is over the old 6 MiB + 64 KiB stdout bound.
+            read = self._video_read(
+                video,
+                {"prompt": prompt, "workflow": workflow},
+                ROLE_METADATA_BYTES + WORKFLOW_METADATA_BYTES + 64 * 1024,
+            )
+            self.assertEqual(read.metadata, expected.metadata)
+            self.assertEqual(read.record_formats, expected.record_formats)
+            self.assertEqual(read.limited_records, frozenset())
+            self.assertGreaterEqual(
+                VIDEO_PROBE_BYTES,
+                2 * (ROLE_METADATA_BYTES + WORKFLOW_METADATA_BYTES) + 64 * 1024,
+            )
+            self.assertGreaterEqual(
+                VIDEO_REPROBE_BYTES, 2 * ROLE_METADATA_BYTES + 64 * 1024
+            )
+            # A role record near its budget alone escapes past 2 MiB and must
+            # still read as the PNG does.
+            png = _png_with_chunks(
+                Path(directory) / "role.png",
+                [_text_chunk(b"tEXt", "prompt", prompt.encode("latin-1"))],
+            )
+            expected = read_inspection_file(png)
+            read = self._video_read(video, {"prompt": prompt}, ROLE_METADATA_BYTES)
+            self.assertEqual(read.metadata, expected.metadata)
+            self.assertEqual(read.record_formats, {"prompt": "original-text"})
+
+
 class TestPerRecordBudgets(unittest.TestCase):
     """Role records keep the 2 MiB budget; a workflow has its own 4 MiB budget."""
 
