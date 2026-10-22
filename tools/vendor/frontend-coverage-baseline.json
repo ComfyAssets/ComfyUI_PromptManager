@@ -73,7 +73,7 @@
   },
   "png-metadata.js": {
     "lines": 98,
-    "branches": 90,
+    "branches": 96,
     "functions": 98,
     "statements": 98
   },
@@ -292,6 +292,12 @@
     "branches": 85,
     "functions": 96,
     "statements": 96
+  },
+  "workspace/local-video.mjs": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/media-viewer.mjs": {
     "lines": 98,
