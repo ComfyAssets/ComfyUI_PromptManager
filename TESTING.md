@@ -332,7 +332,30 @@ becomes record format `limited` (no raw text, graph `limited`, roles and facts
 unaffected); other text chunks are skipped unread; byte-identical duplicates are
 accepted within a bounded read budget, while differing duplicates (and any duplicate
 role record over that budget) still fail. Other read bounds are unchanged: 8 MiB
-non-PNG header, 10,000 PNG chunks and a three-second ffprobe. Resolution under
+non-PNG header, 10,000 PNG chunks and a three-second ffprobe (per probe, at most two
+probes). Video containers are read through one shared carrier selector
+(`utils/video_metadata.select_video_carrier`, used by the inspector and by the admin
+scan): carriers are, in order, the per-key tags that current savers write (`prompt`,
+`workflow`, `parameters`, `comfyassets_prompt_pairs`, each `original-text`; Matroska
+upper-cased names fold on our side), then the old VideoHelperSuite `comment` JSON
+envelope, then `description` (object values are `reserialized-json`; envelope keys are
+matched exactly, as the legacy readers did, never folded). The first carrier holding a
+role key wins, otherwise the first holding a workflow, and carriers never merge. Two
+per-key tags folding to one key are a duplicate record: byte-identical ones are one
+record, differing ones fail the read. ffprobe is asked for exactly those six tags.
+Its JSON output escapes tag text (at most doubling it), so the stdout bounds are sized
+so that only the decoded per-record budgets above can fail or limit a record, and a
+video reads exactly as the identical PNG: the first probe allows twice the role and
+workflow budgets plus 64 KiB of envelope (12 MiB + 64 KiB); past that the inspector
+probes once more without the `workflow` tag within twice the role budget plus 64 KiB
+(4 MiB + 64 KiB) and the per-key workflow becomes `limited`, while an envelope over
+that bound still fails the read because it cannot be split. The admin scan reads the
+same carrier with the default resolver profile, so a per-key video links like the same
+graph in a PNG; the live monitor processes images only (unchanged, see the follow-up
+below) (`tests/test_utils_video_metadata.py`, `tests/test_api_admin.py`
+`TestScanReadsVideos`, `tests/test_api_prompt_inspector.py` `test_video_*`,
+`tests/test_inspection_response.py` `TestVideoProbeBoundsMatchPngBudgets`; the
+real-container round trips skip without ffmpeg). Resolution under
 `INSPECTION_PROFILE` bounds work, not graph size: 2,000 visits per candidate chain,
 20,000 in total, 64 link/JSON-container levels, 100,000 resolved characters, and a
 two 20,000-node ceilings: one over the top-level entries of the API prompt, and one
@@ -1710,6 +1733,12 @@ gap is closed, and only the production-only surfaces above keep their own rules
 responsive production Viewer keeps its toolbar in the media panel and prompt details readable rather than reproducing the concept's
 mobile toolbar collision. These are explicit remaining visual differences, not
 a whole-application or full-gallery/Viewer pixel-parity claim.
+
+Follow-up: monitor video support. The live image monitor (`utils/image_monitor.py`,
+`GalleryConfig.SUPPORTED_EXTENSIONS`) processes images only; videos written by
+ComfyUI savers reach the Library through the admin scan, which reads the shared video
+carrier. Accepting `VIDEO_EXTENSIONS` in the monitor and routing them through
+`read_video_metadata` is a separate, issue-linked change.
 
 Preserve raw logs, failed traces, paired PNGs, geometry, runtime versions and
 source hashes before later managed commands clear their output directories.
