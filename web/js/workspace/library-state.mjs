@@ -23,7 +23,9 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
     let query=parameters({},40),request,disposed=false,seen=new Set();
     if(restore) {
         query=parameters(restore.filters,40);const saved=restore.state;
-        validatePage({items:saved.items,total:saved.total,variant_total:saved.variantTotal,next_cursor:saved.cursor,has_more:saved.cursor!==null},null);
+        // A shelf left before its first page answered (or after it failed) has no page yet: it restores as a fresh stream.
+        const firstPagePending=saved?.variantTotal===null && Array.isArray(saved.items) && !saved.items.length && saved.total===0 && saved.cursor===null && saved.hasMore===true;
+        if(!firstPagePending) validatePage({items:saved.items,total:saved.total,variant_total:saved.variantTotal,next_cursor:saved.cursor,has_more:saved.cursor!==null},null);
         if(new Set(saved.items.map(item=>item.id)).size!==saved.items.length) throw new TypeError('Duplicate restored parent');
         state=Object.freeze({...saved,items:Object.freeze(saved.items.map(item=>Object.freeze({...item}))),loading:false,error:null});seen=new Set(state.items.map(item=>item.id));
     }
