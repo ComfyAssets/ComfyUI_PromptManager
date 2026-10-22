@@ -468,7 +468,7 @@ class IntegrationConfig:
 # Number of tag suggestions the Tag dialogs request by default (D68). The cap
 # is the image tag set limit: more suggestions could never all be kept.
 DEFAULT_SUGGESTION_LIMIT = 10
-MAX_SUGGESTION_LIMIT = 100
+MAX_SUGGESTION_LIMIT = 100  # pinned to MAX_IMAGE_TAGS by tests/test_config.py
 
 
 class AutotagConfig:

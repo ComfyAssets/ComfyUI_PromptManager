@@ -427,6 +427,18 @@ class TestAutotagConfig(unittest.TestCase):
                 PromptManagerConfig.load_from_file(path)
         return logs
 
+    def test_every_copy_of_the_tag_set_cap_is_one_value(self):
+        # A suggestion request is bounded by the image tag set cap; the
+        # copies that cannot import it (config loads before the database,
+        # the inspection envelope stays storage-free) are pinned to it here.
+        from database.annotations import MAX_IMAGE_TAGS
+        from py import autotag
+        from utils import inspection_response
+
+        self.assertEqual(autotag.MAX_SUGGESTION_LIMIT, MAX_IMAGE_TAGS)
+        self.assertEqual(config_module.MAX_SUGGESTION_LIMIT, MAX_IMAGE_TAGS)
+        self.assertEqual(inspection_response.MAX_IMAGE_TAGS, MAX_IMAGE_TAGS)
+
     def test_default_is_ten_and_persisted_under_autotag_defaults(self):
         self.assertEqual(config_module.DEFAULT_SUGGESTION_LIMIT, 10)
         self.assertEqual(config_module.MAX_SUGGESTION_LIMIT, 100)

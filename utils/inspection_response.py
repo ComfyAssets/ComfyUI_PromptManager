@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_LIBRARY_BYTES = 32 * 1024
-# The image tag set cap (database/annotations.py MAX_IMAGE_TAGS).
+# The image tag set cap (database/annotations.py MAX_IMAGE_TAGS; pinned equal
+# by tests/test_config.py).
 MAX_IMAGE_TAGS = 100
 _IMAGE_TAG_STATES = frozenset({"current", "none", "unavailable"})
 _MAX_SAFE_INTEGER = 2**53 - 1

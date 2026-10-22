@@ -16,10 +16,13 @@ from PIL import Image
 # A loader takes (model_type, use_gpu) and returns ("gguf" | "wd14" | "hf", backend)
 ModelLoader = Callable[[str, bool], Tuple[str, Any]]
 
-# Suggestions keep only names a Save accepts (the vocabulary tag rules).
+# Suggestions keep only names a Save accepts (the vocabulary tag rules), and
+# never more than one image tag set holds.
 try:
+    from ..database.annotations import MAX_IMAGE_TAGS
     from ..database.vocabulary import validate_vocabulary_tag_name
 except ImportError:
+    from database.annotations import MAX_IMAGE_TAGS
     from database.vocabulary import validate_vocabulary_tag_name
 
 # Try to import logging from utils, fallback to standard logging
@@ -94,8 +97,8 @@ DEFAULT_PROMPT = (
     "descriptive."
 )
 
-# Upper bound of one suggestion request: the image tag set cap (100 names).
-MAX_SUGGESTION_LIMIT = 100
+# Upper bound of one suggestion request: the image tag set cap.
+MAX_SUGGESTION_LIMIT = MAX_IMAGE_TAGS
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant and help users with any queries they may have "
