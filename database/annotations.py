@@ -49,7 +49,7 @@ _INSERT_OWNER = (
     f"INSERT INTO {FILES_TABLE}(id,locator,created_at) VALUES(?,?,?)"  # nosec B608
 )
 _BYTE = (
-    f"SELECT id,tag_revision FROM {BYTES_TABLE} "  # nosec B608
+    f"SELECT id,tag_revision,size,mtime_ns FROM {BYTES_TABLE} "  # nosec B608
     "WHERE file_id=? AND sha256=?"
 )
 _INSERT_BYTE = (
@@ -229,10 +229,13 @@ class AnnotationOperations:
         size: int,
         mtime_ns: int,
         now: str,
-    ) -> tuple[str, int, bool]:
+    ) -> tuple[str, int, bool, bool]:
         """The byte record for these bytes, refreshed or created.
 
-        Returns ``(id, tag_revision, created)``.
+        Returns ``(id, tag_revision, created, refingerprinted)``; the last is
+        True when an existing record's verified ``(size, mtime_ns)`` changed,
+        which moves its currency for cheap reads (the caller bumps the index
+        revision when nothing else does).
         """
         row = conn.execute(_BYTE, (file_id, sha256)).fetchone()
         if row is None:
@@ -240,9 +243,9 @@ class AnnotationOperations:
             conn.execute(
                 _INSERT_BYTE, (byte_id, file_id, sha256, size, mtime_ns, now, now)
             )
-            return byte_id, 0, True
+            return byte_id, 0, True, False
         conn.execute(_REFRESH_BYTE, (size, mtime_ns, now, row[0]))
-        return row[0], row[1], False
+        return row[0], row[1], False, (row[2], row[3]) != (size, mtime_ns)
 
     @staticmethod
     def _byte_tags(conn: sqlite3.Connection, byte_id: str) -> list[str]:
@@ -311,7 +314,7 @@ class AnnotationOperations:
             epoch = self._library_epoch(conn, expected_epoch)
             now = utc_now_iso()
             file_id = self._annotation_owner(conn, locator, now)
-            byte_id, revision, created = self._annotation_byte(
+            byte_id, revision, created, refingerprinted = self._annotation_byte(
                 conn, file_id, sha256, size, mtime_ns, now
             )
             current = self._byte_tags(conn, byte_id)
@@ -320,6 +323,8 @@ class AnnotationOperations:
                 and current == tags
                 and expected_tag_revision in (revision, revision - 1)
             ):
+                if refingerprinted:
+                    conn.execute(_BUMP_INDEX)
                 return _receipt(epoch, sha256, current, revision, True)
             if expected_tag_revision != revision:
                 raise AnnotationCommandError(
@@ -353,7 +358,7 @@ class AnnotationOperations:
             epoch = self._library_epoch(conn, expected_epoch)
             now = utc_now_iso()
             file_id = self._annotation_owner(conn, locator, now)
-            byte_id, revision, created = self._annotation_byte(
+            byte_id, revision, created, refingerprinted = self._annotation_byte(
                 conn, file_id, sha256, size, mtime_ns, now
             )
             current = self._byte_tags(conn, byte_id)
@@ -367,6 +372,8 @@ class AnnotationOperations:
                     {"sha256": sha256, "tags": current, "tag_revision": revision},
                 )
             if not created and not added:
+                if refingerprinted:
+                    conn.execute(_BUMP_INDEX)
                 return {**_receipt(epoch, sha256, current, revision, True), "added": 0}
             revision = self._write_image_tags(conn, byte_id, merged)
             return {

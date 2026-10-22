@@ -11,6 +11,7 @@ try:
 except ImportError:  # discovered with tests/ as the top-level directory
     from open_handles import assert_closed
 
+from database.library_commands import LibraryCommandError
 from database.operations import PromptDatabase
 
 
@@ -234,6 +235,78 @@ class TestPairTagMaintenance(unittest.TestCase):
         self.assertEqual(
             conn.execute("SELECT COUNT(*) FROM media_annotation_bytes").fetchone()[0], 1
         )
+
+    def index_revision(self) -> int:
+        return (
+            self.db.model.get_connection()
+            .execute("SELECT image_index_revision FROM media_annotation_metadata")
+            .fetchone()[0]
+        )
+
+    def revision(self, locator: str, digest: str = "a") -> int:
+        return self.db.read_image_tags(
+            locator, hashlib.sha256(digest.encode()).hexdigest()
+        )["tag_revision"]
+
+    def tag_id(self, name: str) -> int:
+        conn = self.db.model.get_connection()
+        return conn.execute("SELECT id FROM tags WHERE name=?", (name,)).fetchone()[0]
+
+    def test_vocabulary_maintenance_bumps_image_revisions_so_stale_saves_conflict(
+        self,
+    ):
+        forest = self.image("a.png", ["forest"])
+        misty = self.image("b.png", ["mist"])
+        self.pair("portrait", ["unlinked"])
+        index = self.index_revision()
+        epoch = self.db.get_execution_epoch()
+
+        # A rename of a tag no image carries moves nothing image-side.
+        self.db.rename_vocabulary_tag(
+            self.tag_id("unlinked"), expected_epoch=epoch, name="unlinked", new_name="u"
+        )
+        self.assertEqual(self.index_revision(), index)
+
+        self.db.rename_vocabulary_tag(
+            self.tag_id("forest"), expected_epoch=epoch, name="forest", new_name="woods"
+        )
+        self.assertEqual(self.image_tags(forest), ["woods"])
+        self.assertEqual((self.revision(forest), self.revision(misty)), (2, 1))
+        self.assertEqual(self.index_revision(), index + 1)
+        # The Tag dialog still open at revision 1 cannot recreate "forest".
+        with self.assertRaises(LibraryCommandError) as caught:
+            self.db.replace_image_tags(
+                locator=forest,
+                sha256=hashlib.sha256(b"a").hexdigest(),
+                size=1,
+                mtime_ns=1,
+                expected_epoch=epoch,
+                expected_tag_revision=1,
+                tags=["forest", "mist"],
+            )
+        self.assertEqual(caught.exception.code, "tag-conflict")
+        self.assertEqual(caught.exception.current["tags"], ["woods"])
+        self.assertEqual(caught.exception.current["tag_revision"], 2)
+        self.assertNotIn("forest", self.db.get_all_tags())
+
+        self.db.rename_tag_all_prompts("woods", "trees")  # legacy rename
+        self.assertEqual((self.revision(forest), self.revision(misty)), (3, 1))
+        self.db.merge_tags(["trees"], "mist")  # legacy merge: only the source side
+        self.assertEqual(self.image_tags(forest), ["mist"])
+        self.assertEqual((self.revision(forest), self.revision(misty)), (4, 1))
+        self.db.rename_tag_all_prompts("mist", "fog")  # both carry it now
+        self.assertEqual((self.revision(forest), self.revision(misty)), (5, 2))
+        self.db.delete_vocabulary_tag(
+            self.tag_id("fog"), expected_epoch=epoch, name="fog"
+        )
+        self.assertEqual((self.revision(forest), self.revision(misty)), (6, 3))
+        self.assertEqual((self.image_tags(forest), self.image_tags(misty)), ([], []))
+        self.image("c.png", ["gone"])
+        self.db.delete_tag_all_prompts("gone")  # legacy delete
+        self.assertEqual(self.revision(forest), 6)
+        self.assertEqual(
+            self.index_revision(), index + 7
+        )  # 6 maintenance ops + the c.png save
 
     def test_image_only_and_prior_only_names_participate(self):
         only = self.image("only.png", ["image-only"])

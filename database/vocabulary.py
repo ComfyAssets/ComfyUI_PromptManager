@@ -274,6 +274,7 @@ class VocabularyOperations:
                 "SELECT id FROM tags WHERE name=?", (new_name,)
             ).fetchone()
             if target is None:
+                self._bump_image_tag_bytes(conn, tag_id)
                 conn.execute("UPDATE tags SET name=? WHERE id=?", (new_name, tag_id))
                 result_id = tag_id
             else:
@@ -299,6 +300,7 @@ class VocabularyOperations:
             epoch = self._library_epoch(conn, expected_epoch)
             self._vocabulary_identity(conn, epoch, tag_id, name)
             counts = self._tag_owner_counts(conn, tag_id)
+            self._bump_image_tag_bytes(conn, tag_id)
             conn.execute("DELETE FROM tags WHERE id=?", (tag_id,))
             return {"library_epoch": epoch, "deleted": True, **counts}
 

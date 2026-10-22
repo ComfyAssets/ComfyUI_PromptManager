@@ -1086,15 +1086,38 @@ class PromptDatabase(
             }
 
     @staticmethod
+    def _bump_image_tag_bytes(conn: sqlite3.Connection, tag_id: int) -> int:
+        """Move the tag revision of every image set that carries *tag_id*.
+
+        Vocabulary rename, merge and delete change what an image's set reads
+        as, so a Tag dialog opened before the change must see ``tag-conflict``
+        on Save instead of recreating the old name. Bumps the image index
+        revision once when any set was affected; returns that count.
+        """
+        cursor = conn.execute(
+            "UPDATE media_annotation_bytes SET tag_revision = tag_revision + 1 "
+            "WHERE id IN (SELECT byte_id FROM media_image_tags WHERE tag_id = ?)",
+            (tag_id,),
+        )
+        if cursor.rowcount > 0:
+            conn.execute(
+                "UPDATE media_annotation_metadata SET "
+                "image_index_revision = image_index_revision + 1 WHERE singleton_id = 1"
+            )
+        return cursor.rowcount
+
+    @classmethod
     def _move_tag_links(
-        conn: sqlite3.Connection, source_id: int, target_id: int
+        cls, conn: sqlite3.Connection, source_id: int, target_id: int
     ) -> None:
         """Repoint component, pair and image links from source to target.
 
         Owners that already carry the target keep that one link; the source's
         leftover duplicates are removed (an image set keeps the target's
         position). The source registry row is left for the caller to delete.
+        Image sets that carried the source get a new tag revision first.
         """
+        cls._bump_image_tag_bytes(conn, source_id)
         for junction in ("prompt_tags", "prompt_pair_tags", "media_image_tags"):
             conn.execute(
                 f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
@@ -1148,6 +1171,7 @@ class PromptDatabase(
                 conn.execute("DELETE FROM tags WHERE id = ?", (old_tag_id,))
             else:
                 # Simple rename
+                self._bump_image_tag_bytes(conn, old_tag_id)
                 conn.execute(
                     "UPDATE tags SET name = ? WHERE id = ?", (new_name, old_tag_id)
                 )
@@ -1189,6 +1213,7 @@ class PromptDatabase(
             affected = cursor.fetchone()["c"]
 
             # CASCADE delete handles prompt_tags entries
+            self._bump_image_tag_bytes(conn, tag_id)
             conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
             conn.commit()
 

@@ -92,6 +92,9 @@ class AnnotationTestCase(unittest.TestCase):
         options.update(over)
         return self.db.add_image_tags(**options)
 
+    def read(self, loc, digest=DIGEST_A):
+        return self.db.read_image_tags(loc, digest)
+
     def rows(self, *tables):
         """Every row of each table; ``verified_at`` is a fingerprint, not content."""
         conn = self.db.model.get_connection()
@@ -311,6 +314,22 @@ class ReplaceImageTagsTests(AnnotationTestCase):
             (["b", "a"], 2, False),
         )
         self.assertEqual(self.index_revision(), 2)
+
+    def test_replay_with_new_fingerprint_moves_only_the_index_revision(self):
+        loc = self.locator("a.png")
+        first = self.replace(loc, tags=["a"])
+        index = self.index_revision()
+        same = self.replace(loc, tags=["a"], revision=1)
+        self.assertEqual(same, {**first, "replayed": True})
+        self.assertEqual(self.index_revision(), index)  # identical: nothing moved
+        touched = self.replace(loc, tags=["a"], revision=1, mtime_ns=MTIME + 5)
+        self.assertEqual(touched, {**first, "replayed": True})
+        self.assertEqual(self.index_revision(), index + 1)  # currency changed
+        self.assertEqual(
+            self.db.current_image_tags({loc: (SIZE, MTIME + 5)}), {loc: ["a"]}
+        )
+        self.assertEqual(self.db.current_image_tags({loc: (SIZE, MTIME)}), {})
+        self.assertEqual(self.read(loc)["tag_revision"], 1)
 
     def test_epoch_checked_inside_transaction(self):
         loc = self.locator("a.png")
@@ -549,7 +568,11 @@ class AnnotationIsolationTests(AnnotationTestCase):
         self.db.delete_tag_all_prompts("gone")
         self.assertEqual(
             self.db.read_image_tags(loc, DIGEST_A),
-            {"tags": ["kept"], "tag_revision": 1, "prior_count": 0},
+            {
+                "tags": ["kept"],
+                "tag_revision": 2,
+                "prior_count": 0,
+            },  # moved by the delete
         )
         self.schema_clean()
 
