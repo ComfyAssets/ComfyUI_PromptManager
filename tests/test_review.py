@@ -639,9 +639,13 @@ class TestReviewEdges(ReviewTestCase):
     async def test_record_review_item_validates_its_facts(self):
         self._require_module()
         epoch = self.api.db.get_execution_epoch()
+        # The spelling keeps its case; the locator is folded the native way.
+        spelled = os.path.join(self.tmpdir, "Out", "A.png")
+        locator = os.path.normcase(spelled)
+        other = os.path.normcase(os.path.join(self.tmpdir, "Out", "B.png"))
         good = {
-            "locator": "/out/a.png",
-            "spelled_path": "/out/a.png",
+            "locator": locator,
+            "spelled_path": spelled,
             "sha256": "a" * 64,
             "size": 1,
             "mtime_ns": 2,
@@ -662,18 +666,19 @@ class TestReviewEdges(ReviewTestCase):
             {"evidence": ["not", "an", "object"]},
             {"spelled_path": ""},
             {"spelled_path": None},
-            {"spelled_path": "/out/b.png"},
+            {"spelled_path": os.path.join(self.tmpdir, "Out", "B.png")},
+            {"locator": other},
         ):
             with self.assertRaises(ValueError, msg=change):
                 self.api.db.record_review_item(**{**good, **change})
         self.assertTrue(self.api.db.record_review_item(**good))
         self.assertFalse(self.api.db.record_review_item(**good))
-        items = self.api.db.review_items_for("/out/a.png")
+        items = self.api.db.review_items_for(locator)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["evidence"], {"candidates": []})
         self.assertIs(items[0]["limited"], True)
         self.assertEqual(items[0]["sha256"], "a" * 64)
-        self.assertEqual(self.api.db.review_items_for("/out/b.png"), [])
+        self.assertEqual(self.api.db.review_items_for(other), [])
         self.assertEqual(self.api.db.review_index_revision(), 1)
         with self.assertRaises(ValueError):
             self.api.db.review_items_for("")
