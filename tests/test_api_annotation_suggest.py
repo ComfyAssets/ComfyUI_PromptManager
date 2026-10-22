@@ -327,6 +327,25 @@ class TestModelAvailability(SuggestTestCase):
         entry = self.api._captures._entries[observed["capture"]["token"]]
         self.assertEqual(entry.uses, 0)
 
+    async def test_gate_work_that_never_starts_releases_the_capture_pin(self):
+        observed = await self.observed()
+        loop = asyncio.get_running_loop()
+        real = loop.run_in_executor
+
+        def refuse_gate_work(executor, func, *args):
+            if getattr(func, "__qualname__", "").startswith("ModelGate.run"):
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            return real(executor, func, *args)
+
+        with patch.object(loop, "run_in_executor", refuse_gate_work):
+            status, body = await self.suggest(self.suggest_body(observed))
+
+        self.assertEqual((status, body["code"]), (500, "suggest-failed"))
+        self.assertIsNone(model_gate.holder())
+        entry = self.api._captures._entries[observed["capture"]["token"]]
+        self.assertEqual(entry.uses, 0)
+        self.assertEqual(self.tagger.calls, [])
+
 
 class TestModelGate(SuggestTestCase):
     async def _blocked_suggest(self, observed, model_type="wd14-vit"):

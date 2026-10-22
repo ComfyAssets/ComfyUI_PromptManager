@@ -10,6 +10,7 @@ server path and no locator.
 
 import asyncio
 import datetime
+import functools
 import os
 import re
 from pathlib import Path
@@ -31,6 +32,7 @@ from .. import model_gate
 
 try:
     from ...database.annotations import (
+        MAX_IMAGE_TAGS,
         AnnotationCommandError,
         ImageTagLimitError,
         normalize_image_tags,
@@ -40,6 +42,7 @@ try:
     from ...utils.media_capture import CAPTURE_EXTENSIONS, CaptureError, CaptureStore
 except ImportError:
     from database.annotations import (
+        MAX_IMAGE_TAGS,
         AnnotationCommandError,
         ImageTagLimitError,
         normalize_image_tags,
@@ -98,6 +101,9 @@ _STATUS = {
     "tag-conflict": 409,
     "capture-expired": 409,
     "model-unavailable": 409,
+    "tag-limit": 400,
+    "metadata-conflict": 409,
+    "vocabulary-conflict": 409,
 }
 _MESSAGES = {
     "source-changed": (
@@ -110,7 +116,12 @@ _MESSAGES = {
         "The tags of this image changed since the dialog opened; review them first."
     ),
     "capture-expired": "The preview expired. Open the Tag dialog again.",
+    "tag-limit": f"An image can carry at most {MAX_IMAGE_TAGS} tags.",
 }
+# Any other storage code (a conflict a later command adds) still answers a
+# coded envelope rather than a bare 500.
+_DEFAULT_STATUS = 409
+_DEFAULT_MESSAGE = "The tags could not be saved. Reopen the Tag dialog and try again."
 _OTHER_FILE = "The preview belongs to another file. Open the Tag dialog again."
 
 
@@ -128,7 +139,42 @@ def _error(status: int, code: str, message: str, **extra) -> web.Response:
 
 
 def _coded(code: str, message: str | None = None, **extra) -> web.Response:
-    return _error(_STATUS[code], code, message or _MESSAGES[code], **extra)
+    status = _STATUS.get(code, _DEFAULT_STATUS)
+    return _error(
+        status, code, message or _MESSAGES.get(code, _DEFAULT_MESSAGE), **extra
+    )
+
+
+def _open_capture(path: str):
+    """Worker thread: the capture file opened for reading."""
+    return open(path, "rb")
+
+
+async def _settled(future, cleanup):
+    """Await an executor *future*; a cancelled caller still cleans up after it.
+
+    The future is shielded, so the worker call always runs to its end. When the
+    caller is cancelled first, ``cleanup(result)`` runs once the call is done
+    (``cleanup(None)`` when it failed): a handle is closed, a capture released.
+    """
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        future.add_done_callback(functools.partial(_cleanup_result, cleanup))
+        raise
+
+
+def _cleanup_result(cleanup, future) -> None:
+    if future.cancelled() or future.exception() is not None:
+        cleanup(None)
+    else:
+        cleanup(future.result())
+
+
+def _submit(func, *args, **kwargs):
+    return asyncio.get_running_loop().run_in_executor(
+        None, functools.partial(func, *args, **kwargs)
+    )
 
 
 def _capture_error(exc: CaptureError) -> web.Response:
@@ -286,13 +332,17 @@ class AnnotationRoutesMixin:
         store = self._capture_store()
         try:
             epoch = await self._run_in_executor(self.db.get_execution_epoch)
-            capture = await self._run_in_executor(
-                store.capture,
-                root,
-                relative,
-                epoch=epoch,
-                scope=scope,
-                root_index=index,
+            capture = await _settled(
+                _submit(
+                    store.capture,
+                    root,
+                    relative,
+                    epoch=epoch,
+                    scope=scope,
+                    root_index=index,
+                ),
+                # A cancelled observe never hands its capture out: release it.
+                lambda made: made is not None and store.release(made.token),
             )
         except CaptureError as exc:
             return _capture_error(exc)
@@ -303,6 +353,9 @@ class AnnotationRoutesMixin:
             stored, title = await self._run_in_executor(
                 self._observe_capture, store, capture, root, relative
             )
+        except asyncio.CancelledError:
+            store.release(capture.token)
+            raise
         except Exception:
             store.release(capture.token)
             self.logger.exception("Image observation failed")
@@ -364,6 +417,7 @@ class AnnotationRoutesMixin:
         capture = store.acquire(token)
         if capture is None:
             return _error(404, "capture-expired", _MESSAGES["capture-expired"])
+        pinned = True
         try:
             _root, error = self._scoped_root(capture.root_index, capture.scope)
             if error is not None:
@@ -371,7 +425,15 @@ class AnnotationRoutesMixin:
                 store.release(token)
                 return error
             try:
-                handle = await self._run_in_executor(open, capture.path, "rb")
+                handle = await _settled(
+                    _submit(_open_capture, capture.path),
+                    functools.partial(_close_then_release, store, token),
+                )
+            except asyncio.CancelledError:
+                # Cancelled while the file opens: the pin ends only after the
+                # handle closes (Windows cannot unlink an open file).
+                pinned = False
+                raise
             except OSError:
                 store.release(token)
                 return _error(404, "capture-expired", _MESSAGES["capture-expired"])
@@ -380,25 +442,47 @@ class AnnotationRoutesMixin:
             finally:
                 handle.close()
         finally:
-            store.release_use(token)
+            if pinned:
+                store.release_use(token)
 
     @staticmethod
     async def _stream_capture(request, capture, handle) -> web.StreamResponse:
-        response = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Type": preview_content_type(Path(capture.path).suffix),
-                "Content-Length": str(capture.size),
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        """The capture's bytes, or the one byte range a ``Range`` header asks for.
+
+        The response is written here, inside the caller's pin, so the handle
+        is closed and the pin ended only after the last byte is sent.
+        """
+        size = capture.size
+        headers = {
+            "Content-Type": preview_content_type(Path(capture.path).suffix),
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        status, start, end = 200, 0, size
+        if "Range" in request.headers:
+            wanted = _byte_range(request, size)
+            if wanted is None:
+                return web.Response(
+                    status=416,
+                    headers={**headers, "Content-Range": f"bytes */{size}"},
+                )
+            status, (start, end) = 206, wanted
+            headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
+        headers["Content-Length"] = str(end - start)
+        response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
         loop = asyncio.get_running_loop()
-        while True:
-            chunk = await loop.run_in_executor(None, handle.read, _PREVIEW_CHUNK)
+        if start:
+            await loop.run_in_executor(None, handle.seek, start)
+        remaining = end - start
+        while remaining > 0 and request.method != "HEAD":
+            chunk = await loop.run_in_executor(
+                None, handle.read, min(_PREVIEW_CHUNK, remaining)
+            )
             if not chunk:
                 break
+            remaining -= len(chunk)
             await response.write(chunk)
         await response.write_eof()
         return response
@@ -543,6 +627,8 @@ class AnnotationRoutesMixin:
             if not model_gate.try_acquire(owner):
                 return model_busy_response()
             try:
+                # From here the pin is the gate's to end: the worker ends it,
+                # or ``on_skipped`` does when the worker never starts.
                 started = True
                 pairs = await model_gate.run(
                     owner,
@@ -553,6 +639,7 @@ class AnnotationRoutesMixin:
                     capture,
                     model_type,
                     options,
+                    on_skipped=functools.partial(store.release_use, token),
                 )
             except Exception:
                 self.logger.exception("Tag suggestion failed")
@@ -594,6 +681,37 @@ class AnnotationRoutesMixin:
         if not capture.inferable:
             return _coded("unsupported-media", capture.inferable_reason)
         return None
+
+
+def _close_then_release(store: CaptureStore, token: str, handle) -> None:
+    """Close a preview handle a cancelled request opened, then end its pin."""
+    try:
+        if handle is not None:
+            handle.close()
+    finally:
+        store.release_use(token)
+
+
+def _byte_range(request: web.Request, size: int):
+    """``(start, end)`` of the one satisfiable byte range asked for, else None.
+
+    A malformed, multi-range or unsatisfiable header is None (416), as
+    aiohttp's own file responses answer it.
+    """
+    try:
+        wanted = request.http_range
+    except ValueError:
+        return None
+    start, stop = wanted.start, wanted.stop
+    if start is None:
+        return None
+    if start < 0:  # a suffix: the last -start bytes
+        start = max(0, size + start)
+        stop = size
+    stop = size if stop is None else min(stop, size)
+    if start >= size or stop <= start:
+        return None
+    return start, stop
 
 
 def _pinned_suggestions(store, token, service, capture, model_type, options):

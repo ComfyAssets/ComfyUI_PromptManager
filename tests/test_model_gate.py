@@ -171,6 +171,47 @@ class TestGatedExecutor(GateTestCase):
 
         asyncio.run(scenario())
 
+    def test_skipped_work_runs_its_cleanup_exactly_once(self):
+        async def scenario():
+            loop = asyncio.get_running_loop()
+            skipped = []
+
+            def cleanup():
+                skipped.append(True)
+
+            self.assertTrue(self.gate.try_acquire("owner"))
+            self.assertEqual(
+                await self.gate.run("owner", lambda: 7, on_skipped=cleanup), 7
+            )
+            self.assertEqual(skipped, [])
+
+            def refused(executor, func):
+                raise RuntimeError("executor shut down")
+
+            with unittest.mock.patch.object(loop, "run_in_executor", refused):
+                with self.assertRaises(RuntimeError):
+                    await self.gate.run("owner", lambda: None, on_skipped=cleanup)
+            self.assertEqual(skipped, [True])
+
+            def cancelled(executor, func):
+                future = loop.create_future()
+                future.cancel()
+                return future
+
+            with unittest.mock.patch.object(loop, "run_in_executor", cancelled):
+                with self.assertRaises(asyncio.CancelledError):
+                    await self.gate.run("owner", lambda: None, on_skipped=cleanup)
+            await asyncio.sleep(0)  # let the done callback run
+            self.assertEqual(skipped, [True, True])
+
+            self.gate.release("owner")
+            with self.assertRaises(model_gate.GateNotHeld):
+                await self.gate.run("owner", lambda: None, on_skipped=cleanup)
+            self.assertEqual(skipped, [True, True, True])
+            self.assertIsNone(self.gate.holder())
+
+        asyncio.run(scenario())
+
 
 if __name__ == "__main__":
     unittest.main()

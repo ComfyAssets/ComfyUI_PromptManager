@@ -69,14 +69,29 @@ class ModelGate:
         with self._lock:
             self._end_locked(owner)
 
-    async def run(self, owner: str, func: Callable[..., Any], *args, **kwargs):
+    async def run(
+        self,
+        owner: str,
+        func: Callable[..., Any],
+        *args,
+        on_skipped: Optional[Callable[[], None]] = None,
+        **kwargs,
+    ):
         """Run ``func`` in the default executor while *owner* holds the gate.
 
         The executor future is shielded: cancelling the caller never cancels
         a call that has not started yet (which would leave it admitted
         forever) and never ends the admission of a call that is running.
+        ``on_skipped`` runs once when ``func`` never starts (the gate is not
+        held, the executor refuses the call, or a loop shutdown drops it), so
+        a caller can free what ``func`` would have freed.
         """
-        self.begin(owner)
+        try:
+            self.begin(owner)
+        except GateNotHeld:
+            if on_skipped is not None:
+                on_skipped()
+            raise
         state = {"started": False, "finished": False}
 
         def finish() -> None:
@@ -87,6 +102,10 @@ class ModelGate:
 
         def work():
             with self._lock:
+                if state["finished"]:
+                    # Already declared skipped (the future was cancelled as
+                    # the thread picked the call up): never run it twice over.
+                    return None
                 state["started"] = True
             try:
                 return func(*args, **kwargs)
@@ -102,11 +121,15 @@ class ModelGate:
                     if skipped:
                         state["finished"] = True
                         self._end_locked(owner)
+                if skipped and on_skipped is not None:
+                    on_skipped()
 
         try:
             future = asyncio.get_running_loop().run_in_executor(None, work)
         except BaseException:
             finish()
+            if on_skipped is not None:
+                on_skipped()
             raise
         future.add_done_callback(never_ran)
         return await asyncio.shield(future)
@@ -144,5 +167,11 @@ def holder() -> Optional[str]:
     return _GATE.holder()
 
 
-async def run(owner: str, func: Callable[..., Any], *args, **kwargs):
-    return await _GATE.run(owner, func, *args, **kwargs)
+async def run(
+    owner: str,
+    func: Callable[..., Any],
+    *args,
+    on_skipped: Optional[Callable[[], None]] = None,
+    **kwargs,
+):
+    return await _GATE.run(owner, func, *args, on_skipped=on_skipped, **kwargs)

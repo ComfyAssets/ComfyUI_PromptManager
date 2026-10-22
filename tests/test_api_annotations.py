@@ -6,17 +6,21 @@ access, tag reads and saves are byte-exact (the capture's digest, re-hashed
 at Save) and no response ever carries a server path or a locator.
 """
 
+import asyncio
 import hashlib
 import json
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+from aiohttp.test_utils import make_mocked_request
 
 # Discovery imports this module before tests/test_api_autotag.py, whose
 # ``folder_paths`` stub (a real module, so ``patch(..., create=True)`` can add
@@ -49,6 +53,7 @@ OBSERVE = "/prompt_manager/image-annotations/observe"
 TAGS = "/prompt_manager/image-annotations/tags"
 CAPTURE = "/prompt_manager/image-annotations/capture/"
 MAX_BODY = 64 * 1024
+WAIT = 30.0  # ceiling for cross-thread handoffs, never a short clock
 
 # Columns that an observe may legitimately refresh (S1) or that never matter
 # for "nothing changed" comparisons.
@@ -532,6 +537,47 @@ class TestCaptureRoutes(AnnotationAPITestCase):
             (await self.client.get(body["capture"]["preview_url"])).status, 404
         )
 
+    async def test_preview_answers_byte_ranges(self):
+        # Safari and WebKit play <video> only from byte-range responses.
+        path = make_png(self.output_dir / "sub" / "a.png", size=(64, 64))
+        data = path.read_bytes()
+        size = len(data)
+        body = await self.observe_ok()
+        url = body["capture"]["preview_url"]
+        token = body["capture"]["token"]
+
+        full = await self.client.get(url)
+        self.assertEqual(full.status, 200)
+        self.assertEqual(full.headers["Accept-Ranges"], "bytes")
+        self.assertEqual(await full.read(), data)
+        for header, start, end in (
+            ("bytes=0-15", 0, 16),
+            ("bytes=10-", 10, size),
+            ("bytes=-12", size - 12, size),
+            (f"bytes=5-{size + 100}", 5, size),
+        ):
+            with self.subTest(range=header):
+                resp = await self.client.get(url, headers={"Range": header})
+                self.assertEqual(resp.status, 206)
+                self.assertEqual(
+                    resp.headers["Content-Range"], f"bytes {start}-{end - 1}/{size}"
+                )
+                self.assertEqual(resp.headers["Content-Length"], str(end - start))
+                self.assertEqual(resp.headers["Cache-Control"], "no-store")
+                self.assertEqual(resp.headers["X-Content-Type-Options"], "nosniff")
+                self.assertEqual(resp.headers["Content-Type"], "image/png")
+                self.assertEqual(await resp.read(), data[start:end])
+        for header in (f"bytes={size}-", "bytes=9-3", "items=0-1", "bytes=0-1,4-5"):
+            with self.subTest(unsatisfiable=header):
+                resp = await self.client.get(url, headers={"Range": header})
+                self.assertEqual(resp.status, 416)
+                self.assertEqual(resp.headers["Content-Range"], f"bytes */{size}")
+                self.assertEqual(resp.headers["Cache-Control"], "no-store")
+        store = self.api._captures
+        self.assertEqual(store._entries[token].uses, 0)
+        self.assertEqual(open_handles_under(store.directory), [])
+        self.assertIsNotNone(store.get(token))
+
     async def test_preview_of_a_vanished_capture_file_is_expired(self):
         make_png(self.output_dir / "sub" / "a.png")
         body = await self.observe_ok()
@@ -563,6 +609,113 @@ class TestCaptureRoutes(AnnotationAPITestCase):
                 for suffix in ("", "-wal", "-shm"):
                     if path and os.path.exists(path + suffix):
                         os.unlink(path + suffix)
+
+
+class TestCancellation(AnnotationAPITestCase):
+    """A cancelled handler never leaks a pin, a handle or a capture."""
+
+    async def cancel_when(self, coro, entered):
+        task = asyncio.ensure_future(coro)
+        await asyncio.get_running_loop().run_in_executor(None, entered.wait, WAIT)
+        self.assertTrue(entered.is_set())
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    async def settle(self, done, what):
+        for _ in range(3000):
+            if done():
+                return
+            await asyncio.sleep(0.01)
+        self.fail(what)
+
+    def observe_request(self, path="sub/a.png"):
+        body = AsyncMock(return_value=({"target": self.target(path)}, None))
+        patcher = patch.object(self.api, "_annotation_body", body)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return make_mocked_request("POST", OBSERVE)
+
+    async def test_cancelled_preview_open_closes_the_handle_before_release(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        body = await self.observe_ok()
+        token = body["capture"]["token"]
+        store = self.api._captures
+        capture_path = store.get(token).path
+        entered, proceed = threading.Event(), threading.Event()
+        handles = []
+
+        def slow_open(path):
+            entered.set()
+            proceed.wait(WAIT)
+            handle = open(path, "rb")
+            handles.append(handle)
+            return handle
+
+        request = make_mocked_request(
+            "GET", CAPTURE + token, match_info={"token": token}
+        )
+        with patch.object(annotations_module, "_open_capture", slow_open):
+            await self.cancel_when(self.api.get_capture_preview(request), entered)
+            # A DELETE lands meanwhile; the file stays until the open settles.
+            store.release(token)
+            self.assertTrue(os.path.exists(capture_path))
+            proceed.set()
+            await self.settle(
+                lambda: not os.path.exists(capture_path), "capture never removed"
+            )
+        self.assertEqual(len(handles), 1)
+        self.assertTrue(handles[0].closed)
+
+    async def test_cancelled_observe_capture_releases_the_new_capture(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        store = self.api._capture_store()
+        real_capture = store.capture
+        entered, proceed = threading.Event(), threading.Event()
+        made = []
+
+        def slow_capture(*args, **kwargs):
+            entered.set()
+            proceed.wait(WAIT)
+            capture = real_capture(*args, **kwargs)
+            made.append(capture)
+            return capture
+
+        request = self.observe_request()
+        with patch.object(store, "capture", slow_capture):
+            await self.cancel_when(self.api.observe_image(request), entered)
+            proceed.set()
+            await self.settle(
+                lambda: made and store.get(made[0].token) is None,
+                "the cancelled observe left its capture",
+            )
+        self.assertFalse(any(Path(store.directory).iterdir()))
+
+    async def test_cancelled_observe_read_releases_the_capture(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        store = self.api._capture_store()
+        real_read = self.api._observe_capture
+        entered, proceed, finished = (threading.Event() for _ in range(3))
+        tokens = []
+
+        def slow_read(store_, capture, root, relative):
+            tokens.append(capture.token)
+            entered.set()
+            proceed.wait(WAIT)
+            try:
+                return real_read(store_, capture, root, relative)
+            finally:
+                finished.set()
+
+        request = self.observe_request()
+        with patch.object(self.api, "_observe_capture", slow_read):
+            await self.cancel_when(self.api.observe_image(request), entered)
+            self.assertIsNone(store.get(tokens[0]))
+            proceed.set()
+            await asyncio.get_running_loop().run_in_executor(None, finished.wait, WAIT)
+        await self.settle(
+            lambda: not any(Path(store.directory).iterdir()), "capture file left"
+        )
 
 
 class TestSaveTags(AnnotationAPITestCase):
@@ -994,6 +1147,45 @@ class TestEnvelopes(AnnotationAPITestCase):
                 "wd14_general_threshold",
             ],
         )
+
+    def test_every_storage_code_has_a_coded_envelope(self):
+        cases = {
+            "tag-limit": 400,
+            "tag-conflict": 409,
+            "storage-changed": 409,
+            "metadata-conflict": 409,
+            "vocabulary-conflict": 409,
+            "some-future-code": 409,
+        }
+        for code, status in cases.items():
+            with self.subTest(code=code):
+                response = annotations_module._coded(code)
+                self.assertEqual(response.status, status)
+                body = json.loads(response.body)
+                self.assertEqual((body["success"], body["code"]), (False, code))
+                self.assertTrue(body["error"])
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    async def test_save_maps_an_unlisted_storage_code_to_an_envelope(self):
+        from database.annotations import AnnotationCommandError
+        from database.library_commands import LibraryCommandError
+
+        make_png(self.output_dir / "sub" / "a.png")
+        observed = await self.observe_ok()
+        for error, status in (
+            (AnnotationCommandError("tag-limit", self.epoch, None), 400),
+            (LibraryCommandError("vocabulary-conflict", self.epoch), 409),
+        ):
+            with (
+                self.subTest(code=error.code),
+                patch.object(self.api.db, "replace_image_tags", side_effect=error),
+            ):
+                status_, body = await self.put_tags(
+                    self.save_body(observed, ["forest"])
+                )
+                self.assertEqual((status_, body["code"]), (status, error.code))
+                self.assertEqual(body["library_epoch"], self.epoch)
+                self.assert_no_paths(body)
 
     def test_preview_types_cover_every_capture_extension(self):
         for extension in media_capture.CAPTURE_EXTENSIONS:
