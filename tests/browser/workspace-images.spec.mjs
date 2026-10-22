@@ -545,7 +545,7 @@ async function staleSourceRecovery(page, request, roots) {
     await expect(await request.post('/prompt_manager/settings', { data: { gallery_root_paths: roots } })).toBeOK();
     const selected = initial.images.at(-1), key = `${selected.root_index}:${selected.path}`;
     const stale = page.waitForResponse(response => response.url().includes('/images/inspect/') && response.status() === 409);
-    await page.locator(`article[data-image-key="${key}"] .image-card-actions button`).click();expect((await stale).status()).toBe(409);
+    await page.locator(`article[data-image-key="${key}"] .image-card-actions button:first-child`).click();expect((await stale).status()).toBe(409);
     await expect(details(page)).toContainText('The source changed. Refresh the image collection before inspecting this file.');
     await page.locator(`article[data-image-key="${key}"] .image-open`).click();
     const viewer = page.locator('dialog#viewer-dialog');await expect(viewer).toContainText('The source changed.');
@@ -1028,8 +1028,7 @@ async function cardInventory(page, concept) {
         const walk = new Function(`return (${walkSource})()`)();
         return nodes.map(card => {
             const copy = card.cloneNode(true);
-            // D9: no tag button until image annotations. The D8 checkbox and the D7 star are compared.
-            if (concept) for (const node of copy.querySelectorAll('[aria-label^="Tag or auto-tag "]')) node.remove();
+            // Info then Tag (#249 C2 retired D9). The D8 checkbox and the D7 star are compared.
             const open = card.querySelector('.image-open'), img = open.querySelector('img');
             const star = card.querySelector('.image-overlays > button.star-button');
             const box = card.querySelector('.image-overlays > label > input');
@@ -1039,7 +1038,7 @@ async function cardInventory(page, concept) {
                 size: [img.getAttribute('width'), img.getAttribute('height')],
                 title: card.querySelector('.media-info h3').textContent, subtitle: card.querySelector('.media-info p').textContent,
                 ratio: card.style.getPropertyValue('--media-ratio').replace(/\s/g, ''),
-                inspect: card.querySelector('.image-card-actions > button').getAttribute('aria-label'),
+                actions: [...card.querySelectorAll('.image-card-actions > button')].map(button => button.getAttribute('aria-label')),
                 star: star && { text: star.textContent, pressed: star.getAttribute('aria-pressed'), label: star.getAttribute('aria-label') },
                 select: box && { type: box.type, checked: box.checked, label: box.getAttribute('aria-label') },
                 paths: walk(copy, `article.${[...card.classList].filter(value => value !== 'selected').sort().join('.')}`, []) };
@@ -1209,7 +1208,7 @@ async function zoomedGallery(page, request, { cssZoom }) {
     await page.keyboard.press('Tab');
     await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-overlays .star-button`)).toBeFocused();
     await page.keyboard.press('Tab');
-    await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-card-actions button`)).toBeFocused();
+    await expect(page.locator(`article[aria-posinset="${columns + 1}"] .image-card-actions button:first-child`)).toBeFocused();
     await page.evaluate(() => {
         const card = document.querySelector('article[aria-posinset="1"]');
         const grid = document.querySelector('.image-grid');

@@ -17,7 +17,6 @@ export const canonicalDifferences = {
     // Closed by #249: the gallery's checkbox is Images-only (#259) and the role blocks are the concept's (PR D, F); the
     // exact history comparison is tests/browser/history-concept.spec.mjs.
     remainingApplicationPolish: [
-        'Gallery card tag button (#249 D9, image-annotations slice) remains outside #209',
         'Production keeps mobile toolbar inside media panel and readable scrolling details; the concept toolbar collision is not reproduced',
     ],
 };

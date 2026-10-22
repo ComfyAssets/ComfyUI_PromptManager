@@ -1,11 +1,12 @@
 /**
  * Native Tags & categories screen (concept renderTags, app.js:719-729).
  *
- * Composition, labels and order follow the approved concept; the recorded
- * deviations are Auto-tag images omitted (no image-tag owner yet), Images cells
- * "—" / "Not available yet", and bounded lists with Load more. Rows are real
- * vocabulary pages from vocabulary-state.mjs; Browse hands the exact constraint
- * to the existing Library filters.
+ * Composition, labels and order follow the approved concept: Auto-tag images
+ * opens the Tag image dialog for the image selected in Images (aria-disabled
+ * without one, D115) and the Images cells count the files carrying each tag
+ * (#249 C2). The recorded deviation left is bounded lists with Load more. Rows
+ * are real vocabulary pages from vocabulary-state.mjs; Browse hands the exact
+ * constraint to the existing Library filters.
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { browseFilters, createVocabularyCommand, createVocabularyStream } from './vocabulary-state.mjs';
@@ -13,6 +14,11 @@ import { countOf } from './plural.mjs';
 import { browseLibrary, invalidateLibraryAfterWrite } from './library.mjs';
 import { createVocabularyDialog } from './vocabulary-dialog.mjs';
 import { pageHeading } from './heading.mjs';
+import { selectedImage } from './images.mjs';
+import { onImageTagsSaved, openImageTagging } from './image-tagging.mjs';
+import { showWorkspaceToast } from './toast.mjs';
+
+const NO_SELECTION = 'Select an image in Images first.';
 
 const COPY = {
     tags: {empty: 'No tags yet.', error: 'Tags could not be loaded. Nothing was changed.', more: 'Load more tags'},
@@ -42,10 +48,8 @@ function operation(title, description, label) {
 
 function tagRow(tag) {
     const row = el('tr');
-    const images = el('td');
-    const dash = el('span', '—');
-    dash.setAttribute('aria-hidden', 'true');
-    images.append(dash, el('span', 'Not available yet', 'ca-visually-hidden'));
+    // The files carrying the tag (absent from an older server, which counts none).
+    const images = el('td', String(tag.image_count ?? 0));
     const cell = el('td');
     const actions = el('div', undefined, 'row-actions');
     const browse = createButton('Browse');
@@ -159,7 +163,15 @@ export function mountVocabulary(main, api, scope) {
     const { description, actions } = pageHeading(main);
     description.textContent = 'Organize once. Reuse everywhere.';
     const create = createButton('+ Create tag');
-    actions.append(create);
+    const autoTag = createButton('Auto-tag images', 'ca-primary');
+    actions.append(create, autoTag);
+    // The concept's `tag-review` for `state.selectedImage` (app.js a1511); D115: none selected, so it only explains.
+    const selected = selectedImage();
+    if (!selected) autoTag.setAttribute('aria-disabled', 'true');
+    scope.listen(autoTag, 'click', () => {
+        if (!selected) { showWorkspaceToast(NO_SELECTION); return; }
+        openImageTagging({api, scope, image: selected, source: 'tags', trigger: autoTag});
+    });
 
     const grid = el('div', undefined, 'two-col');
     const tagSurface = el('section', undefined, 'surface');
@@ -232,6 +244,8 @@ export function mountVocabulary(main, api, scope) {
         const tag = button && tags.itemOf(button.closest('tr'));
         if (tag) dialog.renameTag(tag, button);
     });
+    // A saved image tag set changes the Images counts.
+    scope.cleanup(onImageTagsSaved(() => { if (!scope.signal.aborted) reload(); }));
     reload();
-    return {create, manage: manage.button, tags: tags.stream, categories: categories.stream, reload, createCommand, dialog};
+    return {autoTag, create, manage: manage.button, tags: tags.stream, categories: categories.stream, reload, createCommand, dialog};
 }

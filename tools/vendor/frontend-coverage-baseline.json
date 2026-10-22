@@ -221,6 +221,18 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/image-tagging-state.mjs": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/image-tagging.mjs": {
+    "lines": 97,
+    "branches": 88,
+    "functions": 87,
+    "statements": 97
+  },
   "workspace/images-category.mjs": {
     "lines": 98,
     "branches": 98,
@@ -233,6 +245,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/images-favorites.mjs": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 85,
+    "statements": 98
+  },
   "workspace/images-selection.mjs": {
     "lines": 98,
     "branches": 92,
@@ -240,6 +258,12 @@
     "statements": 98
   },
   "workspace/images-state.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/images-tagging.mjs": {
     "lines": 98,
     "branches": 98,
     "functions": 98,

@@ -158,6 +158,9 @@ MAX_EXTRA_IMAGES = 120
 # Unlinked, seedless images (D11 "W × H · PNG") newer than the concept's, for D3 checks.
 MAX_SEEDLESS_IMAGES = 2
 SEEDLESS_SIZE = (1536, 1152)
+# The same 4:3 shape with a short "96 × 72 · PNG" subtitle that stays on one line at
+# 390px beside the card's Info and Tag (the D3 footer check).
+SHORT_SEEDLESS_SIZE = (96, 72)
 SESSION = "5c1f9a7e-3f0b-4a55-9d0e-2b8c4f6a7d10"
 _TABLES = (
     "execution_run_outputs",
@@ -326,9 +329,9 @@ def _record_run(
     return start.run_id
 
 
-def _write_seedless_png(path: Path) -> None:
+def _write_seedless_png(path: Path, size: tuple[int, int] = SEEDLESS_SIZE) -> None:
     """A plain PNG with no metadata: no prompt, no seed, no link."""
-    with Image.new("RGB", SEEDLESS_SIZE, "#2b3442") as image:
+    with Image.new("RGB", size, "#2b3442") as image:
         image.save(path)
 
 
@@ -345,13 +348,17 @@ def seed_workspace_concept(
     *,
     extra_images: int = 0,
     seedless_images: int = 0,
+    short_seedless: bool = False,
 ) -> dict:
     """Replace this server's disposable rows and files with the concept's data.
 
     ``extra_images`` continues the concept's rounds (same prompts, dimensions and
     seed rule) after its 24 images, for bounded-rendering and Load more checks.
-    ``seedless_images`` adds unlinked PNGs without metadata, newest of all.
+    ``seedless_images`` adds unlinked PNGs without metadata, newest of all;
+    ``short_seedless`` makes them ``SHORT_SEEDLESS_SIZE`` instead.
     """
+    if not isinstance(short_seedless, bool):
+        raise TypeError("short_seedless must be a boolean")
     _bounded("extra_images", extra_images, MAX_EXTRA_IMAGES)
     _bounded("seedless_images", seedless_images, MAX_SEEDLESS_IMAGES)
     _clear(api, root)
@@ -459,7 +466,9 @@ def seed_workspace_concept(
     for number in range(seedless_images):
         name = f"seedless_{number + 1:05}.png"
         path = folder / name
-        _write_seedless_png(path)
+        _write_seedless_png(
+            path, SHORT_SEEDLESS_SIZE if short_seedless else SEEDLESS_SIZE
+        )
         stamp = now - 10 - number * 10
         os.utime(path, (stamp, stamp))
         seedless.append({"filename": name, "path": f"concepts/{name}"})

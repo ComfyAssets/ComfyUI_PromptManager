@@ -296,3 +296,33 @@ test("get forwards an explicit cache mode and keeps the default request otherwis
     fetch.calls[2].resolve(jsonResponse(200, { success: true }));
     await writes;
 });
+
+test("ApiError exposes only a validated current tag set from a tag-conflict body", async () => {
+    const permitted = [{ tags: [], tag_revision: 0 }, { tags: ["warm", "Dune"], tag_revision: 7 }];
+    const denied = [undefined, null, { tags: ["a"] }, { tag_revision: 1 }, { tags: "a", tag_revision: 1 },
+        { tags: [1], tag_revision: 1 }, { tags: ["a"], tag_revision: -1 }, { tags: ["a"], tag_revision: 1.5 },
+        { tags: ["a"], tag_revision: true }, { tags: Array(101).fill("a"), tag_revision: 1 }];
+    assert.equal(new ApiError(409, "old caller").current, null);
+    for (const current of permitted.concat(denied)) {
+        const api = createApiClient(async () => jsonResponse(409, {
+            success: false, error: "changed", code: "tag-conflict", ...(current || {}),
+        }));
+        await assert.rejects(api.put("/x", {}), error => {
+            assert.ok(error instanceof ApiError);
+            assert.deepEqual(error.current, permitted.includes(current) ? current : null);
+            if (permitted.includes(current)) assert.notEqual(error.current.tags, current.tags, "server arrays must be copied");
+            return true;
+        });
+    }
+});
+
+test("keepalive is forwarded only when asked, so a request can outlive its page", async () => {
+    const fetch = fakeFetch();
+    const api = createApiClient(fetch);
+    const writes = [api.del("/x", { keepalive: true }), api.put("/x", {}, { keepalive: true }), api.post("/x", {}, { keepalive: true }),
+        api.del("/x"), api.put("/x", {}), api.get("/x")];
+    assert.deepEqual(fetch.calls.map(call => call.init.keepalive), [true, true, true, undefined, undefined, undefined]);
+    assert.equal("keepalive" in fetch.calls[3].init, false);
+    for (const call of fetch.calls) call.resolve(jsonResponse(200, { success: true }));
+    await Promise.all(writes);
+});

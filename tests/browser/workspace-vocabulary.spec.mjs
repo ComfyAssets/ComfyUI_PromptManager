@@ -50,9 +50,12 @@ test('tags route renders the concept composition without a legacy handoff',async
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Tags & categories');
     await expect(main(page).locator(':scope > .heading p.muted')).toHaveText('Organize once. Reuse everywhere.');
     const actions=main(page).locator(':scope > .heading > .heading-actions button');
-    await expect(actions).toHaveText(['+ Create tag']);
+    // The concept's heading actions (#249 C2 retired #245 D2): Auto-tag images is primary; with no image selected in
+    // Images it is aria-disabled (D115).
+    await expect(actions).toHaveText(['+ Create tag','Auto-tag images']);
     await expect(actions.first()).not.toHaveClass(/ca-primary/);
-    await expect(main(page).getByRole('button',{name:'Auto-tag images'})).toHaveCount(0);
+    await expect(actions.last()).toHaveClass(/ca-primary/);
+    await expect(actions.last()).toHaveAttribute('aria-disabled','true');
     await expect(surfaces(page)).toHaveCount(2);
     await expect(surfaces(page).locator('h2')).toHaveText(['Tag vocabulary','Categories']);
     await expect(surfaces(page).locator(':scope > p:visible')).toHaveText(['Category/tag autocomplete uses this same vocabulary across nodes and dialogs.',
@@ -65,9 +68,9 @@ test('tags route renders the concept composition without a legacy handoff',async
     expect(manifest.tags).toEqual(expected.map(([name])=>name));
     await expect(rows(page).locator('td:nth-child(1)')).toHaveText(expected.map(([name])=>name));
     await expect(rows(page).locator('td:nth-child(2)')).toHaveText(expected.map(([,count])=>String(count)));
-    const images=await rows(page).locator('td:nth-child(3)').evaluateAll(cells=>cells.map(cell=>[cell.querySelector('[aria-hidden="true"]')?.textContent,cell.querySelector('.ca-visually-hidden')?.textContent]));
-    expect(images).toEqual(expected.map(()=>['—','Not available yet']));
-    await expect(rows(page).first().locator('td:nth-child(3)')).toHaveAccessibleName('Not available yet');
+    // Images counts the files carrying each tag (#249 C2 retired #245 D3); this fixture tags no image.
+    await expect(rows(page).locator('td:nth-child(3)')).toHaveText(expected.map(()=>'0'));
+    await expect(rows(page).locator('td:nth-child(3) .ca-visually-hidden')).toHaveCount(0);
     const labels=await rows(page).evaluateAll(nodes=>nodes.map(row=>[...row.querySelectorAll('td:nth-child(4) .row-actions button')].map(button=>button.textContent)));
     expect(labels).toEqual(expected.map(()=>['Browse','Rename / merge']));
     const operations=surfaces(page).nth(1).locator('.operation');

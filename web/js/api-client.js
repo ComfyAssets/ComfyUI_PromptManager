@@ -15,7 +15,7 @@
     "use strict";
 
     class ApiError extends Error {
-        constructor(status, message, code = null, recovery = null) {
+        constructor(status, message, code = null, recovery = null, current = null) {
             super(message);
             this.name = "ApiError";
             this.status = status;
@@ -31,6 +31,14 @@
                     recovery.limit >= 1 && recovery.limit <= 100) {
                     this.recovery = { action: "smaller-limit", limit: recovery.limit };
                 }
+            }
+            // A tag-conflict answer carries the image's current tag set; only a
+            // well-formed one is kept, copied, so the dialog can show it.
+            this.current = null;
+            if (current && Array.isArray(current.tags) && current.tags.length <= 100 &&
+                current.tags.every(tag => typeof tag === "string") &&
+                Number.isSafeInteger(current.tag_revision) && current.tag_revision >= 0) {
+                this.current = { tags: current.tags.slice(), tag_revision: current.tag_revision };
             }
         }
     }
@@ -56,9 +64,11 @@
     function createApiClient(fetchImpl) {
         const doFetch = fetchImpl || ((...args) => globalThis.fetch(...args));
 
-        async function request(method, url, { body, signal, cache } = {}) {
+        async function request(method, url, { body, signal, cache, keepalive } = {}) {
             const init = { method, headers: {} };
             if (cache !== undefined) init.cache = cache;
+            // keepalive lets a write or a release finish while its page unloads (pagehide).
+            if (keepalive) init.keepalive = true;
             if (body !== undefined) {
                 init.headers["Content-Type"] = "application/json";
                 init.body = JSON.stringify(body);
@@ -76,11 +86,11 @@
 
             const serverMessage = data && typeof data === "object" ? data.error || data.message : undefined;
             if (!response.ok) {
-                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`, data?.code, data?.recovery);
+                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`, data?.code, data?.recovery, data);
             }
             if (!parsed) throw new ApiError(response.status, "Invalid JSON response");
             if (data && typeof data === "object" && data.success === false) {
-                throw new ApiError(response.status, serverMessage || "Request failed", data.code, data.recovery);
+                throw new ApiError(response.status, serverMessage || "Request failed", data.code, data.recovery, data);
             }
             return data;
         }
@@ -88,11 +98,11 @@
         return {
             // cache is a fetch RequestCache mode such as "no-store"; omitted keeps the default.
             get: (url, { signal, cache } = {}) => request("GET", url, { signal, cache }),
-            post: (url, body, { signal } = {}) => request("POST", url, { body, signal }),
-            put: (url, body, { signal } = {}) => request("PUT", url, { body, signal }),
+            post: (url, body, { signal, keepalive } = {}) => request("POST", url, { body, signal, keepalive }),
+            put: (url, body, { signal, keepalive } = {}) => request("PUT", url, { body, signal, keepalive }),
             patch: (url, body, { signal } = {}) => request("PATCH", url, { body, signal }),
             // A DELETE body is optional; the favorites store names its file in one.
-            del: (url, { signal, body } = {}) => request("DELETE", url, { body, signal }),
+            del: (url, { signal, body, keepalive } = {}) => request("DELETE", url, { body, signal, keepalive }),
         };
     }
 

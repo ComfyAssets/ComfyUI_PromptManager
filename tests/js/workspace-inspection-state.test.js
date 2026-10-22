@@ -771,3 +771,57 @@ test('fileFor rejects selected-local-file for rooted identity', () => {
     assert.throws(() => project(envelope(entry), { kind: 'local-file', key: 'local:1', path: 'a.png' }, null, extractGenerationFacts), /Invalid inspection file/);
     assert.equal(project(data, { kind: 'local-file', key: 'local:1', path: 'a.png' }, null, extractGenerationFacts).file.observation, 'selected-local-file');
 });
+
+// #249 PR C Task C3: the B3 envelope's `image_tags` facet, the file's own current tags (S1).
+test('image_tags facet is kept exactly and absent stays null', () => {
+    const entry = image(), project = contract('toInspectionRecord');
+    assert.equal(project(envelope(entry), entry, extractGenerationFacts).imageTags, null);
+    for (const facet of [{ state: 'current', tags: ['dunes', 'warm_light'] }, { state: 'current', tags: [] }, { state: 'none', tags: [] }, { state: 'unavailable', tags: [] }]) {
+        const data = { ...envelope(entry), image_tags: facet };
+        const record = project(data, entry, extractGenerationFacts);
+        assert.deepEqual(record.imageTags, facet);
+        assert.notEqual(record.imageTags.tags, facet.tags);
+    }
+    const hundred = Array.from({ length: 100 }, (_, index) => `tag_${index}`);
+    assert.deepEqual(project({ ...envelope(entry), image_tags: { state: 'current', tags: hundred } }, entry, extractGenerationFacts).imageTags.tags, hundred);
+});
+
+test('rejects a malformed image_tags facet', () => {
+    const entry = image();
+    for (const facet of [null, [], 'current', { state: 'current' }, { tags: [] }, { state: 'current', tags: ['a'], extra: 1 },
+        { state: 'stale', tags: [] }, { state: 'none', tags: ['a'] }, { state: 'unavailable', tags: ['a'] }, { state: 'current', tags: 'a' },
+        { state: 'current', tags: [1] }, { state: 'current', tags: [''] }, { state: 'current', tags: [' a'] }, { state: 'current', tags: ['a,b'] },
+        { state: 'current', tags: ['a\nb'] }, { state: 'current', tags: ['x'.repeat(51)] },
+        { state: 'current', tags: Array.from({ length: 101 }, (_, index) => `tag_${index}`) }]) {
+        assert.throws(() => module.toInspectionRecord({ ...envelope(entry), image_tags: facet }, entry, extractGenerationFacts), TypeError, JSON.stringify(facet));
+    }
+    assert.equal(module.toInspectionRecord({ ...envelope(entry), image_tags: { state: 'current', tags: ['é'.repeat(50)] } }, entry, extractGenerationFacts).imageTags.tags[0].length, 50);
+});
+
+test('refresh re-reads the selected file and keeps the shown record until the new read lands', async () => {
+    const { api, requests } = pendingApi(), updates = [];
+    const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts });
+    assert.equal(typeof controller.refresh, 'function', 'refresh is part of the controller');
+    controller.subscribe(state => updates.push(state));
+    const load = controller.select(image()); requests[0].resolve(envelope()); await load;
+    const shown = controller.state, count = updates.length;
+    const refresh = controller.refresh();
+    assert.equal(requests.length, 2);
+    // No loading state is published: the panel keeps its content.
+    assert.equal(controller.state, shown); assert.equal(updates.length, count);
+    requests[1].resolve({ ...envelope(), image_tags: { state: 'current', tags: ['fresh'] } }); await refresh;
+    assert.deepEqual(controller.state.record.imageTags, { state: 'current', tags: ['fresh'] });
+    assert.equal(controller.state.loading, false); assert.equal(updates.length, count + 1);
+    // A failed quiet re-read reports the failure as a read would.
+    const failing = controller.refresh(); requests[2].reject(new Error('offline')); await failing;
+    assert.equal(controller.state.error, true);
+    // Without a shown record a refresh is an ordinary retry (loading published).
+    const again = controller.refresh(); assert.equal(controller.state.loading, true);
+    requests[3].resolve(envelope()); await again; assert.equal(controller.state.error, false);
+    // A newer selection supersedes a refresh in flight.
+    const stale = controller.refresh(); const other = controller.select({ ...image(), path: 'folder/b.png', filename: 'b.png', url: image().url.replace('a%20%23%25', 'b') });
+    requests[5].resolve(envelope({ ...image(), path: 'folder/b.png', filename: 'b.png', url: image().url.replace('a%20%23%25', 'b') })); await other;
+    requests[4].resolve(envelope()); await stale;
+    assert.equal(controller.state.record.identity.path, 'folder/b.png');
+    controller.dispose(); assert.equal(await controller.refresh(), undefined);
+});

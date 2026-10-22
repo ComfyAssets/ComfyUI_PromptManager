@@ -35,6 +35,7 @@ from tests.browser.workspace_library_editor_fixture import (
     register_library_editor_commands,
 )
 from tests.browser.workspace_vocabulary_fixture import register_vocabulary_commands
+from tests.browser.workspace_tagging_fixture import register_tagging_commands
 
 CANONICAL_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_ASSETS = {
@@ -57,11 +58,19 @@ class TestModel:
     wd14_character_threshold = 0.85
     custom_prompt = ""
     loaded = None
+    # Models the Tag image dialog workflows mark as not downloaded.
+    unavailable: set = set()
+    # Scored names the concept comparisons answer instead of the fixed list
+    # (``/__test__/tagging/suggestions``); None keeps the fixed list.
+    suggestions: list | None = None
 
     def get_models_status(self) -> dict:
         return {
-            name: {"downloaded": True, "loaded": self.loaded == name}
-            for name in ("gguf", "wd14-vit", "wd14-convnext", "wd14-swinv2")
+            name: {
+                "downloaded": name not in self.unavailable,
+                "loaded": self.loaded == name,
+            }
+            for name in ("gguf", "hf", "wd14-vit", "wd14-convnext", "wd14-swinv2")
         }
 
     def is_model_loaded(self) -> bool:
@@ -85,6 +94,11 @@ class TestModel:
     ) -> list[tuple[str, float | None]]:
         """Fixed scored suggestions (WD14) or unscored ones (language models)."""
         scored = self.loaded is not None and self.loaded.startswith("wd14")
+        if self.suggestions is not None:
+            return [
+                (name, confidence if scored else None)
+                for name, confidence in self.suggestions[:limit]
+            ]
         names = ["sandstone", "desert", "arch", "sky", "rock", "dune", "canyon"]
         names += [f"tag_{index:02d}" for index in range(100)]
         return [
@@ -178,6 +192,7 @@ def create_app(root: Path) -> web.Application:
     history_commands = register_workspace_history_commands(routes, api, root)
     library_editor_commands = register_library_editor_commands(routes, api, root)
     register_vocabulary_commands(routes, api, root)
+    register_tagging_commands(routes, api, root, model)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
 
@@ -471,7 +486,8 @@ def create_app(root: Path) -> web.Application:
         if (
             request.query
             or not isinstance(data, dict)
-            or set(data) - set(limits)
+            or set(data) - set(limits) - {"short_seedless"}
+            or not isinstance(data.get("short_seedless", False), bool)
             or any(
                 isinstance(data.get(key, 0), bool)
                 or not isinstance(data.get(key, 0), int)
@@ -490,6 +506,7 @@ def create_app(root: Path) -> web.Application:
                 root,
                 extra_images=data.get("extra_images", 0),
                 seedless_images=data.get("seedless_images", 0),
+                short_seedless=data.get("short_seedless", False),
             )
         )
         return web.json_response({"success": True, **manifest})

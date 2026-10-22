@@ -119,10 +119,7 @@ function mapShellConcept(reference) {
             const spans=chrome.footer.spans.map(span=>({...span,text:'ComfyAssets · Local tools. Your library.'}));
             return {...chrome.footer,spans,buttons:[],height:remainingFooter(chrome.footer,spans)};
         })(),
-    },
-    heading:reference.heading&&{...reference.heading,actions:reference.heading.actions&&{...reference.heading.actions,
-        // #245 vocabulary ruling D2 (mapVocabularyConcept): Auto-tag images is omitted until the image-annotation slice.
-        buttons:reference.heading.actions.buttons.filter(item=>item.text!=='Auto-tag images')}}};
+    }};
 }
 
 /** The heading without its page-owned description copy and actions; the h1 text is the shell's and stays compared. */

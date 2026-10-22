@@ -143,6 +143,25 @@ function evidenceBadge(prompts) {
 function extensionOf(record) {
     return (record.file?.extension || record.identity.path.split('.').at(-1)).replace(/^\./, '').toUpperCase();
 }
+/**
+ * The chip row after the prompt blocks (D88): the file's current image tags first, then D21's linked tags not already
+ * shown (case-insensitive). With `filterable` (a Tags filter exists, as in the Images panel) every image tag sets it, and
+ * a linked tag only when it is the positive's own (D21); otherwise, as in the viewer, every chip is plain.
+ */
+export function inspectorTagChips(record, {filterable}) {
+    const shown = new Set(), chips = [];
+    const add = (names, filter) => {
+        for (const name of names) {
+            const key = name.toLowerCase();
+            if (shown.has(key)) continue;
+            shown.add(key); chips.push({name, filter});
+        }
+    };
+    if (record.imageTags?.state === 'current') add(record.imageTags.tags, filterable);
+    const {library} = record;
+    if (library?.status === 'linked') add(library.tags, filterable && library.tags_scope === 'positive');
+    return chips;
+}
 /** A concept chip whose visible text carries a visually hidden prefix naming what it is. */
 function prefixedChip(prefix, text) {
     const chip = el('span', undefined, 'chip');
@@ -211,15 +230,16 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         const prompts = el('div'); inner.append(prompts);
         const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext, title});
         blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
-        if (linked && library.tags.length) {
-            // D21: a chip sets the Images Tags filter, which matches the linked positive's tags; a recipe's own tags are
-            // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain. With the
-            // D39 fallback a recipe without tags shows its positive's, which are filter buttons again.
-            const filterable = onTagFilter && library.tags_scope === 'positive';
+        // D21: a chip sets the Images Tags filter, which matches the linked positive's tags; a recipe's own tags are
+        // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain. With the
+        // D39 fallback a recipe without tags shows its positive's, which are filter buttons again. D88: the file's own
+        // image tags lead the row and, where a Tags filter exists, always set it (it matches them too).
+        const chips = inspectorTagChips(record, {filterable:!!onTagFilter});
+        if (chips.length) {
             const tags = el('div', undefined, 'tags');
-            for (const tag of library.tags) {
-                if (!filterable) {tags.append(el('span', tag, 'chip')); continue;}
-                const chip = createButton(tag, 'chip'); contentScope.listen(chip, 'click', () => onTagFilter(tag)); tags.append(chip);
+            for (const {name, filter} of chips) {
+                if (!filter) {tags.append(el('span', name, 'chip')); continue;}
+                const chip = createButton(name, 'chip'); contentScope.listen(chip, 'click', () => onTagFilter(name)); tags.append(chip);
             }
             inner.append(tags);
         }
