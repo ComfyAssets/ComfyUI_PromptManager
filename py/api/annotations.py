@@ -16,8 +16,18 @@ from pathlib import Path
 
 from aiohttp import web
 
+from .annotation_suggest import (
+    SUGGEST_FIELDS,
+    OptionError,
+    run_suggestions,
+    suggestion_rows,
+    unavailable_message,
+    validate_options,
+)
+from .autotag_routes import model_busy_response
 from .images import _forbidden, _has_traversal, _unavailable_link, _verified_title
 from .prompts import bad_request
+from .. import model_gate
 
 try:
     from ...database.annotations import (
@@ -87,6 +97,7 @@ _STATUS = {
     "storage-changed": 409,
     "tag-conflict": 409,
     "capture-expired": 409,
+    "model-unavailable": 409,
 }
 _MESSAGES = {
     "source-changed": (
@@ -190,6 +201,9 @@ class AnnotationRoutesMixin:
         routes.get(CAPTURE_URL + "{token}")(self.get_capture_preview)
         routes.delete(CAPTURE_URL + "{token}")(self.release_capture)
         routes.put("/prompt_manager/image-annotations/tags")(self.save_image_tags)
+        routes.post("/prompt_manager/image-annotations/suggest")(
+            self.suggest_image_tags
+        )
 
     # -- capture store lifetime ------------------------------------------------
 
@@ -473,6 +487,121 @@ class AnnotationRoutesMixin:
         return web.json_response(
             {"success": True, **receipt}, headers={"Cache-Control": "no-store"}
         )
+
+    # -- suggest ---------------------------------------------------------------
+
+    async def suggest_image_tags(self, request: web.Request) -> web.Response:
+        """POST: the top N tags of the captured bytes from one legacy engine.
+
+        Runs only on the private capture (pinned for the whole inference),
+        under the shared model gate (``model-busy`` while anything else holds
+        it, including a legacy batch), never downloads (``model-unavailable``)
+        and never writes.
+        """
+        from ..autotag import MODELS, get_autotag_service
+        from ..config import MAX_SUGGESTION_LIMIT, AutotagConfig
+
+        data, error = await self._annotation_body(request, SUGGEST_FIELDS)
+        if error is not None:
+            return error
+        target, error = _target(data["target"])
+        if error is not None:
+            return error
+        try:
+            model_type, options = validate_options(
+                data["model_type"],
+                data["options"],
+                default_limit=AutotagConfig.suggestion_limit(),
+                max_limit=MAX_SUGGESTION_LIMIT,
+            )
+        except OptionError as exc:
+            return bad_request(str(exc))
+        token, epoch = data["capture_token"], data["expected_epoch"]
+        if not isinstance(token, str) or _TOKEN.fullmatch(token) is None:
+            return bad_request("Invalid capture token")
+        if not isinstance(epoch, str) or _UUID.fullmatch(epoch) is None:
+            return bad_request("expected_epoch must be a canonical UUID")
+        index, scope, relative = target
+        root, error = self._scoped_root(index, scope)
+        if error is not None:
+            return error
+        store = self._captures
+        capture = store.acquire(token) if store is not None else None
+        if capture is None:
+            return _coded("capture-expired")
+        started = False
+        try:
+            error = await self._suggest_guards(capture, target, root, epoch)
+            if error is not None:
+                return error
+            service = get_autotag_service()
+            status = await self._run_in_executor(service.get_models_status)
+            if not status.get(model_type, {}).get("downloaded"):
+                name = MODELS.get(model_type, {}).get("name", model_type)
+                return _coded("model-unavailable", unavailable_message(name))
+            owner = model_gate.new_owner("image-annotations")
+            if not model_gate.try_acquire(owner):
+                return model_busy_response()
+            try:
+                started = True
+                pairs = await model_gate.run(
+                    owner,
+                    _pinned_suggestions,
+                    store,
+                    token,
+                    service,
+                    capture,
+                    model_type,
+                    options,
+                )
+            except Exception:
+                self.logger.exception("Tag suggestion failed")
+                return _error(
+                    500,
+                    "suggest-failed",
+                    "Auto-tagging failed. Check server logs for details.",
+                )
+            finally:
+                model_gate.release(owner)
+        finally:
+            if not started:
+                store.release_use(token)
+        return web.json_response(
+            {
+                "success": True,
+                "model_type": model_type,
+                "options": options,
+                "suggestions": suggestion_rows(pairs),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def _suggest_guards(self, capture, target, root, epoch):
+        """The capture must be this target's, of this epoch, and inferable."""
+        index, scope, relative = target
+        expected = os.path.normcase(
+            os.path.join(os.path.realpath(root), *relative.split("/"))
+        )
+        if (
+            capture.root_index != index
+            or capture.scope != scope
+            or capture.locator != expected
+        ):
+            return _coded("capture-expired", _OTHER_FILE)
+        if epoch != capture.epoch:
+            current = await self._run_in_executor(self.db.get_execution_epoch)
+            return _coded("storage-changed", library_epoch=current)
+        if not capture.inferable:
+            return _coded("unsupported-media", capture.inferable_reason)
+        return None
+
+
+def _pinned_suggestions(store, token, service, capture, model_type, options):
+    """Worker thread: infer on the capture, then end its pin (even on error)."""
+    try:
+        return run_suggestions(service, capture.path, model_type, options)
+    finally:
+        store.release_use(token)
 
 
 def _verify_captured_file(store: CaptureStore, capture, root, relative: str):

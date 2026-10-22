@@ -986,6 +986,7 @@ class TestEnvelopes(AnnotationAPITestCase):
                 "model_loaded",
                 "models",
                 "success",
+                "suggestion_limit",  # B2 adds it (D68); nothing else changes
                 "wd14_character_threshold",
                 "wd14_general_threshold",
             ],

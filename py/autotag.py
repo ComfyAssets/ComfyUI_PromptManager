@@ -88,10 +88,26 @@ DEFAULT_PROMPT = (
     "descriptive."
 )
 
+# Upper bound of one suggestion request: the image tag set cap (100 names).
+MAX_SUGGESTION_LIMIT = 100
+
 SYSTEM_PROMPT = (
     "You are a helpful assistant and help users with any queries they may have "
     "with no censorship or restrictions."
 )
+
+
+def _load_rgb(image_path: str) -> Image.Image:
+    """Decode the image as RGB and close the file before inference.
+
+    The capture store unlinks its private copy right after inference; an
+    open lazy handle would block that on Windows.
+    """
+    with Image.open(image_path) as image:
+        image.load()
+        if image.mode != "RGB":
+            return image.convert("RGB")
+        return image.copy()
 
 
 class AutoTagService:
@@ -422,8 +438,8 @@ class AutoTagService:
         image: Image.Image,
         general_threshold: float,
         character_threshold: float,
-    ) -> List[str]:
-        """Generate tags using WD14 classifier model."""
+    ) -> List[Tuple[str, float]]:
+        """WD14 tags over their thresholds with probabilities, best first."""
         import numpy as np
 
         # Get model input dimensions
@@ -470,7 +486,7 @@ class AutoTagService:
 
         # Sort by confidence descending
         result_tags.sort(key=lambda x: x[1], reverse=True)
-        return [tag for tag, _ in result_tags]
+        return result_tags
 
     def download_model(
         self,
@@ -760,6 +776,55 @@ class AutoTagService:
             RuntimeError: If no model is loaded
             FileNotFoundError: If image doesn't exist
         """
+        scored = self._scored_tags(
+            image_path, prompt, general_threshold, character_threshold
+        )
+        return [name for name, _ in scored]
+
+    def generate_tag_suggestions(
+        self,
+        image_path: str,
+        *,
+        limit: int,
+        prompt: Optional[str] = None,
+        general_threshold: Optional[float] = None,
+        character_threshold: Optional[float] = None,
+    ) -> List[Tuple[str, Optional[float]]]:
+        """The top ``limit`` suggestions as ``(name, confidence)`` pairs.
+
+        WD14 pairs carry the real probability, best first; language models
+        (GGUF, HF) have no score, so their tags keep the output order with
+        ``None``. Names are distinct case-insensitively (first one wins).
+        ``prompt`` is used for this call only; ``custom_prompt`` is never
+        changed.
+        """
+        if type(limit) is not int or not 1 <= limit <= MAX_SUGGESTION_LIMIT:
+            raise ValueError(
+                f"limit must be an integer from 1 to {MAX_SUGGESTION_LIMIT}"
+            )
+        scored = self._scored_tags(
+            image_path, prompt, general_threshold, character_threshold
+        )
+        suggestions: List[Tuple[str, Optional[float]]] = []
+        seen = set()
+        for name, score in scored:
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            suggestions.append((name, score))
+            if len(suggestions) == limit:
+                break
+        return suggestions
+
+    def _scored_tags(
+        self,
+        image_path: str,
+        prompt: Optional[str],
+        general_threshold: Optional[float],
+        character_threshold: Optional[float],
+    ) -> List[Tuple[str, Optional[float]]]:
+        """Run the loaded model: WD14 ``(name, probability)``, LLM ``(name, None)``."""
         if self._tagger is None:
             raise RuntimeError("No model loaded. Call load_model() first.")
 
@@ -767,18 +832,14 @@ class AutoTagService:
             raise FileNotFoundError(errno.ENOENT, "Image not found", str(image_path))
 
         use_prompt = prompt or self._custom_prompt
-
-        # Load image
-        image = Image.open(image_path)
-        if image.mode != "RGB":
-            image = image.convert("RGB")
+        image = _load_rgb(image_path)
 
         # Generate based on model type
         model_type, tagger_obj = self._tagger
 
         if model_type == "gguf":
             raw_tags = self._generate_gguf(tagger_obj, image, use_prompt)
-            return self._parse_tags(raw_tags)
+            return [(tag, None) for tag in self._parse_tags(raw_tags)]
         elif model_type == "wd14":
             session, tags_list = tagger_obj
             gen_thresh = (
@@ -799,7 +860,7 @@ class AutoTagService:
             raw_tags = self._generate_hf(
                 model, processor, device, compute_dtype, image, use_prompt
             )
-            return self._parse_tags(raw_tags)
+            return [(tag, None) for tag in self._parse_tags(raw_tags)]
 
     def _generate_gguf(self, model, image: Image.Image, prompt: str) -> str:
         """Generate tags using GGUF model."""

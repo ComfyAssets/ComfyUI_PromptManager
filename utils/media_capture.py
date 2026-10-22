@@ -28,16 +28,13 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 from PIL import Image
 
 try:
-    from .prompt_inspector import MetadataReadError, read_inspection_file
     from .video_metadata import VIDEO_EXTENSIONS, is_video_path
 except ImportError:  # imported with the repo root on sys.path
-    from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.video_metadata import VIDEO_EXTENSIONS, is_video_path
 
 logger = logging.getLogger(__name__)
@@ -578,20 +575,17 @@ class CaptureStore:
     def _probe(self, path: str, media_type: str):
         """Header-only dimensions of the capture; never decodes pixels.
 
-        Uses the inspection reader, so a PNG whose prompt metadata is over the
-        inspection budgets is reported as unreadable (not inferable) although
-        its pixels decode; B2 may switch to a dimensions-only header read.
+        Only the image header decides whether Generate is offered: prompt
+        metadata over the inspection budgets does not make a decodable image
+        unreadable (the metadata itself is read elsewhere, under its budgets).
         """
         if media_type == "video":
             return None, None, False, VIDEO_ONLY_REASON
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-                read = read_inspection_file(Path(path))
-        except (MetadataReadError, Image.DecompressionBombError):
-            return None, None, False, HEADER_REASON
-        width, height = read.width, read.height
-        if width is None or height is None:
+            width, height = header_dimensions(path)
+        except HeaderTooLarge:
+            return None, None, False, DIMENSION_REASON
+        except HeaderUnreadable:
             return None, None, False, HEADER_REASON
         if (
             width > MAX_INFERENCE_SIDE
@@ -600,6 +594,34 @@ class CaptureStore:
         ):
             return width, height, False, DIMENSION_REASON
         return width, height, True, None
+
+
+class HeaderUnreadable(Exception):
+    """The file has no image header Pillow can read."""
+
+
+class HeaderTooLarge(HeaderUnreadable):
+    """The header declares a decompression bomb (no pixel is decoded)."""
+
+
+def header_dimensions(path: str) -> tuple[int, int]:
+    """``(width, height)`` from the image header alone; the file is closed.
+
+    ``Image.open`` reads only the header; a decompression-bomb warning is an
+    error here, so an absurd size is refused before anything is decoded.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(path) as image:
+                width, height = image.size
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise HeaderTooLarge(str(exc)) from None
+    except Exception as exc:  # any decoder failure means "no usable header"
+        raise HeaderUnreadable(str(exc)) from None
+    if not width or not height:
+        raise HeaderUnreadable("The header declares no size")
+    return int(width), int(height)
 
 
 def _relative_parts(relative) -> tuple[list[str], str]:

@@ -465,6 +465,59 @@ class IntegrationConfig:
             cls.CIVITAI_API_KEY = lora["civitai_api_key"]
 
 
+# Number of tag suggestions the Tag dialogs request by default (D68). The cap
+# is the image tag set limit: more suggestions could never all be kept.
+DEFAULT_SUGGESTION_LIMIT = 10
+MAX_SUGGESTION_LIMIT = 100
+
+
+class AutotagConfig:
+    """Persisted tagging defaults under ``autotag.defaults`` in config.json.
+
+    ``suggestion_limit`` is how many suggestions Generate returns (the top N
+    by score), an integer in ``1..MAX_SUGGESTION_LIMIT``. A hand-edited value
+    outside that range, or of another type, falls back to the default with a
+    warning rather than failing the load.
+    """
+
+    SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
+
+    @classmethod
+    def suggestion_limit(cls) -> int:
+        return cls.SUGGESTION_LIMIT
+
+    @staticmethod
+    def valid_suggestion_limit(value: Any) -> bool:
+        return (
+            type(value) is int and 1 <= value <= MAX_SUGGESTION_LIMIT
+        )  # bool, float and str are rejected
+
+    @classmethod
+    def get_config(cls) -> Dict[str, Any]:
+        return {"defaults": {"suggestion_limit": cls.SUGGESTION_LIMIT}}
+
+    @classmethod
+    def update_config(cls, new_config: Any) -> None:
+        if not isinstance(new_config, dict):
+            config_logger.warning("Ignoring autotag settings that are not an object")
+            return
+        defaults = new_config.get("defaults", {})
+        if not isinstance(defaults, dict):
+            config_logger.warning("Ignoring autotag.defaults that is not an object")
+            return
+        if "suggestion_limit" not in defaults:
+            return
+        value = defaults["suggestion_limit"]
+        if cls.valid_suggestion_limit(value):
+            cls.SUGGESTION_LIMIT = value
+            return
+        config_logger.warning(
+            "autotag.defaults.suggestion_limit must be an integer from 1 to "
+            f"{MAX_SUGGESTION_LIMIT}; using {DEFAULT_SUGGESTION_LIMIT}"
+        )
+        cls.SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
+
+
 class PromptManagerConfig:
     """Main configuration class for PromptManager core functionality.
 
@@ -566,6 +619,7 @@ class PromptManagerConfig:
             },
             "gallery": GalleryConfig.get_config(),
             "integrations": IntegrationConfig.get_config(),
+            "autotag": AutotagConfig.get_config(),
         }
 
     @classmethod
@@ -705,6 +759,9 @@ class PromptManagerConfig:
         # Update integration config
         if "integrations" in new_config:
             IntegrationConfig.update_config(new_config["integrations"])
+
+        if "autotag" in new_config:
+            AutotagConfig.update_config(new_config["autotag"])
 
 
 # Load configuration on import

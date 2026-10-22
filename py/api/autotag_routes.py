@@ -9,11 +9,24 @@ from typing import Optional
 from urllib.parse import quote
 
 from .prompts import thumbnail_url_for
+from .. import model_gate
 
 from aiohttp import web
 
 _INTERNAL_ERROR = "An internal error occurred. Check server logs for details."
 _BUSY_ERROR = "Auto-tagging is already running"
+MODEL_BUSY_ERROR = (
+    "A tagging model is busy with another operation. Try again when it finishes."
+)
+
+
+def model_busy_response() -> web.Response:
+    """``409 model-busy``: another operation holds the shared model gate."""
+    return web.json_response(
+        {"success": False, "code": "model-busy", "error": MODEL_BUSY_ERROR},
+        status=409,
+    )
+
 
 # Only these may be handed to the tagging engine or listed by the scanner.
 _MEDIA_EXTENSIONS = frozenset(
@@ -86,6 +99,7 @@ class AutotagRoutesMixin:
         """Get status of available AutoTag models."""
         try:
             from ..autotag import get_autotag_service
+            from ..config import AutotagConfig
 
             service = get_autotag_service()
             models_status = service.get_models_status()
@@ -99,6 +113,7 @@ class AutotagRoutesMixin:
                     "loaded_model_type": service.get_loaded_model_type(),
                     "wd14_general_threshold": service.wd14_general_threshold,
                     "wd14_character_threshold": service.wd14_character_threshold,
+                    "suggestion_limit": AutotagConfig.suggestion_limit(),
                 }
             )
 
@@ -138,6 +153,7 @@ class AutotagRoutesMixin:
     async def download_autotag_model(self, request):
         """Download an AutoTag model with streaming progress (POST only)."""
         model_type = request.match_info.get("model_type")
+        owner = model_gate.new_owner("legacy-download")
 
         async def events():
             try:
@@ -160,8 +176,8 @@ class AutotagRoutesMixin:
                 def progress_callback(status: str, progress: float):
                     pass
 
-                success = await self._run_in_executor(
-                    service.download_model, model_type, progress_callback
+                success = await model_gate.run(
+                    owner, service.download_model, model_type, progress_callback
                 )
                 if success:
                     yield {
@@ -178,7 +194,12 @@ class AutotagRoutesMixin:
                     "message": _INTERNAL_ERROR,
                 }
 
-        return await self._stream_sse(request, events())
+        if not model_gate.try_acquire(owner):
+            return model_busy_response()
+        try:
+            return await self._stream_sse(request, events())
+        finally:
+            model_gate.release(owner)
 
     async def _read_start_params(self, request) -> Optional[dict]:
         """Merge query-string and optional JSON-body parameters for autotag/start.
@@ -239,8 +260,9 @@ class AutotagRoutesMixin:
             return
 
         yield {"type": "progress", "progress": 0, "status": "Loading model..."}
+        run = self._gated_runner(opts.get("gate_owner"))
         try:
-            await self._run_in_executor(service.load_model, model_type, True)
+            await run(service.load_model, model_type, True)
         except Exception:
             self.logger.exception("Failed to load model")
             yield {
@@ -338,7 +360,7 @@ class AutotagRoutesMixin:
                     continue
 
                 try:
-                    tags = await self._run_in_executor(
+                    tags = await run(
                         service.generate_tags,
                         allowed_path,
                         general_threshold=opts["general_threshold"],
@@ -423,9 +445,25 @@ class AutotagRoutesMixin:
                 {"success": False, "error": _BUSY_ERROR}, status=409
             )
         try:
-            return await self._stream_sse(request, events())
+            opts["gate_owner"] = model_gate.new_owner("legacy-batch")
+            if not model_gate.try_acquire(opts["gate_owner"]):
+                return model_busy_response()
+            try:
+                return await self._stream_sse(request, events())
+            finally:
+                model_gate.release(opts["gate_owner"])
         finally:
             _autotag_batch_lock.release()
+
+    def _gated_runner(self, owner):
+        """Executor calls under the model gate *owner* holds (plain when None)."""
+        if owner is None:
+            return self._run_in_executor
+
+        async def run(func, *args, **kwargs):
+            return await model_gate.run(owner, func, *args, **kwargs)
+
+        return run
 
     def _resolve_allowed_image_path(self, raw_path: str) -> Optional[str]:
         """Return the real path when it is a media file inside an output directory."""
@@ -549,22 +587,28 @@ class AutotagRoutesMixin:
             from ..autotag import get_autotag_service
 
             service = get_autotag_service()
+            owner = model_gate.new_owner("legacy-single")
+            if not model_gate.try_acquire(owner):
+                return model_busy_response()
+            try:
+                if (
+                    not service.is_model_loaded()
+                    or service.get_loaded_model_type() != model_type
+                ):
+                    await model_gate.run(owner, service.load_model, model_type, use_gpu)
 
-            if (
-                not service.is_model_loaded()
-                or service.get_loaded_model_type() != model_type
-            ):
-                await self._run_in_executor(service.load_model, model_type, use_gpu)
+                if custom_prompt:
+                    service.custom_prompt = custom_prompt
 
-            if custom_prompt:
-                service.custom_prompt = custom_prompt
-
-            tags = await self._run_in_executor(
-                service.generate_tags,
-                image_path,
-                general_threshold=general_threshold,
-                character_threshold=character_threshold,
-            )
+                tags = await model_gate.run(
+                    owner,
+                    service.generate_tags,
+                    image_path,
+                    general_threshold=general_threshold,
+                    character_threshold=character_threshold,
+                )
+            finally:
+                model_gate.release(owner)
 
             return web.json_response(
                 {
@@ -636,14 +680,19 @@ class AutotagRoutesMixin:
             from ..autotag import get_autotag_service
 
             service = get_autotag_service()
+            owner = model_gate.new_owner("legacy-unload")
+            if not model_gate.try_acquire(owner):
+                return model_busy_response()
+            try:
+                if not service.is_model_loaded():
+                    return web.json_response(
+                        {"success": True, "message": "No model was loaded"}
+                    )
 
-            if not service.is_model_loaded():
-                return web.json_response(
-                    {"success": True, "message": "No model was loaded"}
-                )
-
-            model_type = service.get_loaded_model_type()
-            service.unload_model()
+                model_type = service.get_loaded_model_type()
+                service.unload_model()
+            finally:
+                model_gate.release(owner)
 
             return web.json_response(
                 {

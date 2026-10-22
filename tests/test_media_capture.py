@@ -596,6 +596,42 @@ class CaptureStoreTestCase(unittest.TestCase):
             cap.sha256, hashlib.sha256(b"\xff\xd8not really a jpeg").hexdigest()
         )
 
+    def test_metadata_over_inspection_budgets_does_not_block_generate(self):
+        # B2 carry-over (A M1): inferable is decided from the image header
+        # alone, so prompt metadata over the inspection budgets (here a 3 MiB
+        # text chunk) leaves a decodable image inferable.
+        base = png_bytes(64, 32)
+        huge = _chunk(b"tEXt", b"prompt\x00" + b"x" * (3 * 1024 * 1024))
+        self.write("big-metadata.png", base[:-12] + huge + base[-12:])
+        store = self.make_store()
+
+        cap = self.capture(store, "big-metadata.png")
+
+        self.assertEqual((cap.width, cap.height), (64, 32))
+        self.assertTrue(cap.inferable)
+        self.assertIsNone(cap.inferable_reason)
+        assert_closed(self, self.parent)
+
+    def test_decompression_bomb_header_is_not_inferable(self):
+        self.write("bomb.png", png_bytes(20_000, 20_000))
+        store = self.make_store()
+
+        cap = self.capture(store, "bomb.png")
+
+        self.assertFalse(cap.inferable)
+        self.assertIn("4096", cap.inferable_reason)
+        assert_closed(self, self.parent)
+
+    def test_header_dimensions_reads_only_the_header(self):
+        path = self.write("dims.png", png_bytes(7, 5))
+        self.assertEqual(capture_module.header_dimensions(str(path)), (7, 5))
+        assert_closed(self, self.parent)
+        with self.assertRaises(capture_module.HeaderUnreadable):
+            capture_module.header_dimensions(
+                str(self.write("bad.png", b"\x89PNG\r\n\x1a\nnope"))
+            )
+        assert_closed(self, self.parent)
+
     def test_video_capture_is_not_inferable(self):
         data = b"\x00\x00\x00\x18ftypmp42" + os.urandom(32)
         self.write("clip.mp4", data)
@@ -604,7 +640,7 @@ class CaptureStoreTestCase(unittest.TestCase):
         def never(path):  # pragma: no cover - guard only
             raise AssertionError("video captures are never probed")
 
-        with patch.object(capture_module, "read_inspection_file", never):
+        with patch.object(capture_module, "header_dimensions", never):
             cap = self.capture(store, "clip.mp4")
         self.assertEqual((cap.media_type, cap.width, cap.height), ("video", None, None))
         self.assertFalse(cap.inferable)

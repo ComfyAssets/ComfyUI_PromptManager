@@ -301,6 +301,143 @@ class TestGgufNormalisation(EngineTestCase):
         )
 
 
+SCORED_TAGS = [
+    {"name": "desert", "category": "0"},
+    {"name": "sandstone", "category": "0"},
+    {"name": "Sandstone", "category": "0"},
+    {"name": "hatsune_miku", "category": "4"},
+    {"name": "rating:safe", "category": "9"},
+] + [{"name": f"tag_{i:03d}", "category": "0"} for i in range(120)]
+SCORED_PROBABILITIES = [0.96, 0.98, 0.5, 0.9, 0.99] + [
+    0.9 - i * 0.004 for i in range(120)
+]
+
+
+class TestTagSuggestions(EngineTestCase):
+    """``generate_tag_suggestions``: scored, ordered, bounded, distinct."""
+
+    def _wd14(self, tags=SCORED_TAGS, probabilities=SCORED_PROBABILITIES):
+        _touch_model_files(self.models_dir, "wd14-vit")
+        self.session = FakeOnnxSession(probabilities)
+        service = self._service(("wd14", (self.session, tags)))
+        service.load_model("wd14-vit")
+        return service
+
+    def _gguf(self, text):
+        _touch_model_files(self.models_dir, "gguf")
+        self.model = FakeGgufModel(text)
+        service = self._service(("gguf", self.model))
+        service.load_model("gguf")
+        return service
+
+    def test_wd14_suggestions_carry_real_probabilities_sorted(self):
+        service = self._wd14()
+
+        suggestions = service.generate_tag_suggestions(
+            str(self.image_path),
+            limit=10,
+            general_threshold=0.35,
+            character_threshold=0.85,
+        )
+
+        self.assertEqual(suggestions[:2], [("sandstone", 0.98), ("desert", 0.96)])
+        # The character tag passes its own threshold; rating tags never show.
+        self.assertIn(("hatsune_miku", 0.9), suggestions)
+        self.assertNotIn("rating:safe", [name for name, _ in suggestions])
+        scores = [score for _, score in suggestions]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertTrue(all(isinstance(score, float) for score in scores))
+        # "Sandstone" (0.5) repeats "sandstone" case-insensitively: dropped.
+        self.assertEqual(
+            [name.casefold() for name, _ in suggestions].count("sandstone"), 1
+        )
+
+    def test_suggestions_keep_the_requested_limit(self):
+        service = self._wd14()
+        for limit in (1, 10, 100):
+            with self.subTest(limit=limit):
+                suggestions = service.generate_tag_suggestions(
+                    str(self.image_path),
+                    limit=limit,
+                    general_threshold=0.0,
+                    character_threshold=0.0,
+                )
+                self.assertEqual(len(suggestions), limit)
+        for bad in (0, -1, 101, 2.5, "10", True, None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                service.generate_tag_suggestions(str(self.image_path), limit=bad)
+
+    def test_thresholds_default_to_the_service_values(self):
+        service = self._wd14()
+        service.wd14_general_threshold = 0.95
+        service.wd14_character_threshold = 0.95
+
+        suggestions = service.generate_tag_suggestions(str(self.image_path), limit=10)
+
+        self.assertEqual(suggestions, [("sandstone", 0.98), ("desert", 0.96)])
+
+    def test_llm_suggestions_have_null_confidence_in_output_order(self):
+        service = self._gguf("Zebra, apple, ZEBRA, mango tree, kiwi, plum")
+
+        suggestions = service.generate_tag_suggestions(
+            str(self.image_path), limit=3, prompt="tags please"
+        )
+
+        self.assertEqual(
+            suggestions, [("zebra", None), ("apple", None), ("mango_tree", None)]
+        )
+
+    def test_generate_tags_return_shape_unchanged(self):
+        service = self._wd14()
+        self.assertEqual(
+            service.generate_tags(
+                str(self.image_path), general_threshold=0.95, character_threshold=0.95
+            ),
+            ["sandstone", "desert"],
+        )
+        gguf = self._gguf("Smile, smile, long hair")
+        self.assertEqual(
+            gguf.generate_tags(str(self.image_path)), ["smile", "long_hair"]
+        )
+
+    def test_explicit_prompt_does_not_mutate_custom_prompt(self):
+        service = self._gguf("tag")
+        service.custom_prompt = "saved legacy prompt"
+
+        service.generate_tag_suggestions(
+            str(self.image_path), limit=10, prompt="dialog instructions"
+        )
+
+        self.assertEqual(
+            self.model.calls[0]["messages"][1]["content"][0]["text"],
+            "dialog instructions",
+        )
+        self.assertEqual(service.custom_prompt, "saved legacy prompt")
+
+    def test_suggestions_need_a_loaded_model(self):
+        service = self._service(("gguf", FakeGgufModel("x")))
+        with self.assertRaises(RuntimeError):
+            service.generate_tag_suggestions(str(self.image_path), limit=10)
+
+    def test_image_file_is_closed_after_inference(self):
+        service = self._gguf("tag")
+        opened = []
+        real_open = autotag.Image.open
+
+        def tracking_open(*args, **kwargs):
+            image = real_open(*args, **kwargs)
+            opened.append(image)
+            return image
+
+        with patch.object(autotag.Image, "open", tracking_open):
+            service.generate_tag_suggestions(str(self.image_path), limit=10)
+            service.generate_tags(str(self.image_path))
+
+        self.assertEqual(len(opened), 2)
+        for image in opened:
+            self.assertIsNone(getattr(image, "fp", None))
+
+
 class TestGenerateTagsErrors(EngineTestCase):
 
     def test_no_model_loaded(self):
