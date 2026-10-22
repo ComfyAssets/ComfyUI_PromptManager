@@ -29,8 +29,9 @@ const PER_KEY = new Set(["prompt", "workflow", "parameters", "comfyassets_prompt
 const GRAPH = '{"3":{"class_type":"KSampler","inputs":{"seed":7}}}';
 const WORKFLOW = '{"nodes":[],"version":0.4}';
 
+// The tags ffprobe reports to the server: the six probed names, ASCII case folded.
 function knownTags(map) {
-    return Object.fromEntries(Object.entries(map).filter(([name]) => PER_KEY.has(name.toLowerCase()) || name === "comment" || name === "description"));
+    return Object.fromEntries(Object.entries(map).filter(([name]) => PER_KEY.has(name.toLowerCase()) || ["comment", "description"].includes(name.toLowerCase())));
 }
 
 function fixture(name) {
@@ -348,6 +349,36 @@ test("ilst items with index 0 or past the keys are skipped; the first keys box w
     assert.deepEqual((await read(shortFirst)).tags, { prompt: GRAPH });
 });
 
+test("one tag per ASCII-folded name and Mac Roman text, as ffmpeg's tag dictionary holds them", async () => {
+    const mdta = (names, items, legacy = []) => v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(names), v.ilst(...items.map(([index, value, type = 1]) => v.item(index, v.data(value, { type }))), ...legacy))));
+    // ISO-BMFF joins case variants with ";" under the spelling set last (checked through ffprobe).
+    assert.deepEqual((await read(mdta(["workflow", "Workflow"], [[1, "A"], [2, "B"]]))).tags, { Workflow: "A;B" });
+    // A legacy comment atom and a later mdta COMMENT key become one COMMENT tag: no exact-case envelope.
+    const merged = await read(mdta(["COMMENT"], [[1, "y"]], [v.legacyItem("©cmt", v.data("x"))]));
+    assert.deepEqual(merged.tags, { comment: "y;x" });
+    const mergedUpper = await read(v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["COMMENT"]), v.ilst(v.legacyItem("©cmt", v.data("x")), v.item(1, v.data("y")))))));
+    assert.deepEqual(mergedUpper.tags, { COMMENT: "x;y" });
+    assert.deepEqual(selectVideoCarrier(mergedUpper.tags).records, {});
+    // Matroska keeps the last spelling and value; a string-less SimpleTag deletes any spelling.
+    assert.deepEqual((await read(v.mkv([v.tagsEl(v.tag([v.simpleTag("PROMPT", GRAPH), v.simpleTag("Prompt", "B")]))]))).tags, { Prompt: "B" });
+    assert.deepEqual((await read(v.mkv([v.tagsEl(v.tag([v.simpleTag("PROMPT", GRAPH), v.simpleTag("Prompt", undefined)]))]))).tags, {});
+    // ffprobe's format_tags filter folds ASCII only: a Kelvin-sign "workflow" is never reported.
+    assert.deepEqual((await read(mdta(["prompt", "worKflow"], [[1, GRAPH], [2, WORKFLOW]]))).tags, { prompt: GRAPH });
+    // data types 0 and 3 are Mac Roman to ffmpeg (types 1 and 4 UTF-8, type 2 not text).
+    const cafe = [0x63, 0x61, 0x66, 0x8e];
+    for (const [type, expected] of [[0, "café"], [3, "café"], [1, "caf�"], [4, "caf�"]]) {
+        assert.deepEqual((await read(mdta(["prompt"], [[1, cafe, type]]))).tags, { prompt: expected }, `type ${type}`);
+    }
+    assert.deepEqual((await read(mdta(["prompt"], [[1, cafe, 2]]))).tags, {});
+    const high = Uint8Array.from({ length: 128 }, (_, index) => 0x80 + index);
+    const roomy = Buffer.concat([high, Buffer.alloc(400, 0x7c)]);
+    assert.equal((await read(mdta(["prompt"], [[1, roomy, 0]]))).tags.prompt, new TextDecoder("macintosh").decode(roomy));
+    // ffmpeg writes the UTF-8 into twice the input size: a long non-ASCII value is cut,
+    // here inside U+00DA, which ffprobe then replaces (its own output for these bytes).
+    const tight = Buffer.concat([high, Buffer.from([0x7c, 0x01, 0x7f])]);
+    assert.equal((await read(mdta(["prompt"], [[1, tight, 0]]))).tags.prompt, new TextDecoder("macintosh").decode(high).slice(0, 114) + "�");
+});
+
 test("budgets: roles share 2 MiB, an oversized workflow is left unread, duplicates and the total are bounded", async () => {
     const limited = { status: "limited", reason: "metadata-limit" };
     // Role tags over 2 MiB together stop the read (the server fails the whole read).
@@ -367,8 +398,10 @@ test("budgets: roles share 2 MiB, an oversized workflow is left unread, duplicat
     const atWorkflow = await read(v.perKeyMp4({ workflow: fill(0x7b, WORKFLOW_BUDGET) }));
     assert.deepEqual([atWorkflow.limited, atWorkflow.tags.workflow.length], [[], WORKFLOW_BUDGET]);
     // Fold-duplicates draw from the duplicate budgets (2x each class), then stop.
-    const twice = await read(v.perKeyMkv({ PROMPT: fill(0x41, ROLE_BUDGET), prompt: fill(0x41, ROLE_BUDGET) }));
-    assert.deepEqual(Object.keys(twice.tags).sort(), ["PROMPT", "prompt"]);
+    // (ffmpeg keeps one tag per ASCII-folded name: Matroska keeps the last spelling and value.)
+    const twice = await read(v.perKeyMkv({ PROMPT: fill(0x41, ROLE_BUDGET), prompt: fill(0x42, ROLE_BUDGET) }));
+    assert.deepEqual(Object.keys(twice.tags), ["prompt"]);
+    assert.equal(twice.tags.prompt[0], "B");
     const thrice = await read(v.perKeyMkv({ PROMPT: fill(0x41, ROLE_BUDGET), prompt: fill(0x41, ROLE_BUDGET), Prompt: fill(0x41, ROLE_BUDGET + 1) }));
     assert.deepEqual(thrice, limited);
     const workflowTwice = await read(v.perKeyMkv({ WORKFLOW: fill(0x7b, WORKFLOW_BUDGET), workflow: fill(0x7b, WORKFLOW_BUDGET) }));

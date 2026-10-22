@@ -367,11 +367,11 @@ def _run_oracle(testcase, entries):
 
 
 def _known_tags(tags):
-    """The tags the local reader keeps: per-key names folded, envelope names exact."""
+    """The tags ffprobe reports to the server: the six probed names, ASCII folded."""
     return {
         key: value
         for key, value in tags.items()
-        if key.lower() in PER_KEY_NAMES or key in ("comment", "description")
+        if key.lower() in PER_KEY_NAMES or key.lower() in ("comment", "description")
     }
 
 
@@ -451,7 +451,8 @@ def _mdta_udta(tags):
 def _mdta_items(names, items, keys_boxes=(), legacy=()):
     """``moov/udta/meta`` from raw bytes: mdta key ``names``, ``(index, value)``
     items, extra ``keys`` boxes after the first (each a list of names) and
-    ``(fourcc, value)`` legacy atoms in the same ``ilst``."""
+    ``(fourcc, value)`` legacy atoms in the same ``ilst``. An item may carry a
+    third member, its ``data`` type (default 1, UTF-8)."""
 
     def keys(entries):
         return _full_box(
@@ -460,12 +461,12 @@ def _mdta_items(names, items, keys_boxes=(), legacy=()):
             *(struct.pack(">I", 8 + len(name)) + b"mdta" + name for name in entries),
         )
 
-    def data(value):
-        return _box(b"data", struct.pack(">II", 1, 0), value)
+    def data(value, kind=1):
+        return _box(b"data", struct.pack(">II", kind, 0), value)
 
     ilst = _box(
         b"ilst",
-        *(_box(struct.pack(">I", index), data(value)) for index, value in items),
+        *(_box(struct.pack(">I", item[0]), data(*item[1:])) for item in items),
         *(_box(fourcc.encode("latin-1"), data(value)) for fourcc, value in legacy),
     )
     hdlr = _full_box(b"hdlr", b"\0\0\0\0", b"mdta", bytes(12), b"\0")
@@ -751,6 +752,28 @@ class LocalVideoCarrierParityTests(unittest.TestCase):
             "oversized_workflow_beside_envelope": _mdta_items(
                 [b"workflow"], [(1, oversized)], legacy=[("\u00a9cmt", envelope)]
             ),
+            # ffmpeg holds one tag per ASCII-folded name (MP4 joins with ";"
+            # under the last spelling), its format_tags filter folds ASCII only,
+            # and data types 0 and 3 are Mac Roman text.
+            "case_variant_keys": _mdta_items(
+                [b"prompt", b"Prompt", b"workflow"],
+                [(1, graph), (2, b"x"), (3, workflow)],
+            ),
+            "legacy_comment_then_upper_key": _mdta_items(
+                [b"COMMENT"],
+                [(1, b"y")],
+                legacy=[("\u00a9cmt", envelope)],
+            ),
+            "kelvin_sign_workflow": _mdta_items(
+                [b"prompt", "wor\u212aflow".encode()], [(1, graph), (2, workflow)]
+            ),
+            "mac_roman_types": _mdta_items(
+                [b"prompt", b"workflow"],
+                [
+                    (1, b'{"1":{"class_type":"caf\x8e","inputs":{}}}', 0),
+                    (2, b'{"n":"\x80\x81' + bytes(range(0x80, 0x100)) + b'|"}', 3),
+                ],
+            ),
             # A repeat joined onto it makes the first probe overflow: the server's
             # role-only re-probe reports no per-key workflow.
             "first_probe_overflows": _mdta_items(
@@ -768,6 +791,13 @@ class LocalVideoCarrierParityTests(unittest.TestCase):
         mkv[at] = 0xFF
         files["matroska_invalid_byte"] = self.directory / "invalid-byte.mkv"
         files["matroska_invalid_byte"].write_bytes(bytes(mkv))
+        # Its WORKFLOW TagName renamed to "Prompt": ffmpeg keeps the last of the
+        # two spellings, so the server reads one prompt, not a duplicate.
+        case_mkv = (VIDEO_FIXTURES / "core.mkv").read_bytes()
+        files["matroska_case_variants"] = self.directory / "case-variants.mkv"
+        files["matroska_case_variants"].write_bytes(
+            case_mkv.replace(b"WORKFLOW", b"Prompt\0\0")
+        )
         observed = _run_oracle(
             self, [{"name": name, "path": str(path)} for name, path in files.items()]
         )
@@ -783,7 +813,14 @@ class LocalVideoCarrierParityTests(unittest.TestCase):
                     _canonical_bytes(observed[name]["metadata"]),
                     _canonical_bytes(metadata),
                 )
-                self.assertEqual(metadata["status"], "available")
+                self.assertEqual(
+                    metadata["status"],
+                    (
+                        "absent"
+                        if name == "legacy_comment_then_upper_key"
+                        else "available"
+                    ),
+                )
         # The re-probe has its own bound: an 8 MiB envelope beside the oversized
         # workflow fails the server's read and stops the local one.
         wide = self.directory / "reprobe_overflows.mp4"
@@ -804,6 +841,20 @@ class LocalVideoCarrierParityTests(unittest.TestCase):
         with self.assertRaises(MetadataReadError):
             read_inspection_file(wide)
         # The server outcomes these shapes pin.
+        variants = read_inspection_file(files["case_variant_keys"])
+        self.assertEqual(variants.metadata["prompt"], GRAPH + ";x")
+        upper = read_inspection_file(files["legacy_comment_then_upper_key"])
+        self.assertEqual((upper.metadata, upper.video_carrier_text), ({}, None))
+        self.assertNotIn(
+            "workflow", read_inspection_file(files["kelvin_sign_workflow"]).metadata
+        )
+        mac = read_inspection_file(files["mac_roman_types"])
+        self.assertIn("caf\u00e9", mac.metadata["prompt"])
+        self.assertIn("\u00c4\u00c5", mac.metadata["workflow"])
+        self.assertIn(
+            '"last_node_id"',
+            read_inspection_file(files["matroska_case_variants"]).metadata["prompt"],
+        )
         latin1 = read_inspection_file(files["latin1_byte_in_workflow"])
         self.assertEqual(latin1.metadata["workflow"], '{"a":"caf\ufffd"}')
         self.assertEqual(

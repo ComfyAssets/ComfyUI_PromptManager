@@ -10,9 +10,11 @@
 //
 // What ffprobe reports is the oracle: ISO-BMFF mdta keys are reported verbatim and
 // the legacy ilst atoms ©cmt/desc as comment/description; Matroska TagNames are
-// reported as written (ffmpeg upper-cases them at mux time). Envelope names are
-// exact-case (comment, description) and the per-key names fold ASCII case in the
-// selector, exactly as the server folds them.
+// reported as written (ffmpeg upper-cases them at mux time). ffmpeg keeps one tag
+// per ASCII-folded name (the last spelling) and ffprobe's tag filter folds ASCII
+// only, so the reader does too. Envelope names are exact-case (comment,
+// description) and the per-key names fold case in the selector, exactly as the
+// server folds them.
 
 import { INT_MAX_STR_DIGITS } from "./local-projection.mjs";
 
@@ -45,6 +47,20 @@ const METADATA_KEYS = ["prompt", "workflow", "parameters", "comfyassets_prompt_p
 const ENVELOPE_KEYS = ["comment", "description"];
 const PER_KEY_NAMES = new Set(METADATA_KEYS);
 const ENVELOPE_NAMES = new Set(ENVELOPE_KEYS);
+// The tags ffprobe is asked for (format_tags=...): its filter, like ffmpeg's tag
+// dictionary, matches names ignoring ASCII case only.
+const PROBED_NAMES = new Set([...METADATA_KEYS, ...ENVELOPE_KEYS]);
+// ffmpeg's mac_to_unicode for bytes 0x80-0xFF (Mac OS Roman, checked through ffprobe).
+const MAC_ROMAN =
+    "\u00c4\u00c5\u00c7\u00c9\u00d1\u00d6\u00dc\u00e1\u00e0\u00e2\u00e4\u00e3\u00e5\u00e7\u00e9\u00e8" +
+    "\u00ea\u00eb\u00ed\u00ec\u00ee\u00ef\u00f1\u00f3\u00f2\u00f4\u00f6\u00f5\u00fa\u00f9\u00fb\u00fc" +
+    "\u2020\u00b0\u00a2\u00a3\u00a7\u2022\u00b6\u00df\u00ae\u00a9\u2122\u00b4\u00a8\u2260\u00c6\u00d8" +
+    "\u221e\u00b1\u2264\u2265\u00a5\u00b5\u2202\u2211\u220f\u03c0\u222b\u00aa\u00ba\u03a9\u00e6\u00f8" +
+    "\u00bf\u00a1\u00ac\u221a\u0192\u2248\u2206\u00ab\u00bb\u2026\u00a0\u00c0\u00c3\u00d5\u0152\u0153" +
+    "\u2013\u2014\u201c\u201d\u2018\u2019\u00f7\u25ca\u00ff\u0178\u2044\u20ac\u2039\u203a\ufb01\ufb02" +
+    "\u2021\u00b7\u201a\u201e\u2030\u00c2\u00ca\u00c1\u00cb\u00c8\u00cd\u00ce\u00cf\u00cc\u00d3\u00d4" +
+    "\uf8ff\u00d2\u00da\u00db\u00d9\u0131\u02c6\u02dc\u00af\u02d8\u02d9\u02da\u00b8\u02dd\u02db\u02c7";
+const MAC_ROMAN_UTF8 = Array.from(MAC_ROMAN, (char) => new TextEncoder().encode(char));
 // ffprobe's names for the legacy ilst atoms that can carry an envelope.
 const LEGACY_ATOMS = new Map([["©cmt", "comment"], ["desc", "description"], ["©des", "description"]]);
 const ASF_GUID = [0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c];
@@ -195,6 +211,28 @@ function ffprobeText(bytes) {
     return parts.join("");
 }
 
+/** ASCII-only lower case, as ffmpeg's av_strcasecmp compares names. */
+function asciiLower(name) {
+    return name.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
+}
+
+/**
+ * ffmpeg's mov_read_mac_string: Mac Roman bytes as UTF-8 into a buffer of twice
+ * the input size, so a long non-ASCII value is cut, possibly inside a character
+ * (ffprobe then replaces the cut sequence).
+ */
+function macRomanBytes(bytes) {
+    const limit = bytes.length * 2;
+    const out = new Uint8Array(limit);
+    let length = 0;
+    for (const byte of bytes) {
+        if (length >= limit) break;
+        if (byte < 0x80) out[length++] = byte;
+        else for (const unit of MAC_ROMAN_UTF8[byte - 0x80]) if (length < limit) out[length++] = unit;
+    }
+    return out.subarray(0, length);
+}
+
 /** UTF-8 length as Python's ``encode("utf-8", "surrogatepass")`` counts it. */
 function utf8Length(text) {
     let total = 0;
@@ -281,11 +319,19 @@ function createWalk(reader, signal, pacer) {
     let duplicateWorkflow = 0;
     let total = 0;
     let workflowRead = 0; // bytes of per-key workflow tags read, which the re-probe leaves out
-    let oversized = null; // {name, size}: the unread first per-key workflow
+    let oversized = null; // {size}: the unread first per-key workflow
+    // ffmpeg keeps one tag per ASCII-folded name, under the spelling set last.
+    const spelling = new Map();
     const overLimit = () => limited("metadata-limit", "Video metadata exceeds inspection limits");
     const forgetOversized = () => {
         oversized = null;
         limitedRecords.splice(limitedRecords.indexOf("workflow"), 1);
+    };
+    const current = (folded) => (spelling.has(folded) ? tags[spelling.get(folded)] : undefined);
+    const store = (name, folded, value) => {
+        if (spelling.has(folded)) delete tags[spelling.get(folded)];
+        tags[name] = value;
+        spelling.set(folded, name);
     };
     return {
         tags,
@@ -297,13 +343,16 @@ function createWalk(reader, signal, pacer) {
             return reader.read(offset, offset + length);
         },
         read: (start, end) => reader.read(start, end),
-        /** Whether `name` is a carrier the server reads (per-key folded, envelope exact). */
+        /** Whether ffprobe reports `name` to the server (the probed names, ASCII case folded). */
         known(name) {
-            return PER_KEY_NAMES.has(name.toLowerCase()) || ENVELOPE_NAMES.has(name);
+            return PROBED_NAMES.has(asciiLower(name));
         },
+        /** A string-less Matroska SimpleTag deletes the name, ignoring ASCII case. */
         remove(name) {
-            if (oversized && oversized.name === name) forgetOversized();
-            delete tags[name];
+            const folded = asciiLower(name);
+            if (current(folded) === OVERSIZED_WORKFLOW) forgetOversized();
+            if (spelling.has(folded)) delete tags[spelling.get(folded)];
+            spelling.delete(folded);
         },
         /**
          * Settles the oversized workflow as the server's probes would: when the
@@ -312,32 +361,37 @@ function createWalk(reader, signal, pacer) {
          */
         finish() {
             if (!oversized || total + oversized.size <= VIDEO_TAG_READ_BYTES) return;
-            for (const name of Object.keys(tags)) if (name.toLowerCase() === "workflow") delete tags[name];
+            // The re-probe leaves the per-key workflow out; it stays "limited".
+            if (spelling.has("workflow")) delete tags[spelling.get("workflow")];
+            spelling.delete("workflow");
             if (total - workflowRead > VIDEO_REPROBE_BYTES) throw overLimit();
         },
         /**
          * Reads and keeps the tag `name` (a known carrier, see `known`) whose value
          * spans [start, end), within the budgets. `join` appends to an existing value
-         * with that separator (ISO-BMFF repeats, as ffprobe reports them); `text`
-         * stores an already decoded value.
+         * of the same folded name with that separator (ISO-BMFF repeats, as ffprobe
+         * reports them; Matroska replaces); `text` stores an already decoded value
+         * and `mac` decodes Mac Roman.
          */
-        async value(name, start, end, { join = null, text = null } = {}) {
+        async value(name, start, end, { join = null, text = null, mac = false } = {}) {
             const size = end - start;
-            const folded = name.toLowerCase();
+            const folded = asciiLower(name);
+            const previous = current(folded);
             if (PER_KEY_NAMES.has(folded)) {
                 const first = !seen.has(folded);
                 seen.add(folded);
                 if (folded === "workflow") {
                     if (first && size > WORKFLOW_METADATA_BYTES) {
-                        oversized = { name, size };
-                        tags[name] = OVERSIZED_WORKFLOW;
+                        oversized = { size };
+                        store(name, folded, OVERSIZED_WORKFLOW);
                         limitedRecords.push("workflow");
                         return;
                     }
-                    if (tags[name] === OVERSIZED_WORKFLOW) {
+                    if (previous === OVERSIZED_WORKFLOW) {
                         // An ISO-BMFF repeat joins onto the unread value, still over budget.
                         if (join !== null) {
                             oversized.size += size;
+                            store(name, folded, OVERSIZED_WORKFLOW);
                             return;
                         }
                         // Matroska keeps a name's last value: the oversized one is gone.
@@ -355,8 +409,12 @@ function createWalk(reader, signal, pacer) {
             }
             total += size;
             if (total > VIDEO_TAG_READ_BYTES) throw overLimit();
-            const value = text ?? ffprobeText(untilNul(await reader.read(start, end)));
-            tags[name] = join !== null && name in tags ? `${tags[name]}${join}${value}` : value;
+            let value = text;
+            if (value === null) {
+                const bytes = await reader.read(start, end);
+                value = ffprobeText(untilNul(mac ? macRomanBytes(bytes) : bytes));
+            }
+            store(name, folded, join !== null && previous !== undefined ? `${previous}${join}${value}` : value);
         },
     };
 }
@@ -481,7 +539,8 @@ function integerText(bytes, signed) {
 /**
  * ilst items: a legacy fourcc or a `keys` index, then the leading run of `data`
  * children. As ffprobe reports them, repeated values of one name join with ";",
- * types 0, 1 and 4 are text, 21 and 22 are integers, other types are not tags.
+ * types 1 and 4 are UTF-8 text, 0 and 3 Mac Roman text, 21 and 22 integers, other
+ * types are not tags.
  */
 async function readIlst(walk, ilst, state) {
     let offset = ilst.bodyStart;
@@ -505,7 +564,9 @@ async function readIlst(walk, ilst, state) {
             const start = inner + 16;
             const end = inner + dataSize;
             inner = end;
-            if (type === 0 || type === 1 || type === 4) await walk.value(name, start, end, { join: ";" });
+            // Types 0 and 3 are Mac Roman text to ffmpeg; 1 and 4 are UTF-8.
+            if (type === 0 || type === 3) await walk.value(name, start, end, { join: ";", mac: true });
+            else if (type === 1 || type === 4) await walk.value(name, start, end, { join: ";" });
             else if ((type === 21 || type === 22) && end - start <= 8) {
                 const text = integerText(await walk.read(start, end), type === 21);
                 if (text !== null) await walk.value(name, start, end, { join: ";", text });
