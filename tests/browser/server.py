@@ -60,6 +60,9 @@ class TestModel:
     loaded = None
     # Models the Tag image dialog workflows mark as not downloaded.
     unavailable: set = set()
+    # Scored names the concept comparisons answer instead of the fixed list
+    # (``/__test__/tagging/suggestions``); None keeps the fixed list.
+    suggestions: list | None = None
 
     def get_models_status(self) -> dict:
         return {
@@ -91,6 +94,11 @@ class TestModel:
     ) -> list[tuple[str, float | None]]:
         """Fixed scored suggestions (WD14) or unscored ones (language models)."""
         scored = self.loaded is not None and self.loaded.startswith("wd14")
+        if self.suggestions is not None:
+            return [
+                (name, confidence if scored else None)
+                for name, confidence in self.suggestions[:limit]
+            ]
         names = ["sandstone", "desert", "arch", "sky", "rock", "dune", "canyon"]
         names += [f"tag_{index:02d}" for index in range(100)]
         return [
@@ -478,7 +486,8 @@ def create_app(root: Path) -> web.Application:
         if (
             request.query
             or not isinstance(data, dict)
-            or set(data) - set(limits)
+            or set(data) - set(limits) - {"short_seedless"}
+            or not isinstance(data.get("short_seedless", False), bool)
             or any(
                 isinstance(data.get(key, 0), bool)
                 or not isinstance(data.get(key, 0), int)
@@ -497,6 +506,7 @@ def create_app(root: Path) -> web.Application:
                 root,
                 extra_images=data.get("extra_images", 0),
                 seedless_images=data.get("seedless_images", 0),
+                short_seedless=data.get("short_seedless", False),
             )
         )
         return web.json_response({"success": True, **manifest})

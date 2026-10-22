@@ -803,8 +803,10 @@ sorted alphabetically). Removed toolbar and filter-row items flow again from the
 concept's own boxes (`reflow`), checked against the concept page with those items
 removed at runtime. Masonry tops and heights are compared unrounded, within one layout
 unit per card above in the column (D3). `one footer height for the collection (D3)`
-seeds two seedless files (`seedless_images` on `/__test__/concept/reset`) and asserts
-that every row reserves the tallest footer.
+seeds two seedless files (`seedless_images` on `/__test__/concept/reset`, with
+`short_seedless` so their "96 × 72 · PNG" subtitle stays on one line beside Info and
+Tag) and asserts that every row reserves the tallest footer and that their own footer
+is shorter than the row it reserves.
 
 ### Images page controls and recorded deviations (#249 PR C)
 
@@ -1089,9 +1091,15 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   checkbox rows: `span.chip.tag-suggestion` in a `.tags` row, in the concept's
   checked-row tokens (accent border, `--soft-blue`), each with the name, the
   confidence (`98%` for WD14, "Suggested" for language models) and a × "Remove
-  <tag>". At most the requested count, all preselected. The help copy reads
-  "Remove anything you do not want to add." and removing the last chip shows "All
-  suggestions removed. Generate again or enter tags manually."
+  <tag>". A chip has the concept `.chip`'s 4px corner (the later `.tag-suggestion`
+  row rule would give 5px) around the row's own 12px text. At most the requested
+  count, all preselected. The help copy reads "Remove anything you do not want to
+  add." and removing the last chip shows "All suggestions removed. Generate again or
+  enter tags manually." The concept's markup carries that initial sentence ("Uncheck
+  anything…"), but its `renderTagModelOptions` (a1062–1076) replaces it with "Generate
+  suggestions with the selected model before approving." as soon as the dialog opens,
+  so the concept never shows it; production shows ruling T4's sentence on open and
+  the model-changed sentence after a model change.
 - **D84** (plan D61, rulings T1/T2): the Tagging model options are legacy's four
   engines in the mock's order with legacy labels and sizes (`WD14 SwinV2 · ~400
   MB`, `WD14 ViT · ~400 MB`, `GGUF JoyCaption (Recommended) · ~4.5 GB` in the
@@ -1117,6 +1125,62 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   its "Auto-tag images" always opens the dialog. Production opens it for the image
   selected in Images when it was last left; with none it is `aria-disabled` and
   pressing it toasts "Select an image in Images first." (no new chrome).
+- **D29** (no prototype copy) in the dialog: no "Prototype · suggestions are
+  simulated…" note, the status reads "Suggestions from <model>. Approve tags to save."
+  (not "Sample suggestions from …"), and the toast has no " in this tab".
+
+After a confirmed save the selected file's inspection is re-read quietly: the panel
+and the viewer keep the current details until the new answer lands, with no "Loading
+file details…" in between (`createInspectionController().refresh()`). While a Tags
+filter or a search is active the saved file may start or stop matching, so Images
+re-reads its loaded range in place (`createImageStream().refresh()`: the same query
+from the first page until the loaded count, published once). The cards, the scroll
+position and the selection stay while the selected file still matches; when it no
+longer does, the panel follows the collection (its first file), as after a reload.
+A refresh never runs beside a page load already in flight. Browser tests: "the
+post-save re-read keeps the panel content until the new read lands", "a save under a
+Tags filter re-reads the listing: …" and "a save under a search keeps the scroll
+position and the loaded range".
+
+Concept comparison (`tests/browser/tagging-concept.spec.mjs` with
+`tagging-canonical-comparison.mjs`, plan Task C4): production runs on the concept
+fixture with the concept image's own tags (`cinematic, blue_hour, architecture`)
+saved as its image tags, and the fake model answers the concept's own sample
+(`/__test__/tagging/suggestions`: mountain 0.98, observatory 0.95, snow 0.88,
+blue_hour 0.81), so the dialog's inventory (order, text, field attributes, tokens,
+preview box, chips, status, sticky actions) must equal the concept's at 1600×1100 and
+390×844, dark and light: opened, generated with WD14 and generated with a language
+model, plus the empty result (the concept above its own threshold), the review-scoped
+dialog with its scope note and the card's Info and Tag group (M1). `mapConceptTagging`
+applies only D29, D83, D84 and D91; a mutation check (the model panel's border
+removed, the primary relabelled) shows the comparison notices a change. Every
+production-versus-concept difference of PR C and its record:
+
+| Difference | Record |
+| --- | --- |
+| Removable chips with × instead of checked checkbox rows; "Remove anything…"; the all-removed copy; the initial sentence on open | D83 (ruling T4) |
+| Legacy engine labels and values, GGUF in the Ollama slot, server default instructions | D84 (rulings T1/T2) |
+| Suggestions count field | D91 (ruling T3-bulk) |
+| No prototype note, "Suggestions from …", no " in this tab" | D29 |
+| Image tags first in the inspector and viewer chip row | D88 (ruling T7/C2) |
+| Auto-tag images `aria-disabled` without a selected image | D115 |
+| Retry leads the actions when the controller allows it | ruling T5 (state text only otherwise) |
+| States the concept lacks (busy, conflict, changed storage or file, unconfirmed save, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
+
+Native image tagging (#249 PR B routes, PR C UI): `POST
+/prompt_manager/image-annotations/observe` (capture one listed file, its saved set and
+`tag_revision`), `GET`/`DELETE /prompt_manager/image-annotations/capture/<token>`
+(the preview and its release), `POST /prompt_manager/image-annotations/suggest` (the
+gated top-N suggestions, at most the requested count) and `PUT
+/prompt_manager/image-annotations/tags` (re-hash, then save one byte record's set).
+Cheap reads follow spec amendment S1 (the verified `(size, mtime_ns)` fingerprint;
+residual risk above, under "Image annotations schema"). No automated test downloads
+or loads a model: the browser server injects `TestModel`, whose `download_model`
+raises, and every tagging spec asserts no `/autotag/download/` request. Capture
+limits are those of the capture store above (256 MiB per file, 8 completed captures,
+512 MiB reserved, 900 s idle, 1800 s hard). The browser fixtures release every capture
+on reset. PR C is HTML, CSS and JS only (no restart); the PR B routes it calls need a
+maintainer ComfyUI restart once.
 
 Test files: `tests/browser/workspace-tagging.spec.mjs` (the fixture is
 `tests/browser/workspace_tagging_fixture.py`: two files sharing one prompt and
@@ -1127,11 +1191,13 @@ no model files; every test asserts no download request),
 `tests/js/workspace-images-lifecycle.test.js`, and for D88
 `tests/js/workspace-file-inspector.test.js`,
 `tests/js/workspace-inspection-state.test.js` and `tests/browser/inspector-concept.spec.mjs`
-("image tags saved on the concept image keep the inspector equal to the concept").
+("image tags saved on the concept image keep the inspector equal to the concept"), and
+for the comparison `tests/browser/tagging-concept.spec.mjs` and
+`tests/js/workspace-images-state.test.js` (the in-place refresh).
 
 ```sh
 node --test tests/js/workspace-image-tagging*.test.js tests/js/workspace-images-lifecycle.test.js
-npm run --prefix tools/vendor test:workflows -- workspace-tagging.spec.mjs \
+npm run --prefix tools/vendor test:workflows -- workspace-tagging.spec.mjs tagging-concept.spec.mjs \
   workspace-vocabulary.spec.mjs images-concept.spec.mjs --project chromium --project touch
 ```
 

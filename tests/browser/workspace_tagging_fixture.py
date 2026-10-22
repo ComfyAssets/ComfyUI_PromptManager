@@ -186,6 +186,7 @@ def register_tagging_commands(
         if not 0 <= extra <= MAX_EXTRA_IMAGES:
             raise web.HTTPBadRequest()
         model.unavailable = set()
+        model.suggestions = None
         model.loaded = None
         # A test that ends with the dialog open leaves its capture behind; drop
         # every capture so the next test starts below the store's limits.
@@ -213,3 +214,45 @@ def register_tagging_commands(
             raise web.HTTPBadRequest()
         model.unavailable = set(data["unavailable"])
         return web.json_response({"success": True})
+
+    @routes.post("/__test__/tagging/suggestions")
+    async def suggestions(request: web.Request) -> web.Response:
+        """Answer Generate with fixed scored names (the concept's own sample).
+
+        ``{"scored": [[name, confidence], ...]}`` (at most 100, confidence in
+        [0, 1]) or ``{"scored": null}`` for the default list. Every capture is
+        released too, so a concept comparison starts below the store's limits
+        whatever the previous test left open.
+        """
+        data = await request.json() if request.can_read_body else None
+        scored = data.get("scored") if isinstance(data, dict) else None
+        if (
+            request.query
+            or not isinstance(data, dict)
+            or set(data) != {"scored"}
+            or not (scored is None or _valid_scored(scored))
+        ):
+            raise web.HTTPBadRequest()
+        model.suggestions = (
+            None if scored is None else [(name, float(value)) for name, value in scored]
+        )
+        model.unavailable = set()
+        await api._run_in_executor(api.close_annotation_captures)
+        return web.json_response({"success": True})
+
+
+def _valid_scored(scored: object) -> bool:
+    return (
+        isinstance(scored, list)
+        and len(scored) <= 100
+        and all(
+            isinstance(row, list)
+            and len(row) == 2
+            and isinstance(row[0], str)
+            and 0 < len(row[0]) <= 50
+            and isinstance(row[1], (int, float))
+            and not isinstance(row[1], bool)
+            and 0 <= row[1] <= 1
+            for row in scored
+        )
+    )

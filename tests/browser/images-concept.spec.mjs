@@ -533,8 +533,9 @@ test('one image appended by scrolling reads in the singular',async({page,request
 });
 
 // D3 (one footer height for the collection): bounded rendering cannot measure unrendered cards, so every row reserves
-// the tallest measured footer. Two seedless files (D11 "W × H · PNG", one line) form the first row at 390px, where
-// every concept subtitle wraps: their row is as tall as the wrapped rows, and every concept row moves down by one.
+// the tallest measured footer. Two seedless files (D11 "W × H · PNG", one line: a short "96 × 72" beside Info and Tag)
+// form the first row at 390px, where every concept subtitle wraps: their row is as tall as the wrapped rows, and every
+// concept row moves down by one.
 test('one footer height for the collection (D3)',async({page,request})=>{
     // A second fixture seed (dozens of PNGs and their thumbnails) runs inside the test.
     test.setTimeout(120_000);
@@ -543,7 +544,7 @@ test('one footer height for the collection (D3)',async({page,request})=>{
     const reference=await inventoryOf(page,'#main');
     expect(reference.grid.columns).toBe(2);
     expect(reference.cards.every(card=>card.info.p.height>parseFloat(card.info.p.lineHeight))).toBe(true);
-    const manifest=await seedConcept(request,{seedless_images:2});
+    const manifest=await seedConcept(request,{seedless_images:2,short_seedless:true});
     await openProductionLoaded(page,'dark','no-preference',FIXTURE_IMAGES+2);
     const actual=await inventoryOf(page,'#workspace-main');
     const box=card=>({left:card.left,top:card.top,width:card.width,height:card.height});
@@ -552,8 +553,10 @@ test('one footer height for the collection (D3)',async({page,request})=>{
         ...reference.cards.slice(0,4).map(card=>({...box(card),top:card.top+pitch}))]);
     const seedless=actual.cards.slice(0,2);
     expect(seedless.map(card=>card.open.label)).toEqual(manifest.seedless.map(image=>`Open ${image.filename}`));
-    expect(seedless.map(card=>card.info.p.text)).toEqual(['1536 × 1152 · PNG','1536 × 1152 · PNG']);
-    // Their own footer fits the row it reserves. With Info and Tag (#249 C2, the concept's own pair) their subtitle
-    // wraps at 390px as the concept's do, so it is no longer one line shorter; the boxes above pin the reservation.
-    for(const card of seedless)expect(card.info.height).toBeLessThanOrEqual(reference.cards[0].info.height);
+    expect(seedless.map(card=>card.info.p.text)).toEqual(['96 × 72 · PNG','96 × 72 · PNG']);
+    // Their own footer is one line shorter than the row it reserves.
+    for(const card of seedless) {
+        expect(card.info.p.height).toBeLessThanOrEqual(parseFloat(card.info.p.lineHeight)+0.5);
+        expect(card.info.height).toBeLessThan(reference.cards[0].info.height);
+    }
 });
