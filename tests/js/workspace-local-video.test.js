@@ -254,10 +254,6 @@ test("containers fail closed", async () => {
         ["64-bit size below its header", v.concat(v.ftyp(), v.box("mdat", v.opts({ largesize: 12 })), v.moov(v.mdtaUdta({ prompt: GRAPH })))],
         ["keys count larger than the entries", v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt"], { count: 3 }), v.ilst(v.item(1, v.data(GRAPH))))))],
         ["keys entry overrunning the box", v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.box("keys", v.u32(0), v.u32(1), v.u32(90), v.latin1("mdta"), v.utf8("prompt")), v.ilst(v.item(1, v.data(GRAPH))))))],
-        ["ilst index 0", v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt"]), v.ilst(v.item(0, v.data(GRAPH))))))],
-        ["ilst index out of range", v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt"]), v.ilst(v.item(2, v.data(GRAPH))))))],
-        ["invalid UTF-8 in a tag value", v.perKeyMp4({ prompt: [0x7b, 0xff, 0xfe, 0x7d] })],
-        ["invalid UTF-8 in a key name", v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys([Uint8Array.from([0xc3, 0x28])]), v.ilst(v.item(1, v.data(GRAPH))))))],
         ["no moov box", v.concat(v.ftyp(), v.mdat(), v.free(32))],
         ["not a container at all", v.utf8("#EXTM3U\n#EXT-X-VERSION:3\n".padEnd(64, "x"))],
         ["bad VINT: zero ID byte", v.concat(v.ebmlHeader(), v.idBytes(ID.Segment), v.vint(20, { width: 8 }), [0x00, 0x81, 0x00], new Uint8Array(17))],
@@ -266,8 +262,6 @@ test("containers fail closed", async () => {
         ["element past the end of the file", v.concat(v.ebmlHeader(), v.idBytes(ID.Segment), v.vint(5000, { width: 8 }), v.globalTags({ PROMPT: GRAPH }))],
         ["unknown DocType", v.perKeyMkv({ PROMPT: GRAPH }, { docType: "avi" })],
         ["EBML header without a DocType", v.concat(v.el(ID.EBML, v.el(ID.EBMLVersion, [1])), v.segment([v.globalTags({ PROMPT: GRAPH })]))],
-        ["invalid UTF-8 in a TagString", v.mkv([v.tagsEl(v.tag([v.simpleTag("PROMPT", [0xff, 0xfe])]))])],
-        ["invalid UTF-8 in a TagName", v.mkv([v.tagsEl(v.tag([v.simpleTag([0xff], GRAPH)]))])],
         ["Matroska bytes after a stray size", v.concat(v.ebmlHeader(), v.idBytes(ID.Segment), v.vint(3, { width: 8 }), [0xec, 0x82, 0x00])],
     ];
     for (const [name, bytes] of rows) {
@@ -288,6 +282,72 @@ test("containers fail closed", async () => {
     assert.deepEqual(await readVideoTags({}), { status: "unreadable", reason: "read-failure" });
 });
 
+// ffprobe's string_validation=replace (av_utf8_decode): one U+FFFD per failing
+// decode step. A bad continuation or a truncated sequence fails one byte at a time;
+// an overlong form, a surrogate, a code above U+10FFFF, U+FFFE/U+FFFF and 5/6-byte
+// forms fail as one whole sequence. Each row was read through ffprobe 9.0.2.
+const FFPROBE_REPLACEMENTS = [
+    ["one Latin-1 byte", [0x63, 0x61, 0x66, 0xe9], "caf�"],
+    ["truncated 4-byte sequence", [0x61, 0xf0, 0x9f, 0x22, 0x62], 'a��"b'],
+    ["overlong 2-byte form", [0x61, 0xc0, 0xaf, 0x62], "a�b"],
+    ["C1 overlong lead", [0x61, 0xc1, 0xbf, 0x62], "a�b"],
+    ["overlong 3-byte form", [0x61, 0xe0, 0x80, 0x80, 0x62], "a�b"],
+    ["overlong 4-byte form", [0x61, 0xf0, 0x80, 0x80, 0x80, 0x62], "a�b"],
+    ["UTF-16 surrogate", [0x61, 0xed, 0xa0, 0x80, 0x62], "a�b"],
+    ["U+FFFE", [0x61, 0xef, 0xbf, 0xbe, 0x62], "a�b"],
+    ["U+FFFF", [0x61, 0xef, 0xbf, 0xbf, 0x62], "a�b"],
+    ["U+FDD0 is kept", [0x61, 0xef, 0xb7, 0x90, 0x62], "a﷐b"],
+    ["5-byte form", [0x61, 0xf8, 0x88, 0x80, 0x80, 0x80, 0x62], "a�b"],
+    ["6-byte form", [0x61, 0xfc, 0x84, 0x80, 0x80, 0x80, 0x80, 0x62], "a�b"],
+    ["truncated 5-byte form", [0x61, 0xf8, 0x88, 0x62], "a��b"],
+    ["above U+10FFFF", [0x61, 0xf4, 0x90, 0x80, 0x80, 0x62], "a�b"],
+    ["0xFE", [0x61, 0xfe, 0x62], "a�b"],
+    ["0xFF", [0x61, 0xff, 0x62], "a�b"],
+    ["0xFE 0xFF", [0xfe, 0xff], "��"],
+    ["lone continuation byte", [0x61, 0x80, 0x62], "a�b"],
+    ["truncated at the end", [0x61, 0xe2, 0x82], "a��"],
+    ["lead byte before a whole sequence", [0x61, 0xc3, 0xc3, 0xa9, 0x62], "a�éb"],
+    ["valid emoji", [0x61, 0xf0, 0x9f, 0x98, 0x80, 0x62], "a\u{1f600}b"],
+    ["control characters", [0x61, 0x01, 0x1f, 0x62], "a\u0001\u001fb"],
+];
+
+test("invalid UTF-8 reads as ffprobe replaces it; names that do not decode are not carriers", async () => {
+    for (const [name, bytes, expected] of FFPROBE_REPLACEMENTS) {
+        assert.deepEqual((await read(v.perKeyMp4({ prompt: bytes }))).tags, { prompt: expected }, name);
+        assert.deepEqual((await read(v.perKeyMkv({ PROMPT: bytes }))).tags, { PROMPT: expected }, `${name} (Matroska)`);
+    }
+    // A long value with one bad byte keeps every other byte.
+    const long = Buffer.concat([Buffer.from('{"a":"'), Buffer.alloc(100000, 0x78), Buffer.from([0xe9]), Buffer.from('"}')]);
+    assert.equal((await read(v.perKeyMp4({ workflow: long }))).tags.workflow, `{"a":"${"x".repeat(100000)}�"}`);
+    assert.deepEqual((await read(v.perKeyMp4({ prompt: [0x7b, 0xff, 0xfe, 0x7d] }))).tags, { prompt: "{��}" });
+    // A keys name with a bad byte is reported as "prom�pt", which is no carrier.
+    const badKey = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys([Uint8Array.from([0x70, 0x72, 0x6f, 0x6d, 0xff, 0x70, 0x74]), "prompt"]), v.ilst(v.item(1, v.data("junk")), v.item(2, v.data(GRAPH))))));
+    assert.deepEqual(await read(badKey), complete({ prompt: GRAPH }, { container: "iso-bmff", format: "isom" }));
+    const onlyBadKey = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys([Uint8Array.from([0xc3, 0x28])]), v.ilst(v.item(1, v.data(GRAPH))))));
+    assert.deepEqual((await read(onlyBadKey)).tags, {});
+    assert.deepEqual((await read(v.mkv([v.tagsEl(v.tag([v.simpleTag([0xff], GRAPH), v.simpleTag("WORKFLOW", WORKFLOW)]))]))).tags, { WORKFLOW: WORKFLOW });
+    assert.deepEqual((await read(v.mkv([v.tagsEl(v.tag([v.simpleTag("PROMPT", [0xff, 0xfe])]))]))).tags, { PROMPT: "��" });
+});
+
+test("ilst items with index 0 or past the keys are skipped; the first keys box wins", async () => {
+    const wf = '{"nodes":[]}';
+    const stray = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt", "workflow"]), v.ilst(v.item(1, v.data(GRAPH)), v.item(5, v.data("junk")), v.item(2, v.data(wf))))));
+    assert.deepEqual((await read(stray)).tags, { prompt: GRAPH, workflow: wf });
+    const zero = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt", "workflow"]), v.ilst(v.item(0, v.data("junk")), v.item(1, v.data(GRAPH)), v.item(2, v.data(wf))))));
+    assert.deepEqual((await read(zero)).tags, { prompt: GRAPH, workflow: wf });
+    assert.deepEqual((await read(v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt"]), v.ilst(v.item(2, v.data(GRAPH)))))))).tags, {});
+    // ffmpeg reads one keys box: a second one (even malformed) addresses nothing.
+    const twoKeys = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt"]), v.keys(["workflow"]), v.ilst(v.item(1, v.data(GRAPH))))));
+    assert.deepEqual((await read(twoKeys)).tags, { prompt: GRAPH });
+    const brokenSecond = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["prompt"]), v.keys(["workflow"], { count: 9 }), v.ilst(v.item(1, v.data(GRAPH))))));
+    assert.deepEqual((await read(brokenSecond)).tags, { prompt: GRAPH });
+    const emptyFirst = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys([]), v.keys(["prompt"]), v.ilst(v.item(1, v.data(GRAPH))))));
+    assert.deepEqual((await read(emptyFirst)).tags, {});
+    // A keys box too short for its count field is not read, so the next one is.
+    const shortFirst = v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.fullBox("keys"), v.keys(["prompt"]), v.ilst(v.item(1, v.data(GRAPH))))));
+    assert.deepEqual((await read(shortFirst)).tags, { prompt: GRAPH });
+});
+
 test("budgets: roles share 2 MiB, an oversized workflow is left unread, duplicates and the total are bounded", async () => {
     const limited = { status: "limited", reason: "metadata-limit" };
     // Role tags over 2 MiB together stop the read (the server fails the whole read).
@@ -299,10 +359,11 @@ test("budgets: roles share 2 MiB, an oversized workflow is left unread, duplicat
     // A per-key workflow over 4 MiB is not sliced; the result says the workflow is limited.
     const big = v.recordingBlob(v.perKeyMp4({ prompt: GRAPH, workflow: fill(0x7b, WORKFLOW_BUDGET + 1) }));
     const over = await readVideoTags(big);
-    assert.deepEqual(over, { status: "complete", container: "iso-bmff", format: "isom", tags: { prompt: GRAPH }, limited: ["workflow"] });
+    // It stays in the tag map as a marker, so the carrier choice still sees a per-key workflow.
+    assert.deepEqual(over, { status: "complete", container: "iso-bmff", format: "isom", tags: { prompt: GRAPH, workflow: m.OVERSIZED_WORKFLOW }, limited: ["workflow"] });
     assert.ok(big.ranges.every(([start, end]) => end - start < WORKFLOW_BUDGET), "the oversized workflow was never sliced");
     const bigMkv = await read(v.perKeyMkv({ WORKFLOW: fill(0x7b, WORKFLOW_BUDGET + 1), PROMPT: GRAPH }));
-    assert.deepEqual([bigMkv.limited, Object.keys(bigMkv.tags)], [["workflow"], ["PROMPT"]]);
+    assert.deepEqual([bigMkv.limited, Object.keys(bigMkv.tags)], [["workflow"], ["WORKFLOW", "PROMPT"]]);
     const atWorkflow = await read(v.perKeyMp4({ workflow: fill(0x7b, WORKFLOW_BUDGET) }));
     assert.deepEqual([atWorkflow.limited, atWorkflow.tags.workflow.length], [[], WORKFLOW_BUDGET]);
     // Fold-duplicates draw from the duplicate budgets (2x each class), then stop.
@@ -318,6 +379,39 @@ test("budgets: roles share 2 MiB, an oversized workflow is left unread, duplicat
     const tooMuch = await read(v.mp4(v.legacyUdta({ comment: fill(0x41, TAG_READ_BYTES - 10), description: fill(0x42, 11) })));
     assert.deepEqual(tooMuch, limited);
     assert.equal(m.VIDEO_TAG_READ_BYTES, TAG_READ_BYTES);
+});
+
+test("an oversized per-key workflow keeps its place in the carrier choice, as in the server's first probe", async () => {
+    const big = fill(0x7b, WORKFLOW_BUDGET + 1);
+    const envelope = '{"workflow": {"nodes": [1]}}';
+    const beside = (comment) => v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["workflow"]), v.ilst(v.item(1, v.data(big)), v.legacyItem("©cmt", v.data(comment))))));
+    const read1 = await read(beside(envelope));
+    assert.deepEqual([read1.tags, read1.limited], [{ workflow: m.OVERSIZED_WORKFLOW, comment: envelope }, ["workflow"]]);
+    // The server picks the per-key carrier (no role on either side) and marks the workflow limited.
+    assert.deepEqual(selectVideoCarrier(read1.tags, { limited: read1.limited }), { status: "complete", records: {}, record_formats: { workflow: "limited" }, carrierText: null, limited: ["workflow"] });
+    // A role envelope still wins and clears it.
+    const roleEnvelope = '{"prompt": "{}", "workflow": {"a": 1}}';
+    const read2 = await read(beside(roleEnvelope));
+    assert.deepEqual(selectVideoCarrier(read2.tags, { limited: read2.limited }), { status: "complete", records: { prompt: "{}", workflow: '{"a": 1}' }, record_formats: { prompt: "original-text", workflow: "reserialized-json" }, carrierText: roleEnvelope, limited: [] });
+    // ISO-BMFF joins a repeat onto the oversized value, which stays over budget and unread.
+    const repeat = (extra) => v.mp4(v.udta(v.meta(v.hdlr("mdta"), v.keys(["workflow", "prompt"]), v.ilst(v.item(1, v.data(big)), v.item(1, v.data(extra)), v.item(2, v.data(GRAPH))))));
+    const repeatedBlob = v.recordingBlob(repeat(WORKFLOW));
+    const repeated = await readVideoTags(repeatedBlob);
+    assert.deepEqual([repeated.tags, repeated.limited], [{ workflow: m.OVERSIZED_WORKFLOW, prompt: GRAPH }, ["workflow"]]);
+    assert.ok(repeatedBlob.ranges.every(([start, end]) => end - start < 1024), "neither workflow part was sliced");
+    // When the first probe would overflow its bound, the server re-probes without the
+    // per-key workflow: then it takes no part in the choice ...
+    const dropped = await read(repeat(fill(0x41, TAG_READ_BYTES - WORKFLOW_BUDGET)));
+    assert.deepEqual([dropped.tags, dropped.limited], [{ prompt: GRAPH }, ["workflow"]]);
+    // ... and the re-probe's own bound (twice the role budget plus 64 KiB) applies to the rest.
+    const wide = '{"workflow": {"n": "' + "x".repeat(TAG_READ_BYTES - WORKFLOW_BUDGET) + '"}}';
+    assert.deepEqual(await read(beside(wide)), { status: "limited", reason: "metadata-limit" });
+    assert.equal(m.VIDEO_REPROBE_BYTES, 2 * ROLE_BUDGET + 64 * 1024);
+    // Matroska keeps the last value of a name, and a string-less SimpleTag deletes it.
+    const replaced = await read(v.mkv([v.tagsEl(v.tag([v.simpleTag("WORKFLOW", big), v.simpleTag("WORKFLOW", WORKFLOW)]))]));
+    assert.deepEqual([replaced.tags, replaced.limited], [{ WORKFLOW: WORKFLOW }, []]);
+    const deleted = await read(v.mkv([v.tagsEl(v.tag([v.simpleTag("WORKFLOW", big), v.simpleTag("WORKFLOW", undefined), v.simpleTag("PROMPT", GRAPH)]))]));
+    assert.deepEqual([deleted.tags, deleted.limited], [{ PROMPT: GRAPH }, []]);
 });
 
 test("avi and asf are recognised but not read", async () => {
@@ -471,6 +565,17 @@ test("pythonJsonLoads and pythonJsonDumps spell values as Python's json module d
         assert.throws(() => pythonJsonLoads(input), { name: "PythonJsonError" }, JSON.stringify(input));
     }
     assert.throws(() => pythonJsonLoads("[".repeat(2000) + "]".repeat(2000)), { name: "PythonJsonError", recursion: true });
+    // CPython's int() refuses more than 4300 digits (sign excluded); floats have no such limit.
+    const digits = (count) => "1" + "0".repeat(count - 1);
+    assert.equal(pythonJsonDumps(pythonJsonLoads(digits(4300))), digits(4300));
+    assert.equal(pythonJsonDumps(pythonJsonLoads("-" + digits(4300))), "-" + digits(4300));
+    for (const input of [digits(4301), "-" + digits(4301), `[${digits(5000)}]`]) {
+        assert.throws(() => pythonJsonLoads(input), (error) => error.name === "PythonJsonError" && error.recursion === false, input.slice(0, 8));
+    }
+    assert.equal(pythonJsonLoads(digits(4301) + ".0").isFloat, true);
+    // So an envelope holding such an integer is skipped, as the server's _carriers does.
+    const hugeInt = `{"workflow": {"a": ${digits(4400)}}}`;
+    assert.deepEqual(selectVideoCarrier({ comment: hugeInt, description: '{"workflow": {"b": 2}}' }).carrierText, '{"workflow": {"b": 2}}');
     assert.throws(() => pythonJsonDumps(undefined), { name: "PythonJsonError" });
     assert.throws(() => pythonJsonLoads(5), { name: "PythonJsonError" });
     assert.equal(pythonJsonDumps(pythonJsonLoads("[".repeat(500) + "]".repeat(500))), "[".repeat(500) + "]".repeat(500));

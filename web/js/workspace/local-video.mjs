@@ -14,6 +14,8 @@
 // exact-case (comment, description) and the per-key names fold ASCII case in the
 // selector, exactly as the server folds them.
 
+import { INT_MAX_STR_DIGITS } from "./local-projection.mjs";
+
 // Role records (prompt, parameters, the pair execution record) share one budget:
 // past it the read fails. A workflow has its own budget; past it only the workflow
 // is "limited". Duplicate tags draw from separate budgets per class. The total of
@@ -23,6 +25,11 @@ export const WORKFLOW_METADATA_BYTES = 4 * 1024 * 1024;
 export const DUPLICATE_WORKFLOW_BYTES = 2 * WORKFLOW_METADATA_BYTES;
 export const DUPLICATE_ROLE_BYTES = 2 * ROLE_METADATA_BYTES;
 export const VIDEO_TAG_READ_BYTES = 2 * (ROLE_METADATA_BYTES + WORKFLOW_METADATA_BYTES) + 64 * 1024;
+// The server's role-only re-probe bound, taken when the first probe overflows.
+export const VIDEO_REPROBE_BYTES = 2 * ROLE_METADATA_BYTES + 64 * 1024;
+// A first per-key workflow over its budget is never sliced; this marker holds its
+// place in the tag map, as the server's first probe still reports the tag.
+export const OVERSIZED_WORKFLOW = Object.freeze({ oversized: "workflow" });
 export const MAX_VIDEO_ELEMENTS = 10000;
 const MAX_HEADER_BYTES = 16; // a 64-bit ISO-BMFF box header; an EBML header is at most 12
 const MAX_NAME_BYTES = 64; // the longest carrier name is 24 bytes; longer names are never ours
@@ -132,13 +139,60 @@ function untilNul(bytes) {
     return nul < 0 ? bytes : bytes.subarray(0, nul);
 }
 
-/** Strict UTF-8, as Python decodes ffprobe's output: invalid bytes fail the read. */
-function utf8Strict(bytes) {
-    try {
-        return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    } catch (error) {
-        throw invalid("Video metadata is not valid UTF-8");
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const REPLACEMENT = "\ufffd";
+// av_utf8_decode's smallest code point per continuation count (overlong below it).
+const OVERLONG_MINIMUM = [0, 0x80, 0x800, 0x10000];
+
+/**
+ * One av_utf8_decode step (flags 0, as ffprobe calls it) from `start`: the next
+ * offset and whether the sequence is valid. A lead byte that is a continuation or
+ * 0xFE/0xFF, an overlong form, a surrogate, a code above U+10FFFF, U+FFFE/U+FFFF
+ * and every 5/6-byte form fail as the whole sequence; a missing or bad
+ * continuation byte fails the lead byte alone.
+ */
+function ffprobeStep(bytes, start) {
+    const lead = bytes[start];
+    if ((lead & 0xc0) === 0x80 || lead >= 0xfe) return [start + 1, false];
+    let tail = 0;
+    if (lead & 0x80) while (lead & (0x40 >> tail)) tail += 1;
+    let code = tail ? lead & (0x3f >> tail) : lead;
+    let next = start + 1;
+    for (let index = 0; index < tail; index += 1, next += 1) {
+        if (next >= bytes.length || (bytes[next] & 0xc0) !== 0x80) return [start + 1, false];
+        code = code * 64 + (bytes[next] & 0x3f);
     }
+    const valid = tail <= 3 && code >= OVERLONG_MINIMUM[tail] && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) && code !== 0xfffe && code !== 0xffff;
+    return [next, valid];
+}
+
+/**
+ * Tag text as ffprobe prints it with its default string_validation=replace
+ * (fftools validate_string): each failing av_utf8_decode step becomes one U+FFFD,
+ * so Python's json.loads of ffprobe's output never meets invalid UTF-8. This
+ * differs from WHATWG decoding in how many replacements a bad sequence yields.
+ */
+function ffprobeText(bytes) {
+    let text = null;
+    try {
+        text = STRICT_UTF8.decode(bytes);
+    } catch (error) {
+        text = null;
+    }
+    if (text !== null && !/[\ufffe\uffff]/.test(text)) return text;
+    const parts = [];
+    let run = 0;
+    for (let offset = 0; offset < bytes.length; ) {
+        const [next, valid] = ffprobeStep(bytes, offset);
+        if (!valid) {
+            if (offset > run) parts.push(STRICT_UTF8.decode(bytes.subarray(run, offset)));
+            parts.push(REPLACEMENT);
+            run = next;
+        }
+        offset = next;
+    }
+    if (bytes.length > run) parts.push(STRICT_UTF8.decode(bytes.subarray(run)));
+    return parts.join("");
 }
 
 /** UTF-8 length as Python's ``encode("utf-8", "surrogatepass")`` counts it. */
@@ -226,7 +280,13 @@ function createWalk(reader, signal, pacer) {
     let duplicateRole = 0;
     let duplicateWorkflow = 0;
     let total = 0;
+    let workflowRead = 0; // bytes of per-key workflow tags read, which the re-probe leaves out
+    let oversized = null; // {name, size}: the unread first per-key workflow
     const overLimit = () => limited("metadata-limit", "Video metadata exceeds inspection limits");
+    const forgetOversized = () => {
+        oversized = null;
+        limitedRecords.splice(limitedRecords.indexOf("workflow"), 1);
+    };
     return {
         tags,
         limited: limitedRecords,
@@ -242,7 +302,18 @@ function createWalk(reader, signal, pacer) {
             return PER_KEY_NAMES.has(name.toLowerCase()) || ENVELOPE_NAMES.has(name);
         },
         remove(name) {
+            if (oversized && oversized.name === name) forgetOversized();
             delete tags[name];
+        },
+        /**
+         * Settles the oversized workflow as the server's probes would: when the
+         * first probe fits, the tag keeps its marker; when it overflows, the
+         * role-only re-probe reports no per-key workflow and has its own bound.
+         */
+        finish() {
+            if (!oversized || total + oversized.size <= VIDEO_TAG_READ_BYTES) return;
+            for (const name of Object.keys(tags)) if (name.toLowerCase() === "workflow") delete tags[name];
+            if (total - workflowRead > VIDEO_REPROBE_BYTES) throw overLimit();
         },
         /**
          * Reads and keeps the tag `name` (a known carrier, see `known`) whose value
@@ -258,10 +329,21 @@ function createWalk(reader, signal, pacer) {
                 seen.add(folded);
                 if (folded === "workflow") {
                     if (first && size > WORKFLOW_METADATA_BYTES) {
-                        // The server's role-only re-probe: the per-key workflow is left out.
-                        if (!limitedRecords.includes("workflow")) limitedRecords.push("workflow");
+                        oversized = { name, size };
+                        tags[name] = OVERSIZED_WORKFLOW;
+                        limitedRecords.push("workflow");
                         return;
                     }
+                    if (tags[name] === OVERSIZED_WORKFLOW) {
+                        // An ISO-BMFF repeat joins onto the unread value, still over budget.
+                        if (join !== null) {
+                            oversized.size += size;
+                            return;
+                        }
+                        // Matroska keeps a name's last value: the oversized one is gone.
+                        forgetOversized();
+                    }
+                    workflowRead += size;
                     if (first) workflow += size;
                     else duplicateWorkflow += size;
                     if (duplicateWorkflow > DUPLICATE_WORKFLOW_BYTES) throw overLimit();
@@ -273,7 +355,7 @@ function createWalk(reader, signal, pacer) {
             }
             total += size;
             if (total > VIDEO_TAG_READ_BYTES) throw overLimit();
-            const value = text ?? utf8Strict(untilNul(await reader.read(start, end)));
+            const value = text ?? ffprobeText(untilNul(await reader.read(start, end)));
             tags[name] = join !== null && name in tags ? `${tags[name]}${join}${value}` : value;
         },
     };
@@ -361,9 +443,12 @@ async function readMeta(walk, meta, state) {
     }
 }
 
-/** The `keys` box: 1-based mdta names; other namespaces and overlong names address nothing. */
+/**
+ * The `keys` box: 1-based mdta names; other namespaces and overlong names address
+ * nothing. As ffmpeg, only the first keys box with a count field is read.
+ */
 async function readKeys(walk, box, state) {
-    if (box.end - box.bodyStart < 8) return;
+    if (state.keys || box.end - box.bodyStart < 8) return;
     const head = await walk.read(box.bodyStart, box.bodyStart + 8);
     const count = readUint32(head, 4);
     const keys = [null];
@@ -376,7 +461,7 @@ async function readKeys(walk, box, state) {
         const nameLength = keySize - 8;
         let name = null;
         if (latin1(entry, 4, 8) === "mdta" && nameLength <= MAX_NAME_BYTES) {
-            name = utf8Strict(await walk.read(offset + 8, offset + keySize));
+            name = ffprobeText(await walk.read(offset + 8, offset + keySize));
         }
         keys.push(name);
         offset += keySize;
@@ -406,7 +491,8 @@ async function readIlst(walk, ilst, state) {
         let name = LEGACY_ATOMS.get(item.type);
         if (name === undefined && state.hdlrMdta && state.keys) {
             const index = readUint32(item.raw, 0);
-            if (index === 0 || index >= state.keys.length) throw invalid("ilst index out of range");
+            // ffmpeg warns that the index is out of range and skips the item.
+            if (index === 0 || index >= state.keys.length) continue;
             name = state.keys[index];
         }
         if (!name || !walk.known(name)) continue;
@@ -552,7 +638,7 @@ async function readSimpleTag(walk, simpleTag) {
     for await (const field of children(walk, simpleTag)) {
         const length = field.end - field.dataStart;
         if (field.id === EBML.tagName) {
-            name = length <= MAX_NAME_BYTES ? utf8Strict(untilNul(await walk.read(field.dataStart, field.end))) : "";
+            name = length <= MAX_NAME_BYTES ? ffprobeText(untilNul(await walk.read(field.dataStart, field.end))) : "";
         } else if (field.id === EBML.tagLanguage && length <= MAX_NAME_BYTES) {
             language = latin1(untilNul(await walk.read(field.dataStart, field.end)), 0, Math.min(length, MAX_NAME_BYTES));
         } else if (field.id === EBML.tagDefault && length <= 8) {
@@ -596,6 +682,7 @@ export async function readVideoTags(file, options = {}) {
         if (container !== "iso-bmff" && container !== "matroska") throw invalid("Not a supported video container");
         const walk = createWalk(createSliceReader(file, prefix, signal), signal, createPacer(yieldControl, signal));
         const format = container === "iso-bmff" ? await readIsoBmff(walk, file.size) : await readMatroska(walk, file.size);
+        walk.finish();
         return { status: "complete", container, format, tags: walk.tags, limited: walk.limited };
     } catch (error) {
         if (error && error.name === "AbortError") throw error;
@@ -737,7 +824,10 @@ export function pythonJsonLoads(text) {
         const number = NUMBER.exec(text);
         if (!number || number.index !== pos || !number[0]) throw fail("Expecting value");
         pos += number[0].length;
-        return new PyNumber(number[0], Boolean(number[1] || number[2]));
+        const isFloat = Boolean(number[1] || number[2]);
+        // CPython's int() refuses more digits than sys.get_int_max_str_digits().
+        if (!isFloat && number[0].replace("-", "").length > INT_MAX_STR_DIGITS) throw fail("Exceeds the limit for integer string conversion");
+        return new PyNumber(number[0], isFloat);
     }
     skip();
     const result = value(0);
@@ -864,6 +954,11 @@ export function selectVideoCarrier(tags, options = {}) {
     const metadata = {};
     for (const key of METADATA_KEYS) {
         if (!fields.has(key)) continue;
+        if (fields.get(key) === OVERSIZED_WORKFLOW) {
+            // The reader left it unread: the server reads it, then finds it over budget.
+            limitedRecords.add(key);
+            continue;
+        }
         const [text, format] = record(fields.get(key), key);
         if (format === "invalid") {
             formats[key] = format;

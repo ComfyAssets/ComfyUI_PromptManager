@@ -205,6 +205,16 @@ TAG_MAP_VECTORS = [
         {"comment": ENVELOPE},
         ["workflow"],
     ),
+    # CPython's json.loads refuses an integer of more than 4300 digits, so the
+    # server skips that envelope for the next one.
+    (
+        "envelope_integer_over_digit_limit_skipped",
+        {
+            "comment": '{"workflow": {"a": 1' + "0" * 4400 + "}}",
+            "description": '{"workflow": {"b": 2}}',
+        },
+        [],
+    ),
 ]
 
 
@@ -433,26 +443,34 @@ def _full_box(kind, *parts):
 
 def _mdta_udta(tags):
     """``moov/udta/meta`` with one mdta key per tag, laid out as ffmpeg writes it."""
-    names = list(tags)
-    keys = _full_box(
-        b"keys",
-        struct.pack(">I", len(names)),
-        *(
-            struct.pack(">I", 8 + len(name.encode("utf-8")))
-            + b"mdta"
-            + name.encode("utf-8")
-            for name in names
-        ),
-    )
-    items = b"".join(
-        _box(
-            struct.pack(">I", index + 1),
-            _box(b"data", struct.pack(">II", 1, 0), tags[name].encode("utf-8")),
+    names = [name.encode("utf-8") for name in tags]
+    values = [value.encode("utf-8") for value in tags.values()]
+    return _mdta_items(names, list(enumerate(values, 1)))
+
+
+def _mdta_items(names, items, keys_boxes=(), legacy=()):
+    """``moov/udta/meta`` from raw bytes: mdta key ``names``, ``(index, value)``
+    items, extra ``keys`` boxes after the first (each a list of names) and
+    ``(fourcc, value)`` legacy atoms in the same ``ilst``."""
+
+    def keys(entries):
+        return _full_box(
+            b"keys",
+            struct.pack(">I", len(entries)),
+            *(struct.pack(">I", 8 + len(name)) + b"mdta" + name for name in entries),
         )
-        for index, name in enumerate(names)
+
+    def data(value):
+        return _box(b"data", struct.pack(">II", 1, 0), value)
+
+    ilst = _box(
+        b"ilst",
+        *(_box(struct.pack(">I", index), data(value)) for index, value in items),
+        *(_box(fourcc.encode("latin-1"), data(value)) for fourcc, value in legacy),
     )
     hdlr = _full_box(b"hdlr", b"\0\0\0\0", b"mdta", bytes(12), b"\0")
-    return _box(b"udta", _full_box(b"meta", hdlr, keys, _box(b"ilst", items)))
+    boxes = [keys(names), *(keys(entries) for entries in keys_boxes)]
+    return _box(b"udta", _full_box(b"meta", hdlr, *boxes, ilst))
 
 
 def _with_udta(data, udta):
@@ -686,7 +704,8 @@ class LocalVideoCarrierParityTests(unittest.TestCase):
         )
         limited = observed["workflow_limited"]["result"]
         self.assertEqual(limited["read"]["limited"], ["workflow"])
-        self.assertNotIn("workflow", limited["read"]["tags"])
+        # The unread workflow keeps its place in the carrier choice as a marker.
+        self.assertEqual(limited["read"]["tags"]["workflow"], {"oversized": "workflow"})
         self.assertEqual(
             _local_shape(limited["selection"]),
             _read_shape(read_inspection_file(files["workflow_limited"])),
@@ -702,6 +721,110 @@ class LocalVideoCarrierParityTests(unittest.TestCase):
         self.assertIsNone(over["selection"])
         with self.assertRaises(MetadataReadError):
             read_inspection_file(files["roles_over_budget"])
+
+    @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg/ffprobe not installed")
+    def test_byte_level_container_shapes_read_the_same_as_the_server(self):
+        """Shapes where ffprobe is lenient: invalid UTF-8 is replaced (one U+FFFD
+        per failing decode step), names that do not decode are no carrier, stray
+        ``ilst`` indexes are skipped, the first ``keys`` box wins, and an
+        oversized per-key workflow still takes part in the carrier choice."""
+        base = self.directory / "base.mp4"
+        write_video(base)
+        source = base.read_bytes()
+        graph, workflow = GRAPH.encode(), WORKFLOW.encode()
+        envelope = json.dumps({"workflow": {"nodes": [1]}}).encode()
+        oversized = b'{"nodes":[' + b"0," * (5 * MiB // 2) + b"0]}"
+        shapes = {
+            "latin1_byte_in_workflow": _mdta_items(
+                [b"prompt", b"workflow"], [(1, graph), (2, b'{"a":"caf\xe9"}')]
+            ),
+            "undecodable_key_name": _mdta_items(
+                [b"prom\xffpt", b"prompt"], [(1, b"junk"), (2, graph)]
+            ),
+            "stray_ilst_indexes": _mdta_items(
+                [b"prompt", b"workflow"],
+                [(1, graph), (5, b"junk"), (0, b"junk"), (2, workflow)],
+            ),
+            "second_keys_box": _mdta_items(
+                [b"prompt"], [(1, graph)], keys_boxes=[[b"workflow"]]
+            ),
+            "oversized_workflow_beside_envelope": _mdta_items(
+                [b"workflow"], [(1, oversized)], legacy=[("\u00a9cmt", envelope)]
+            ),
+            # A repeat joined onto it makes the first probe overflow: the server's
+            # role-only re-probe reports no per-key workflow.
+            "first_probe_overflows": _mdta_items(
+                [b"workflow", b"prompt"],
+                [(1, oversized), (1, b"A" * (8 * MiB)), (2, graph)],
+            ),
+        }
+        files = {}
+        for name, udta in shapes.items():
+            files[name] = self.directory / f"{name}.mp4"
+            files[name].write_bytes(_with_udta(source, udta))
+        # One byte of core.mkv's PROMPT TagString patched to 0xFF.
+        mkv = bytearray((VIDEO_FIXTURES / "core.mkv").read_bytes())
+        at = mkv.index(b'"KSampler"', mkv.index(b"PROMPT")) + 1
+        mkv[at] = 0xFF
+        files["matroska_invalid_byte"] = self.directory / "invalid-byte.mkv"
+        files["matroska_invalid_byte"].write_bytes(bytes(mkv))
+        observed = _run_oracle(
+            self, [{"name": name, "path": str(path)} for name, path in files.items()]
+        )
+        for name, path in files.items():
+            with self.subTest(shape=name):
+                server = read_inspection_file(path)
+                self.assertEqual(
+                    _local_shape(observed[name]["result"]["selection"]),
+                    _read_shape(server),
+                )
+                metadata = _metadata(server)
+                self.assertEqual(
+                    _canonical_bytes(observed[name]["metadata"]),
+                    _canonical_bytes(metadata),
+                )
+                self.assertEqual(metadata["status"], "available")
+        # The re-probe has its own bound: an 8 MiB envelope beside the oversized
+        # workflow fails the server's read and stops the local one.
+        wide = self.directory / "reprobe_overflows.mp4"
+        wide.write_bytes(
+            _with_udta(
+                source,
+                _mdta_items(
+                    [b"workflow"],
+                    [(1, oversized)],
+                    legacy=[("\u00a9cmt", b'{"n":"' + b"x" * (8 * MiB) + b'"}')],
+                ),
+            )
+        )
+        local = _run_oracle(self, [{"name": "wide", "path": str(wide)}])["wide"]
+        self.assertEqual(
+            local["result"]["read"], {"status": "limited", "reason": "metadata-limit"}
+        )
+        with self.assertRaises(MetadataReadError):
+            read_inspection_file(wide)
+        # The server outcomes these shapes pin.
+        latin1 = read_inspection_file(files["latin1_byte_in_workflow"])
+        self.assertEqual(latin1.metadata["workflow"], '{"a":"caf\ufffd"}')
+        self.assertEqual(
+            read_inspection_file(files["stray_ilst_indexes"]).metadata,
+            {"prompt": GRAPH, "workflow": WORKFLOW},
+        )
+        self.assertEqual(
+            read_inspection_file(files["second_keys_box"]).metadata, {"prompt": GRAPH}
+        )
+        patched = read_inspection_file(files["matroska_invalid_byte"])
+        self.assertIn('"\ufffdSampler"', patched.metadata["prompt"])
+        over = read_inspection_file(files["oversized_workflow_beside_envelope"])
+        self.assertEqual(
+            (over.record_formats, over.video_carrier_text),
+            ({"workflow": "limited"}, None),
+        )
+        dropped = read_inspection_file(files["first_probe_overflows"])
+        self.assertEqual(
+            (dropped.metadata, dropped.record_formats),
+            ({"prompt": GRAPH}, {"prompt": "original-text", "workflow": "limited"}),
+        )
 
 
 def _canonical(value):

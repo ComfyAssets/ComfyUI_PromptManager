@@ -16,7 +16,7 @@ const FORMATS = new Set(['original-text', 'reserialized-json', 'invalid', 'limit
 const PROMPT_NODE_KEYS = new Set(['class_type', 'inputs']);
 const MAX_SAFE_DIGITS = '9007199254740991';
 // Python's int() refuses more digits than sys.get_int_max_str_digits() (4300).
-const INT_MAX_STR_DIGITS = 4300;
+export const INT_MAX_STR_DIGITS = 4300;
 // decimal's exact constructor (libmpdec, 64-bit) refuses values outside its
 // maximal context: adjusted exponent above MAX_EMAX or exponent below Etiny.
 const DECIMAL_MAX_EMAX = 999999999999999999n;
