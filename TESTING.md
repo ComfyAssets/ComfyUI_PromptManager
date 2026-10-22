@@ -1762,6 +1762,41 @@ ComfyUI savers reach the Library through the admin scan, which reads the shared 
 carrier. Accepting `VIDEO_EXTENSIONS` in the monitor and routing them through
 `read_video_metadata` is a separate, issue-linked change.
 
+Follow-up: local Inspect parity (#249 PR L1). The browser readers
+(`web/js/png-metadata.js`, `web/js/workspace/local-video.mjs`,
+`web/js/workspace/local-projection.mjs`) answer as the server does for the same bytes
+and a matching extension (`tests/test_local_inspect_parity.py`; the real-ffprobe cases
+skip without ffmpeg). The remaining known divergences, checked against ffprobe 9.0.2,
+`read_inspection_file` and `_metadata`, are tracked here, not accepted as parity:
+
+- Media kind comes from the bytes locally and from the extension on the server: a PNG
+  named `.mp4` is read as a PNG locally (format and size shown) while the server probes
+  it with ffprobe (no format, no size); MP4 bytes named `.png` read locally as video
+  while Pillow fails them on the server (`unreadable`). Parity is stated for the same
+  bytes with a matching extension.
+- JPEG dimensions: the local header read stops at 64 KiB, so a JPEG whose SOF follows
+  more than 64 KiB of APP segments (camera, Photoshop and EXIF/XMP workflow savers)
+  shows no dimensions, while Pillow reads them within the server's 8 MiB header bound.
+  The fix is a segment-header walk up to 8 MiB, which needs a plan amendment.
+- Classic QuickTime `moov/udta` text atoms (`©cmt`/`desc` with a 16-bit size and
+  language, outside `meta`) are not read locally; ffprobe reports them as
+  `comment`/`description`, so the server can select that envelope while the local
+  read is `absent`. No ComfyUI saver writes them.
+- Tag-size bounds count raw bytes locally and ffprobe's escaped JSON on the server
+  (first probe 12 MiB + 64 KiB, role-only re-probe 4 MiB + 64 KiB): only tag sets near
+  those bounds and dense with quotes or control characters can make one side re-probe
+  or fail while the other reads.
+- More than 10,000 container elements stop the local read (`limited`, metadata
+  `unreadable`); ffprobe reads such files.
+- An EBML DocType other than `matroska`/`webm` is an invalid container locally; ffmpeg
+  only warns and reads it.
+- Envelope JSON deeper than 1,000 levels is refused locally as Python's default
+  recursion limit refuses it; the server's real limit depends on the interpreter and
+  call stack. A duplicate key in an object enclosing a nest deeper than the running
+  Python's json limit is `malformed` locally and `limited` on that Python.
+- Decimal exponent limits assume CPython's C `_decimal`; on a `_pydecimal` interpreter
+  the server would read the over-limit exponents the local projection refuses.
+
 Preserve raw logs, failed traces, paired PNGs, geometry, runtime versions and
 source hashes before later managed commands clear their output directories.
 Frontend baseline updates are additive through `coverage:update` only after

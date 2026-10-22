@@ -390,5 +390,44 @@ class TestReadVideoMetadataWithRealFfprobe(unittest.TestCase):
         self.assertEqual(read_video_metadata(path), {})
 
 
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg/ffprobe not installed")
+class VideoFixtureFfprobeTests(unittest.TestCase):
+    """Characterization: the committed local-inspect video fixtures still carry the
+    tag maps recorded in ``video-tags-v1.json``, which the browser reader parity
+    tests use in place of ffprobe. A different ffprobe that reports other names or
+    values for the same bytes shows up here, not as a silent parity gap."""
+
+    FIXTURES = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "fixtures", "local-inspect"
+    )
+
+    def test_committed_fixtures_produce_their_recorded_tags(self):
+        with open(
+            os.path.join(self.FIXTURES, "video-tags-v1.json"), encoding="utf-8"
+        ) as stream:
+            recorded = json.load(stream)["fixtures"]
+        self.assertEqual(len(recorded), 8)
+        for name, tags in recorded.items():
+            with self.subTest(fixture=name):
+                probe = subprocess.run(
+                    [
+                        shutil.which("ffprobe"),
+                        "-v",
+                        "quiet",
+                        "-show_entries",
+                        "format_tags",
+                        "-of",
+                        "json",
+                        os.path.join(self.FIXTURES, name),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=True,
+                    timeout=60,
+                )
+                self.assertEqual(json.loads(probe.stdout)["format"]["tags"], tags)
+
+
 if __name__ == "__main__":
     unittest.main()
