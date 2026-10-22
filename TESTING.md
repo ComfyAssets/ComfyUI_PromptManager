@@ -40,8 +40,9 @@ npm run --prefix tools/vendor test:workflows -- --project firefox --project webk
 ```
 
 `PM_TEST_PYTHON` selects the Python executable; set it when Python is outside
-PATH. Every Playwright worker starts its own `tests/browser/server.py` on a port the
-OS picks, with its own temp root and database (`tests/browser/fixtures.mjs`), so
+PATH. Every Playwright worker starts its own `tests/browser/server.py --port 0`,
+which binds a port the OS picks and prints it as `PM_TEST_SERVER_PORT=<n>`, with
+its own temp root and database (`tests/browser/fixtures.mjs`), so
 parallel workers and concurrent runs never share state. `PM_TEST_WORKERS` sets the
 worker count (default 1 under `CI`, otherwise a quarter of the CPUs, at most 8).
 Test servers are never reused across runs. On unsupported Linux

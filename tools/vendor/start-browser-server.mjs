@@ -10,8 +10,9 @@ const STOP_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 1_000;
 const STDERR_TAIL_BYTES = 8_192;
-const START_ATTEMPTS = 3;
-const PORT_COLLISION = /address already in use|errno 98\b|errno 48\b|10048|EADDRINUSE/i;
+const HOST = '127.0.0.1';
+// tests/browser/server.py prints this once it holds its listening socket.
+const PORT_ANNOUNCEMENT = /^PM_TEST_SERVER_PORT=(\d+)\s*$/m;
 
 const pythonServer = port => ['-m', 'tests.browser.server', '--port', String(port)];
 
@@ -19,28 +20,41 @@ function describeExit({ code, signal }) {
     return signal ? `signal ${signal}` : `code ${code}`;
 }
 
-// Start one disposable tests/browser/server.py on `port` and wait until it
-// serves the readiness page. Resolves to {port, url, exited, exitStatus,
+// Start one disposable tests/browser/server.py and wait until it serves the
+// readiness page. `port` 0 (the default) lets the server bind an OS-chosen port
+// itself and announce it on stdout, so nothing can take the port between
+// choosing and binding. Resolves to {port, url, exited, exitStatus,
 // stderrTail(), stop()}; rejects with the server's stderr tail when it exits
 // or stays unready.
 export async function startBrowserServer({
-    port,
+    port = 0,
     command = process.env.PM_TEST_PYTHON || 'python',
     args = pythonServer,
     cwd = repositoryRoot,
     timeoutMs = STARTUP_TIMEOUT_MS,
 } = {}) {
-    if (!Number.isInteger(port) || port <= 0) throw new Error(`startBrowserServer needs a port, got ${port}`);
-    const url = `http://127.0.0.1:${port}`;
-    const child = spawn(command, args(port), { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        throw new Error(`startBrowserServer needs a port from 0 to 65535, got ${port}`);
+    }
+    const child = spawn(command, args(port), { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-STDERR_TAIL_BYTES); });
+    let stdout = '';
+    let announced = null;
+    child.stdout.setEncoding('utf8');
+    // Keep draining stdout for the server's whole life so it never blocks on a full pipe.
+    child.stdout.on('data', chunk => {
+        if (announced !== null) return;
+        stdout = (stdout + chunk).slice(-STDERR_TAIL_BYTES);
+        const match = PORT_ANNOUNCEMENT.exec(stdout);
+        if (match) announced = Number(match[1]);
+    });
     const killOnExit = () => child.kill('SIGKILL');
     process.once('exit', killOnExit);
     const server = {
-        port,
-        url,
+        port: port || null,
+        url: port ? `http://${HOST}:${port}` : null,
         exitStatus: null,
         stopping: false,
         stderrTail: () => stderr.trimEnd(),
@@ -72,15 +86,27 @@ export async function startBrowserServer({
     const failure = async reason => {
         await server.stop();
         const tail = server.stderrTail();
-        return new Error(`test server on port ${port} ${reason}${tail ? `\n--- server stderr tail ---\n${tail}` : ''}`);
+        return new Error(`test server on port ${server.port ?? '(not yet announced)'} ${reason}`
+            + (tail ? `\n--- server stderr tail ---\n${tail}` : ''));
     };
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         if (server.exitStatus !== null) {
             throw await failure(`exited with ${describeExit(server.exitStatus)} before it was ready`);
         }
+        if (announced !== null && server.url === null) {
+            server.port = announced;
+            server.url = `http://${HOST}:${announced}`;
+        }
+        if (announced !== null && announced !== server.port) {
+            throw await failure(`announced port ${announced} instead`);
+        }
+        if (server.url === null) {
+            await delay(POLL_INTERVAL_MS);
+            continue;
+        }
         try {
-            const response = await fetch(`${url}${READY_PATH}`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+            const response = await fetch(`${server.url}${READY_PATH}`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
             await response.arrayBuffer();
             if (response.ok) return server;
         } catch {
@@ -92,23 +118,17 @@ export async function startBrowserServer({
 }
 
 // Keep one live server for a Playwright worker. ensure() returns the running
-// server, or starts a fresh one when the last one died; crash(server) turns an
-// unexpected exit into an error carrying the stderr tail; a startup that lost
-// its port to another process between reservation and bind is retried.
-export function createServerSupervisor({ start, attempts = START_ATTEMPTS }) {
+// server, or starts a fresh one when the last one died (a failed start is
+// reported, not retried); crash(server) turns an unexpected exit into an error
+// carrying the stderr tail.
+export function createServerSupervisor({ start }) {
     let current = null;
     return {
         async ensure() {
             if (current && current.exitStatus === null) return current;
             current = null;
-            for (let attempt = 1; ; attempt += 1) {
-                try {
-                    current = await start();
-                    return current;
-                } catch (error) {
-                    if (attempt >= attempts || !PORT_COLLISION.test(error.message)) throw error;
-                }
-            }
+            current = await start();
+            return current;
         },
         crash(server) {
             if (!server || server.stopping || server.exitStatus === null) return null;

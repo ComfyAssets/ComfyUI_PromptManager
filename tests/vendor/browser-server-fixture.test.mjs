@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { freePort } from '../../tools/vendor/free-port.mjs';
 import { startBrowserServer, createServerSupervisor } from '../../tools/vendor/start-browser-server.mjs';
 import { workflowWorkers } from '../../tools/vendor/test-workers.mjs';
 
 const fakeServer = fileURLToPath(new URL('./fake-browser-server.mjs', import.meta.url));
 const fake = (...extra) => ({ command: process.execPath, args: port => [fakeServer, '--port', String(port), ...extra] });
+const REAL_SERVER_TIMEOUT_MS = 90_000;
 
 function listen(port = 0) {
     return new Promise((resolve, reject) => {
@@ -17,24 +17,42 @@ function listen(port = 0) {
     });
 }
 
+async function releasedPort() {
+    const probe = await listen();
+    const { port } = probe.address();
+    await new Promise(resolve => probe.close(resolve));
+    return port;
+}
+
 test('free port allocation never reuses a bound port', async t => {
     const held = await listen();
     t.after(() => held.close());
     const heldPort = held.address().port;
-    const seen = [];
-    for (let index = 0; index < 20; index += 1) {
-        const port = await freePort();
-        assert.ok(Number.isInteger(port) && port > 0 && port < 65536, `port ${port} is a TCP port`);
-        assert.notEqual(port, heldPort, 'a port another process holds is never handed out');
-        const probe = await listen(port);
-        seen.push(port);
-        await new Promise(resolve => probe.close(resolve));
+    const servers = await Promise.all(Array.from({ length: 6 }, () => startBrowserServer(fake())));
+    t.after(() => Promise.all(servers.map(server => server.stop())));
+    const ports = servers.map(server => server.port);
+    for (const server of servers) {
+        assert.ok(Number.isInteger(server.port) && server.port > 0 && server.port < 65536, `port ${server.port} is a TCP port`);
+        assert.equal(server.url, `http://127.0.0.1:${server.port}`);
+        assert.equal(await (await fetch(`${server.url}/prompt_manager/test`)).text(), 'ready');
     }
-    assert.ok(new Set(seen).size > 1, 'the OS hands out more than one port');
+    assert.ok(!ports.includes(heldPort), 'a port another process holds is never handed out');
+    assert.equal(new Set(ports).size, ports.length, 'concurrent servers never share a port');
 });
 
-test('startBrowserServer serves the readiness page on the given port and stops cleanly', async () => {
-    const port = await freePort();
+test('startBrowserServer asks the server to bind port 0 and reads the port it announces', async () => {
+    const asked = [];
+    const server = await startBrowserServer({ command: process.execPath, args: port => { asked.push(port); return fake().args(port); } });
+    try {
+        assert.deepEqual(asked, [0], 'no port is reserved and released before the server binds');
+        assert.ok(server.port > 0);
+    } finally {
+        await server.stop();
+    }
+});
+
+test('startBrowserServer serves the readiness page on a requested port and stops cleanly', async () => {
+    const port = await releasedPort();
     const server = await startBrowserServer({ port, ...fake() });
     assert.equal(server.port, port);
     assert.equal(server.url, `http://127.0.0.1:${port}`);
@@ -44,22 +62,20 @@ test('startBrowserServer serves the readiness page on the given port and stops c
 });
 
 test('startBrowserServer reports a startup failure with the server\'s stderr tail', async () => {
-    const port = await freePort();
-    await assert.rejects(startBrowserServer({ port, ...fake('--fail') }), error => {
+    await assert.rejects(startBrowserServer(fake('--fail')), error => {
         assert.match(error.message, /exited with code 4 before it was ready/);
         assert.match(error.message, /last fake stderr line/);
         return true;
     });
 });
 
-test('startBrowserServer gives up on a server that never becomes ready', async () => {
-    const port = await freePort();
+test('startBrowserServer gives up on a server that never announces a port or becomes ready', async () => {
     const silent = { command: process.execPath, args: () => ['-e', 'setInterval(() => {}, 1000)'] };
-    await assert.rejects(startBrowserServer({ port, ...silent, timeoutMs: 500 }), /not ready .* within 500 ms/);
+    await assert.rejects(startBrowserServer({ ...silent, timeoutMs: 500 }), /not ready .* within 500 ms/);
 });
 
 test('worker server restarts after an unexpected exit', async t => {
-    const supervisor = createServerSupervisor({ start: async () => startBrowserServer({ port: await freePort(), ...fake() }) });
+    const supervisor = createServerSupervisor({ start: () => startBrowserServer(fake()) });
     t.after(() => supervisor.stop());
     const first = await supervisor.ensure();
     assert.equal(supervisor.crash(first), null, 'a running server reports no crash');
@@ -74,29 +90,41 @@ test('worker server restarts after an unexpected exit', async t => {
     assert.equal(await supervisor.ensure(), second, 'a healthy server is reused');
 });
 
-test('supervisor retries a port that was taken between reservation and bind', async t => {
-    const ports = [];
+test('supervisor reports a startup failure once and tries again on the next ensure', async t => {
     let attempts = 0;
     const supervisor = createServerSupervisor({
         start: async () => {
             attempts += 1;
-            if (attempts === 1) throw new Error('OSError: [Errno 98] error while attempting to bind: address already in use');
-            const port = await freePort();
-            ports.push(port);
-            return startBrowserServer({ port, ...fake() });
+            if (attempts === 1) throw new Error('ImportError: no module');
+            return startBrowserServer(fake());
         },
     });
     t.after(() => supervisor.stop());
+    await assert.rejects(supervisor.ensure(), /ImportError/);
+    assert.equal(attempts, 1, 'a failed startup is not retried behind the caller\'s back');
     const server = await supervisor.ensure();
     assert.equal(attempts, 2);
-    assert.equal(server.port, ports[0]);
+    assert.equal(await (await fetch(`${server.url}/prompt_manager/test`)).text(), 'ready');
 });
 
-test('supervisor does not retry a startup failure that is not a port collision', async () => {
-    let attempts = 0;
-    const supervisor = createServerSupervisor({ start: async () => { attempts += 1; throw new Error('ImportError: no module'); } });
-    await assert.rejects(supervisor.ensure(), /ImportError/);
-    assert.equal(attempts, 1);
+test('tests/browser/server.py binds an OS-chosen port for --port 0 and still honours --port N', { timeout: 2 * REAL_SERVER_TIMEOUT_MS }, async t => {
+    const held = await listen();
+    t.after(() => held.close());
+    const chosen = await startBrowserServer({ timeoutMs: REAL_SERVER_TIMEOUT_MS });
+    try {
+        assert.notEqual(chosen.port, held.address().port);
+        assert.equal((await fetch(`${chosen.url}/prompt_manager/test`)).status, 200);
+    } finally {
+        await chosen.stop();
+    }
+    const port = await releasedPort();
+    const fixed = await startBrowserServer({ port, timeoutMs: REAL_SERVER_TIMEOUT_MS });
+    try {
+        assert.equal(fixed.port, port);
+        assert.equal((await fetch(`http://127.0.0.1:${port}/prompt_manager/test`)).status, 200);
+    } finally {
+        await fixed.stop();
+    }
 });
 
 test('worker count follows PM_TEST_WORKERS, then one in CI, then a quarter of the CPUs up to eight', () => {

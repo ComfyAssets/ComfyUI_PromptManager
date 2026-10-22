@@ -2,7 +2,6 @@
 // `browser.newContext()` all reach it through `baseURL`, and another server
 // process never sees its database.
 import { test, expect } from './fixtures.mjs';
-import { freePort } from '../../tools/vendor/free-port.mjs';
 import { startBrowserServer } from '../../tools/vendor/start-browser-server.mjs';
 
 const search = text => `/prompt_manager/search?text=${encodeURIComponent(text)}`;
@@ -26,7 +25,7 @@ test('every fixture reaches this worker\'s own server and another server keeps i
         await context.close();
     }
 
-    const other = await startBrowserServer({ port: await freePort() });
+    const other = await startBrowserServer();
     try {
         expect(other.url).not.toBe(baseURL);
         expect((await (await fetch(`${other.url}${search(marker)}`)).json()).count).toBe(0);
