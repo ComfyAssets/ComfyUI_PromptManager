@@ -258,14 +258,16 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         }
         return node;
     }
-    /** "File & provenance": the current-file facts, the D21 prompt evidence, the occurrence and the saved association. */
+    /** "File & provenance": the file facts, the D21 prompt evidence, the occurrence and the saved association (D66 for a local file). */
     function provenance(record, badge) {
         const {file, library} = record, section = disclosure('File & provenance');
-        const reported = record.identity.kind === 'reported-location';
-        section.append(el('p', reported ? 'Current file at the reported location · identity unverified' : 'Current file at this source; historical bytes are not verified.', 'small'));
+        const reported = record.identity.kind === 'reported-location', local = record.identity.kind === 'local-file';
+        // D66: a file chosen in this browser has no server path, no folder to show and no saved association.
+        section.append(el('p', reported ? 'Current file at the reported location · identity unverified' : local ? 'Selected local file · read in this browser' :
+            'Current file at this source; historical bytes are not verified.', 'small'));
         const path = el('dd', record.identity.path ?? 'Not available');
         const facts = file && definitionList([
-            ['Source', file.source_label], ['Path', path], ['Size', formatBytes(file.size)],
+            ['Source', file.source_label], ...(local ? [] : [['Path', path]]), ['Size', formatBytes(file.size)],
             ['Dimensions', file.width && file.height ? `${file.width} × ${file.height}` : null],
             ['Format', file.format || `${extensionOf(record)} extension`], ['Media type', file.media_type],
             ['Modified', file.modified_time !== null ? new Date(file.modified_time * 1000).toLocaleString() : null],
@@ -284,7 +286,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
                 ['Recorded run', occurrence.run_id], ['Output node', occurrence.output_node_id], ['Image ordinal', String(occurrence.image_ordinal)],
             ], 'meta-grid'));
         }
-        section.append(el('p', record.historyTarget ? 'Saved association; not verified against current file' : library?.status === 'ambiguous' ? 'Saved association is ambiguous; no unique saved positive prompt is available.' : 'No unique saved positive prompt association is available.', 'small'));
+        section.append(el('p', local ? 'Local file; no saved library association was checked.' : record.historyTarget ? 'Saved association; not verified against current file' : library?.status === 'ambiguous' ? 'Saved association is ambiguous; no unique saved positive prompt is available.' : 'No unique saved positive prompt association is available.', 'small'));
         if (record.download) {
             const original = el('a', 'Download original'); original.href = record.download.url;
             original.download = safeFilename(record.download.filename); section.append(original);

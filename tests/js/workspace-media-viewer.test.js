@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createScope} from '../../web/js/shared/toolkit/core.js';
 import gallerySettings from '../../web/js/gallery-settings.js';
+import {mountedDom} from './helpers/mounted-dom.mjs';
 
 const module = await import('../../web/js/workspace/media-viewer.mjs').catch(error => {
     if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error;
@@ -33,44 +34,6 @@ test('preferences handle denied malformed storage without mutation', () => {
     assert.deepEqual(module.readViewerPreferences(()=>storage,normalize),defaults);
 });
 
-function mountedDom() {
-    class Node {
-        constructor(tag) {this.tagName=tag;this.children=[];this.dataset={};this.attributes={};this.listeners=new Map();this._text='';this.classList={add(){},remove(){}};}
-        get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
-        set textContent(value){this._text=String(value);this.children=[];}
-        get childNodes(){return this.children;}
-        get isConnected(){return this.root || !!this.parent?.isConnected;}
-        // As in the DOM, a string argument becomes a text node.
-        static wrap(node){if(typeof node!=='string')return node;const text=new Node('#text');text.textContent=node;return text;}
-        append(...nodes){for(const node of nodes.map(Node.wrap)){node.parent=this;this.children.push(node);}}
-        prepend(...nodes){nodes=nodes.map(Node.wrap);for(const node of nodes)node.parent=this;this.children.unshift(...nodes);}
-        replaceChildren(...nodes){for(const child of this.children)child.parent=null;this.children=[];this._text='';this.append(...nodes);}
-        remove(){if(this.parent)this.parent.children=this.parent.children.filter(c=>c!==this);this.parent=null;}
-        setAttribute(key,value){this.attributes[key]=String(value);}
-        getAttribute(key){return this.attributes[key]??null;}
-        removeAttribute(key){delete this.attributes[key];}
-        addEventListener(type,callback,options={}){const list=this.listeners.get(type)||[];list.push({callback,signal:options.signal});this.listeners.set(type,list);}
-        removeEventListener(type,callback){this.listeners.set(type,(this.listeners.get(type)||[]).filter(e=>e.callback!==callback));}
-        fire(type,event={}){for(const e of [...(this.listeners.get(type)||[])])if(!e.signal?.aborted)e.callback({target:this,preventDefault(){},...event});}
-        focus(){this.focused=true;}
-        showModal(){this.open=true;}
-        close(){this.open=false;this.fire('close');}
-        contains(node){return node===this||this.children.some(c=>c.contains(node));}
-        closest(selector){if(selector==='section'&&this.tagName==='section')return this;if(selector==='[data-send-role]'&&this.dataset.sendRole)return this;if(selector==='[data-copy-role]'&&this.dataset.copyRole)return this;return this.parent?.closest(selector)||null;}
-        querySelector(selector){return walk(this,n=>n.tagName===selector)[0]||null;}
-        pause(){this.paused=true;}
-        load(){this.loaded=true;}
-        play(){this.played=true;return Promise.resolve();}
-    }
-    const walk=(node,predicate)=>[...(predicate(node)?[node]:[]),...node.children.flatMap(child=>walk(child,predicate))];
-    const oldDocument=globalThis.document,oldWindow=globalThis.window;
-    const container=new Node('main');container.root=true;
-    const doc=new Node('document');doc.createElement=tag=>new Node(tag);doc.createElementNS=(_,tag)=>new Node(tag);
-    doc.querySelectorAll=()=>walk(container,n=>n.tagName==='dialog'&&n.open);doc.activeElement=new Node('button');doc.activeElement.root=true;
-    const win=new Node('window');win.location={href:'http://localhost/prompt_manager/workspace'};win.getSelection=()=>({isCollapsed:true});
-    globalThis.document=doc;globalThis.window=win;
-    return {container,doc,win,walk,Node,restore(){globalThis.document=oldDocument;globalThis.window=oldWindow;}};
-}
 function occurrenceMedia(node,ordinal,key) {
     const run='22222222-2222-2222-2222-222222222222',epoch='11111111-1111-1111-1111-111111111111',scope='a'.repeat(64);
     const query=new URLSearchParams({node,ordinal:String(ordinal),epoch,current_scope:scope}),base=`/prompt_manager/history/runs/${run}/output/current`;
@@ -246,4 +209,85 @@ test('viewer titles a linked card "<title> · <filename>" before any inspection 
         other.open({items:[linked,unlinked],selectedKey:'d'.repeat(64)});
         assert.equal(g.walk(g.container,n=>n.id==='viewer-title')[0].textContent,unlinked.filename);
     } finally { other.dispose(); scope.dispose(); g.restore(); }
+});
+
+// PR L2 Task 4(d): an adapter's own media URL (a session-owned blob:) is used exactly, never cache-busted.
+async function localHandles() {
+    const {createLocalFileHandle} = await import('../../web/js/workspace/local-inspection.mjs');
+    const image = createLocalFileHandle({file:new File([new Uint8Array(8)], 'a.png'), url:'blob:http://localhost/aaaaaaaa-0000-0000-0000-000000000001', classification:{media:'image', kind:'png'}});
+    const video = createLocalFileHandle({file:new File([new Uint8Array(8)], 'b.mp4'), url:'blob:http://localhost/aaaaaaaa-0000-0000-0000-000000000002', classification:{media:'video', kind:'iso-bmff'}});
+    return {image, video};
+}
+function withViewerGlobals(f) {
+    const globals = {ResizeObserver:globalThis.ResizeObserver, requestAnimationFrame:globalThis.requestAnimationFrame, cancelAnimationFrame:globalThis.cancelAnimationFrame, GallerySettings:globalThis.GallerySettings};
+    Object.assign(globalThis, {ResizeObserver:class { observe() {} disconnect() {} }, requestAnimationFrame:() => 1, cancelAnimationFrame() {}, GallerySettings:gallerySettings});
+    f.win.localStorage = {getItem:() => null, setItem:() => assert.fail('read-only preferences')};
+    return () => Object.assign(globalThis, globals);
+}
+
+test('viewer uses adapter.mediaUrl for image and video', async () => {
+    const {localFileAdapter:adapter} = await import('../../web/js/workspace/local-inspection.mjs');
+    const {image, video} = await localHandles();
+    const f = mountedDom(), restoreGlobals = withViewerGlobals(f), parentScope = createScope(), instances = [];
+    f.win.Viewer = class { constructor(node) { this.node = node; instances.push(this); } destroy() {} resize() {} };
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:borrowedController(),adapter,sender:{open(){}}});
+    try {
+        view.open({items:[image, video],selectedKey:image.key});
+        const img = f.walk(f.container,n => n.tagName === 'img')[0];
+        assert.equal(img.src, image.url, 'the blob URL is used exactly');
+        assert.doesNotMatch(img.src, /\?/);
+        assert.equal(instances[0].node, img, 'Viewer.js shows the blob image');
+        const download = f.walk(f.container,n => n.attributes['aria-label'] === 'Download original')[0];
+        assert.equal(download.href, image.url);assert.equal(download.download, 'a.png');
+        f.walk(f.container,n => n.attributes['aria-label'] === 'Next media')[0].fire('click');
+        const node = f.walk(f.container,n => n.tagName === 'video')[0];
+        assert.equal(node.src, video.url);assert.doesNotMatch(node.src, /\?/);
+        assert.equal(f.walk(f.container,n => n.tagName === 'img').length, 0);
+        view.dispose();
+        assert.equal(node.attributes.src, undefined);assert.equal(node.loaded, true, 'closing releases the video source');
+    } finally { view.dispose(); parentScope.dispose(); restoreGlobals(); f.restore(); }
+});
+
+test('retry media keeps the blob URL exact', async () => {
+    const {localFileAdapter:adapter} = await import('../../web/js/workspace/local-inspection.mjs');
+    const {image} = await localHandles();
+    const f = mountedDom(), restoreGlobals = withViewerGlobals(f), parentScope = createScope();
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:borrowedController(),adapter,sender:{open(){}}});
+    try {
+        view.open({items:[image],selectedKey:image.key});
+        const first = f.walk(f.container,n => n.tagName === 'img')[0];
+        assert.equal(first.src, image.url);
+        first.fire('error');
+        const failure = f.walk(f.container,n => n.className === 'media-failure')[0];
+        assert.ok(!failure.hidden, 'the media failure shows');
+        f.walk(f.container,n => n.tagName === 'button' && n.textContent === 'Retry media')[0].fire('click');
+        const second = f.walk(f.container,n => n.tagName === 'img')[0];
+        assert.notEqual(second, first, 'retry rebuilds the media element');
+        assert.equal(second.src, image.url, 'retry reuses the exact blob URL');
+    } finally { view.dispose(); parentScope.dispose(); restoreGlobals(); f.restore(); }
+});
+
+test('server adapters still cache-bust the original on open and retry', async () => {
+    const {rootedFileAdapter, createInspectionController} = await import('../../web/js/workspace/inspection-state.mjs');
+    const {reportedLocationAdapter} = await import('../../web/js/workspace/history-media.mjs');
+    const scope = 'a'.repeat(64);
+    const rooted = {root_index:0,path:'folder/a.png',filename:'a.png',root_scope:scope,is_video:false,url:`/prompt_manager/images/serve/folder/a.png?root=0&root_scope=${scope}`};
+    for (const [adapter, item, key, path] of [[rootedFileAdapter, rooted, '0:folder/a.png', `/prompt_manager/images/inspect/folder/a.png?root=0&root_scope=${scope}`],
+        [reportedLocationAdapter, occurrenceMedia('1',1,'c'), 'c'.repeat(64), occurrenceMedia('1',1,'c').inspection_url]]) {
+        const f = mountedDom(), restoreGlobals = withViewerGlobals(f), parentScope = createScope(), paths = [];
+        const controller = createInspectionController({adapter,api:{get(url) {paths.push(url);return new Promise(() => {});}}});
+        const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,onSelect:entry => controller.select(entry),sender:{open(){}}});
+        try {
+            view.open({items:[item],selectedKey:key});
+            assert.deepEqual(paths, [path], 'the same api.get path');
+            const first = f.walk(f.container,n => n.tagName === 'img')[0];
+            assert.match(first.src, /_pm_viewer=/);
+            const url = new URL(first.src);url.searchParams.delete('_pm_viewer');
+            assert.equal(`${url.pathname}${url.search}`, item.url);
+            first.fire('error');
+            f.walk(f.container,n => n.tagName === 'button' && n.textContent === 'Retry media')[0].fire('click');
+            const second = f.walk(f.container,n => n.tagName === 'img')[0];
+            assert.match(second.src, /_pm_viewer=/);assert.notEqual(second.src, first.src, 'retry busts the cache again');
+        } finally { view.dispose(); controller.dispose(); parentScope.dispose(); restoreGlobals(); f.restore(); }
+    }
 });

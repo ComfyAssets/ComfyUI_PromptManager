@@ -308,7 +308,9 @@ export function createInspectionLoader(api, onChange, { extractFacts, adapter = 
             const current = request = new AbortController();
             onChange({ loading: true });
             try {
-                const result = await api.get(adapter.inspectionPath(image), { signal: current.signal });
+                // An adapter that reads by itself (a file chosen in this browser) never reaches the API.
+                const result = adapter.read ? await adapter.read(image, { signal: current.signal }) :
+                    await api.get(adapter.inspectionPath(image), { signal: current.signal });
                 if (disposed || request !== current) return;
                 const record = adapter.toRecord(result, image, extractFacts);
                 onChange({ prompts: record.prompts, record });
