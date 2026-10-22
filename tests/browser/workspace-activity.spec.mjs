@@ -1,5 +1,5 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
-import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { test, expect } from './fixtures.mjs';
 import { seedConcept, openConcept, openProduction } from './concept-inventory.mjs';
 
 // Activity (#249 Activity-1): the concept's Activity page (app.js renderActivity 732–738), its top-bar button

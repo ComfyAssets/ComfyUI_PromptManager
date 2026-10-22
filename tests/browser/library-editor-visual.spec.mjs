@@ -1,4 +1,4 @@
-import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 
 // Artifact-only captures of the editor states that have no concept counterpart (archive confirmation, Show archived,

@@ -2,7 +2,7 @@
 // same concept selectors in the immutable concept (/__test__/canonical/workspace) and in production, which now renders
 // the concept's classes. The concept is never rewritten: each page's map<Page>Concept(reference) applies only the
 // recorded spec-§8 deviations, each commented with its D-number, and diffInventory must then report nothing.
-import {expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {expect} from './fixtures.mjs';
 export {diffInventory} from './library-editor-canonical-comparison.mjs';
 
 export const CONCEPT_URL='/__test__/canonical/workspace';

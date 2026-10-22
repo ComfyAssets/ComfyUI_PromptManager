@@ -39,9 +39,12 @@ npm run --prefix tools/vendor test:coverage
 npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit
 ```
 
-`PM_TEST_PYTHON` selects the Python executable; `PM_TEST_PORT` selects the local
-port (default 8765). Set these environment variables when Python is outside PATH
-or the port is occupied. Test servers are never reused. On unsupported Linux
+`PM_TEST_PYTHON` selects the Python executable; set it when Python is outside
+PATH. Every Playwright worker starts its own `tests/browser/server.py` on a port the
+OS picks, with its own temp root and database (`tests/browser/fixtures.mjs`), so
+parallel workers and concurrent runs never share state. `PM_TEST_WORKERS` sets the
+worker count (default 1 under `CI`, otherwise a quarter of the CPUs, at most 8).
+Test servers are never reused across runs. On unsupported Linux
 distributions, browser system dependencies may need manual installation. For a
 quick browser run, use `test:workflows -- --project chromium`.
 
@@ -1556,7 +1559,7 @@ bytes at the same path without changing the immutable receipt.
 The focused acceptance command retains all four projects:
 
 ```sh
-PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+npm run --prefix tools/vendor test:workflows -- \
   workspace-history.spec.mjs workspace-visual.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 npm run --prefix tools/vendor test:executions
@@ -1649,7 +1652,7 @@ acceptance; a baseline is added only after the maintainer accepts them.
 Focused commands:
 
 ```sh
-PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+npm run --prefix tools/vendor test:workflows -- \
   workspace-library-editor.spec.mjs library-editor-visual.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 npm run --prefix tools/vendor test:comfyui   # library-sender.spec.mjs host regression
@@ -1749,7 +1752,7 @@ mobile, the concept geometry/token/control comparison and its mutation check),
 
 ```sh
 node --test tests/js/workspace-vocabulary-state.test.js tests/js/workspace-state.test.js
-PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+npm run --prefix tools/vendor test:workflows -- \
   workspace-vocabulary.spec.mjs vocabulary-visual.spec.mjs focused-node.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```

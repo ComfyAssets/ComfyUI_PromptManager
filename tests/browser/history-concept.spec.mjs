@@ -1,5 +1,5 @@
 import {writeFile} from 'node:fs/promises';
-import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact} from './concept-inventory.mjs';
 

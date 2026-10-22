@@ -1,5 +1,5 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
-import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { test, expect } from './fixtures.mjs';
 
 // Saved views (#249 D16, maintainer ruling 2026-10-21): the toolbar's Save view (concept app.js a359, a1330–1346),
 // the sidebar SAVED VIEWS rows (a331–335) and `#/saved/<id>` (a1158–1162), on Images and the Prompt library.

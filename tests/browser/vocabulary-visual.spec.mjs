@@ -1,4 +1,4 @@
-import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 
 // Artifact-only captures of Tags & categories states that have no concept counterpart: the Manage categories

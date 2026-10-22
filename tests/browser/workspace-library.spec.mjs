@@ -1,5 +1,5 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
-import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {test,expect} from './fixtures.mjs';
 
 const route='/prompt_manager/workspace#/library';
 const cards=page=>page.locator('article[data-prompt-id]');
