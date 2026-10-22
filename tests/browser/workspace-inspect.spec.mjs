@@ -685,3 +685,80 @@ test('touch layout at 390 has no horizontal overflow at 200% zoom', async ({ pag
         expect(area).toBe(true);
     }
 });
+
+// LI-4 (D-NEW-1): "Copy settings summary" after the six facts is the legacy metadata page's COPY ALL, in the shared full
+// inspector, so a file served in Images and the same bytes chosen here copy the same summary of what the rail shows.
+/** Records clipboard writes in the page, or (`clipboard: false`) leaves the page without a clipboard. */
+async function stubClipboard(page, { clipboard = true } = {}) {
+    await page.addInitScript(available => {
+        window.__copied = [];
+        Object.defineProperty(navigator, 'clipboard', { configurable: true,
+            value: available ? { writeText: async text => { window.__copied.push(text); } } : undefined });
+    }, clipboard);
+}
+/** The summary the rail's own prompts and facts make, in the legacy COPY ALL lines and placeholders. */
+const expectedSummary = locator => locator.evaluate(node => {
+    const facts = Object.fromEntries([...node.querySelectorAll(':scope .meta-grid:not(details .meta-grid) > div')]
+        .map(item => [item.querySelector('dt').textContent, item.querySelector('dd').textContent]));
+    // A confirmed prompt has its Copy action; an explicitly empty one takes the legacy placeholder too.
+    const prompt = role => {
+        const text = node.querySelector(`.prompt-section.${role} [data-copy-role]`) ? node.querySelector(`.prompt-section.${role} p.prompt-text`).textContent : null;
+        return text === `No ${role} prompt (explicitly empty)` ? null : text;
+    };
+    return [`Checkpoint: ${facts.Model}`, `Positive Prompt: ${prompt('positive') ?? 'No prompt found'}`,
+        `Negative Prompt: ${prompt('negative') ?? 'No negative prompt found'}`, `Steps: ${facts.Steps}`, `CFG Scale: ${facts.CFG}`,
+        `Sampler: ${facts.Sampler}`, `Seed: ${facts.Seed}`].join('\n');
+});
+async function copySummary(page) {
+    const button = rail(page).getByRole('button', { name: 'Copy settings summary', exact: true });
+    // It follows the six facts, before "File & provenance".
+    expect(await button.evaluate(node => [node.previousElementSibling?.localName, node.nextElementSibling?.localName])).toEqual(['dl', 'details']);
+    await button.click();
+}
+
+test('Copy settings summary copies the same legacy summary in Images and Inspect', async ({ page, request }) => {
+    await stubClipboard(page);
+    await expect(await request.post('/__test__/add-local-inspect-file', { data: { name: 'f02.png' } })).toBeOK();
+    await page.goto(`${workspace}#/images`);
+    await page.locator('article[data-image-key="0:local-inspect/f02.png"] .image-open').click();
+    await expect(rail(page).locator('.prompt-section.positive p.prompt-text')).toBeVisible();
+    const served = await expectedSummary(rail(page));
+    expect(served).toMatch(/^Checkpoint: .+\nPositive Prompt: [\s\S]+\nNegative Prompt: [\s\S]+\nSteps: .+\nCFG Scale: .+\nSampler: .+\nSeed: .+$/);
+    expect(served).not.toContain('Unknown');
+    await copySummary(page);
+    await expect(page.locator('#workspace-toast')).toHaveText('Settings summary copied.');
+    expect(await page.evaluate(() => window.__copied)).toEqual([served]);
+    await page.keyboard.press('Escape');
+    await expect(viewer(page)).toHaveCount(0);
+
+    await openInspect(page);
+    await choose(page, parityPng('f02.png'));
+    await openViewer(page);
+    expect(await expectedSummary(rail(page))).toBe(served);
+    await copySummary(page);
+    await expect.poll(() => page.evaluate(() => window.__copied)).toEqual([served, served]);
+    // The panel variant (the Images side panel) keeps the concept's footer: no summary action there.
+    await page.keyboard.press('Escape');
+    await page.goto(`${workspace}#/images`);
+    await expect(page.locator('#image-inspector .panel-heading')).toBeVisible();
+    await expect(page.locator('#image-inspector').getByRole('button', { name: 'Copy settings summary', exact: true })).toHaveCount(0);
+});
+
+test('Copy settings summary without a clipboard opens the select-to-copy dialog', async ({ page }) => {
+    await stubClipboard(page, { clipboard: false });
+    await openInspect(page);
+    await choose(page, sendablePng());
+    await openViewer(page);
+    const summary = await expectedSummary(rail(page));
+    expect(summary).toContain(`Positive Prompt: ${POSITIVE_LINES}`);
+    await copySummary(page);
+    const fallback = page.getByRole('dialog', { name: 'Copy settings summary', exact: true });
+    await expect(fallback).toBeVisible();
+    await expect(fallback.getByRole('textbox', { name: 'Select and copy this text', exact: true })).toHaveValue(summary);
+    await expect(fallback.getByRole('textbox', { name: 'Select and copy this text', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(fallback).toHaveCount(0);
+    // Escape closes only the copy dialog; focus returns to the action in the still-open viewer.
+    await expect(viewer(page)).toBeVisible();
+    await expect(rail(page).getByRole('button', { name: 'Copy settings summary', exact: true })).toBeFocused();
+});

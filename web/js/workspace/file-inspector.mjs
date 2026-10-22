@@ -5,6 +5,7 @@ import { createSendButton } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { navigateTo } from './state.mjs';
 import { showWorkspaceToast } from './toast.mjs';
+import { openCopyFallback } from './workspace-dialogs.mjs';
 
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
@@ -25,6 +26,26 @@ const REVEAL_UNAVAILABLE = 'No file manager is available on this computer.';
 const REVEAL_BUSY = 'The folder is already opening.';
 const REVEAL_FAILED = 'The folder could not be opened. Try again.';
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
+
+// D-NEW-1 (LI-4): the legacy metadata page's COPY ALL (web/metadata.html copyAllData), its lines and placeholders.
+const SUMMARY_LINES = [['Checkpoint', 'model'], ['Positive Prompt', 'positive'], ['Negative Prompt', 'negative'], ['Steps', 'steps'],
+    ['CFG Scale', 'cfg'], ['Sampler', 'sampler'], ['Seed', 'seed']];
+const SUMMARY_MISSING = {positive:'No prompt found', negative:'No negative prompt found'};
+
+/**
+ * The one-click settings summary (D-NEW-1): the legacy COPY ALL text for what this inspector shows. A confirmed prompt
+ * and a known fact are copied verbatim; anything else, an explicitly empty prompt included, takes the legacy page's
+ * placeholder, as its parse does (`hasValue` treats '' as absent).
+ */
+export function settingsSummary(record) {
+    const roles = promptRoles(record?.prompts);
+    const value = key => {
+        if (Object.hasOwn(SUMMARY_MISSING, key)) return roles[key] ? roles[key] : SUMMARY_MISSING[key];
+        const fact = record?.generation?.[key];
+        return fact?.status === 'known' && typeof fact.value === 'string' && fact.value !== '' ? fact.value : 'Unknown';
+    };
+    return SUMMARY_LINES.map(([label, key]) => `${label}: ${value(key)}`).join('\n');
+}
 
 function safeFilename(value) {
     return String(value || 'file').replace(/[\\/\x00-\x1f\x7f<>:"|?*]/g, '_').replace(/^\.+|[. ]+$/g, '') || 'file';
@@ -175,7 +196,7 @@ function prefixedChip(prefix, text) {
  * `variant: 'full'` (the viewer's `#viewer-details`, imageDetails(i, true)) leaves out the cover and adds "File &
  * provenance" and "Workflow & raw metadata" with the downloads. `inline: true` means `panel`; neither means `full`.
  */
-export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onInteraction = () => {}}) {
+export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onInteraction = () => {}, copyFallback = openCopyFallback}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -244,7 +265,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
             inner.append(tags);
         }
         inner.append(...generationFacts(record, 'meta-grid', 'small'));
-        if (full) inner.append(provenance(record, badge), rawMetadata(record));
+        if (full) inner.append(summaryButton(record), provenance(record, badge), rawMetadata(record));
         const footer = full ? container : el('div', undefined, 'detail-footer'), roles = promptRoles(record.prompts);
         if (Object.hasOwn(roles, 'positive') && Object.hasOwn(roles, 'negative')) {
             const pair = createButton('', 'send');
@@ -263,6 +284,23 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
             footer.append(history);
         }
         if (!full && footer.childNodes.length) container.append(footer);
+    }
+    /**
+     * D-NEW-1 (LI-4): "Copy settings summary" after the six facts, the legacy COPY ALL. It copies as the concept's prompt
+     * copy does: the shared toast, or the select-to-copy dialog where the clipboard is unavailable or refused.
+     */
+    function summaryButton(record) {
+        const button = createButton('Copy settings summary'), text = settingsSummary(record);
+        contentScope.listen(button, 'click', async () => {
+            try {
+                if (!navigator.clipboard) throw new Error('Clipboard requires a secure context');
+                await navigator.clipboard.writeText(text);
+                if (!contentScope.signal.aborted) showWorkspaceToast('Settings summary copied.');
+            } catch {
+                if (!contentScope.signal.aborted) copyFallback(text, {scope:contentScope, trigger:button, title:'Copy settings summary'});
+            }
+        });
+        return button;
     }
     /** The concept's plain cover; the card image opens the viewer (D19). Video keeps its own element. */
     function cover(record) {

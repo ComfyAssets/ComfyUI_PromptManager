@@ -1527,6 +1527,29 @@ mapped differences"):
   Modified with no Path row and no Show in folder, and ends with "Local file; no saved
   library association was checked." and Download original. There is no Prompt history
   action and no category or tag chips.
+- **D-NEW-1** (Copy settings summary, LI-4; number to be assigned): the legacy metadata
+  page's COPY ALL, consolidated into the shared full inspector (the viewer's
+  `#viewer-details`, so Images, the recorded history's current file and Inspect all have
+  it). The concept has no such action. One plain button "Copy settings summary" follows
+  the six facts (before "File & provenance"); the Images side panel keeps the concept's
+  footer and has none. Its text is the legacy `copyAllData` template, line for line:
+  `Checkpoint`, `Positive Prompt`, `Negative Prompt`, `Steps`, `CFG Scale`, `Sampler`,
+  `Seed`, with the legacy placeholders ("Unknown", "No prompt found", "No negative prompt
+  found"). The values are the ones the inspector shows: a confirmed prompt and a known
+  fact verbatim, anything else (an explicitly empty prompt included, as the legacy parse
+  treats '') the placeholder. Against the legacy page, for the same file, only these
+  differ: numbers keep the server's spelling ("8.0" where the legacy page wrote 8); a fact
+  the legacy parse could not read can be known; and a negative the #249 ZeroOut guard
+  zeroed reads "No negative prompt found" where the legacy parse read the positive's text
+  through the zero-out. `workspace-file-inspector.test.js` runs the template taken from
+  `web/metadata.html` itself on the legacy parse of every parity PNG: 22 of 25 are
+  byte-equal, f01b and f23 differ by the ZeroOut guard and f17 by facts the legacy parse
+  missed. Copying works as the concept's prompt copy: the toast "Settings summary
+  copied.", or, without a clipboard or when it is refused, the select-to-copy dialog
+  titled "Copy settings summary". `.ca-tools #viewer-details > div > button` wraps
+  (`white-space: normal`) in the narrow rail at 200% zoom, as D20's buttons do. The concept
+  comparisons add the button to the concept's viewer at runtime (a copy of its own plain
+  button) and to the Inspect rail's section order.
 
 The chooser keeps naming the chosen file, as the concept's does: it is cleared as the
 picker opens (so choosing the same file again is a new selection), not after `change`,
@@ -1540,9 +1563,8 @@ Legacy floor (`web/metadata.html`), dispositions:
 - Full text (the old "Show more"): the prompt blocks show the whole text.
 - Raw workflow view and Download workflow JSON: kept, in "Workflow & raw metadata".
 - Copy all summary and filename copy (LI-4): the filename is selectable text in the rail
-  and Download original saves the file under its name. The ruled "Copy settings summary"
-  button after the six facts of the shared full inspector is not part of PR L2; until it
-  lands, the legacy page keeps COPY ALL and stays reachable from Overview.
+  and Download original saves the file under its name. COPY ALL is the shared full
+  inspector's "Copy settings summary" (D-NEW-1), with the legacy text.
 - Fully browser-local reading: kept and asserted (privacy above).
 - Case-variant keys `Workflow|comfy|ComfyUI|Prompt|Parameters` (LI-5): a separate
   backend issue; Inspect follows the server's readers, so the two never disagree.

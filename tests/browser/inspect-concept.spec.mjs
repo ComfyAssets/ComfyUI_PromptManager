@@ -117,7 +117,7 @@ function measureViewer() {
         ['dl.meta-grid', node => node.closest('details') ? null : 'facts'],
         ['details > summary', node => text(node)],
         ['button.send', node => node.closest('.prompt-section') ? `send ${node.closest('.prompt-section').matches('.positive') ? 'positive' : 'negative'}` : 'send pair'],
-        ['button', node => /Prompt history/.test(node.textContent) ? 'Prompt history' : null],
+        ['button', node => /Prompt history/.test(node.textContent) ? 'Prompt history' : text(node) === 'Copy settings summary' ? 'settings summary' : null],
     ];
     const sections = [...rail.querySelectorAll('*')].map(node => {
         for (const [selector, label] of SECTIONS) if (node.matches(selector)) return label(node);
@@ -158,13 +158,18 @@ async function withProductionCopy(page) {
     }, { COPY, ACCEPT });
 }
 
-/** D66: the viewer of a local file is titled by its filename and has no tag chips and no Prompt history. */
+/**
+ * D66: the viewer of a local file is titled by its filename and has no tag chips and no Prompt history. D-NEW-1 (LI-4):
+ * "Copy settings summary" follows the six facts.
+ */
 function mapViewerConcept(reference) {
+    const sections = reference.sections.filter(section => section !== 'tag chips' && section !== 'Prompt history');
+    const facts = sections.indexOf('facts');
     return {
         ...reference,
         title: FILE,
         railTitle: FILE,
-        sections: reference.sections.filter(section => section !== 'tag chips' && section !== 'Prompt history'),
+        sections: [...sections.slice(0, facts + 1), 'settings summary', ...sections.slice(facts + 1)],
     };
 }
 
@@ -269,9 +274,9 @@ for (const [width, height] of SIZES) for (const theme of THEMES) {
         // The chooser names the chosen file after a real setInputFiles, as the concept's does.
         expect(production.initial.chosen).toEqual({ name: '', files: [] });
         expect(production.selected.chosen).toEqual({ name: FILE, files: [FILE] });
-        // D66 in the rail: no tag chips and no Prompt history; the title is the filename.
+        // D66 in the rail: no tag chips and no Prompt history; the title is the filename. D-NEW-1 follows the facts.
         expect(production.viewer.sections).toEqual(['heading', 'filename', 'badges', 'positive', 'send positive', 'negative',
-            'send negative', 'facts', 'File & provenance', 'Workflow & raw metadata', 'send pair']);
+            'send negative', 'facts', 'settings summary', 'File & provenance', 'Workflow & raw metadata', 'send pair']);
     });
 }
 
