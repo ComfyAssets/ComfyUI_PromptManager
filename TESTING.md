@@ -39,9 +39,44 @@ npm run --prefix tools/vendor test:coverage
 npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit
 ```
 
-`PM_TEST_PYTHON` selects the Python executable; `PM_TEST_PORT` selects the local
-port (default 8765). Set these environment variables when Python is outside PATH
-or the port is occupied. Test servers are never reused. On unsupported Linux
+`PM_TEST_PYTHON` selects the Python executable; set it when Python is outside
+PATH. Every Playwright worker starts its own `tests/browser/server.py --port 0`,
+which binds a port the OS picks and prints it as `PM_TEST_SERVER_PORT=<n>`, with
+its own temp root and database (`tests/browser/fixtures.mjs`), so
+parallel workers and concurrent runs never share state. `PM_TEST_WORKERS` sets the
+worker count (default 1 under `CI`, otherwise a quarter of the CPUs, at most 8).
+Test servers are never reused across runs. The launcher holds each server's
+stdin open and the server (`--exit-on-stdin-eof`) shuts down cleanly, removing its
+temp root, when that pipe closes, so a worker killed without teardown leaves no
+server behind. A test that fails gets the stderr its server wrote during the test
+attached to the report as `server-stderr` (an aiohttp traceback behind a 500).
+
+The coverage run can be split the way CI splits it, and each shard keeps the raw
+V8 files it writes under `coverage/js/raw`:
+
+```sh
+PM_TEST_WORKERS=8 npm run --prefix tools/vendor test:coverage            # whole run, one report
+npm run --prefix tools/vendor test:coverage:shard -- 1/3                 # node units, viewer suite, workflows 1/3
+npm run --prefix tools/vendor test:coverage:shard -- 2/3                 # workflows 2/3 (likewise 3/3)
+npm run --prefix tools/vendor coverage:merge                             # report and baseline check of every raw file
+npm run --prefix tools/vendor test:workflows -- --project webkit --shard 2/2
+```
+
+`coverage:merge` refuses an empty raw directory; it does not count shards, so run
+every shard first (CI's merge job checks all three arrived). Measured on a 32-CPU
+machine in the pinned image (2026-10-21): `test:coverage` takes about 5 minutes
+with 8 workers and 24 minutes with 1; all four projects, 8 workers, each test 3
+times (6132 tests), 24 minutes. A CI-sized run (`docker run --cpus=4`,
+`PM_TEST_WORKERS=3`, all four projects once, 2044 tests) takes 25.5 minutes.
+
+Specs must pass beside each other, not only alone. Wait for the page's own
+signal, never for time: a rendering frame (`requestAnimationFrame`) for layout
+work queued by a render or a scroll, a response or a visible state for data. A
+timer that "usually" covers a frame is a race on a loaded runner. Library
+virtualization specs settle with `libraryObservation.settled()` (two consecutive
+frames with no Library frame queued). To look for such races, repeat a spec under
+load (`--workers 8 --repeat-each 10`, and in the image with `--cpus=1` or `2`).
+On unsupported Linux
 distributions, browser system dependencies may need manual installation. For a
 quick browser run, use `test:workflows -- --project chromium`.
 
@@ -114,16 +149,39 @@ second without a browser and fails, naming the files, when a measured
 `web/js` file has no baseline entry or the baseline lists a file that no longer
 exists. It uses the gate's own `discoverSources`, and `npm test` runs the same
 check, so run it before pushing a new or deleted frontend file instead of
-waiting for the `frontend coverage` job.
+waiting for the `frontend coverage` jobs.
 
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job that passes only when the `frontend coverage (chromium and touch)`
-job and both `page workflows (firefox)` and `page workflows (webkit)` jobs
-succeed; the browsers run on separate runners in parallel. GitHub artifacts
-named `frontend-test-reports` contain HTML coverage, a JSON summary, and the
-Chromium/touch failure screenshots/traces; `browser-traces-firefox` and
-`browser-traces-webkit` hold the other browsers' traces. Open traces with
-Playwright's `show-trace` tool.
+aggregate job that passes only when every frontend job succeeds: the three
+`frontend coverage (shard N/3)` jobs, `frontend coverage (merge)`, and the four
+`page workflows (firefox|webkit, shard N/2)` jobs. A failed, cancelled or skipped
+job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
+runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/3`
+(shard 1 also runs the node units and the viewer suite, shard 3 the vendor pins
+and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
+days). The merge job downloads them, fails unless all three arrived with raw
+files and without clashing names, then runs `coverage:merge` (report plus
+baseline check). `tests/vendor/ci-workflow.test.mjs` checks this shape. GitHub
+artifacts named `frontend-test-reports` contain the merged HTML coverage and
+JSON summary; `frontend-traces-shard-N` hold the Chromium/touch failure
+screenshots/traces and `browser-traces-<browser>-shard-N` the other browsers'
+traces. Open traces with Playwright's `show-trace` tool.
+
+Every `npm ci` first restores npm's download cache (`~/.npm`), keyed on the vendor
+lockfile and the job's pinned image tag (`tests/vendor/ci-workflow.test.mjs` checks
+the key names the same tag as the job's `container.image`). Without it, `npm ci` stalled for about 300 s
+(npm's fetch timeout) in most of the eight concurrent jobs; with a hit it takes
+0 to 2 s. A lockfile change misses the cache once, so expect one slow run after it.
+Measured on PR #274 (run 39725176320 at cbc8a61, cache hit): the whole workflow
+took 8m38s, against about 33 minutes with one worker and no shards. Jobs: coverage
+shards 7m34s/6m04s/5m22s (tests 6m38s/4m53s/4m04s), merge 54s, firefox shards
+7m57s/5m21s (tests 7m08s/4m34s), webkit shards 8m16s/5m03s (tests 7m26s/3m58s).
+Browser jobs keep a 20-minute limit: the slowest job is about 8.5 minutes, a cache
+miss adds up to 5 to `npm ci`, and runner speed varies (the first sharded run was
+cancelled at a 12-minute limit).
+Playwright shards by test count, whole files at a time, so shard 1 carries the
+slow concept-comparison specs (`*-concept.spec.mjs`, alphabetically first) and
+runs longer; the remedy, if it starts to matter, is more shards, not reordering.
 
 The real-host suite covers both Classic and Nodes 2.0 startup, switching both
 ways, actual database prompt selection, execution-text serialization, workflow
@@ -1556,7 +1614,7 @@ bytes at the same path without changing the immutable receipt.
 The focused acceptance command retains all four projects:
 
 ```sh
-PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+npm run --prefix tools/vendor test:workflows -- \
   workspace-history.spec.mjs workspace-visual.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 npm run --prefix tools/vendor test:executions
@@ -1649,7 +1707,7 @@ acceptance; a baseline is added only after the maintainer accepts them.
 Focused commands:
 
 ```sh
-PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+npm run --prefix tools/vendor test:workflows -- \
   workspace-library-editor.spec.mjs library-editor-visual.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 npm run --prefix tools/vendor test:comfyui   # library-sender.spec.mjs host regression
@@ -1749,7 +1807,7 @@ mobile, the concept geometry/token/control comparison and its mutation check),
 
 ```sh
 node --test tests/js/workspace-vocabulary-state.test.js tests/js/workspace-state.test.js
-PM_TEST_PORT=8766 npm run --prefix tools/vendor test:workflows -- \
+npm run --prefix tools/vendor test:workflows -- \
   workspace-vocabulary.spec.mjs vocabulary-visual.spec.mjs focused-node.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```

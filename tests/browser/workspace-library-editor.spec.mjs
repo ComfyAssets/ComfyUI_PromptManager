@@ -1,6 +1,6 @@
 import {writeFile} from 'node:fs/promises';
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
-import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {inventoryOf,mapConcept,diffInventory} from './library-editor-canonical-comparison.mjs';
 

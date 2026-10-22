@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { captureCanonicalState, historyGeometry, compareCanonicalHistory, nativeDialogState, exerciseCurrentPairSend, assertRecordedHistory } from './history-canonical-comparison.mjs';
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
-import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { test, expect } from './fixtures.mjs';
 
 test.use({ locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
 const workspace = '/prompt_manager/workspace';

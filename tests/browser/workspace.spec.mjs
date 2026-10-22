@@ -1,5 +1,5 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
-import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { test, expect } from './fixtures.mjs';
 
 const workspace = '/prompt_manager/workspace';
 const statistic = (page, label) => page.locator('#workspace-main dt')

@@ -16,9 +16,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Timeouts are the measured job time plus at least 50%, and never under 20 minutes for a browser job,
+# because runner speed varies. Before sharding (main 2cecfcf, one worker): frontend coverage 32m10s,
+# page workflows firefox 18m59s, webkit 19m26s. First sharded run (PR #274 run 39712909047, 3 workers,
+# no npm cache, where npm ci stalled for 5m in six of eight jobs): coverage shards 11m19s/10m47s/10m49s
+# (tests 5m20s/4m42s/4m46s), merge 5m52s (report and check 4s), firefox shards 7m53s/9m27s (tests
+# 4m41s/3m29s), webkit shards 12m25s+ (cancelled at the old 12-minute limit after its 267 tests passed in
+# 6m29s) and 4m53s (tests 3m08s). With the npm cache hit (run 39725176320 at cbc8a61, npm ci 0-2s):
+# coverage shards 7m34s/6m04s/5m22s (tests 6m38s/4m53s/4m04s), merge 54s, firefox 7m57s/5m21s (tests
+# 7m08s/4m34s), webkit 8m16s/5m03s (tests 7m26s/3m58s); a cache miss adds up to 5m to npm ci, which
+# the 20-minute limits absorb.
 jobs:
   frontend-coverage:
-    name: frontend coverage (chromium and touch)
+    name: frontend coverage (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
     # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
@@ -26,12 +36,15 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
-    # This job runs every page workflow twice (chromium, then touch) on one worker with V8 coverage on, so it
-    # takes about twice a single-browser job. Measured 2026-10-20: whole job 18m26s-24m57s (main 5ded3cf
-    # 22m15s; PR head 6359999 was cancelled at the old 25-minute limit while still passing), coverage step
-    # alone 20m55s-22m17s+, against ~12-15 minutes for the firefox/webkit jobs. 40 minutes leaves headroom
-    # for suite growth while still stopping a hung run; re-measure if a run passes 30 minutes.
-    timeout-minutes: 40
+    timeout-minutes: 20
+    # Public-repo ubuntu-latest runners have 4 vCPUs: three Playwright workers, each with its own test
+    # server, leave one CPU for the servers and the runner.
+    env:
+      PM_TEST_WORKERS: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache
@@ -50,24 +63,107 @@ jobs:
           "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
           echo "$venv/bin" >> "$GITHUB_PATH"
       - run: python --version && node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
-      - run: npm run --prefix tools/vendor check
-      - run: npm run --prefix tools/vendor test
-      - name: Frontend unit, viewer, workflow, and coverage checks
-        run: npm run --prefix tools/vendor test:coverage
-      - name: Upload frontend coverage and Chromium traces
+      # Shard 1 also runs the node units and the viewer suite, so the vendor pins and the tooling tests
+      # run on the lightest shard instead.
+      - if: matrix.shard == 3
+        run: npm run --prefix tools/vendor check
+      - if: matrix.shard == 3
+        run: npm run --prefix tools/vendor test
+      - name: Page workflows with coverage, shard ${{ matrix.shard }}/3
+        run: npm run --prefix tools/vendor test:coverage:shard -- ${{ matrix.shard }}/3
+      - name: Upload raw coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-raw-${{ matrix.shard }}
+          path: coverage/js/raw/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload Chromium and touch traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-traces-shard-${{ matrix.shard }}
+          path: tools/vendor/test-results/
+          retention-days: 14
+
+  frontend-coverage-merge:
+    name: frontend coverage (merge)
+    needs: frontend-coverage
+    runs-on: ubuntu-latest
+    # Same image as the shards: the raw files name sources by the container's workspace path.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      # Each artifact lands in its own coverage-raw-N directory, so the next step can count them.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-raw-*
+          path: ${{ runner.temp }}/coverage-raw
+      # coverage:merge only checks that raw files exist; merging two of three shards would report
+      # partial coverage, so a missing or empty shard artifact fails here.
+      - name: Verify every shard's raw coverage arrived
+        shell: bash
+        env:
+          STAGED_RAW: ${{ runner.temp }}/coverage-raw
+          EXPECTED_SHARDS: 3
+        run: |
+          found=0
+          for shard in $(seq 1 "$EXPECTED_SHARDS"); do
+            directory="$STAGED_RAW/coverage-raw-$shard"
+            count=0
+            if [ -d "$directory" ]; then count=$(find "$directory" -maxdepth 1 -type f -name '*.json' | wc -l); fi
+            echo "coverage-raw-$shard: $count raw files"
+            if [ "$count" -gt 0 ]; then found=$((found + 1)); fi
+          done
+          echo "shard artifacts with raw coverage: $found of $EXPECTED_SHARDS"
+          if [ "$found" -ne "$EXPECTED_SHARDS" ]; then
+            echo "::error::Expected raw coverage from $EXPECTED_SHARDS shards, got $found of $EXPECTED_SHARDS"
+            exit 1
+          fi
+          staged=$(find "$STAGED_RAW" -mindepth 2 -maxdepth 2 -type f -name '*.json' | wc -l)
+          mkdir -p coverage/js/raw
+          # cp -n never overwrites; a clash shows up as fewer merged files than staged ones.
+          find "$STAGED_RAW" -mindepth 2 -maxdepth 2 -type f -name '*.json' -exec cp -n -t coverage/js/raw {} + || true
+          merged=$(find coverage/js/raw -maxdepth 1 -type f -name '*.json' | wc -l)
+          if [ "$merged" -ne "$staged" ]; then
+            echo "::error::Shards wrote clashing raw file names: $staged staged, $merged merged"
+            exit 1
+          fi
+          echo "merged $merged raw files"
+      - name: Frontend coverage report and baseline check
+        run: npm run --prefix tools/vendor coverage:merge
+      - name: Upload frontend coverage report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: frontend-test-reports
           path: |
-            tools/vendor/test-results/
             coverage/js/
             !coverage/js/raw/**
           retention-days: 14
 
   browser-workflows:
-    name: page workflows (${{ matrix.browser }})
+    name: page workflows (${{ matrix.browser }}, shard ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
     # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
@@ -75,11 +171,16 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
-    timeout-minutes: 25
+    timeout-minutes: 20
+    # Public-repo ubuntu-latest runners have 4 vCPUs: three Playwright workers, each with its own test
+    # server, leave one CPU for the servers and the runner.
+    env:
+      PM_TEST_WORKERS: 3
     strategy:
       fail-fast: false
       matrix:
         browser: [firefox, webkit]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v7
       # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache
@@ -98,22 +199,29 @@ jobs:
           "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
           echo "$venv/bin" >> "$GITHUB_PATH"
       - run: python --version && node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
-      - name: Page workflows in ${{ matrix.browser }}
-        run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }}
+      - name: Page workflows in ${{ matrix.browser }}, shard ${{ matrix.shard }}/2
+        run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }} --shard ${{ matrix.shard }}/2
       - name: Upload browser traces
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-traces-${{ matrix.browser }}
+          name: browser-traces-${{ matrix.browser }}-shard-${{ matrix.shard }}
           path: tools/vendor/test-results/
           retention-days: 14
 
   # Branch protection requires the exact context "viewerjs". This job keeps that
-  # name and fails unless every frontend job above succeeded, including when one
-  # was cancelled or skipped.
+  # name and fails unless every frontend job above succeeded (every shard, the
+  # coverage merge and every browser shard), including when one was cancelled or skipped.
   viewerjs:
-    needs: [frontend-coverage, browser-workflows]
+    needs: [frontend-coverage, frontend-coverage-merge, browser-workflows]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -121,8 +229,10 @@ jobs:
       - name: Require every frontend job to succeed
         env:
           COVERAGE_RESULT: ${{ needs.frontend-coverage.result }}
+          MERGE_RESULT: ${{ needs.frontend-coverage-merge.result }}
           WORKFLOWS_RESULT: ${{ needs.browser-workflows.result }}
         run: |
           echo "frontend-coverage: $COVERAGE_RESULT"
+          echo "frontend-coverage-merge: $MERGE_RESULT"
           echo "browser-workflows: $WORKFLOWS_RESULT"
-          test "$COVERAGE_RESULT" = success && test "$WORKFLOWS_RESULT" = success
+          test "$COVERAGE_RESULT" = success && test "$MERGE_RESULT" = success && test "$WORKFLOWS_RESULT" = success

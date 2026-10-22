@@ -1,5 +1,5 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
-import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {test,expect} from './fixtures.mjs';
 
 const route='/prompt_manager/workspace#/library';
 const cards=page=>page.locator('article[data-prompt-id]');
@@ -25,6 +25,8 @@ async function loadShelfPages(page,more,pages) {
         await more.evaluate(node=>node.click());await response;await expect(more).toHaveAttribute('aria-disabled','false');
     }
 }
+/** Resolves in the rendering frame after every frame callback the page had already queued (callbacks run in request order). */
+const nextFrame=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>resolve())));
 async function openHistory(page,text='Cat portrait') {
     await cards(page).filter({has:page.getByText(text,{exact:true})}).getByRole('button',{name:'Explore history',exact:true}).click();
     await expect(history(page)).toBeVisible();
@@ -103,7 +105,8 @@ test('library infinite loading keeps unique parents and keyboard-accessible hist
         const appended=await (await nextPage).json();expect(appended.items.length).toBeGreaterThan(0);hasMore=appended.has_more;
         if(hasMore)await expect(more).toHaveAttribute('aria-disabled','false');
     }
-    await expect(more).toBeHidden();expect(await cards(page).count()).toBeLessThan(80);
+    // The last page's render queued the window update for the next frame; count after that frame, not before it.
+    await expect(more).toBeHidden();await nextFrame(page);expect(await cards(page).count()).toBeLessThan(80);
     const ids=await cards(page).evaluateAll(nodes=>nodes.map(node=>node.dataset.promptId));expect(new Set(ids).size).toBe(ids.length);
     await expect(page.getByRole('button',{name:/next page|previous page/i})).toHaveCount(0);
     const firstId=await cards(page).first().getAttribute('data-prompt-id');
@@ -376,14 +379,18 @@ async function observeLibrary(page, hold=false) {
             holdFrames(){holdingFrames=true;},
             releaseFrames(){holdingFrames=false;const callbacks=[...heldFrames.values()];heldFrames.clear();for(const callback of callbacks)callback();},
             equal(){for(const record of records){const entries=[...record.latest.values()].filter(entry=>record.targets.has(entry.target));if(entries.length)record.callback(entries,record.native);}},
+            // Resolves once two consecutive rendering frames find no Library frame queued. Each check runs inside a native
+            // frame callback, so a frame the page queues later in that update (a scroll event, a ResizeObserver delivery) is
+            // still pending there. A timer is not a frame: under CPU load a 60 ms wait could end before the scroll's frame.
+            // A frame that never drains (a rAF loop, or settling while frames are held) fails after `limit` frames with the stats.
+            settled(limit=600){return new Promise((resolve,reject)=>{let quiet=0,frames=0;const check=()=>{frames++;quiet=pending.size?0:quiet+1;
+                if(quiet>=2)resolve();else if(frames>=limit)reject(new Error(`Library never settled within ${limit} frames: ${JSON.stringify(window.libraryObservation.stats())}`));else raf(check);};raf(check);});},
             stats(){return {requested,pending:pending.size,heldFrames:heldFrames.size,measurements:records.reduce((sum,record)=>sum+record.entries.size,0),mutations,unmounted,targets:records.reduce((sum,record)=>sum+record.targets.size,0)};},
         };
     },{hold});
 }
 async function settleLibrary(page) {
-    await expect.poll(async()=>page.evaluate(()=>window.libraryObservation.stats().pending)).toBe(0);
-    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,60)));
-    await expect.poll(async()=>page.evaluate(()=>window.libraryObservation.stats().pending)).toBe(0);
+    await page.evaluate(()=>window.libraryObservation.settled());
 }
 async function firstVisibleParent(page) {
     return cards(page).evaluateAll(nodes=>{
@@ -681,6 +688,17 @@ test('title and Explore history are buttons that open history',async({page,reque
     const first=cards(page).first();await first.locator('.card-title > button').focus();await page.keyboard.press('End');
     await expect(cards(page).last().locator('.card-title > button')).toBeFocused();
     await page.keyboard.press('ArrowLeft');await expect(cards(page).nth(1).locator('.card-title > button')).toBeFocused();
+});
+
+test('settling fails with the observation stats when a Library frame stays queued',async({page,request})=>{
+    await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}});
+    await observeLibrary(page);await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    await page.goto(route);await expect(cards(page).first()).toBeVisible();await settleLibrary(page);
+    await page.evaluate(()=>{window.libraryObservation.holdFrames();dispatchEvent(new Event('scroll'));});
+    await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+    const failure=await page.evaluate(()=>window.libraryObservation.settled(30).then(()=>'settled',error=>error.message));
+    expect(failure).toMatch(/^Library never settled within 30 frames: \{.*"heldFrames":[1-9]/);
+    await page.evaluate(()=>window.libraryObservation.releaseFrames());await settleLibrary(page);
 });
 
 test('virtualized rows keep measured heights with the clamp',async({page,request,isMobile})=>{

@@ -1,16 +1,20 @@
 """Serve production pages and API routes with disposable state for browser tests."""
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
+import socket
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import types
 
 from aiohttp import web
+from aiohttp.web_runner import GracefulExit
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
@@ -515,14 +519,77 @@ def create_app(root: Path) -> web.Application:
     return app
 
 
-def main() -> None:
+HOST = "127.0.0.1"
+PORT_ANNOUNCEMENT = "PM_TEST_SERVER_PORT="
+
+
+def bind_listener(port: int) -> socket.socket:
+    """Bind the server's socket before the app is built.
+
+    ``port`` 0 lets the OS choose a free port, which this process then holds,
+    so parallel launchers never race for one between choosing and binding.
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if port and os.name != "nt":
+            # aiohttp's own default on POSIX; on Windows it would let a
+            # second process share the port.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((HOST, port))
+        listener.listen(128)
+    except OSError:
+        listener.close()
+        raise
+    return listener
+
+
+def _graceful_exit() -> None:
+    raise GracefulExit()
+
+
+def exit_when_stdin_closes(loop: asyncio.AbstractEventLoop) -> threading.Thread:
+    """Stop the app gracefully once stdin reaches end of file.
+
+    The launcher keeps the write end of this process's stdin pipe, and the OS
+    closes it however the launcher dies, SIGKILL included. GracefulExit runs
+    aiohttp's cleanup (closing the database) and lets the temp root be removed,
+    on every OS, where a signal from a dead parent would not.
+    """
+
+    def watch() -> None:
+        while sys.stdin.buffer.read(65536):
+            pass
+        loop.call_soon_threadsafe(_graceful_exit)
+
+    thread = threading.Thread(target=watch, name="stdin-eof", daemon=True)
+    thread.start()
+    return thread
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8765)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--port", type=int, default=8765, help="0 binds an OS-chosen free port"
+    )
+    parser.add_argument(
+        "--exit-on-stdin-eof",
+        action="store_true",
+        help="shut down when stdin closes (the launcher's parent-death guard)",
+    )
+    args = parser.parse_args(argv)
+    listener = bind_listener(args.port)
+    # One machine-readable line tells the launcher which port this process holds.
+    print(f"{PORT_ANNOUNCEMENT}{listener.getsockname()[1]}", flush=True)
+    loop = asyncio.new_event_loop()
+    if args.exit_on_stdin_eof:
+        exit_when_stdin_closes(loop)
+    original_cwd = os.getcwd()
     with tempfile.TemporaryDirectory(prefix="pm-browser-") as directory:
-        web.run_app(
-            create_app(Path(directory).resolve()), host="127.0.0.1", port=args.port
-        )
+        try:
+            web.run_app(create_app(Path(directory).resolve()), sock=listener, loop=loop)
+        finally:
+            # create_app works inside the root; Windows cannot remove a process's cwd.
+            os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

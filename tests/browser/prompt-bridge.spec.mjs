@@ -1,4 +1,4 @@
-import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { test, expect } from './fixtures.mjs';
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 
 const moduleUrl = '/prompt_manager/js/shared/toolkit/prompt-bridge.js';

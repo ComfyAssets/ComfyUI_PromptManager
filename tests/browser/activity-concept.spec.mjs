@@ -1,5 +1,5 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
-import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { test, expect } from './fixtures.mjs';
 import { THEMES, seedConcept, openConcept, openProduction, diffInventory, mutate } from './concept-inventory.mjs';
 
 // Activity-1 Task 3. The review dialog is compared with the concept's own `scan-review` ("Review metadata scan",

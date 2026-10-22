@@ -1,5 +1,5 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
-import { test, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { test, expect } from './fixtures.mjs';
 import { seedConcept, openConcept, openProduction, SIZES } from './concept-inventory.mjs';
 // D10/D20: the heading is the linked positive's title (its confirmed first line here), never the pair's
 // "Inspector recipe", which names the negative variant.

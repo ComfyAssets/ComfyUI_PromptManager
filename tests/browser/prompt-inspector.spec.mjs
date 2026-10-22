@@ -1,5 +1,5 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
-import {test,expect} from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import {test,expect} from './fixtures.mjs';
 
 const workspace='/prompt_manager/workspace#/images';
 const details=page=>page.getByRole('complementary',{name:'Selected image details',exact:true});

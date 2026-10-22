@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises';
-import { expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
+import { expect } from './fixtures.mjs';
 
 // Content, row counts, and image bytes come from independent synthetic datasets.
 // Saved choices and actual executions are separate production sections. The concept's
