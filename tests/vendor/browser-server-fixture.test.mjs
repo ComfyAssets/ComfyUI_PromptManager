@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startBrowserServer, createServerSupervisor, attachServerStderr } from '../../tools/vendor/start-browser-server.mjs';
@@ -27,7 +28,11 @@ async function writeStderr(server, text) {
     await waitFor(() => server.stderrTail().endsWith(text.trimEnd()), `stderr ${JSON.stringify(text)}`);
 }
 
-const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** A process that exited counts as gone even while a non-reaping PID 1 (CI's container) leaves it a zombie. */
+function alive(pid) {
+    try { process.kill(pid, 0); } catch { return false; }
+    try { return readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /s, '')[0] !== 'Z'; } catch { return true; }
+}
 
 /** Starts a server from a separate Node worker process, SIGKILLs that worker and returns the server's pid. */
 async function serverOfKilledWorker(options) {

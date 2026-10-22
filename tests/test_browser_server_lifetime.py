@@ -39,7 +39,10 @@ class TestBrowserServerLifetime(unittest.TestCase):
         def stop():
             if process.poll() is None:
                 process.kill()
-            process.communicate(timeout=SERVER_TIMEOUT_S)
+            process.wait(timeout=SERVER_TIMEOUT_S)
+            # communicate() would flush a closed stdin, which Python < 3.13 refuses.
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
 
         self.addCleanup(stop)
         line = process.stdout.readline().decode()
@@ -63,7 +66,10 @@ class TestBrowserServerLifetime(unittest.TestCase):
         process = self.start("--exit-on-stdin-eof")
         self.assertEqual(len(self.roots()), 1, "the server works in its own temp root")
         process.stdin.close()
-        self.assertEqual(process.wait(timeout=SERVER_TIMEOUT_S), 0)
+        code = process.wait(timeout=SERVER_TIMEOUT_S)
+        self.assertEqual(
+            code, 0, process.stderr.read().decode(errors="replace")[-4000:]
+        )
         self.assertEqual(self.roots(), [], "the temp root and its database are removed")
 
     def test_server_keeps_running_with_stdin_closed_without_the_flag(self):

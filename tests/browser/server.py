@@ -583,8 +583,13 @@ def main(argv: list[str] | None = None) -> None:
     loop = asyncio.new_event_loop()
     if args.exit_on_stdin_eof:
         exit_when_stdin_closes(loop)
+    original_cwd = os.getcwd()
     with tempfile.TemporaryDirectory(prefix="pm-browser-") as directory:
-        web.run_app(create_app(Path(directory).resolve()), sock=listener, loop=loop)
+        try:
+            web.run_app(create_app(Path(directory).resolve()), sock=listener, loop=loop)
+        finally:
+            # create_app works inside the root; Windows cannot remove a process's cwd.
+            os.chdir(original_cwd)
 
 
 if __name__ == "__main__":
