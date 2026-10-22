@@ -392,16 +392,69 @@ test('start scan creates a job, toasts, and opens its view', async ({ page, requ
     await expect(scanLog(page).locator('pre')).toContainText('Scan finished');
 });
 
+// ── Task 4 (Activity-2): scan scope, new and unresolved files by default ─────────────────────
+
+test('all files checkbox changes the scope line and the request', async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const bodies = [];
+    page.on('request', item => {
+        if (item.method() === 'POST' && new URL(item.url()).pathname === '/prompt_manager/jobs/scan') bodies.push(item.postDataJSON());
+    });
+    const review = page.getByRole('dialog', { name: 'Review metadata scan', exact: true });
+    const scopeValue = review.locator('.meta-grid > div').filter({ has: page.locator('dt', { hasText: 'Scope' }) }).locator('dd');
+    // The concept's switch: a checkbox with role=switch.
+    const allFiles = review.getByRole('switch', { name: 'All files', exact: true });
+    const openReview = async () => {
+        await page.goto(`${workspace}#/images`);
+        await page.getByRole('button', { name: 'Import', exact: true }).click();
+        await page.getByRole('dialog', { name: 'Import & inspect', exact: true }).locator('.operation')
+            .filter({ hasText: 'Scan for metadata' }).getByRole('button', { name: 'Review scan', exact: true }).click();
+        await expect(review).toBeVisible();
+    };
+
+    // The default: the concept's "New and unresolved files", the box unchecked; the request asks for "new".
+    await openReview();
+    await expect(scopeValue).toHaveText('New and unresolved files');
+    await expect(allFiles).not.toBeChecked();
+    await expect(review.locator('.setting-row p')).toHaveText('Also read the files already linked to their prompt again.');
+    await expect(allFiles).toHaveAccessibleDescription('Also read the files already linked to their prompt again.');
+    // Checking and unchecking switches the Scope value both ways.
+    await allFiles.check();
+    await expect(scopeValue).toHaveText('All files');
+    await allFiles.uncheck();
+    await expect(scopeValue).toHaveText('New and unresolved files');
+    await review.getByRole('button', { name: 'Start scan', exact: true }).click();
+    await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0]).toEqual({ scope: 'new' });
+    await expect(heading(page).locator('h1')).toHaveText('Scan for metadata');
+    // Wait for the first scan to end so the second is not refused as busy.
+    await scanLog(page).locator('summary').click();
+    await expect(scanLog(page).locator('pre')).toContainText('Scan finished', { timeout: 15000 });
+    await expect(scanLog(page).locator('pre')).toContainText('new and unresolved files');
+
+    // Checked: "All files", and the request asks for "all".
+    await openReview();
+    await allFiles.check();
+    await expect(scopeValue).toHaveText('All files');
+    await review.getByRole('button', { name: 'Start scan', exact: true }).click();
+    await expect.poll(() => bodies.length).toBe(2);
+    expect(bodies[1]).toEqual({ scope: 'all' });
+    await scanLog(page).locator('summary').click();
+    await expect(scanLog(page).locator('pre')).toContainText('Scan started · ', { timeout: 15000 });
+    await expect(scanLog(page).locator('pre')).toContainText('all files');
+});
+
 test('job view counters follow the mapping and update live', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     const job = await startJob(request);
     await step(request, job.id, { processed: 8240, counters: { added: 1420, known: 6511, review: 37, no_metadata: 254, errors: 18 } });
     await openJob(page, job.id);
-    // The header: the title, the detail line, then Download report (Task 5) and Cancel scan (danger).
+    // The header: the title, the detail line, then Download report (enabled in Task 5) and Cancel scan (danger).
     await expect(heading(page).locator('h1')).toHaveText('Scan for metadata');
     await expect(heading(page).locator('p.muted')).toHaveText(/^Started \d\d:\d\d · 2 output folders · closing this view does not cancel it$/);
     await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report', 'Cancel scan']);
-    await expect(heading(page).getByRole('button', { name: 'Download report', exact: true })).toBeDisabled();
+    await expect(heading(page).getByRole('button', { name: 'Download report', exact: true })).toBeEnabled();
     await expect(heading(page).getByRole('button', { name: 'Cancel scan', exact: true })).toHaveClass(/danger/);
     // Progress: the bar, the server's line and the five tiles in order and colour.
     await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('Processing file 8,240 of 19,622');
@@ -558,6 +611,19 @@ test('job view renders 200-row cap note', async ({ page, request }) => {
     await step(request, job.id, { processed: 260, bulk: { group: 'added', count: 250 }, records: [
         ...Array.from({ length: 10 }, (_, index) => ({ group: 'no_metadata', path: `misc/plain_${index}.png`, detail: 'No prompt metadata in the file' })),
     ] });
+    // Every detail read of this job: in flight, and whether one has returned the full listing.
+    const detailUrl = `/prompt_manager/jobs/${job.id}`;
+    const isDetail = item => new URL(item.url()).pathname === detailUrl;
+    const detailReads = { inFlight: 0, full: false };
+    page.on('request', item => { if (isDetail(item)) detailReads.inFlight += 1; });
+    page.on('requestfailed', item => { if (isDetail(item)) detailReads.inFlight -= 1; });
+    page.on('response', async response => {
+        if (!isDetail(response)) return;
+        const body = await response.json().catch(() => null);
+        const outcomes = body?.job?.outcomes ?? {};
+        if (outcomes.added?.length === 200 && outcomes.no_metadata?.length === 10) detailReads.full = true;
+        detailReads.inFlight -= 1;
+    });
     await openJob(page, job.id);
     await expect(tiles(page).first().locator('dd')).toHaveText('250');
     await expect(fileRows(page)).toHaveCount(200);
@@ -573,6 +639,9 @@ test('job view renders 200-row cap note', async ({ page, request }) => {
 
     // Review M12: with the list capped and the log closed, more files only update the counters; the detail is read
     // again only when the log opens with new lines.
+    // The reads from opening the view have settled: one returned the full listing and none is in flight. The view
+    // re-reads only while what the summary lists differs from the last read, so no further read is due.
+    await expect.poll(() => detailReads.full && detailReads.inFlight === 0).toBe(true);
     const reads = [];
     page.on('request', item => { if (new URL(item.url()).pathname === `/prompt_manager/jobs/${job.id}`) reads.push(Date.now()); });
     await step(request, job.id, { processed: 300, bulk: { group: 'added', count: 40 } });
@@ -639,6 +708,8 @@ test('an unknown or restarted job view says so', async ({ page, request }) => {
     await expect(await request.post('/__test__/jobs/restart')).toBeOK();
     await expect(heading(page).locator('p.muted')).toHaveText(LOST);
     await expect(heading(page).getByRole('button', { name: 'Cancel scan', exact: true })).toHaveCount(0);
+    // A lost job has no report on the server (review M9): Download report is disabled rather than failing.
+    await expect(heading(page).getByRole('button', { name: 'Download report', exact: true })).toBeDisabled();
     // What was read before the restart stays on the page.
     await expect(fileRows(page)).toHaveCount(1);
     await expect(pill(page)).toBeHidden();
@@ -661,4 +732,70 @@ test('a finished job the server pruned leaves its open view honest', async ({ pa
     await expect(heading(page).locator('h1')).toHaveText('Activity');
     await expect(heading(page).locator('h1')).toBeFocused();
     await expect(page).toHaveTitle('Activity · Prompt Manager');
+});
+
+// Activity-2 Task 5 (D59): Download report and the log's scroll position.
+test('download report saves the job JSON', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request);
+    await step(request, job.id, { processed: 2, records: [
+        { group: 'added', path: 'sub/a.png', root: 'output', detail: 'Added' },
+        { group: 'errors', path: 'broken/b.png', root: 'output', detail: 'Error' },
+    ] });
+    await finish(request, job.id);
+    await openJob(page, job.id);
+    const button = heading(page).getByRole('button', { name: 'Download report', exact: true });
+    await expect(button).toBeEnabled();
+    const [download] = await Promise.all([page.waitForEvent('download'), button.click()]);
+    expect(download.suggestedFilename()).toMatch(/^prompt-manager-scan-\d{8}-\d{4}\.json$/);
+    const path = await download.path();
+    const report = JSON.parse(await (await import('node:fs/promises')).readFile(path, 'utf8'));
+    expect(report.job.id).toBe(job.id);
+    expect(report.outcomes.added.rows.map(row => row.path)).toEqual(['sub/a.png']);
+    expect(report.outcomes.errors.truncated).toBe(false);
+    expect(report.log.length).toBeGreaterThan(0);
+    await expect(toast(page)).toHaveText('Job report downloaded.');
+});
+
+test('log keeps the reader\'s scroll position', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request);
+    const more = (from, count) => Array.from({ length: count }, (_, index) => ({ group: 'known', path: `log/f_${from + index}.png`,
+        root: 'output', detail: 'Known' }));
+    await step(request, job.id, { processed: 60, records: more(0, 60) });
+    await openJob(page, job.id);
+    await scanLog(page).locator('summary').click();
+    const pre = scanLog(page).locator('pre');
+    await expect(pre).toContainText('log/f_59.png');
+    const metrics = () => pre.evaluate(node => ({ top: node.scrollTop, max: node.scrollHeight - node.clientHeight }));
+    // Opening starts at the newest line.
+    await expect.poll(async () => { const m = await metrics(); return m.max > 0 && m.top >= m.max - 2; }).toBe(true);
+    // Pinned to the bottom: new lines are followed.
+    await step(request, job.id, { processed: 90, records: more(60, 30) });
+    await expect(pre).toContainText('log/f_89.png');
+    await expect.poll(async () => { const m = await metrics(); return m.top >= m.max - 2; }).toBe(true);
+    // Scrolled up: the position stays while more lines arrive.
+    await pre.evaluate(node => { node.scrollTop = 40; });
+    await step(request, job.id, { processed: 120, records: more(90, 30) });
+    await expect(pre).toContainText('log/f_119.png');
+    expect((await metrics()).top).toBe(40);
+    // Closed and opened again (review M6): every open starts at the newest line, also after lines arrived meanwhile.
+    await scanLog(page).locator('summary').click();
+    await expect(scanLog(page)).not.toHaveAttribute('open', '');
+    await step(request, job.id, { processed: 150, records: more(120, 30) });
+    await scanLog(page).locator('summary').click();
+    await expect(pre).toContainText('log/f_149.png');
+    await expect.poll(async () => { const m = await metrics(); return m.max > 0 && m.top >= m.max - 2; }).toBe(true);
+});
+
+test('a failed report download says so and leaves the button usable', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request);
+    await finish(request, job.id);
+    await openJob(page, job.id);
+    await page.route(`**/prompt_manager/jobs/${job.id}/report`, route => route.fulfill({ status: 500, body: 'no' }));
+    const button = heading(page).getByRole('button', { name: 'Download report', exact: true });
+    await button.click();
+    await expect(toast(page)).toHaveText('The report could not be downloaded. Try again.');
+    await expect(button).not.toHaveAttribute('aria-disabled', 'true');
 });

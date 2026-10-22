@@ -10,11 +10,36 @@ import json
 
 from aiohttp import web
 
-from .jobs import JobBusy
+from .jobs import DEFAULT_SCAN_SCOPE, SCAN_SCOPES, JobBusy
 
 
 def _not_found():
     return web.json_response({"success": False, "error": "Job not found"}, status=404)
+
+
+def _bad_request(message):
+    return web.json_response({"success": False, "error": message}, status=400)
+
+
+async def _scan_scope(request):
+    """The requested scan scope ("new" or "all"), or None when the body is invalid.
+
+    An empty body (also a chunked one with no bytes), or one without
+    ``scope``, asks for the default.
+    """
+    if not request.can_read_body:
+        return DEFAULT_SCAN_SCOPE
+    text = await request.text()
+    if not text.strip():  # e.g. a chunked POST that sent no bytes
+        return DEFAULT_SCAN_SCOPE
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    scope = body.get("scope", DEFAULT_SCAN_SCOPE)
+    return scope if scope in SCAN_SCOPES else None
 
 
 def _summary_event(job):
@@ -37,6 +62,10 @@ class JobRoutesMixin:
         async def job_detail_route(request):
             return await self.job_detail(request)
 
+        @routes.get("/prompt_manager/jobs/{job_id}/report")
+        async def job_report_route(request):
+            return await self.job_report(request)
+
         @routes.get("/prompt_manager/jobs/{job_id}/events")
         async def job_events_route(request):
             return await self.job_events(request)
@@ -56,6 +85,22 @@ class JobRoutesMixin:
             return _not_found()
         return web.json_response({"success": True, "job": job.detail()})
 
+    async def job_report(self, request):
+        """The job's whole record as a JSON attachment (no absolute paths)."""
+        job = self._jobs.get(request.match_info["job_id"])
+        if job is None:
+            return _not_found()
+        body = json.dumps(job.report(), indent=2)
+        disposition = f'attachment; filename="{job.report_filename()}"'
+        return web.Response(
+            text=body,
+            content_type="application/json",
+            headers={
+                "Content-Disposition": disposition,
+                "Cache-Control": "no-store",
+            },
+        )
+
     async def cancel_job(self, request):
         """Stop a job at its next file boundary; a finished job is a no-op."""
         job_id = request.match_info["job_id"]
@@ -65,9 +110,16 @@ class JobRoutesMixin:
         return web.json_response({"success": True, "cancellation_requested": requested})
 
     async def start_scan_job(self, request):
-        """Start the metadata scan as a job (202), or 409 naming the busy job."""
+        """Start the metadata scan as a job (202), or 409 naming the busy job.
+
+        The body's ``scope`` is "new" (the default: new and unresolved files)
+        or "all"; anything else is a 400.
+        """
+        files = await _scan_scope(request)
+        if files is None:
+            return _bad_request('The scan scope must be "new" or "all"')
         try:
-            job = self._start_scan_job()
+            job = self._start_scan_job(files)
         except JobBusy as busy:
             running = busy.running
             return web.json_response(

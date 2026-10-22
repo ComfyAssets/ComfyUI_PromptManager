@@ -2060,7 +2060,7 @@ test('scan for metadata opens the review dialog from Import', async ({ page, req
     await openScanReview(page);
     const dialog = scanReview(page);
     await expect(dialog.locator('dl.meta-grid > div > dt')).toHaveText(['Sources', 'Scope']);
-    await expect(dialog.locator('dl.meta-grid > div > dd')).toHaveText(['2 output folders', 'All files']);
+    await expect(dialog.locator('dl.meta-grid > div > dd')).toHaveText(['2 output folders', 'New and unresolved files']);
     await expect(dialog.locator('#modal-body > p.small')).toHaveText('Enrich positive / negative associations, reuse canonical text and report unchanged files. Do not inflate run counts or recreate existing thumbnails.');
     await expect(dialog.locator('.notice h3')).toHaveText('Back up the database first (recommended)');
     await expect(dialog.locator('.dialog-actions button')).toHaveText(['Cancel', 'Start scan']);

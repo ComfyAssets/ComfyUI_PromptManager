@@ -20,7 +20,7 @@
  *
  * Every opener takes the page `scope`: disposing it closes and removes the shell, so a dialog never outlives its page.
  */
-import { createButton } from '../shared/toolkit/core.js';
+import { createButton, createSwitch } from '../shared/toolkit/core.js';
 
 const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags' });
 const FIELD_ORDER = Object.keys(FIELD_LABELS);
@@ -342,22 +342,44 @@ export const SCAN_REVIEW_SENTENCE = 'Enrich positive / negative associations, re
 const BACKUP_LABEL = 'Back up now';
 const BACKUP_BUSY_LABEL = 'Backing up…';
 
+export const SCAN_SCOPE_LABELS = { new: 'New and unresolved files', all: 'All files' };
+export const SCAN_ALL_FILES_HINT = 'Also read the files already linked to their prompt again.';
+
 /**
- * The concept's "Review metadata scan" (`scan-review`, D55). `sources` is the number of output folders the scan reads;
- * the scope is fixed to "All files" in Activity-1. `onBackup` runs the database backup (the button is aria-disabled
- * and reads "Backing up…" until it settles, and the dialog stays open); Start scan closes the dialog, then `onStart`.
+ * The concept's "Review metadata scan" (`scan-review`, D55). `sources` is the number of output folders the scan reads.
+ * The scope is the concept's "New and unresolved files"; the "All files" checkbox (D58, the concept's `.setting-row`
+ * switch, unchecked) switches the Scope value to "All files". `onBackup` runs the database backup (the button is
+ * aria-disabled and reads "Backing up…" until it settles, and the dialog stays open); Start scan closes the dialog, then
+ * calls `onStart({scope: 'new' | 'all'})`.
  */
 export function openScanReviewDialog({ scope, sources, onBackup, onStart, trigger = null }) {
     requireScope(scope);
     requireCallbacks({ onBackup, onStart });
     if (!Number.isSafeInteger(sources) || sources < 0) throw new TypeError('The scan review needs its source count');
     const grid = el('dl', undefined, 'meta-grid');
+    const values = {};
     for (const [term, value] of [['Sources', `${sources.toLocaleString('en-US')} output ${sources === 1 ? 'folder' : 'folders'}`],
-        ['Scope', 'All files']]) {
+        ['Scope', SCAN_SCOPE_LABELS.new]]) {
         const entry = el('div');
-        entry.append(el('dt', term), el('dd', value));
+        values[term] = el('dd', value);
+        entry.append(el('dt', term), values[term]);
         grid.append(entry);
     }
+    // The concept's System toggle: a `.setting-row` whose checkbox is the Toolkit switch (concept `hydrateSwitches`).
+    const toggle = createSwitch('', '', 'scan-all-files');
+    const allFiles = toggle.querySelector('input');
+    allFiles.checked = false;
+    const option = el('div', undefined, 'setting-row');
+    const optionText = el('div');
+    const optionLabel = el('label', SCAN_SCOPE_LABELS.all);
+    optionLabel.htmlFor = allFiles.id;
+    const hint = el('p', SCAN_ALL_FILES_HINT);
+    hint.id = 'scan-all-files-hint';
+    allFiles.setAttribute('aria-describedby', hint.id);
+    optionText.append(optionLabel, hint);
+    option.append(optionText, toggle);
+    const chosenScope = () => (allFiles.checked ? 'all' : 'new');
+    allFiles.addEventListener('change', () => { values.Scope.textContent = SCAN_SCOPE_LABELS[chosenScope()]; });
     const notice = el('div', undefined, 'notice');
     const copy = el('div');
     copy.append(el('h3', 'Back up the database first (recommended)'),
@@ -381,10 +403,11 @@ export function openScanReviewDialog({ scope, sources, onBackup, onStart, trigge
     const start = createButton('Start scan', 'ca-primary');
     cancel.addEventListener('click', () => finish());
     start.addEventListener('click', () => {
+        const files = chosenScope();
         finish();
-        onStart();
+        onStart({ scope: files });
     });
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(cancel, start);
-    show('Review metadata scan', [grid, el('p', SCAN_REVIEW_SENTENCE, 'small'), notice, actions], { scope, trigger });
+    show('Review metadata scan', [grid, option, el('p', SCAN_REVIEW_SENTENCE, 'small'), notice, actions], { scope, trigger });
 }

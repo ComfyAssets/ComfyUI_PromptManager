@@ -129,7 +129,7 @@ def register_activity_commands(app, routes, api):
                 str(data.get("title", "Scan for metadata")),
                 record_changing=True,
                 scope={
-                    "mode": "all",
+                    "files": str(data.get("files", "new")),
                     "output_folders": count(data.get("output_folders"), 2),
                 },
                 runner=fake_runner(ending),

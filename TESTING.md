@@ -550,8 +550,9 @@ Recorded shell deviations:
   configured sources.", button "Review scan"). It opens the concept's `scan-review`,
   "Review metadata scan": no sample-plan `.demo-note` (prototype copy); Sources and
   Scope in a `dl.meta-grid` (the concept's maintenance plan uses `dl`; `scan-review`
-  uses a `div`) reading "N output folders" (the discovered sources) and "All files"
-  (fixed in Activity-1; Activity-2 adds the scope option); the concept's sentence; then
+  uses a `div`) reading "N output folders" (the discovered sources) and the concept's
+  "New and unresolved files" (the D58 checkbox switches it to "All files"); the
+  concept's sentence; then
   a backup `.notice` (the concept's System notice box): `h3` "Back up the database first
   (recommended)", "Downloads a copy of the prompts database before the scan changes any
   records." and "Back up now", which downloads the existing `/prompt_manager/backup`
@@ -624,6 +625,63 @@ Recorded shell deviations:
   is running: <title>." with the title linking that job's view (the shared toast now
   accepts link parts). A toast with a link stays 20 s instead of 6.5 s, and any toast
   stays while the pointer or focus is on it.
+- **D58** (scan scope, Activity-2 Task 4): the concept's `scan-review` states a fixed
+  scope, "New and unresolved files". Production keeps that value as the default and adds
+  the concept's own System toggle after the `dl.meta-grid`: a `.setting-row` with the
+  label "All files", the hint "Also read the files already linked to their prompt
+  again." (the switch's `aria-describedby`) and the Toolkit switch (`label.ca-switch`, a
+  checkbox with `role="switch"`, as the concept's `hydrateSwitches` renders it),
+  unchecked. Checking it switches the Scope value to "All files"; Start scan sends
+  `POST /prompt_manager/jobs/scan {scope: "new" | "all"}` (no body, an empty body or no
+  `scope` is "new"; another value is a 400).
+  - In "new" the scan skips, before reading any metadata, the files the Library already
+    links with a resolved link and that are unchanged on disk: exactly one
+    `generated_images` row for the file, exactly one distinct pair link on it
+    (`image_prompt_pairs`, written only by resolved ingestion), and a stored
+    `file_size` equal to the file's size in this walk. Both paths go through
+    `normalize_image_path` (absolute, normalized, `os.path.normcase`); a row without
+    `file_path` matches by its `image_path`.
+  - Read again: files linked without a pair (the monitor's fallback and FIFO links, the
+    legacy positive-only import), linked to more than one prompt or pair, not linked, a
+    file whose size changed (one replaced at the same path, e.g. a reused ComfyUI
+    counter name, is read and its conflict lands under Needs review), and a row with no
+    stored size (unknown is not known). The scan now stores each file's size when it
+    ingests it, so a file read once is skipped by the next "new" pass; the first pass
+    after the upgrade fills the missing sizes, which reports those files as enriched
+    (Added) instead of unchanged.
+  - The known set is one streamed query that keeps only the scanned paths. If it cannot
+    be read, the scan logs "Known files could not be read · reading every file" and
+    reads every file.
+  - A skipped file counts as processed and unchanged in the legacy counts (not as
+    found) and under Already known, with the detail "Skipped · already linked" and the
+    log line "= <root>/<path> · Skipped · already linked"; the log's first line names
+    the scope ("Scan started · N output folders · new and unresolved files" or "· all
+    files"). A legacy-page scan that attaches to a running "new" job therefore shows
+    the skipped files in its `unchanged` count.
+  - "All files" reads every file, as the scan did in Activity-1, and the legacy
+    `/prompt_manager/scan` route always does when it starts the scan (its SSE payload
+    keys are unchanged).
+  - `activity-concept.spec.mjs` compares the switch with the concept's System → Sources
+    toggle ("Watch for new outputs"), without its place-dependent top margin;
+    `workspace-activity.spec.mjs` covers the Scope value, the description and the
+    request both ways; `tests/test_scan_scope.py` covers the skip, the size rule, the
+    replaced file, the re-read of unresolved files, "all", the legacy route, the
+    fallback, the empty body, the 400 and Windows case folding.
+- **D59** (job report and log, Activity-2 Task 5): the job view's "Download report" is
+  enabled. It fetches `GET /prompt_manager/jobs/<id>/report` through the api-client URL
+  (so a proxy mount works) and saves a JSON attachment named
+  `prompt-manager-<kind>-<YYYYMMDD-HHMM>.json` (server local time), then toasts "Job
+  report downloaded." (or "The report could not be downloaded. Try again."). The report
+  holds the summary, every counter, each outcome group's exact `count`, its listed
+  `rows` (at most 200) and a `truncated` flag, the scope and the log; rows and log lines
+  carry root-relative paths only, never an absolute path (an unknown id is a 404).
+  A job lost with a restart has no report on the server, so its Download report is
+  disabled; a view left while the report downloads still saves it but shows no toast.
+  The scan log opens at its newest line every time it is opened and follows new lines
+  only while the reader is at the bottom; a reader who scrolled up keeps the position
+  while it stays open (checked on Chromium, Firefox and WebKit).
+  `test_report_is_attachment_without_absolute_paths` and the browser tests `download
+  report saves the job JSON` and `log keeps the reader's scroll position` cover it.
 - **D29**: no prototype copy. There is no "Interactive concept" badge and no
   "What changes & why" button. The footer reads "ComfyAssets · Local tools. Your
   library.", and the title has no " concept" suffix. Save view's dialog action reads

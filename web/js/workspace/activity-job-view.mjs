@@ -3,7 +3,7 @@
  * concept's classes.
  *
  * - Header: the page heading names the job; its line is the Activity item's (D54), and its actions are Download report
- *   (disabled until Activity-2) and, while the job runs, "Cancel scan" (danger).
+ *   (the job's JSON report, D59) and, while the job runs, "Cancel scan" (danger).
  * - Progress (`section.surface`): `<progress>`, the server's "Processing file N of M · about X min left", and the
  *   outcome counters as `dl.stat-row` tiles: Added to Library (green), Already known, Needs review (warning), No usable
  *   metadata, Errors (red).
@@ -21,6 +21,7 @@ import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
 import { parseJob, JOBS_URL, LOST_DETAIL } from './activity-store.mjs';
 import { jobDetail, CANCEL_FAILED_TOAST } from './activity.mjs';
+import { downloadJobReport } from './activity-scan.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
@@ -122,7 +123,6 @@ function section(title, id) {
 export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const parts = pageHeading(main);
     const download = createButton('Download report');
-    download.disabled = true;
     const cancel = createButton('Cancel scan', 'danger');
 
     const progressPart = section('Progress', 'job-progress-title');
@@ -271,6 +271,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         document.title = `${job.title} · Prompt Manager`;
         parts.description.textContent = jobDetail(job);
         cancel.textContent = scan ? 'Cancel scan' : 'Cancel job';
+        // A job lost with the server has no report there (review M9).
+        const lost = job.state === 'lost';
+        if (lost && document.activeElement === download) parts.h1.focus();
+        download.disabled = lost;
         if (job.state === 'running') {
             if (!cancel.isConnected) parts.actions.append(cancel);
         } else if (cancel.isConnected) {
@@ -290,9 +294,11 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         logLabel.textContent = `● ${scan ? 'Scan' : 'Job'} log`;
         const text = detail?.log.length ? detail.log.join('\n') : 'No log lines yet.';
         if (pre.textContent !== text) {
+            // Replacing the text clamps the scroll position, so keep it: pinned readers follow the end, others stay.
+            const { scrollTop } = pre;
             const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 2;
             pre.textContent = text;
-            if (atEnd) pre.scrollTop = pre.scrollHeight;
+            pre.scrollTop = atEnd ? pre.scrollHeight : scrollTop;
         }
         renderRows(job);
     }
@@ -323,7 +329,12 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
             reading = false;
         }
         render();
-        if (readAgain) { readAgain = false; scheduleRead(); }
+        // Read once more only if the summary moved past what this read returned (review: no redundant re-read).
+        if (readAgain) {
+            readAgain = false;
+            const job = store.find(jobId);
+            if (job && job.state !== 'lost' && detailChanged(job)) scheduleRead();
+        }
     }
 
     /**
@@ -347,10 +358,23 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     }
 
     scope.listen(log, 'toggle', () => {
+        // Every open starts at the newest line: while closed the log has no layout box (Firefox, WebKit), so a kept
+        // position would be lost anyway (review M6).
+        if (log.open) pre.scrollTop = pre.scrollHeight;
         const job = store.find(jobId);
         if (log.open && job && job.state !== 'lost' && detailChanged(job)) scheduleRead();
     });
 
+    scope.listen(download, 'click', async () => {
+        if (download.disabled || download.getAttribute('aria-disabled') === 'true') return;
+        download.setAttribute('aria-disabled', 'true');
+        try {
+            // A view left while the report downloads shows no toast (review M10).
+            await downloadJobReport(jobId, { signal: scope.signal });
+        } finally {
+            download.removeAttribute('aria-disabled');
+        }
+    });
     scope.listen(cancel, 'click', async () => {
         if (cancel.getAttribute('aria-disabled') === 'true') return;
         cancel.setAttribute('aria-disabled', 'true');

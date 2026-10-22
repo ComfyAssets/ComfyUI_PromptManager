@@ -35,12 +35,19 @@ MAX_FINISHED_JOBS = 20  # finished jobs this session keeps
 # The metadata scan's outcome groups, in counter-tile order of the spec's
 # mapping, and the per-file scan status each group collects. Files without
 # usable metadata have no status and go to "no_metadata".
+# Which files a scan reads (#249 Activity-2): "new" skips the files the Library
+# already links with a resolved link (get_known_resolved_paths) before reading
+# them, so new, unlinked, unresolved and ambiguous files are read; "all" reads
+# every file again. The workspace job defaults to "new"; legacy /scan is "all".
+SCAN_SCOPES = ("new", "all")
+DEFAULT_SCAN_SCOPE = "new"
 SCAN_GROUP_NAMES = ("added", "known", "review", "no_metadata", "errors")
 SCAN_GROUPS = {
     "added": "added",
     "linked": "added",
     "enriched": "added",
     "unchanged": "known",
+    "skipped": "known",  # "new" scope: known and resolved, not read again
     "ambiguous": "review",
     "conflict": "review",
     "unresolved": "review",
@@ -239,6 +246,36 @@ class Job:
             },
             "log": list(self.log),
         }
+
+    def report(self):
+        """The downloadable report: the summary, every outcome group and the log.
+
+        Each group carries its exact count, its listed rows (at most
+        MAX_OUTCOME_ROWS) and whether the list is cut short. Rows and log lines
+        already hold root-relative paths only.
+        """
+        summary = self.summary()
+        summary.pop("listed", None)
+        summary.pop("log_length", None)
+        return {
+            "report_version": 1,
+            "generated_at": self._clock(),
+            "job": summary,
+            "outcomes": {
+                group: {
+                    "count": self.counters.get(group, len(rows)),
+                    "rows": [dict(row) for row in rows],
+                    "truncated": self.counters.get(group, len(rows)) > len(rows),
+                }
+                for group, rows in self.outcomes.items()
+            },
+            "log": list(self.log),
+        }
+
+    def report_filename(self):
+        """The download name: prompt-manager-KIND-YYYYMMDD-HHMM.json (local time)."""
+        stamp = time.strftime("%Y%m%d-%H%M", time.localtime(self._clock()))
+        return f"prompt-manager-{self.kind}-{stamp}.json"
 
 
 class JobRegistry:

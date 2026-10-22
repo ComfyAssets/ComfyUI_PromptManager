@@ -17,7 +17,14 @@ from pathlib import Path
 from aiohttp import web
 
 from .prompts import thumbnail_url_for
-from .jobs import SCAN_GROUP_NAMES, SCAN_GROUPS, Job, JobBusy
+from .jobs import (
+    DEFAULT_SCAN_SCOPE,
+    SCAN_GROUP_NAMES,
+    SCAN_GROUPS,
+    SCAN_SCOPES,
+    Job,
+    JobBusy,
+)
 
 try:
     from ...utils.parallel import map_parallel
@@ -150,6 +157,8 @@ SCAN_FINAL_STATES = {
     "cancelled": "cancelled",
     "error": "failed",
 }
+# The scope as the scan log's first line names it (the review dialog's words).
+SCAN_SCOPE_LOG = {"new": "new and unresolved files", "all": "all files"}
 MIN_BATCHES_FOR_ESTIMATE = 2  # "about X min left" waits for this many batches
 # Log line prefix per outcome group (spec: + added, = known, ? review, ! error,
 # - no usable metadata).
@@ -174,6 +183,7 @@ SCAN_DETAILS = {
     "linked": "Linked to an existing prompt",
     "enriched": "Metadata added to its prompt",
     "unchanged": "Already linked to its prompt",
+    "skipped": "Skipped · already linked",
     "ambiguous": "Needs review: more than one prompt could match",
     "unresolved": "Needs review: the prompt could not be traced in the workflow",
     "conflict": "Needs review: already linked to a different prompt",
@@ -195,6 +205,30 @@ def _scan_status_line(done, total, batches, elapsed):
         return line
     minutes = max(1, math.ceil(elapsed / done * (total - done) / 60))
     return f"{line} · about {minutes} min left"
+
+
+def _file_size(path):
+    """``path``'s size on disk, or None when it cannot be read."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def _with_file_size(canonical, media_file):
+    """Record the file's size in ``file_info`` unless the metadata carries one.
+
+    Stored as ``generated_images.file_size``; the "new" scan scope skips a known
+    file only while its size is unchanged.
+    """
+    info = canonical.get("file_info")
+    info = dict(info) if isinstance(info, dict) else {}
+    if info.get("size") is None:
+        size = _file_size(media_file)
+        if size is not None:
+            info["size"] = size
+    if info:
+        canonical["file_info"] = info
 
 
 def _scan_roots(output_dirs):
@@ -1426,7 +1460,7 @@ class AdminRoutesMixin:
         job = self._jobs.active(SCAN_JOB_KIND)
         if job is None:
             try:
-                job = self._start_scan_job()
+                job = self._start_scan_job("all")
             except JobBusy as busy:
                 return self._long_job_busy_response(busy.running.title)
         return await self._stream_scan_job(request, job)
@@ -1450,16 +1484,19 @@ class AdminRoutesMixin:
             }
         )
 
-    def _start_scan_job(self):
+    def _start_scan_job(self, files=DEFAULT_SCAN_SCOPE):
         """Register the scan job synchronously; its runner starts on the loop.
 
-        Raises JobBusy while another record-changing job runs.
+        ``files`` is the scope (``SCAN_SCOPES``). Raises JobBusy while another
+        record-changing job runs.
         """
+        if files not in SCAN_SCOPES:
+            raise ValueError(f"Unknown scan scope: {files!r}")
         job = self._jobs.start(
             SCAN_JOB_KIND,
             SCAN_JOB_TITLE,
             record_changing=True,
-            scope={"mode": "all"},
+            scope={"files": files},
             runner=self._run_scan_job,
             groups=SCAN_GROUP_NAMES,
         )
@@ -1525,7 +1562,8 @@ class AdminRoutesMixin:
             dir_names = [self._public_path(d) for d in output_dirs]
             folders = _plural(len(output_dirs), "output folder")
             job.scope["output_folders"] = len(output_dirs)
-            job.log_line(f"Scan started · {folders}")
+            scope = SCAN_SCOPE_LOG[job.scope.get("files", "all")]
+            job.log_line(f"Scan started · {folders} · {scope}")
             job.update(status_line=f"Looking for media files in {folders}")
             yield self._scan_progress(
                 0, f"Scanning {len(output_dirs)} directory(ies) for media files..."
@@ -1544,7 +1582,12 @@ class AdminRoutesMixin:
                     5, f"Found {len(media_files)} media files to process...", counts
                 )
             roots = _scan_roots(output_dirs)
-            async for event in self._scan_batches(media_files, counts, job, roots):
+            known = set()
+            if media_files and job.scope.get("files") != "all":
+                known = await self._known_scan_files(job, media_files)
+            async for event in self._scan_batches(
+                media_files, counts, job, roots, known
+            ):
                 yield event
 
             self.logger.info(
@@ -1565,11 +1608,29 @@ class AdminRoutesMixin:
                 "message": "An internal error occurred. Check server logs for details.",
             }
 
-    async def _scan_batches(self, media_files, counts, job, roots=()):
+    async def _known_scan_files(self, job, media_files):
+        """The "new" scope's skip set; a failed read falls back to reading all."""
+        try:
+            return await self._run_in_executor(self._known_scan_files_sync, media_files)
+        except Exception:
+            self.logger.warning(
+                "Known files could not be read; the scan reads every file",
+                exc_info=True,
+            )
+            job.log_line("Known files could not be read · reading every file")
+            return set()
+
+    def _known_scan_files_sync(self, media_files):
+        """Stat each scanned file and ask the database which are known (blocking)."""
+        sizes = {str(media_file): _file_size(media_file) for media_file in media_files}
+        return self.db.get_known_resolved_paths(sizes)
+
+    async def _scan_batches(self, media_files, counts, job, roots=(), known=()):
         """Process ``media_files`` in executor batches, updating ``counts`` in place.
 
         Records each file's outcome in ``job`` and yields one progress event
-        per batch.
+        per batch. Files in ``known`` (path strings) are not read: they count
+        as processed and unchanged and are recorded as skipped.
         """
         total = len(media_files)
         started = time.monotonic()
@@ -1578,18 +1639,23 @@ class AdminRoutesMixin:
             if job.cancelled:
                 return
             batch = media_files[batch_start : batch_start + SCAN_BATCH_SIZE]
-            batch_results = await self._run_in_executor(
-                self._extract_batch_metadata_sync, batch
-            )
-            outcomes = []
-            batch_counts = await self._run_in_executor(
-                self._ingest_scan_batch_sync,
-                batch_results,
-                roots=roots,
-                outcomes=outcomes,
-            )
-            for key in counts:
-                counts[key] += batch_counts[key]
+            skipped = [f for f in batch if str(f) in known]
+            to_read = [f for f in batch if str(f) not in known]
+            outcomes = [_scan_outcome(f, roots, "skipped") for f in skipped]
+            counts["processed"] += len(skipped)
+            counts["unchanged"] += len(skipped)
+            if to_read:
+                batch_results = await self._run_in_executor(
+                    self._extract_batch_metadata_sync, to_read
+                )
+                batch_counts = await self._run_in_executor(
+                    self._ingest_scan_batch_sync,
+                    batch_results,
+                    roots=roots,
+                    outcomes=outcomes,
+                )
+                for key in counts:
+                    counts[key] += batch_counts[key]
             for group, row, log_line in outcomes:
                 job.record(group, row, log_line)
 
@@ -1713,6 +1779,7 @@ class AdminRoutesMixin:
                     pass
         if not canonical.get("prompt") and not canonical.get("parameters"):
             return None
+        _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
         if resolution["state"] == "resolved":
             result = ingest_resolved_pair(
