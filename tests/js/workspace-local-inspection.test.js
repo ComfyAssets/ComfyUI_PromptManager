@@ -267,9 +267,10 @@ test("select reuses the same local key", async () => {
     assert.equal(m.localFileAdapter.inspectionPath(first), `local-file:${first.key}`);
     assert.equal(m.localFileAdapter.key(first), first.key);
     const reads = [];
-    // Until the loader seam lands (PR L2 Task 4) the controller reaches the adapter through api.get.
-    const api = { get: (sentinel) => { reads.push(sentinel); return m.localFileAdapter.read(reads.length === 1 || sentinel === `local-file:${first.key}` ? first : second); } };
-    const controller = createInspectionController({ api, extractFacts: extractGenerationFacts, adapter: m.localFileAdapter });
+    // The controller calls adapter.read itself (PR L2 Task 4); the API is never reached.
+    const api = new Proxy({}, { get: (_, key) => assert.fail(`api.${String(key)} touched`) });
+    const adapter = { ...m.localFileAdapter, read: (handle, options) => { reads.push(m.localFileAdapter.inspectionPath(handle)); return m.localFileAdapter.read(handle, options); } };
+    const controller = createInspectionController({ api, extractFacts: extractGenerationFacts, adapter });
     const pending = controller.select(first);
     assert.equal(controller.select(first), pending, "the same handle returns the pending read");
     await pending;

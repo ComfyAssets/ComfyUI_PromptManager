@@ -23,8 +23,21 @@ test('tags is a native route titled Tags; only unbuilt routes hand off to legacy
         assert.equal(routeTitle(route), route.label);
     }
     assert.equal(routeTitle(resolveRoute('#/library/7')), 'Prompt library');
-    for (const id of ['images', 'library', 'tags', 'overview', 'activity']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
-    for (const id of ['inspect', 'system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), true, id);
+    for (const id of ['images', 'library', 'tags', 'inspect', 'overview', 'activity']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
+    for (const id of ['system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), true, id);
+});
+
+test('inspect is the native Inspect a file page with the concept description', async () => {
+    const { resolveRoute, routeTitle, isHandoff } = await source;
+    const inspect = resolveRoute('#/inspect');
+    assert.equal(inspect.label, 'Inspect a file');
+    assert.equal(routeTitle(inspect), 'Inspect a file');
+    // The concept's heading description (app.js renderMetadata 743).
+    assert.equal(inspect.description, 'A standalone file uses the same image viewer and prompt actions.');
+    assert.equal(isHandoff(inspect), false);
+    // Overview keeps its card for the legacy metadata page, which stays working.
+    assert.equal(inspect.href, '/prompt_manager/gallery.html');
+    assert.equal(inspect.action, 'Open existing metadata inspector');
 });
 
 test('a job of the Activity page is its own deep link', async () => {

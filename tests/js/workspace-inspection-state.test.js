@@ -703,6 +703,75 @@ test('a workflow the legacy parser throws on keeps the server result instead of 
     assert.equal(record.prompts.negative.status, 'ambiguous');
 });
 
+// PR L2 Task 4(a): an adapter that reads by itself (the local file adapter) never reaches the API.
+test('controller prefers adapter.read and never touches api', async () => {
+    const createController = contract('createInspectionController');
+    const forbidden = new Proxy({}, { get(_, key) { assert.fail(`api.${String(key)} touched`); } });
+    const reads = [], records = [];
+    const adapter = {
+        validate(item) { if (!item?.key) throw new TypeError('bad'); }, key: item => item.key, scope: () => 'own', inspectionPath: item => `own:${item.key}`,
+        read(item, options) { const pending = {}; reads.push({ item, options, pending }); return new Promise((resolve, reject) => Object.assign(pending, { resolve, reject })); },
+        toRecord(result, item) { records.push([result, item.key]); return { identity: { kind: 'own', key: item.key }, prompts: result.prompts }; },
+    };
+    for (const api of [forbidden, null]) {
+        reads.length = 0; records.length = 0;
+        const controller = createController({ api, adapter, extractFacts: extractGenerationFacts });
+        const first = controller.select({ key: 'a' });
+        assert.equal(reads.length, 1);
+        assert.equal(reads[0].item.key, 'a');
+        assert.ok(reads[0].options.signal instanceof AbortSignal);
+        assert.equal(controller.state.loading, true);
+        const second = controller.select({ key: 'b' });
+        assert.equal(reads[0].options.signal.aborted, true, 'a new selection aborts the previous read');
+        reads[0].pending.resolve({ prompts: { positive: { status: 'resolved', text: 'late' } } });
+        await first;
+        assert.equal(controller.state.record, null, 'a superseded read never publishes');
+        reads[1].pending.resolve({ prompts: { positive: { status: 'resolved', text: 'current' } } });
+        await second;
+        assert.deepEqual(records.map(([, key]) => key), ['b']);
+        assert.equal(controller.state.record.prompts.positive.text, 'current');
+        const retry = controller.retry();
+        reads[2].pending.reject(new Error('read failed'));
+        await retry;
+        assert.equal(controller.state.error, true);
+        assert.equal(controller.state.message, 'Could not read details from this file.');
+        controller.dispose();
+    }
+});
+
+test('rooted and history adapters are unchanged', async () => {
+    const createController = contract('createInspectionController');
+    const { reportedLocationAdapter } = await import('../../web/js/workspace/history-media.mjs');
+    for (const adapter of [module.rootedFileAdapter, reportedLocationAdapter]) {
+        assert.equal(adapter.read, undefined, 'server adapters read through the API');
+        assert.equal(adapter.mediaUrl, undefined, 'server adapters keep the cache-busted original');
+    }
+    const { api, requests } = pendingApi();
+    const rooted = createController({ api, extractFacts: extractGenerationFacts });
+    rooted.select(image());
+    assert.deepEqual(requests.map(request => request.url), [`/prompt_manager/images/inspect/folder/a%20%23%25.png?root=0&root_scope=${scopeA}`]);
+    rooted.dispose();
+    const run = '22222222-2222-2222-2222-222222222222', epoch = '11111111-1111-1111-1111-111111111111';
+    const query = new URLSearchParams({ node: '1', ordinal: '1', epoch, current_scope: scopeA }), base = `/prompt_manager/history/runs/${run}/output/current`;
+    const target = { kind: 'reported-location', location_key: 'c'.repeat(64), history_epoch: epoch, current_scope: scopeA, occurrence: { run_id: run, output_node_id: '1', image_ordinal: 1 },
+        reference: { folder_type: 'output', subfolder: '', filename: 'a.png', path_style: 'posix', root_key: scopeB }, filename: 'a.png', is_video: false,
+        url: `${base}/media?${query}`, thumbnail_url: `${base}/thumbnail?${query}`, inspection_url: `${base}/inspection?${query}` };
+    const history = pendingApi(), recorded = createController({ api: history.api, adapter: reportedLocationAdapter, extractFacts: extractGenerationFacts });
+    recorded.select(target);
+    assert.deepEqual(history.requests.map(request => request.url), [target.inspection_url]);
+    recorded.dispose();
+});
+
+test('fileFor rejects selected-local-file for rooted identity', () => {
+    const entry = image(), data = envelope(entry);
+    data.file = { ...data.file, observation: 'selected-local-file', source_label: 'Selected local file' };
+    assert.throws(() => contract('toInspectionRecord')(data, entry, extractGenerationFacts), /Invalid inspection file/);
+    const project = contract('projectInspectionPayload');
+    assert.throws(() => project(data, { kind: 'rooted-file', key: 'k', path: 'a.png' }, null, extractGenerationFacts), /Invalid inspection file/);
+    assert.throws(() => project(envelope(entry), { kind: 'local-file', key: 'local:1', path: 'a.png' }, null, extractGenerationFacts), /Invalid inspection file/);
+    assert.equal(project(data, { kind: 'local-file', key: 'local:1', path: 'a.png' }, null, extractGenerationFacts).file.observation, 'selected-local-file');
+});
+
 // #249 PR C Task C3: the B3 envelope's `image_tags` facet, the file's own current tags (S1).
 test('image_tags facet is kept exactly and absent stays null', () => {
     const entry = image(), project = contract('toInspectionRecord');

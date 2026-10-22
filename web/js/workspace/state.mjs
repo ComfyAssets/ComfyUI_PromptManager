@@ -6,8 +6,9 @@ export const routes = [
     // Native screen; `title` is the concept's breadcrumb/title, the href stays for Overview's card.
     { id: 'tags', label: 'Tags & categories', title: 'Tags', href: '/prompt_manager/admin#/tags',
         description: 'Explore your vocabulary and find the prompts associated with each tag.', action: 'Open existing tag manager' },
+    // Native screen (#249 local Inspect); the href stays for Overview's card to the legacy metadata page.
     { id: 'inspect', label: 'Inspect a file', href: '/prompt_manager/gallery.html',
-        description: 'Inspect generation metadata from an image or video file.', action: 'Open existing metadata inspector' },
+        description: 'A standalone file uses the same image viewer and prompt actions.', action: 'Open existing metadata inspector' },
     { id: 'overview', label: 'Overview' },
     // SAVED VIEWS' first row (#249 D51): Images filtered to favorites. No href, so Overview lists no card for it.
     { id: 'favorites', label: 'Favorites' },
@@ -17,7 +18,7 @@ export const routes = [
         description: 'Open the current dashboard, then choose Settings or Maintenance for configuration, scans, backups and diagnostics.', action: 'Open existing administration' },
 ];
 
-const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'overview', 'saved', 'favorites', 'activity']);
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity']);
 
 /** A saved view (#249 D16): the shell resolves its id to the view's page, name and state. */
 const SAVED_ROUTE = Object.freeze({ id: 'saved', label: 'Saved view' });

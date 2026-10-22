@@ -24,7 +24,9 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
     const stopSlideshow = () => active?.stop();
-    if (parentScope.signal.aborted) { scope.dispose(); return {open() {},dispose,stopSlideshow}; }
+    // Closes an open viewer without restoring focus (page leave); the viewer stays usable.
+    const close = () => active?.close(false);
+    if (parentScope.signal.aborted) { scope.dispose(); return {open() {},close,dispose,stopSlideshow}; }
     parentScope.signal.addEventListener('abort',dispose,{once:true});
     scope.cleanup(() => parentScope.signal.removeEventListener('abort',dispose));
     scope.cleanup(() => active?.close(false));
@@ -115,11 +117,18 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
             failure.hidden = true;
             const mediaLocal = mediaScope, key = session.state.key;
             const current = () => !local.signal.aborted && !mediaLocal.signal.aborted && session.state.key === key;
-            let original;
-            try { original = adapter.originalDownload(selected); }
+            // An adapter's own media URL (a session-owned blob:) is used exactly, so a retry reuses it; a server
+            // original gets a fresh cache-buster on every build.
+            let original, src;
+            try { if (adapter.mediaUrl) src = adapter.mediaUrl(selected); else original = adapter.originalDownload(selected); }
             catch { session.failed(key);return; }
-            const url = new URL(original.url,window.location.href);
-            url.searchParams.set('_pm_viewer',`${Date.now()}-${++retryVersion}`);
+            if (adapter.mediaUrl) {
+                if (typeof src !== 'string' || !src) { session.failed(key);return; }
+            } else {
+                const url = new URL(original.url,window.location.href);
+                url.searchParams.set('_pm_viewer',`${Date.now()}-${++retryVersion}`);
+                src = url.href;
+            }
             const node = element(selected.is_video ? 'video' : 'img');
             mediaLocal.listen(node,'error',() => {if (current()) session.failed(key);});
             if (selected.is_video) {
@@ -140,7 +149,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                     mediaLocal.cleanup(() => node.removeAttribute('src'));
                 }
             }
-            node.src = url.href;stage.append(node);
+            node.src = src;stage.append(node);
             if (!selected.is_video && window.Viewer) {
                 let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
                 const release = () => {
@@ -233,5 +242,5 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
             if (state.record?.identity.key === currentKey && state.record.library?.title) title.textContent = `${state.record.library.title} · ${entry.filename}`;
         }));
     }
-    return {open,dispose,stopSlideshow};
+    return {open,close,dispose,stopSlideshow};
 }
