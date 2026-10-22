@@ -4,7 +4,6 @@ import hashlib
 import os
 import stat
 import struct
-import sys
 import tempfile
 import threading
 import time
@@ -101,13 +100,23 @@ class CaptureStoreTestCase(unittest.TestCase):
             self.skipTest(f"symlinks unavailable here: {error}")
 
     def wait_for_change_time_after(self, ns: int) -> None:
-        """Block until the filesystem clock passes *ns* (coarse ticks on Linux)."""
-        probe = self.parent / "tick"
+        """Block until a new file's ``st_ctime_ns`` passes *ns*.
+
+        File timestamps tick coarsely (Linux jiffies, Windows ~1-16 ms). Each
+        probe is a fresh name: Windows reports the creation time (or, on
+        Python 3.12+, the change time) and tunnels the creation time of a
+        reused name for 15 s.
+        """
         deadline = time.monotonic() + WAIT
-        while time.monotonic() < deadline:
+        for index in range(1_000_000):
+            probe = self.parent / f"tick-{index}"
             probe.write_bytes(b"x")
-            if os.stat(probe).st_ctime_ns > ns:
+            advanced = os.stat(probe).st_ctime_ns > ns
+            probe.unlink()
+            if advanced:
                 return
+            if time.monotonic() >= deadline:
+                break
             time.sleep(0.001)
         self.fail("the filesystem clock did not advance")  # pragma: no cover
 
@@ -280,8 +289,7 @@ class CaptureStoreTestCase(unittest.TestCase):
         # so there the torn copy completes and its digest describes the copy.
         source.write_bytes(source_bytes)
         before = os.stat(source)
-        if os.name == "posix":  # Windows st_ctime is the creation time
-            self.wait_for_change_time_after(before.st_ctime_ns)
+        self.wait_for_change_time_after(before.st_ctime_ns)
         rewritten = bytes(b ^ 0xFF for b in source_bytes)
 
         def rewriting(store_, stream, size):
@@ -293,9 +301,12 @@ class CaptureStoreTestCase(unittest.TestCase):
                 os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
             return data
 
-        # Detection depends on whether fstat exposes a change time: POSIX
-        # always, Windows only on Python 3.13+. Where it is missing the torn
-        # copy completes and its digest must describe the copied bytes.
+        # Only a change time can tell: POSIX always has one; Windows exposes
+        # it from stat on Python 3.12+ (where the OS supports the fast path)
+        # and never from fstat, so detection there is best effort. The test
+        # asserts the outcome, not the platform: a detected change leaves no
+        # temp file; an undetected one (Windows only) completes with a digest
+        # that describes the copied bytes.
         with patch.object(CaptureStore, "_read", rewriting):
             try:
                 cap = store.capture(self.root, "a.png", epoch=EPOCH, scope=SCOPE)
@@ -303,13 +314,12 @@ class CaptureStoreTestCase(unittest.TestCase):
                 detected = True
             else:
                 detected = False
+                self.assertEqual(os.name, "nt", "only Windows may miss the rewrite")
                 copied = Path(cap.path).read_bytes()
                 self.assertEqual(cap.sha256, hashlib.sha256(copied).hexdigest())
                 store.release(cap.token)
         if os.name == "posix":
             self.assertTrue(detected)
-        else:
-            self.assertEqual(detected, sys.version_info >= (3, 13))
         self.assert_empty(store)
         self.assertEqual(os.stat(source).st_mtime_ns, before.st_mtime_ns)
 
