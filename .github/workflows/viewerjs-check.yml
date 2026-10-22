@@ -22,7 +22,9 @@ concurrency:
 # no npm cache, where npm ci stalled for 5m in six of eight jobs): coverage shards 11m19s/10m47s/10m49s
 # (tests 5m20s/4m42s/4m46s), merge 5m52s (report and check 4s), firefox shards 7m53s/9m27s (tests
 # 4m41s/3m29s), webkit shards 12m25s+ (cancelled at the old 12-minute limit after its 267 tests passed in
-# 6m29s) and 4m53s (tests 3m08s).
+# 6m29s) and 4m53s (tests 3m08s). With the npm cache hit (run 39722172529, npm ci 0-2s): coverage shards
+# 7m56s/5m10s/4m55s (tests 6m42s/4m09s/3m45s), merge 47s, firefox 8m10s/5m28s (tests 7m14s/4m34s),
+# webkit 6m31s/4m30s (tests 5m32s/3m29s); a cache miss adds up to 5m to npm ci, which the limits absorb.
 jobs:
   frontend-coverage:
     name: frontend coverage (shard ${{ matrix.shard }}/3)

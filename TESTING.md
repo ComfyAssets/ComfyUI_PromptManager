@@ -45,7 +45,34 @@ which binds a port the OS picks and prints it as `PM_TEST_SERVER_PORT=<n>`, with
 its own temp root and database (`tests/browser/fixtures.mjs`), so
 parallel workers and concurrent runs never share state. `PM_TEST_WORKERS` sets the
 worker count (default 1 under `CI`, otherwise a quarter of the CPUs, at most 8).
-Test servers are never reused across runs. On unsupported Linux
+Test servers are never reused across runs.
+
+The coverage run can be split the way CI splits it, and each shard keeps the raw
+V8 files it writes under `coverage/js/raw`:
+
+```sh
+PM_TEST_WORKERS=8 npm run --prefix tools/vendor test:coverage            # whole run, one report
+npm run --prefix tools/vendor test:coverage:shard -- 1/3                 # node units, viewer suite, workflows 1/3
+npm run --prefix tools/vendor test:coverage:shard -- 2/3                 # workflows 2/3 (likewise 3/3)
+npm run --prefix tools/vendor coverage:merge                             # report and baseline check of every raw file
+npm run --prefix tools/vendor test:workflows -- --project webkit --shard 2/2
+```
+
+`coverage:merge` refuses an empty raw directory; it does not count shards, so run
+every shard first (CI's merge job checks all three arrived). Measured on a 32-CPU
+machine in the pinned image (2026-10-21): `test:coverage` takes about 5 minutes
+with 8 workers and 24 minutes with 1; all four projects, 8 workers, each test 3
+times (6132 tests), 24 minutes. A CI-sized run (`docker run --cpus=4`,
+`PM_TEST_WORKERS=3`, all four projects once, 2044 tests) takes 25.5 minutes.
+
+Specs must pass beside each other, not only alone. Wait for the page's own
+signal, never for time: a rendering frame (`requestAnimationFrame`) for layout
+work queued by a render or a scroll, a response or a visible state for data. A
+timer that "usually" covers a frame is a race on a loaded runner. Library
+virtualization specs settle with `libraryObservation.settled()` (two consecutive
+frames with no Library frame queued). To look for such races, repeat a spec under
+load (`--workers 8 --repeat-each 10`, and in the image with `--cpus=1` or `2`).
+On unsupported Linux
 distributions, browser system dependencies may need manual installation. For a
 quick browser run, use `test:workflows -- --project chromium`.
 
@@ -135,6 +162,18 @@ artifacts named `frontend-test-reports` contain the merged HTML coverage and
 JSON summary; `frontend-traces-shard-N` hold the Chromium/touch failure
 screenshots/traces and `browser-traces-<browser>-shard-N` the other browsers'
 traces. Open traces with Playwright's `show-trace` tool.
+
+Every `npm ci` first restores npm's download cache (`~/.npm`), keyed on the vendor
+lockfile and the pinned image. Without it, `npm ci` stalled for about 300 s
+(npm's fetch timeout) in most of the eight concurrent jobs; with a hit it takes
+0 to 2 s. A lockfile change misses the cache once, so expect one slow run after it.
+Measured on PR #274 (run 39722172529, cache hit): the whole workflow took 8m54s,
+against about 33 minutes with one worker and no shards. Jobs: coverage shards
+7m56s/5m10s/4m55s (tests 6m42s/4m09s/3m45s), merge 47s, firefox shards
+8m10s/5m28s (tests 7m14s/4m34s), webkit shards 6m31s/4m30s (tests 5m32s/3m29s).
+Playwright shards by test count, whole files at a time, so shard 1 carries the
+slow concept-comparison specs (`*-concept.spec.mjs`, alphabetically first) and
+runs longer; the remedy, if it starts to matter, is more shards, not reordering.
 
 The real-host suite covers both Classic and Nodes 2.0 startup, switching both
 ways, actual database prompt selection, execution-text serialization, workflow
