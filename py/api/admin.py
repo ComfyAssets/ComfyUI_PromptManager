@@ -43,6 +43,7 @@ try:
         parse_js_json,
     )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
+    from ...utils.review_capture import record_ambiguous_file
 except ImportError:
     from database.operations import PromptDatabase
     from database.pair_ingestion import ingest_resolved_pair
@@ -53,6 +54,7 @@ except ImportError:
         parse_js_json,
     )
     from utils.prompt_pair_resolver import resolve_prompt_pair
+    from utils.review_capture import record_ambiguous_file
 
 
 try:
@@ -1585,10 +1587,13 @@ class AdminRoutesMixin:
             known = set()
             if media_files and job.scope.get("files") != "all":
                 known = await self._known_scan_files(job, media_files)
+            review = {"recorded": 0, "errors": 0}
+            job.scope.update(review_items=0, review_errors=0)
             async for event in self._scan_batches(
-                media_files, counts, job, roots, known
+                media_files, counts, job, roots, known, review
             ):
                 yield event
+            self._log_review_items(job, review)
 
             self.logger.info(
                 f"Scan completed: processed={counts['processed']}, "
@@ -1625,12 +1630,16 @@ class AdminRoutesMixin:
         sizes = {str(media_file): _file_size(media_file) for media_file in media_files}
         return self.db.get_known_resolved_paths(sizes)
 
-    async def _scan_batches(self, media_files, counts, job, roots=(), known=()):
+    async def _scan_batches(
+        self, media_files, counts, job, roots=(), known=(), review=None
+    ):
         """Process ``media_files`` in executor batches, updating ``counts`` in place.
 
         Records each file's outcome in ``job`` and yields one progress event
         per batch. Files in ``known`` (path strings) are not read: they count
-        as processed and unchanged and are recorded as skipped.
+        as processed and unchanged and are recorded as skipped. ``review``
+        counts the Needs review items the batches record (``job.scope``
+        ``review_items`` / ``review_errors`` follow it after every batch).
         """
         total = len(media_files)
         started = time.monotonic()
@@ -1653,9 +1662,15 @@ class AdminRoutesMixin:
                     batch_results,
                     roots=roots,
                     outcomes=outcomes,
+                    review=review,
                 )
                 for key in counts:
                     counts[key] += batch_counts[key]
+                if review is not None:
+                    job.scope.update(
+                        review_items=review["recorded"],
+                        review_errors=review["errors"],
+                    )
             for group, row, log_line in outcomes:
                 job.record(group, row, log_line)
 
@@ -1705,12 +1720,17 @@ class AdminRoutesMixin:
 
         return map_parallel(extract, file_batch, PromptManagerConfig.WORKER_THREADS)
 
-    def _ingest_scan_batch_sync(self, batch_results, roots=(), outcomes=None):
+    def _ingest_scan_batch_sync(
+        self, batch_results, roots=(), outcomes=None, review=None
+    ):
         """Store the prompts found in a metadata batch (blocking DB work).
 
         Returns the legacy counts. When ``outcomes`` is a list, every processed
         file appends its ``(group, row, log_line)`` for the scan job, with the
-        path relative to its root in ``roots`` (see ``_scan_roots``).
+        path relative to its root in ``roots`` (see ``_scan_roots``). A file the
+        resolver finds ambiguous is also recorded for Needs review (best
+        effort, counted in ``review`` when given); statuses and counts do not
+        depend on it.
         """
         counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
 
@@ -1722,13 +1742,18 @@ class AdminRoutesMixin:
             if self._scan_job and self._scan_job.cancelled:
                 break
             counts["processed"] += 1
+            ambiguous = []
             try:
-                outcome = self._ingest_scanned_file(media_file, metadata, detailed=True)
+                outcome = self._ingest_scanned_file(
+                    media_file, metadata, detailed=True, ambiguous=ambiguous
+                )
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
                 counts["failed"] += 1
                 note(media_file, "error")
                 continue
+            if ambiguous:
+                self._record_scanned_review(media_file, roots, review)
             if outcome is None:
                 note(media_file, None)
                 continue
@@ -1759,13 +1784,17 @@ class AdminRoutesMixin:
             return None
         return positive.strip() or None
 
-    def _ingest_scanned_file(self, media_file, metadata, detailed=False):
+    def _ingest_scanned_file(
+        self, media_file, metadata, detailed=False, ambiguous=None
+    ):
         """Enrich exact pairs; retain legacy positive-only import for absent pairs.
 
         Returns the file's scan status, or None without prompt metadata. With
         ``detailed``, a stored or linked file returns a dict instead: its
         ``status``, the prompt's display ``title`` and, for a resolved pair,
-        the pair counts.
+        the pair counts. When the resolver finds the file ambiguous (whether
+        or not the browser parser then links it) and ``ambiguous`` is a list,
+        ``media_file`` is appended to it.
         """
         if not metadata:
             return None
@@ -1781,6 +1810,8 @@ class AdminRoutesMixin:
             return None
         _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
+        if resolution["state"] == "ambiguous" and ambiguous is not None:
+            ambiguous.append(media_file)
         if resolution["state"] == "resolved":
             result = ingest_resolved_pair(
                 self.db, str(media_file), canonical, resolution
@@ -1822,6 +1853,61 @@ class AdminRoutesMixin:
         if not detailed or status not in SCAN_TITLED_DETAILS:
             return status
         return {"status": status, "title": self._scan_title(media_file, prompt_text)}
+
+    # ── Needs review items (the scan's and the monitor's ambiguous files) ──
+
+    def _record_scanned_review(self, media_file, roots, review=None):
+        """Record one ambiguous scanned file; a failure is logged and counted."""
+        try:
+            outcome = self._record_review_sync(media_file, roots)
+        except Exception:
+            self.logger.warning(
+                f"{media_file.name} could not be added to Needs review",
+                exc_info=True,
+            )
+            if review is not None:
+                review["errors"] += 1
+            return
+        if review is not None and outcome in ("recorded", "limited"):
+            review["recorded"] += 1
+
+    def _record_review_sync(self, media_file, roots):
+        """``record_ambiguous_file`` for a file under one of ``roots`` (blocking)."""
+        relative, _label, index = _scan_location(media_file, roots)
+        root = next((r for r, _l, i in roots if i == index), None)
+        if index is None or root is None:
+            return "skipped"
+        return record_ambiguous_file(
+            self.db, self._capture_store(), Path(root), index, relative
+        )
+
+    def record_review_file(self, image_path):
+        """Needs review recording for the live monitor (its worker thread).
+
+        Maps ``image_path`` to the gallery root that lists it (the listing's
+        ``root_index``); a file under no current root is ``skipped``. Errors
+        propagate: the monitor logs them and keeps its link.
+        """
+        full = os.path.abspath(str(image_path))
+        located = Path(os.path.realpath(os.path.dirname(full))) / os.path.basename(full)
+        return self._record_review_sync(
+            located, _scan_roots(self._get_all_output_dirs())
+        )
+
+    @staticmethod
+    def _log_review_items(job, review):
+        """The scan log's Needs review summary lines (none when nothing moved)."""
+        if review["recorded"]:
+            job.log_line(
+                f"{SCAN_LOG_PREFIXES['review']} "
+                f"{_plural(review['recorded'], 'image')} added to Needs review"
+            )
+        if review["errors"]:
+            job.log_line(
+                f"{SCAN_LOG_PREFIXES['errors']} "
+                f"{_plural(review['errors'], 'image')} could not be added to "
+                "Needs review"
+            )
 
     def _scan_title(self, media_file, text):
         """The linked prompt's Library title (its stored title, else ``text``'s

@@ -1610,6 +1610,30 @@ every evidence document in one streamed pass at startup and on restore (about
 `media_review_decisions` and `media_review_items` before the annotation tables,
 never the metadata row.
 
+Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
+`tests/test_review.py`): the output scan (Activity's Scan for metadata and the
+legacy `/scan`) and the live monitor hand every file the ingestion resolver
+finds `ambiguous` to `record_ambiguous_file`, whether or not the browser parser
+then links it (`conflict` and `unresolved` files are not queued). It captures
+the file (scope `needs-review`), reads its metadata again from the capture,
+resolves it with the default profile and stores only an ambiguous result,
+bound to the capture's byte record (created or refreshed like an observe) and
+fenced by the capture's storage epoch. Evidence is the resolver reason plus one
+`{sampler_id, state, reason, positive, negative, hash}` per selectable
+candidate (nested ambiguous stages flattened, duplicates dropped; each side
+`{text, storage_text, provenance}`; `hash` = SHA-256 of the canonical candidate
+without it). No candidate, more than 16, or evidence over 8 MiB is a `limited`
+item without candidates. Recording is idempotent per `(byte_id,
+resolver_version, evidence_hash)` and never touches an existing item or its
+decisions; changed bytes add a new pending item and keep the old one. The
+capture is released before the write; no model is loaded and no pixel is
+decoded. Scan statuses, counters, outcome rows and the legacy SSE events are
+unchanged; the job's `scope` gains `review_items` (new items) and
+`review_errors`, and the log ends with `? N images added to Needs review` (and
+`! N images could not be added to Needs review` on failures, e.g. capture
+capacity). The monitor records after its fallback link, best effort: a failure
+is logged and the link stays. A new item moves `review_index_revision`.
+
 Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
 one explicit action captures one rooted media file into an owner-only
 `prompt-manager-captures-*` temp directory, streaming it in 1 MiB chunks while

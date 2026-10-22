@@ -548,6 +548,8 @@ def create_app(root: Path) -> web.Application:
         return web.json_response("dark")
 
     async def cleanup(application: web.Application) -> None:
+        # A scan of an ambiguous fixture file captures it for Needs review.
+        api.close_annotation_captures()
         api.db.close_all()
 
     seed()

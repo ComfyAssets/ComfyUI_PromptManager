@@ -13,6 +13,7 @@ from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations, titled
 from .image_favorites import ImageFavoriteOperations
 from .annotations import AnnotationOperations
+from .review import ReviewOperations
 from .saved_views import SavedViewOperations
 from .library_commands import LibraryCommandOperations
 from .vocabulary import VocabularyOperations
@@ -341,6 +342,7 @@ class PromptDatabase(
     HistoryReadOperations,
     ImageFavoriteOperations,
     AnnotationOperations,
+    ReviewOperations,
     SavedViewOperations,
 ):
     """Database operations class for managing prompts."""

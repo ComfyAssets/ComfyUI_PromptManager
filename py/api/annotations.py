@@ -13,6 +13,7 @@ import datetime
 import functools
 import os
 import re
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -73,6 +74,9 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 # secrets.token_urlsafe(32) is 43 characters; the bound only rejects junk.
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# The store is created on first use by the event loop, the scan's executor or
+# the monitor's worker (Needs review), so its creation is serialized.
+_CAPTURE_STORE_LOCK = threading.Lock()
 
 _PREVIEW_TYPES = {
     ".png": "image/png",
@@ -259,14 +263,16 @@ class AnnotationRoutesMixin:
         Created lazily so an API object that never observes a file (most tests,
         a server that never opens the Tag dialog) owns no temp directory. A
         restore of the database dooms every capture (``invalidate_all``).
+        Thread-safe: Needs review recording calls it off the event loop.
         """
-        if self._captures is None:
-            self._captures = CaptureStore()
-        if self._captures_unsubscribe is None:
-            self._captures_unsubscribe = subscribe_history_restore(
-                self.db.model.db_path, self._invalidate_captures
-            )
-        return self._captures
+        with _CAPTURE_STORE_LOCK:
+            if self._captures is None:
+                self._captures = CaptureStore()
+            if self._captures_unsubscribe is None:
+                self._captures_unsubscribe = subscribe_history_restore(
+                    self.db.model.db_path, self._invalidate_captures
+                )
+            return self._captures
 
     def _invalidate_captures(self) -> None:
         store = self._captures
