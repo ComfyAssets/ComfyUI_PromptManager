@@ -329,7 +329,12 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
             reading = false;
         }
         render();
-        if (readAgain) { readAgain = false; scheduleRead(); }
+        // Read once more only if the summary moved past what this read returned (review: no redundant re-read).
+        if (readAgain) {
+            readAgain = false;
+            const job = store.find(jobId);
+            if (job && job.state !== 'lost' && detailChanged(job)) scheduleRead();
+        }
     }
 
     /**

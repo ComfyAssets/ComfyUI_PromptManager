@@ -611,6 +611,19 @@ test('job view renders 200-row cap note', async ({ page, request }) => {
     await step(request, job.id, { processed: 260, bulk: { group: 'added', count: 250 }, records: [
         ...Array.from({ length: 10 }, (_, index) => ({ group: 'no_metadata', path: `misc/plain_${index}.png`, detail: 'No prompt metadata in the file' })),
     ] });
+    // Every detail read of this job: in flight, and whether one has returned the full listing.
+    const detailUrl = `/prompt_manager/jobs/${job.id}`;
+    const isDetail = item => new URL(item.url()).pathname === detailUrl;
+    const detailReads = { inFlight: 0, full: false };
+    page.on('request', item => { if (isDetail(item)) detailReads.inFlight += 1; });
+    page.on('requestfailed', item => { if (isDetail(item)) detailReads.inFlight -= 1; });
+    page.on('response', async response => {
+        if (!isDetail(response)) return;
+        const body = await response.json().catch(() => null);
+        const outcomes = body?.job?.outcomes ?? {};
+        if (outcomes.added?.length === 200 && outcomes.no_metadata?.length === 10) detailReads.full = true;
+        detailReads.inFlight -= 1;
+    });
     await openJob(page, job.id);
     await expect(tiles(page).first().locator('dd')).toHaveText('250');
     await expect(fileRows(page)).toHaveCount(200);
@@ -626,9 +639,9 @@ test('job view renders 200-row cap note', async ({ page, request }) => {
 
     // Review M12: with the list capped and the log closed, more files only update the counters; the detail is read
     // again only when the log opens with new lines.
-    // A read still due from opening the view (at most one per DETAIL_INTERVAL_MS, 1 s) lands first; Firefox is slow
-    // enough that it otherwise fell inside the window below.
-    await page.waitForTimeout(1200);
+    // The reads from opening the view have settled: one returned the full listing and none is in flight. The view
+    // re-reads only while what the summary lists differs from the last read, so no further read is due.
+    await expect.poll(() => detailReads.full && detailReads.inFlight === 0).toBe(true);
     const reads = [];
     page.on('request', item => { if (new URL(item.url()).pathname === `/prompt_manager/jobs/${job.id}`) reads.push(Date.now()); });
     await step(request, job.id, { processed: 300, bulk: { group: 'added', count: 40 } });
