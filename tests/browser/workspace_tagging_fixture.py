@@ -187,6 +187,9 @@ def register_tagging_commands(
             raise web.HTTPBadRequest()
         model.unavailable = set()
         model.loaded = None
+        # A test that ends with the dialog open leaves its capture behind; drop
+        # every capture so the next test starts below the store's limits.
+        await api._run_in_executor(api.close_annotation_captures)
         manifest = await api._run_in_executor(seed_tagging, api, root, extra)
         return web.json_response({"success": True, **manifest})
 

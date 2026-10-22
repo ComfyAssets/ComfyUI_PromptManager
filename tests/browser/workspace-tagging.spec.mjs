@@ -3,7 +3,7 @@
 // downloaded or loaded: the fake answers, and every test checks that no download request was sent.
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
-import { seedConcept, openConcept, openProduction } from './concept-inventory.mjs';
+import { seedConcept, openConcept, openProduction, saveImageTags } from './concept-inventory.mjs';
 
 const images = '/prompt_manager/workspace#/images';
 const MODULE = '/prompt_manager/js/workspace/image-tagging.mjs';
@@ -22,7 +22,7 @@ const status = page => dialog(page).locator('#tag-generation-status');
 const toast = page => page.locator('#workspace-toast');
 const nav = (page, label) => page.locator('aside.sidebar nav').getByRole('link', { name: new RegExp(`^${label}(?:\\s*[\\d,]+)?$`) });
 const FIRST = 'tagging/dunes_00001.png', SECOND = 'tagging/dunes_00002.png', COPY = 'copies/dunes_00001.png';
-const VIDEO = 'tagging/clip.webm';
+const VIDEO = 'tagging/clip.webm', UNLINKED = 'loose/unlinked.png';
 
 let manifest;
 test.beforeEach(async ({ page, request, browserName }) => {
@@ -460,4 +460,73 @@ for (const [width, height] of [[1600, 1100], [390, 844]]) test(`paired Tag dialo
         await expect(shell.locator('#suggestion-count')).not.toHaveText('Not generated');
         await shot(`${side}-tag-dialog-generated-${width}`);
     }
+});
+
+// Task C3 (D88): the side panel and the viewer details draw the file's own current image tags first, then D21's linked
+// tags not already shown (case-insensitive). Panel image tags are Tags filter buttons; the viewer's chips are plain.
+const panel = page => page.getByRole('complementary', { name: 'Selected image details', exact: true });
+const tagRow = page => panel(page).locator('.detail-inner > .tags').last();
+const inspected = (page, path) => page.waitForResponse(item => new URL(item.url()).pathname === `/prompt_manager/images/inspect/${path}`);
+const infoButton = (page, path) => card(page, path).getByRole('button', { name: `Inspect ${path.split('/').pop()}`, exact: true });
+
+test('inspector shows saved image tags after Save without reselecting', async ({ page }) => {
+    await page.goto(images);
+    await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
+    // D21/D39: the linked recipe's own tag, plain.
+    await expect(tagRow(page).locator('.chip')).toHaveText(manifest.pair_tags);
+    await expect(tagRow(page).locator('button.chip')).toHaveCount(0);
+    await openTag(page, FIRST, { goto: false });
+    await manual(page).fill('dunes_tag, Editorial');
+    const reread = inspected(page, FIRST);
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    expect((await (await reread).json()).image_tags).toEqual({ state: 'current', tags: ['dunes_tag', 'Editorial'] });
+    // The image tags lead as filter buttons; the recipe's "editorial" is already shown as "Editorial".
+    await expect(tagRow(page).locator('.chip')).toHaveText(['dunes_tag', 'Editorial']);
+    await expect(tagRow(page).locator('button.chip')).toHaveText(['dunes_tag', 'Editorial']);
+    await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
+    await expect(panel(page).locator('.panel-heading h2')).toHaveText(manifest.title);
+});
+
+test('clicking an image tag chip filters Images to the tagged unlinked file', async ({ page, request }) => {
+    expect(await saveImageTags(request, UNLINKED, ['loose_tag'])).toEqual(['loose_tag']);
+    await page.goto(images);
+    const read = inspected(page, UNLINKED);
+    await infoButton(page, UNLINKED).click();
+    await read;
+    await expect(panel(page).locator('.panel-heading h2')).toHaveText('unlinked.png');
+    await expect(tagRow(page).locator('.chip')).toHaveText(['loose_tag']);
+    const listing = page.waitForRequest(item => item.url().includes('/images/output?') && new URL(item.url()).searchParams.get('tags') === 'loose_tag');
+    await tagRow(page).getByRole('button', { name: 'loose_tag', exact: true }).click();
+    await listing;
+    await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(1);
+    await expect(card(page, UNLINKED)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Filters · 1', exact: true })).toBeVisible();
+});
+
+test('viewer details show the same chips', async ({ page, request }) => {
+    await saveImageTags(request, FIRST, ['dunes_tag', 'Editorial', 'sunlit']);
+    await page.goto(images);
+    await expect(tagRow(page).locator('button.chip')).toHaveText(['dunes_tag', 'Editorial', 'sunlit']);
+    await card(page, FIRST).locator('.image-open').click();
+    const details = page.locator('#viewer-dialog[open] #viewer-details');
+    await expect(details.locator('.panel-heading h2')).toHaveText(manifest.title);
+    const row = details.locator('.tags').last();
+    await expect(row.locator('.chip')).toHaveText(['dunes_tag', 'Editorial', 'sunlit']);
+    await expect(row.locator('span.chip')).toHaveCount(3);
+    await expect(row.locator('button')).toHaveCount(0);
+    // A file without image tags: the viewer shows only D21's linked tags.
+    await page.getByRole('button', { name: 'Next media', exact: true }).click();
+    await expect(page.locator('#viewer-dialog[open] #viewer-title')).toHaveText(`${manifest.title} · dunes_00002.png`);
+    await expect(details.locator('.tags').last().locator('.chip')).toHaveText(manifest.pair_tags);
+});
+
+test('search finds an image by its image tag', async ({ page, request }) => {
+    await saveImageTags(request, UNLINKED, ['Loose_Tag']);
+    await page.goto(images);
+    await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(manifest.files.length);
+    const listing = page.waitForRequest(item => item.url().includes('/images/output?') && new URL(item.url()).searchParams.get('q') === 'loose_t');
+    await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).fill('loose_t');
+    await listing;
+    await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(1);
+    await expect(card(page, UNLINKED)).toBeVisible();
 });

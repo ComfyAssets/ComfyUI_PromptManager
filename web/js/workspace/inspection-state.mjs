@@ -167,6 +167,20 @@ function libraryFor(value) {
     return library;
 }
 
+// #249 PR C (D88): the file's own current image tags (S1). `none` and `unavailable` carry no names; a name is a
+// vocabulary tag name (1–50 characters, trimmed, no comma or control character), at most 100 of them.
+const IMAGE_TAG_STATES = ['current', 'none', 'unavailable'], MAX_IMAGE_TAGS = 100, IMAGE_TAG_LENGTH = 50;
+const imageTagName = name => typeof name === 'string' && name !== '' && name === name.trim() && [...name].length <= IMAGE_TAG_LENGTH &&
+    !/[,\x00-\x1f\x7f]/.test(name);
+
+function imageTagsFor(value) {
+    if (value === undefined) return null;
+    if (!object(value) || Object.keys(value).sort().join() !== 'state,tags' || !IMAGE_TAG_STATES.includes(value.state) ||
+        !Array.isArray(value.tags) || value.tags.length > MAX_IMAGE_TAGS || !value.tags.every(imageTagName) ||
+        (value.state !== 'current' && value.tags.length)) throw new TypeError('Invalid inspection image tags');
+    return { state: value.state, tags: [...value.tags] };
+}
+
 // The legacy workflow parse (comfy-metadata.js, as of #170) also feeds the gallery and
 // admin pages; it fills any prompt or setting the server could not decide, so this page
 // never shows less than they do. A definite server answer is never replaced.
@@ -279,9 +293,10 @@ export function toInspectionRecord(result, image, extractFacts = globalThis.Comf
 export function projectInspectionPayload(result, identity, download, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts, legacy = false, parser = comfyMetadata()) {
     const record = {
         identity, file: null, prompts: promptsFor(result.prompts), library: null, metadata: null,
-        generation: unavailableFacts(), historyTarget: null, download,
+        generation: unavailableFacts(), historyTarget: null, download, imageTags: null,
     };
     if (legacy) return record;
+    record.imageTags = imageTagsFor(result.image_tags);
     const resolution = resolutionFor(result.resolution);
     record.file = fileFor(result.file, identity);
     record.metadata = metadataFor(result.metadata);

@@ -292,8 +292,9 @@ The shared inline and collection inspector reads the current rooted file's suppo
 embedded records, exact generation facts and recorded or inferred prompt evidence.
 It renders in two concept surfaces (#249 D20–D22, D38). The Images side panel shows
 only the concept content: cover, title, filename, the evidence badge with a category
-chip, the + and − prompt blocks with copy and send, tag chips (the linked positive's
-own tags filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
+chip, the + and − prompt blocks with copy and send, tag chips (the file's own image
+tags first, D88, then the linked tags; image tags and the linked positive's own tags
+filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
 "Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
 scrolls inside the window. The viewer's details (`#viewer-details`) repeat that
 content without the cover, then "File & provenance" (the honest file facts, the
@@ -949,6 +950,8 @@ Recorded deviations on this page (spec §8):
   history appear only with resolved prompt roles or a saved link; a video file keeps
   `video.detail-cover`; and only the linked positive's own tags are `button.chip`
   filters, while recipe, recorded-run and embedded tags stay plain `span.chip`.
+  Amended by D88 (#249 PR C): the file's own current image tags lead the same row
+  and are filters too; a linked tag already shown (case-insensitive) is left out.
 - **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
   applies its negative wording to both roles), and a confirmed `p.prompt-text` is
   focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
@@ -1080,7 +1083,7 @@ unconfirmed save), where the other workspace dialogs place their Retry. The Tags
 page re-reads its lists after every confirmed save, so the Images counts follow.
 
 The image-tagging plan's deviation numbers were renumbered by +23 because the
-Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D68 → D91).
+Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 → D91).
 
 - **D83** (plan D60, ruling T4): the suggestions are removable chips instead of
   checkbox rows: `span.chip.tag-suggestion` in a `.tags` row, in the concept's
@@ -1097,6 +1100,19 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D68 → D91).
 - **D91** (plan D68, ruling T3-bulk): a **Suggestions** number field (1–100) for
   every model, prefilled from `autotag.defaults.suggestion_limit` (10); a model
   change keeps it.
+- **D88** (plan D65, ruling T7/C2): the inspector's chip row (side panel and viewer
+  details, after the prompt blocks) shows the file's current image tags first (the
+  B3 envelope's `image_tags`, `state: "current"`, S1), then D21's linked tags not
+  already shown (case-insensitive, the image tag's spelling wins). In the Images
+  panel every image tag is a Tags filter `button.chip` (the filter matches image
+  tags too) and linked tags keep D21's rule; in the viewer, and wherever no Tags
+  filter exists (the Library-embedded gallery, Activity and recorded runs), every
+  chip is a plain `span.chip`. `none` and `unavailable` add no chips and no other
+  chrome; a malformed facet fails the inspection like any malformed field. The
+  concept has one row of the image's own tags (`i.tags`, app.js a402), so with the
+  concept image's tags saved as its image tags production still equals the concept.
+  After a Tag save the selected file's inspection is re-read, so the panel redraws
+  the row without reselecting and the viewer, which shares that inspection, shows it.
 - **D115** (beyond the plan's list): the concept always has a selected image, so
   its "Auto-tag images" always opens the dialog. Production opens it for the image
   selected in Images when it was last left; with none it is `aria-disabled` and
@@ -1107,8 +1123,11 @@ Test files: `tests/browser/workspace-tagging.spec.mjs` (the fixture is
 pair, an equal-byte copy, a video, an unlinked file, the fake model with `hf`, and
 no model files; every test asserts no download request),
 `tests/js/workspace-image-tagging.test.js`,
-`tests/js/workspace-image-tagging-state.test.js` and
-`tests/js/workspace-images-lifecycle.test.js`.
+`tests/js/workspace-image-tagging-state.test.js`,
+`tests/js/workspace-images-lifecycle.test.js`, and for D88
+`tests/js/workspace-file-inspector.test.js`,
+`tests/js/workspace-inspection-state.test.js` and `tests/browser/inspector-concept.spec.mjs`
+("image tags saved on the concept image keep the inspector equal to the concept").
 
 ```sh
 node --test tests/js/workspace-image-tagging*.test.js tests/js/workspace-images-lifecycle.test.js

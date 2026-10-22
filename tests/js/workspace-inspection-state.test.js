@@ -702,3 +702,29 @@ test('a workflow the legacy parser throws on keeps the server result instead of 
     assert.deepEqual(record.prompts.positive, { status: 'resolved', text: 'exact\npositive', source: 'execution' });
     assert.equal(record.prompts.negative.status, 'ambiguous');
 });
+
+// #249 PR C Task C3: the B3 envelope's `image_tags` facet, the file's own current tags (S1).
+test('image_tags facet is kept exactly and absent stays null', () => {
+    const entry = image(), project = contract('toInspectionRecord');
+    assert.equal(project(envelope(entry), entry, extractGenerationFacts).imageTags, null);
+    for (const facet of [{ state: 'current', tags: ['dunes', 'warm_light'] }, { state: 'current', tags: [] }, { state: 'none', tags: [] }, { state: 'unavailable', tags: [] }]) {
+        const data = { ...envelope(entry), image_tags: facet };
+        const record = project(data, entry, extractGenerationFacts);
+        assert.deepEqual(record.imageTags, facet);
+        assert.notEqual(record.imageTags.tags, facet.tags);
+    }
+    const hundred = Array.from({ length: 100 }, (_, index) => `tag_${index}`);
+    assert.deepEqual(project({ ...envelope(entry), image_tags: { state: 'current', tags: hundred } }, entry, extractGenerationFacts).imageTags.tags, hundred);
+});
+
+test('rejects a malformed image_tags facet', () => {
+    const entry = image();
+    for (const facet of [null, [], 'current', { state: 'current' }, { tags: [] }, { state: 'current', tags: ['a'], extra: 1 },
+        { state: 'stale', tags: [] }, { state: 'none', tags: ['a'] }, { state: 'unavailable', tags: ['a'] }, { state: 'current', tags: 'a' },
+        { state: 'current', tags: [1] }, { state: 'current', tags: [''] }, { state: 'current', tags: [' a'] }, { state: 'current', tags: ['a,b'] },
+        { state: 'current', tags: ['a\nb'] }, { state: 'current', tags: ['x'.repeat(51)] },
+        { state: 'current', tags: Array.from({ length: 101 }, (_, index) => `tag_${index}`) }]) {
+        assert.throws(() => module.toInspectionRecord({ ...envelope(entry), image_tags: facet }, entry, extractGenerationFacts), TypeError, JSON.stringify(facet));
+    }
+    assert.equal(module.toInspectionRecord({ ...envelope(entry), image_tags: { state: 'current', tags: ['é'.repeat(50)] } }, entry, extractGenerationFacts).imageTags.tags[0].length, 50);
+});

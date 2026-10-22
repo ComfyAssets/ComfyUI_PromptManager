@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInventory,mutate,countCopy} from './concept-inventory.mjs';
+import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInventory,mutate,countCopy,saveImageTags} from './concept-inventory.mjs';
 
 // Task D4 of #249: the Images side panel (app.js imageDetails a400–414) and the viewer's full details (imageDetails(i,
 // true)) against the immutable concept, on the concept-shaped real fixture, at 1600x1100 and 390x844 in both themes.
@@ -317,6 +317,27 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await expect(rows.nth(1).locator('button.chip')).toHaveText(['minimal','warm_light','editorial']);
     await expect(rows.nth(1).locator('span.chip')).toHaveCount(0);
     await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history']);
+});
+
+// Task C3 (D88, #249 PR C): the concept's chip row is the image's own tags (`i.tags`, app.js a402). With those names
+// saved as the file's current image tags, production draws the row from them (Tags filter buttons in the panel, plain
+// in the viewer, the linked positive's equal tags not repeated) and still equals the concept, in both sizes.
+for(const [width,height] of SIZES)test(`image tags saved on the concept image keep the inspector equal to the concept ${width}x${height} (D88)`,async({page,request},testInfo)=>{
+    test.setTimeout(120_000);
+    const viewport={width,height};await page.setViewportSize(viewport);
+    await openConceptPanel(page,'dark');
+    const names=await panelOf(page).locator('.detail-inner > .tags').last().locator('button.chip').allTextContents();
+    expect(names).toEqual(['cinematic','blue_hour','architecture']);
+    await captureCanonicalState(page,testInfo,`concept-image-tags-${width}`,'#image-inspector');
+    const reference=await inventory(page,true);
+    const {path}=testInfo.manifest.images.find(item=>item.filename==='alpine_00001.png');
+    expect(await saveImageTags(request,path,names)).toEqual(names);
+    const read=page.waitForResponse(item=>new URL(item.url()).pathname===`/prompt_manager/images/inspect/${path}`);
+    await openProductionPanel(page,'dark');
+    expect((await (await read).json()).image_tags).toEqual({state:'current',tags:names});
+    await expect(panelOf(page).locator('.detail-inner > .tags').last().locator('.chip')).toHaveText(names);
+    await captureCanonicalState(page,testInfo,`production-image-tags-${width}`,'#image-inspector');
+    assertInspectorMatch(reference,await inventory(page),viewport);
 });
 
 // The comparison is only worth something if it notices a change (spec §7 mutation check): on the panel one CSS

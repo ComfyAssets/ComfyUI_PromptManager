@@ -78,6 +78,23 @@ export async function seedConcept(request,data={}) {
     return response.json();
 }
 
+/**
+ * Save `tags` as the current image tag set of the listed file at `path` (root 0) through the real observe and tag
+ * routes (#249 PR C), releasing the capture afterwards; returns the receipt's saved names.
+ */
+export async function saveImageTags(request,path,tags) {
+    const listing=await (await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();
+    const target={root_index:0,root_scope:listing.images.find(item=>item.root_index===0).root_scope,path};
+    const observed=await (await request.post('/prompt_manager/image-annotations/observe',{data:{target}})).json();
+    expect(observed.success).toBe(true);
+    try {
+        const receipt=await (await request.put('/prompt_manager/image-annotations/tags',{data:{target,capture_token:observed.capture.token,
+            sha256:observed.capture.sha256,expected_epoch:observed.library_epoch,expected_tag_revision:observed.tag_revision,tags}})).json();
+        expect(receipt.success).toBe(true);
+        return receipt.tags;
+    } finally {await request.delete(`/prompt_manager/image-annotations/capture/${observed.capture.token}`);}
+}
+
 async function selectTheme(page,theme) {
     await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
 }
