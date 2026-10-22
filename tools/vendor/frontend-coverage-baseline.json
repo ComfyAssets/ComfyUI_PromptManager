@@ -221,6 +221,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/image-tagging-state.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/images-category.mjs": {
     "lines": 98,
     "branches": 98,

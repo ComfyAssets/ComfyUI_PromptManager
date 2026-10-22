@@ -15,7 +15,7 @@
     "use strict";
 
     class ApiError extends Error {
-        constructor(status, message, code = null, recovery = null) {
+        constructor(status, message, code = null, recovery = null, current = null) {
             super(message);
             this.name = "ApiError";
             this.status = status;
@@ -31,6 +31,14 @@
                     recovery.limit >= 1 && recovery.limit <= 100) {
                     this.recovery = { action: "smaller-limit", limit: recovery.limit };
                 }
+            }
+            // A tag-conflict answer carries the image's current tag set; only a
+            // well-formed one is kept, copied, so the dialog can show it.
+            this.current = null;
+            if (current && Array.isArray(current.tags) && current.tags.length <= 100 &&
+                current.tags.every(tag => typeof tag === "string") &&
+                Number.isSafeInteger(current.tag_revision) && current.tag_revision >= 0) {
+                this.current = { tags: current.tags.slice(), tag_revision: current.tag_revision };
             }
         }
     }
@@ -76,11 +84,11 @@
 
             const serverMessage = data && typeof data === "object" ? data.error || data.message : undefined;
             if (!response.ok) {
-                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`, data?.code, data?.recovery);
+                throw new ApiError(response.status, serverMessage || response.statusText || `HTTP ${response.status}`, data?.code, data?.recovery, data);
             }
             if (!parsed) throw new ApiError(response.status, "Invalid JSON response");
             if (data && typeof data === "object" && data.success === false) {
-                throw new ApiError(response.status, serverMessage || "Request failed", data.code, data.recovery);
+                throw new ApiError(response.status, serverMessage || "Request failed", data.code, data.recovery, data);
             }
             return data;
         }
