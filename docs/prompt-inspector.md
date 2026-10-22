@@ -29,6 +29,11 @@ Each role has `status` (`resolved`, `absent`, `unresolved`, or `ambiguous`), `te
 (string only when resolved, otherwise null), and `source`. Inspection does not
 index files, alter saved prompts, run scans, or decode image pixels. PNG text and
 video probe output are bounded; unsupported or malformed evidence remains
-unresolved rather than becoming sendable placeholder text.
+unresolved rather than becoming sendable placeholder text. Videos are read from
+one container carrier: the per-key tags written by core SaveVideo/SaveWEBM and
+current VideoHelperSuite (`prompt`, `workflow`, `parameters`,
+`comfyassets_prompt_pairs`), else the old VideoHelperSuite `comment` envelope,
+else `description`. The scan reads the same carrier, so Images and ingestion
+agree on a video's prompts (see TESTING.md for the order and budgets).
 
 Python route changes require restarting ComfyUI. Browser assets require a refresh.

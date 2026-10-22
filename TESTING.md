@@ -332,7 +332,24 @@ becomes record format `limited` (no raw text, graph `limited`, roles and facts
 unaffected); other text chunks are skipped unread; byte-identical duplicates are
 accepted within a bounded read budget, while differing duplicates (and any duplicate
 role record over that budget) still fail. Other read bounds are unchanged: 8 MiB
-non-PNG header, 10,000 PNG chunks and a three-second ffprobe. Resolution under
+non-PNG header, 10,000 PNG chunks and a three-second ffprobe. Video containers are
+read through one shared carrier selector (`utils/video_metadata.select_video_carrier`,
+used by the inspector and by scans): carriers are, in order, the per-key tags that
+current savers write (`prompt`, `workflow`, `parameters`, `comfyassets_prompt_pairs`,
+each `original-text`; Matroska upper-cased names fold on our side), then the old
+VideoHelperSuite `comment` JSON envelope, then `description` (object values are
+`reserialized-json`). The first carrier holding a role key wins, otherwise the first
+holding a workflow, and carriers never merge. Two tags folding to one key are a
+duplicate record: byte-identical ones are one record, differing ones fail the read.
+ffprobe is asked for exactly those six tags and its output is bounded at the role
+and workflow budgets plus 64 KiB of envelope (6 MiB + 64 KiB); past that the
+inspector probes once more without the `workflow` tag within the role budget and
+the per-key workflow becomes `limited`, while an envelope over budget still fails
+the read because it cannot be split. Scans and the live monitor read the same
+carrier with the default resolver profile, so a per-key video links like the same
+graph in a PNG (`tests/test_utils_video_metadata.py`, `tests/test_api_admin.py`
+`TestScanReadsVideos`, `tests/test_api_prompt_inspector.py` `test_video_*`; the
+real-container round trips skip without ffmpeg). Resolution under
 `INSPECTION_PROFILE` bounds work, not graph size: 2,000 visits per candidate chain,
 20,000 in total, 64 link/JSON-container levels, 100,000 resolved characters, and a
 two 20,000-node ceilings: one over the top-level entries of the API prompt, and one
