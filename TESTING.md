@@ -1369,6 +1369,27 @@ preserves both keeps the old set matching until the file is next observed. The
 browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
 `media_annotation_files` on reset and never the metadata row.
 
+Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
+one explicit action captures one rooted media file into an owner-only
+`prompt-manager-captures-*` temp directory, streaming it in 1 MiB chunks while
+hashing, with the opened descriptor compared to the path (`dev`, `ino` where
+meaningful, `size`, `mtime_ns`, `ctime_ns`) before and after the copy; any
+disagreement is `CaptureChanged` and the copy is removed. Aliases (a symlinked
+file or directory, even inside the root), escapes, non-media names and
+directories are `CaptureDenied`; the locator is
+`normcase(join(realpath(root), relative))`, so a symlinked root shares the
+listing's identity. Fixed limits: 256 MiB per file (stat and stream), 8
+completed captures, 512 MiB reserved, 2 capture/verify workers, 900 s idle,
+1800 s hard; admission is nonblocking (`CaptureCapacity`) and lifetimes are
+tested with an injected clock. An acquired capture outlives expiry and release
+until its last use ends. Header-only dimensions (4096 px per side,
+16,777,216 px) and video mark Generate unsupported; `verify` re-hashes the
+current file without a copy. Every handle closes before unlink (a patched
+`os.unlink` asserts it, plus `assert_closed`). Known limit: Windows exposes no
+change time through `stat`, so a same-size rewrite that restores `mtime_ns`
+during the copy window completes there with a digest of the copied bytes; POSIX
+detects it through `ctime`.
+
 Budgets: `test_filter_work_is_bounded` always runs. It asserts that a plain first
 page makes 1 link SELECT and a plain cursor page none, that every filter shape
 makes exactly 1, the covering-index plan, and that the per-file values are built
