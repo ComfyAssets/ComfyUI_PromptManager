@@ -276,7 +276,8 @@ class CaptureStoreTestCase(unittest.TestCase):
         # so there the torn copy completes and its digest describes the copy.
         source.write_bytes(source_bytes)
         before = os.stat(source)
-        self.wait_for_change_time_after(before.st_ctime_ns)
+        if os.name == "posix":  # Windows st_ctime is the creation time
+            self.wait_for_change_time_after(before.st_ctime_ns)
         rewritten = bytes(b ^ 0xFF for b in source_bytes)
 
         def rewriting(store_, stream, size):
