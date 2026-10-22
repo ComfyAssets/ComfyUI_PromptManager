@@ -26,7 +26,6 @@ import stat as stat_module
 import tempfile
 import threading
 import time
-import warnings
 from dataclasses import dataclass
 from typing import Callable
 
@@ -607,15 +606,17 @@ class HeaderTooLarge(HeaderUnreadable):
 def header_dimensions(path: str) -> tuple[int, int]:
     """``(width, height)`` from the image header alone; the file is closed.
 
-    ``Image.open`` reads only the header; a decompression-bomb warning is an
-    error here, so an absurd size is refused before anything is decoded.
+    ``Image.open`` reads only the header. Pillow's decompression-bomb error
+    (twice its warning size) is ``HeaderTooLarge``; a size between the two
+    only warns, and the caller's inference pixel cap, far below Pillow's
+    warning size, refuses it. The process-global warnings filters are never
+    touched: this runs on capture workers inside the host process, and
+    ``warnings.catch_warnings`` is not thread-safe.
     """
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(path) as image:
-                width, height = image.size
-    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        with Image.open(path) as image:
+            width, height = image.size
+    except Image.DecompressionBombError as exc:
         raise HeaderTooLarge(str(exc)) from None
     except Exception as exc:  # any decoder failure means "no usable header"
         raise HeaderUnreadable(str(exc)) from None

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 import zlib
 from pathlib import Path
 from unittest.mock import patch
@@ -630,6 +631,62 @@ class CaptureStoreTestCase(unittest.TestCase):
             capture_module.header_dimensions(
                 str(self.write("bad.png", b"\x89PNG\r\n\x1a\nnope"))
             )
+        assert_closed(self, self.parent)
+
+    def test_header_dimensions_leaves_the_warning_filters_alone(self):
+        # The capture workers run in the ComfyUI process: touching the
+        # process-global warnings filters from them races (catch_warnings is
+        # not thread-safe) and can leave an "error" filter installed for every
+        # later Pillow open in the host.
+        from PIL import Image
+
+        path = str(self.write("dims.png", png_bytes(7, 5)))
+        before = list(warnings.filters)
+        seen_during = []
+        real_open = Image.open
+
+        def recording_open(*args, **kwargs):
+            seen_during.append(list(warnings.filters))
+            return real_open(*args, **kwargs)
+
+        with patch.object(Image, "open", recording_open):
+            self.assertEqual(capture_module.header_dimensions(path), (7, 5))
+        self.assertEqual(seen_during, [before])
+        self.assertEqual(list(warnings.filters), before)
+
+        barrier = threading.Barrier(8)
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait()
+                for _ in range(50):
+                    capture_module.header_dimensions(path)
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(list(warnings.filters), before)
+        assert_closed(self, self.parent)
+
+    def test_header_over_the_warning_size_is_refused_by_the_pixel_cap(self):
+        # 100 MP: past Pillow's warning size, under its error size. The
+        # header is read, then the inference pixel cap refuses it.
+        from PIL import Image
+
+        path = str(self.write("big.png", png_bytes(10_000, 10_000)))
+        with self.assertWarns(Image.DecompressionBombWarning):
+            self.assertEqual(capture_module.header_dimensions(path), (10_000, 10_000))
+        store = self.make_store()
+        with self.assertWarns(Image.DecompressionBombWarning):
+            cap = self.capture(store, "big.png")
+        self.assertFalse(cap.inferable)
+        self.assertIn("4096", cap.inferable_reason)
         assert_closed(self, self.parent)
 
     def test_video_capture_is_not_inferable(self):
