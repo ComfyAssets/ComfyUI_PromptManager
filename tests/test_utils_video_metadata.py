@@ -33,25 +33,31 @@ HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 GRAPH = json.dumps({"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}}})
 
 
+def write_video(path, **tags):
+    """Write a tiny black video carrying one container tag per keyword.
+
+    MP4 keeps arbitrary keys only with ``use_metadata_tags``, the movflag the
+    core SaveVideo node sets; Matroska and WebM upper-case the key names.
+    """
+    command = [
+        "ffmpeg",
+        "-v",
+        "quiet",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=16x16:d=0.2",
+    ]
+    if str(path).lower().endswith((".mp4", ".mov", ".m4v")):
+        command += ["-movflags", "use_metadata_tags"]
+    for key, value in tags.items():
+        command += ["-metadata", f"{key}={value}"]
+    subprocess.run(command + ["-y", str(path)], check=True, timeout=60)
+
+
 def write_mp4(path, comment):
     """Write a tiny black video carrying ``comment`` in its container tags."""
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "quiet",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=black:s=16x16:d=0.2",
-            "-metadata",
-            f"comment={comment}",
-            "-y",
-            str(path),
-        ],
-        check=True,
-        timeout=60,
-    )
+    write_video(path, comment=comment)
 
 
 class TestMetadataFromTags(unittest.TestCase):
@@ -273,6 +279,37 @@ class TestReadVideoMetadataWithoutFfprobe(unittest.TestCase):
             ):
                 self.assertEqual(read_video_metadata("clip.mp4"), {})
 
+    def test_read_video_metadata_returns_per_key_prompt(self):
+        payload = {
+            "format": {
+                "tags": {
+                    "PROMPT": GRAPH,
+                    "WORKFLOW": '{"nodes":[]}',
+                    "COMFYASSETS_PROMPT_PAIRS": '{"version":1}',
+                    "COMMENT": json.dumps({"prompt": "must not win"}),
+                    "ENCODER": "Lavf",
+                }
+            }
+        }
+        with mock.patch.object(
+            video_metadata.shutil, "which", return_value="/bin/ffprobe"
+        ):
+            with self._run_returning(stdout=json.dumps(payload)):
+                self.assertEqual(
+                    read_video_metadata("clip.mkv"),
+                    {
+                        "prompt": GRAPH,
+                        "workflow": '{"nodes":[]}',
+                        "comfyassets_prompt_pairs": '{"version":1}',
+                    },
+                )
+            duplicates = {"format": {"tags": {"PROMPT": GRAPH, "prompt": "{}"}}}
+            with self._run_returning(stdout=json.dumps(duplicates)):
+                self.assertEqual(read_video_metadata("clip.mkv"), {})
+            markers = {"format": {"tags": {"comment": json.dumps({"prompt": None})}}}
+            with self._run_returning(stdout=json.dumps(markers)):
+                self.assertEqual(read_video_metadata("clip.mp4"), {})
+
     def test_ffprobe_output_is_parsed(self):
         payload = {"format": {"tags": {"comment": json.dumps({"prompt": GRAPH})}}}
         with mock.patch.object(
@@ -302,6 +339,16 @@ class TestReadVideoMetadataWithRealFfprobe(unittest.TestCase):
 
         self.assertEqual(meta["prompt"], GRAPH)
         self.assertEqual(json.loads(meta["workflow"]), {"v": 1})
+
+    def test_per_key_tags_round_trip_through_real_containers(self):
+        for name in ("per_key.mp4", "per_key.mkv", "per_key.webm"):
+            path = os.path.join(self.tmpdir, name)
+            write_video(path, prompt=GRAPH, workflow='{"nodes":[]}')
+            self.assertEqual(
+                read_video_metadata(path),
+                {"prompt": GRAPH, "workflow": '{"nodes":[]}'},
+                name,
+            )
 
     def test_video_without_a_comment_is_empty(self):
         path = os.path.join(self.tmpdir, "plain.mp4")
