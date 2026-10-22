@@ -189,6 +189,9 @@ def create_app(root: Path) -> web.Application:
             for table in (
                 "saved_views",
                 "image_favorites",
+                "media_image_tags",
+                "media_annotation_bytes",
+                "media_annotation_files",
                 "image_prompt_pairs",
                 "prompt_pair_tags",
                 "prompt_pairs",

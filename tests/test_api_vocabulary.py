@@ -1,6 +1,8 @@
 """Vocabulary read routes page with signed, epoch-scoped cursors."""
 
+import hashlib
 import json
+import os
 import unittest
 from unittest.mock import patch
 
@@ -184,6 +186,7 @@ class TestVocabularyAPI(ImageAPITestCase):
                     "id": created["tag"]["id"],
                     "name": "sunset",
                     "prompt_count": 0,
+                    "image_count": 0,
                 },
             },
         )
@@ -202,6 +205,7 @@ class TestVocabularyAPI(ImageAPITestCase):
                     "other_prompts": 0,
                     "negative_variants": 1,
                     "archived_negative_variants": 0,
+                    "images": 0,
                 },
             },
         )
@@ -221,9 +225,11 @@ class TestVocabularyAPI(ImageAPITestCase):
                     "id": created["tag"]["id"],
                     "name": "sunset",
                     "prompt_count": 2,
+                    "image_count": 0,
                 },
                 "components_changed": 1,
                 "pairs_changed": 1,
+                "images_changed": 0,
             },
         )
         self.assertEqual(self.api.db.get_prompt_by_id(parent)["tags"], ["sunset"])
@@ -242,6 +248,7 @@ class TestVocabularyAPI(ImageAPITestCase):
                 "deleted": True,
                 "components_changed": 1,
                 "pairs_changed": 1,
+                "images_changed": 0,
             },
         )
         self.assertEqual(self.api.db.get_all_tags(), [])
@@ -252,6 +259,95 @@ class TestVocabularyAPI(ImageAPITestCase):
             response, result = await self.get(f"tags/{bad}/impact")
             self.assertEqual(response.status, 400, bad)
             self.assertNotIn("code", result)
+
+    def image(self, name, tags, digest="a", mtime_ns=1):
+        """Tag the bytes ``digest`` of the file ``name``; return its locator."""
+        locator = os.path.normcase(str(self.output_dir / name))
+        self.api.db.replace_image_tags(
+            locator=locator,
+            sha256=hashlib.sha256(digest.encode()).hexdigest(),
+            size=1,
+            mtime_ns=mtime_ns,
+            expected_epoch=self.api.db.get_execution_epoch(),
+            expected_tag_revision=0,
+            tags=tags,
+        )
+        return locator
+
+    async def test_tag_rows_report_image_count_by_locator(self):
+        self._save_prompt("Prompt only", tags=["prompt-only", "shared"])
+        self.image("one.png", ["twice", "shared"], digest="old")
+        self.image("one.png", ["twice"], digest="new", mtime_ns=2)
+        self.image("two.png", ["shared"], digest="new")
+        self.image("three.png", ["prior-only"], digest="first")
+        self.image("three.png", [], digest="second", mtime_ns=2)
+        response, page = await self.get("tags")
+        self.assertEqual(response.status, 200, page)
+        rows = {row["name"]: row for row in page["tags"]}
+        self.assertEqual(
+            {
+                name: (row["prompt_count"], row["image_count"])
+                for name, row in rows.items()
+            },
+            {
+                "prompt-only": (1, 0),
+                "shared": (1, 2),
+                "twice": (0, 1),
+                "prior-only": (0, 1),
+            },
+        )
+        row = rows["shared"]
+        self.assertEqual(row["image_count"], 2)
+        self.assertEqual(set(row), {"id", "name", "prompt_count", "image_count"})
+
+    async def test_impact_and_delete_counts_include_images(self):
+        epoch = self.api.db.get_execution_epoch()
+        self._save_prompt("Parent", tags=["moody"])
+        self.image("a.png", ["moody", "keep"])
+        self.image("b.png", ["moody"])
+        _, page = await self.get("tags")
+        moody = next(row for row in page["tags"] if row["name"] == "moody")
+        self.assertEqual(moody["image_count"], 2)
+        response, impact = await self.get(f"tags/{moody['id']}/impact")
+        self.assertEqual(response.status, 200, impact)
+        self.assertEqual(
+            impact["impact"],
+            {
+                "positive_prompts": 1,
+                "other_prompts": 0,
+                "negative_variants": 0,
+                "archived_negative_variants": 0,
+                "images": 2,
+            },
+        )
+        response, deleted = await self.send(
+            "POST",
+            f"tags/{moody['id']}/delete",
+            {"expected_epoch": epoch, "name": "moody"},
+        )
+        self.assertEqual(response.status, 200, deleted)
+        self.assertEqual(
+            deleted,
+            {
+                "success": True,
+                "library_epoch": epoch,
+                "deleted": True,
+                "components_changed": 1,
+                "pairs_changed": 0,
+                "images_changed": 2,
+            },
+        )
+        keep = next(
+            row for row in (await self.get("tags"))[1]["tags"] if row["name"] == "keep"
+        )
+        response, renamed = await self.send(
+            "PATCH",
+            f"tags/{keep['id']}",
+            {"expected_epoch": epoch, "name": "keep", "new_name": "kept"},
+        )
+        self.assertEqual(response.status, 200, renamed)
+        self.assertEqual(renamed["images_changed"], 1)
+        self.assertEqual(renamed["tag"]["image_count"], 1)
 
     async def test_create_route_validates_names(self):
         epoch = self.api.db.get_execution_epoch()

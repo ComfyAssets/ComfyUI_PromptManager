@@ -804,6 +804,7 @@ test('slideshow preference failures leave native playback usable',async({page,re
 });
 
 test('full inspector attaches matched theme and mobile evidence with reachable content',async({page,request},testInfo)=>{
+    test.setTimeout(120_000); // 32 evidence captures across four viewports, like the concept comparisons
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true,include_video:true}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');
     const measurements=[];

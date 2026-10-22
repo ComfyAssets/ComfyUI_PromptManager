@@ -507,10 +507,49 @@ test('category preview text states the real impact and whether it renames or con
         '“Landscapes” is used by 2 other saved prompts. Apply renames it to “Scenery”.');
 });
 
+test('accepts image_count and names images in the delete text', async () => {
+    const {createVocabularyStream, createVocabularyCommand, readTagImpact, deleteTagText} = await helpers;
+    const rows = [{...tag(1, 'mist', 2), image_count: 3}, tag(2, 'dusk', 0)];
+    const stream = createVocabularyStream({api: queued([tagPage(rows)]).api, kind: 'tags'});
+    assert.equal(await stream.loadMore(), 2);
+    assert.deepEqual(stream.state.items.map(row => row.image_count), [3, undefined]);
+    for (const bad of [{...tag(1), image_count: -1}, {...tag(1), image_count: '3'}, {...tag(1), image_count: 1.5}]) {
+        const rejected = createVocabularyStream({api: queued([tagPage([bad])]).api, kind: 'tags'});
+        await rejected.loadMore();
+        assert.ok(rejected.state.error instanceof TypeError, JSON.stringify(bad));
+        assert.deepEqual(rejected.state.items, []);
+    }
+    const withImages = {...impact, images: 2};
+    const api = {get: async () => ({success: true, library_epoch: EPOCH, impact: withImages})};
+    assert.deepEqual((await readTagImpact(api, {id: 4, name: 'mist'})).impact, withImages);
+    await assert.rejects(readTagImpact({get: async () => ({success: true, library_epoch: EPOCH, impact: {...impact, images: -2}})},
+        {id: 4, name: 'mist'}), TypeError);
+    const command = createVocabularyCommand({api: {
+        patch: async () => renameReceipt({tag: {...tag(1, 'dusk', 2), image_count: 1}, images_changed: 1}),
+        post: async () => ({success: true, library_epoch: EPOCH, deleted: true, components_changed: 0, pairs_changed: 0, images_changed: 2}),
+    }});
+    await command.renameTag({id: 1, name: 'dawn', prompt_count: 2}, 'dusk', EPOCH);
+    assert.equal(command.state.phase, 'done');
+    assert.equal(command.state.receipt.images_changed, 1);
+    command.reset();
+    await command.deleteTag({id: 1, name: 'dusk'}, EPOCH);
+    assert.equal(command.state.phase, 'done');
+    const malformed = createVocabularyCommand({api: {post: async () => ({success: true, library_epoch: EPOCH, deleted: true,
+        components_changed: 0, pairs_changed: 0, images_changed: 'two'})}});
+    await malformed.deleteTag({id: 1, name: 'dusk'}, EPOCH);
+    assert.equal(malformed.state.phase, 'unknown-outcome');
+    assert.equal(deleteTagText('mist', withImages),
+        'Deleting “mist” removes the name and its links from 3 positive prompts, 3 negative variants (1 archived), 1 other saved prompt and 2 images. The prompts, negative variants, images and history themselves are kept.');
+    assert.equal(deleteTagText('mist', {...zero, images: 1}),
+        'Deleting “mist” removes the name and its links from 1 image. The prompts, negative variants, images and history themselves are kept.');
+    assert.equal(deleteTagText('unused', {...zero, images: 0}),
+        '“unused” is not linked to any saved prompt or image. Deleting it removes only the name.');
+});
+
 test('delete text names the tag, its real links and what stays unchanged', async () => {
     const {deleteTagText} = await helpers;
     assert.equal(deleteTagText('mist', impact),
         'Deleting “mist” removes the name and its links from 3 positive prompts, 3 negative variants (1 archived) and 1 other saved prompt. The prompts, negative variants, images and history themselves are kept.');
     assert.equal(deleteTagText('unused', zero),
-        '“unused” is not linked to any saved prompt. Deleting it removes only the name.');
+        '“unused” is not linked to any saved prompt or image. Deleting it removes only the name.');
 });

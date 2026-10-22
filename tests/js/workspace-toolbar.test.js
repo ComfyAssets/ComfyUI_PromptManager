@@ -765,6 +765,20 @@ test('the Filters button shows the active refinement count', async () => {
         assert.equal(filtersButton.textContent, 'Filters');
         for (const bad of [-1, 1.5, '1', null, Number.NaN]) assert.throws(() => toolbar.setActiveFilters(bad), TypeError);
         assert.equal(filtersButton.textContent, 'Filters');
+        // An unchanged count leaves the label's text node alone: every listing reload reports the count, and WebKit
+        // drops a click whose mousedown hit a text node that was replaced before mouseup.
+        let writes = 0;
+        const proto = Object.getPrototypeOf(filtersButton);
+        const descriptor = Object.getOwnPropertyDescriptor(proto, 'textContent');
+        Object.defineProperty(filtersButton, 'textContent', {
+            get() { return descriptor.get.call(this); },
+            set(text) { writes += 1; descriptor.set.call(this, text); },
+            configurable: true,
+        });
+        toolbar.setActiveFilters(0);
+        assert.equal(writes, 0);
+        toolbar.setActiveFilters(3);
+        assert.deepEqual([writes, filtersButton.textContent], [1, 'Filters · 3']);
         assert.throws(() => mountToolbar(new dom.Element('div'), { scope, categories: [], sorts: [['newest', 'Recently added']],
             activeFilters: -1, onChange() {}, onFilters() {}, onSaveView() {} }), TypeError);
     } finally {

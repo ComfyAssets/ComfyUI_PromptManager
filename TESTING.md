@@ -1367,6 +1367,61 @@ concept fixture stars the concept's favorites (each other prompt's first image).
   restore. Old backups without the table restore, and backup plus restore keeps
   WAL-resident favorites and closes every handle (`tests/test_database_backup.py`).
 
+Image annotations schema (#249, `database/annotation_schema.py`): the group
+`media_annotation_metadata` (one row: schema version, `image_index_revision`),
+`media_annotation_files` (one private locator per physical file,
+`normcase(join(realpath(root), relative))`, server-side only),
+`media_annotation_bytes` (one record per observed whole-file SHA-256 with the
+`size`/`mtime_ns` verified when those bytes were last seen and the set's
+`tag_revision`) and `media_image_tags` (the ordered tag set of one byte record,
+joined into the global `tags` registry). It installs like favorites: optional in
+old backups, required once current (`annotation_schema_error`, the single
+`require_library_state` flag), validated read-only before and after a SAVEPOINT
+install and on restore, never backfilled and never stat-ing media
+(`tests/test_annotation_schema.py`). Writers (`database/annotations.py`) always
+supply the UUID ids, run in `_pair_transaction` fenced by the storage epoch, and
+replace or union one byte record's set (`tag-conflict` / `tag-limit` with the
+current set, identical retries `replayed`); vocabulary rename, merge and delete
+carry `media_image_tags` through the one `_move_tag_links` loop, and tag rows,
+impact and command receipts report `image_count` / `images` /
+`images_changed` as files (`tests/test_annotations.py`,
+`tests/test_pair_tag_maintenance.py`, `tests/test_vocabulary.py`). Cheap reads
+(spec amendment S1) use a byte record only while the file's current
+`(size, mtime_ns)` equals its verified fingerprint; an in-place rewrite that
+preserves both keeps the old set matching until the file is next observed. The
+browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
+`media_annotation_files` on reset and never the metadata row.
+
+Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
+one explicit action captures one rooted media file into an owner-only
+`prompt-manager-captures-*` temp directory, streaming it in 1 MiB chunks while
+hashing. Identity is compared like with like: the opened descriptor against
+the path only on the API-stable facts (`size`, `mtime_ns`); the full identity
+(`size`, `mtime_ns`, `ctime_ns`, `dev`/`ino` where meaningful) between the
+`fstat` before and after the copy and between the path stats before and after
+(native Windows CI with Python 3.12/3.13 showed `stat` and `fstat` disagreeing
+on `st_ctime_ns`: change time versus creation time; 3.10/3.11 agree). Any
+disagreement is `CaptureChanged` and the copy is removed. Error messages carry
+`strerror` only, never a path. Aliases (a symlinked
+file or directory, even inside the root), escapes, non-media names and
+directories are `CaptureDenied`; the locator is
+`normcase(join(realpath(root), relative))`, so a symlinked root shares the
+listing's identity. Fixed limits: 256 MiB per file (stat and stream), 8
+completed captures, 512 MiB reserved, 2 capture/verify workers, 900 s idle,
+1800 s hard; admission is nonblocking (`CaptureCapacity`) and lifetimes are
+tested with an injected clock. An acquired capture outlives expiry and release
+until its last use ends. Header-only dimensions (4096 px per side,
+16,777,216 px) and video mark Generate unsupported; `verify` re-hashes the
+current file without a copy. Every handle closes before unlink (a patched
+`os.unlink` asserts it, plus `assert_closed`), and files are unlinked outside
+the store lock. Known limit: on Windows before Python 3.13 `fstat` reports the
+creation time, so a same-size rewrite that restores `mtime_ns` during the copy
+window completes there with a digest of the copied bytes; POSIX and Windows on
+3.13+ detect it through the descriptor's change time (native CI, 3.13 only).
+Vocabulary rename, merge and delete bump the `tag_revision` of every image set
+they change (and `image_index_revision`), so a Tag dialog opened before the
+change gets `tag-conflict` on Save (`tests/test_pair_tag_maintenance.py`).
+
 Budgets: `test_filter_work_is_bounded` always runs. It asserts that a plain first
 page makes 1 link SELECT and a plain cursor page none, that every filter shape
 makes exactly 1, the covering-index plan, and that the per-file values are built

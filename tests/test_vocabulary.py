@@ -1,5 +1,7 @@
 """Bounded vocabulary reads count exactly what Library Browse shows."""
 
+import hashlib
+import os
 import re
 import sqlite3
 import tempfile
@@ -61,7 +63,48 @@ class TestVocabularyReads(unittest.TestCase):
         by_name = {row["name"]: row for row in page["tags"]}
         self.assertEqual(by_name["z"]["prompt_count"], 0)
         self.assertEqual(by_name["a"]["prompt_count"], 2)
-        self.assertEqual(set(by_name["c"]), {"id", "name", "prompt_count"})
+        self.assertEqual(
+            set(by_name["c"]), {"id", "name", "prompt_count", "image_count"}
+        )
+        self.assertEqual({row["image_count"] for row in page["tags"]}, {0})
+
+    def image(self, name, tags, digest="a", mtime_ns=1):
+        """Tag the bytes ``digest`` of the file ``name``; return its locator."""
+        locator = os.path.normcase(os.path.join(os.path.realpath(self.temp.name), name))
+        self.read(
+            "replace_image_tags",
+            locator=locator,
+            sha256=hashlib.sha256(digest.encode()).hexdigest(),
+            size=1,
+            mtime_ns=mtime_ns,
+            expected_epoch=self.db.get_execution_epoch(),
+            expected_tag_revision=0,
+            tags=tags,
+        )
+        return locator
+
+    def test_tag_rows_report_image_count_by_locator(self):
+        self.save("Prompt only", tags=["prompt-only"])
+        self.image("one.png", ["twice", "shared"], digest="old")
+        self.image(
+            "one.png", ["twice"], digest="new", mtime_ns=2
+        )  # two bytes, one file
+        self.image("two.png", ["shared"], digest="new")  # equal digest, other locator
+        self.image("three.png", ["prior-only"], digest="first")
+        self.image("three.png", [], digest="second", mtime_ns=2)
+        rows = {row["name"]: row for row in self.all_tags()}
+        self.assertEqual(rows["twice"]["image_count"], 1)
+        row = rows["shared"]
+        self.assertEqual(row["image_count"], 2)
+        self.assertEqual(rows["prior-only"]["image_count"], 1)
+        self.assertEqual(rows["prompt-only"]["image_count"], 0)
+        self.assertEqual(
+            {name: r["prompt_count"] for name, r in rows.items()},
+            {"prompt-only": 1, "twice": 0, "shared": 0, "prior-only": 0},
+        )
+        self.assertEqual(
+            self.db.list_library(tags=["shared"])["total"], row["prompt_count"]
+        )
 
     def test_prompt_count_equals_library_browse_total_for_every_tag(self):
         self.save("Parent only", tags=["parent-only"])
@@ -302,7 +345,12 @@ class TestVocabularyTagCommands(unittest.TestCase):
         self.assertTrue(created["created"])
         self.assertEqual(
             created["tag"],
-            {"id": self.tag_id("sunset"), "name": "sunset", "prompt_count": 0},
+            {
+                "id": self.tag_id("sunset"),
+                "name": "sunset",
+                "prompt_count": 0,
+                "image_count": 0,
+            },
         )
         after = self.junction_rows()
         self.assertEqual(after[1:], before[1:])
@@ -345,9 +393,15 @@ class TestVocabularyTagCommands(unittest.TestCase):
             {
                 "library_epoch": self.epoch,
                 "merged": False,
-                "tag": {"id": tag_id, "name": "dramatic", "prompt_count": 2},
+                "tag": {
+                    "id": tag_id,
+                    "name": "dramatic",
+                    "prompt_count": 2,
+                    "image_count": 0,
+                },
                 "components_changed": 2,
                 "pairs_changed": 2,
+                "images_changed": 0,
             },
         )
         self.assertIsNone(self.tag_id("moody"))
@@ -397,7 +451,8 @@ class TestVocabularyTagCommands(unittest.TestCase):
         )
         self.assertFalse(result["merged"])
         self.assertEqual(
-            result["tag"], {"id": tag_id, "name": "cat", "prompt_count": 1}
+            result["tag"],
+            {"id": tag_id, "name": "cat", "prompt_count": 1, "image_count": 0},
         )
         self.assertEqual(self.db.get_prompt_by_id(prompt)["tags"], ["cat"])
 
@@ -467,6 +522,7 @@ class TestVocabularyTagCommands(unittest.TestCase):
                     "other_prompts": 1,
                     "negative_variants": 1,
                     "archived_negative_variants": 1,
+                    "images": 0,
                 },
             },
         )
@@ -482,6 +538,7 @@ class TestVocabularyTagCommands(unittest.TestCase):
                 "deleted": True,
                 "components_changed": 2,
                 "pairs_changed": 2,
+                "images_changed": 0,
             },
         )
         self.assertIsNone(self.tag_id("moody"))
@@ -493,6 +550,69 @@ class TestVocabularyTagCommands(unittest.TestCase):
                 "delete_vocabulary_tag", tag_id, expected_epoch=self.epoch, name="moody"
             )
         self.assertEqual(caught.exception.code, "vocabulary-conflict")
+
+    def image(self, name, tags, digest="a", mtime_ns=1):
+        locator = os.path.normcase(os.path.join(os.path.realpath(self.temp.name), name))
+        self.command(
+            "replace_image_tags",
+            locator=locator,
+            sha256=hashlib.sha256(digest.encode()).hexdigest(),
+            size=1,
+            mtime_ns=mtime_ns,
+            expected_epoch=self.epoch,
+            expected_tag_revision=0,
+            tags=tags,
+        )
+        return locator
+
+    def test_impact_and_delete_counts_include_images(self):
+        self.owners()
+        self.image("a.png", ["moody", "keep"])
+        self.image("a.png", ["moody"], digest="prior", mtime_ns=2)
+        self.image("b.png", ["moody"])
+        tag_id = self.tag_id("moody")
+        impact = self.command("vocabulary_tag_impact", tag_id)["impact"]
+        self.assertEqual(impact["images"], 2)
+        self.assertEqual(
+            self.command("vocabulary_tag_impact", self.tag_id("keep"))["impact"],
+            {
+                "positive_prompts": 0,
+                "other_prompts": 0,
+                "negative_variants": 0,
+                "archived_negative_variants": 0,
+                "images": 1,
+            },
+        )
+        result = self.command(
+            "delete_vocabulary_tag", tag_id, expected_epoch=self.epoch, name="moody"
+        )
+        self.assertEqual(
+            (
+                result["components_changed"],
+                result["pairs_changed"],
+                result["images_changed"],
+            ),
+            (2, 2, 2),
+        )
+        with self.db.model.get_connection() as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM media_image_tags").fetchone()[0], 1
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM media_annotation_bytes").fetchone()[
+                    0
+                ],
+                3,
+            )
+        renamed = self.command(
+            "rename_vocabulary_tag",
+            self.tag_id("keep"),
+            expected_epoch=self.epoch,
+            name="keep",
+            new_name="kept",
+        )
+        self.assertEqual(renamed["images_changed"], 1)
+        self.assertEqual(renamed["tag"]["image_count"], 1)
 
 
 _OLD_STAMP = "2000-01-01T00:00:00+00:00"

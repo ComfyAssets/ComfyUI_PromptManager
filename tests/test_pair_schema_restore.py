@@ -251,7 +251,19 @@ class PairSchemaTests(unittest.TestCase):
                 [r[1] for r in conn.execute("PRAGMA table_info(prompt_library_state)")],
                 ["prompt_id", "title"],
             )
+            self.assertEqual(
+                [
+                    tuple(r)
+                    for r in conn.execute("SELECT * FROM media_annotation_metadata")
+                ],
+                [(1, 1, 0)],
+            )
         self.assertTrue(PromptModel.verify_database_file(live.db_path)[0])
+        self.assertTrue(
+            PromptModel.verify_database_file(live.db_path, require_library_state=True)[
+                0
+            ]
+        )
 
     def test_restore_staged_verification_failure_does_not_replace_live_pages(self):
         live = self.model()
