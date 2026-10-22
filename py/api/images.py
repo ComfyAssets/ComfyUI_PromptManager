@@ -74,6 +74,7 @@ IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
 # The header records the card parses (see utils.card_seed.header_params).
 _CARD_RECORDS = ("prompt", "workflow")
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_LISTING_FAILED = "The image list could not be filtered. Check server logs for details."
 
 
 def _card_header(path: Path) -> tuple:
@@ -1173,7 +1174,7 @@ class ImageRoutesMixin:
                 }
             )
         except Exception as e:
-            self.logger.error(f"Output images error: {e}")
+            self.logger.error(f"Output images error: {e}", exc_info=True)
             return web.json_response(
                 {"success": False, "error": _safe_error(e)}, status=500
             )
@@ -1217,11 +1218,27 @@ class ImageRoutesMixin:
             for index, root in enumerate(output_dirs)
             if root_index is None or index == root_index
         ]
-        page, total, has_more, next_cursor, positive_count = (
-            await self._run_in_executor(
-                self._select_workspace_page, listings, filters, after, limit, scope
+        try:
+            page, total, has_more, next_cursor, positive_count = (
+                await self._run_in_executor(
+                    self._select_workspace_page, listings, filters, after, limit, scope
+                )
             )
-        )
+        except Exception:
+            # A filter that needs the prompt links or the image tags cannot be
+            # served without them. Never echo the exception: it can carry SQL
+            # or database text. The traceback goes to the server log.
+            self.logger.error(
+                "Workspace image list could not be filtered", exc_info=True
+            )
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "listing-failed",
+                    "error": _LISTING_FAILED,
+                },
+                status=500,
+            )
         images = await self._run_in_executor(self._format_workspace_page, page)
         result = {
             "success": True,
@@ -2652,7 +2669,9 @@ class ImageRoutesMixin:
             try:
                 found = self.db.current_image_tags({locator: (size, mtime_ns)})
             except Exception:
-                self.logger.warning("Inspection image tags could not be read")
+                self.logger.warning(
+                    "Inspection image tags could not be read", exc_info=True
+                )
                 return {"state": "unavailable", "tags": []}
             tags = found.get(locator)
             if tags is None:

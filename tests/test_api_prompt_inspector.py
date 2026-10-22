@@ -1696,8 +1696,12 @@ class TestInspectorImageTags(ImageAPITestCase):
         with patch.object(
             self.api.db, "current_image_tags", side_effect=RuntimeError("boom")
         ):
-            with self.assertLogs("prompt_manager", level="WARNING"):
+            with self.assertLogs("prompt_manager", level="WARNING") as logged:
                 response, failed = await self.inspect("sub/tagged.png")
+        self.assertTrue(
+            any(r.exc_info and "image tags" in r.getMessage() for r in logged.records),
+            logged.output,
+        )
         self.assertEqual(response.status, 200, failed)
         self.assertEqual(failed.get("image_tags"), {"state": "unavailable", "tags": []})
         self.assertEqual(failed["prompts"], envelope["prompts"])

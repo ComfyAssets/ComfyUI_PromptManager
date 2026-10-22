@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import sqlite3
 import subprocess  # nosec B404
 import sys
 import unittest
@@ -1232,15 +1233,21 @@ class TestWorkspaceImages(ImageAPITestCase):
             {"q": "zebra", "category": "Night"},
             {"sort": "rating"},
         ):
+            leak = 'near "gi": syntax error FROM generation_images'
             with (
                 self.subTest(failing=params),
                 patch.object(
-                    db, "get_image_link_matches", side_effect=RuntimeError("gone")
+                    db, "get_image_link_matches", side_effect=RuntimeError(leak)
                 ),
+                self.assertLogs("prompt_manager", level="ERROR") as logged,
             ):
                 response, data = await self.get(**params)
                 self.assertEqual(response.status, 500, data)
                 self.assertNotIn("images", data)
+                self.assertEqual(data["code"], "listing-failed")
+                self.assertNotIn(leak, json.dumps(data))
+                self.assertNotIn("syntax error", json.dumps(data))
+                self.assertTrue(any(r.exc_info for r in logged.records))
 
     async def test_filename_search_survives_a_database_failure(self):
         for name, mtime in (("zebra-1.png", 300), ("zebra-2.png", 200)):
@@ -1989,17 +1996,38 @@ class TestWorkspaceImageTags(ImageAPITestCase):
         tagged = self.media("unlinked_tagged.png", mtime=102)
         self.media("dunes_by_name.png", mtime=101)
         self.tag(tagged, ["dunes"])
+        leak = "no such table: media_annotation_files"
         with patch.object(
-            self.api.db, "iter_image_tag_records", side_effect=RuntimeError("boom")
+            self.api.db,
+            "iter_image_tag_records",
+            side_effect=sqlite3.OperationalError(leak),
         ):
-            # As a failed link read does under a Tags filter.
-            response, body = await self.get(tags="dunes")
+            # As a failed link read does under a Tags filter: a fixed coded
+            # sentence, never the exception or SQL text; the traceback is logged.
+            with self.assertLogs("prompt_manager", level="ERROR") as failed:
+                response, body = await self.get(tags="dunes")
             self.assertEqual((response.status, body["success"]), (500, False))
+            self.assertEqual(body["code"], "listing-failed")
+            self.assertNotIn(leak, body["error"])
+            self.assertNotIn("media_annotation_files", json.dumps(body))
+            self.assertTrue(any(r.exc_info for r in failed.records))
             with self.assertLogs("prompt_manager", level="WARNING") as logged:
                 response, body = await self.get(q="dunes")
         self.assertEqual(response.status, 200, body)
         self.assertEqual(self.names(body), ["dunes_by_name.png"])
         self.assertIn("image tags", "\n".join(logged.output))
+
+    async def test_legacy_output_failure_logs_its_traceback(self):
+        self.media("legacy.png", mtime=100)
+        with (
+            patch.object(
+                self.api, "_collect_output_images", side_effect=RuntimeError("x")
+            ),
+            self.assertLogs("prompt_manager", level="ERROR") as logged,
+        ):
+            response = await self.client.get("/prompt_manager/images/output")
+        self.assertEqual(response.status, 500)
+        self.assertTrue(any(r.exc_info for r in logged.records), logged.output)
 
     async def test_legacy_gallery_and_search_shapes_unchanged(self):
         path = self.media("legacy.png", mtime=100)
