@@ -45,7 +45,11 @@ which binds a port the OS picks and prints it as `PM_TEST_SERVER_PORT=<n>`, with
 its own temp root and database (`tests/browser/fixtures.mjs`), so
 parallel workers and concurrent runs never share state. `PM_TEST_WORKERS` sets the
 worker count (default 1 under `CI`, otherwise a quarter of the CPUs, at most 8).
-Test servers are never reused across runs.
+Test servers are never reused across runs. The launcher holds each server's
+stdin open and the server (`--exit-on-stdin-eof`) shuts down cleanly, removing its
+temp root, when that pipe closes, so a worker killed without teardown leaves no
+server behind. A test that fails gets the stderr its server wrote during the test
+attached to the report as `server-stderr` (an aiohttp traceback behind a 500).
 
 The coverage run can be split the way CI splits it, and each shard keeps the raw
 V8 files it writes under `coverage/js/raw`:
@@ -164,13 +168,17 @@ screenshots/traces and `browser-traces-<browser>-shard-N` the other browsers'
 traces. Open traces with Playwright's `show-trace` tool.
 
 Every `npm ci` first restores npm's download cache (`~/.npm`), keyed on the vendor
-lockfile and the pinned image. Without it, `npm ci` stalled for about 300 s
+lockfile and the job's pinned image tag (`tests/vendor/ci-workflow.test.mjs` checks
+the key names the same tag as the job's `container.image`). Without it, `npm ci` stalled for about 300 s
 (npm's fetch timeout) in most of the eight concurrent jobs; with a hit it takes
 0 to 2 s. A lockfile change misses the cache once, so expect one slow run after it.
-Measured on PR #274 (run 39722172529, cache hit): the whole workflow took 8m54s,
-against about 33 minutes with one worker and no shards. Jobs: coverage shards
-7m56s/5m10s/4m55s (tests 6m42s/4m09s/3m45s), merge 47s, firefox shards
-8m10s/5m28s (tests 7m14s/4m34s), webkit shards 6m31s/4m30s (tests 5m32s/3m29s).
+Measured on PR #274 (run 39725176320 at cbc8a61, cache hit): the whole workflow
+took 8m38s, against about 33 minutes with one worker and no shards. Jobs: coverage
+shards 7m34s/6m04s/5m22s (tests 6m38s/4m53s/4m04s), merge 54s, firefox shards
+7m57s/5m21s (tests 7m08s/4m34s), webkit shards 8m16s/5m03s (tests 7m26s/3m58s).
+Browser jobs keep a 20-minute limit: the slowest job is about 8.5 minutes, a cache
+miss adds up to 5 to `npm ci`, and runner speed varies (the first sharded run was
+cancelled at a 12-minute limit).
 Playwright shards by test count, whole files at a time, so shard 1 carries the
 slow concept-comparison specs (`*-concept.spec.mjs`, alphabetically first) and
 runs longer; the remedy, if it starts to matter, is more shards, not reordering.
