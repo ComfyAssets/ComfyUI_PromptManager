@@ -1019,7 +1019,7 @@ test('shared gallery uses concept cards, image opens the viewer, empty copy',asy
     await expect(star).toHaveAccessibleName(`Favorite ${filename}`);await expect(star).toHaveAttribute('aria-pressed',String(image.favorite));
     await expect(star).toHaveText(image.favorite?'★':'☆');
     await expect(first.locator('.media-info h3')).toHaveCount(1);
-    await expect(first.locator('.image-card-actions > button.icon-btn')).toHaveAccessibleName(`Inspect ${filename}`);
+    await expect(first.locator('.image-card-actions > button.icon-btn:first-child')).toHaveAccessibleName(`Inspect ${filename}`);
     // C3 activation: the image opens the viewer and Escape returns focus to it.
     const openButton=first.locator('.image-open');await openButton.click();
     const viewer=page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();

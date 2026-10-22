@@ -39,9 +39,9 @@ const GENERIC_CODES = new Set(['observe-failed', 'suggest-failed', 'save-failed'
 const UNCONFIRMED_STATUS = new Set([502, 503, 504]);
 
 const COPY = Object.freeze({
-    initial: 'Choose a model, then generate tags. Remove anything you do not want to add.', // D60
+    initial: 'Choose a model, then generate tags. Remove anything you do not want to add.', // D83
     modelChanged: 'Generate suggestions with the selected model before approving.',
-    allRemoved: 'All suggestions removed. Generate again or enter tags manually.', // D60
+    allRemoved: 'All suggestions removed. Generate again or enter tags manually.', // D83
     empty: 'No suggestions met this threshold. Adjust it or enter tags manually.',
     generating: 'Generating suggestions…',
     observeFailed: 'The image could not be opened for tagging.',
@@ -298,7 +298,7 @@ export function createImageTaggingController({api, target, source = 'images'} = 
         const phase = state.phase === 'generating' || state.phase === 'generate-error' ? 'ready' : state.phase;
         set({
             phase, model: id, generated: false, suggestions: [], suggestionsText: COPY.modelChanged, statusText: reasonText(),
-            // Like the mock, a model change re-renders its fields with the defaults; the count is kept (D68).
+            // Like the mock, a model change re-renders its fields with the defaults; the count is kept (D91).
             options: {...state.options, general_threshold: defaults.general_threshold,
                 character_threshold: defaults.character_threshold, instructions: defaults.instructions},
         });
@@ -363,7 +363,8 @@ export function createImageTaggingController({api, target, source = 'images'} = 
         const n = value.tags.length;
         set({
             phase: 'saved', savedTags: value.tags.slice(), tagRevision: value.tag_revision, currentTags: null, statusText: '',
-            toast: `${n} ${noun(n, 'tag')} saved for ${state.image.filename}.${source === 'review' ? COPY.reviewSuffix : ''}`,
+            // The mock's toast verbatim (app.js:1545, without the demo's "in this tab"): "tags" even for one.
+            toast: `${n} tags saved for ${state.image.filename}.${source === 'review' ? COPY.reviewSuffix : ''}`,
         });
         return true;
     }

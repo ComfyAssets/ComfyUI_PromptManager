@@ -35,6 +35,7 @@ from tests.browser.workspace_library_editor_fixture import (
     register_library_editor_commands,
 )
 from tests.browser.workspace_vocabulary_fixture import register_vocabulary_commands
+from tests.browser.workspace_tagging_fixture import register_tagging_commands
 
 CANONICAL_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_ASSETS = {
@@ -57,11 +58,16 @@ class TestModel:
     wd14_character_threshold = 0.85
     custom_prompt = ""
     loaded = None
+    # Models the Tag image dialog workflows mark as not downloaded.
+    unavailable: set = set()
 
     def get_models_status(self) -> dict:
         return {
-            name: {"downloaded": True, "loaded": self.loaded == name}
-            for name in ("gguf", "wd14-vit", "wd14-convnext", "wd14-swinv2")
+            name: {
+                "downloaded": name not in self.unavailable,
+                "loaded": self.loaded == name,
+            }
+            for name in ("gguf", "hf", "wd14-vit", "wd14-convnext", "wd14-swinv2")
         }
 
     def is_model_loaded(self) -> bool:
@@ -178,6 +184,7 @@ def create_app(root: Path) -> web.Application:
     history_commands = register_workspace_history_commands(routes, api, root)
     library_editor_commands = register_library_editor_commands(routes, api, root)
     register_vocabulary_commands(routes, api, root)
+    register_tagging_commands(routes, api, root, model)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
 

@@ -64,12 +64,10 @@ export function pageInventoryOf(main) {
 // Recorded deviations only (plan "Mock inventory" + decisions D1-D15 + ledger rulings). Everything else must be equal.
 export function mapVocabularyConcept(reference) {
     return {...reference,
-        heading:{...reference.heading,actions:{...reference.heading.actions,
-            // D2: Auto-tag images is omitted until the image-annotation slice owns image tags.
-            buttons:reference.heading.actions.buttons.filter(item=>item.text!=='Auto-tag images')}},
         table:{...reference.table,rows:reference.table.rows.map(row=>({...row,
-            // D3: no image-tag owner yet, so the Images cell shows "—" with a visually hidden "Not available yet".
-            images:'—',imagesHidden:'Not available yet'}))},
+            // Data, not a deviation: the concept tags each sample image with its prompt's tags; the vocabulary fixture
+            // tags no image, so every Images count is 0 (#249 C2 retired #245 D3).
+            images:'0'}))},
         operations:reference.operations.map(row=>({...row,p:{...row.p,
             // Ledger ruling: "1 positive prompts" -> singular, consistent with the shared plural helper (#238/#243).
             text:row.p.text.replace(/^1 positive prompts$/,'1 positive prompt')}})),

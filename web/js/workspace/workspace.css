@@ -137,6 +137,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
    row stacks its text above Inspect, so neither the title nor the subtitle collapses to nothing beside the button. */
 .narrow-cards .media-info { flex-wrap: wrap; }
 .narrow-cards .media-info > div { flex: 1 0 100%; }
+/* #249 D31: Info and Tag (#249 C2) wrap onto two lines when even the stacked row cannot hold them side by side. */
+.narrow-cards .media-info > .image-card-actions { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; /* D31 */ }
 /* A list row beside its art keeps room for Inspect. */
 .narrow-cards.list-grid .media-art { width: 40%; }
 .narrow-cards.list-grid .media-info { padding-inline: 4px; }
@@ -361,4 +363,15 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 @media (forced-colors: active) {
     .history-context-branch, .history-context-branch::before, .history-run-marker, .history-run-marker::before { border-color: CanvasText; }
     .history-run-marker[aria-pressed="true"] { outline-color: Highlight; }
+}
+
+/* Tag image dialog (#249 C2): the concept's `tagging-modal` (s1598–1694) as it stands, but D83 (ruling T4): the
+   suggestions are removable chips, each the concept's `.chip` geometry in its checked suggestion row's tokens
+   (`.tag-suggestion:has(input:checked)`, s1655): a name, the confidence and a × button. */
+#tag-suggestions .chip.tag-suggestion { display: inline-flex; gap: 6px; padding: 2px 2px 2px 8px; margin-bottom: 0; cursor: default; color: inherit; border-color: var(--ca-accent); background: var(--soft-blue); /* D83 */ }
+#tag-suggestions .chip.tag-suggestion .tag-confidence { margin-inline-start: 0; /* D83 */ }
+.ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 24px; min-inline-size: 24px; padding: 0 6px; /* D83 */ }
+@media (pointer: coarse) {
+    /* D83: the chip's × keeps the concept's 40px coarse target. */
+    .ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 40px; min-inline-size: 40px; }
 }

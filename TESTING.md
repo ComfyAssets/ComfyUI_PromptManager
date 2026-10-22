@@ -769,8 +769,12 @@ Recorded shell deviations:
   "Save", not "Apply in prototype", and its toast drops the demo's word "Sample".
 - **D31**: at `max-width: 950px` the overlay caps the one-column shell at
   `minmax(0, 1fr)`, so extreme zoom cannot widen it to the sidebar's min-content.
-- **#245 D2**: no "Auto-tag images" on the Tags heading until the image-annotation
-  slice.
+  On the Images cards (#249 C2) a card's info row stacks its text above Info and Tag
+  once the row is narrower than the narrowest bounded card (120px; a list row's info
+  is what its art leaves), and the two buttons wrap when even that row cannot hold
+  them (`stacksCardInfo`, `tests/js/workspace-image-layout.test.js`).
+- **#245 D2 (retired, #249 C2)**: the Tags heading shows the concept's "Auto-tag images";
+  it opens the Tag image dialog (D115 when nothing is selected).
 - **Brand name**: not a deviation. The brand link's accessible name matches the
   concept's, mark included, because production's `.brand-mark` is not `aria-hidden`
   either. The inventory compares `brand.name` and `brand.mark.hidden`.
@@ -793,7 +797,7 @@ zoom, the 2nd card opens the viewer titled "<title> · <filename>", Escape retur
 to it (production only: the concept re-renders its grid and drops focus), Info on the
 3rd card moves `.selected`, searches for "alpine" and for one image, and Load more with
 its toast. `mapImagesConcept` applies D3, D8 (the selection bar's real actions only),
-D9, D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
+D10, D14, D15, D17, D29, D32, D35 (singular counts) and D36 (categories
 sorted alphabetically). Removed toolbar and filter-row items flow again from the
 concept's own boxes (`reflow`), checked against the concept page with those items
 removed at runtime. Masonry tops and heights are compared unrounded, within one layout
@@ -885,7 +889,9 @@ Recorded deviations on this page (spec §8):
   the concept` compares the bar and the checked card with one card checked; the omitted
   actions flow again from the concept's own boxes, checked against the concept page with
   them removed at runtime.
-- **D9**: no Tag button until the image-annotations slice.
+- **D9 (retired, #249 C2)**: every card shows the concept's Tag (`tagImage`, "Tag or
+  auto-tag <filename>") after Info; it opens the Tag image dialog without selecting
+  the card (see "Tag image dialog" below).
 - **D10**: the card title is the linked positive's display title, else the filename;
   the `h3` keeps the relative path in `title`.
 - **D11**: the subtitle is "W × H · EXT · Seed N" with unknown parts omitted.
@@ -1047,6 +1053,67 @@ saved file.
 npm run --prefix tools/vendor test:workflows -- images-concept.spec.mjs \
   workspace-images.spec.mjs full-inspector.spec.mjs inspector-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
+```
+
+### Tag image dialog and recorded deviations (#249 PR C)
+
+Every Images card and every Library-embedded gallery card shows Info then the
+concept's Tag (`app.js` mediaCard). Tag opens the concept's **Tag image** dialog
+(`web/js/workspace/image-tagging.mjs` over the C1 controller
+`image-tagging-state.mjs`) in the shared modal shell with the concept's
+`tagging-modal` class, so its `.dialog-actions` stay sticky while the content
+scrolls. Focus starts on × and returns to the Tag button. The preview is the
+capture's own `preview_url` (through `ApiClient.resolveUrl`): an `img`, or a
+`video preload="metadata" muted`. The capture is released on ×, Escape, Cancel,
+Save, a route change (the shell closes its dialog) and `pagehide`. Generate is
+explicit and uses the server's real defaults (`GET /prompt_manager/autotag/models`);
+an invalid field reports native validity and sends nothing. Save writes the manual
+names, then the remaining chips, deduplicated case-insensitively (first spelling
+wins), and toasts the mock's copy verbatim, "<n> tags saved for <filename>." even
+for one tag, plus " Prompt association still awaits review." from Needs review.
+Tagging one file never changes another file (an equal-byte copy included), a
+prompt, a pair or a link. States the mock lacks (generating, busy, conflict,
+changed storage or file, expired capture, unconfirmed save, unavailable model,
+video) are text in `#tag-generation-status` only; **Retry** (ruling T5) leads the
+actions while the controller allows it (failed observation, failed Generate,
+unconfirmed save), where the other workspace dialogs place their Retry. The Tags
+page re-reads its lists after every confirmed save, so the Images counts follow.
+
+The image-tagging plan's deviation numbers were renumbered by +23 because the
+Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D68 → D91).
+
+- **D83** (plan D60, ruling T4): the suggestions are removable chips instead of
+  checkbox rows: `span.chip.tag-suggestion` in a `.tags` row, in the concept's
+  checked-row tokens (accent border, `--soft-blue`), each with the name, the
+  confidence (`98%` for WD14, "Suggested" for language models) and a × "Remove
+  <tag>". At most the requested count, all preselected. The help copy reads
+  "Remove anything you do not want to add." and removing the last chip shows "All
+  suggestions removed. Generate again or enter tags manually."
+- **D84** (plan D61, rulings T1/T2): the Tagging model options are legacy's four
+  engines in the mock's order with legacy labels and sizes (`WD14 SwinV2 · ~400
+  MB`, `WD14 ViT · ~400 MB`, `GGUF JoyCaption (Recommended) · ~4.5 GB` in the
+  mock's Ollama slot, `HuggingFace JoyCaption · ~16 GB`); the instructions start
+  from the server's `default_prompt`.
+- **D91** (plan D68, ruling T3-bulk): a **Suggestions** number field (1–100) for
+  every model, prefilled from `autotag.defaults.suggestion_limit` (10); a model
+  change keeps it.
+- **D115** (beyond the plan's list): the concept always has a selected image, so
+  its "Auto-tag images" always opens the dialog. Production opens it for the image
+  selected in Images when it was last left; with none it is `aria-disabled` and
+  pressing it toasts "Select an image in Images first." (no new chrome).
+
+Test files: `tests/browser/workspace-tagging.spec.mjs` (the fixture is
+`tests/browser/workspace_tagging_fixture.py`: two files sharing one prompt and
+pair, an equal-byte copy, a video, an unlinked file, the fake model with `hf`, and
+no model files; every test asserts no download request),
+`tests/js/workspace-image-tagging.test.js`,
+`tests/js/workspace-image-tagging-state.test.js` and
+`tests/js/workspace-images-lifecycle.test.js`.
+
+```sh
+node --test tests/js/workspace-image-tagging*.test.js tests/js/workspace-images-lifecycle.test.js
+npm run --prefix tools/vendor test:workflows -- workspace-tagging.spec.mjs \
+  workspace-vocabulary.spec.mjs images-concept.spec.mjs --project chromium --project touch
 ```
 
 ### Prompt library cards and recorded deviations (#249 PR E)
@@ -1747,8 +1814,8 @@ page lifecycle recovery retain their separate behavioral tests.
 Initial production acceptance requires maintainer inspection of paired PNGs and
 geometry; never update snapshots automatically or mask content to bless a gap.
 Data-dependent text/images/counts and the clearly labeled saved/frozen/current
-distinctions are documented in the comparison helper. The Images card tag
-button (#249 D9) remains outside #209; every prompt block now renders the concept's
+distinctions are documented in the comparison helper. The gallery cards carry the
+concept's Tag button beside Info (#249 C2 retired D9); every prompt block now renders the concept's
 `section.prompt-section` (D22), so the shared role-block spacing, padding and glyph
 gap is closed, and only the production-only surfaces above keep their own rules
 (D48). The
@@ -1912,7 +1979,7 @@ legacy admin page. The screen consumes only the `/prompt_manager/vocabulary/*` r
 above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.
 
 Screen: a `+ Create tag` heading action, a Tag vocabulary table (columns Tag, Prompts,
-Images shown as "—" with hidden "Not available yet", and Actions with Browse and
+Images counting the files that carry the tag (`image_count`, #249 C2), and Actions with Browse and
 Rename / merge), and a Categories panel whose category rows end with the Manage
 category row (Review). Lists load 100 rows at a time, append when scrolled into view
 and keep `Load more tags` / `Load more categories` while more remain. Prompts counts
@@ -1953,8 +2020,7 @@ npm run --prefix tools/vendor test:workflows -- \
   --project chromium --project touch --project firefox --project webkit
 ```
 
-Recorded deviations from the concept (maintainer acceptance): no Auto-tag images
-button and an Images "—" cell until the image-annotation slice; bounded lists with
+Recorded deviations from the concept (maintainer acceptance): bounded lists with
 Load more; title "Tags"; Manage categories adds a Category select and Preview before
 Apply; "Apply" instead of "Apply in prototype"; Delete tag… inside Rename or merge;
 Browse sets the exact filter; singular "1 positive prompt"; the production list appends

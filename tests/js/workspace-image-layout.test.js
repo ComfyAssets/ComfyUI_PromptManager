@@ -149,3 +149,15 @@ test('a narrow gallery caps the concept columns at the smallest readable card', 
     }
     assert.equal(layoutImages([{}], 990, 'list', {columns:3}).columns, 1);
 });
+
+test('the card info stacks below the narrowest bounded card, a list row beside its art too (D31)', async () => {
+    const {stacksCardInfo} = await source;
+    assert.equal(typeof stacksCardInfo, 'function', 'stacksCardInfo is not implemented');
+    assert.equal(stacksCardInfo(119, 'grid'), true);
+    assert.equal(stacksCardInfo(120, 'grid'), false);
+    assert.equal(stacksCardInfo(119, 'masonry'), true);
+    // A list row's info is what its art (160px, at most 45%) leaves: 195px at 200% zoom on a phone leaves 107px.
+    assert.equal(stacksCardInfo(195, 'list'), true);
+    assert.equal(stacksCardInfo(280, 'list'), false);
+    assert.equal(stacksCardInfo(358, 'list'), false);
+});

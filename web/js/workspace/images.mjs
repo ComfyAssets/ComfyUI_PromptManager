@@ -1,6 +1,6 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
 import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
-import { layoutImages, visibleImages, gridMetrics, MINIMUM_CARD_WIDTH } from './image-layout.mjs';
+import { layoutImages, visibleImages, gridMetrics, stacksCardInfo } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { mountSelectionBar } from './images-selection.mjs';
@@ -15,6 +15,7 @@ import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
+import { createTagButton, isTagButton, openImageTagging, onImageTagsSaved } from './image-tagging.mjs';
 
 /** The concept's panel without an image (app.js updateImages a456–458). */
 function noSelection() {
@@ -103,6 +104,12 @@ const favoriteListeners = new Set();
 export function onFavoriteChange(listener) {
     favoriteListeners.add(listener);
     return () => favoriteListeners.delete(listener);
+}
+
+/** The image selected in Images when it was last left (the concept's `state.selectedImage`, for Tags › Auto-tag images). */
+export function selectedImage() {
+    const key = lastVisit?.selection;
+    return key ? lastVisit.state?.items.find(item => imageKey(item) === key) ?? null : null;
 }
 
 /**
@@ -341,11 +348,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const title = el('h3', cardTitle(image)); title.title = image.path;
         text.append(title, el('p', cardSubtitle(image)));
         const actions = el('div', undefined, 'image-card-actions');
-        // D9: the tag button waits for the image-annotations slice.
         const inspectButton = createButton('', 'icon-btn');
         inspectButton.append(createWorkspaceIcon('info'));
         inspectButton.setAttribute('aria-label', `Inspect ${image.filename}`);
-        actions.append(inspectButton);
+        actions.append(inspectButton, createTagButton(image));
         info.append(text, actions);
         card.append(art, info);
         markSelected(card, key === selection);
@@ -397,10 +403,17 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!card) return;
         const image = state.items.find(item => imageKey(item) === card.dataset.imageKey);
         if (!image) return;
+        const action = event.target.closest('.image-card-actions button');
         if (event.target.closest('.star-button')) toggleFavorite(image);
         else if (event.target.closest('.image-open')) previewImage(image);
-        else if (event.target.closest('.image-card-actions button')) inspect(image);
+        // Tag opens the dialog without selecting the card, as the concept's `image-tag` does.
+        else if (isTagButton(action)) openImageTagging({api, scope, image, source: embedded ? 'library' : 'images', trigger: action});
+        else if (action) inspect(image);
     });
+    // A saved tag set re-reads the selected file's details (its inspector envelope carries the image tags).
+    scope.cleanup(onImageTagsSaved(({target}) => {
+        if (selection === `${target.root_index}:${target.path}`) inspection.retry();
+    }));
 
     function renderVisible() {
         if (!state || scope.signal.aborted) return;
@@ -487,7 +500,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function updateGeometry() {
         geometry = layoutImages(state.items, galleryWidth, layout, metrics);
         // Below the narrowest bounded card (extreme zoom) the info row stacks (the production overlay, #249 D31).
-        grid.classList.toggle('narrow-cards', galleryWidth < MINIMUM_CARD_WIDTH);
+        grid.classList.toggle('narrow-cards', stacksCardInfo(galleryWidth, layout));
         grid.style.height = `${geometry.height}px`;
         grid.style.setProperty('--image-footer-height', `${metrics.footerHeight}px`);
     }

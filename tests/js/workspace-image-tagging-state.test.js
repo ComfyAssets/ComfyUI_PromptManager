@@ -106,7 +106,7 @@ async function opened(routes, options = {}) {
     return { c, h };
 }
 
-test('MODEL_OPTIONS lists legacy engines in mock order with D61 labels', async () => {
+test('MODEL_OPTIONS lists legacy engines in mock order with D84 labels', async () => {
     const { MODEL_OPTIONS } = await load();
     assert.deepEqual(MODEL_OPTIONS.map(option => [option.id, option.label]), [
         ['wd14-swinv2', 'WD14 SwinV2 · ~400 MB'],
@@ -425,7 +425,7 @@ test('toast matches the mock with the review suffix', async () => {
     const { c } = await opened({ [`PUT ${TAGS}`]: () => response(200, receipt(['one'])) });
     c.setManual('one');
     await c.save();
-    assert.equal(c.state.toast, '1 tag saved for dunes_00001.png.');
+    assert.equal(c.state.toast, '1 tags saved for dunes_00001.png.', 'the mock always says "tags"');
     const many = await opened({}, { source: 'library' });
     await many.c.save();
     assert.equal(many.c.state.toast, '2 tags saved for dunes_00001.png.');

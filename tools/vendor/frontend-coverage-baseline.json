@@ -162,10 +162,10 @@
     "statements": 97
   },
   "workspace/activity-scan.mjs": {
-    "lines": 95,
-    "branches": 64,
+    "lines": 96,
+    "branches": 73,
     "functions": 98,
-    "statements": 95
+    "statements": 96
   },
   "workspace/activity-store.mjs": {
     "lines": 98,
@@ -223,9 +223,15 @@
   },
   "workspace/image-tagging-state.mjs": {
     "lines": 98,
-    "branches": 92,
+    "branches": 93,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/image-tagging.mjs": {
+    "lines": 97,
+    "branches": 88,
+    "functions": 86,
+    "statements": 97
   },
   "workspace/images-category.mjs": {
     "lines": 98,

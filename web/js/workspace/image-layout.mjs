@@ -4,6 +4,17 @@ const MEDIA_RATIO = 1.33, BORDER = 2, FOOTER_HEIGHT = 54, LIST_HEIGHT = 97;
 // Bounded rendering keeps a card readable when zoom shrinks the grid below the concept's columns (D3, D31).
 export const MINIMUM_CARD_WIDTH = 120;
 const AUTOMATIC_CARD_WIDTH = 240;
+// A list row's art: the concept's 160px, yielding to 45% of the row at extreme zoom (the overlay's D31).
+const LIST_ART_WIDTH = 160, LIST_ART_SHARE = 0.45;
+
+/**
+ * Whether a card's info row stacks its text above Info and Tag (D31): the row would be narrower than the narrowest
+ * bounded card, which only extreme zoom reaches. A list row's info is what its art leaves of the row.
+ */
+export function stacksCardInfo(width, mode) {
+    const info = mode === 'list' ? width - Math.min(LIST_ART_WIDTH, width * LIST_ART_SHARE) : width;
+    return info < MINIMUM_CARD_WIDTH;
+}
 
 /** The concept grid's own columns and gap, read from its computed style as the concept's mountMasonry does (D3). */
 export function gridMetrics(grid) {
