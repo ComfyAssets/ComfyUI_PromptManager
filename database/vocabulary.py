@@ -3,6 +3,9 @@
 A count is the number of eligible Library parents that carry the value
 directly or through one active saved pair, which is exactly what
 ``list_library(tags=[name])`` / ``list_library(category=value)`` return.
+A tag row's ``image_count`` is the number of files (private locators) with any
+byte record carrying the tag (#249), so a file counts once however many of its
+byte versions carry it, and equal bytes at two paths count twice.
 
 Tag commands run in one ``_pair_transaction``: the storage epoch is checked
 first, then the exact ``{id, name}`` identity, and the receipt is read on the
@@ -26,6 +29,11 @@ except ImportError:
     from utils.validators import validate_category, validate_tags
 
 _CATEGORY_DOMAIN = "prompt-manager-vocabulary-category:v1\n"
+# Files carrying a tag through any of their byte records (#249 image tags).
+_IMAGE_FILES = (
+    "SELECT mit.tag_id,COUNT(DISTINCT b.file_id) FROM media_image_tags mit "
+    "JOIN media_annotation_bytes b ON b.id=mit.byte_id"
+)
 
 
 def _tag_rows(page: str) -> str:
@@ -40,9 +48,13 @@ def _tag_rows(page: str) -> str:
         "WHERE pt.tag_id IN (SELECT id FROM page) AND " + _ELIGIBLE + " "
         "UNION SELECT ppt.tag_id,pp.positive_prompt_id FROM prompt_pairs pp "
         "JOIN prompt_pair_tags ppt ON ppt.pair_id=pp.id "
-        "WHERE pp.archived=0 AND ppt.tag_id IN (SELECT id FROM page)) "
-        "SELECT page.id,page.name,COUNT(DISTINCT owners.pid) AS prompt_count "
+        "WHERE pp.archived=0 AND ppt.tag_id IN (SELECT id FROM page)),"
+        "images(tag_id,n) AS (" + _IMAGE_FILES + " "
+        "WHERE mit.tag_id IN (SELECT id FROM page) GROUP BY mit.tag_id) "
+        "SELECT page.id,page.name,COUNT(DISTINCT owners.pid) AS prompt_count,"
+        "COALESCE(MAX(images.n),0) AS image_count "
         "FROM page LEFT JOIN owners ON owners.tag_id=page.id "
+        "LEFT JOIN images ON images.tag_id=page.id "
         "GROUP BY page.id ORDER BY page.id"
     )
 
@@ -61,7 +73,10 @@ _TAG_IMPACT = (
     "AS negative_variants,"
     "(SELECT COUNT(*) FROM prompt_pairs pp JOIN prompt_pair_tags ppt "
     "ON ppt.pair_id=pp.id WHERE ppt.tag_id=:tag AND pp.archived!=0) "
-    "AS archived_negative_variants"
+    "AS archived_negative_variants,"
+    "(SELECT COUNT(DISTINCT b.file_id) FROM media_image_tags mit "
+    "JOIN media_annotation_bytes b ON b.id=mit.byte_id WHERE mit.tag_id=:tag) "
+    "AS images"
 )
 _MAX_ID = 2**63 - 1
 
@@ -205,7 +220,16 @@ class VocabularyOperations:
             "SELECT COUNT(DISTINCT pair_id) FROM prompt_pair_tags WHERE tag_id=?",
             (tag_id,),
         ).fetchone()[0]
-        return {"components_changed": components, "pairs_changed": pairs}
+        images = conn.execute(
+            "SELECT COUNT(DISTINCT b.file_id) FROM media_image_tags mit "
+            "JOIN media_annotation_bytes b ON b.id=mit.byte_id WHERE mit.tag_id=?",
+            (tag_id,),
+        ).fetchone()[0]
+        return {
+            "components_changed": components,
+            "pairs_changed": pairs,
+            "images_changed": images,
+        }
 
     def create_vocabulary_tag(self, name: str, *, expected_epoch: str) -> dict:
         """Insert an unused registry row, or reuse the exact existing name."""

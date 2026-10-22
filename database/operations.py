@@ -12,6 +12,7 @@ from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations
 from .library import LibraryOperations, titled
 from .image_favorites import ImageFavoriteOperations
+from .annotations import AnnotationOperations
 from .saved_views import SavedViewOperations
 from .library_commands import LibraryCommandOperations
 from .vocabulary import VocabularyOperations
@@ -322,6 +323,7 @@ class PromptDatabase(
     ExecutionOutputOperations,
     HistoryReadOperations,
     ImageFavoriteOperations,
+    AnnotationOperations,
     SavedViewOperations,
 ):
     """Database operations class for managing prompts."""
@@ -1087,13 +1089,13 @@ class PromptDatabase(
     def _move_tag_links(
         conn: sqlite3.Connection, source_id: int, target_id: int
     ) -> None:
-        """Repoint component and pair links from source to target.
+        """Repoint component, pair and image links from source to target.
 
         Owners that already carry the target keep that one link; the source's
-        leftover duplicates are removed. The source registry row is left for the
-        caller to delete.
+        leftover duplicates are removed (an image set keeps the target's
+        position). The source registry row is left for the caller to delete.
         """
-        for junction in ("prompt_tags", "prompt_pair_tags"):
+        for junction in ("prompt_tags", "prompt_pair_tags", "media_image_tags"):
             conn.execute(
                 f"UPDATE OR IGNORE {junction} SET tag_id = ? WHERE tag_id = ?",
                 (target_id, source_id),
@@ -1239,7 +1241,10 @@ class PromptDatabase(
                 pair_count = conn.execute(
                     "SELECT COUNT(*) FROM prompt_pair_tags WHERE tag_id = ?", (src_id,)
                 ).fetchone()[0]
-                if src_count or pair_count:
+                image_count = conn.execute(
+                    "SELECT COUNT(*) FROM media_image_tags WHERE tag_id = ?", (src_id,)
+                ).fetchone()[0]
+                if src_count or pair_count or image_count:
                     self._move_tag_links(conn, src_id, target_id)
                     tags_merged += 1
                     affected += src_count

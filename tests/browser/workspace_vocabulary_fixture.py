@@ -81,6 +81,9 @@ MAX_EXTRA_CATEGORIES = 200
 _TABLES = (
     "saved_views",
     "image_favorites",
+    "media_image_tags",
+    "media_annotation_bytes",
+    "media_annotation_files",
     "image_prompt_pairs",
     "prompt_pair_tags",
     "prompt_pairs",

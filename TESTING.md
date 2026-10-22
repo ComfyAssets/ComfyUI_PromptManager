@@ -1344,6 +1344,31 @@ concept fixture stars the concept's favorites (each other prompt's first image).
   restore. Old backups without the table restore, and backup plus restore keeps
   WAL-resident favorites and closes every handle (`tests/test_database_backup.py`).
 
+Image annotations schema (#249, `database/annotation_schema.py`): the group
+`media_annotation_metadata` (one row: schema version, `image_index_revision`),
+`media_annotation_files` (one private locator per physical file,
+`normcase(join(realpath(root), relative))`, server-side only),
+`media_annotation_bytes` (one record per observed whole-file SHA-256 with the
+`size`/`mtime_ns` verified when those bytes were last seen and the set's
+`tag_revision`) and `media_image_tags` (the ordered tag set of one byte record,
+joined into the global `tags` registry). It installs like favorites: optional in
+old backups, required once current (`annotation_schema_error`, the single
+`require_library_state` flag), validated read-only before and after a SAVEPOINT
+install and on restore, never backfilled and never stat-ing media
+(`tests/test_annotation_schema.py`). Writers (`database/annotations.py`) always
+supply the UUID ids, run in `_pair_transaction` fenced by the storage epoch, and
+replace or union one byte record's set (`tag-conflict` / `tag-limit` with the
+current set, identical retries `replayed`); vocabulary rename, merge and delete
+carry `media_image_tags` through the one `_move_tag_links` loop, and tag rows,
+impact and command receipts report `image_count` / `images` /
+`images_changed` as files (`tests/test_annotations.py`,
+`tests/test_pair_tag_maintenance.py`, `tests/test_vocabulary.py`). Cheap reads
+(spec amendment S1) use a byte record only while the file's current
+`(size, mtime_ns)` equals its verified fingerprint; an in-place rewrite that
+preserves both keeps the old set matching until the file is next observed. The
+browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
+`media_annotation_files` on reset and never the metadata row.
+
 Budgets: `test_filter_work_is_bounded` always runs. It asserts that a plain first
 page makes 1 link SELECT and a plain cursor page none, that every filter shape
 makes exactly 1, the covering-index plan, and that the per-file values are built

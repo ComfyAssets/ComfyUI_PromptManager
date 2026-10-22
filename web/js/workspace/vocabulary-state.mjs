@@ -16,7 +16,8 @@ import { countOf } from './plural.mjs';
 const LIMIT = 100;
 const BASE = '/prompt_manager/vocabulary';
 const KINDS = {
-    tags: {key: row => row.id, valid: row => id(row.id) && typeof row.name === 'string' && row.name.length > 0},
+    // image_count (#249 image tags) is optional until every server reports it.
+    tags: {key: row => row.id, valid: row => id(row.id) && typeof row.name === 'string' && row.name.length > 0 && optionalCount(row.image_count)},
     categories: {key: row => row.value, valid: row => typeof row.value === 'string' && row.value.length > 0},
 };
 const RECOVERY = {'storage-changed': 'storage-changed', 'vocabulary-conflict': 'conflict'};
@@ -29,6 +30,7 @@ const IMPACT_FIELDS = ['positive_prompts', 'other_prompts', 'negative_variants',
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const id = value => Number.isSafeInteger(value) && value > 0;
 const count = value => Number.isSafeInteger(value) && value >= 0;
+const optionalCount = value => value === undefined || count(value);
 const epochOf = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value);
 const hexToken = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 
@@ -108,7 +110,7 @@ export function createVocabularyStream({api, kind, onChange = () => {}}) {
 }
 
 function validateTag(value) {return object(value) && KINDS.tags.valid(value) && count(value.prompt_count);}
-function validateImpact(value) {return object(value) && IMPACT_FIELDS.every(name => count(value[name]));}
+function validateImpact(value) {return object(value) && IMPACT_FIELDS.every(name => count(value[name])) && optionalCount(value.images);}
 function requireRow(row) {requireValue(object(row) && id(row.id) && typeof row.name === 'string', 'Invalid tag row');}
 function requireEpoch(epoch) {requireValue(epochOf(epoch), 'Invalid library epoch');}
 function requireText(value, name) {requireValue(typeof value === 'string', `${name} must be a string`);}
@@ -116,8 +118,9 @@ function requireText(value, name) {requireValue(typeof value === 'string', `${na
 const RECEIPTS = {
     'create-tag': value => typeof value.created === 'boolean' && validateTag(value.tag),
     'rename-tag': value => typeof value.merged === 'boolean' && validateTag(value.tag) &&
-        count(value.components_changed) && count(value.pairs_changed),
-    'delete-tag': value => value.deleted === true && count(value.components_changed) && count(value.pairs_changed),
+        count(value.components_changed) && count(value.pairs_changed) && optionalCount(value.images_changed),
+    'delete-tag': value => value.deleted === true && count(value.components_changed) && count(value.pairs_changed) &&
+        optionalCount(value.images_changed),
     'apply-category': (value, body) => value.source === body.source && value.target === body.target &&
         typeof value.consolidated === 'boolean' && validateImpact(value.impact),
 };
@@ -270,6 +273,7 @@ function impactList(impact) {
         parts.push(`${countOf(negatives, 'negative variant')}${archived}`);
     }
     if (impact.other_prompts) parts.push(countOf(impact.other_prompts, 'other saved prompt'));
+    if (impact.images) parts.push(countOf(impact.images, 'image'));
     return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts.join('');
 }
 
@@ -282,6 +286,6 @@ export function categoryPreviewText(shown) {
 /** The Delete tag confirmation sentence (decision D14). */
 export function deleteTagText(name, impact) {
     const list = impactList(impact);
-    if (!list) return `“${name}” is not linked to any saved prompt. Deleting it removes only the name.`;
+    if (!list) return `“${name}” is not linked to any saved prompt or image. Deleting it removes only the name.`;
     return `Deleting “${name}” removes the name and its links from ${list}. The prompts, negative variants, images and history themselves are kept.`;
 }
