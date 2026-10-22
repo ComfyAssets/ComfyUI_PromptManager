@@ -2476,7 +2476,8 @@ def _write_mp4(path, comment):
 
 
 class TestScanReadsVideos(AdminAPITestCase):
-    """Videos saved by ComfyUI carry the graph in their comment tag."""
+    """Videos carry the graph in per-key container tags (current savers) or in
+    the old VideoHelperSuite comment envelope; the scan reads one carrier."""
 
     def setUp(self):
         super().setUp()
@@ -2505,6 +2506,56 @@ class TestScanReadsVideos(AdminAPITestCase):
         self.assertEqual([p["text"] for p in prompts], ["a cat"])
         images = self.api.db.get_prompt_images(prompts[0]["id"])
         self.assertTrue(images[0]["image_path"].endswith("clip.mp4"))
+
+    async def test_scan_links_per_key_tag_video_with_default_profile(self):
+        """A current saver's per-key tags scan exactly like the same graph as PNG."""
+        from utils import video_metadata
+
+        _write_png(self.output_dir / "same.png", prompt_text="a cat")
+        graph = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "bad"}},
+            "3": {
+                "class_type": "KSampler",
+                "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
+            },
+        }
+        (self.output_dir / "clip.mkv").write_bytes(b"\x1aE\xdf\xa3 fixture")
+        probed = {
+            "format": {
+                "tags": {
+                    "PROMPT": json.dumps(graph),
+                    "WORKFLOW": '{"nodes":[]}',
+                    "COMMENT": json.dumps({"prompt": "must not win"}),
+                }
+            }
+        }
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+
+        with (
+            patch.object(video_metadata.shutil, "which", return_value="/bin/ffprobe"),
+            patch.object(
+                video_metadata.subprocess,
+                "run",
+                return_value=MagicMock(returncode=0, stdout=json.dumps(probed)),
+            ) as run,
+            self.assertNoLogs(level="ERROR"),
+        ):
+            body = await (
+                await self.client.request("POST", "/prompt_manager/scan")
+            ).text()
+
+        self.assertEqual(run.call_args.args[0][-1], str(self.output_dir / "clip.mkv"))
+        self.assertIn('"found": 2', body)
+        prompts = self.api.db.get_recent_prompts(limit=10)["prompts"]
+        self.assertEqual(sorted(p["text"] for p in prompts), ["a cat", "bad"])
+        positive = next(p for p in prompts if p["text"] == "a cat")
+        images = self.api.db.get_prompt_images(positive["id"])
+        self.assertEqual(
+            sorted(os.path.basename(image["image_path"]) for image in images),
+            ["clip.mkv", "same.png"],
+        )
+        self.assertNotIn("must not win", json.dumps(prompts))
 
     async def test_scan_without_ffprobe_skips_videos_quietly(self):
         from unittest.mock import patch

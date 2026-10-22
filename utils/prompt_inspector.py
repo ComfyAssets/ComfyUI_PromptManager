@@ -23,7 +23,15 @@ from .prompt_pair_resolver import (
     ResolverProfile,
     resolve_prompt_pair,
 )
-from .video_metadata import ffprobe_path, is_video_path
+from .video_metadata import (
+    ENVELOPE_TAG_KEYS,
+    ROLE_TAG_KEYS,
+    VIDEO_TAG_KEYS,
+    DuplicateVideoTagError,
+    ffprobe_path,
+    is_video_path,
+    select_video_carrier,
+)
 
 # Role records (prompt, parameters, the pair execution record) share one
 # budget, encoded and decoded: roles cannot be trusted from a partial record,
@@ -36,7 +44,18 @@ WORKFLOW_METADATA_BYTES = 4 * 1024 * 1024
 # repeated chunks cost bounded I/O instead of file size.
 DUPLICATE_WORKFLOW_BYTES = 2 * WORKFLOW_METADATA_BYTES
 DUPLICATE_ROLE_BYTES = 2 * ROLE_METADATA_BYTES
-MAX_METADATA_BYTES = ROLE_METADATA_BYTES  # video stdout bound, unchanged here
+# ffprobe stdout bounds. ffprobe JSON-escapes tag text (at most doubling it),
+# and the decoded per-record budgets below are the only gate that may make a
+# record fail or ``limited``: a video must read exactly as the identical PNG.
+# So the first probe allows twice the role and workflow budgets plus 64 KiB of
+# JSON envelope; past that only the per-key ``workflow`` tag can be dropped,
+# and the re-probe asks for role and envelope tags within twice the role
+# budget (an envelope cannot be split, so an over-budget one fails the read).
+MAX_METADATA_BYTES = ROLE_METADATA_BYTES
+VIDEO_PROBE_BYTES = 2 * (ROLE_METADATA_BYTES + WORKFLOW_METADATA_BYTES) + 64 * 1024
+VIDEO_REPROBE_BYTES = 2 * ROLE_METADATA_BYTES + 64 * 1024
+VIDEO_PROBE_SECONDS = 3
+_VIDEO_ROLE_PROBE_KEYS = ROLE_TAG_KEYS + ENVELOPE_TAG_KEYS
 MAX_KEYWORD_BYTES = 80  # a 1-79 byte PNG keyword plus its NUL separator
 MAX_HEADER_BYTES = 8 * 1024 * 1024
 MAX_PNG_CHUNKS = 10_000
@@ -86,6 +105,7 @@ class _VideoInspection:
     metadata: dict[str, str | None]
     record_formats: dict[str, str]
     carrier_text: str | None
+    limited: frozenset[str] = dataclass_field(default_factory=frozenset)
 
 
 def _inflate(data: bytes, limit: int) -> bytes | None:
@@ -274,16 +294,16 @@ def _png_metadata(stream: Any, size: int) -> tuple[dict, frozenset, int, int]:
     raise MetadataReadError("PNG chunk count exceeds inspection limits")
 
 
-def _video_metadata(path: Path) -> _VideoInspection:
-    probe = ffprobe_path()
-    if not probe:
-        raise MetadataReadError("Video metadata reader is unavailable")
+def _probe_video_tags(
+    probe: str, path: Path, keys: tuple[str, ...], limit: int
+) -> bytes | None:
+    """ffprobe's JSON for the container tags ``keys``; ``None`` past ``limit``."""
     command = [
         probe,
         "-v",
         "quiet",
         "-show_entries",
-        "format_tags=comment,description",
+        "format_tags=" + ",".join(keys),
         "-of",
         "json",
         str(path),
@@ -303,13 +323,13 @@ def _video_metadata(path: Path) -> _VideoInspection:
                 # Timeout and final cleanup can race with the process exiting.
                 pass
 
-    timer = threading.Timer(3, stop)
+    timer = threading.Timer(VIDEO_PROBE_SECONDS, stop)
     timer.daemon = True
     timer.start()
     try:
-        raw = process.stdout.read(MAX_METADATA_BYTES + 1)
-        if len(raw) > MAX_METADATA_BYTES:
-            raise MetadataReadError("Video metadata exceeds inspection limits")
+        raw = process.stdout.read(limit + 1)
+        if len(raw) > limit:
+            return None
         process.wait()
         if process.returncode:
             raise MetadataReadError("Video metadata could not be read")
@@ -318,49 +338,45 @@ def _video_metadata(path: Path) -> _VideoInspection:
         stop()
         process.wait()
         process.stdout.close()
+    return raw
+
+
+def _video_metadata(path: Path) -> _VideoInspection:
+    probe = ffprobe_path()
+    if not probe:
+        raise MetadataReadError("Video metadata reader is unavailable")
+    limited = frozenset()
+    raw = _probe_video_tags(probe, path, VIDEO_TAG_KEYS, VIDEO_PROBE_BYTES)
+    if raw is None:
+        raw = _probe_video_tags(
+            probe, path, _VIDEO_ROLE_PROBE_KEYS, VIDEO_REPROBE_BYTES
+        )
+        if raw is None:
+            raise MetadataReadError("Video metadata exceeds inspection limits")
+        # Only the per-key workflow tag was left out, so it is the record over
+        # budget: limited when the per-key carrier (or no carrier) is selected.
+        limited = frozenset({"workflow"})
     probed = json.loads(raw)
     if not isinstance(probed, dict) or not isinstance(probed.get("format"), dict):
         raise MetadataReadError("Malformed video metadata")
     tags = probed["format"].get("tags", {})
     if not isinstance(tags, dict):
         raise MetadataReadError("Malformed video metadata")
-    # The scan normalizer drops null fields and unknown keys. Inspection must
-    # retain explicit prompt/execution markers so malformed evidence cannot
-    # silently fall back to an unrelated saved recipe or another comment.
-    candidates = []
-    for key in ("comment", "description"):
-        raw = tags.get(key)
-        if not isinstance(raw, str):
-            continue
-        try:
-            envelope = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(envelope, dict):
-            continue
-        candidates.append((raw, envelope))
-    selected = next(
-        (item for item in candidates if _ROLE_METADATA_KEYS.intersection(item[1])),
-        None,
-    )
+    # The shared selector keeps explicit null role markers so malformed
+    # evidence cannot silently fall back to an unrelated saved recipe or
+    # another carrier; ``read_inspection_file`` refuses them.
+    try:
+        selected = select_video_carrier(tags)
+    except DuplicateVideoTagError:
+        raise MetadataReadError("Duplicate prompt metadata") from None
     if selected is None:
-        selected = next((item for item in candidates if "workflow" in item[1]), None)
-    if selected is not None:
-        raw, envelope = selected
-        metadata, formats = {}, {}
-        for field in _METADATA_KEYS.intersection(envelope):
-            value = envelope[field]
-            if field == "workflow" and not isinstance(value, (str, dict)):
-                formats[field] = "invalid"
-                continue
-            metadata[field] = (
-                value if value is None or isinstance(value, str) else json.dumps(value)
-            )
-            formats[field] = (
-                "original-text" if isinstance(value, str) else "reserialized-json"
-            )
-        return _VideoInspection(metadata, formats, raw)
-    return _VideoInspection({}, {}, None)
+        return _VideoInspection({}, {}, None, limited)
+    metadata, formats, carrier = selected
+    if carrier is not None:
+        # An envelope carrier is whole; the dropped per-key workflow belonged
+        # to the carrier that lost.
+        limited = frozenset()
+    return _VideoInspection(metadata, formats, carrier, limited)
 
 
 def read_inspection_file(path: Path) -> InspectionRead:
@@ -370,10 +386,11 @@ def read_inspection_file(path: Path) -> InspectionRead:
         format_name = width = height = None
         if is_video_path(path):
             video = _video_metadata(path)
-            metadata, formats, carrier = (
+            metadata, formats, carrier, limited = (
                 video.metadata,
                 video.record_formats,
                 video.carrier_text,
+                video.limited,
             )
         else:
             with path.open("rb") as stream:
