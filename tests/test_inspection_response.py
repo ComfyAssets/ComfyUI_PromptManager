@@ -823,6 +823,71 @@ def _png_with_chunks(path, chunks):
     return path
 
 
+class TestImageTagsFacet(unittest.TestCase):
+    """B3: the rooted envelope's ``image_tags`` facet is validated."""
+
+    def encoded(self, facet):
+        import inspect as signature_of
+
+        parameters = signature_of.signature(encode_inspection_response).parameters
+        if "image_tags" not in parameters:
+            self.fail("the image_tags facet is not implemented")
+        body = encode_inspection_response(
+            image=IMAGE,
+            root_scope="a" * 64,
+            file={
+                "observation": "current-file",
+                "source_label": "output",
+                "media_type": "image",
+                "extension": ".png",
+                "size": 100,
+                "modified_time": 100,
+            },
+            prompts=PROMPTS,
+            resolution={"state": "resolved", "sampler_id": "3", "reason": ""},
+            inspection=inspection({"prompt": graph_text()}),
+            library={"status": "none"},
+            image_tags=facet,
+        )
+        return json.loads(body)
+
+    def test_valid_facets_pass_through(self):
+        for facet in (
+            {"state": "current", "tags": ["dunes", "warm_light"]},
+            {"state": "current", "tags": []},
+            {"state": "none", "tags": []},
+            {"state": "unavailable", "tags": []},
+            {"state": "current", "tags": [f"tag {i}" for i in range(100)]},
+        ):
+            with self.subTest(facet=facet):
+                self.assertEqual(self.encoded(facet)["image_tags"], facet)
+
+    def test_envelope_rejects_malformed_image_tags(self):
+        unavailable = {"state": "unavailable", "tags": []}
+        for facet in (
+            "current",
+            ["dunes"],
+            {"state": "current"},
+            {"state": "stale", "tags": []},
+            {"state": "current", "tags": "dunes"},
+            {"state": "current", "tags": ["dunes", 3]},
+            {"state": "current", "tags": [""]},
+            {"state": "current", "tags": [" dunes"]},
+            {"state": "current", "tags": ["a,b"]},
+            {"state": "current", "tags": ["x" * 51]},
+            {"state": "current", "tags": [f"tag {i}" for i in range(101)]},
+            {"state": "none", "tags": ["dunes"]},
+            {"state": "unavailable", "tags": ["dunes"]},
+            {"state": "current", "tags": [], "locator": "/abs/path.png"},
+        ):
+            with self.subTest(facet=facet):
+                self.assertEqual(self.encoded(facet)["image_tags"], unavailable)
+
+    def test_facet_is_absent_unless_given(self):
+        self.assertNotIn("image_tags", json.loads(encode(inspection({}))))
+        self.assertNotIn("image_tags", self.encoded(None))
+
+
 class TestVideoProbeBoundsMatchPngBudgets(unittest.TestCase):
     """ffprobe escapes tag text; the stdout bounds must never gate a record
     that the identical PNG reads within its decoded budget (I3)."""

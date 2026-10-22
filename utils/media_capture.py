@@ -26,18 +26,15 @@ import stat as stat_module
 import tempfile
 import threading
 import time
-import warnings
+import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 from PIL import Image
 
 try:
-    from .prompt_inspector import MetadataReadError, read_inspection_file
     from .video_metadata import VIDEO_EXTENSIONS, is_video_path
 except ImportError:  # imported with the repo root on sys.path
-    from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.video_metadata import VIDEO_EXTENSIONS, is_video_path
 
 logger = logging.getLogger(__name__)
@@ -578,20 +575,17 @@ class CaptureStore:
     def _probe(self, path: str, media_type: str):
         """Header-only dimensions of the capture; never decodes pixels.
 
-        Uses the inspection reader, so a PNG whose prompt metadata is over the
-        inspection budgets is reported as unreadable (not inferable) although
-        its pixels decode; B2 may switch to a dimensions-only header read.
+        Only the image header decides whether Generate is offered: prompt
+        metadata over the inspection budgets does not make a decodable image
+        unreadable (the metadata itself is read elsewhere, under its budgets).
         """
         if media_type == "video":
             return None, None, False, VIDEO_ONLY_REASON
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-                read = read_inspection_file(Path(path))
-        except (MetadataReadError, Image.DecompressionBombError):
-            return None, None, False, HEADER_REASON
-        width, height = read.width, read.height
-        if width is None or height is None:
+            width, height = header_dimensions(path)
+        except HeaderTooLarge:
+            return None, None, False, DIMENSION_REASON
+        except HeaderUnreadable:
             return None, None, False, HEADER_REASON
         if (
             width > MAX_INFERENCE_SIDE
@@ -600,6 +594,36 @@ class CaptureStore:
         ):
             return width, height, False, DIMENSION_REASON
         return width, height, True, None
+
+
+class HeaderUnreadable(Exception):
+    """The file has no image header Pillow can read."""
+
+
+class HeaderTooLarge(HeaderUnreadable):
+    """The header declares a decompression bomb (no pixel is decoded)."""
+
+
+def header_dimensions(path: str) -> tuple[int, int]:
+    """``(width, height)`` from the image header alone; the file is closed.
+
+    ``Image.open`` reads only the header. Pillow's decompression-bomb error
+    (twice its warning size) is ``HeaderTooLarge``; a size between the two
+    only warns, and the caller's inference pixel cap, far below Pillow's
+    warning size, refuses it. The process-global warnings filters are never
+    touched: this runs on capture workers inside the host process, and
+    ``warnings.catch_warnings`` is not thread-safe.
+    """
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except Image.DecompressionBombError as exc:
+        raise HeaderTooLarge(str(exc)) from None
+    except Exception as exc:  # any decoder failure means "no usable header"
+        raise HeaderUnreadable(str(exc)) from None
+    if not width or not height:
+        raise HeaderUnreadable("The header declares no size")
+    return int(width), int(height)
 
 
 def _relative_parts(relative) -> tuple[list[str], str]:
@@ -629,4 +653,33 @@ def _resolve(root, parts: list[str]) -> tuple[str, str]:
     locator = os.path.normcase(candidate)
     if os.path.normcase(os.path.realpath(candidate)) != locator:
         raise CaptureDenied("The file is not a listed rooted file")
+    _deny_spelling_aliases(real_root, parts)
     return candidate, locator
+
+
+def _spelling_key(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _deny_spelling_aliases(real_root: str, parts: list[str]) -> None:
+    """Deny a case or Unicode spelling of an entry the directory spells otherwise.
+
+    On a case- or normalization-insensitive filesystem (macOS APFS, Windows)
+    ``A.PNG`` or an NFD name opens the listed ``a.png`` or NFC name, while
+    ``realpath`` keeps the requested spelling (macOS), so the tags would be
+    stored under a second locator. Each part must be spelled as its directory
+    lists it. A part with no entry of any spelling is left to the open that
+    follows (a missing file keeps its usual outcome).
+    """
+    directory = real_root
+    for part in parts:
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+        if part not in names:
+            key = _spelling_key(part)
+            if any(_spelling_key(name) == key for name in names):
+                raise CaptureDenied("The file is not a listed rooted file")
+            return
+        directory = os.path.join(directory, part)

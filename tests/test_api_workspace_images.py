@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import sqlite3
 import subprocess  # nosec B404
 import sys
 import unittest
@@ -1232,15 +1233,21 @@ class TestWorkspaceImages(ImageAPITestCase):
             {"q": "zebra", "category": "Night"},
             {"sort": "rating"},
         ):
+            leak = 'near "gi": syntax error FROM generation_images'
             with (
                 self.subTest(failing=params),
                 patch.object(
-                    db, "get_image_link_matches", side_effect=RuntimeError("gone")
+                    db, "get_image_link_matches", side_effect=RuntimeError(leak)
                 ),
+                self.assertLogs("prompt_manager", level="ERROR") as logged,
             ):
                 response, data = await self.get(**params)
                 self.assertEqual(response.status, 500, data)
                 self.assertNotIn("images", data)
+                self.assertEqual(data["code"], "listing-failed")
+                self.assertNotIn(leak, json.dumps(data))
+                self.assertNotIn("syntax error", json.dumps(data))
+                self.assertTrue(any(r.exc_info for r in logged.records))
 
     async def test_filename_search_survives_a_database_failure(self):
         for name, mtime in (("zebra-1.png", 300), ("zebra-2.png", 200)):
@@ -1361,8 +1368,10 @@ class TestWorkspaceImages(ImageAPITestCase):
             for query in statements
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
-        self.assertEqual(len(selects), 3, selects)
+        # Plus the one stream of tagged image records q and tags read (B3).
+        self.assertEqual(len(selects), 4, selects)
         self.assertEqual(sum("image_favorites" in q for q in selects), 1, selects)
+        self.assertEqual(sum("media_image_tags" in q for q in selects), 1, selects)
 
     async def test_rating_sort_orders_linked_then_unlinked(self):
         self._filter_fixtures()
@@ -1626,7 +1635,15 @@ class TestWorkspaceImages(ImageAPITestCase):
                     response, data = await self.get(limit=10, **params)
                     self.assertEqual(response.status, 200, data)
                     self.assertEqual(built, [])
-                    self.assertEqual(len(selects()), 1)
+                    found = selects()
+                    # q and tags also stream the tagged image records once
+                    # (#249 B3); none are tagged here, so nothing is stat'ed.
+                    streamed = "q" in params or "tags" in params
+                    self.assertEqual(len(found), 2 if streamed else 1, found)
+                    self.assertEqual(
+                        sum("media_image_tags" in query for query in found),
+                        int(streamed),
+                    )
             self.assertIs(
                 self.api._workspace_order_cache[((0, str(self.output_dir)),)][1][
                     "newest"
@@ -1773,3 +1790,342 @@ class TestWorkspaceCursorEncoding(unittest.TestCase):
                 token = _workspace_cursor(key, "scope")
                 self.assertLessEqual(len(token), 4096)
                 self.assertEqual(_workspace_cursor_key(token, "scope", order), key)
+
+
+class TestWorkspaceImageTags(ImageAPITestCase):
+    """B3: image tags in the Tags filter and search (spec amendment S1)."""
+
+    media = TestWorkspaceImages.media
+    get = TestWorkspaceImages.get
+
+    async def tearDownAsync(self):
+        self.api.db.close_all()
+        assert_closed(self, self._temp_db.name, self._output_tmp.name)
+        await super().tearDownAsync()
+
+    def tag(self, path, tags):
+        """Save *tags* for the current bytes of *path*, as the Tag dialog does."""
+        import hashlib
+
+        stat = path.stat()
+        return self.api.db.replace_image_tags(
+            locator=os.path.normcase(os.path.realpath(path)),
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            expected_epoch=self.api.db.get_execution_epoch(),
+            expected_tag_revision=0,
+            tags=tags,
+        )
+
+    def names(self, data):
+        return [item["path"] for item in data["images"]]
+
+    async def test_tags_filter_admits_unlinked_image_with_current_image_tags(self):
+        tagged = self.media("unlinked_tagged.png", mtime=103)
+        self.media("plain.png", mtime=102)
+        linked = self.media("linked.png", mtime=101)
+        self.api.db.link_image_to_prompt(
+            self._save_prompt("Linked", tags=["other"]), str(linked)
+        )
+        self.tag(tagged, ["dunes", "warm_light"])
+        for tags in ("dunes", "dunes,warm_light", "warm_light"):
+            with self.subTest(tags=tags):
+                response, body = await self.get(tags=tags)
+                self.assertEqual(response.status, 200, body)
+                self.assertEqual(
+                    [i["path"] for i in body["images"]], ["unlinked_tagged.png"]
+                )
+                self.assertEqual(body["total"], 1)
+                self.assertEqual(body["positive_count"], 0)
+        # Exact names, as for prompt tags; a missing tag excludes the file.
+        for tags in ("Dunes", "dunes,missing", "dune"):
+            with self.subTest(tags=tags):
+                _, body = await self.get(tags=tags)
+                self.assertEqual(self.names(body), [])
+        # A category filter reads only the linked positive.
+        _, body = await self.get(tags="dunes", category="Night")
+        self.assertEqual(self.names(body), [])
+
+    async def test_tags_filter_combines_image_and_positive_tags(self):
+        both = self._save_prompt("Both", category="Night", tags=["a", "b"], rating=2)
+        only_a = self._save_prompt("Only a", category="Night", tags=["a"], rating=5)
+        day_a = self._save_prompt("Day a", category="Day", tags=["a"], rating=4)
+        files = {
+            name: self.media(f"{name}.png", mtime=100 + index)
+            for index, name in enumerate(
+                ("positive_ab", "positive_a_image_b", "image_ab", "image_a", "day")
+            )
+        }
+        self.api.db.link_image_to_prompt(both, str(files["positive_ab"]))
+        self.api.db.link_image_to_prompt(only_a, str(files["positive_a_image_b"]))
+        self.api.db.link_image_to_prompt(day_a, str(files["day"]))
+        self.tag(files["positive_a_image_b"], ["b"])
+        self.tag(files["image_ab"], ["a", "b"])
+        self.tag(files["image_a"], ["a"])
+        self.tag(files["day"], ["b"])
+        _, body = await self.get(tags="a,b", sort="name")
+        self.assertEqual(
+            self.names(body),
+            ["day.png", "image_ab.png", "positive_a_image_b.png", "positive_ab.png"],
+        )
+        self.assertEqual(body["total"], 4)
+        self.assertEqual(body["positive_count"], 3)
+        _, body = await self.get(tags="a,b", category="Night", sort="name")
+        self.assertEqual(
+            self.names(body), ["positive_a_image_b.png", "positive_ab.png"]
+        )
+        # The rating sort ranks an image-admitted linked file by its positive.
+        _, body = await self.get(tags="a,b", sort="rating")
+        self.assertEqual(
+            self.names(body),
+            ["positive_a_image_b.png", "day.png", "positive_ab.png", "image_ab.png"],
+        )
+        # With q, a linked positive hit admits as before.
+        _, body = await self.get(tags="b", q="only", sort="name")
+        self.assertEqual(self.names(body), ["positive_a_image_b.png"])
+
+    async def test_q_matches_image_tag_names(self):
+        tagged = self.media("unlinked_tagged.png", mtime=102)
+        self.media("plain.png", mtime=101)
+        self.tag(tagged, ["Sand Dunes", "warm_light"])
+        for query in ("dune", "DUNES", "sand d", "warm_"):
+            with self.subTest(q=query):
+                response, body = await self.get(q=query)
+                self.assertEqual(response.status, 200, body)
+                self.assertEqual(self.names(body), ["unlinked_tagged.png"])
+        _, body = await self.get(q="plain")
+        self.assertEqual(self.names(body), ["plain.png"])
+        _, body = await self.get(q="nothing")
+        self.assertEqual(self.names(body), [])
+
+    async def test_filter_ignores_tags_of_a_changed_fingerprint(self):
+        moved = self.media("touched.png", mtime=102)
+        grown = self.media("grown.png", mtime=101)
+        kept = self.media("kept.png", mtime=100)
+        for path in (moved, grown, kept):
+            self.tag(path, ["dunes"])
+        _, body = await self.get(tags="dunes")
+        self.assertEqual(self.names(body), ["touched.png", "grown.png", "kept.png"])
+        os.utime(moved, (500, 500))
+        with grown.open("ab") as handle:
+            handle.write(b"\0")
+        os.utime(grown, (101, 101))
+        self.api.invalidate_gallery_cache()
+        _, body = await self.get(tags="dunes")
+        self.assertEqual(self.names(body), ["kept.png"])
+        _, body = await self.get(q="dunes")
+        self.assertEqual(self.names(body), ["kept.png"])
+
+    async def test_stat_calls_equal_tagged_candidates_not_listing_size(self):
+        from py.api import images as images_module
+
+        listed = [
+            (self.output_dir / f"day-{i % 50:02}" / f"img_{i:05}.png", 1_000.0 + i)
+            for i in range(1_997)
+        ]
+        tagged = [self.media(f"tagged_{i}.png", mtime=5_000 + i) for i in range(3)]
+        listed += [(path, path.stat().st_mtime) for path in tagged]
+        # Tagged but outside the listing, and listed with a non-matching tag.
+        outside = self.media("elsewhere.png", root=self.comfy_dir)
+        unrelated = self.media("unrelated.png", mtime=4_000)
+        listed.append((unrelated, unrelated.stat().st_mtime))
+        for path in tagged:
+            self.tag(path, ["dunes"])
+        self.tag(outside, ["dunes"])
+        self.tag(unrelated, ["other"])
+        self.assertEqual(len(listed), 2_001)
+        stat_calls = 0
+        real = getattr(images_module, "_current_fingerprint", None)
+        self.assertIsNotNone(real, "the candidate stat helper is not implemented")
+
+        def counting(path):
+            nonlocal stat_calls
+            stat_calls += 1
+            return real(path)
+
+        with (
+            patch.object(
+                self.api, "_get_gallery_files", AsyncMock(return_value=listed)
+            ),
+            patch.object(
+                self.api, "_format_workspace_page", TestWorkspaceImages._stub_page
+            ),
+            patch.object(images_module, "_current_fingerprint", counting),
+        ):
+            response, body = await self.get(tags="dunes", limit=10)
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(
+            sorted(i["filename"] for i in body["images"]),
+            ["tagged_0.png", "tagged_1.png", "tagged_2.png"],
+        )
+        self.assertEqual(stat_calls, 3)
+
+    async def test_plain_listing_reads_no_image_tags(self):
+        prompt = self._save_prompt("Linked", category="Night", tags=["a"])
+        for index in range(4):
+            path = self.media(f"{index}.png", mtime=100 + index)
+            self.tag(path, ["dunes"])
+            self.api.db.link_image_to_prompt(prompt, str(path))
+        statements = []
+        original = self.api.db.model.get_connection
+
+        def trace_connection():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(
+            self.api.db.model, "get_connection", side_effect=trace_connection
+        ):
+            _, first = await self.get(limit=2)
+            _, rest = await self.get(limit=2, cursor=first["next_cursor"])
+            for params in (
+                {"sort": "rating"},
+                {"category": "Night"},
+                {"media": "image"},
+            ):
+                response, _ = await self.get(**params)
+                self.assertEqual(response.status, 200)
+        self.assertEqual(len(first["images"] + rest["images"]), 4)
+        self.assertFalse(
+            [q for q in statements if "media_" in q or "annotation" in q], statements
+        )
+
+    async def test_image_tag_read_failure_fails_tags_and_degrades_search(self):
+        tagged = self.media("unlinked_tagged.png", mtime=102)
+        self.media("dunes_by_name.png", mtime=101)
+        self.tag(tagged, ["dunes"])
+        leak = "no such table: media_annotation_files"
+        with patch.object(
+            self.api.db,
+            "iter_image_tag_records",
+            side_effect=sqlite3.OperationalError(leak),
+        ):
+            # As a failed link read does under a Tags filter: a fixed coded
+            # sentence, never the exception or SQL text; the traceback is logged.
+            with self.assertLogs("prompt_manager", level="ERROR") as failed:
+                response, body = await self.get(tags="dunes")
+            self.assertEqual((response.status, body["success"]), (500, False))
+            self.assertEqual(body["code"], "listing-failed")
+            self.assertNotIn(leak, body["error"])
+            self.assertNotIn("media_annotation_files", json.dumps(body))
+            self.assertTrue(any(r.exc_info for r in failed.records))
+            with self.assertLogs("prompt_manager", level="WARNING") as logged:
+                response, body = await self.get(q="dunes")
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(self.names(body), ["dunes_by_name.png"])
+        self.assertIn("image tags", "\n".join(logged.output))
+
+    async def test_legacy_output_failure_logs_its_traceback(self):
+        self.media("legacy.png", mtime=100)
+        with (
+            patch.object(
+                self.api, "_collect_output_images", side_effect=RuntimeError("x")
+            ),
+            self.assertLogs("prompt_manager", level="ERROR") as logged,
+        ):
+            response = await self.client.get("/prompt_manager/images/output")
+        self.assertEqual(response.status, 500)
+        self.assertTrue(any(r.exc_info for r in logged.records), logged.output)
+
+    async def test_legacy_gallery_and_search_shapes_unchanged(self):
+        path = self.media("legacy.png", mtime=100)
+        self.media("other.png", mtime=99)
+        self._link_image(path, "dunes at dusk")
+
+        async def legacy():
+            bodies = []
+            for url, params in (
+                ("/prompt_manager/images/output", {}),
+                ("/prompt_manager/images/search", {"q": "dunes"}),
+                ("/prompt_manager/images/all", {}),
+            ):
+                response = await self.client.get(url, params=params)
+                self.assertEqual(response.status, 200, url)
+                bodies.append(await response.json())
+            return bodies
+
+        before = await legacy()
+        self.tag(path, ["dunes", "warm_light"])
+        self.tag(self.output_dir / "other.png", ["dunes"])
+        self.api.invalidate_gallery_cache()
+        self.assertEqual(await legacy(), before)
+
+    def test_link_facts_resolve_pairs_skip_ambiguous_and_chunk(self):
+        from database.models import normalize_image_path
+
+        db = self.api.db
+        plain = self._save_prompt("Plain dunes", category="Day", tags=["a", "b"])
+        positive = self._save_prompt("Pair positive", category="Night", tags=["p"])
+        pair = db.save_prompt_pair("Pair positive", "Noise", title="Pair")
+        owners = (self._save_prompt("Owner one"), self._save_prompt("Owner two"))
+        paths = {
+            name: str(self.output_dir / f"{name}.png")
+            for name in ("plain", "paired", "ambiguous")
+        }
+        db.link_image_to_prompt(plain, paths["plain"])
+        image = db.link_image_to_prompt(positive, paths["paired"])
+        db.link_image_to_pair(pair, image, {"source": "fixture"})
+        for owner in owners:
+            db.link_image_to_prompt(owner, paths["ambiguous"])
+        keys = {name: normalize_image_path(path) for name, path in paths.items()}
+        padding = [f"/nowhere/{index}.png" for index in range(600)]
+        facts = db.get_image_link_facts([*padding, *keys.values(), keys["plain"]])
+        self.assertEqual(
+            facts,
+            {
+                keys["plain"]: (True, None, plain, "Day", ("a", "b")),
+                keys["paired"]: (True, None, positive, "Night", ("p",)),
+            },
+        )
+        searched = db.get_image_link_facts(list(keys.values()), "dunes")
+        self.assertEqual(
+            {path: row[0] for path, row in searched.items()},
+            {keys["plain"]: True, keys["paired"]: False},
+        )
+        self.assertEqual(db.get_image_link_facts([]), {})
+
+    def test_new_link_fact_reads_use_indexes(self):
+        from database.operations import (
+            _LINK_FACTS_SQL,
+            _LINK_FILTER_HIT,
+            _POSITIVE_TAG_NAMES_SQL,
+        )
+
+        with self.api.db.model.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO prompts(id,text,hash) VALUES(?,?,?)",
+                [(i, f"prompt {i}", f"hash-{i}") for i in range(1, 3_001)],
+            )
+            conn.executemany(
+                "INSERT INTO generated_images(prompt_id,image_path,filename,"
+                "file_path) VALUES(?,?,?,?)",
+                [
+                    (i, f"/x/{i}.png", f"{i}.png", f"/x/{i}.png")
+                    for i in range(1, 3_001)
+                ],
+            )
+            for hit, params in (
+                ("1", {}),
+                (_LINK_FILTER_HIT, {"pattern": "%prompt 1%"}),
+            ):
+                sql = _LINK_FACTS_SQL.format(hit=hit, marks=":path0,:path1")
+                bound = {**params, "path0": "/x/1.png", "path1": "/x/2.png"}
+                plan = [
+                    row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, bound)
+                ]
+                self.assertIn(
+                    "SEARCH gi USING INDEX idx_image_file_path (file_path=?)", plan
+                )
+                self.assertFalse(
+                    [s for s in plan if s.startswith(("SCAN gi", "SCAN other"))], plan
+                )
+            plan = [
+                row[3]
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN " + _POSITIVE_TAG_NAMES_SQL.format(marks="?,?"),
+                    (1, 2),
+                )
+            ]
+        self.assertFalse([step for step in plan if step.startswith("SCAN")], plan)

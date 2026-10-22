@@ -1522,6 +1522,12 @@ impact and command receipts report `image_count` / `images` /
 (spec amendment S1) use a byte record only while the file's current
 `(size, mtime_ns)` equals its verified fingerprint; an in-place rewrite that
 preserves both keeps the old set matching until the file is next observed. The
+Images Tags filter (a file matches when every tag is on its linked positive or
+its current image tag set) and `q` search stream the tagged records once and
+stat only the listed files whose records carry a filter tag or a `q` hit; the
+inspector's `image_tags` facet (`current` / `none` / `unavailable`) uses the
+inspection's own stable stat (`tests/test_api_workspace_images.py`
+`TestWorkspaceImageTags`, `tests/test_api_prompt_inspector.py`). The
 browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
 `media_annotation_files` on reset and never the metadata row.
 
@@ -1554,6 +1560,22 @@ window completes there with a digest of the copied bytes; POSIX and Windows on
 Vocabulary rename, merge and delete bump the `tag_revision` of every image set
 they change (and `image_index_revision`), so a Tag dialog opened before the
 change gets `tag-conflict` on Save (`tests/test_pair_tag_maintenance.py`).
+A case or Unicode spelling of a listed name (`A.PNG` for `a.png`, an NFD name)
+is an alias too: each path part must be spelled as its directory lists it, so a
+case- or normalization-insensitive filesystem (macOS, Windows) cannot store a
+second locator. The capture preview answers one byte range with 206 (416 for
+an unsatisfiable or multi-range header) inside the capture's pin, and a
+cancelled preview, observe or Generate still closes its handle and ends its pin
+or capture (`tests/test_api_annotations.py` `TestCancellation`,
+`tests/test_model_gate.py`).
+
+Follow-ups (tracked, not accepted): the legacy Auto-tag batch's cleanup
+`unload_model()` in `py/api/autotag_routes.py` is not gated against the
+batch's own in-flight inference when the batch coroutine is cancelled (other
+owners are kept out; the thread may log an error); and `py/autotag.py`,
+`py/api/images.py` and `database/operations.py` are over the 800-line ceiling
+(all three were before #249 PR B), with a split of `py/autotag.py` into
+backends and service planned first.
 
 Budgets: `test_filter_work_is_bounded` always runs. It asserts that a plain first
 page makes 1 link SELECT and a plain cursor page none, that every filter shape

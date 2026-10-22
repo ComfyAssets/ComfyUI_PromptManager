@@ -7,7 +7,9 @@ import struct
 import tempfile
 import threading
 import time
+import unicodedata
 import unittest
+import warnings
 import zlib
 from pathlib import Path
 from unittest.mock import patch
@@ -238,6 +240,41 @@ class CaptureStoreTestCase(unittest.TestCase):
         with self.assertRaises(CaptureDenied):
             self.capture(store, "alias.png")
         self.assert_empty(store)
+
+    def test_case_and_unicode_spellings_of_a_listed_file_are_denied(self):
+        # On a case- or normalization-insensitive filesystem (macOS APFS,
+        # Windows) these spellings open the listed file while realpath keeps
+        # the requested spelling, which would store its tags under a second
+        # locator. Every OS denies them; the listed spelling is the control.
+        nfc = unicodedata.normalize("NFC", "caf\u00e9.png")
+        nfd = unicodedata.normalize("NFD", nfc)
+        self.assertNotEqual(nfc, nfd)
+        self.write("a.png", png_bytes(1, 1))
+        self.write(nfc, png_bytes(1, 1))
+        self.write("Sub/b.png", png_bytes(1, 1))
+        store = self.make_store()
+
+        for relative in ("a.png", nfc, "Sub/b.png"):
+            with self.subTest(listed=relative):
+                cap = self.capture(store, relative)
+                self.assertEqual(
+                    cap.locator,
+                    os.path.normcase(
+                        os.path.join(os.path.realpath(self.root), *relative.split("/"))
+                    ),
+                )
+                self.assertTrue(store.release(cap.token))
+        for alias in ("A.PNG", "A.png", nfd, "sub/b.png", "SUB/B.PNG", "Sub/B.png"):
+            with self.subTest(alias=alias):
+                with self.assertRaises(CaptureDenied):
+                    self.capture(store, alias)
+                with self.assertRaises(CaptureDenied):
+                    store.verify(self.root, alias)
+        # A missing file with no other spelling keeps its usual outcome.
+        with self.assertRaises(CaptureChanged):
+            self.capture(store, "Sub/missing.png")
+        self.assert_empty(store)
+        assert_closed(self, self.parent)
 
     def test_locator_matches_listing_identity_for_symlinked_root(self):
         real_root = self.parent / "real-output"
@@ -596,6 +633,98 @@ class CaptureStoreTestCase(unittest.TestCase):
             cap.sha256, hashlib.sha256(b"\xff\xd8not really a jpeg").hexdigest()
         )
 
+    def test_metadata_over_inspection_budgets_does_not_block_generate(self):
+        # B2 carry-over (A M1): inferable is decided from the image header
+        # alone, so prompt metadata over the inspection budgets (here a 3 MiB
+        # text chunk) leaves a decodable image inferable.
+        base = png_bytes(64, 32)
+        huge = _chunk(b"tEXt", b"prompt\x00" + b"x" * (3 * 1024 * 1024))
+        self.write("big-metadata.png", base[:-12] + huge + base[-12:])
+        store = self.make_store()
+
+        cap = self.capture(store, "big-metadata.png")
+
+        self.assertEqual((cap.width, cap.height), (64, 32))
+        self.assertTrue(cap.inferable)
+        self.assertIsNone(cap.inferable_reason)
+        assert_closed(self, self.parent)
+
+    def test_decompression_bomb_header_is_not_inferable(self):
+        self.write("bomb.png", png_bytes(20_000, 20_000))
+        store = self.make_store()
+
+        cap = self.capture(store, "bomb.png")
+
+        self.assertFalse(cap.inferable)
+        self.assertIn("4096", cap.inferable_reason)
+        assert_closed(self, self.parent)
+
+    def test_header_dimensions_reads_only_the_header(self):
+        path = self.write("dims.png", png_bytes(7, 5))
+        self.assertEqual(capture_module.header_dimensions(str(path)), (7, 5))
+        assert_closed(self, self.parent)
+        with self.assertRaises(capture_module.HeaderUnreadable):
+            capture_module.header_dimensions(
+                str(self.write("bad.png", b"\x89PNG\r\n\x1a\nnope"))
+            )
+        assert_closed(self, self.parent)
+
+    def test_header_dimensions_leaves_the_warning_filters_alone(self):
+        # The capture workers run in the ComfyUI process: touching the
+        # process-global warnings filters from them races (catch_warnings is
+        # not thread-safe) and can leave an "error" filter installed for every
+        # later Pillow open in the host.
+        from PIL import Image
+
+        path = str(self.write("dims.png", png_bytes(7, 5)))
+        before = list(warnings.filters)
+        seen_during = []
+        real_open = Image.open
+
+        def recording_open(*args, **kwargs):
+            seen_during.append(list(warnings.filters))
+            return real_open(*args, **kwargs)
+
+        with patch.object(Image, "open", recording_open):
+            self.assertEqual(capture_module.header_dimensions(path), (7, 5))
+        self.assertEqual(seen_during, [before])
+        self.assertEqual(list(warnings.filters), before)
+
+        barrier = threading.Barrier(8)
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait()
+                for _ in range(50):
+                    capture_module.header_dimensions(path)
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(list(warnings.filters), before)
+        assert_closed(self, self.parent)
+
+    def test_header_over_the_warning_size_is_refused_by_the_pixel_cap(self):
+        # 100 MP: past Pillow's warning size, under its error size. The
+        # header is read, then the inference pixel cap refuses it.
+        from PIL import Image
+
+        path = str(self.write("big.png", png_bytes(10_000, 10_000)))
+        with self.assertWarns(Image.DecompressionBombWarning):
+            self.assertEqual(capture_module.header_dimensions(path), (10_000, 10_000))
+        store = self.make_store()
+        with self.assertWarns(Image.DecompressionBombWarning):
+            cap = self.capture(store, "big.png")
+        self.assertFalse(cap.inferable)
+        self.assertIn("4096", cap.inferable_reason)
+        assert_closed(self, self.parent)
+
     def test_video_capture_is_not_inferable(self):
         data = b"\x00\x00\x00\x18ftypmp42" + os.urandom(32)
         self.write("clip.mp4", data)
@@ -604,7 +733,7 @@ class CaptureStoreTestCase(unittest.TestCase):
         def never(path):  # pragma: no cover - guard only
             raise AssertionError("video captures are never probed")
 
-        with patch.object(capture_module, "read_inspection_file", never):
+        with patch.object(capture_module, "header_dimensions", never):
             cap = self.capture(store, "clip.mp4")
         self.assertEqual((cap.media_type, cap.width, cap.height), ("video", None, None))
         self.assertFalse(cap.inferable)

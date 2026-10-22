@@ -80,6 +80,21 @@ class TestModel:
     def generate_tags(self, image_path: str, **kwargs: object) -> list[str]:
         return ["generated", Path(image_path).parent.parent.name]
 
+    def generate_tag_suggestions(
+        self, image_path: str, *, limit: int, **kwargs: object
+    ) -> list[tuple[str, float | None]]:
+        """Fixed scored suggestions (WD14) or unscored ones (language models)."""
+        scored = self.loaded is not None and self.loaded.startswith("wd14")
+        names = ["sandstone", "desert", "arch", "sky", "rock", "dune", "canyon"]
+        names += [f"tag_{index:02d}" for index in range(100)]
+        return [
+            (name, round(0.98 - index * 0.008, 3) if scored else None)
+            for index, name in enumerate(names[:limit])
+        ]
+
+    def download_model(self, model_type: str, progress_callback=None) -> bool:
+        raise AssertionError("browser tests never download a model")
+
 
 REVEAL_OUTCOMES = ("opened", "unavailable", "fail")
 

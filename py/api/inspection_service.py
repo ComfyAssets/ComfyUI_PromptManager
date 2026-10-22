@@ -3,6 +3,7 @@
 import os
 import stat
 from pathlib import Path
+from typing import Callable
 
 try:
     from ...utils.prompt_inspector import (
@@ -93,8 +94,19 @@ def _in_host_temp(path: Path) -> bool:
 
 
 def inspect_current_file(
-    path: Path, *, source_label: str, saved: dict | None, library: dict
+    path: Path,
+    *,
+    source_label: str,
+    saved: dict | None,
+    library: dict,
+    image_tags: Callable[[int, int], dict] | None = None,
 ) -> dict:
+    """Current-file evidence read between two equal stats of *path*.
+
+    *image_tags*, when given, is called once with that stable
+    ``(st_size, st_mtime_ns)`` and its facet is returned as ``image_tags``
+    (spec amendment S1: tags of a byte record verified at exactly that stat).
+    """
     before = _current_file_facts(path)
     try:
         inspection = read_inspection_file(path)
@@ -104,6 +116,9 @@ def inspect_current_file(
     fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
     if any(getattr(before, key) != getattr(after, key) for key in fields):
         raise CurrentFileChanged
+    facets = {}
+    if image_tags is not None:
+        facets["image_tags"] = image_tags(before.st_size, before.st_mtime_ns)
     if inspection is None:
         evidence = unreadable_evidence()
     else:
@@ -132,4 +147,5 @@ def inspect_current_file(
         **evidence,
         "inspection": inspection,
         "library": library,
+        **facets,
     }

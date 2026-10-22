@@ -256,6 +256,19 @@ test('returning from history restores library context and mobile content stays i
     await expect(history(page)).toHaveCount(0);await expect(page.locator('dialog[open]')).toHaveCount(0);
 });
 
+test('leaving the shelf before its first page answers and returning reads page one without a page error',async({page})=>{
+    // Hold the first shelf page so the route changes while the shelf is still loading (a slow CI runner's natural order).
+    let reached;const firstRead=new Promise(resolve=>{reached=resolve;});
+    await page.route(url=>url.pathname==='/prompt_manager/library'&&!url.searchParams.has('cursor'),route=>{reached();});
+    await page.goto(route);await firstRead;await expect(page.locator('.library-status')).toHaveText('Loading prompt library…');
+    await page.evaluate(()=>{window.location.hash='#/tags';});
+    await expect(page.locator('#workspace-main > .heading h1')).toHaveText('Tags & categories');
+    await page.unrouteAll({behavior:'ignoreErrors'});
+    await page.evaluate(()=>{window.location.hash='#/library';});
+    await expect(page.locator('#workspace-main > .heading h1')).toHaveText('Prompt library');
+    await expect(cards(page)).toHaveCount(3);await expect(page.locator('.section-caption')).toContainText('3 positive prompts');
+    expect(page.libraryErrors).toEqual([]);
+});
 test('empty shelf visits restore saved scroll without inventing a parent anchor',async({page})=>{
     await page.setViewportSize({width:1600,height:300});await page.goto(route);
     await page.getByRole('searchbox',{name:'Search workspace',exact:true}).fill('No matching saved positive');

@@ -90,6 +90,7 @@ try:
     host_app = getattr(config.server_instance, "app", None)
     if host_app is not None and hasattr(host_app, "on_cleanup"):
         host_app.on_cleanup.append(api.cleanup_history_reads)
+        host_app.on_cleanup.append(api.cleanup_annotation_captures)
 
 except Exception as e:
     # Log to internal logging system without console spam
