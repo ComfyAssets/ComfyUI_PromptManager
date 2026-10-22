@@ -1747,7 +1747,9 @@ Review queue schema (#249, `database/review_schema.py`,
 `tests/test_review_schema.py`): the group `media_review_metadata` (one row:
 schema version, `review_index_revision`), `media_review_items` (one ambiguous
 resolver result per `(byte_id, resolver_version, evidence_hash)`, citing an
-annotation byte record `ON DELETE RESTRICT`, with 0..16 candidates, `limited`,
+annotation byte record `ON DELETE RESTRICT`, with the file's recorded
+`spelled_path` (the locator is case-folded on Windows, a listing target is
+not), 0..16 candidates, `limited`,
 `state` pending/selected/unresolved and a revision) and `media_review_decisions`
 (one row per item decision revision; `selected` exactly when a
 `candidate_hash` is present; `pair_id`/`image_id` navigation is set to NULL,
@@ -1786,7 +1788,47 @@ unchanged; the job's `scope` gains `review_items` (new items) and
 `review_errors`, and the log ends with `? N images added to Needs review` (and
 `! N images could not be added to Needs review` on failures, e.g. capture
 capacity). The monitor records after its fallback link, best effort: a failure
-is logged and the link stays. A new item moves `review_index_revision`.
+is logged and the link stays. A new item moves `review_index_revision`. A
+rescan does not copy or hash an ambiguous file whose current size and
+`mtime_ns` equal the verified fingerprint of bytes an item already cites (a
+stat compare); the file still stays in the default "new" scope, because it is
+not a known image.
+
+Needs review decisions and queue reads (#249, `py/api/review.py`,
+`database/review.py`, `database/review_decisions.py`,
+`tests/test_api_review.py`): `GET /prompt_manager/review/items?limit=1..40&cursor=`
+answers `{success, library_epoch, total, items, next_cursor}` with pending items
+oldest first; `total` is the exact pending count. The cursor is an HMAC keyset
+on `(created_at, id)` bound to the storage epoch and `review_index_revision`: a
+forged one is 400, one from before a restore is 409 `storage-changed`, one from
+before any queue change (a decision, a new item) is 409 `review-conflict`.
+Targets are formatted from `spelled_path` against the current roots (the
+roots' real paths are the only file access); a file under no current root is
+`unavailable` with a null target. `GET .../items/{id}` adds `candidates`
+(`hash`, `sampler_id`, `state` resolved/unresolved, `reason`, `label` "<positive
+title> / <negative title>" from the saved prompt's Library title else the
+first line, and the role texts), `dependency_fingerprint` (SHA-256 of the
+file's exact legacy rows, positive hashes and pair links with their negative
+hashes, as the ingester reads them) and `sha256`; a detail over 8 MiB, or a
+limited item, has no candidates. `POST .../items/{id}/decision
+{expected_epoch, expected_revision, capture_token, sha256, dependency_fingerprint,
+choice}` with a candidate hash (Apply) requires a capture of the item's file
+whose bytes are the item's, re-hashes the current file (`file-changed`
+otherwise, also for a fresh capture of new bytes), re-reads the capture and
+requires the same evidence digest (`review-conflict` otherwise), then in one
+`_pair_transaction` checks the epoch, the item revision and state
+(`review-conflict` with the current item for a repeat), the dependency
+fingerprint and the public ingester's compatible-only rules through
+`_ingest_resolved_pair_in` (either refusal is 409 `association-conflict`
+with zero writes, explained inline; Apply never reparents a link), and writes
+the link with `kind:"user-selection"` provenance (decision id, reviewed digest,
+candidate hash, resolver version, role provenance), the decision row, the
+item's new state and revision and `review_index_revision`. `"unresolved"`
+records the decision only and accepts `capture_token: null`. A successful
+decision releases its capture. No decision changes run or usage counts or
+calls an execution writer; a Tag save never changes a review item. Errors carry
+fixed sentences: `review-failed` / `decision-failed` 500s never echo exception
+text or paths.
 
 Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
 one explicit action captures one rooted media file into an owner-only

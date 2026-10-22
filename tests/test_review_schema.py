@@ -53,7 +53,9 @@ DDL = {
     ITEMS: (
         f"CREATE TABLE {ITEMS}(id TEXT PRIMARY KEY CHECK(length(id)=36), "
         "byte_id TEXT NOT NULL REFERENCES media_annotation_bytes(id) "
-        "ON DELETE RESTRICT, resolver_version INTEGER NOT NULL, "
+        "ON DELETE RESTRICT, spelled_path TEXT NOT NULL CHECK(length(CAST("
+        "spelled_path AS BLOB)) BETWEEN 1 AND 16384), "
+        "resolver_version INTEGER NOT NULL, "
         "evidence_hash TEXT NOT NULL CHECK(length(evidence_hash)=64 AND "
         "evidence_hash NOT GLOB '*[^0-9a-f]*'), evidence TEXT NOT NULL "
         f"CHECK(length(CAST(evidence AS BLOB)) <= {MAX_EVIDENCE_BYTES}), "
@@ -175,6 +177,7 @@ def insert_item(conn, *, item_id=ITEM_ID, evidence=EVIDENCE, candidates=2, **ext
     values = {
         "id": item_id,
         "byte_id": BYTE_ID,
+        "spelled_path": "/out/img.png",
         "resolver_version": 1,
         "evidence_hash": hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
         "evidence": evidence,
@@ -531,6 +534,9 @@ class ReviewSchemaTests(unittest.TestCase):
             "long created_at": ((f"UPDATE {ITEMS} SET created_at=?", ("x" * 65,)),),
             "blob updated_at": (f"UPDATE {ITEMS} SET updated_at=X'00'",),
             "text resolver version": (f"UPDATE {ITEMS} SET resolver_version='one'",),
+            "blob spelled path": (
+                f"UPDATE {ITEMS} SET spelled_path=CAST(spelled_path AS BLOB)",
+            ),
             "evidence hash mismatch": (
                 (f"UPDATE {ITEMS} SET evidence_hash=?", (CANDIDATE,)),
             ),
@@ -549,6 +555,7 @@ class ReviewSchemaTests(unittest.TestCase):
             ),
             "bad state": (f"UPDATE {ITEMS} SET state='done'",),
             "limited two": (f"UPDATE {ITEMS} SET limited=2",),
+            "empty spelled path": (f"UPDATE {ITEMS} SET spelled_path=''",),
             "negative revision": (f"UPDATE {ITEMS} SET revision=-1",),
             "negative candidates": (f"UPDATE {ITEMS} SET candidate_count=-1",),
             "bad outcome": (f"UPDATE {DECISIONS} SET outcome='maybe'",),

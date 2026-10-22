@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -53,11 +54,16 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
 
     Returns ``recorded`` (new item with candidates), ``limited`` (new item
     without candidates), ``duplicate`` (these bytes already carry this
-    evidence) or ``skipped`` (the file changed, vanished, is not ambiguous in
-    its captured bytes, or storage was restored meanwhile).
+    evidence, or the file's current stat is the verified fingerprint of
+    bytes an item cites, so it is not even copied) or ``skipped`` (the file
+    changed, vanished, is not ambiguous in its captured bytes, or storage was
+    restored meanwhile).
     ``CaptureCapacity`` and database errors propagate to the caller, which
     logs and counts them.
     """
+    spelled_path = _queued_spelling(db, root, relative)
+    if spelled_path is None:
+        return "duplicate"
     epoch = db.get_execution_epoch()
     try:
         capture = store.capture(
@@ -69,15 +75,17 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
         logger.debug("Review capture skipped (%s): %s", error.code, error)
         return "skipped"
     try:
-        resolution = _captured_resolution(store, capture)
+        captured = captured_review(store, capture)
     finally:
         store.release(capture.token)
+    resolution = captured[1] if captured is not None else None
     if resolution is None or resolution.get("state") != "ambiguous":
         return "skipped"
     evidence, count, limited = review_evidence(resolution)
     try:
         inserted = db.record_review_item(
             locator=capture.locator,
+            spelled_path=spelled_path,
             sha256=capture.sha256,
             size=capture.size,
             mtime_ns=capture.mtime_ns,
@@ -94,18 +102,45 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
     return "limited" if limited else "recorded"
 
 
-def _captured_resolution(store, capture) -> dict | None:
-    """The ingestion resolver's result for the capture's own metadata."""
+def _queued_spelling(db, root, relative: str) -> str | None:
+    """The file's spelling, or None when its current stat is already queued.
+
+    The spelling is the capture's own candidate path (the real root joined
+    with the listed relative path), so it folds to the capture's locator. A
+    file whose size and ``mtime_ns`` equal the verified fingerprint of bytes
+    an item already cites is not copied or hashed again (maintainer ruling:
+    the rescan stays cheap and the file stays in the default scope). A stat
+    failure leaves the decision to the capture.
+    """
+    spelled = os.path.join(os.path.realpath(os.fspath(root)), *relative.split("/"))
+    try:
+        facts = os.lstat(spelled)
+    except OSError:
+        return spelled
+    if db.review_fingerprint_queued(
+        os.path.normcase(spelled), facts.st_size, facts.st_mtime_ns, RESOLVER_VERSION
+    ):
+        return None
+    return spelled
+
+
+def captured_review(store, capture) -> tuple[dict, dict] | None:
+    """``(metadata, resolution)`` of the capture's own bytes, else None.
+
+    ``metadata`` is what the scan hands the ingester: prompt and workflow
+    JSON-decoded and ``file_info`` (size, dimensions, format) from the
+    capture. None when the capture is gone or carries no prompt metadata.
+    """
     if store.acquire(capture.token) is None:
         return None
     try:
         try:
-            metadata = read_inspection_file(Path(capture.path)).metadata
+            read = read_inspection_file(Path(capture.path))
         except MetadataReadError:
             return None
     finally:
         store.release_use(capture.token)
-    canonical = dict(metadata)
+    canonical = dict(read.metadata)
     for key in ("prompt", "workflow"):
         if isinstance(canonical.get(key), str):
             try:
@@ -115,7 +150,13 @@ def _captured_resolution(store, capture) -> dict | None:
                 pass
     if not canonical.get("prompt") and not canonical.get("parameters"):
         return None
-    return resolve_prompt_pair(canonical)
+    info = {"size": capture.size}
+    if read.width is not None and read.height is not None:
+        info["dimensions"] = [read.width, read.height]
+    if read.format is not None:
+        info["format"] = read.format
+    canonical["file_info"] = info
+    return canonical, resolve_prompt_pair(canonical)
 
 
 def review_evidence(resolution: dict) -> tuple[dict, int, bool]:

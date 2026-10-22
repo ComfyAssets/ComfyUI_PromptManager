@@ -275,6 +275,46 @@ class TestScanRecording(ReviewTestCase):
         self.assertEqual(self._review_revision(), revision)
         self.assertEqual(self._capture_files(), [])
 
+    async def test_queued_fingerprint_skips_the_copy_and_hash(self):
+        """A rescan of a queued file whose size and mtime match its item's
+        verified fingerprint neither copies nor hashes it, and the file stays
+        in the default "new" scope (it is still read like any unknown file)."""
+        self._require_module()
+        self._roots()
+        path = self.output_dir / "two.png"
+        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+        await self._scan("new")
+        captures = []
+        original = CaptureStore.capture
+
+        def spy(store, root, relative, **kwargs):
+            captures.append(relative)
+            return original(store, root, relative, **kwargs)
+
+        reads = []
+        extract = self.api._extract_comfyui_metadata
+
+        def read_spy(file_path):
+            reads.append(os.path.basename(file_path))
+            return extract(file_path)
+
+        self.api._extract_comfyui_metadata = read_spy
+        with patch.object(CaptureStore, "capture", spy):
+            second = await self._scan("new")
+            self.assertEqual(captures, [])
+            self.assertEqual(reads, ["two.png"])
+            self.assertEqual(second["scope"]["review_items"], 0)
+            # A touched file (same bytes, new mtime) is captured again: a
+            # duplicate of its item, whose fingerprint is refreshed.
+            stat = path.stat()
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+            await self._scan("new")
+            self.assertEqual(captures, ["two.png"])
+        items = self._items()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["mtime_ns"], path.stat().st_mtime_ns)
+        self.assertEqual(self._capture_files(), [])
+
     async def test_repeat_scan_keeps_decisions(self):
         self._require_module()
         self._roots()
@@ -601,6 +641,7 @@ class TestReviewEdges(ReviewTestCase):
         epoch = self.api.db.get_execution_epoch()
         good = {
             "locator": "/out/a.png",
+            "spelled_path": "/out/a.png",
             "sha256": "a" * 64,
             "size": 1,
             "mtime_ns": 2,
@@ -619,6 +660,9 @@ class TestReviewEdges(ReviewTestCase):
             {"limited": True, "candidate_count": 2},
             {"sha256": "A" * 64},
             {"evidence": ["not", "an", "object"]},
+            {"spelled_path": ""},
+            {"spelled_path": None},
+            {"spelled_path": "/out/b.png"},
         ):
             with self.assertRaises(ValueError, msg=change):
                 self.api.db.record_review_item(**{**good, **change})

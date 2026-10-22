@@ -7,8 +7,10 @@ annotation group, because every item cites one annotation byte record. It owns
 - ``media_review_metadata``: one row, the group's schema version and the
   review index revision (moved by every queue change);
 - ``media_review_items``: one ambiguous resolver result for one byte record,
-  keyed by ``(byte_id, resolver_version, evidence_hash)``, with its canonical
-  evidence, candidate count, ``limited`` flag, state and revision;
+  keyed by ``(byte_id, resolver_version, evidence_hash)``, with the file's
+  spelling when it was recorded (the locator is case-folded on Windows, a
+  target is not), its canonical evidence, candidate count, ``limited`` flag,
+  state and revision;
 - ``media_review_decisions``: the auditable decision history of an item, one
   row per decision revision, with optional navigation to the pair and image
   the decision linked (nulled, never cascaded, when those are deleted).
@@ -40,6 +42,9 @@ DECISIONS_TABLE = "media_review_decisions"
 TABLES = (METADATA_TABLE, ITEMS_TABLE, DECISIONS_TABLE)
 MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
 MAX_CANDIDATES = 16
+# The file's own spelling when it was recorded (bytes of UTF-8 text). Locators
+# are case-folded on Windows, so a target is formatted from this instead.
+MAX_SPELLED_PATH_BYTES = 16384
 ITEM_STATES = ("pending", "selected", "unresolved")
 DECISION_OUTCOMES = ("selected", "unresolved")
 _TIMESTAMP_BYTES = 64
@@ -57,6 +62,8 @@ _TABLE_DDL = {
     ITEMS_TABLE: (
         f"CREATE TABLE {ITEMS_TABLE} (id TEXT PRIMARY KEY CHECK(length(id)=36), "
         f"byte_id TEXT NOT NULL REFERENCES {BYTES_TABLE}(id) ON DELETE RESTRICT, "
+        "spelled_path TEXT NOT NULL CHECK(length(CAST(spelled_path AS BLOB)) "
+        f"BETWEEN 1 AND {MAX_SPELLED_PATH_BYTES}), "
         "resolver_version INTEGER NOT NULL, evidence_hash TEXT NOT NULL "
         f"CHECK({_HEX64.format(c='evidence_hash')}), "
         f"evidence TEXT NOT NULL {_EVIDENCE_CHECK}, "
@@ -109,6 +116,7 @@ _COLUMNS = {
     ITEMS_TABLE: (
         ("id", "TEXT", 0, None, 1),
         ("byte_id", "TEXT", 1, None, 0),
+        ("spelled_path", "TEXT", 1, None, 0),
         ("resolver_version", "INTEGER", 1, None, 0),
         ("evidence_hash", "TEXT", 1, None, 0),
         ("evidence", "TEXT", 1, None, 0),
@@ -243,6 +251,8 @@ _ROW_PREDICATES = {
         (
             _uuid("id"),
             _uuid("byte_id"),
+            "typeof(spelled_path) = 'text' AND length(CAST(spelled_path AS BLOB)) "
+            f"BETWEEN 1 AND {MAX_SPELLED_PATH_BYTES}",
             "typeof(resolver_version) = 'integer'",
             _hex64("evidence_hash"),
             _evidence("evidence"),
