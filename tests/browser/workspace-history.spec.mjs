@@ -317,6 +317,19 @@ test('marker labels disclose exact observed dequeue and outcome including times 
     }
 });
 
+// A timeline scroll re-renders the markers on the next frame. On a slow runner that frame lands between the press and
+// the release of a marker tap (Playwright's own scroll-into-view scrolls the timeline first); the re-render must leave
+// the pressed marker's nodes alone, or Chromium touch drops the click. The scroll event is dispatched so the marker
+// stays under the pointer, and the two frames are the re-render itself.
+test('a timeline re-render between press and release keeps the marker tap',async({page})=>{
+    const f=page.fixture;await open(page,f.detail_id);
+    const target=marker(page,f.runs.shared,'z');await expect(target).toHaveAttribute('aria-disabled','false');await target.scrollIntoViewIfNeeded();
+    const box=await target.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();
+    await recorded(page).locator('.history-timeline').evaluate(timeline=>{timeline.dispatchEvent(new Event('scroll'));return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+    await page.mouse.up();
+    await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+});
+
 test('same-epoch refresh retains recorded context mode and exact receipt after fresh candidate reads',async({page})=>{
     const f=page.fixture;await open(page,f.detail_id);await marker(page,f.runs.shared,'z').click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
     await dialog(page).getByRole('button',{name:'Effective',exact:true}).click();

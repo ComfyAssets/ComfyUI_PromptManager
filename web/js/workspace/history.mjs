@@ -22,6 +22,12 @@ function observedLabel(value) {
     return `Observed dequeue ${value} ms (${Number.isSafeInteger(time) && time <= 8640000000000000 ? new Date(time).toISOString() : 'outside display range'})`;
 }
 
+// Writing textContent replaces the text node even when the text is unchanged. A marker re-rendered between the press and
+// the release of a tap would lose the node under the pointer, and Chromium touch then drops the click.
+function setText(node, text) {
+    if (node.textContent !== text) node.textContent = text;
+}
+
 // New nodes use ordinary insertion; connected moves preserve browser state where supported.
 function place(parent, node, before) {
     if (node === before || (node.parentNode === parent && node.nextSibling === before)) return;
@@ -115,7 +121,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
             const {node, buttons} = column;
             node.style.insetInlineStart = `${38 + index * 64}px`;node.value = index + 1;
             node.setAttribute('aria-posinset', String(index + 1));node.setAttribute('aria-setsize', String(items.length));
-            column.position.textContent = String(index + 1);
+            setText(column.position, String(index + 1));
             const anchors = new Map();for (const anchor of run.matching_anchors) if (!anchors.has(anchor.context_id)) anchors.set(anchor.context_id, anchor);
             for (const anchor of anchors.values()) {
                 let button = buttons.get(anchor.context_id);
@@ -126,7 +132,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
                 const context = contexts.get(anchor.context_id), first = context.first === index;
                 button.classList.toggle('history-context-anchor', first);
                 button.style.insetBlockStart = `${80 + context.row * 57}px`;
-                button.textContent = first ? '−' : '';
+                setText(button, first ? '−' : '');
                 const label = `Recorded run ${index + 1} of ${items.length} loaded · ${observedLabel(run.observed_dequeue_at)} · Outcome ${run.outcome} · ${preview(context.summary)} · context ${anchor.context_id.slice(0, 8)} · anchor ${anchor.anchor_id}`;
                 button.setAttribute('aria-label', label);button.title = label;
                 button.setAttribute('aria-pressed', String(state.selection.run_id === run.run_id && state.selection.context_id === anchor.context_id));
@@ -157,7 +163,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
                 let branch = branchNodes.get(id);
                 if (!branch) {branch = el('div', undefined, 'history-context-branch');branch.dataset.contextBranch = id;branch.append(el('span', '', 'history-context-label'));branchNodes.set(id, branch);}
                 branch.style.insetBlockStart = `${80 + context.row * 57}px`;branch.style.insetInlineStart = `${38 + context.first * 64}px`;
-                branch.firstChild.textContent = `${preview(context.summary)} · ${id.slice(0, 8)} · ${distinction(context.summary)}`;
+                setText(branch.firstChild, `${preview(context.summary)} · ${id.slice(0, 8)} · ${distinction(context.summary)}`);
                 place(branches, branch, before);before = branch.nextSibling;
             }
             if (anchor) {
@@ -176,7 +182,7 @@ export function mountRecordedHistory(container, {api, positiveId, parentScope, s
         selected.hidden = !outside;selected.disabled = next.validating || window.loading || !!next.refreshRequired;
         earlier.hidden = !window.has_more;earlier.disabled = window.loading || !!next.refreshRequired;earlier.setAttribute('aria-disabled', String(earlier.disabled));
         refresh.disabled = window.loading || next.validating;retry.hidden = !window.error || !!next.refreshRequired;
-        reload.hidden = !next.refreshRequired;reload.textContent = next.refreshLabel || 'Reload recorded history';
+        reload.hidden = !next.refreshRequired;setText(reload, next.refreshLabel || 'Reload recorded history');
         timeline.hidden = !items.length;
         let initialAnchor = null;
         if (!initialized && items.length && !window.loading && !next.validating && !next.refreshRequired) {
