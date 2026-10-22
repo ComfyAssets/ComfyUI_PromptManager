@@ -11,8 +11,8 @@ lifetimes.
 
 The contract is "these bytes at this location, last checked at this time".
 Stat equality is never content proof: a same-size rewrite that restores
-``mtime_ns`` is visible only through the POSIX change time, which Windows does
-not expose through ``stat``.
+``mtime_ns`` is visible only through the change time between the two
+``fstat`` reads, which on Windows is the creation time (no signal).
 """
 
 from __future__ import annotations
@@ -146,24 +146,33 @@ class _Entry:
         self.doomed = False
 
 
-def _same_file(
-    before: os.stat_result, after: os.stat_result, *, change_time: bool
-) -> bool:
-    """Size and mtime must agree, device/inode where meaningful.
+def _same_facts(before: os.stat_result, after: os.stat_result) -> bool:
+    """The facts every stat API reports alike: size and modification time.
 
-    The change time is compared only between two reads of the same kind
-    (``fstat`` before and after the copy): Windows reports the creation time
-    from ``fstat`` but, on Python 3.12+, the change time from ``stat``.
+    This is the only comparison made across APIs (a path ``stat`` against the
+    opened descriptor's ``fstat``). Windows reports the creation time from
+    ``fstat`` but, on Python 3.12+, the change time from ``stat``, and may
+    encode device and inode differently, so those fields are compared only
+    between two reads of the same kind (``_same_identity``).
     """
-    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
-        return False
-    if change_time and before.st_ctime_ns != after.st_ctime_ns:
+    return before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns
+
+
+def _same_identity(before: os.stat_result, after: os.stat_result) -> bool:
+    """Full identity between two reads of the same kind (both ``fstat`` or both
+    path stats): size, mtime, change time, and device/inode where meaningful."""
+    if not _same_facts(before, after) or before.st_ctime_ns != after.st_ctime_ns:
         return False
     if before.st_ino and after.st_ino and before.st_ino != after.st_ino:
         return False
     if before.st_dev and after.st_dev and before.st_dev != after.st_dev:
         return False
     return True
+
+
+def _reason(error: OSError) -> str:
+    """The OS error text without the path, so messages never name server paths."""
+    return error.strerror or type(error).__name__
 
 
 def _unlink_quietly(path: str) -> None:
@@ -219,6 +228,7 @@ class CaptureStore:
         self._pending_bytes = 0
         self._workers = 0
         self._closed = False
+        self._stale: list[str] = []
 
     # -- public API ------------------------------------------------------------
 
@@ -264,66 +274,84 @@ class CaptureStore:
         return FileFacts(locator, sha256, before.st_size, before.st_mtime_ns)
 
     def get(self, token: str) -> Capture | None:
-        """The live capture for *token*, touching its idle clock; else None."""
-        with self._lock:
-            entry = self._live_locked(token)
-            if entry is None:
-                return None
-            entry.last_used_at = self._clock()
-            return entry.capture
+        """The live capture for *token*, touching its idle clock; else None.
+
+        ``get`` does not pin the file: a reader that streams ``capture.path``
+        (the preview route) must bracket the read with ``acquire`` and
+        ``release_use``, or a concurrent ``sweep``/``release`` may unlink the
+        file under it (and, on Windows, leak it until ``close``).
+        """
+        try:
+            with self._lock:
+                entry = self._live_locked(token)
+                if entry is None:
+                    return None
+                entry.last_used_at = self._clock()
+                return entry.capture
+        finally:
+            self._flush()
 
     def acquire(self, token: str) -> Capture | None:
         """Mark the capture in use (inference); it outlives expiry until released."""
-        with self._lock:
-            entry = self._live_locked(token)
-            if entry is None:
-                return None
-            entry.uses += 1
-            entry.last_used_at = self._clock()
-            return entry.capture
+        try:
+            with self._lock:
+                entry = self._live_locked(token)
+                if entry is None:
+                    return None
+                entry.uses += 1
+                entry.last_used_at = self._clock()
+                return entry.capture
+        finally:
+            self._flush()
 
     def release_use(self, token: str) -> None:
         """End one ``acquire``; a doomed capture is removed with its last use."""
         with self._lock:
             entry = self._entries.get(token)
-            if entry is None:
-                return
-            entry.uses = max(0, entry.uses - 1)
-            entry.last_used_at = self._clock()
-            if entry.doomed and entry.uses == 0:
-                self._remove_locked(entry)
+            if entry is not None:
+                entry.uses = max(0, entry.uses - 1)
+                entry.last_used_at = self._clock()
+                if entry.doomed and entry.uses == 0:
+                    self._remove_locked(entry)
+        self._flush()
 
     def release(self, token: str) -> bool:
         """Explicit release; True when the token was live."""
         with self._lock:
             entry = self._entries.get(token)
-            if entry is None or entry.doomed:
-                return False
-            self._doom_locked(entry)
-            return True
+            live = entry is not None and not entry.doomed
+            if live:
+                self._doom_locked(entry)
+        self._flush()
+        return live
 
     def invalidate_all(self) -> None:
         """Expire every capture now (storage epoch changed, restore, shutdown)."""
         with self._lock:
             for entry in list(self._entries.values()):
                 self._doom_locked(entry)
+        self._flush()
 
     def sweep(self) -> None:
         """Remove idle and hard-expired captures that are not in use."""
         with self._lock:
             self._sweep_locked(self._clock())
+        self._flush()
 
     def expires_in(self, token: str) -> float | None:
         """Seconds until *token* expires without further use; None when gone."""
-        with self._lock:
-            entry = self._live_locked(token)
-            if entry is None:
-                return None
-            now = self._clock()
-            remaining = self.hard - (now - entry.created_at)
-            if entry.uses == 0:
-                remaining = min(remaining, self.idle - (now - entry.last_used_at))
-            return max(0.0, remaining)
+        try:
+            with self._lock:
+                entry = self._live_locked(token)
+                if entry is None:
+                    return None
+                now = self._clock()
+                remaining = self.hard - (now - entry.created_at)
+                if entry.uses == 0:
+                    remaining = min(remaining, self.idle - (now - entry.last_used_at))
+                return max(0.0, remaining)
+        finally:
+            self._flush()
 
     def stats(self) -> dict:
         with self._lock:
@@ -334,11 +362,21 @@ class CaptureStore:
             }
 
     def close(self) -> None:
-        """Remove every owned capture file and the owned directory. Idempotent."""
+        """Remove every owned capture file and the owned directory. Idempotent.
+
+        A capture still in flight finishes first: its worker removes its own
+        temp file and then the directory (``_release_admission``).
+        """
         with self._lock:
             self._closed = True
             for entry in list(self._entries.values()):
                 self._remove_locked(entry)
+            busy = self._pending > 0
+        self._flush()
+        if not busy:
+            self._remove_directory()
+
+    def _remove_directory(self) -> None:
         try:
             os.rmdir(self.directory)
         except FileNotFoundError:
@@ -351,6 +389,12 @@ class CaptureStore:
     # -- admission -------------------------------------------------------------
 
     def _admit(self, size: int, *, reserve: bool) -> None:
+        try:
+            self._admit_locked(size, reserve=reserve)
+        finally:
+            self._flush()
+
+    def _admit_locked(self, size: int, *, reserve: bool) -> None:
         with self._lock:
             if self._closed:
                 raise RuntimeError("The capture store is closed")
@@ -373,6 +417,9 @@ class CaptureStore:
             if reserve:
                 self._pending -= 1
                 self._pending_bytes -= size
+            last_out = self._closed and self._pending == 0 and self._workers == 0
+        if last_out:
+            self._remove_directory()
 
     def _register(self, capture: Capture) -> None:
         with self._lock:
@@ -408,9 +455,17 @@ class CaptureStore:
             self._remove_locked(entry)
 
     def _remove_locked(self, entry: _Entry) -> None:
-        _unlink_quietly(entry.capture.path)
+        """Forget the entry; its file is unlinked by ``_flush`` after the lock."""
         if self._entries.pop(entry.capture.token, None) is not None:
             self._completed_bytes -= entry.capture.size
+            self._stale.append(entry.capture.path)
+
+    def _flush(self) -> None:
+        """Unlink files released under the lock, without holding it (slow I/O)."""
+        with self._lock:
+            stale, self._stale = self._stale, []
+        for path in stale:
+            _unlink_quietly(path)
 
     # -- copy and hash -----------------------------------------------------------
 
@@ -420,7 +475,10 @@ class CaptureStore:
         except FileNotFoundError:
             raise CaptureChanged("The file is no longer there") from None
         except OSError as error:
-            raise CaptureChanged(f"The file could not be read: {error}") from None
+            logger.debug("Capture pre-stat failed for %s: %s", candidate, error)
+            raise CaptureChanged(
+                f"The file could not be read ({_reason(error)})"
+            ) from None
         if stat_module.S_ISLNK(facts.st_mode):
             raise CaptureDenied("Symbolic links are not captured")
         if not stat_module.S_ISREG(facts.st_mode):
@@ -485,10 +543,13 @@ class CaptureStore:
         try:
             fd = os.open(candidate, _OPEN_FLAGS)
         except OSError as error:
-            raise CaptureChanged(f"The file could not be opened: {error}") from None
+            logger.debug("Capture open failed for %s: %s", candidate, error)
+            raise CaptureChanged(
+                f"The file could not be opened ({_reason(error)})"
+            ) from None
         with os.fdopen(fd, "rb") as stream:
             opened = os.fstat(stream.fileno())
-            if not _same_file(before, opened, change_time=False):
+            if not _same_facts(before, opened):
                 raise CaptureChanged("The file changed before it was read")
             while True:
                 chunk = self._read(stream, CHUNK_SIZE)
@@ -501,24 +562,25 @@ class CaptureStore:
                 if sink is not None:
                     sink.write(chunk)
             after = os.fstat(stream.fileno())
-        if (
-            total != before.st_size
-            or not _same_file(opened, after, change_time=True)
-            or not _same_file(before, after, change_time=False)
-        ):
+        if total != before.st_size or not _same_identity(opened, after):
             raise CaptureChanged("The file changed while it was read")
         try:
-            current = os.stat(candidate)
+            current = os.lstat(candidate)
         except OSError:
             raise CaptureChanged("The file is no longer there") from None
-        if not _same_file(before, current, change_time=False):
+        if not _same_identity(before, current):
             raise CaptureChanged("The path names another file now")
         if os.path.normcase(os.path.realpath(candidate)) != locator:
             raise CaptureChanged("The path resolves elsewhere now")
         return digest.hexdigest()
 
     def _probe(self, path: str, media_type: str):
-        """Header-only dimensions of the capture; never decodes pixels."""
+        """Header-only dimensions of the capture; never decodes pixels.
+
+        Uses the inspection reader, so a PNG whose prompt metadata is over the
+        inspection budgets is reported as unreadable (not inferable) although
+        its pixels decode; B2 may switch to a dimensions-only header read.
+        """
         if media_type == "video":
             return None, None, False, VIDEO_ONLY_REASON
         try:

@@ -1372,11 +1372,14 @@ browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
 Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
 one explicit action captures one rooted media file into an owner-only
 `prompt-manager-captures-*` temp directory, streaming it in 1 MiB chunks while
-hashing, with the opened descriptor compared to the path (`dev`, `ino` where
-meaningful, `size`, `mtime_ns`) before and after the copy and `ctime_ns`
-compared between the two `fstat` reads (Python 3.12+ on Windows reports the
-change time from `stat` but the creation time from `fstat`); any disagreement
-is `CaptureChanged` and the copy is removed. Aliases (a symlinked
+hashing. Identity is compared like with like: the opened descriptor against
+the path only on the API-stable facts (`size`, `mtime_ns`); the full identity
+(`size`, `mtime_ns`, `ctime_ns`, `dev`/`ino` where meaningful) between the
+`fstat` before and after the copy and between the path stats before and after
+(native Windows CI with Python 3.12/3.13 showed `stat` and `fstat` disagreeing
+on `st_ctime_ns`: change time versus creation time; 3.10/3.11 agree). Any
+disagreement is `CaptureChanged` and the copy is removed. Error messages carry
+`strerror` only, never a path. Aliases (a symlinked
 file or directory, even inside the root), escapes, non-media names and
 directories are `CaptureDenied`; the locator is
 `normcase(join(realpath(root), relative))`, so a symlinked root shares the
@@ -1387,10 +1390,13 @@ tested with an injected clock. An acquired capture outlives expiry and release
 until its last use ends. Header-only dimensions (4096 px per side,
 16,777,216 px) and video mark Generate unsupported; `verify` re-hashes the
 current file without a copy. Every handle closes before unlink (a patched
-`os.unlink` asserts it, plus `assert_closed`). Known limit: Windows exposes no
-change time through `stat`, so a same-size rewrite that restores `mtime_ns`
-during the copy window completes there with a digest of the copied bytes; POSIX
-detects it through `ctime`.
+`os.unlink` asserts it, plus `assert_closed`), and files are unlinked outside
+the store lock. Known limit: Windows reports the creation time from `fstat`, so
+a same-size rewrite that restores `mtime_ns` during the copy window completes
+there with a digest of the copied bytes; POSIX detects it through `ctime`.
+Vocabulary rename, merge and delete bump the `tag_revision` of every image set
+they change (and `image_index_revision`), so a Tag dialog opened before the
+change gets `tag-conflict` on Save (`tests/test_pair_tag_maintenance.py`).
 
 Budgets: `test_filter_work_is_bounded` always runs. It asserts that a plain first
 page makes 1 link SELECT and a plain cursor page none, that every filter shape

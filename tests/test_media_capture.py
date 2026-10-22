@@ -75,7 +75,8 @@ class CaptureStoreTestCase(unittest.TestCase):
         parent = tempfile.TemporaryDirectory()
         self.addCleanup(parent.cleanup)
         self.addCleanup(assert_closed, self, parent.name)
-        self.parent = Path(parent.name)
+        # The resolved path: macOS /var -> /private/var, Windows 8.3 names.
+        self.parent = Path(os.path.realpath(parent.name))
         self.root = self.parent / "output"
         self.root.mkdir()
         self.clock = FakeClock()
@@ -512,6 +513,8 @@ class CaptureStoreTestCase(unittest.TestCase):
 
         def checked_unlink(path, *args, **kwargs):
             self.assertEqual(open_handles_under(path), [])
+            self.assertTrue(store._lock.acquire(blocking=False))  # no I/O under lock
+            store._lock.release()
             unlinked.append(os.fspath(path))
             return original_unlink(path, *args, **kwargs)
 
@@ -703,6 +706,105 @@ class CaptureStoreTestCase(unittest.TestCase):
         self.assertEqual(stray.read_bytes(), b"not ours")
         stray.unlink()
         os.rmdir(store.directory)
+        assert_closed(self, self.parent)
+
+    # -- platform identity checks -------------------------------------------
+
+    def test_path_and_handle_stats_are_never_compared_across_apis(self):
+        """Windows (Python 3.12+) reports the change time from stat but the
+        creation time from fstat, and may encode dev/ino differently; only
+        size and mtime_ns may be compared across the two APIs."""
+        source_bytes = png_bytes(2, 2, b"\x66" * 40)
+        self.write("a.png", source_bytes)
+        store = self.make_store()
+        original_fstat = os.fstat
+
+        def shifted(fd):
+            st = original_fstat(fd)
+            return os.stat_result(
+                (
+                    st.st_mode,
+                    st.st_ino + 7,
+                    st.st_dev + 7,
+                    st.st_nlink,
+                    st.st_uid,
+                    st.st_gid,
+                    st.st_size,
+                    st.st_atime,
+                    st.st_mtime,
+                    st.st_ctime + 1,
+                ),
+                {
+                    "st_atime_ns": st.st_atime_ns,
+                    "st_mtime_ns": st.st_mtime_ns,
+                    "st_ctime_ns": st.st_ctime_ns + 1_000_000_000,
+                },
+            )
+
+        with patch.object(capture_module.os, "fstat", shifted):
+            cap = self.capture(store, "a.png")
+            facts = store.verify(self.root, "a.png")
+        self.assertEqual(cap.sha256, hashlib.sha256(source_bytes).hexdigest())
+        self.assertEqual(facts.sha256, cap.sha256)
+        store.release(cap.token)
+        self.assert_empty(store)
+
+    def test_fresh_file_captures_twice_on_every_platform(self):
+        data = png_bytes(1, 1, os.urandom(3 * capture_module.CHUNK_SIZE))
+        self.write("fresh.png", data)
+        store = self.make_store()
+        first = self.capture(store, "fresh.png")
+        second = self.capture(store, "fresh.png")
+        self.assertEqual(first.sha256, hashlib.sha256(data).hexdigest())
+        self.assertEqual(second.sha256, first.sha256)
+        self.assertNotEqual(first.token, second.token)
+        self.assertEqual(store.stats()["captures"], 2)
+
+    def test_error_messages_never_name_server_paths(self):
+        self.write("a.png", png_bytes(1, 1))
+        self.write("dir.png/x", b"")  # dir.png is a directory
+        store = self.make_store(max_file=64)
+        attempts = [
+            lambda: self.capture(store, "missing.png"),
+            lambda: self.capture(store, "a.png"),  # over the 64-byte cap
+            lambda: self.capture(store, "dir.png"),
+            lambda: self.capture(store, "../a.png"),
+            lambda: self.capture(store, "notes.txt"),
+            lambda: store.verify(self.root, "missing.png"),
+        ]
+        if os.name == "posix" and os.geteuid() != 0:
+            locked = self.write("locked.png", bytes(10))
+            os.chmod(locked, 0)
+            self.addCleanup(os.chmod, locked, 0o600)
+            attempts.append(lambda: self.capture(store, "locked.png"))
+        for attempt in attempts:
+            with self.assertRaises(capture_module.CaptureError) as caught:
+                attempt()
+            message = str(caught.exception)
+            self.assertTrue(message)
+            self.assertNotIn(str(self.root), message)
+            self.assertNotIn(str(self.parent), message)
+            self.assertNotIn(os.sep, message)
+        self.assert_empty(store)
+
+    def test_close_during_a_capture_removes_the_directory_once_it_finishes(self):
+        self.write("a.png", png_bytes(1, 1, bytes(64)))
+        store = CaptureStore(self.parent / "captures", clock=self.clock)
+        original = CaptureStore._read
+
+        def closing(store_, stream, size):
+            data = original(store_, stream, 16)
+            if data and not getattr(closing, "done", False):
+                closing.done = True
+                store.close()
+            return data
+
+        with patch.object(CaptureStore, "_read", closing):
+            with self.assertRaises(RuntimeError):
+                self.capture(store, "a.png")
+        self.assertFalse(Path(store.directory).exists())
+        self.assertEqual(store.stats()["reserved_bytes"], 0)
+        store.close()
         assert_closed(self, self.parent)
 
     # -- constants ---------------------------------------------------------
