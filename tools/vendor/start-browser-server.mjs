@@ -10,11 +10,17 @@ const STOP_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 1_000;
 const STDERR_TAIL_BYTES = 8_192;
+// Server stderr kept for the failing test's attachment; the newest output wins.
+const STDERR_LOG_CHARS = 256 * 1024;
+const STDERR_DROPPED = '[earlier server stderr dropped]\n';
 const HOST = '127.0.0.1';
-// tests/browser/server.py prints this once it holds its listening socket.
-const PORT_ANNOUNCEMENT = /^PM_TEST_SERVER_PORT=(\d+)\s*$/m;
+// tests/browser/server.py prints this once it holds its listening socket. Only a
+// complete line counts: a chunk may end mid-number.
+const PORT_ANNOUNCEMENT = /^PM_TEST_SERVER_PORT=(\d+)\r?\n/m;
 
-const pythonServer = port => ['-m', 'tests.browser.server', '--port', String(port)];
+// The server exits when its stdin closes, so a worker that dies without teardown
+// (SIGKILL) leaves no server behind; the launcher holds the pipe's other end.
+const pythonServer = port => ['-m', 'tests.browser.server', '--port', String(port), '--exit-on-stdin-eof'];
 
 function describeExit({ code, signal }) {
     return signal ? `signal ${signal}` : `code ${code}`;
@@ -24,22 +30,30 @@ function describeExit({ code, signal }) {
 // readiness page. `port` 0 (the default) lets the server bind an OS-chosen port
 // itself and announce it on stdout, so nothing can take the port between
 // choosing and binding. Resolves to {port, url, exited, exitStatus,
-// stderrTail(), stop()}; rejects with the server's stderr tail when it exits
-// or stays unready.
+// pid, stderrTail(), stderrMark(), stderrSince(mark), stop()}; rejects with the
+// server's stderr tail when it exits or stays unready. stdin is a pipe this
+// process holds open for the server's life.
 export async function startBrowserServer({
     port = 0,
     command = process.env.PM_TEST_PYTHON || 'python',
     args = pythonServer,
     cwd = repositoryRoot,
     timeoutMs = STARTUP_TIMEOUT_MS,
+    stderrLogChars = STDERR_LOG_CHARS,
 } = {}) {
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
         throw new Error(`startBrowserServer needs a port from 0 to 65535, got ${port}`);
     }
-    const child = spawn(command, args(port), { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args(port), { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Never written; closing it (or this process dying) tells the server to exit.
+    child.stdin.on('error', () => {});
     let stderr = '';
+    let stderrTotal = 0;
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-STDERR_TAIL_BYTES); });
+    child.stderr.on('data', chunk => {
+        stderr = (stderr + chunk).slice(-Math.max(stderrLogChars, STDERR_TAIL_BYTES));
+        stderrTotal += chunk.length;
+    });
     let stdout = '';
     let announced = null;
     child.stdout.setEncoding('utf8');
@@ -53,11 +67,21 @@ export async function startBrowserServer({
     const killOnExit = () => child.kill('SIGKILL');
     process.once('exit', killOnExit);
     const server = {
+        pid: child.pid,
         port: port || null,
         url: port ? `http://${HOST}:${port}` : null,
         exitStatus: null,
         stopping: false,
-        stderrTail: () => stderr.trimEnd(),
+        stderrTail: () => stderr.slice(-STDERR_TAIL_BYTES).trimEnd(),
+        // A position in the server's stderr stream, for stderrSince().
+        stderrMark: () => stderrTotal,
+        // What the server wrote after `mark`, at most stderrLogChars of the newest of it.
+        stderrSince(mark) {
+            const kept = Math.min(stderr.length, stderrLogChars);
+            const keptFrom = stderrTotal - kept;
+            const log = stderr.slice(stderr.length - kept);
+            return mark >= keptFrom ? log.slice(mark - keptFrom) : STDERR_DROPPED + log;
+        },
         exited: new Promise(done => {
             child.once('error', error => {
                 stderr += `\n${error.message}`;
@@ -71,6 +95,7 @@ export async function startBrowserServer({
         }),
         async stop() {
             server.stopping = true;
+            child.stdin.destroy();
             if (server.exitStatus === null) {
                 child.kill('SIGTERM');
                 const stopped = await Promise.race([server.exited, delay(STOP_TIMEOUT_MS).then(() => false)]);
@@ -115,6 +140,14 @@ export async function startBrowserServer({
         await delay(POLL_INTERVAL_MS);
     }
     throw await failure(`was not ready at ${READY_PATH} within ${timeoutMs} ms`);
+}
+
+// After a test: when it did not end as expected, attach what the server wrote to
+// stderr since `mark` (an aiohttp traceback names the cause a "got 500" hides).
+export async function attachServerStderr(testInfo, server, mark) {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    const log = server.stderrSince(mark);
+    if (log) await testInfo.attach('server-stderr', { body: log, contentType: 'text/plain' });
 }
 
 // Keep one live server for a Playwright worker. ensure() returns the running

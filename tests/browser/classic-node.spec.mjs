@@ -57,7 +57,8 @@ test('Classic keeps immediate selection, search query and metadata serialization
 });
 
 test('Classic detaches native text synchronization on removal',async({page})=>{
-    await page.waitForTimeout(60);
+    // The page installs the text sync (serializeValue and its listeners) in a 50 ms timer; wait for it, not for time.
+    await expect.poll(()=>page.evaluate(()=>typeof node.widgets.find(item=>item.name==='text').serializeValue)).toBe('function');
     const values=await page.evaluate(()=>{
         const widget=node.widgets.find(item=>item.name==='text');
         widget.inputEl.value='Before removal';widget.inputEl.dispatchEvent(new Event('input'));

@@ -382,7 +382,9 @@ async function observeLibrary(page, hold=false) {
             // Resolves once two consecutive rendering frames find no Library frame queued. Each check runs inside a native
             // frame callback, so a frame the page queues later in that update (a scroll event, a ResizeObserver delivery) is
             // still pending there. A timer is not a frame: under CPU load a 60 ms wait could end before the scroll's frame.
-            settled(){return new Promise(resolve=>{let quiet=0;const check=()=>{quiet=pending.size?0:quiet+1;if(quiet>=2)resolve();else raf(check);};raf(check);});},
+            // A frame that never drains (a rAF loop, or settling while frames are held) fails after `limit` frames with the stats.
+            settled(limit=600){return new Promise((resolve,reject)=>{let quiet=0,frames=0;const check=()=>{frames++;quiet=pending.size?0:quiet+1;
+                if(quiet>=2)resolve();else if(frames>=limit)reject(new Error(`Library never settled within ${limit} frames: ${JSON.stringify(window.libraryObservation.stats())}`));else raf(check);};raf(check);});},
             stats(){return {requested,pending:pending.size,heldFrames:heldFrames.size,measurements:records.reduce((sum,record)=>sum+record.entries.size,0),mutations,unmounted,targets:records.reduce((sum,record)=>sum+record.targets.size,0)};},
         };
     },{hold});
@@ -686,6 +688,17 @@ test('title and Explore history are buttons that open history',async({page,reque
     const first=cards(page).first();await first.locator('.card-title > button').focus();await page.keyboard.press('End');
     await expect(cards(page).last().locator('.card-title > button')).toBeFocused();
     await page.keyboard.press('ArrowLeft');await expect(cards(page).nth(1).locator('.card-title > button')).toBeFocused();
+});
+
+test('settling fails with the observation stats when a Library frame stays queued',async({page,request})=>{
+    await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}});
+    await observeLibrary(page);await page.addInitScript(()=>{window.IntersectionObserver=undefined;});
+    await page.goto(route);await expect(cards(page).first()).toBeVisible();await settleLibrary(page);
+    await page.evaluate(()=>{window.libraryObservation.holdFrames();dispatchEvent(new Event('scroll'));});
+    await expect.poll(()=>page.evaluate(()=>window.libraryObservation.stats().heldFrames)).toBeGreaterThan(0);
+    const failure=await page.evaluate(()=>window.libraryObservation.settled(30).then(()=>'settled',error=>error.message));
+    expect(failure).toMatch(/^Library never settled within 30 frames: \{.*"heldFrames":[1-9]/);
+    await page.evaluate(()=>window.libraryObservation.releaseFrames());await settleLibrary(page);
 });
 
 test('virtualized rows keep measured heights with the clamp',async({page,request,isMobile})=>{

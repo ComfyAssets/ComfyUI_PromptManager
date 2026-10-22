@@ -1,13 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
-import { fileURLToPath } from 'node:url';
-import { startBrowserServer, createServerSupervisor } from '../../tools/vendor/start-browser-server.mjs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { startBrowserServer, createServerSupervisor, attachServerStderr } from '../../tools/vendor/start-browser-server.mjs';
 import { workflowWorkers } from '../../tools/vendor/test-workers.mjs';
 
 const fakeServer = fileURLToPath(new URL('./fake-browser-server.mjs', import.meta.url));
 const fake = (...extra) => ({ command: process.execPath, args: port => [fakeServer, '--port', String(port), ...extra] });
 const REAL_SERVER_TIMEOUT_MS = 90_000;
+const launcher = fileURLToPath(new URL('../../tools/vendor/start-browser-server.mjs', import.meta.url));
+
+/** Polls `check` until it is truthy, failing with `what` after `ms`. */
+async function waitFor(check, what, ms = 5_000) {
+    const deadline = Date.now() + ms;
+    while (!check()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+        await delay(20);
+    }
+}
+
+async function writeStderr(server, text) {
+    await (await fetch(`${server.url}/__stderr?text=${encodeURIComponent(text)}`)).text();
+    await waitFor(() => server.stderrTail().endsWith(text.trimEnd()), `stderr ${JSON.stringify(text)}`);
+}
+
+const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+/** Starts a server from a separate Node worker process, SIGKILLs that worker and returns the server's pid. */
+async function serverOfKilledWorker(options) {
+    const script = `import { startBrowserServer } from ${JSON.stringify(pathToFileURL(launcher).href)};
+        const server = await startBrowserServer(${options});
+        console.log('SERVER_PID=' + server.pid);
+        setInterval(() => {}, 1000);`;
+    const worker = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let out = '';
+    worker.stdout.setEncoding('utf8');
+    worker.stdout.on('data', chunk => { out += chunk; });
+    await waitFor(() => /SERVER_PID=\d+\n/.test(out) || worker.exitCode !== null, 'the worker to start its server', REAL_SERVER_TIMEOUT_MS);
+    const pid = Number(/SERVER_PID=(\d+)/.exec(out)?.[1]);
+    assert.ok(pid > 0, `the worker started a server (output: ${out})`);
+    assert.ok(alive(pid), 'the server runs while its worker lives');
+    worker.kill('SIGKILL');
+    await once(worker, 'exit');
+    return pid;
+}
 
 function listen(port = 0) {
     return new Promise((resolve, reject) => {
@@ -105,6 +144,58 @@ test('supervisor reports a startup failure once and tries again on the next ensu
     const server = await supervisor.ensure();
     assert.equal(attempts, 2);
     assert.equal(await (await fetch(`${server.url}/prompt_manager/test`)).text(), 'ready');
+});
+
+test('the port announcement counts only once its line is complete', async t => {
+    const server = await startBrowserServer({ ...fake('--split-announce'), timeoutMs: 5_000 });
+    t.after(() => server.stop());
+    assert.equal(await (await fetch(`${server.url}/prompt_manager/test`)).text(), 'ready');
+    assert.equal(server.url, `http://127.0.0.1:${server.port}`);
+});
+
+test('server stderr since a mark holds only what came after it, bounded to the newest output', async t => {
+    const server = await startBrowserServer({ ...fake(), stderrLogChars: 64 });
+    t.after(() => server.stop());
+    await writeStderr(server, 'earlier test\n');
+    const mark = server.stderrMark();
+    assert.equal(server.stderrSince(mark), '');
+    await writeStderr(server, 'Traceback: this test\n');
+    assert.equal(server.stderrSince(mark), 'Traceback: this test\n');
+    const flood = `${'x'.repeat(80)}newest\n`;
+    await writeStderr(server, flood);
+    const kept = server.stderrSince(mark);
+    assert.match(kept, /^\[earlier server stderr dropped\]\n/);
+    assert.ok(kept.endsWith('newest\n'), 'the newest output is kept');
+    assert.ok(kept.length <= 64 + '[earlier server stderr dropped]\n'.length, `bounded, got ${kept.length} chars`);
+});
+
+test('a failed test gets the server stderr written during it attached; a passing one does not', async t => {
+    const server = await startBrowserServer(fake());
+    t.after(() => server.stop());
+    const attached = [];
+    const info = status => ({ status, expectedStatus: 'passed', attach: async (name, options) => { attached.push({ name, ...options }); } });
+    await writeStderr(server, 'before the test\n');
+    const mark = server.stderrMark();
+    await attachServerStderr(info('failed'), server, mark);
+    assert.deepEqual(attached, [], 'nothing to attach when the server wrote nothing');
+    await writeStderr(server, 'Traceback (most recent call last): boom\n');
+    await attachServerStderr(info('passed'), server, mark);
+    assert.deepEqual(attached, [], 'a passing test attaches nothing');
+    await attachServerStderr(info('timedOut'), server, mark);
+    assert.equal(attached.length, 1);
+    assert.equal(attached[0].name, 'server-stderr');
+    assert.equal(attached[0].contentType, 'text/plain');
+    assert.equal(String(attached[0].body), 'Traceback (most recent call last): boom\n');
+});
+
+test('a server exits with its worker even when the worker is SIGKILLed', async () => {
+    const pid = await serverOfKilledWorker(`{ command: process.execPath, args: port => [${JSON.stringify(fakeServer)}, '--port', String(port), '--exit-on-stdin-eof'] }`);
+    await waitFor(() => !alive(pid), `server ${pid} to exit after its worker died`);
+});
+
+test('tests/browser/server.py exits with a SIGKILLed worker', { timeout: 2 * REAL_SERVER_TIMEOUT_MS }, async () => {
+    const pid = await serverOfKilledWorker(`{ timeoutMs: ${REAL_SERVER_TIMEOUT_MS} }`);
+    await waitFor(() => !alive(pid), `server.py ${pid} to exit after its worker died`, 15_000);
 });
 
 test('tests/browser/server.py binds an OS-chosen port for --port 0 and still honours --port N', { timeout: 2 * REAL_SERVER_TIMEOUT_MS }, async t => {

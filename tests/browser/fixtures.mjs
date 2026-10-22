@@ -3,8 +3,10 @@
 // and database. `baseURL` (and so `page`, `request` and `browser.newContext`)
 // points at that worker's server. A server that dies fails the running test
 // with its stderr tail, and the next test in the worker gets a fresh server.
+// A test that fails gets the stderr its server wrote during it attached as
+// `server-stderr`.
 import { test as base, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
-import { createServerSupervisor, startBrowserServer } from '../../tools/vendor/start-browser-server.mjs';
+import { attachServerStderr, createServerSupervisor, startBrowserServer } from '../../tools/vendor/start-browser-server.mjs';
 
 const SERVER_FIXTURE_TIMEOUT_MS = 90_000;
 
@@ -17,9 +19,11 @@ export const test = base.extend({
             await supervisor.stop();
         }
     }, { scope: 'worker', timeout: SERVER_FIXTURE_TIMEOUT_MS }],
-    workerServer: [async ({ testServer }, use) => {
+    workerServer: [async ({ testServer }, use, testInfo) => {
         const server = await testServer.ensure();
+        const mark = server.stderrMark();
         await use(server);
+        await attachServerStderr(testInfo, server, mark);
         const crash = testServer.crash(server);
         if (crash) throw crash;
     }, { auto: true, timeout: SERVER_FIXTURE_TIMEOUT_MS }],
