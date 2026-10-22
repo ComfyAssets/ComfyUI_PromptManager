@@ -64,11 +64,16 @@ test('actual Tags page reloads the selected filter and opens its image viewer', 
     await page.goto('/prompt_manager/admin#/tags');
     await page.locator('[data-tag-name="cats"]').click();
     await expect(page.locator('#tagPromptsGrid')).toContainText('Cat portrait');
+    const dogs = page.waitForResponse(response => response.url().includes('/tags/dogs/prompts?'));
     await page.locator('[data-tag-name="dogs"]').click();
+    const [shown] = (await (await dogs).json()).prompts[0].images;
     await expect(page.locator('#tagPromptsGrid')).toContainText('Dog landscape');
     await expect(page.locator('#tagPromptsGrid')).not.toContainText('Cat portrait');
     await page.locator('#tagPromptsGrid img').first().click();
     await expect(page.locator('.viewer-canvas img')).toBeVisible();
+    // The viewer's title names the shown image through the page's title callback. ViewerJS renders it only once the
+    // image is viewed, so closing at "visible" alone left the callback unrun on slower hosts (CI coverage missed it).
+    await expect(page.locator('.viewer-title')).toHaveText(shown.filename);
     await page.locator('.viewer-container').getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page.locator('.viewer-container')).toHaveCount(0);
 });
