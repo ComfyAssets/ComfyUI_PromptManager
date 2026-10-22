@@ -16,10 +16,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Timeouts are the measured job time plus about 50%, so a hung run stops early.
-# Before sharding (main 2cecfcf, one worker): frontend coverage 32m10s, page workflows firefox 18m59s,
-# webkit 19m26s. Sharded with 3 workers per job: estimates pending the first CI run (coverage shard ~10m,
-# merge ~5m, workflow shard ~8m). Re-measure when a job passes its estimate.
+# Timeouts are the measured job time plus at least 50%, and never under 20 minutes for a browser job,
+# because runner speed varies. Before sharding (main 2cecfcf, one worker): frontend coverage 32m10s,
+# page workflows firefox 18m59s, webkit 19m26s. First sharded run (PR #274 run 39712909047, 3 workers,
+# no npm cache, where npm ci stalled for 5m in six of eight jobs): coverage shards 11m19s/10m47s/10m49s
+# (tests 5m20s/4m42s/4m46s), merge 5m52s (report and check 4s), firefox shards 7m53s/9m27s (tests
+# 4m41s/3m29s), webkit shards 12m25s+ (cancelled at the old 12-minute limit after its 267 tests passed in
+# 6m29s) and 4m53s (tests 3m08s).
 jobs:
   frontend-coverage:
     name: frontend coverage (shard ${{ matrix.shard }}/3)
@@ -30,7 +33,7 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
-    timeout-minutes: 15
+    timeout-minutes: 20
     # Public-repo ubuntu-latest runners have 4 vCPUs: three Playwright workers, each with its own test
     # server, leave one CPU for the servers and the runner.
     env:
@@ -57,6 +60,13 @@ jobs:
           "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
           echo "$venv/bin" >> "$GITHUB_PATH"
       - run: python --version && node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
       # Shard 1 also runs the node units and the viewer suite, so the vendor pins and the tooling tests
       # run on the lightest shard instead.
@@ -89,10 +99,17 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - run: node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
       # Each artifact lands in its own coverage-raw-N directory, so the next step can count them.
       - uses: actions/download-artifact@v8
@@ -151,7 +168,7 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
-    timeout-minutes: 12
+    timeout-minutes: 20
     # Public-repo ubuntu-latest runners have 4 vCPUs: three Playwright workers, each with its own test
     # server, leave one CPU for the servers and the runner.
     env:
@@ -179,6 +196,13 @@ jobs:
           "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
           echo "$venv/bin" >> "$GITHUB_PATH"
       - run: python --version && node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
       - name: Page workflows in ${{ matrix.browser }}, shard ${{ matrix.shard }}/2
         run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }} --shard ${{ matrix.shard }}/2

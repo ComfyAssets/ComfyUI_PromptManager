@@ -195,3 +195,24 @@ test('page workflows run each browser in two shards', () => {
     assert.match(workflows, /^ {6}fail-fast: false$/m);
     assert.match(workflows, /name: browser-traces-\$\{\{ matrix\.browser \}\}-shard-\$\{\{ matrix\.shard \}\}/);
 });
+
+test('every npm ci restores the npm download cache keyed on the vendor lockfile first', () => {
+    const installing = [...allJobs].filter(([, body]) => /npm ci --prefix tools\/vendor/.test(body));
+    assert.deepEqual(installing.map(([id]) => id).sort(), ['browser-workflows', 'frontend-coverage', 'frontend-coverage-merge']);
+    for (const [id, body] of installing) {
+        const jobSteps = steps(body);
+        const cacheAt = jobSteps.findIndex(step => /uses: actions\/cache@v\d+/.test(step));
+        const installAt = jobSteps.findIndex(step => /npm ci --prefix tools\/vendor/.test(step));
+        assert.ok(cacheAt >= 0 && cacheAt < installAt, `${id} restores the npm cache before npm ci`);
+        assert.match(jobSteps[cacheAt], /^ {10}path: ~\/\.npm$/m, `${id} caches npm's download cache, not node_modules`);
+        assert.match(jobSteps[cacheAt], /hashFiles\('tools\/vendor\/package-lock\.json'\)/, `${id} keys the cache on the lockfile`);
+        assert.match(jobSteps[installAt], /npm ci --prefix tools\/vendor --ignore-scripts/, `${id} still installs without scripts`);
+    }
+});
+
+test('browser job timeouts keep a real margin over measured runs', () => {
+    for (const id of ['frontend-coverage', 'browser-workflows']) {
+        const minutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(allJobs.get(id))[1]);
+        assert.ok(minutes >= 20, `${id} allows at least 20 minutes, since runner speed varies`);
+    }
+});
