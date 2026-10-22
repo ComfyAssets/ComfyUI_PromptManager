@@ -391,6 +391,28 @@ test('URLs and media end with their owning session', async ({ page }) => {
     expect(state.revoked.filter(url => url === state.created[7])).toHaveLength(1);
 });
 
+test('replacing a video that just started loading never blocks the page', async ({ context, browserName }) => {
+    test.setTimeout(120000);
+    // WebKit (GStreamer) blocked the page when a video's pipeline was reset with load() in the same task that
+    // removed its src, while it was still starting: the next chooser selection never completed. Each fresh page
+    // replaces its first video as soon as it shows.
+    for (let attempt = 0; attempt < 15; attempt++) {
+        const page = await context.newPage();
+        try {
+            if (attempt === 0) await startCoverage(page, browserName);
+            await openInspect(page);
+            await choose(page, localFixture('core-tags.webm', 'video/webm'));
+            await expect(preview(page).locator('video.local-file-preview')).toBeVisible();
+            await chooser(page).setInputFiles(parityPng('f02.png'), { timeout: 8000 });
+            await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
+            await expect(preview(page).locator('video')).toHaveCount(0);
+            if (attempt === 0) await saveCoverage(page, browserName);
+        } finally {
+            await page.close();
+        }
+    }
+});
+
 test('replacing a file mid-read never shows or sends the old record', async ({ page, context }) => {
     const host = await bridgeHost(context);
     try {

@@ -1296,8 +1296,10 @@ mapped differences"):
   `image/png,image/jpeg,image/webp` plus `video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.wmv`. A
   video previews in the same `#local-preview` slot as `video.local-file-preview` with
   native `controls`, `playsInline`, `preload="metadata"` and `muted`, never autoplays
-  inline, and is paused, unloaded (`removeAttribute('src')`, `load()`) and removed on
-  replacement or dispose.
+  inline, and is paused, has its `src` removed and is removed from the page on replacement
+  or dispose, before its URL is revoked; its `load()` reset runs in the next task, because
+  WebKit (GStreamer) blocked the page when a still-starting video was reset in the same
+  task (`replacing a video that just started loading never blocks the page`).
 - **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
   concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose
   one image or video file.", "This file type cannot be previewed or inspected here.

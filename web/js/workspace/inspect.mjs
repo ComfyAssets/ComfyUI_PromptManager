@@ -37,10 +37,14 @@ function element(tag, className, text) {
     return node;
 }
 
-/** Stops a preview from holding its blob: URL: media is paused and unloaded before the session revokes the URL. */
+/**
+ * Stops a preview from holding its blob: URL: media is paused and its src dropped before the session revokes the URL.
+ * The media resets with load() in the next task: WebKit (GStreamer) blocked the page when a starting video was reset in
+ * the same task that removed its src.
+ */
 function releaseMedia(node) {
     if (!node) return;
-    if (node instanceof HTMLMediaElement) { node.pause(); node.removeAttribute('src'); node.load(); }
+    if (node instanceof HTMLMediaElement) { node.pause(); node.removeAttribute('src'); setTimeout(() => node.load(), 0); }
     else node.removeAttribute('src');
     node.remove();
 }
