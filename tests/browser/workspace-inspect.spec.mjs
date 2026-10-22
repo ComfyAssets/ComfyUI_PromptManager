@@ -355,6 +355,8 @@ test('URLs and media end with their owning session', async ({ page }) => {
     });
     await choose(page, localFixture('core-tags.webm', 'video/webm'));
     await expect(preview(page).locator('video')).toBeVisible();
+    // A settled video (metadata read, or failed) is reset with load() when it is released.
+    await expect.poll(() => preview(page).locator('video').evaluate(node => node.readyState >= 1 || !!node.error)).toBe(true);
     // Replacement.
     await choose(page, parityPng('f02.png'));
     await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
@@ -393,9 +395,9 @@ test('URLs and media end with their owning session', async ({ page }) => {
 
 test('replacing a video that just started loading never blocks the page', async ({ context, browserName }) => {
     test.setTimeout(120000);
-    // WebKit (GStreamer) blocked the page when a video's pipeline was reset with load() in the same task that
-    // removed its src, while it was still starting: the next chooser selection never completed. Each fresh page
-    // replaces its first video as soon as it shows.
+    // WebKit (GStreamer) blocked the page when a video whose pipeline was still starting was reset with load(): the
+    // next chooser selection, or the steps after it, never completed. Each fresh page replaces its first video as
+    // soon as it shows.
     for (let attempt = 0; attempt < 15; attempt++) {
         const page = await context.newPage();
         try {

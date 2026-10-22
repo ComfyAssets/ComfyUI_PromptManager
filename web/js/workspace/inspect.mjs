@@ -39,13 +39,16 @@ function element(tag, className, text) {
 
 /**
  * Stops a preview from holding its blob: URL: media is paused and its src dropped before the session revokes the URL.
- * The media resets with load() in the next task: WebKit (GStreamer) blocked the page when a starting video was reset in
- * the same task that removed its src.
+ * A settled video (metadata read, or failed) is then reset with load() to free its decoder at once. A video still
+ * starting is not: WebKit (GStreamer) blocked the page when such a pipeline was reset, so it is left to be collected.
  */
 function releaseMedia(node) {
     if (!node) return;
-    if (node instanceof HTMLMediaElement) { node.pause(); node.removeAttribute('src'); setTimeout(() => node.load(), 0); }
-    else node.removeAttribute('src');
+    if (node instanceof HTMLMediaElement) {
+        const settled = node.readyState >= HTMLMediaElement.HAVE_METADATA || node.error !== null;
+        node.pause(); node.removeAttribute('src');
+        if (settled) node.load();
+    } else node.removeAttribute('src');
     node.remove();
 }
 
