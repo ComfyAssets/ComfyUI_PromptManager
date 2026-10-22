@@ -13,6 +13,21 @@ ffmpeg -f lavfi -i testsrc=size=32x32:rate=4:duration=1 \
 
 Browser tests use the committed file; FFmpeg is not required to run them.
 
+# Local Inspect header fixtures
+
+`local-inspect/tiny.jpg` (48x32) and `local-inspect/tiny.webp` (40x24) are original
+synthetic FFmpeg color test patterns, under 4 KB, dedicated to the public domain
+under CC0-1.0. `tests/js/png-local-reader.test.js` reads their dimensions with the
+browser header reader and `tests/test_local_inspect_parity.py` checks the same two
+files against Pillow.
+
+Reproduce with FFmpeg:
+
+```sh
+ffmpeg -f lavfi -i testsrc=size=48x32:rate=1 -frames:v 1 -q:v 10 tiny.jpg
+ffmpeg -f lavfi -i testsrc=size=40x24:rate=1 -frames:v 1 -c:v libwebp -quality 40 tiny.webp
+```
+
 # Inspection parity fixtures
 
 `inspection_parity/` holds small synthetic PNGs (`f01b.png` ... `f24.png`, each
