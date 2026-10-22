@@ -18,14 +18,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { moduleUrl } from './module-url.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const pngMetadata = require(path.join(here, '..', '..', '..', 'web', 'js', 'png-metadata.js'));
 const web = path.join(here, '..', '..', '..', 'web', 'js', 'workspace');
-const { selectVideoCarrier } = await import(path.join(web, 'local-video.mjs'));
-const { projectMetadata } = await import(path.join(web, 'local-projection.mjs'));
-const { readLocalFile, toInspectionRead } = await import(path.join(web, 'local-inspection.mjs'));
+// ES modules import by file URL (a Windows path would parse as a URL scheme).
+const { selectVideoCarrier } = await import(moduleUrl(path.join(web, 'local-video.mjs')));
+const { projectMetadata } = await import(moduleUrl(path.join(web, 'local-projection.mjs')));
+const { readLocalFile, toInspectionRead } = await import(moduleUrl(path.join(web, 'local-inspection.mjs')));
 
 const selectionRead = (selection) => selection.status === 'complete' ?
     { records: selection.records, record_formats: selection.record_formats, carrierText: selection.carrierText, limited: selection.limited } : null;
