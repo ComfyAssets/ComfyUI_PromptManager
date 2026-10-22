@@ -22,7 +22,7 @@ test('execution script discovers only the new matrix and preserves all 78 origin
         'test', '--config', config, '--list'], { cwd: root, encoding: 'utf8',
         env: { ...process.env, PM_COMFY_ROOT: '/unused-pinned-checkout' } });
     const stock = list('tools/vendor/comfyui.config.mjs');
-    assert.match(stock, /Total: 80 tests in 7 files/);
+    assert.match(stock, /Total: 82 tests in 8 files/);  // + local Inspect host case (inspect-sender.spec.mjs, 2 projects)
     assert.doesNotMatch(stock, /execution-history/);
     assert.doesNotMatch(stock, /execution-outputs/);
     const executions = list('tools/vendor/playwright.execution.config.mjs');

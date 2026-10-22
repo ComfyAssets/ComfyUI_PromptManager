@@ -543,6 +543,33 @@ def create_app(root: Path) -> web.Application:
         shutil.copyfile(root / "output" / "shared" / "same.png", destination)
         return web.json_response({"success": True})
 
+    @routes.post("/__test__/add-local-inspect-file")
+    async def add_local_inspect_file(request: web.Request) -> web.Response:
+        """Serve one committed Inspect fixture from the output folder.
+
+        The local Inspect page reads a chosen file in the browser; its page
+        workflow compares that rail with the Images viewer for the same bytes.
+        Only a committed fixture name is accepted.
+        """
+        data = await request.json() if request.can_read_body else None
+        fixtures = CANONICAL_ROOT / "tests" / "fixtures"
+        allowed = {
+            path.name: path
+            for folder in ("inspection_parity", "local-inspect")
+            for path in (fixtures / folder).iterdir()
+            if path.suffix.lower() in {".png", ".jpg", ".webp", ".webm", ".mp4"}
+        }
+        if (
+            not isinstance(data, dict)
+            or set(data) != {"name"}
+            or data["name"] not in allowed
+        ):
+            raise web.HTTPBadRequest()
+        destination = root / "output" / "local-inspect" / data["name"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(allowed[data["name"]], destination)
+        return web.json_response({"success": True})
+
     @routes.get("/api/settings/Comfy.ColorPalette")
     async def palette(request: web.Request) -> web.Response:
         return web.json_response("dark")

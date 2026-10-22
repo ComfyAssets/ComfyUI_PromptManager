@@ -1431,6 +1431,160 @@ npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
   workspace-history.spec.mjs --project chromium --project touch --project firefox --project webkit
 ```
 
+### Inspect a file page and recorded deviations (#249 local Inspect, PR L2)
+
+`#/inspect` ("Inspect a file") is a native workspace route; it no longer hands off to
+the legacy metadata page, which stays reachable from Overview's "Open existing metadata
+inspector" card (`/prompt_manager/gallery.html`). The page is the concept's `#metadata`
+(app.js `renderMetadata` a740–748, selection a1715–1729; style.css 709–722, 1180–1194,
+1543–1545, 1559–1564) in the concept's own classes (`.surface`, `.file-drop`,
+`.spaced-20`, `.local-file-preview`, all from the synced `concept.css`), with no
+`workspace.css` override. One local image (PNG/JPEG/WebP) or video (MP4/MOV/M4V/WebM/MKV;
+AVI/WMV preview only), chosen or dropped, previews inline. The heading's one action opens
+the shared viewer with the full inspector on a record read entirely in this browser
+(`web/js/workspace/inspect.mjs`, `local-session.mjs`, `local-inspection.mjs` and the L1
+readers `png-metadata.js`, `local-video.mjs`, `local-projection.mjs`). Nothing is
+uploaded, imported or stored. Only HTML and JS change, so no ComfyUI restart is needed.
+
+Bounds (the server's own budgets, ported by PR L1; see "Follow-up: local Inspect parity"
+under "Chronological Library history" for the known divergences):
+- PNG: at most 10,000 chunks; keyword 1–79 bytes; every chunk range checked against the
+  File's size before slicing. Role records (`prompt`, `parameters`,
+  `comfyassets_prompt_pairs`) share 2 MiB encoded and 2 MiB decoded (over that, the read
+  fails); a workflow over 4 MiB is `limited`; duplicates are capped at 8 MiB (workflow)
+  and 4 MiB (roles, decoded `parameters`). The sum of slices read from any PNG, however
+  large or sparse, is at most 19,794,389 bytes.
+- Video: the same record rule over the container's tags (per-key carrier first, then the
+  `comment` envelope, then `description`); at most 10,000 boxes or elements; no slice
+  inside `mdat` or a Cluster beyond its header.
+- JPEG/WebP: at most 64 KiB, for dimensions only.
+- Response: 8 MiB of actual UTF-8 JSON; omission order workflow graph, prompt graph, all
+  raw. The whole File is never read with `arrayBuffer()`, `text()` or `stream()`.
+
+Privacy, asserted by `local inspection makes no content request or storage write` and
+`local roles send exactly` in `tests/browser/workspace-inspect.spec.mjs`, and by the
+managed-host spec below: no request carries the file's bytes, name or text (fetch, XHR,
+beacon, WebSocket, EventSource); Inspect writes nothing to `localStorage`,
+`sessionStorage` or IndexedDB; only an explicit Send crosses the host bridge, and its
+payload carries neither the `blob:` URL nor the filename; no console message names the
+file or quotes its prompts (asserted on the managed host). The selection's `blob:` URL belongs to one local session and is revoked once,
+on replacement, route change, unmount or `pagehide`, never while an element in the page holds it: the inline preview
+and, when it is open, the viewer drop their media first. The page, not the session, owns `pagehide`: it closes the
+viewer, releases the inline media, then ends the selection and clears the chooser, so a page restored from the
+back-forward cache shows an empty chooser beside the empty selection (`URLs and media end with their owning
+session`, which also leaves with the viewer open).
+
+Recorded deviations on this page (maintainer rulings LI-3, LI-6; plan "Mock inventory and
+mapped differences"):
+- **D60** (heading action, LI-3): "Open file metadata" (`ca-primary`) replaces the
+  concept's "Open sample metadata". It is `aria-disabled="true"` and
+  `aria-describedby="local-file-note"` (the drop note) until a classified selection is
+  ready, then opens the shared viewer on that file.
+- **D61** (copy, LI-3): the surface `p` reads "Read embedded metadata in this browser.
+  The file is not uploaded or added to your library."; the drop note "Your file stays in
+  this browser. Its metadata opens with “Open file metadata”."; the chooser label "Choose
+  an image or video for a local preview"; the toast "Local preview only. No file
+  uploaded; metadata is available above.". The h2 "Inspect without importing" is the
+  concept's, verbatim.
+- **D62** (accept and video): `accept` is the concept's
+  `image/png,image/jpeg,image/webp` plus `video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.wmv`. A
+  video previews in the same `#local-preview` slot as `video.local-file-preview` with
+  native `controls`, `playsInline`, `preload="metadata"` and `muted`, never autoplays
+  inline, and is paused, has its `src` removed and is removed from the page on replacement
+  or dispose, before its URL is revoked. Each preview owns its listeners, so the page never
+  pins a released node. A settled video (metadata read, or failed) is then reset with
+  `load()` at once; one still starting is reset only once it reports metadata or an error,
+  because WebKit (GStreamer) blocked the page when such a pipeline was reset (`replacing a
+  video that just started loading never blocks the page`, `a video replaced while still
+  starting is reset once it settles`). A WebKit load cut off by the revoked URL usually
+  stalls and never settles; a fallback then only drops the waiting listeners. The viewer's
+  own video teardown was checked the same way (`closing the viewer on a video that just
+  started never blocks the page`, 15 fresh pages on WebKit) and needed no change.
+  Follow-up: on WebKit, a video released exactly at its `loadstart` sometimes blocks the
+  page, with or without any reset and also before the deferred reset (2 of 24 runs in the
+  pinned image), so the `loadstart` spec is skipped on WebKit until that is investigated.
+- **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
+  concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose
+  one image or video file.", "This file type cannot be previewed or inspected here.
+  Choose an image or video file.", "The preview could not be displayed. Metadata and the
+  original remain available in the viewer." and "Embedded metadata could not be read."
+  (the shared inspector's own copy) are `role="alert"`; "Metadata in AVI and WMV files
+  is not read here. The preview and the original remain available." is `role="status"`.
+  A rejected chooser or drop ("Drop one file at a time.", folders, an unsupported drop)
+  keeps the selection and its status line: its alert is a second line after it, removed
+  by the next selection attempt or after the concept's toast interval (6.5 s). The toast
+  "Local preview only…; metadata is available above." shows only for a selection whose
+  status is empty or the AVI/WMV note, never beside an unreadable or failed preview.
+- **D64** (drop, LI-6): `dragover`/`drop` on `.file-drop` accept exactly one File, read
+  only `dataTransfer.files`/`items` (never its strings) and change nothing visually.
+  While the page is mounted, `window` `dragover`/`drop` call `preventDefault`, so a missed
+  drop cannot navigate away. A drop is ignored while a dialog is open.
+- **D65** (no revoke on load): unlike the concept, the preview's `blob:` URL is not
+  revoked on `load`: the viewer and Download original use it until the session ends.
+- **D66** (local rail, in `file-inspector.mjs` for `identity.kind === 'local-file'`): the
+  viewer and rail title is the filename; "File & provenance" opens with "Selected local
+  file · read in this browser", lists Source, Size, Dimensions, Format, Media type and
+  Modified with no Path row and no Show in folder, and ends with "Local file; no saved
+  library association was checked." and Download original. There is no Prompt history
+  action and no category or tag chips.
+
+The chooser keeps naming the chosen file, as the concept's does: it is cleared as the
+picker opens (so choosing the same file again is a new selection), not after `change`,
+and named again with the current File (through a `DataTransfer`, which fires no
+`change`) when the picker is cancelled. An accepted drop names the dropped file, so the
+chooser never names a replaced file and never reads "No file chosen" beside a selection.
+
+Legacy floor (`web/metadata.html`), dispositions:
+- PNG by chooser and by drop: kept (`#local-file`, D64).
+- Positive and negative with Copy: kept, in the shared inspector's prompt blocks.
+- Full text (the old "Show more"): the prompt blocks show the whole text.
+- Raw workflow view and Download workflow JSON: kept, in "Workflow & raw metadata".
+- Copy all summary and filename copy (LI-4): the filename is selectable text in the rail
+  and Download original saves the file under its name. The ruled "Copy settings summary"
+  button after the six facts of the shared full inspector is not part of PR L2; until it
+  lands, the legacy page keeps COPY ALL and stays reachable from Overview.
+- Fully browser-local reading: kept and asserted (privacy above).
+- Case-variant keys `Workflow|comfy|ComfyUI|Prompt|Parameters` (LI-5): a separate
+  backend issue; Inspect follows the server's readers, so the two never disagree.
+
+`tests/browser/inspect-concept.spec.mjs` compares the page with the immutable concept's
+`#metadata` on the concept fixture, at 1600×1100 and 390×844 in both themes, on Chromium
+and touch, in three states: initial, selected (`f02.png` from the parity corpus set into
+both `#local-file` inputs with a real `setInputFiles`) and viewer-open (the heading
+action). `withProductionCopy` applies D60–D62 to the open concept page before it is
+measured (it throws if the concept's own copy changed), so the browser lays the concept
+out with production's words; `mapViewerConcept` applies D66 (title, no tag chips, no
+Prompt history). The diff of the heading, surface, drop area (icon, label, input, note),
+preview and viewer (dialog box, layout below its header, toolbar control order, rail
+section order) must then be empty. Pinned values are asserted on production: surface
+padding 22px and radius 7px; drop area dashed 1px border, radius 7px, min-height 170px,
+gap 12px, padding 22px, margin-top 20px; h2 17px/600; p 12px; input 12px and
+max-width 100%; preview max-height 400px, `object-fit: contain`, margin-top 20px. The
+chooser's displayed name is asserted to be `f02.png` in both documents. `mutation is
+noticed` makes the drop border solid (noticed on all four sides and nowhere else),
+renames the label and removes the note. Paired captures
+(`{concept,production}-{initial,selected,viewer}-{dark,light}-{1600,390}.png`) and
+`inspect-geometry.json` are attached as test artifacts; there are no PNG baselines.
+
+`tests/comfyui/inspect-sender.spec.mjs` (`local file roles send exactly across renderer
+transitions`) runs on the managed CPU host: the Inspect page reads a PNG whose positive
+spans lines and whose negative is a ConditioningZeroOut (explicitly empty) and
+`core-tags.webm`, and sends each pair to a Prompt Manager (+/-) node in Classic and
+Nodes 2.0, switching both ways with a graph reload each time. Each send previews the
+node's current and new roles, writes exactly those roles, and neither queues nor loads a
+workflow. A connected `negative_text` input rejects the whole preview with no change. The
+workspace page makes no non-GET request and logs neither filename nor prompt text.
+Follow-up (pair node, separate investigation): the node's `text` widget ignored a value
+set after a `PrimitiveString` linked `negative_text` (it kept its prior value), so this spec
+and `library-sender.spec.mjs` set the positive before connecting the negative input.
+
+```sh
+node --test tests/js/workspace-local-session.test.js tests/js/workspace-state.test.js
+npm run --prefix tools/vendor test:workflows -- inspect-concept.spec.mjs workspace-inspect.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+npm run --prefix tools/vendor test:comfyui -- inspect-sender.spec.mjs
+```
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no
