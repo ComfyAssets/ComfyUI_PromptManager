@@ -16,6 +16,12 @@ from PIL import Image
 # A loader takes (model_type, use_gpu) and returns ("gguf" | "wd14" | "hf", backend)
 ModelLoader = Callable[[str, bool], Tuple[str, Any]]
 
+# Suggestions keep only names a Save accepts (the vocabulary tag rules).
+try:
+    from ..database.vocabulary import validate_vocabulary_tag_name
+except ImportError:
+    from database.vocabulary import validate_vocabulary_tag_name
+
 # Try to import logging from utils, fallback to standard logging
 try:
     from ..utils.logging_config import get_logger
@@ -795,8 +801,10 @@ class AutoTagService:
         WD14 pairs carry the real probability, best first; language models
         (GGUF, HF) have no score, so their tags keep the output order with
         ``None``. Names are distinct case-insensitively (first one wins).
-        ``prompt`` is used for this call only; ``custom_prompt`` is never
-        changed.
+        A name Save would reject (over 50 characters, a control character
+        such as a newline, a comma) is skipped before the dedupe and the
+        ``limit`` count. ``prompt`` is used for this call only;
+        ``custom_prompt`` is never changed.
         """
         if type(limit) is not int or not 1 <= limit <= MAX_SUGGESTION_LIMIT:
             raise ValueError(
@@ -807,7 +815,11 @@ class AutoTagService:
         )
         suggestions: List[Tuple[str, Optional[float]]] = []
         seen = set()
-        for name, score in scored:
+        for raw, score in scored:
+            try:
+                name = validate_vocabulary_tag_name(raw)
+            except ValueError:
+                continue
             key = name.casefold()
             if key in seen:
                 continue

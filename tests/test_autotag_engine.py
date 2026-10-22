@@ -387,6 +387,22 @@ class TestTagSuggestions(EngineTestCase):
             suggestions, [("zebra", None), ("apple", None), ("mango_tree", None)]
         )
 
+    def test_suggestions_skip_names_save_would_reject_before_the_limit(self):
+        from database.annotations import normalize_image_tags
+
+        too_long = "x" * 60
+        service = self._gguf(f"{too_long}, sky\ncloud, zebra, apple, mango, kiwi, plum")
+
+        suggestions = service.generate_tag_suggestions(
+            str(self.image_path), limit=3, prompt="tags please"
+        )
+
+        # The 60-character part and the part holding a newline are dropped
+        # before the count, so three valid chips still come back.
+        names = [name for name, _ in suggestions]
+        self.assertEqual(names, ["zebra", "apple", "mango"])
+        self.assertEqual(normalize_image_tags(names), names)
+
     def test_generate_tags_return_shape_unchanged(self):
         service = self._wd14()
         self.assertEqual(
