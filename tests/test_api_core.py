@@ -448,6 +448,20 @@ class TestUiRoutes(CoreRoutesTestCase):
         resp = await self.client.request("GET", "/prompt_manager/test")
         self.assertTrue((await resp.json())["success"])
 
+    async def test_image_annotation_routes_are_registered(self):
+        table = {
+            (route.method, route.resource.canonical)
+            for route in self.app.router.routes()
+            if route.resource is not None
+        }
+        for entry in (
+            ("POST", "/prompt_manager/image-annotations/observe"),
+            ("GET", "/prompt_manager/image-annotations/capture/{token}"),
+            ("DELETE", "/prompt_manager/image-annotations/capture/{token}"),
+            ("PUT", "/prompt_manager/image-annotations/tags"),
+        ):
+            self.assertIn(entry, table)
+
 
 class TestStaticRoutes(CoreRoutesTestCase):
 
