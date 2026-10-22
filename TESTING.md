@@ -1373,8 +1373,10 @@ Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
 one explicit action captures one rooted media file into an owner-only
 `prompt-manager-captures-*` temp directory, streaming it in 1 MiB chunks while
 hashing, with the opened descriptor compared to the path (`dev`, `ino` where
-meaningful, `size`, `mtime_ns`, `ctime_ns`) before and after the copy; any
-disagreement is `CaptureChanged` and the copy is removed. Aliases (a symlinked
+meaningful, `size`, `mtime_ns`) before and after the copy and `ctime_ns`
+compared between the two `fstat` reads (Python 3.12+ on Windows reports the
+change time from `stat` but the creation time from `fstat`); any disagreement
+is `CaptureChanged` and the copy is removed. Aliases (a symlinked
 file or directory, even inside the root), escapes, non-media names and
 directories are `CaptureDenied`; the locator is
 `normcase(join(realpath(root), relative))`, so a symlinked root shares the

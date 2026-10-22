@@ -146,13 +146,18 @@ class _Entry:
         self.doomed = False
 
 
-def _same_file(before: os.stat_result, after: os.stat_result) -> bool:
-    """Size, mtime and change time must agree; device/inode where meaningful."""
-    if (
-        before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or before.st_ctime_ns != after.st_ctime_ns
-    ):
+def _same_file(
+    before: os.stat_result, after: os.stat_result, *, change_time: bool
+) -> bool:
+    """Size and mtime must agree, device/inode where meaningful.
+
+    The change time is compared only between two reads of the same kind
+    (``fstat`` before and after the copy): Windows reports the creation time
+    from ``fstat`` but, on Python 3.12+, the change time from ``stat``.
+    """
+    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+        return False
+    if change_time and before.st_ctime_ns != after.st_ctime_ns:
         return False
     if before.st_ino and after.st_ino and before.st_ino != after.st_ino:
         return False
@@ -483,7 +488,7 @@ class CaptureStore:
             raise CaptureChanged(f"The file could not be opened: {error}") from None
         with os.fdopen(fd, "rb") as stream:
             opened = os.fstat(stream.fileno())
-            if not _same_file(before, opened):
+            if not _same_file(before, opened, change_time=False):
                 raise CaptureChanged("The file changed before it was read")
             while True:
                 chunk = self._read(stream, CHUNK_SIZE)
@@ -496,13 +501,17 @@ class CaptureStore:
                 if sink is not None:
                     sink.write(chunk)
             after = os.fstat(stream.fileno())
-        if total != before.st_size or not _same_file(before, after):
+        if (
+            total != before.st_size
+            or not _same_file(opened, after, change_time=True)
+            or not _same_file(before, after, change_time=False)
+        ):
             raise CaptureChanged("The file changed while it was read")
         try:
             current = os.stat(candidate)
         except OSError:
             raise CaptureChanged("The file is no longer there") from None
-        if not _same_file(before, current):
+        if not _same_file(before, current, change_time=False):
             raise CaptureChanged("The path names another file now")
         if os.path.normcase(os.path.realpath(candidate)) != locator:
             raise CaptureChanged("The path resolves elsewhere now")

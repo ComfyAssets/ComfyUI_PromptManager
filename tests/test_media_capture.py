@@ -247,7 +247,9 @@ class CaptureStoreTestCase(unittest.TestCase):
         self.assertEqual(
             cap.locator, os.path.normcase(os.path.realpath(link_root / "sub/a.png"))
         )
-        self.assertTrue(cap.locator.startswith(os.path.normcase(str(real_root))))
+        self.assertTrue(
+            cap.locator.startswith(os.path.normcase(os.path.realpath(real_root)))
+        )
         self.assertEqual(cap.sha256, hashlib.sha256(source_bytes).hexdigest())
 
     # -- change detection ----------------------------------------------------
