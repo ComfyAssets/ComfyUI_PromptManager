@@ -107,7 +107,10 @@ export function mountToolbar(container, { scope, categories = [], sorts, value =
         category.value = [...category.options].some(node => node.value === selected) ? selected : '';
     }
     function setActiveFilters(count) {
-        filters.textContent = filtersLabel(count);
+        const next = filtersLabel(count);
+        // Every listing reload reports the count; only a changed label rewrites the text node, because WebKit drops a
+        // click whose mousedown hit a text node that was replaced before mouseup.
+        if (filters.textContent !== next) filters.textContent = next;
     }
     setValue(value);
 
