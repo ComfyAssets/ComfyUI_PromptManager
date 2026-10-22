@@ -73,7 +73,7 @@
   },
   "png-metadata.js": {
     "lines": 98,
-    "branches": 90,
+    "branches": 96,
     "functions": 98,
     "statements": 98
   },
@@ -292,6 +292,24 @@
     "branches": 85,
     "functions": 96,
     "statements": 96
+  },
+  "workspace/local-inspection.mjs": {
+    "lines": 98,
+    "branches": 89,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/local-projection.mjs": {
+    "lines": 97,
+    "branches": 96,
+    "functions": 98,
+    "statements": 97
+  },
+  "workspace/local-video.mjs": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/media-viewer.mjs": {
     "lines": 98,
