@@ -135,6 +135,14 @@ export function createLocalFileHandle({ file, url = null, classification, filena
     return Object.freeze({ kind: 'local-file', key: secret.key, filename: secret.filename, is_video: classified.media === 'video', url, file, classification: classified, [TOKEN]: token });
 }
 
+/**
+ * Ends a selection: the handle and every copy of it become foreign, so a replaced
+ * or released file can no longer be read, downloaded or shown.
+ */
+export function releaseLocalFileHandle(handle) {
+    if (object(handle) && handle[TOKEN]) OWNED.delete(handle[TOKEN]);
+}
+
 /** The owned selection behind a handle (or a copy of one); throws for anything else. */
 function owned(handle) {
     const secret = object(handle) ? OWNED.get(handle[TOKEN]) : undefined;
