@@ -1589,6 +1589,27 @@ inspection's own stable stat (`tests/test_api_workspace_images.py`
 browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
 `media_annotation_files` on reset and never the metadata row.
 
+Review queue schema (#249, `database/review_schema.py`,
+`tests/test_review_schema.py`): the group `media_review_metadata` (one row:
+schema version, `review_index_revision`), `media_review_items` (one ambiguous
+resolver result per `(byte_id, resolver_version, evidence_hash)`, citing an
+annotation byte record `ON DELETE RESTRICT`, with 0..16 candidates, `limited`,
+`state` pending/selected/unresolved and a revision) and `media_review_decisions`
+(one row per item decision revision; `selected` exactly when a
+`candidate_hash` is present; `pair_id`/`image_id` navigation is set to NULL,
+never cascaded, when the pair or image is deleted, through
+`idx_media_review_decisions_pair`/`_image`). Evidence is canonical JSON
+(`canonical_evidence`: one object, sorted keys, no whitespace, ASCII only, no
+NaN/infinity, at most 8 MiB) and `evidence_hash` is its SHA-256. The group is
+valid only beside a valid annotation group (a review group without one is
+refused before the annotation install), installs like the annotation group
+(optional in old backups, required once current under `require_library_state`,
+SAVEPOINT install validated before and after), and validation re-canonicalizes
+every evidence document in one streamed pass at startup and on restore (about
+0.6 s for 4,000 items plus 4,000 decisions of 3 KB). The browser fixtures clear
+`media_review_decisions` and `media_review_items` before the annotation tables,
+never the metadata row.
+
 Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
 one explicit action captures one rooted media file into an owner-only
 `prompt-manager-captures-*` temp directory, streaming it in 1 MiB chunks while

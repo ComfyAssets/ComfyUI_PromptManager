@@ -454,6 +454,9 @@ class TestRestoreFromFile(BackupTestCase):
 
     def test_restore_old_backup_without_annotations(self):
         tables = (
+            "media_review_decisions",
+            "media_review_items",
+            "media_review_metadata",
             "media_image_tags",
             "media_annotation_bytes",
             "media_annotation_files",
@@ -489,6 +492,70 @@ class TestRestoreFromFile(BackupTestCase):
                 ).fetchone()[0],
                 0,
             )
+
+    def test_restore_annotations_era_backup_without_review_queue(self):
+        tables = (
+            "media_review_decisions",
+            "media_review_items",
+            "media_review_metadata",
+        )
+        src = self._make_source_db(["predates the review queue"])
+        with closing(sqlite3.connect(src)) as conn:
+            for table in tables:
+                conn.execute(f"DROP TABLE {table}")
+            conn.commit()
+        self.assertTrue(PromptModel.verify_database_file(src)[0])
+        ok, reason = PromptModel.verify_database_file(src, require_library_state=True)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "Missing review queue schema")
+
+        self.db.model.restore_from_file(src)
+
+        self.assertEqual(_texts(self.path), ["predates the review queue"])
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT * FROM media_review_metadata").fetchall(),
+                [(1, 1, 0)],
+            )
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM media_review_items").fetchone()[0],
+                0,
+            )
+        ok, reason = PromptModel.verify_database_file(
+            self.path, require_library_state=True
+        )
+        self.assertTrue(ok, reason)
+        with closing(sqlite3.connect(src)) as conn:  # the source is untouched
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'media_review%'"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_restore_rejects_review_queue_without_annotations(self):
+        src = self._make_source_db(["review without annotations"])
+        with closing(sqlite3.connect(src)) as conn:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            for table in (
+                "media_image_tags",
+                "media_annotation_bytes",
+                "media_annotation_files",
+                "media_annotation_metadata",
+            ):
+                conn.execute(f"DROP TABLE {table}")
+            conn.commit()
+        before = Path(src).read_bytes()
+        live_before = _texts(self.path)
+        ok, reason = PromptModel.verify_database_file(src)
+        self.assertFalse(ok)
+        self.assertIn("image annotation", reason)
+
+        with self.assertRaises(ValueError):
+            self.db.model.restore_from_file(src)
+
+        self.assertEqual(Path(src).read_bytes(), before)
+        self.assertEqual(_texts(self.path), live_before)
 
     def test_restore_preserves_favorites_and_closes_handles(self):
         self.db.set_image_favorite("output", "live.png")
