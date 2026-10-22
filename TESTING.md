@@ -118,16 +118,23 @@ second without a browser and fails, naming the files, when a measured
 `web/js` file has no baseline entry or the baseline lists a file that no longer
 exists. It uses the gate's own `discoverSources`, and `npm test` runs the same
 check, so run it before pushing a new or deleted frontend file instead of
-waiting for the `frontend coverage` job.
+waiting for the `frontend coverage` jobs.
 
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job that passes only when the `frontend coverage (chromium and touch)`
-job and both `page workflows (firefox)` and `page workflows (webkit)` jobs
-succeed; the browsers run on separate runners in parallel. GitHub artifacts
-named `frontend-test-reports` contain HTML coverage, a JSON summary, and the
-Chromium/touch failure screenshots/traces; `browser-traces-firefox` and
-`browser-traces-webkit` hold the other browsers' traces. Open traces with
-Playwright's `show-trace` tool.
+aggregate job that passes only when every frontend job succeeds: the three
+`frontend coverage (shard N/3)` jobs, `frontend coverage (merge)`, and the four
+`page workflows (firefox|webkit, shard N/2)` jobs. A failed, cancelled or skipped
+job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
+runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/3`
+(shard 1 also runs the node units and the viewer suite, shard 3 the vendor pins
+and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
+days). The merge job downloads them, fails unless all three arrived with raw
+files and without clashing names, then runs `coverage:merge` (report plus
+baseline check). `tests/vendor/ci-workflow.test.mjs` checks this shape. GitHub
+artifacts named `frontend-test-reports` contain the merged HTML coverage and
+JSON summary; `frontend-traces-shard-N` hold the Chromium/touch failure
+screenshots/traces and `browser-traces-<browser>-shard-N` the other browsers'
+traces. Open traces with Playwright's `show-trace` tool.
 
 The real-host suite covers both Classic and Nodes 2.0 startup, switching both
 ways, actual database prompt selection, execution-text serialization, workflow
