@@ -1391,9 +1391,10 @@ until its last use ends. Header-only dimensions (4096 px per side,
 16,777,216 px) and video mark Generate unsupported; `verify` re-hashes the
 current file without a copy. Every handle closes before unlink (a patched
 `os.unlink` asserts it, plus `assert_closed`), and files are unlinked outside
-the store lock. Known limit: Windows reports the creation time from `fstat`, so
-a same-size rewrite that restores `mtime_ns` during the copy window completes
-there with a digest of the copied bytes; POSIX detects it through `ctime`.
+the store lock. Known limit: on Windows before Python 3.13 `fstat` reports the
+creation time, so a same-size rewrite that restores `mtime_ns` during the copy
+window completes there with a digest of the copied bytes; POSIX and Windows on
+3.13+ detect it through the descriptor's change time (native CI, 3.13 only).
 Vocabulary rename, merge and delete bump the `tag_revision` of every image set
 they change (and `image_index_revision`), so a Tag dialog opened before the
 change gets `tag-conflict` on Save (`tests/test_pair_tag_maintenance.py`).

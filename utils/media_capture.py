@@ -12,7 +12,8 @@ lifetimes.
 The contract is "these bytes at this location, last checked at this time".
 Stat equality is never content proof: a same-size rewrite that restores
 ``mtime_ns`` is visible only through the change time between the two
-``fstat`` reads, which on Windows is the creation time (no signal).
+``fstat`` reads, which Windows before Python 3.13 reports as the creation time
+(no signal).
 """
 
 from __future__ import annotations

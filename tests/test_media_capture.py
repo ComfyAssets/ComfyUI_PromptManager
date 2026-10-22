@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -292,15 +293,23 @@ class CaptureStoreTestCase(unittest.TestCase):
                 os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
             return data
 
+        # Detection depends on whether fstat exposes a change time: POSIX
+        # always, Windows only on Python 3.13+. Where it is missing the torn
+        # copy completes and its digest must describe the copied bytes.
         with patch.object(CaptureStore, "_read", rewriting):
-            if os.name == "posix":
-                with self.assertRaises(CaptureChanged):
-                    store.capture(self.root, "a.png", epoch=EPOCH, scope=SCOPE)
-            else:
+            try:
                 cap = store.capture(self.root, "a.png", epoch=EPOCH, scope=SCOPE)
+            except CaptureChanged:
+                detected = True
+            else:
+                detected = False
                 copied = Path(cap.path).read_bytes()
                 self.assertEqual(cap.sha256, hashlib.sha256(copied).hexdigest())
                 store.release(cap.token)
+        if os.name == "posix":
+            self.assertTrue(detected)
+        else:
+            self.assertEqual(detected, sys.version_info >= (3, 13))
         self.assert_empty(store)
         self.assertEqual(os.stat(source).st_mtime_ns, before.st_mtime_ns)
 
@@ -747,6 +756,34 @@ class CaptureStoreTestCase(unittest.TestCase):
         self.assertEqual(cap.sha256, hashlib.sha256(source_bytes).hexdigest())
         self.assertEqual(facts.sha256, cap.sha256)
         store.release(cap.token)
+        self.assert_empty(store)
+
+    def test_change_time_moving_between_fstat_reads_is_detected(self):
+        """The Windows 3.13 / POSIX signal, forced on every platform: the
+        descriptor's change time differs after the copy, size and mtime equal."""
+        self.write("a.png", png_bytes(1, 1, b"\x77" * 40))
+        store = self.make_store()
+        original_fstat = os.fstat
+        calls = []
+
+        def drifting(fd):
+            st = original_fstat(fd)
+            calls.append(fd)
+            if len(calls) < 2:
+                return st
+            return os.stat_result(
+                tuple(st)[:10],
+                {
+                    "st_atime_ns": st.st_atime_ns,
+                    "st_mtime_ns": st.st_mtime_ns,
+                    "st_ctime_ns": st.st_ctime_ns + 1,
+                },
+            )
+
+        with patch.object(capture_module.os, "fstat", drifting):
+            with self.assertRaises(CaptureChanged):
+                self.capture(store, "a.png")
+        self.assertEqual(len(calls), 2)
         self.assert_empty(store)
 
     def test_fresh_file_captures_twice_on_every_platform(self):
