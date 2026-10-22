@@ -82,8 +82,12 @@ export function finishToast(job) {
     return `${job.title} finished.`;
 }
 
+// D85: an image tagging job says which of its two modes started.
+const IMAGE_TAG_START_TOASTS = Object.freeze({ add: 'Tagging started.', auto: 'Auto-tagging started.' });
+
 /** The toast after this tab starts a job. */
 export function startToast(job) {
+    if (job.kind === 'image-tags' && IMAGE_TAG_START_TOASTS[job.scope.mode]) return IMAGE_TAG_START_TOASTS[job.scope.mode];
     return START_TOASTS[job.kind] ?? `${job.title} started.`;
 }
 

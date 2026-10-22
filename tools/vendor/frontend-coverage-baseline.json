@@ -229,7 +229,7 @@
   },
   "workspace/image-tagging.mjs": {
     "lines": 97,
-    "branches": 88,
+    "branches": 90,
     "functions": 87,
     "statements": 97
   },
@@ -253,13 +253,25 @@
   },
   "workspace/images-selection.mjs": {
     "lines": 98,
-    "branches": 92,
+    "branches": 93,
     "functions": 98,
     "statements": 98
   },
   "workspace/images-state.mjs": {
     "lines": 98,
     "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/images-tagging-bulk.mjs": {
+    "lines": 98,
+    "branches": 91,
+    "functions": 85,
+    "statements": 98
+  },
+  "workspace/images-tagging-review.mjs": {
+    "lines": 98,
+    "branches": 93,
     "functions": 98,
     "statements": 98
   },

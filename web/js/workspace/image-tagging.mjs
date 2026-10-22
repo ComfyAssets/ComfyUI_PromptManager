@@ -101,10 +101,12 @@ function numberInput(value, {min, max, step}) {
 
 /**
  * The concept's `.tag-model-panel` (a1049): `heading`, the Tagging model select, the model's options and Generate.
- * It follows `controller` until `scope` is disposed (reused by the bulk Auto-tag dialog). Returns the `element` and
- * `requestGenerate()`, Generate's own path (field validity first), for a Retry after a failed Generate.
+ * It follows `controller` until `scope` is disposed (reused by the bulk Auto-tag dialog, D85, without Generate:
+ * `generate: false`). Returns the `element`, `validate()` (the fields' native validity, then what the controller would
+ * refuse; true when valid, else the first invalid field reports) and `requestGenerate()`, Generate's own path (field
+ * validity first), for a Retry after a failed Generate.
  */
-export function renderModelPanel({scope, controller, heading = 'Auto-tag this image'}) {
+export function renderModelPanel({scope, controller, heading = 'Auto-tag this image', generate: withGenerate = true}) {
     const panel = el('div', undefined, 'tag-model-panel');
     const select = el('select');
     for (const option of MODEL_OPTIONS) {
@@ -116,7 +118,8 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
     options.id = 'image-tag-model-options';
     const generate = createButton('', 'ca-primary');
     generate.append(createWorkspaceIcon('tagImage'), ' Generate suggestions');
-    panel.append(el('h3', heading), field('Tagging model', select, 'image-tag-model'), options, generate);
+    panel.append(el('h3', heading), field('Tagging model', select, 'image-tag-model'), options);
+    if (withGenerate) panel.append(generate);
     const inputs = new Map();
     let shownModel = null, shownOptions = null;
 
@@ -161,26 +164,28 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
         setDisabled(generate, !state.canGenerate);
     }
     select.addEventListener('change', () => controller.setModel(select.value));
-    function requestGenerate() {
+    function validate() {
         const {state} = controller;
-        if (!state.canGenerate) return;
         // The concept's native validity first (a1104–1114), then what the controller would refuse (a blank field).
         for (const input of inputs.values()) input.setCustomValidity('');
         const invalid = [...inputs.values()].find(input => !input.checkValidity());
-        if (invalid) { invalid.reportValidity(); return; }
+        if (invalid) { invalid.reportValidity(); return false; }
         const error = optionError(state.model, state.options);
         if (error) {
             const input = inputs.get(error.field);
             input.setCustomValidity(error.message);
             input.reportValidity();
-            return;
+            return false;
         }
-        controller.generate();
+        return true;
+    }
+    function requestGenerate() {
+        if (controller.state.canGenerate && validate()) controller.generate();
     }
     generate.addEventListener('click', () => { if (!disabled(generate)) requestGenerate(); });
     scope.cleanup(controller.subscribe(update));
     update(controller.state);
-    return {element: panel, requestGenerate};
+    return {element: panel, requestGenerate, validate};
 }
 
 function previewOf(image, state) {
@@ -192,20 +197,33 @@ function previewOf(image, state) {
 
 /**
  * Open "Tag image" for one listed `image` (its tagging target). `source` is the page (`images`, `library`, `review`,
- * `tags`); `onSaved(event)` runs after a confirmed save, as every `onImageTagsSaved` listener does.
+ * `tags`, `bulk`); `onSaved(event)` runs after a confirmed save, as every `onImageTagsSaved` listener does.
+ *
+ * D90 (the bulk review session, `images-tagging-review.mjs`): `actions: 'review'` with `position: {index, total}`
+ * titles the dialog "Tag image · Image <index> of <total>" and makes its actions Stop reviewing, Skip and Approve and
+ * next (Approve and finish on the last image). `preset` ({model, options}) applies the session's model and options,
+ * and `autoGenerate` runs Generate as soon as the file is observed. Approve saves as Save does, without the per-image
+ * toast (the session toasts its count), and calls `onSaved`; Skip writes nothing and calls `onSkip`; Stop reviewing,
+ * Escape and × write nothing and call `onStop` once. Swapping the next image's dialog in is not a stop.
  */
-export function openImageTagging({api, scope, image, source = 'images', trigger = null, onSaved = null}) {
+export function openImageTagging({api, scope, image, source = 'images', trigger = null, onSaved = null, preset = null,
+    autoGenerate = false, actions: mode = 'tag', position = null, onSkip = null, onStop = null}) {
     const target = imageTarget(image);
     if (!target) throw new TypeError('The image has no tagging target');
+    const review = mode === 'review';
+    if (review && !(Number.isSafeInteger(position?.index) && Number.isSafeInteger(position?.total) &&
+        position.index >= 1 && position.index <= position.total)) throw new TypeError('A review needs its position');
+    // Set once this dialog hands over to the session (Approve, Skip): its close is then not a Stop.
+    let advancing = false;
     const saved = ({filename: name, tags, toast}) => {
         const event = {target, filename: name, tags, source};
         announceSaved(event);
+        if (toast) showWorkspaceToast(toast);
         onSaved?.(event);
-        showWorkspaceToast(toast);
     };
     // A save that settles after the dialog closed is still reported: its toast, and the pages' refresh (I5).
     const onLateSave = outcome => (outcome.saved ? saved(outcome) : showWorkspaceToast(outcome.message));
-    const controller = createImageTaggingController({api, target, source, onLateSave});
+    const controller = createImageTaggingController({api, target, source, onLateSave, preset});
     const local = createScope();
     let open = true;
     let completed = false;
@@ -253,9 +271,13 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     // 7. The actions; Retry leads them only while the controller allows it.
     const actions = el('div', undefined, 'dialog-actions');
     const retry = createButton('Retry');
-    const cancel = createButton('Cancel');
+    const cancel = createButton(review ? 'Stop reviewing' : 'Cancel'); // D90
+    const skip = createButton('Skip');
     const primary = createButton('Save manual tags', 'ca-primary');
-    actions.append(cancel, primary);
+    const last = review && position.index === position.total;
+    const approveLabel = last ? 'Approve and finish' : 'Approve and next';
+    if (review) actions.append(cancel, skip, primary);
+    else actions.append(cancel, primary);
 
     const nodes = [heading];
     if (controller.state.showScopeNote) nodes.push(el('p', SCOPE_NOTE, 'tag-scope-note small'));
@@ -301,6 +323,12 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     }
     function complete(state) {
         completed = true;
+        if (review) {
+            // D90: the session swaps the next image in (or ends), so this dialog is not closed here.
+            advancing = true;
+            saved({filename: state.image.filename, tags: state.savedTags.slice(), toast: null});
+            return;
+        }
         closeWorkspaceDialog();
         saved({filename: state.image.filename, tags: state.savedTags.slice(), toast: state.toast});
     }
@@ -315,8 +343,9 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         if (state.suggestions !== shownRows || state.suggestionsText !== shownText) renderSuggestions(state);
         setText(count, state.countText);
         setText(status, state.statusText);
-        setText(primary, state.primaryLabel);
+        setText(primary, review ? approveLabel : state.primaryLabel);
         setDisabled(primary, !state.canSave);
+        if (review) setDisabled(skip, state.phase === 'saving');
         if (state.canRetry !== retry.isConnected) {
             if (state.canRetry) actions.prepend(retry); // D116
             else {
@@ -328,6 +357,11 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     }
 
     cancel.addEventListener('click', () => closeWorkspaceDialog());
+    skip.addEventListener('click', () => {
+        if (!open || advancing || disabled(skip)) return;
+        advancing = true;
+        onSkip?.();
+    });
     // Retry after a failed Generate takes Generate's own path, so an invalid field reports its validity (M4).
     retry.addEventListener('click', () => (controller.state.phase === 'generate-error' ? requestGenerate() : controller.retry()));
     primary.addEventListener('click', () => {
@@ -345,12 +379,16 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         document.getElementById('modal')?.classList.remove('tagging-modal');
         local.dispose();
         controller.dispose();
+        if (review && !advancing) onStop?.();
     }
-    openContentDialog({scope, title: 'Tag image', nodes, trigger, onClose: release});
+    const dialogTitle = review ? `Tag image · Image ${position.index} of ${position.total}` : 'Tag image'; // D90
+    openContentDialog({scope, title: dialogTitle, nodes, trigger, onClose: release});
     document.getElementById('modal')?.classList.add('tagging-modal');
     local.cleanup(controller.subscribe(render));
     render(controller.state);
-    controller.open();
+    controller.open().then(() => {
+        if (open && autoGenerate && controller.state.canGenerate) controller.generate();
+    });
     return {
         close() { if (open) closeWorkspaceDialog(); },
         get controller() { return controller; },
