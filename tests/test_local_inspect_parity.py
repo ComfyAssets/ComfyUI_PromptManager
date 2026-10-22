@@ -16,6 +16,14 @@ webm}`` with their recorded ffprobe tag maps in ``video-tags-v1.json``), recorde
 and synthetic tag maps, and multi-megabyte per-key containers built at test time,
 and assert that the local carrier equals the server's, which selects from the
 same tag map through a mocked probe, or from the same file through real ffprobe.
+
+``web/js/workspace/local-projection.mjs`` ports ``utils/inspection_response.py``:
+the strict Decimal/duplicate-key parse, the prompt, workflow and carrier
+projection, the depth and node ceilings and ``_metadata``. The projection tests
+hand the oracle every file above plus the committed adversarial record sets in
+``tests/fixtures/local-inspect/projection-cases.json`` and node-ceiling sets built
+at test time, and assert that ``projectMetadata`` equals ``_metadata`` byte for
+byte, as the server's ``_bytes`` writes it with sorted keys.
 """
 
 import io
@@ -24,6 +32,7 @@ import os
 import shutil
 import struct
 import subprocess  # nosec B404
+import sys
 import tempfile
 import unittest
 import zlib
@@ -33,9 +42,11 @@ from unittest.mock import patch
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from utils.inspection_response import GRAPH_NODE_CEILING, _bytes, _metadata
 from utils.prompt_inspector import (
     ROLE_METADATA_BYTES,
     WORKFLOW_METADATA_BYTES,
+    InspectionRead,
     MetadataReadError,
     read_inspection_file,
 )
@@ -56,6 +67,9 @@ VIDEO_FIXTURES = HEADER_FIXTURES
 RECORDED_TAGS = json.loads(
     (VIDEO_FIXTURES / "video-tags-v1.json").read_text(encoding="utf-8")
 )["fixtures"]
+PROJECTION_CASES = json.loads(
+    (HEADER_FIXTURES / "projection-cases.json").read_text(encoding="utf-8")
+)["cases"]
 NODE_TIMEOUT_SECONDS = 180
 PNG_CLASS = {"media": "image", "kind": "png"}
 _FOOTER = "Steps: 20, Sampler: Euler, Batch index: {}, Seed: 7"
@@ -688,6 +702,239 @@ class LocalVideoCarrierParityTests(unittest.TestCase):
         self.assertIsNone(over["selection"])
         with self.assertRaises(MetadataReadError):
             read_inspection_file(files["roles_over_budget"])
+
+
+def _canonical(value):
+    """``value`` with every dict's keys sorted, so two orders compare as one."""
+    if isinstance(value, dict):
+        return {key: _canonical(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_canonical(item) for item in value]
+    return value
+
+
+def _canonical_bytes(value):
+    return _bytes(_canonical(value))
+
+
+def _server_metadata(path):
+    try:
+        return _metadata(read_inspection_file(path))
+    except MetadataReadError:
+        return _metadata(None)
+
+
+def _synthetic_read(case):
+    if case["records"] is None:
+        return None
+    formats = case.get("record_formats")
+    if formats is None:
+        formats = {key: "original-text" for key in case["records"]}
+    return InspectionRead(
+        case["records"],
+        formats,
+        case.get("carrier_text"),
+        None,
+        None,
+        None,
+        frozenset(case.get("limited", ())),
+    )
+
+
+def _case_supported(case):
+    """Whether this interpreter has the feature a case depends on."""
+    if case.get("needs") == "int-max-str-digits":
+        limit = getattr(sys, "get_int_max_str_digits", None)
+        return limit is not None and limit() == 4300
+    return True
+
+
+def _node_ceiling_cases():
+    """Record sets at and past the 20,000-node ceiling, too large to commit."""
+    api = lambda count: "{%s}" % ",".join(  # noqa: E731
+        '"%d":{"class_type":"A","inputs":{}}' % index for index in range(count)
+    )
+    ui = lambda count: "[%s]" % ",".join("{}" for _ in range(count))  # noqa: E731
+    half = GRAPH_NODE_CEILING // 2
+    return [
+        {"name": "prompt_at_ceiling", "records": {"prompt": api(GRAPH_NODE_CEILING)}},
+        {
+            "name": "prompt_over_ceiling",
+            "records": {"prompt": api(GRAPH_NODE_CEILING + 1)},
+        },
+        {
+            "name": "workflow_at_ceiling",
+            "records": {"workflow": '{"nodes":%s}' % ui(GRAPH_NODE_CEILING)},
+        },
+        {
+            "name": "workflow_over_ceiling",
+            "records": {"workflow": '{"nodes":%s}' % ui(GRAPH_NODE_CEILING + 1)},
+        },
+        {
+            "name": "workflow_subgraphs_over_ceiling",
+            "records": {
+                "workflow": '{"nodes":%s,"definitions":{"subgraphs":[{"nodes":%s},'
+                '5,{"nodes":3}]}}' % (ui(half + 1), ui(half))
+            },
+        },
+        {
+            "name": "workflow_subgraphs_at_ceiling",
+            "records": {
+                "workflow": '{"nodes":%s,"definitions":{"subgraphs":[{"nodes":%s}]}}'
+                % (ui(half), ui(half))
+            },
+        },
+        {
+            "name": "carrier_prompt_over_ceiling",
+            "records": {"prompt": "x"},
+            "record_formats": {"prompt": "reserialized-json"},
+            "carrier_text": '{"prompt":%s}' % api(GRAPH_NODE_CEILING + 1),
+        },
+    ]
+
+
+class LocalProjectionParityTests(unittest.TestCase):
+    """The local projection answers byte for byte as ``_metadata`` does."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(assert_closed, self, temporary.name)
+        self.directory = Path(temporary.name)
+
+    def _files(self):
+        files = {}
+        for name in parity.COMMITTED:
+            files[name] = parity.fixture_path(name)
+        for name in parity.TEST_TIME:
+            path = parity.fixture_path(name, self.directory)
+            parity.write_png(path, parity.build(name))
+            files[name] = path
+        for name, write in EXTRA_SHAPES.items():
+            path = self.directory / f"{name}.png"
+            write(path)
+            files[name] = path
+        for header in ("tiny.jpg", "tiny.webp"):
+            files[header] = HEADER_FIXTURES / header
+        for name in RECORDED_TAGS:
+            files[name] = VIDEO_FIXTURES / name
+        return files
+
+    def test_local_metadata_matches_route_for_parity_corpus(self):
+        files = self._files()
+        cases = [
+            case
+            for case in PROJECTION_CASES + _node_ceiling_cases()
+            if _case_supported(case)
+        ]
+        self.assertGreater(len(cases), len(PROJECTION_CASES) - 3)
+        entries = [{"name": name, "path": str(path)} for name, path in files.items()]
+        entries += [
+            {
+                "name": "case:" + case["name"],
+                "records": case["records"],
+                "record_formats": case.get("record_formats"),
+                "carrier_text": case.get("carrier_text"),
+                "limited": case.get("limited", []),
+            }
+            for case in cases
+        ]
+        observed = _run_oracle(self, entries)
+        outcomes = set()
+        for name, path in files.items():
+            with self.subTest(fixture=name):
+                self.assertIsNotNone(observed[name]["classified"], name)
+                if path.suffix in VIDEO_CONTAINERS and not HAVE_FFMPEG:
+                    # Without ffprobe the server cannot read the file; the tag-map
+                    # vectors below cover the carrier projection instead.
+                    continue
+                server = _server_metadata(path)
+                local = observed[name]["metadata"]
+                self.assertEqual(_canonical_bytes(local), _canonical_bytes(server))
+                outcomes.add(server["status"])
+                for field in ("prompt_graph", "workflow_graph"):
+                    outcomes.add(field + ":" + server[field]["status"])
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                server = _metadata(_synthetic_read(case))
+                local = observed["case:" + case["name"]]["metadata"]
+                self.assertEqual(_canonical_bytes(local), _canonical_bytes(server))
+                expect = case.get("expect") or {}
+                for field, status in expect.items():
+                    self.assertEqual(server[field]["status"], status, field)
+                outcomes.add(server["status"])
+                for field in ("prompt_graph", "workflow_graph"):
+                    outcomes.add(field + ":" + server[field]["status"])
+        # Every projection outcome must occur, or agreement proves little.
+        self.assertEqual(
+            outcomes,
+            {
+                "available",
+                "absent",
+                "unreadable",
+                "prompt_graph:parsed",
+                "prompt_graph:limited",
+                "prompt_graph:malformed",
+                "prompt_graph:absent",
+                "workflow_graph:parsed",
+                "workflow_graph:limited",
+                "workflow_graph:malformed",
+                "workflow_graph:absent",
+            },
+        )
+
+    def test_recorded_video_tag_maps_project_as_the_server(self):
+        """The carrier projection on the recorded maps, with or without ffprobe."""
+        vectors = [(name, tags, []) for name, tags in RECORDED_TAGS.items()]
+        vectors += [
+            (name, tags, limited)
+            for name, tags, limited in TAG_MAP_VECTORS
+            if name
+            in {
+                "per_key_wins_over_comment",
+                "object_prompt_reserialized",
+                "python_number_spellings",
+                "integer_like_keys_keep_order",
+                "invalid_envelope_workflow_keeps_roles",
+                "workflow_only_invalid_envelope",
+                "reader_limited_workflow_with_per_key",
+                "envelope_workflow_over_budget_limited",
+            }
+        ]
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "tags": tags, "limited": limited}
+                for name, tags, limited in vectors
+            ],
+        )
+        seen = set()
+        for name, tags, limited in vectors:
+            with self.subTest(vector=name):
+                with (
+                    patch(
+                        "utils.prompt_inspector.ffprobe_path",
+                        return_value="/tool/ffprobe",
+                    ),
+                    patch(
+                        "utils.prompt_inspector._probe_video_tags",
+                        side_effect=_fake_probe(
+                            tags, drop_workflow="workflow" in limited
+                        ),
+                    ),
+                ):
+                    try:
+                        server = _metadata(read_inspection_file(Path("vector.mp4")))
+                    except MetadataReadError:
+                        server = _metadata(None)
+                local = observed[name]["metadata"]
+                self.assertEqual(_canonical_bytes(local), _canonical_bytes(server))
+                seen.update(server["record_formats"].values())
+                seen.add(server["workflow_graph"]["status"])
+        self.assertTrue(
+            {"reserialized-json", "original-text", "invalid", "limited"} <= seen
+        )
+        self.assertTrue({"parsed", "malformed", "limited"} <= seen)
 
 
 if __name__ == "__main__":

@@ -67,6 +67,21 @@ for f in core-faststart.mp4 core-moov-end.mp4 core.mov core.m4v core.mkv core-ta
 done
 ```
 
+# Local Inspect projection cases
+
+`local-inspect/projection-cases.json` holds synthetic record sets (prompt, workflow,
+parameters and pair-record texts, optional `record_formats`, a video `carrier_text`
+and `limited` records) that exercise every branch of the server's inspection
+projection: Python's Decimal spellings and exact-construction limits, the 4300-digit
+integer limit, duplicate keys, NaN/Infinity, the depth-64 and node ceilings, prompt
+node key filtering and the carrier rule. `records: null` stands for an unreadable
+file. `expect` pins both graph statuses; `needs` names an interpreter feature a case
+depends on. `tests/js/workspace-local-projection.test.js` runs them through
+`web/js/workspace/local-projection.mjs`, and `tests/test_local_inspect_parity.py`
+asserts that its answer equals `utils.inspection_response._metadata` byte for byte.
+All texts are original synthetic content, dedicated to the public domain under
+CC0-1.0.
+
 # Inspection parity fixtures
 
 `inspection_parity/` holds small synthetic PNGs (`f01b.png` ... `f24.png`, each

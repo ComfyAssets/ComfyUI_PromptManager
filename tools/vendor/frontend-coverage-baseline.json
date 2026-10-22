@@ -293,6 +293,18 @@
     "functions": 96,
     "statements": 96
   },
+  "workspace/local-inspection.mjs": {
+    "lines": 98,
+    "branches": 85,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/local-projection.mjs": {
+    "lines": 97,
+    "branches": 95,
+    "functions": 98,
+    "statements": 97
+  },
   "workspace/local-video.mjs": {
     "lines": 98,
     "branches": 93,

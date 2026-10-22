@@ -87,8 +87,10 @@ function promptsFor(value) {
     return value;
 }
 
-function fileFor(value) {
-    if (!object(value) || value.observation !== 'current-file' || typeof value.source_label !== 'string' ||
+function fileFor(value, identity) {
+    // A local record observes the selected file itself; every other adapter observes a current server file.
+    const observation = identity?.kind === 'local-file' ? 'selected-local-file' : 'current-file';
+    if (!object(value) || value.observation !== observation || typeof value.source_label !== 'string' ||
         !['image', 'video'].includes(value.media_type) || typeof value.extension !== 'string' ||
         (value.format !== null && typeof value.format !== 'string')) throw new TypeError('Invalid inspection file');
     const file = { observation: value.observation, source_label: value.source_label, media_type: value.media_type, extension: value.extension, format: value.format };
@@ -281,7 +283,7 @@ export function projectInspectionPayload(result, identity, download, extractFact
     };
     if (legacy) return record;
     const resolution = resolutionFor(result.resolution);
-    record.file = fileFor(result.file);
+    record.file = fileFor(result.file, identity);
     record.metadata = metadataFor(result.metadata);
     record.library = libraryFor(result.library);
     if (typeof extractFacts !== 'function') throw new TypeError('Inspection facts parser unavailable');
