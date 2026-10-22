@@ -348,38 +348,56 @@ export function projectMetadata(inspection) {
     return result;
 }
 
-/** UTF-8 length of `JSON.stringify(value)`: the server's `_bytes` count (lone surrogates are already escaped). */
+const UTF8 = new TextEncoder();
+const MEASURE_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * UTF-8 length of `JSON.stringify(value)`: the server's `_bytes` count. The text
+ * holds no lone surrogate (JSON.stringify escapes them), so the encoder's count is
+ * exact; it encodes into one bounded scratch buffer and never splits a pair.
+ */
 export function inspectionBytes(value) {
     const text = JSON.stringify(value);
+    const scratch = new Uint8Array(Math.min(MEASURE_CHUNK_BYTES, text.length * 3 + 4));
     let count = 0;
-    for (let index = 0; index < text.length; index++) {
-        const code = text.charCodeAt(index);
-        if (code < 0x80) count += 1;
-        else if (code < 0x800) count += 2;
-        else if (code >= 0xd800 && code <= 0xdbff) { count += 4; index++; } else count += 3;
+    for (let offset = 0; offset < text.length; ) {
+        const { read, written } = UTF8.encodeInto(offset ? text.slice(offset) : text, scratch);
+        offset += read;
+        count += written;
     }
     return count;
 }
 
 const withMetadata = (payload, changes) => ({ ...payload, metadata: { ...payload.metadata, ...changes } });
 
+function defaultYield() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 /**
  * The omission steps of `_encode_inspection`: the workflow graph first, then the
  * prompt graph, then all raw records atomically, each measured as encoded bytes.
- * Returns a new payload; throws when even the bare payload is over `limit`.
+ * Each re-measure of a multi-megabyte payload follows a `yieldControl` turn, and
+ * `signal` aborts between steps. Resolves to a new payload; rejects when even the
+ * bare payload is over `limit`.
  */
-export function fitInspectionPayload(payload, limit = MAX_RESPONSE_BYTES) {
+export async function fitInspectionPayload(payload, limit = MAX_RESPONSE_BYTES, { yieldControl = defaultYield, signal } = {}) {
+    const measure = async (candidate) => {
+        await yieldControl();
+        if (signal && signal.aborted) throw new DOMException('The inspection was aborted', 'AbortError');
+        return inspectionBytes(candidate);
+    };
     let fitted = payload, body = inspectionBytes(payload);
     for (const field of ['workflow_graph', 'prompt_graph']) {
         if (body <= limit) break;
         if (fitted.metadata[field].status !== 'absent') {
             fitted = withMetadata(fitted, { [field]: { status: 'limited', value: null } });
-            body = inspectionBytes(fitted);
+            body = await measure(fitted);
         }
     }
     if (body > limit) {
         fitted = withMetadata(fitted, { raw: {}, parameters: null, status: 'limited', omitted_reason: 'response-size-limit' });
-        body = inspectionBytes(fitted);
+        body = await measure(fitted);
     }
     if (body > limit) throw new RangeError('Inspection response exceeds limits');
     return fitted;

@@ -176,7 +176,7 @@ test("projectMetadata mirrors _metadata for records, formats and carriers", () =
     assert.deepEqual(objectPrompt.prompt_graph, { status: "parsed", value: { 1: { class_type: "A", inputs: {} } } });
 });
 
-test("fitInspectionPayload omits the workflow graph, then the prompt graph, then all raw atomically", () => {
+test("fitInspectionPayload omits the workflow graph, then the prompt graph, then all raw atomically", async () => {
     const payload = {
         success: true, inspection_version: 1, metadata: {
             status: "available", omitted_reason: null, raw: { prompt: "é".repeat(100), workflow: "{}" }, record_formats: { prompt: "original-text", workflow: "original-text" },
@@ -188,28 +188,43 @@ test("fitInspectionPayload omits the workflow graph, then the prompt graph, then
     // UTF-8 bytes, not UTF-16 code units: 'é' is 2 bytes, an escaped lone surrogate 6.
     assert.equal(m.inspectionBytes(payload), Buffer.byteLength(text, "utf8"));
     assert.ok(m.inspectionBytes(payload) > text.length);
-    const whole = m.fitInspectionPayload(payload, bytes(payload));
+    // Measured in bounded chunks: pairs and 2-byte characters across every chunk edge count once.
+    for (const shift of [0, 1, 2, 3]) {
+        const wide = { s: "x".repeat(shift) + "é😀".repeat(200000) + "\ud800", t: "a😀".repeat(70000) };
+        assert.equal(m.inspectionBytes(wide), Buffer.byteLength(JSON.stringify(wide), "utf8"), `shift ${shift}`);
+    }
+    const whole = await m.fitInspectionPayload(payload, bytes(payload));
     assert.equal(whole, payload, "a payload within the limit is returned as is");
-    const first = m.fitInspectionPayload(payload, bytes(payload) - 1);
+    const first = await m.fitInspectionPayload(payload, bytes(payload) - 1);
     assert.equal(first.metadata.workflow_graph.status, "limited");
     assert.equal(first.metadata.prompt_graph.status, "parsed");
     assert.deepEqual(first.metadata.raw, payload.metadata.raw);
     assert.ok(bytes(first) <= bytes(payload) - 1);
-    const second = m.fitInspectionPayload(payload, bytes(first) - 1);
+    const second = await m.fitInspectionPayload(payload, bytes(first) - 1);
     assert.deepEqual([second.metadata.workflow_graph.status, second.metadata.prompt_graph.status], ["limited", "limited"]);
     assert.equal(second.metadata.status, "available");
     assert.deepEqual(second.metadata.raw, payload.metadata.raw);
-    const third = m.fitInspectionPayload(payload, bytes(second) - 1);
+    const third = await m.fitInspectionPayload(payload, bytes(second) - 1);
     assert.deepEqual(third.metadata, { ...second.metadata, raw: {}, parameters: null, status: "limited", omitted_reason: "response-size-limit" });
     assert.ok(bytes(third) <= bytes(second) - 1);
-    assert.throws(() => m.fitInspectionPayload(payload, bytes(third) - 1), /exceeds/);
+    await assert.rejects(m.fitInspectionPayload(payload, bytes(third) - 1), /exceeds/);
     // The caller's payload is never mutated and absent graphs are left alone.
     assert.equal(JSON.stringify(payload), text);
     const absent = { ...payload, metadata: { ...payload.metadata, workflow_graph: { status: "absent", value: null } } };
-    const fitted = m.fitInspectionPayload(absent, bytes(absent) - 1);
+    const fitted = await m.fitInspectionPayload(absent, bytes(absent) - 1);
     assert.equal(fitted.metadata.workflow_graph.status, "absent");
     assert.equal(fitted.metadata.prompt_graph.status, "limited");
-    assert.equal(m.fitInspectionPayload(payload).metadata.status, "available", "the default limit is 8 MiB");
+    assert.equal((await m.fitInspectionPayload(payload)).metadata.status, "available", "the default limit is 8 MiB");
+    // Every omission step after the first measure hands the event loop a turn, and an
+    // abort between steps rejects with AbortError; the answer itself is unchanged.
+    let turns = 0;
+    const counted = await m.fitInspectionPayload(payload, bytes(second) - 1, { yieldControl: async () => { turns += 1; } });
+    assert.equal(JSON.stringify(counted), JSON.stringify(third));
+    assert.equal(turns, 3);
+    assert.equal(await m.fitInspectionPayload(payload, bytes(payload), { yieldControl: async () => { turns += 1; } }), payload);
+    assert.equal(turns, 3, "a payload within the limit is measured once, without a turn");
+    const controller = new AbortController();
+    await assert.rejects(m.fitInspectionPayload(payload, bytes(second) - 1, { signal: controller.signal, yieldControl: async () => controller.abort() }), { name: "AbortError" });
 });
 
 test("the committed projection corpus has every outcome and parses with the oracle entry shape", () => {

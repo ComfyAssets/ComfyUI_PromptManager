@@ -109,8 +109,8 @@ export function buildLocalPayload({ read, file, classification }) {
 }
 
 /** The server's 8 MiB response budget, applied to the local wire with the same omission order. */
-export function fitLocalPayload(wire, limit = MAX_RESPONSE_BYTES) {
-    return fitInspectionPayload(wire, limit);
+export function fitLocalPayload(wire, limit = MAX_RESPONSE_BYTES, options = {}) {
+    return fitInspectionPayload(wire, limit, options);
 }
 
 // Handles this module created, by a private token: the controller and the viewer
@@ -161,7 +161,7 @@ export const localFileAdapter = Object.freeze({
     async read(handle, { signal } = {}) {
         const secret = owned(handle);
         const { result } = await readLocalFile(secret.file, { classification: secret.classification, signal });
-        return fitLocalPayload(buildLocalPayload({ read: result, file: { name: secret.filename, size: secret.file.size, lastModified: secret.file.lastModified }, classification: secret.classification }));
+        return fitLocalPayload(buildLocalPayload({ read: result, file: { name: secret.filename, size: secret.file.size, lastModified: secret.file.lastModified }, classification: secret.classification }), MAX_RESPONSE_BYTES, { signal });
     },
     toRecord(result, handle, extractFacts) {
         const secret = owned(handle);

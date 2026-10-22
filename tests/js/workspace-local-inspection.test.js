@@ -189,7 +189,7 @@ test("local cap measures escaped UTF-8 atomically", async () => {
     const wire = m.buildLocalPayload({ read: raw.result, file: { name: file.name, size: file.size, lastModified: file.lastModified }, classification: handle.classification });
     const text = JSON.stringify(wire);
     assert.ok(text.length < LIMIT && bytes(wire) > LIMIT, `${text.length} code units, ${bytes(wire)} bytes`);
-    const fitted = m.fitLocalPayload(wire);
+    const fitted = await m.fitLocalPayload(wire);
     assert.ok(bytes(fitted) <= LIMIT);
     assert.equal(fitted.metadata.workflow_graph.status, "limited", "the workflow graph goes first");
     assert.equal(fitted.metadata.prompt_graph.status, "parsed");
@@ -198,9 +198,9 @@ test("local cap measures escaped UTF-8 atomically", async () => {
     assert.equal(inspectionDownloads(record).metadata.available, true);
     assert.equal(inspectionDownloads(record).workflow.available, false);
     // Whole-raw omission is atomic and marks the response-size limit; the inspector offers no metadata download.
-    const squeezed = m.fitLocalPayload(wire, bytes(fitted) - 1);
+    const squeezed = await m.fitLocalPayload(wire, bytes(fitted) - 1);
     assert.deepEqual([squeezed.metadata.workflow_graph.status, squeezed.metadata.prompt_graph.status], ["limited", "limited"]);
-    const tiny = m.fitLocalPayload(wire, 2000);
+    const tiny = await m.fitLocalPayload(wire, 2000);
     assert.equal(tiny.metadata.status, "limited");
     assert.equal(tiny.metadata.omitted_reason, "response-size-limit");
     assert.deepEqual(tiny.metadata.raw, {});
@@ -209,7 +209,7 @@ test("local cap measures escaped UTF-8 atomically", async () => {
     const omitted = m.localFileAdapter.toRecord(tiny, handle, extractGenerationFacts);
     assert.equal(inspectionDownloads(omitted).metadata.available, false);
     assert.equal(omitted.generation.seed.reason, "projection-limited");
-    assert.throws(() => m.fitLocalPayload(wire, 100), /exceeds/);
+    await assert.rejects(m.fitLocalPayload(wire, 100), /exceeds/);
     assert.equal(wire.metadata.status, "available", "the input wire is not mutated");
     assert.equal((await m.localFileAdapter.read(handle)).metadata.workflow_graph.status, "limited", "adapter.read returns the fitted wire");
 });
