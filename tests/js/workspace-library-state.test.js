@@ -47,6 +47,22 @@ test('restored shelves keep filters, loaded parents and continuation without a f
  const next=createLibraryStream({api:{get:async url=>{urls.push(url);return page([item(2)]);}},restore:{filters:{text:'retained',sort:'name'},state:old.state}});assert.equal(next.state.items.length,1);await next.loadMore();assert.match(urls[0],/text=retained/);assert.match(urls[0],/cursor=next/);assert.equal(next.state.items.length,2);next.dispose();
  assert.throws(()=>createLibraryStream({api:{},restore:{filters:{},state:{items:[item(1),item(1)],total:2,variantTotal:0,cursor:null,hasMore:false}}}));
 });
+test('a shelf left before its first page answered or after it failed restores and reads page one',async()=>{
+ const {createLibraryStream}=await source;
+ // The shelf saves whatever state it holds when the route changes; a first page still pending or failed has no variant total yet.
+ let pending;const left=createLibraryStream({api:{get:()=>new Promise(resolve=>{pending=resolve;})}});const first=left.reset({text:'kept'});
+ assert.equal(left.state.loading,true);assert.equal(left.state.variantTotal,null);const saved=left.state;left.dispose();pending(page([item(9)]));await first;
+ const failed=createLibraryStream({api:{get:async()=>{throw Error('offline');}}});await failed.reset();assert.ok(failed.state.error);failed.dispose();
+ for(const state of [saved,failed.state]) {
+  const urls=[];const next=createLibraryStream({api:{get:async url=>{urls.push(url);return page([item(1)]);}},restore:{filters:{text:'kept'},state}});
+  assert.deepEqual([next.state.items.length,next.state.loading,next.state.error,next.state.variantTotal,next.state.hasMore],[0,false,null,null,true]);
+  assert.equal(await next.loadMore(),1);assert.equal(new URL(urls[0],'https://x').searchParams.get('text'),'kept');assert.equal(new URL(urls[0],'https://x').searchParams.has('cursor'),false);
+  assert.equal(next.state.variantTotal,6);next.dispose();
+ }
+ // A pending first page is only the empty, cursorless state: anything else without a variant total stays invalid.
+ for(const state of [{items:[item(1)],total:1,variantTotal:null,cursor:null,hasMore:false},{items:[],total:0,variantTotal:null,cursor:'next',hasMore:true},{items:[],total:3,variantTotal:null,cursor:null,hasMore:true},{items:[],total:0,variantTotal:null,cursor:null,hasMore:false}])
+  assert.throws(()=>createLibraryStream({api:{},restore:{filters:{},state}}),/Invalid library page/);
+});
 test('parent shelf window bounds DOM and pins focused rows without changing logical order',async()=>{
  const {libraryWindow}=await source;const first=libraryWindow(500,2,0,900);assert.equal(first[0],0);assert.ok(first.length<24);
  const middle=libraryWindow(500,2,50000,900,0);assert.equal(middle[0],0);assert.ok(middle.some(index=>index>150));assert.ok(middle.length<24);assert.deepEqual(middle,[...middle].sort((a,b)=>a-b));assert.deepEqual(libraryWindow(3,2,0,900),[0,1,2]);
