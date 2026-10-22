@@ -728,3 +728,31 @@ test('rejects a malformed image_tags facet', () => {
     }
     assert.equal(module.toInspectionRecord({ ...envelope(entry), image_tags: { state: 'current', tags: ['é'.repeat(50)] } }, entry, extractGenerationFacts).imageTags.tags[0].length, 50);
 });
+
+test('refresh re-reads the selected file and keeps the shown record until the new read lands', async () => {
+    const { api, requests } = pendingApi(), updates = [];
+    const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts });
+    assert.equal(typeof controller.refresh, 'function', 'refresh is part of the controller');
+    controller.subscribe(state => updates.push(state));
+    const load = controller.select(image()); requests[0].resolve(envelope()); await load;
+    const shown = controller.state, count = updates.length;
+    const refresh = controller.refresh();
+    assert.equal(requests.length, 2);
+    // No loading state is published: the panel keeps its content.
+    assert.equal(controller.state, shown); assert.equal(updates.length, count);
+    requests[1].resolve({ ...envelope(), image_tags: { state: 'current', tags: ['fresh'] } }); await refresh;
+    assert.deepEqual(controller.state.record.imageTags, { state: 'current', tags: ['fresh'] });
+    assert.equal(controller.state.loading, false); assert.equal(updates.length, count + 1);
+    // A failed quiet re-read reports the failure as a read would.
+    const failing = controller.refresh(); requests[2].reject(new Error('offline')); await failing;
+    assert.equal(controller.state.error, true);
+    // Without a shown record a refresh is an ordinary retry (loading published).
+    const again = controller.refresh(); assert.equal(controller.state.loading, true);
+    requests[3].resolve(envelope()); await again; assert.equal(controller.state.error, false);
+    // A newer selection supersedes a refresh in flight.
+    const stale = controller.refresh(); const other = controller.select({ ...image(), path: 'folder/b.png', filename: 'b.png', url: image().url.replace('a%20%23%25', 'b') });
+    requests[5].resolve(envelope({ ...image(), path: 'folder/b.png', filename: 'b.png', url: image().url.replace('a%20%23%25', 'b') })); await other;
+    requests[4].resolve(envelope()); await stale;
+    assert.equal(controller.state.record.identity.path, 'folder/b.png');
+    controller.dispose(); assert.equal(await controller.refresh(), undefined);
+});

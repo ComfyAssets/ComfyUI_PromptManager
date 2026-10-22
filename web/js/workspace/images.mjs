@@ -410,9 +410,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         else if (isTagButton(action)) openImageTagging({api, scope, image, source: embedded ? 'library' : 'images', trigger: action});
         else if (action) inspect(image);
     });
-    // A saved tag set re-reads the selected file's details (its inspector envelope carries the image tags).
-    scope.cleanup(onImageTagsSaved(({target}) => {
-        if (selection === `${target.root_index}:${target.path}`) inspection.retry();
+    // A saved tag set re-reads the selected file's details (its inspector envelope carries the image tags) without a
+    // loading flash. Under a Tags filter or a search the saved file may now match or stop matching: the loaded range
+    // is re-read in place first, keeping the scroll and the selection while it still matches.
+    scope.cleanup(onImageTagsSaved(async ({target}) => {
+        const key = `${target.root_index}:${target.path}`;
+        if (!embedded && !recovering && (filters.tags.length || filters.q)) await stream.refresh();
+        if (!scope.signal.aborted && selection === key) inspection.refresh();
     }));
 
     function renderVisible() {
@@ -548,14 +552,17 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // The concept's end of the collection (app.js updateImageContinuation).
         return `${next.loaded ? 'You’re all caught up' : 'No matching images'} · ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')}`;
     }
-    function renderState(next, {patch} = {}) {
+    function renderState(next, {patch, replaced = false} = {}) {
         const previous = state;
         // A patched item (a favorite) keeps every card's size and place; setFavorite repaints its card.
         const changed = !patch && state?.items !== next.items;
         if (changed) {
-            if (!next.items.length) itemIndexes.clear();
-            for (let index = state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
+            // A refreshed collection (`replaced`) is indexed again from its start; a loaded page only appends.
+            if (!next.items.length || replaced) itemIndexes.clear();
+            for (let index = replaced ? 0 : state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
+        // The selected file left the refreshed result: the panel follows the collection, as after a reload.
+        if (replaced && selection !== null && !itemIndexes.has(selection)) dropSelection();
         state = next;
         if (!embedded) {
             setText(count, countLine(next));
@@ -564,7 +571,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }
         if (changed) updateLayout();
         // The concept's Load more toast (app.js loadMoreImages) for every batch appended to a loaded collection.
-        if (!embedded && changed && previous?.loaded && next.loaded > previous.loaded) {
+        if (!embedded && changed && !replaced && previous?.loaded && next.loaded > previous.loaded) {
             const added = next.loaded - previous.loaded;
             showWorkspaceToast(`${added.toLocaleString('en-US')} more ${noun(added, 'image')} loaded. ${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')}.`);
         }
@@ -623,6 +630,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function updateScope() {
         scopeText.textContent = ` ${scopeLabel(filters, roots)}`;
         toolbar?.setActiveFilters(activeRefinements(filters));
+    }
+    function dropSelection() {
+        inspection.clear();
+        detailInspector?.dispose(); detailInspector = null;
+        for (const video of details.querySelectorAll('video')) releaseVideo(video);
+        details.replaceChildren(noSelection());
+        selection = null;
     }
     function reset() {
         mediaViewer.stopSlideshow();

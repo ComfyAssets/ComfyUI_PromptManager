@@ -352,3 +352,49 @@ test('selectionLabel counts the selected images as the concept bar does', async 
     assert.equal(selectionLabel(2), '2 selected');
     assert.equal(selectionLabel(1234), '1,234 selected');
 });
+
+test('refresh re-reads the loaded range in place and publishes once, replacing the items', async () => {
+    const {createImageStream,imageKey}=await source;const requests=[];const states=[];
+    const stream=createImageStream({api:{get:(url,{signal})=>{const d=deferred();requests.push({...d,url,signal});return d.promise;}},onChange:(s,hint)=>states.push([s,hint]),batchSize:2});
+    assert.equal(typeof stream.refresh,'function','refresh is part of the stream');
+    const first=stream.reset({q:'tag'});requests[0].resolve(page([image('a'),image('b')],5,'c1'));await first;
+    const second=stream.loadMore();requests[1].resolve(page([image('c'),image('d')],5,'c2'));await second;
+    const before=stream.state;const published=states.length;
+    const refresh=stream.refresh();
+    // The current collection stays shown while the re-read runs; Load more waits for it.
+    assert.equal(stream.state,before);assert.equal(states.length,published);
+    assert.equal(await stream.loadMore(),0);assert.equal(requests.length,3);
+    const query=new URL(requests[2].url,'http://local').searchParams;
+    assert.equal(query.get('q'),'tag');assert.equal(query.has('cursor'),false);
+    requests[2].resolve(page([image('a'),image('new')],6,'n1'));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(new URL(requests[3].url,'http://local').searchParams.get('cursor'),'n1');
+    assert.equal(stream.state,before);
+    requests[3].resolve(page([image('c'),image('d')],6,'n2'));
+    assert.equal(await refresh,4);
+    assert.deepEqual(stream.state.items.map(imageKey),['0:a','0:new','0:c','0:d']);
+    assert.deepEqual([stream.state.total,stream.state.cursor,stream.state.hasMore,stream.state.loaded,stream.state.loading],[6,'n2',true,4,false]);
+    assert.equal(states.length,published+1);assert.deepEqual(states.at(-1)[1],{replaced:true});
+    // Load more continues from the refreshed cursor.
+    const more=stream.loadMore();assert.equal(new URL(requests[4].url,'http://local').searchParams.get('cursor'),'n2');
+    requests[4].resolve(page([image('e')],6));await more;
+    assert.deepEqual(stream.state.items.map(imageKey),['0:a','0:new','0:c','0:d','0:e']);
+});
+
+test('refresh stops early when the result shrank, and a reset or failure leaves the collection as it was', async () => {
+    const {createImageStream,imageKey}=await source;const requests=[];
+    const stream=createImageStream({api:{get:(url,{signal})=>{const d=deferred();requests.push({...d,url,signal});return d.promise;}},batchSize:2});
+    assert.equal(typeof stream.refresh,'function','refresh is part of the stream');
+    const first=stream.reset({tags:['x']});requests[0].resolve(page([image('a'),image('b')],4,'c1'));await first;
+    const shrink=stream.refresh();requests[1].resolve(page([image('b')],1));
+    assert.equal(await shrink,1);assert.deepEqual(stream.state.items.map(imageKey),['0:b']);assert.equal(stream.state.hasMore,false);
+    const before=stream.state;
+    const failing=stream.refresh();requests[2].reject(new Error('offline'));
+    assert.equal(await failing,0);assert.equal(stream.state,before);
+    const stale=stream.refresh();const fresh=stream.reset({tags:['y']});
+    assert.equal(requests[3].signal.aborted,true);
+    requests[4].resolve(page([image('y')]));await fresh;
+    requests[3].resolve(page([image('stale')]));assert.equal(await stale,0);
+    assert.deepEqual(stream.state.items.map(imageKey),['0:y']);
+    stream.dispose();assert.equal(await stream.refresh(),0);
+});

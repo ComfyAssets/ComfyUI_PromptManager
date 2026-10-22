@@ -110,8 +110,11 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         onChange(state);
     }
 
+    // A refresh in flight (its abort controller): Load more waits for it, a reset or dispose cancels it.
+    let refreshing = null;
+
     async function loadMore() {
-        if (disposed || state.loading || !state.hasMore) return 0;
+        if (disposed || state.loading || !state.hasMore || refreshing) return 0;
         const request = new AbortController();
         controller = request;
         const cursor = state.cursor;
@@ -148,11 +151,53 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         }
     }
 
+    /**
+     * Re-read the loaded range of the same query (a write may have changed which files match) and publish the new
+     * collection once, with the hint `{replaced: true}`; the current items stay shown until then. A failure, a reset
+     * or a dispose leaves the collection as it was. Resolves to the number of items now loaded (0 when abandoned).
+     */
+    async function refresh() {
+        if (disposed || state.loading) return 0;
+        refreshing?.abort();
+        const request = refreshing = new AbortController();
+        const target = Math.max(state.loaded, 1);
+        const items = [], keys = new Set();
+        let cursor = null, total = 0, hasMore = true, positiveCount = null;
+        try {
+            while (items.length < target && hasMore) {
+                const parameters = new URLSearchParams(query);
+                if (cursor !== null) parameters.set('cursor', cursor);
+                const page = await readPage({parameters, signal:request.signal});
+                if (disposed || request !== refreshing) return 0;
+                validatePage(page, cursor);
+                for (const item of page.images) {
+                    const key = imageKey(item);
+                    if (keys.has(key)) continue;
+                    keys.add(key);
+                    items.push(Object.freeze({ ...item }));
+                }
+                if (cursor === null) positiveCount = isCount(page.positive_count) ? page.positive_count : null;
+                ({total, next_cursor: cursor, has_more: hasMore} = page);
+            }
+        } catch {
+            if (request === refreshing) refreshing = null;
+            return 0;
+        }
+        refreshing = null;
+        seen = keys;
+        state = Object.freeze({ ...state, items: Object.freeze(items), total, cursor, hasMore, loading: false, error: null,
+            loaded: items.length, positiveCount });
+        onChange(state, {replaced: true});
+        return items.length;
+    }
+
     async function reset(filters = {}, {load = true} = {}) {
         if (disposed) return 0;
         const nextQuery = queryFor(filters, batchSize);
         controller?.abort();
         controller = null;
+        refreshing?.abort();
+        refreshing = null;
         query = nextQuery;
         seen = new Set();
         publish({ items: Object.freeze([]), total: 0, cursor: null, hasMore: true,
@@ -164,6 +209,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         get state() { return state; },
         reset,
         loadMore,
+        refresh,
         /** Patch one loaded item (a favorite toggle); false when it is not loaded or the stream is gone. */
         updateItem(key, patch) {
             const next = withItem(state, key, patch);
@@ -178,6 +224,8 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
             disposed = true;
             controller?.abort();
             controller = null;
+            refreshing?.abort();
+            refreshing = null;
         },
     };
 }

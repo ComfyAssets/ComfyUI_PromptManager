@@ -317,11 +317,12 @@ export const rootedFileAdapter = Object.freeze({
 export function createInspectionLoader(api, onChange, { extractFacts, adapter = rootedFileAdapter } = {}) {
     let request = null, disposed = false;
     return {
-        async load(image) {
+        /** `quiet`: publish only the answer, so the shown record stays until it lands (a re-read after a write). */
+        async load(image, { quiet = false } = {}) {
             if (disposed) return;
             request?.abort();
             const current = request = new AbortController();
-            onChange({ loading: true });
+            if (!quiet) onChange({ loading: true });
             try {
                 const result = await api.get(adapter.inspectionPath(image), { signal: current.signal });
                 if (disposed || request !== current) return;
@@ -354,8 +355,8 @@ export function createInspectionController({ api, extractFacts, adapter = rooted
     }
     const makeLoader = () => createInspectionLoader(api, publish, { extractFacts, adapter });
     let loader = makeLoader();
-    function read(image) {
-        pending = loader.load(image);
+    function read(image, options) {
+        pending = loader.load(image, options);
         return pending;
     }
     return {
@@ -378,6 +379,11 @@ export function createInspectionController({ api, extractFacts, adapter = rooted
         retry() {
             if (disposed || !hasAttempt || state.refreshRequired) return;
             return read(attempted);
+        },
+        /** Re-read the selected file keeping the shown record until the answer (a retry when none is shown). */
+        refresh() {
+            if (disposed || !hasAttempt || state.refreshRequired) return;
+            return read(attempted, { quiet: Boolean(state.record) && !state.loading && !state.error });
         },
         clear() {
             if (disposed) return;

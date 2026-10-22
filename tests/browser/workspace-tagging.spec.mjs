@@ -530,3 +530,109 @@ test('search finds an image by its image tag', async ({ page, request }) => {
     await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(1);
     await expect(card(page, UNLINKED)).toBeVisible();
 });
+
+// Task C4 rulings: a save re-reads the selected file's details without a loading flash, and under a Tags filter or a
+// search the loaded listing is re-read in place (scroll and selection kept while the file still matches).
+const cards = page => page.locator('.gallery-body article[data-image-key]');
+const listingOf = (page, check) => page.waitForResponse(item => item.url().includes('/images/output?') && check(new URL(item.url()).searchParams));
+
+test('the post-save re-read keeps the panel content until the new read lands', async ({ page }) => {
+    await page.goto(images);
+    await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
+    await expect(tagRow(page).locator('.chip')).toHaveText(manifest.pair_tags);
+    await page.evaluate(() => {
+        const node = document.querySelector('aside[aria-label="Selected image details"]');
+        window.__loadingSeen = false;
+        window.__loadingWatch = new MutationObserver(() => { if (node.textContent.includes('Loading file details')) window.__loadingSeen = true; });
+        window.__loadingWatch.observe(node, { childList: true, subtree: true, characterData: true });
+    });
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const matcher = url => url.pathname === `/prompt_manager/images/inspect/${FIRST}`;
+    await page.route(matcher, async route => { await held; await route.continue(); });
+    await openTag(page, FIRST, { goto: false });
+    await manual(page).fill('held_tag');
+    const reread = page.waitForRequest(item => new URL(item.url()).pathname === `/prompt_manager/images/inspect/${FIRST}`);
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await reread;
+    await expect(toast(page)).toHaveText('1 tags saved for dunes_00001.png.');
+    // While the re-read is held, the panel still shows the file's details.
+    await expect(panel(page).locator('.panel-heading h2')).toHaveText(manifest.title);
+    await expect(tagRow(page).locator('.chip')).toHaveText(manifest.pair_tags);
+    expect(await page.evaluate(() => window.__loadingSeen)).toBe(false);
+    const landed = inspected(page, FIRST);
+    release();
+    await landed;
+    await expect(tagRow(page).locator('.chip')).toHaveText(['held_tag', ...manifest.pair_tags]);
+    expect(await page.evaluate(() => { window.__loadingWatch.disconnect(); return window.__loadingSeen; })).toBe(false);
+    await page.unroute(matcher);
+});
+
+test('a save under a Tags filter re-reads the listing: the selection stays while it matches and follows when it leaves', async ({ page, request }) => {
+    await saveImageTags(request, UNLINKED, ['shared']);
+    await saveImageTags(request, SECOND, ['shared']);
+    await page.goto(images);
+    const read = inspected(page, SECOND);
+    await infoButton(page, SECOND).click();
+    await read;
+    const filtered = listingOf(page, query => query.get('tags') === 'shared');
+    await tagRow(page).getByRole('button', { name: 'shared', exact: true }).click();
+    await filtered;
+    await expect(cards(page)).toHaveCount(2);
+    // The newest match (SECOND) is selected once the filter applies.
+    await expect(card(page, SECOND)).toHaveClass(/\bselected\b/);
+    // Tagging the other match keeps both cards and SECOND selected; the listing is re-read.
+    await openTag(page, UNLINKED, { goto: false });
+    await manual(page).fill('shared, extra');
+    let reread = listingOf(page, query => query.get('tags') === 'shared' && !query.has('cursor'));
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await reread;
+    await expect(cards(page)).toHaveCount(2);
+    await expect(card(page, SECOND)).toHaveClass(/\bselected\b/);
+    await expect(tagButton(page, UNLINKED)).toBeFocused();
+    // SECOND loses the filter tag: it leaves the result and the panel follows the remaining match.
+    await openTag(page, SECOND, { goto: false });
+    await manual(page).fill('');
+    reread = listingOf(page, query => query.get('tags') === 'shared' && !query.has('cursor'));
+    const next = inspected(page, UNLINKED);
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await reread;
+    await next;
+    await expect(cards(page)).toHaveCount(1);
+    await expect(card(page, SECOND)).toHaveCount(0);
+    await expect(card(page, UNLINKED)).toHaveClass(/\bselected\b/);
+    await expect(panel(page).locator('.panel-heading h2')).toHaveText('unlinked.png');
+    await expect(page.getByText('1 of 1 image', { exact: false }).first()).toBeVisible();
+});
+
+test('a save under a search keeps the scroll position and the loaded range', async ({ page, request }) => {
+    await expect(await request.post('/__test__/tagging/reset', { data: { extra_images: 140 } })).toBeOK();
+    await page.goto(images);
+    const searched = listingOf(page, query => query.get('q') === 'bulk');
+    await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).fill('bulk');
+    await searched;
+    const continuation = page.locator('#gallery-continuation');
+    // Load at least two pages (the search lists 40 a page), then rest a third of the way down.
+    const loadedCount = async () => {
+        const text = await continuation.textContent();
+        return /caught up/.test(text) ? 140 : Number(/^(\d+) of 140/.exec(text)?.[1] ?? 0);
+    };
+    await expect.poll(async () => { await continuation.scrollIntoViewIfNeeded(); return loadedCount(); }).toBeGreaterThanOrEqual(80);
+    await page.evaluate(() => window.scrollTo(0, Math.round(document.documentElement.scrollHeight / 3)));
+    await expect(continuation).not.toBeInViewport();
+    const loaded = await continuation.textContent();
+    await expect.poll(() => continuation.textContent()).toBe(loaded);
+    const y = await page.evaluate(() => window.scrollY);
+    expect(y).toBeGreaterThan(0);
+    const visible = await cards(page).evaluateAll(nodes => nodes.find(node => { const box = node.getBoundingClientRect(); return box.top > 80 && box.bottom < innerHeight; })?.dataset.imageKey);
+    expect(visible).toBeTruthy();
+    const path = visible.slice(2);
+    await openTag(page, path, { goto: false });
+    await manual(page).fill('kept_in_place');
+    const reread = listingOf(page, query => query.get('q') === 'bulk' && !query.has('cursor'));
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await reread;
+    await expect(tagButton(page, path)).toBeFocused();
+    await expect(continuation).toHaveText(loaded);
+    expect(Math.abs(await page.evaluate(() => window.scrollY) - y)).toBeLessThanOrEqual(1);
+});
