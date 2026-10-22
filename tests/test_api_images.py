@@ -18,7 +18,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ComfyUI-only modules are stubbed so the API can be imported standalone.
-sys.modules.setdefault("folder_paths", MagicMock())
+try:
+    from host_stubs import install_folder_paths_stub
+except ImportError:  # imported as tests.test_api_images
+    from tests.host_stubs import install_folder_paths_stub
+
+install_folder_paths_stub()
 sys.modules.setdefault("server", MagicMock())
 
 from aiohttp import web  # noqa: E402

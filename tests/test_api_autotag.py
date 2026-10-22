@@ -11,7 +11,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import types
 import unittest
 from unittest.mock import MagicMock
 from pathlib import Path
@@ -23,12 +22,12 @@ sys.modules.setdefault("server", _mock_server)  # py.config imports it at module
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-if "folder_paths" not in sys.modules:
-    _stub = types.ModuleType("folder_paths")
-    _stub.models_dir = tempfile.gettempdir()
-    _stub.base_path = tempfile.gettempdir()
-    _stub.get_output_directory = tempfile.gettempdir
-    sys.modules["folder_paths"] = _stub
+try:
+    from host_stubs import install_folder_paths_stub
+except ImportError:  # imported as tests.test_api_autotag
+    from tests.host_stubs import install_folder_paths_stub
+
+install_folder_paths_stub()
 
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
@@ -36,6 +35,11 @@ from aiohttp.test_utils import AioHTTPTestCase
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
 from utils.hashing import generate_prompt_hash
+
+try:  # guarded so a missing module fails assertions, not test loading
+    from py import model_gate
+except ImportError:
+    model_gate = None
 
 
 class FakeAutotagService:
@@ -128,6 +132,11 @@ class AutotagAPITestCase(AioHTTPTestCase):
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
         self._service_patch.stop()
+        if model_gate is not None:
+            leaked = model_gate.holder()
+            if leaked is not None:  # never leak the process-wide gate
+                model_gate.release(leaked)
+            self.assertIsNone(leaked, "a route left the model gate held")
         self.api.db.close_all()
         for path in (
             self._temp_db.name,
@@ -945,6 +954,159 @@ class TestUnloadAutotag(AutotagAPITestCase):
         self.service.is_model_loaded = boom
         resp = await self.client.request("POST", "/prompt_manager/autotag/unload")
         self.assertEqual(resp.status, 500)
+
+
+class TestLegacyRoutesShareTheModelGate(AutotagAPITestCase):
+    """While another model operation holds the gate, every legacy model route
+    answers ``409 model-busy`` and touches no model (the one allowed legacy
+    change)."""
+
+    BUSY = {"success": False, "code": "model-busy"}
+
+    def setUp(self):
+        super().setUp()
+        self.assertIsNotNone(model_gate, "py.model_gate is not implemented")
+
+    async def _busy(self, resp):
+        self.assertEqual(resp.status, 409)
+        data = await resp.json()
+        self.assertEqual({k: data[k] for k in self.BUSY}, self.BUSY)
+        self.assertIn("busy", data["error"].lower())
+        return data
+
+    async def test_legacy_single_download_start_return_model_busy_while_gate_held(
+        self,
+    ):
+        image = self._make_image(self.output_dir)
+        self.service._loaded_type = "wd14-vit"
+        self.assertTrue(model_gate.try_acquire("test-holder"))
+        try:
+            await self._busy(
+                await self._post_json(
+                    "/prompt_manager/autotag/single",
+                    {"path": str(image), "model_type": "gguf"},
+                )
+            )
+            await self._busy(
+                await self.client.request(
+                    "POST", "/prompt_manager/autotag/download/gguf"
+                )
+            )
+            await self._busy(
+                await self.client.request(
+                    "POST", "/prompt_manager/autotag/start?model_type=gguf"
+                )
+            )
+            await self._busy(
+                await self.client.request("POST", "/prompt_manager/autotag/unload")
+            )
+            self.assertEqual(model_gate.holder(), "test-holder")
+        finally:
+            model_gate.release("test-holder")
+
+        self.assertEqual(self.service.load_calls, [])
+        self.assertEqual(self.service.generate_calls, [])
+        self.assertEqual(self.service.download_calls, [])
+        self.assertEqual(self.service.unload_calls, 0)
+        self.assertEqual(self.service.get_loaded_model_type(), "wd14-vit")
+
+        # A refused start released the batch lock: the next start runs.
+        resp = await self.client.request(
+            "POST", "/prompt_manager/autotag/start?model_type=gguf"
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
+
+    async def test_legacy_routes_hold_the_gate_only_while_they_run(self):
+        image = self._make_image(self.output_dir)
+        seen = []
+
+        def generate(image_path, **kwargs):
+            seen.append(model_gate.holder())
+            return ["x"]
+
+        def download(model_type, progress_callback=None):
+            seen.append(model_gate.holder())
+            return True
+
+        def load(model_type, use_gpu=True):
+            seen.append(model_gate.holder())
+            self.service._loaded_type = model_type
+            return True
+
+        self.service.generate_tags = generate
+        self.service.download_model = download
+        self.service.load_model = load
+
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single", {"path": str(image)}
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertIsNone(model_gate.holder())
+        resp = await self.client.request(
+            "POST", "/prompt_manager/autotag/download/gguf"
+        )
+        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
+        self.assertIsNone(model_gate.holder())
+        resp = await self.client.request("POST", "/prompt_manager/autotag/unload")
+        self.assertEqual(resp.status, 200)
+        self.assertIsNone(model_gate.holder())
+
+        self.assertEqual(len(seen), 3)
+        self.assertTrue(all(owner and owner.startswith("legacy-") for owner in seen))
+
+    async def test_validation_errors_win_over_the_gate(self):
+        self.assertTrue(model_gate.try_acquire("test-holder"))
+        try:
+            resp = await self._post_json("/prompt_manager/autotag/single", {})
+            self.assertEqual(resp.status, 400)
+            resp = await self.client.request(
+                "POST", "/prompt_manager/autotag/start?general_threshold=x"
+            )
+            self.assertEqual(resp.status, 400)
+        finally:
+            model_gate.release("test-holder")
+
+    async def test_batch_holds_the_gate_until_it_completes(self):
+        prompt = self._save_prompt("p")
+        self._link_image(prompt, self._make_image(self.output_dir, "a.png"))
+        started = threading.Event()
+        proceed = threading.Event()
+
+        def slow_generate(image_path, **kwargs):
+            started.set()
+            proceed.wait(30)
+            return ["slow"]
+
+        self.service.generate_tags = slow_generate
+        run = asyncio.ensure_future(
+            self.client.request("POST", "/prompt_manager/autotag/start")
+        )
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            self.assertTrue(model_gate.holder().startswith("legacy-batch:"))
+            await self._busy(
+                await self.client.request("POST", "/prompt_manager/autotag/unload")
+            )
+        finally:
+            proceed.set()
+            resp = await run
+            events = self._sse_events(await resp.text())
+        self.assertEqual(events[-1]["type"], "complete")
+        self.assertIsNone(model_gate.holder())
+
+    async def test_models_response_carries_the_suggestion_limit(self):
+        from py.config import AutotagConfig
+
+        resp = await self.client.get("/prompt_manager/autotag/models")
+        data = await resp.json()
+        self.assertEqual(data["suggestion_limit"], 10)
+        AutotagConfig.SUGGESTION_LIMIT = 25
+        try:
+            resp = await self.client.get("/prompt_manager/autotag/models")
+            self.assertEqual((await resp.json())["suggestion_limit"], 25)
+        finally:
+            AutotagConfig.SUGGESTION_LIMIT = 10
 
 
 class TestScanOutputDir(AutotagAPITestCase):

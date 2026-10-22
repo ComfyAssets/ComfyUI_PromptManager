@@ -119,12 +119,16 @@ class AnnotationCommandError(LibraryCommandError):
         self.current = current
 
 
+class ImageTagLimitError(ValueError):
+    """More than ``MAX_IMAGE_TAGS`` distinct names in one set."""
+
+
 def normalize_image_tags(names: object) -> list[str]:
     """Trim and validate each name, fold case-insensitive repeats, cap at 100.
 
     The first occurrence keeps its spelling and position. Raises ``ValueError``
-    for anything but a list of valid vocabulary names or for more than
-    ``MAX_IMAGE_TAGS`` distinct names.
+    for anything but a list of valid vocabulary names, and its subclass
+    ``ImageTagLimitError`` for more than ``MAX_IMAGE_TAGS`` distinct names.
     """
     if not isinstance(names, list):
         raise ValueError("tags must be a list of strings")
@@ -138,7 +142,7 @@ def normalize_image_tags(names: object) -> list[str]:
         seen.add(key)
         result.append(name)
     if len(result) > MAX_IMAGE_TAGS:
-        raise ValueError(f"An image can carry at most {MAX_IMAGE_TAGS} tags")
+        raise ImageTagLimitError(f"An image can carry at most {MAX_IMAGE_TAGS} tags")
     return result
 
 

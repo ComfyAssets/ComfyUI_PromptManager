@@ -19,6 +19,7 @@ sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from py import config as config_module
 from py.config import GalleryConfig, IntegrationConfig, PromptManagerConfig
 
 
@@ -402,6 +403,86 @@ class TestConfigPathOverride(unittest.TestCase):
             PromptManagerConfig.load_from_file()
 
             self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, 77)
+
+
+class TestAutotagConfig(unittest.TestCase):
+    """``autotag.defaults.suggestion_limit``: integer 1..100, default 10 (D68)."""
+
+    def setUp(self):
+        self.config_class = getattr(config_module, "AutotagConfig", None)
+        self.assertIsNotNone(self.config_class, "AutotagConfig is not implemented")
+        self._orig = PromptManagerConfig.get_config()
+
+    def tearDown(self):
+        self.config_class.SUGGESTION_LIMIT = 10
+        PromptManagerConfig.update_config(self._orig)
+
+    def _load(self, value):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "config.json")
+            with open(path, "w") as f:
+                # json writes NaN for float("nan"), which json.load reads back.
+                json.dump({"autotag": {"defaults": {"suggestion_limit": value}}}, f)
+            with self.assertLogs("prompt_manager.config", level="WARNING") as logs:
+                PromptManagerConfig.load_from_file(path)
+        return logs
+
+    def test_every_copy_of_the_tag_set_cap_is_one_value(self):
+        # A suggestion request is bounded by the image tag set cap; the
+        # copies that cannot import it (config loads before the database,
+        # the inspection envelope stays storage-free) are pinned to it here.
+        from database.annotations import MAX_IMAGE_TAGS
+        from py import autotag
+        from utils import inspection_response
+
+        self.assertEqual(autotag.MAX_SUGGESTION_LIMIT, MAX_IMAGE_TAGS)
+        self.assertEqual(config_module.MAX_SUGGESTION_LIMIT, MAX_IMAGE_TAGS)
+        self.assertEqual(inspection_response.MAX_IMAGE_TAGS, MAX_IMAGE_TAGS)
+
+    def test_default_is_ten_and_persisted_under_autotag_defaults(self):
+        self.assertEqual(config_module.DEFAULT_SUGGESTION_LIMIT, 10)
+        self.assertEqual(config_module.MAX_SUGGESTION_LIMIT, 100)
+        self.assertEqual(self.config_class.suggestion_limit(), 10)
+        self.assertEqual(
+            PromptManagerConfig.get_config()["autotag"],
+            {"defaults": {"suggestion_limit": 10}},
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "config.json")
+            PromptManagerConfig.update_config(
+                {"autotag": {"defaults": {"suggestion_limit": 25}}}
+            )
+            PromptManagerConfig.save_to_file(path)
+            self.config_class.SUGGESTION_LIMIT = 10
+            PromptManagerConfig.load_from_file(path)
+        self.assertEqual(self.config_class.suggestion_limit(), 25)
+
+    def test_valid_limits_are_kept(self):
+        for value in (1, 10, 100):
+            with self.subTest(value=value):
+                PromptManagerConfig.update_config(
+                    {"autotag": {"defaults": {"suggestion_limit": value}}}
+                )
+                self.assertEqual(self.config_class.suggestion_limit(), value)
+
+    def test_suggestion_limit_setting_validated_on_load(self):
+        for value in (0, 101, "10", float("nan"), 2.5, True, None, [10]):
+            with self.subTest(value=value):
+                self.config_class.SUGGESTION_LIMIT = 42
+                logs = self._load(value)
+                self.assertEqual(self.config_class.suggestion_limit(), 10)
+                self.assertIn("suggestion_limit", "\n".join(logs.output))
+
+    def test_missing_or_malformed_sections_keep_the_current_value(self):
+        self.config_class.SUGGESTION_LIMIT = 7
+        for config in ({}, {"autotag": {}}, {"autotag": {"defaults": {}}}):
+            PromptManagerConfig.update_config(config)
+            self.assertEqual(self.config_class.suggestion_limit(), 7)
+        with self.assertLogs("prompt_manager.config", level="WARNING"):
+            PromptManagerConfig.update_config({"autotag": "nope"})
+        with self.assertLogs("prompt_manager.config", level="WARNING"):
+            PromptManagerConfig.update_config({"autotag": {"defaults": [1]}})
+        self.assertEqual(self.config_class.suggestion_limit(), 7)
 
 
 if __name__ == "__main__":

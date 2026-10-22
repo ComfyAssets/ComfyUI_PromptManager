@@ -26,6 +26,7 @@ from .prompts import PromptRoutesMixin
 from .pairs import PairRoutesMixin
 from .library import LibraryRoutesMixin
 from .vocabulary import VocabularyRoutesMixin
+from .annotations import AnnotationRoutesMixin
 from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
@@ -252,6 +253,7 @@ class PromptManagerAPI(
     PairRoutesMixin,
     LibraryRoutesMixin,
     VocabularyRoutesMixin,
+    AnnotationRoutesMixin,
     SavedViewRoutesMixin,
     HistoryRoutesMixin,
     PromptRoutesMixin,
@@ -285,6 +287,10 @@ class PromptManagerAPI(
         self.db = db if db is not None else PromptDatabase()
         self._history_read_fence = None
         self._history_reads_closed = False
+        # Private media captures of the annotation routes (py/api/annotations.py),
+        # created on first use with their restore subscription.
+        self._captures = None
+        self._captures_unsubscribe = None
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
@@ -441,6 +447,7 @@ class PromptManagerAPI(
         self._register_pair_routes(routes)
         self._register_library_routes(routes)
         self._register_vocabulary_routes(routes)
+        self._register_annotation_routes(routes)
         self._register_saved_view_routes(routes)
         self._register_history_routes(routes)
         self._register_prompt_routes(routes)
