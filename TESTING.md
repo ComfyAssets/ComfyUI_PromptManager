@@ -1070,18 +1070,28 @@ concept's Tag (`app.js` mediaCard). Tag opens the concept's **Tag image** dialog
 scrolls. Focus starts on × and returns to the Tag button. The preview is the
 capture's own `preview_url` (through `ApiClient.resolveUrl`): an `img`, or a
 `video preload="metadata" muted`. The capture is released on ×, Escape, Cancel,
-Save, a route change (the shell closes its dialog) and `pagehide`. Generate is
-explicit and uses the server's real defaults (`GET /prompt_manager/autotag/models`);
-an invalid field reports native validity and sends nothing. Save writes the manual
+Save, a route change (the shell closes its dialog) and `pagehide`, which closes the
+dialog (a page restored from the back/forward cache shows no dead dialog); the
+release `DELETE` and the Save `PUT` are sent with `keepalive` (`ApiClient`'s
+additive option), so they finish while the page unloads. A save still in flight
+when the dialog closes keeps its capture until the `PUT` settles, then releases it
+and still reports the outcome: the saved toast and every page's refresh, or the
+failure as a toast. Generate is explicit and uses the server's real defaults
+(`GET /prompt_manager/autotag/models`), and the fields show exactly those values
+(they are re-rendered when the observation lands and on a model change, never while
+typing); an invalid field reports native validity and sends nothing. A tag conflict
+shows the current set at once: the status line appends "Saved now: <tags>." and the
+manual field holds the current set ahead of the draft (repeats dropped), so the next
+Save sends what is shown against the current revision. Save writes the manual
 names, then the remaining chips, deduplicated case-insensitively (first spelling
 wins), and toasts the mock's copy verbatim, "<n> tags saved for <filename>." even
 for one tag, plus " Prompt association still awaits review." from Needs review.
 Tagging one file never changes another file (an equal-byte copy included), a
 prompt, a pair or a link. States the mock lacks (generating, busy, conflict,
 changed storage or file, expired capture, unconfirmed save, unavailable model,
-video) are text in `#tag-generation-status` only; **Retry** (ruling T5) leads the
-actions while the controller allows it (failed observation, failed Generate,
-unconfirmed save), where the other workspace dialogs place their Retry. The Tags
+video) are text in `#tag-generation-status` only; **Retry** (D116) leads the
+actions while the controller allows it, where the other workspace dialogs place
+their Retry. The Tags
 page re-reads its lists after every confirmed save, so the Images counts follow.
 
 The image-tagging plan's deviation numbers were renumbered by +23 because the
@@ -1093,13 +1103,13 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   confidence (`98%` for WD14, "Suggested" for language models) and a × "Remove
   <tag>". A chip has the concept `.chip`'s 4px corner (the later `.tag-suggestion`
   row rule would give 5px) around the row's own 12px text. At most the requested
-  count, all preselected. The help copy reads "Remove anything you do not want to
-  add." and removing the last chip shows "All suggestions removed. Generate again or
-  enter tags manually." The concept's markup carries that initial sentence ("Uncheck
-  anything…"), but its `renderTagModelOptions` (a1062–1076) replaces it with "Generate
-  suggestions with the selected model before approving." as soon as the dialog opens,
-  so the concept never shows it; production shows ruling T4's sentence on open and
-  the model-changed sentence after a model change.
+  count, all preselected. While chips exist, ruling T4's "Remove anything you do not
+  want to add." (`p.small`) leads them inside `#tag-suggestions`; removing the last
+  chip shows "All suggestions removed. Generate again or enter tags manually." The
+  opening sentence is the concept's on-screen copy, "Generate suggestions with the
+  selected model before approving.": the concept's markup carries another ("Choose a
+  model… Uncheck anything…"), but its `renderTagModelOptions` (a1062–1076) replaces it
+  as soon as the dialog opens, so the opened state is compared unmapped.
 - **D84** (plan D61, rulings T1/T2): the Tagging model options are legacy's four
   engines in the mock's order with legacy labels and sizes (`WD14 SwinV2 · ~400
   MB`, `WD14 ViT · ~400 MB`, `GGUF JoyCaption (Recommended) · ~4.5 GB` in the
@@ -1125,6 +1135,18 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   its "Auto-tag images" always opens the dialog. Production opens it for the image
   selected in Images when it was last left; with none it is `aria-disabled` and
   pressing it toasts "Select an image in Images first." (no new chrome).
+- **D116** (ruling T5): **Retry** leads `.dialog-actions` (before Cancel and the
+  primary) while a failed observation, a failed Generate, an unconfirmed save or an
+  answer that needs a fresh observation (changed storage or file, expired capture)
+  can be retried; the concept has no failure states, so it has no Retry. After a
+  failed Generate it takes Generate's own path (an invalid field reports its
+  validity); an unconfirmed save resends the identical body; after a changed storage,
+  file or expired capture it observes again and keeps the typed draft (when the saved
+  set changed meanwhile, the current set leads the draft and the status line says
+  "The tags of this image changed since the dialog opened. Saved now: <tags>.").
+  Browser tests: "D116: Retry leads the actions after an unconfirmed save…", "D116:
+  Retry after an expired capture observes again and keeps the typed draft (M5)" and
+  the paired `production-unknown-outcome` capture.
 - **D29** (no prototype copy) in the dialog: no "Prototype · suggestions are
   simulated…" note, the status reads "Suggestions from <model>. Approve tags to save."
   (not "Sample suggestions from …"), and the toast has no " in this tab".
@@ -1136,11 +1158,23 @@ filter or a search is active the saved file may start or stop matching, so Image
 re-reads its loaded range in place (`createImageStream().refresh()`: the same query
 from the first page until the loaded count, published once). The cards, the scroll
 position and the selection stay while the selected file still matches; when it no
-longer does, the panel follows the collection (its first file), as after a reload.
-A refresh never runs beside a page load already in flight. Browser tests: "the
-post-save re-read keeps the panel content until the new read lands", "a save under a
-Tags filter re-reads the listing: …" and "a save under a search keeps the scroll
-position and the loaded range".
+longer does, the panel follows the collection (its first file), as after a reload,
+and the selection bar keeps only the checked files still listed, so its count is what
+Set category and Export metadata apply to. A refresh never runs beside a page load
+already in flight: asked during one, it is pending and runs once that page settles
+(success or failure; a reset drops it), and Load more waits for a running refresh
+(it neither loads nor moves focus). The re-read asks for pages as large as the rest of
+the loaded range (at most 200 files, at least one batch), one after another (each
+cursor comes from the page before); a failed re-read toasts "Images could not be
+refreshed after the tag save. Refresh image collection to retry." and keeps the
+cards. A save made while Images is left (Tags › Auto-tag images) marks a saved Images
+visit with a Tags filter or a search stale: returning lists it again with its
+filters instead of restoring the old cards. Browser tests: "the post-save re-read
+keeps the panel content until the new read lands", "a save under a Tags filter
+re-reads the listing: …", "a save under a search keeps the scroll position and the
+loaded range", "a failed listing re-read after a save says so and keeps the cards
+(M2)" and "a tag save from Tags reloads a filtered Images visit instead of restoring
+it (M6)"; the pending refresh and the page sizes are unit-tested.
 
 Concept comparison (`tests/browser/tagging-concept.spec.mjs` with
 `tagging-canonical-comparison.mjs`, plan Task C4): production runs on the concept
@@ -1158,13 +1192,13 @@ production-versus-concept difference of PR C and its record:
 
 | Difference | Record |
 | --- | --- |
-| Removable chips with × instead of checked checkbox rows; "Remove anything…"; the all-removed copy; the initial sentence on open | D83 (ruling T4) |
+| Removable chips with × instead of checked checkbox rows; "Remove anything…" while chips exist; the all-removed copy | D83 (ruling T4) |
 | Legacy engine labels and values, GGUF in the Ollama slot, server default instructions | D84 (rulings T1/T2) |
 | Suggestions count field | D91 (ruling T3-bulk) |
 | No prototype note, "Suggestions from …", no " in this tab" | D29 |
 | Image tags first in the inspector and viewer chip row | D88 (ruling T7/C2) |
 | Auto-tag images `aria-disabled` without a selected image | D115 |
-| Retry leads the actions when the controller allows it | ruling T5 (state text only otherwise) |
+| Retry leads the actions when the controller allows it | D116 (ruling T5) |
 | States the concept lacks (busy, conflict, changed storage or file, unconfirmed save, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
 
 Native image tagging (#249 PR B routes, PR C UI): `POST
@@ -1193,12 +1227,17 @@ no model files; every test asserts no download request),
 `tests/js/workspace-inspection-state.test.js` and `tests/browser/inspector-concept.spec.mjs`
 ("image tags saved on the concept image keep the inspector equal to the concept"), and
 for the comparison `tests/browser/tagging-concept.spec.mjs` and
-`tests/js/workspace-images-state.test.js` (the in-place refresh).
+`tests/js/workspace-images-state.test.js` (the in-place refresh), and on all four
+projects `tests/browser/workspace-tagging-lifecycle.spec.mjs` (leaving the page with
+the dialog open releases the capture with no console error; closing during a save
+releases it after the save and still reports it).
 
 ```sh
 node --test tests/js/workspace-image-tagging*.test.js tests/js/workspace-images-lifecycle.test.js
 npm run --prefix tools/vendor test:workflows -- workspace-tagging.spec.mjs tagging-concept.spec.mjs \
   workspace-vocabulary.spec.mjs images-concept.spec.mjs --project chromium --project touch
+npm run --prefix tools/vendor test:workflows -- workspace-tagging-lifecycle.spec.mjs tagging-concept.spec.mjs \
+  --project firefox --project webkit
 ```
 
 ### Prompt library cards and recorded deviations (#249 PR E)

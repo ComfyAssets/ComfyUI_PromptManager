@@ -25,6 +25,7 @@ function el(tag, text, className) {
  * - `getItems()` is the listing in its order; `checked` restores a saved visit's selection.
  * - `onCategorySet()` reloads the categories and the listing after a successful Set category (the reload clears the
  *   selection through `clear`); focus then moves to `focusFallback` if it was on the hidden action.
+ * - `retain(kept)` drops the checked files a refreshed listing no longer holds (a tag save under a filter, I7).
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, checked: initial = Object.freeze(new Set()) }) {
     let checked = initial;
@@ -52,6 +53,13 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
         if (!checked.size) return;
         checked = Object.freeze(new Set());
         for (const box of grid.querySelectorAll(CHECKBOX)) box.checked = false;
+        render();
+    }
+    /** Keep only the checked files `kept(key)` still lists (a refreshed result), so the count is what the actions apply to. */
+    function retain(kept) {
+        const next = [...checked].filter(kept);
+        if (next.length === checked.size) return;
+        checked = Object.freeze(new Set(next));
         render();
     }
     function checkedImages() {
@@ -142,6 +150,7 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
         isChecked: key => checked.has(key),
         checked: () => checked,
         clear,
+        retain,
         /** Whether a Set category write is still in flight. */
         writing: () => categorizing,
     };

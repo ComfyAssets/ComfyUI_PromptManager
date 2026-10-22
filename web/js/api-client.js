@@ -64,9 +64,11 @@
     function createApiClient(fetchImpl) {
         const doFetch = fetchImpl || ((...args) => globalThis.fetch(...args));
 
-        async function request(method, url, { body, signal, cache } = {}) {
+        async function request(method, url, { body, signal, cache, keepalive } = {}) {
             const init = { method, headers: {} };
             if (cache !== undefined) init.cache = cache;
+            // keepalive lets a write or a release finish while its page unloads (pagehide).
+            if (keepalive) init.keepalive = true;
             if (body !== undefined) {
                 init.headers["Content-Type"] = "application/json";
                 init.body = JSON.stringify(body);
@@ -96,11 +98,11 @@
         return {
             // cache is a fetch RequestCache mode such as "no-store"; omitted keeps the default.
             get: (url, { signal, cache } = {}) => request("GET", url, { signal, cache }),
-            post: (url, body, { signal } = {}) => request("POST", url, { body, signal }),
-            put: (url, body, { signal } = {}) => request("PUT", url, { body, signal }),
+            post: (url, body, { signal, keepalive } = {}) => request("POST", url, { body, signal, keepalive }),
+            put: (url, body, { signal, keepalive } = {}) => request("PUT", url, { body, signal, keepalive }),
             patch: (url, body, { signal } = {}) => request("PATCH", url, { body, signal }),
             // A DELETE body is optional; the favorites store names its file in one.
-            del: (url, { signal, body } = {}) => request("DELETE", url, { body, signal }),
+            del: (url, { signal, body, keepalive } = {}) => request("DELETE", url, { body, signal, keepalive }),
         };
     }
 

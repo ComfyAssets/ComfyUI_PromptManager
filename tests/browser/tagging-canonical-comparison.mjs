@@ -101,17 +101,18 @@ const CONCEPT_LABELS=Object.freeze({'WD14 SwinV2 · fast classifier':'WD14 SwinV
 /**
  * The concept inventory with the recorded deviations applied:
  * - no prototype note (Global Constraints: `Prototype · suggestions are simulated…` is not shipped);
- * - D83 (ruling T4): "Remove anything you do not want to add." and every suggestion a chip with a `Remove <name>` ×
- *   instead of a checked checkbox row: the concept's own `.chip` corner (`chip`: a concept `.chip` inventory, the
- *   heading's size chip) around the row's own text (12px) in the checked row's colours (accent border, `--soft-blue`);
+ * - D83 (ruling T4): while suggestions exist, "Remove anything you do not want to add." leads them, and every
+ *   suggestion is a chip with a `Remove <name>` × instead of a checked checkbox row: the concept's own `.chip` corner
+ *   (`chip`: a concept `.chip` inventory, the heading's size chip) around the row's own text (12px) in the checked
+ *   row's colours (accent border, `--soft-blue`);
  * - D84 (plan D61): the legacy engine labels and values, and the server's default instructions (`instructions`);
  * - D91 (plan D68): a Suggestions count field after the model's own fields, on the concept's number field tokens
  *   (`numberField`: the concept's General confidence field) with the configured count (`limit`);
- * - D29: the prototype's "Sample suggestions from …" status reads "Suggestions from …";
- * - D83, `opened`: on open the concept's renderTagModelOptions (a1062–1076) replaces its own initial sentence with the
- *   model-changed one at once; production shows the initial sentence of ruling T4 until a model change.
+ * - D29: the prototype's "Sample suggestions from …" status reads "Suggestions from …".
+ * The opened state is compared unmapped: both show the concept's on-screen "Generate suggestions with the selected
+ * model before approving." (its renderTagModelOptions, a1062–1076, replaces the markup's sentence at once).
  */
-export function mapConceptTagging(reference,{instructions,limit=10,chip,numberField,opened=false}) {
+export function mapConceptTagging(reference,{instructions,limit=10,chip,numberField}) {
     const [select,...own]=reference.modelPanel.fields;
     const suggestionsField={...numberField,label:'Suggestions',control:{...numberField.control,id:'image-suggestion-limit',
         value:String(limit),min:'1',max:'100',step:'1'}};
@@ -119,9 +120,7 @@ export function mapConceptTagging(reference,{instructions,limit=10,chip,numberFi
     const rows=reference.suggestions.rows.map(row=>({...row,
         control:row.control?.kind==='checkbox'&&row.control.checked?{kind:'remove',label:`Remove ${row.name}`}:row.control,
         borderTopLeftRadius:chip.borderTopLeftRadius}));
-    const initial='Choose a model, then generate tags. Remove anything you do not want to add.';
-    const copy=opened&&reference.suggestions.copy==='Generate suggestions with the selected model before approving.'?initial:
-        reference.suggestions.copy?.replace('Uncheck anything you do not want to add.','Remove anything you do not want to add.')??null;
+    const copy=rows.length&&reference.suggestions.copy===null?'Remove anything you do not want to add.':reference.suggestions.copy;
     const status=reference.suggestions.status.text.replace(/^Sample suggestions from (.+)\. Approve tags to save\.$/,
         (_,label)=>`Suggestions from ${CONCEPT_LABELS[label]??label}. Approve tags to save.`);
     return {...reference,

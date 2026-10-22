@@ -365,12 +365,14 @@ test('refresh re-reads the loaded range in place and publishes once, replacing t
     assert.equal(stream.state,before);assert.equal(states.length,published);
     assert.equal(await stream.loadMore(),0);assert.equal(requests.length,3);
     const query=new URL(requests[2].url,'http://local').searchParams;
-    assert.equal(query.get('q'),'tag');assert.equal(query.has('cursor'),false);
-    requests[2].resolve(page([image('a'),image('new')],6,'n1'));
+    // The loaded range is re-read in pages as large as it (at most 200), not in the listing's batches (M2).
+    assert.equal(query.get('q'),'tag');assert.equal(query.has('cursor'),false);assert.equal(query.get('limit'),'4');
+    requests[2].resolve(page([image('a'),image('new'),image('c')],6,'n1'));
     await new Promise(resolve=>setImmediate(resolve));
-    assert.equal(new URL(requests[3].url,'http://local').searchParams.get('cursor'),'n1');
+    const next=new URL(requests[3].url,'http://local').searchParams;
+    assert.equal(next.get('cursor'),'n1');assert.equal(next.get('limit'),'2','the rest, at least one batch');
     assert.equal(stream.state,before);
-    requests[3].resolve(page([image('c'),image('d')],6,'n2'));
+    requests[3].resolve(page([image('d')],6,'n2'));
     assert.equal(await refresh,4);
     assert.deepEqual(stream.state.items.map(imageKey),['0:a','0:new','0:c','0:d']);
     assert.deepEqual([stream.state.total,stream.state.cursor,stream.state.hasMore,stream.state.loaded,stream.state.loading],[6,'n2',true,4,false]);
@@ -390,11 +392,89 @@ test('refresh stops early when the result shrank, and a reset or failure leaves 
     assert.equal(await shrink,1);assert.deepEqual(stream.state.items.map(imageKey),['0:b']);assert.equal(stream.state.hasMore,false);
     const before=stream.state;
     const failing=stream.refresh();requests[2].reject(new Error('offline'));
-    assert.equal(await failing,0);assert.equal(stream.state,before);
+    await assert.rejects(failing,/offline/,'a failed re-read is reported to the page');assert.equal(stream.state,before);
     const stale=stream.refresh();const fresh=stream.reset({tags:['y']});
     assert.equal(requests[3].signal.aborted,true);
     requests[4].resolve(page([image('y')]));await fresh;
     requests[3].resolve(page([image('stale')]));assert.equal(await stale,0);
     assert.deepEqual(stream.state.items.map(imageKey),['0:y']);
     stream.dispose();assert.equal(await stream.refresh(),0);
+});
+
+test('a refresh asked while a page loads runs once that page settles (I6)', async () => {
+    const {createImageStream,imageKey}=await source;const requests=[];const states=[];
+    const stream=createImageStream({api:{get:(url,{signal})=>{const d=deferred();requests.push({...d,url,signal});return d.promise;}},onChange:(s,hint)=>states.push(hint),batchSize:2});
+    const first=stream.reset({tags:['x']});requests[0].resolve(page([image('a'),image('b')],4,'c1'));await first;
+    for (const settle of ['resolve','reject']) {
+        const more=stream.loadMore();const sent=requests.length;
+        assert.equal(await stream.refresh(),0,'nothing is read beside the page in flight');
+        assert.equal(await stream.refresh(),0);
+        assert.equal(requests.length,sent);
+        if (settle==='resolve') requests[sent-1].resolve(page([image('c'),image('d')],4,'c2'));
+        else requests[sent-1].reject(new Error('offline'));
+        await more;
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(requests.length,sent+1,'exactly one pending refresh follows');
+        assert.equal(new URL(requests[sent].url,'http://local').searchParams.has('cursor'),false);
+        requests[sent].resolve(page([image('a'),image('b'),image('c'),image('d')],6,'r1'));
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.deepEqual(states.at(-1),{replaced:true});
+        assert.equal(states.filter(hint=>hint?.replaced).length,settle==='resolve'?1:2);
+    }
+    // A reset drops a pending refresh.
+    const more=stream.loadMore();const sent=requests.length;
+    assert.equal(await stream.refresh(),0);
+    const fresh=stream.reset({tags:['y']});
+    requests[sent].resolve(page([image('y')]));await fresh;
+    requests[sent-1].resolve(page([image('late')],1));await more;
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,sent+1);assert.deepEqual(stream.state.items.map(imageKey),['0:y']);
+    assert.equal(stream.refreshing,false);
+});
+
+test('refresh reads a long loaded range in at most 200-file pages and exposes refreshing (M2, M3)', async () => {
+    const {createImageStream}=await source;const requests=[];
+    const stream=createImageStream({api:{get:(url,{signal})=>{const d=deferred();requests.push({...d,url,signal});return d.promise;}},batchSize:150});
+    const many=(prefix,n)=>Array.from({length:n},(_,i)=>image(`${prefix}${i}`));
+    const first=stream.reset({q:'x'});requests[0].resolve(page(many('a',150),1000,'c1'));await first;
+    const second=stream.loadMore();requests[1].resolve(page(many('b',150),1000,'c2'));await second;
+    const refresh=stream.refresh();
+    assert.equal(stream.refreshing,true);
+    assert.equal(new URL(requests[2].url,'http://local').searchParams.get('limit'),'200');
+    requests[2].resolve(page(many('r',200),1000,'n1'));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(new URL(requests[3].url,'http://local').searchParams.get('limit'),'150');
+    requests[3].resolve(page(many('s',150),1000,'n2'));
+    assert.equal(await refresh,350);assert.equal(requests.length,4);
+    assert.equal(stream.refreshing,false);
+});
+
+test('a second refresh supersedes the first, repeats in a re-read are dropped, and dispose abandons one in flight', async () => {
+    const {createImageStream,imageKey}=await source;const requests=[];const states=[];
+    const stream=createImageStream({api:{get:(url,{signal})=>{const d=deferred();requests.push({...d,url,signal});return d.promise;}},onChange:(s,hint)=>states.push(hint),batchSize:2});
+    const first=stream.reset({q:'x'});requests[0].resolve(page([image('a'),image('b')],2));await first;
+    const older=stream.refresh();const newer=stream.refresh();
+    assert.equal(requests[1].signal.aborted,true,'the older re-read is aborted');
+    requests[2].resolve(page([image('b'),image('b'),image('a')],2));
+    assert.equal(await newer,2);
+    requests[1].resolve(page([image('old')],1));assert.equal(await older,0);
+    assert.deepEqual(stream.state.items.map(imageKey),['0:b','0:a']);
+    assert.equal(states.filter(hint=>hint?.replaced).length,1);
+    const pending=stream.refresh();
+    stream.dispose();
+    assert.equal(requests[3].signal.aborted,true);
+    requests[3].resolve(page([image('late')],1));
+    assert.equal(await pending,0);assert.deepEqual(stream.state.items.map(imageKey),['0:b','0:a']);
+});
+
+test('a refresh deferred behind a page load is dropped when the stream is disposed meanwhile', async () => {
+    const {createImageStream}=await source;const requests=[];
+    const stream=createImageStream({api:{get:(url,{signal})=>{const d=deferred();requests.push({...d,url,signal});return d.promise;}},batchSize:2});
+    const first=stream.reset({q:'x'});requests[0].resolve(page([image('a'),image('b')],4,'c1'));await first;
+    const more=stream.loadMore();
+    assert.equal(await stream.refresh(),0);
+    stream.dispose();
+    requests[1].resolve(page([image('c')],4,'c2'));await more;
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,2,'no refresh runs after dispose');
 });

@@ -159,7 +159,7 @@ test('opens with saved tags joined by comma-space', async () => {
     assert.equal(c.state.model, 'wd14-swinv2');
     assert.equal(c.state.countText, 'Not generated');
     assert.equal(c.state.primaryLabel, 'Save manual tags');
-    assert.equal(c.state.suggestionsText, 'Choose a model, then generate tags. Remove anything you do not want to add.');
+    assert.equal(c.state.suggestionsText, 'Generate suggestions with the selected model before approving.');
     assert.equal(c.state.showScopeNote, false);
     assert.equal(c.state.canSave, true);
     assert.equal(c.state.canGenerate, true);
@@ -448,9 +448,9 @@ test('conflict keeps draft and exposes current saved tags', async () => {
     await c.save();
     assert.equal(c.state.phase, 'conflict');
     assert.deepEqual(c.state.currentTags, ['night', 'rain']);
-    assert.equal(c.state.manual, 'Minimal, dune');
+    assert.equal(c.state.manual, 'night, rain, Minimal, dune');
     assert.equal(c.state.suggestions.length, 3);
-    assert.equal(c.state.statusText, 'The tags of this image changed since the dialog opened; review them first.');
+    assert.equal(c.state.statusText, 'The tags of this image changed since the dialog opened; review them first. Saved now: night, rain.');
     assert.equal(c.state.canSave, true);
     answer = call => response(200, receipt(call.body.tags, { tag_revision: 6 }));
     await c.save();
@@ -565,10 +565,15 @@ test('model-unavailable and model-busy set the status line only', async () => {
 
 test('a storage restore during generate requires a reopen', async () => {
     const { c } = await opened({ [`POST ${SUGGEST}`]: () => fail(409, 'storage-changed', 'Prompt storage was restored; reopen the Tag dialog.') });
+    c.setManual('kept');
     await c.generate();
     assert.equal(c.state.phase, 'storage-changed');
     assert.equal(c.state.canSave, false);
-    assert.equal(await c.retry(), false);
+    assert.equal(c.state.canGenerate, false);
+    await c.retry();
+    await settle();
+    assert.equal(c.state.phase, 'ready', 'Retry observes again (D116)');
+    assert.equal(c.state.manual, 'kept');
 });
 
 test('dispose aborts requests and releases the capture once', async () => {
@@ -617,4 +622,148 @@ test('a failing capture release is not reported as a dialog error', async () => 
     await settle();
     assert.equal(h.of('DELETE', CAPTURE).length, 1);
     assert.equal(c.state.phase, 'ready');
+});
+
+test('the opening sentence is the concept on-screen copy and the chip hint shows only with chips (D83)', async () => {
+    const { createImageTaggingController } = await load();
+    const h = harness(defaultRoutes());
+    const c = createImageTaggingController({ api: h.api, target: TARGET });
+    assert.equal(c.state.suggestionsText, 'Generate suggestions with the selected model before approving.');
+    assert.equal(c.state.chipHint, '');
+    await c.open();
+    await settle();
+    assert.equal(c.state.suggestionsText, 'Generate suggestions with the selected model before approving.');
+    assert.equal(c.state.chipHint, '');
+    await c.generate();
+    assert.equal(c.state.chipHint, 'Remove anything you do not want to add.');
+    for (const row of [...c.state.suggestions]) c.remove(row.name);
+    assert.equal(c.state.chipHint, '');
+});
+
+test('the option fields follow the server defaults: open and a model change bump the revision, typing does not', async () => {
+    const { c, h } = await opened({
+        [`GET ${MODELS}`]: () => response(200, models({ suggestion_limit: 7, wd14_general_threshold: 0.5, wd14_character_threshold: 0.9 })),
+    });
+    const opening = c.state.optionsRevision;
+    assert.ok(opening > 0, 'the observation that applies the server defaults bumps the revision');
+    assert.deepEqual({ ...c.state.options }, { general_threshold: 0.5, character_threshold: 0.9, instructions: DEFAULT_PROMPT, suggestion_limit: 7 });
+    c.setOption('general_threshold', '0.6');
+    assert.equal(c.state.optionsRevision, opening, 'typing never re-renders the fields');
+    c.setModel('wd14-vit');
+    assert.equal(c.state.optionsRevision, opening + 1);
+    assert.equal(c.state.options.general_threshold, 0.5);
+    await c.generate();
+    assert.deepEqual(h.of('POST', SUGGEST)[0].body.options, { general_threshold: 0.5, character_threshold: 0.9, suggestion_limit: 7 });
+});
+
+test('a conflict shows the current set and merges it ahead of the draft, so a second Save never drops it unseen', async () => {
+    let answer = () => fail(409, 'tag-conflict', 'The tags of this image changed since the dialog opened; review them first.',
+        { tags: ['changed_elsewhere', 'Minimal'], tag_revision: 5 });
+    const { c, h } = await opened({ [`PUT ${TAGS}`]: call => answer(call) });
+    const draft = c.state.draftRevision;
+    c.setManual('minimal, dune');
+    await c.save();
+    assert.equal(c.state.phase, 'conflict');
+    assert.equal(c.state.statusText,
+        'The tags of this image changed since the dialog opened; review them first. Saved now: changed_elsewhere, Minimal.');
+    assert.equal(c.state.manual, 'changed_elsewhere, Minimal, dune', 'the current set leads, the draft follows, repeats dropped');
+    assert.equal(c.state.draftRevision, draft + 1, 'the dialog rewrites its field');
+    answer = call => response(200, receipt(call.body.tags, { tag_revision: 6 }));
+    await c.save();
+    const second = h.of('PUT', TAGS)[1].body;
+    assert.deepEqual(second.tags, ['changed_elsewhere', 'Minimal', 'dune']);
+    assert.equal(second.expected_tag_revision, 5);
+    const empty = await opened({ [`PUT ${TAGS}`]: () => fail(409, 'tag-conflict', 'Changed.', { tags: [], tag_revision: 9 }) });
+    empty.c.setManual('a');
+    await empty.c.save();
+    assert.equal(empty.c.state.statusText, 'Changed. Saved now: no tags.');
+    assert.equal(empty.c.state.manual, 'a');
+});
+
+test('the capture release and the save survive leaving the page (keepalive)', async () => {
+    const { c, h } = await opened();
+    await c.save();
+    assert.equal(h.of('PUT', TAGS)[0].init.keepalive, true);
+    const other = await opened();
+    other.c.dispose();
+    const [release] = other.h.of('DELETE', CAPTURE);
+    assert.equal(release.init.keepalive, true);
+    assert.equal(h.of('POST', OBSERVE)[0].init.keepalive, undefined, 'reads are not kept alive');
+});
+
+test('closing during a save releases the capture only after the PUT settles and reports the outcome', async () => {
+    const outcomes = [];
+    const gate = deferred();
+    const { c, h } = await opened({ [`PUT ${TAGS}`]: call => gate.promise.then(() => response(200, receipt(call.body.tags))) },
+        { onLateSave: outcome => outcomes.push(outcome) });
+    c.setManual('dune');
+    const saving = c.save();
+    c.dispose();
+    await settle();
+    assert.equal(h.of('DELETE', CAPTURE).length, 0, 'the capture stays while its save is in flight');
+    gate.resolve();
+    assert.equal(await saving, true);
+    await settle();
+    const order = h.calls.filter(call => call.method !== 'GET').map(call => call.method);
+    assert.deepEqual(order, ['POST', 'PUT', 'DELETE']);
+    assert.deepEqual(outcomes, [{ saved: true, filename: 'dunes_00001.png', tags: ['dune'], toast: '1 tags saved for dunes_00001.png.' }]);
+    assert.equal(c.state.closed, true);
+
+    for (const [route, message] of [
+        [() => fail(409, 'tag-conflict', 'Changed elsewhere.', { tags: ['x'], tag_revision: 5 }), 'Changed elsewhere.'],
+        [() => fail(400, 'tag-limit', 'Too many.'), 'Too many.'],
+        [() => Promise.reject(new TypeError('Failed to fetch')), 'The tag save could not be confirmed. Open Tag image again to check the saved tags.'],
+    ]) {
+        const late = [];
+        const held = deferred();
+        const run = await opened({ [`PUT ${TAGS}`]: () => held.promise.then(route) }, { onLateSave: outcome => late.push(outcome) });
+        const pending = run.c.save();
+        run.c.cancel();
+        held.resolve();
+        assert.equal(await pending, false);
+        await settle();
+        assert.deepEqual(late, [{ saved: false, message }]);
+        assert.equal(run.h.of('DELETE', CAPTURE).length, 1);
+    }
+    const quiet = await opened();
+    quiet.c.dispose();
+    assert.equal(quiet.h.of('DELETE', CAPTURE).length, 1, 'with no save in flight the capture is released at once');
+    const { createImageTaggingController } = await load();
+    assert.throws(() => createImageTaggingController({ api: h.api, target: TARGET, onLateSave: 'x' }), TypeError);
+});
+
+test('retry after a changed storage, file or expired capture observes again and keeps the draft', async () => {
+    for (const code of ['storage-changed', 'file-changed', 'capture-expired']) {
+        let revision = 3;
+        const { c, h } = await opened({
+            [`PUT ${TAGS}`]: () => fail(409, code, `server says ${code}`),
+            [`POST ${OBSERVE}`]: () => response(200, observed({ tag_revision: revision, tags: revision === 3 ? ['Minimal', 'warm_light'] : ['night'] })),
+        });
+        c.setManual('kept draft');
+        await c.save();
+        assert.equal(c.state.canRetry, true);
+        const draft = c.state.draftRevision;
+        await c.retry();
+        await settle();
+        assert.equal(c.state.phase, 'ready');
+        assert.equal(c.state.manual, 'kept draft', 'an unchanged tag set keeps the draft as typed');
+        assert.equal(c.state.draftRevision, draft + 1);
+        assert.equal(h.of('POST', OBSERVE).length, 2);
+        revision = 4;
+        await c.save();
+        await c.retry();
+        await settle();
+        assert.equal(c.state.manual, 'night, kept draft', 'a set changed meanwhile is shown ahead of the draft');
+        assert.equal(c.state.statusText, 'The tags of this image changed since the dialog opened. Saved now: night.');
+        assert.equal(c.state.tagRevision, 4);
+    }
+    // A first observation that failed has no draft to keep: its retry fills the saved tags.
+    const { createImageTaggingController } = await load();
+    let first = true;
+    const h = harness(defaultRoutes({ [`POST ${OBSERVE}`]: () => (first ? (first = false, fail(500, 'observe-failed')) : response(200, observed())) }));
+    const c = createImageTaggingController({ api: h.api, target: TARGET });
+    await c.open();
+    await c.retry();
+    await settle();
+    assert.equal(c.state.manual, 'Minimal, warm_light');
 });

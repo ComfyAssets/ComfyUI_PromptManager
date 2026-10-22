@@ -188,6 +188,7 @@ def register_tagging_commands(
         model.unavailable = set()
         model.suggestions = None
         model.loaded = None
+        _set_defaults(model, DEFAULTS)
         # A test that ends with the dialog open leaves its capture behind; drop
         # every capture so the next test starts below the store's limits.
         await api._run_in_executor(api.close_annotation_captures)
@@ -239,6 +240,60 @@ def register_tagging_commands(
         model.unavailable = set()
         await api._run_in_executor(api.close_annotation_captures)
         return web.json_response({"success": True})
+
+    @routes.post("/__test__/tagging/defaults")
+    async def defaults(request: web.Request) -> web.Response:
+        """Serve other tagging defaults from ``GET /autotag/models``.
+
+        ``{"general": g, "character": c, "limit": n}``: the WD14 thresholds
+        (in [0, 1]) and the persisted suggestion count (1..100), so a test can
+        tell the server's values from the dialog's built-in ones. Reset
+        restores the standard 0.35 / 0.85 / 10.
+        """
+        data = await request.json() if request.can_read_body else None
+        if request.query or not _valid_defaults(data):
+            raise web.HTTPBadRequest()
+        _set_defaults(model, (data["general"], data["character"], data["limit"]))
+        return web.json_response({"success": True})
+
+    @routes.get("/__test__/tagging/captures")
+    async def captures(request: web.Request) -> web.Response:
+        """How many captures the store holds (a released capture is gone)."""
+        if request.query:
+            raise web.HTTPBadRequest()
+        store = api._captures
+        count = store.stats()["captures"] if store is not None else 0
+        return web.json_response({"captures": count})
+
+
+# The standard tagging defaults: WD14 general and character thresholds, and
+# the suggestion count (``AutotagConfig``).
+DEFAULTS = (0.35, 0.85, 10)
+
+
+def _set_defaults(model, values) -> None:
+    from py.config import AutotagConfig
+
+    general, character, limit = values
+    model.wd14_general_threshold = general
+    model.wd14_character_threshold = character
+    AutotagConfig.SUGGESTION_LIMIT = limit
+
+
+def _valid_defaults(data: object) -> bool:
+    unit = (
+        lambda value: isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and 0 <= value <= 1
+    )
+    return (
+        isinstance(data, dict)
+        and set(data) == {"general", "character", "limit"}
+        and unit(data["general"])
+        and unit(data["character"])
+        and type(data["limit"]) is int
+        and 1 <= data["limit"] <= 100
+    )
 
 
 def _valid_scored(scored: object) -> bool:

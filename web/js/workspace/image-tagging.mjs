@@ -5,14 +5,16 @@
  * class, whose sticky `.dialog-actions` stay reachable while the content scrolls.
  *
  * Recorded deviations: D83 (#249 plan D60) the suggestions are removable chips, every one preselected, at most the
- * requested count, with "Remove anything you do not want to add." and the all-removed copy; D84 (plan D61) the
- * legacy engines' labels and sizes, GGUF in the concept's Ollama slot, instructions prefilled with the server's
- * default; D91 (plan D68) a Suggestions count field for every model. States the concept lacks (busy, conflict,
- * changed storage or file, lost answers, unavailable model, video) are only text in `#tag-generation-status`; Retry
- * (ruling T5) leads the actions wherever the controller allows it, as the other workspace dialogs place theirs.
+ * requested count, with "Remove anything you do not want to add." while chips exist and the all-removed copy; D84
+ * (plan D61) the legacy engines' labels and sizes, GGUF in the concept's Ollama slot, instructions prefilled with the
+ * server's default; D91 (plan D68) a Suggestions count field for every model. States the concept lacks (busy,
+ * conflict, changed storage or file, lost answers, unavailable model, video) are only text in
+ * `#tag-generation-status`; D116 (ruling T5) Retry leads the actions wherever the controller allows it, as the other
+ * workspace dialogs place theirs.
  *
  * The capture is released when the dialog closes (×, Escape, Cancel, Save), when the route changes (the shell
- * closes its dialog) and on `pagehide`.
+ * closes its dialog) and on `pagehide` (which closes the dialog; the release is sent with `keepalive`). A save in
+ * flight at close keeps its capture until it settles, and its outcome is still toasted and announced.
  */
 import { createButton, createScope } from '../shared/toolkit/core.js';
 import { createImageTaggingController, MODEL_OPTIONS, optionError } from './image-tagging-state.mjs';
@@ -99,7 +101,8 @@ function numberInput(value, {min, max, step}) {
 
 /**
  * The concept's `.tag-model-panel` (a1049): `heading`, the Tagging model select, the model's options and Generate.
- * It follows `controller` until `scope` is disposed (reused by the bulk Auto-tag dialog).
+ * It follows `controller` until `scope` is disposed (reused by the bulk Auto-tag dialog). Returns the `element` and
+ * `requestGenerate()`, Generate's own path (field validity first), for a Retry after a failed Generate.
  */
 export function renderModelPanel({scope, controller, heading = 'Auto-tag this image'}) {
     const panel = el('div', undefined, 'tag-model-panel');
@@ -115,7 +118,7 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
     generate.append(createWorkspaceIcon('tagImage'), ' Generate suggestions');
     panel.append(el('h3', heading), field('Tagging model', select, 'image-tag-model'), options, generate);
     const inputs = new Map();
-    let shownModel = null;
+    let shownModel = null, shownOptions = null;
 
     function renderOptions(state) {
         inputs.clear();
@@ -148,17 +151,19 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
         }
     }
     function update(state) {
-        if (state.model !== shownModel) {
+        // A model change or the observation's server defaults rewrite the fields; typing never does (I1).
+        if (state.model !== shownModel || state.optionsRevision !== shownOptions) {
             shownModel = state.model;
+            shownOptions = state.optionsRevision;
             select.value = state.model;
             renderOptions(state);
         }
         setDisabled(generate, !state.canGenerate);
     }
     select.addEventListener('change', () => controller.setModel(select.value));
-    generate.addEventListener('click', () => {
+    function requestGenerate() {
         const {state} = controller;
-        if (disabled(generate) || !state.canGenerate) return;
+        if (!state.canGenerate) return;
         // The concept's native validity first (a1104–1114), then what the controller would refuse (a blank field).
         for (const input of inputs.values()) input.setCustomValidity('');
         const invalid = [...inputs.values()].find(input => !input.checkValidity());
@@ -171,10 +176,11 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
             return;
         }
         controller.generate();
-    });
+    }
+    generate.addEventListener('click', () => { if (!disabled(generate)) requestGenerate(); });
     scope.cleanup(controller.subscribe(update));
     update(controller.state);
-    return panel;
+    return {element: panel, requestGenerate};
 }
 
 function previewOf(image, state) {
@@ -191,7 +197,15 @@ function previewOf(image, state) {
 export function openImageTagging({api, scope, image, source = 'images', trigger = null, onSaved = null}) {
     const target = imageTarget(image);
     if (!target) throw new TypeError('The image has no tagging target');
-    const controller = createImageTaggingController({api, target, source});
+    const saved = ({filename: name, tags, toast}) => {
+        const event = {target, filename: name, tags, source};
+        announceSaved(event);
+        onSaved?.(event);
+        showWorkspaceToast(toast);
+    };
+    // A save that settles after the dialog closed is still reported: its toast, and the pages' refresh (I5).
+    const onLateSave = outcome => (outcome.saved ? saved(outcome) : showWorkspaceToast(outcome.message));
+    const controller = createImageTaggingController({api, target, source, onLateSave});
     const local = createScope();
     let open = true;
     let completed = false;
@@ -220,7 +234,7 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     manual.addEventListener('input', () => controller.setManual(manual.value));
 
     // 5. The model panel; 6. the suggestions.
-    const panel = renderModelPanel({scope: local, controller});
+    const {element: panel, requestGenerate} = renderModelPanel({scope: local, controller});
     const suggestions = el('section', undefined, 'tag-suggestion-panel');
     suggestions.setAttribute('aria-labelledby', 'tag-suggestions-title');
     const panelHeading = el('div', undefined, 'panel-heading');
@@ -247,7 +261,7 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     if (controller.state.showScopeNote) nodes.push(el('p', SCOPE_NOTE, 'tag-scope-note small'));
     nodes.push(manualField, panel, suggestions, actions);
 
-    let shownImage = null, shownRows = null, shownText = null, filled = false;
+    let shownImage = null, shownRows = null, shownText = null, shownDraft = 0;
     function renderImage(info) {
         shownImage = info;
         const next = previewOf(null, {image: info});
@@ -268,7 +282,7 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         if (!state.suggestions.length) {
             list.replaceChildren(el('p', state.suggestionsText, 'small'));
         } else {
-            // D83: removable chips instead of the concept's checkbox rows.
+            // D83: removable chips instead of the concept's checkbox rows, under ruling T4's instruction.
             const chips = el('div', undefined, 'tags');
             for (const row of state.suggestions) {
                 const chip = el('span', undefined, 'chip tag-suggestion');
@@ -278,7 +292,7 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
                 chip.append(el('span', row.name), el('span', row.label, 'tag-confidence'), remove);
                 chips.append(chip);
             }
-            list.replaceChildren(chips);
+            list.replaceChildren(el('p', state.chipHint, 'small'), chips);
         }
         if (focused >= 0) {
             const buttons = [...list.querySelectorAll('button')];
@@ -287,18 +301,16 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     }
     function complete(state) {
         completed = true;
-        const event = {target, filename: state.image.filename, tags: state.savedTags.slice(), source};
         closeWorkspaceDialog();
-        announceSaved(event);
-        onSaved?.(event);
-        showWorkspaceToast(state.toast);
+        saved({filename: state.image.filename, tags: state.savedTags.slice(), toast: state.toast});
     }
     function render(state) {
         if (!open || completed) return;
         if (state.image && state.image !== shownImage) renderImage(state.image);
-        if (!filled && state.phase !== 'observing' && state.image) {
-            filled = true;
-            manual.value = state.manual;
+        // The observation's saved tags, a kept draft, or a conflict's current set ahead of the draft (I2).
+        if (state.draftRevision !== shownDraft) {
+            shownDraft = state.draftRevision;
+            if (manual.value !== state.manual) manual.value = state.manual;
         }
         if (state.suggestions !== shownRows || state.suggestionsText !== shownText) renderSuggestions(state);
         setText(count, state.countText);
@@ -306,7 +318,7 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         setText(primary, state.primaryLabel);
         setDisabled(primary, !state.canSave);
         if (state.canRetry !== retry.isConnected) {
-            if (state.canRetry) actions.prepend(retry);
+            if (state.canRetry) actions.prepend(retry); // D116
             else {
                 if (document.activeElement === retry) primary.focus();
                 retry.remove();
@@ -316,12 +328,14 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     }
 
     cancel.addEventListener('click', () => closeWorkspaceDialog());
-    retry.addEventListener('click', () => controller.retry());
+    // Retry after a failed Generate takes Generate's own path, so an invalid field reports its validity (M4).
+    retry.addEventListener('click', () => (controller.state.phase === 'generate-error' ? requestGenerate() : controller.retry()));
     primary.addEventListener('click', () => {
         if (disabled(primary) || !controller.state.canSave) return;
         controller.save();
     });
-    const pagehide = () => controller.dispose();
+    // Leaving the page closes the dialog, so a page restored from the back/forward cache shows no dead dialog (I4).
+    const pagehide = () => { if (open) closeWorkspaceDialog(); };
     window.addEventListener('pagehide', pagehide);
 
     function release() {

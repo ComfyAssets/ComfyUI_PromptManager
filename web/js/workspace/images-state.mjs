@@ -9,6 +9,8 @@ export function imageKey(image) {
 export const IMAGE_SORTS = Object.freeze(['newest', 'oldest', 'name', 'name-desc', 'rating']);
 
 const isCount = value => Number.isSafeInteger(value) && value >= 0;
+// The largest page a refresh asks for (the listing clamps at 500).
+const REFRESH_PAGE_LIMIT = 200;
 
 function queryFor(filters, batchSize) {
     const query = new URLSearchParams({ mode: 'workspace', limit: String(batchSize) });
@@ -110,8 +112,10 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         onChange(state);
     }
 
-    // A refresh in flight (its abort controller): Load more waits for it, a reset or dispose cancels it.
+    // A refresh in flight (its abort controller): Load more waits for it, a reset or dispose cancels it. A refresh
+    // asked while a page loads is pending and runs once that page settles (I6).
     let refreshing = null;
+    let refreshPending = false;
 
     async function loadMore() {
         if (disposed || state.loading || !state.hasMore || refreshing) return 0;
@@ -148,16 +152,29 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
                 publish({ loading: false, error });
             }
             return 0;
+        } finally {
+            runPendingRefresh(request);
         }
+    }
+    function runPendingRefresh(request) {
+        // Only the page this load owned: a reset or dispose already dropped the pending refresh.
+        if (disposed || !refreshPending || state.loading || request.signal.aborted) return;
+        refreshPending = false;
+        // A failure is the page's to report on the refresh it asked for; here it has no caller left.
+        refresh().catch(() => {});
     }
 
     /**
      * Re-read the loaded range of the same query (a write may have changed which files match) and publish the new
-     * collection once, with the hint `{replaced: true}`; the current items stay shown until then. A failure, a reset
-     * or a dispose leaves the collection as it was. Resolves to the number of items now loaded (0 when abandoned).
+     * collection once, with the hint `{replaced: true}`; the current items stay shown until then. Pages are as large
+     * as the rest of the range (at most REFRESH_PAGE_LIMIT, at least one batch), read one after another (each page's
+     * cursor comes from the one before). A read failure rejects and leaves the collection as it was; a reset or a
+     * dispose abandons it. Resolves to the number of items now loaded (0 when abandoned, or deferred behind a page
+     * load in flight, which runs it once settled).
      */
     async function refresh() {
-        if (disposed || state.loading) return 0;
+        if (disposed) return 0;
+        if (state.loading) { refreshPending = true; return 0; }
         refreshing?.abort();
         const request = refreshing = new AbortController();
         const target = Math.max(state.loaded, 1);
@@ -166,6 +183,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         try {
             while (items.length < target && hasMore) {
                 const parameters = new URLSearchParams(query);
+                parameters.set('limit', String(Math.min(REFRESH_PAGE_LIMIT, Math.max(target - items.length, batchSize))));
                 if (cursor !== null) parameters.set('cursor', cursor);
                 const page = await readPage({parameters, signal:request.signal});
                 if (disposed || request !== refreshing) return 0;
@@ -179,9 +197,11 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
                 if (cursor === null) positiveCount = isCount(page.positive_count) ? page.positive_count : null;
                 ({total, next_cursor: cursor, has_more: hasMore} = page);
             }
-        } catch {
-            if (request === refreshing) refreshing = null;
-            return 0;
+        } catch (error) {
+            // A newer refresh, a reset or a dispose replaced this one (and aborted it): nothing to report.
+            if (request !== refreshing) return 0;
+            refreshing = null;
+            throw error;
         }
         refreshing = null;
         seen = keys;
@@ -198,6 +218,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         controller = null;
         refreshing?.abort();
         refreshing = null;
+        refreshPending = false;
         query = nextQuery;
         seen = new Set();
         publish({ items: Object.freeze([]), total: 0, cursor: null, hasMore: true,
@@ -210,6 +231,8 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         reset,
         loadMore,
         refresh,
+        /** Whether a refresh is re-reading the loaded range (Load more waits for it). */
+        get refreshing() { return refreshing !== null; },
         /** Patch one loaded item (a favorite toggle); false when it is not loaded or the stream is gone. */
         updateItem(key, patch) {
             const next = withItem(state, key, patch);
@@ -222,6 +245,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         dispose() {
             if (disposed) return;
             disposed = true;
+            refreshPending = false;
             controller?.abort();
             controller = null;
             refreshing?.abort();

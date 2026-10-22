@@ -43,8 +43,8 @@ async function conceptPath(request) {
 }
 
 /**
- * Close an open Tag dialog before leaving the page: leaving with it open releases its capture during unload, which
- * WebKit reports as a failed fetch.
+ * Close an open Tag dialog before opening the next page, so each comparison starts from a settled page. Leaving with
+ * the dialog open is covered on its own (workspace-tagging-lifecycle.spec.mjs: the keepalive release on pagehide).
  */
 async function leave(page) {
     if (await tagDialog(page).count()) {
@@ -84,7 +84,7 @@ const inventory = async page => {
 };
 
 /** The concept and production inventories of one dialog state, the concept mapped (D29, D83, D84, D91). */
-async function compareState(page, { theme, act = async () => {}, opened = false }) {
+async function compareState(page, { theme, act = async () => {} }) {
     await openTagDialog(page, 'concept', theme);
     const conceptOpened = await inventory(page);
     await act(page, 'concept');
@@ -93,7 +93,7 @@ async function compareState(page, { theme, act = async () => {}, opened = false 
     await act(page, 'production');
     const actual = await inventory(page);
     const numberField = conceptOpened.modelPanel.fields.find(field => field.control.id === 'image-general-threshold');
-    const reference = mapConceptTagging(concept, { instructions: INSTRUCTIONS, chip: concept.heading.size, numberField, opened });
+    const reference = mapConceptTagging(concept, { instructions: INSTRUCTIONS, chip: concept.heading.size, numberField });
     return { reference: withoutChipGeometry(reference), actual: withoutChipGeometry(actual) };
 }
 
@@ -103,12 +103,12 @@ for (const [width, height] of SIZES) for (const theme of THEMES) {
         await saveImageTags(request, await conceptPath(request), CONCEPT_TAGS);
         await page.setViewportSize({ width, height });
         // Opened, generated with WD14 (the concept's default), then generated with a language model.
-        for (const [state, act, opened] of [
-            ['opened', async () => {}, true],
-            ['generated WD14', (page, side) => generateWith(page, side), false],
-            ['generated GGUF', (page, side) => generateWith(page, side, 'gguf'), false],
+        for (const [state, act] of [
+            ['opened', async () => {}],
+            ['generated WD14', (page, side) => generateWith(page, side)],
+            ['generated GGUF', (page, side) => generateWith(page, side, 'gguf')],
         ]) {
-            const { reference, actual } = await compareState(page, { theme, act, opened });
+            const { reference, actual } = await compareState(page, { theme, act });
             expect(diffTaggingInventory(reference, actual), `${state} at ${width}x${height} ${theme}`).toEqual([]);
         }
         // Pinned concept geometry (M2), so a mapping mistake on both sides cannot pass unseen.
@@ -172,7 +172,7 @@ test('review-scoped dialog shows the scope note', async ({ page, request }) => {
     expect(actual.scopeNote.text).toBe('Tags belong to this image. Resolve its prompt association separately in Needs review.');
     expect(actual.order).toEqual(['tag-image-heading', 'tag-scope-note small', 'field', 'tag-model-panel', 'tag-suggestion-panel', 'dialog-actions']);
     const numberField = opened.modelPanel.fields.find(field => field.control.id === 'image-general-threshold');
-    const reference = mapConceptTagging(opened, { instructions: INSTRUCTIONS, chip: opened.heading.size, numberField, opened: true });
+    const reference = mapConceptTagging(opened, { instructions: INSTRUCTIONS, chip: opened.heading.size, numberField });
     expect(diffTaggingInventory(reference, actual)).toEqual([]);
 });
 
@@ -188,7 +188,7 @@ for (const [width, height] of SIZES) test(`card action group matches M1 at ${wid
 
 test('the comparison notices a changed panel border or primary label', async ({ page, request }) => {
     await saveImageTags(request, await conceptPath(request), CONCEPT_TAGS);
-    const { reference, actual } = await compareState(page, { theme: 'dark', opened: true });
+    const { reference, actual } = await compareState(page, { theme: 'dark' });
     expect(diffTaggingInventory(reference, actual)).toEqual([]);
     const undo = await mutate(page, { css: '.tag-model-panel { border: 0 !important; }' });
     const borderless = withoutChipGeometry(await inventory(page));
@@ -271,6 +271,17 @@ test('paired Tag dialog captures', async ({ page, request }, testInfo) => {
     await save();
     await expect(status()).not.toHaveText('');
     await shot('production-file-changed');
+    await page.unroute(writes);
+    await page.keyboard.press('Escape');
+
+    // Unconfirmed save (a 504): D116's Retry leads the actions, before Cancel and the disabled primary.
+    await page.route(writes, route => route.fulfill({ status: 504, body: 'Gateway Timeout' }));
+    await openTagDialog(page, 'production', 'dark');
+    await save();
+    await expect(status()).toHaveText('The save could not be confirmed. Retry sends the same tags again.');
+    expect((await inventory(page)).actions.buttons.map(button => [button.text, button.primary, button.disabled])).toEqual(
+        [['Retry', false, false], ['Cancel', false, false], ['Save manual tags', true, true]]);
+    await shot('production-unknown-outcome');
     await page.unroute(writes);
     await page.keyboard.press('Escape');
 

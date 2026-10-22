@@ -8,7 +8,10 @@
  * cancel() or dispose() supersedes older requests, so a late answer can never
  * stage chips or supply a token. Writes are sent once, without an abort signal
  * (aborting cannot undo a write); a lost answer is resent only by retry(), with
- * the identical body (the server answers a duplicate as `replayed`).
+ * the identical body (the server answers a duplicate as `replayed`). A save in
+ * flight when the dialog closes still settles: the capture is released after it,
+ * and `onLateSave(outcome)` reports what happened. Writes and the capture release
+ * are sent with `keepalive`, so they finish while the page unloads.
  */
 import {noun} from './plural.mjs';
 
@@ -30,17 +33,20 @@ const DEFAULTS = Object.freeze({general_threshold: 0.35, character_threshold: 0.
 const MAX_SUGGESTIONS = 100;
 const MAX_INSTRUCTION_CHARS = 4000;
 const EDITABLE = new Set(['ready', 'generate-error', 'write-error', 'conflict']);
-const RETRYABLE = new Set(['observe-error', 'generate-error', 'unknown-outcome']);
-// Answers after which only a fresh observation can save (the capture or epoch is gone).
+// Answers after which only a fresh observation can save (the capture or epoch is gone); Retry observes again (D116).
 const REOPEN = {'storage-changed': 'storage-changed', 'file-changed': 'file-changed', 'source-changed': 'file-changed', 'capture-expired': 'capture-expired'};
+const REOBSERVE = new Set(Object.values(REOPEN));
+const RETRYABLE = new Set(['observe-error', 'generate-error', 'unknown-outcome', ...REOBSERVE]);
 // Generic failure envelopes whose fixed sentence the dialog words itself.
 const GENERIC_CODES = new Set(['observe-failed', 'suggest-failed', 'save-failed', 'capture-error']);
 // A proxy timeout or bad gateway cannot tell whether the server committed the write.
 const UNCONFIRMED_STATUS = new Set([502, 503, 504]);
 
 const COPY = Object.freeze({
-    initial: 'Choose a model, then generate tags. Remove anything you do not want to add.', // D83
+    // The concept's on-screen opening sentence (renderTagModelOptions a1062 replaces its markup's at once).
     modelChanged: 'Generate suggestions with the selected model before approving.',
+    chipHint: 'Remove anything you do not want to add.', // D83
+    changedElsewhere: 'The tags of this image changed since the dialog opened.',
     allRemoved: 'All suggestions removed. Generate again or enter tags manually.', // D83
     empty: 'No suggestions met this threshold. Adjust it or enter tags manually.',
     generating: 'Generating suggestions…',
@@ -48,6 +54,7 @@ const COPY = Object.freeze({
     generateFailed: 'Auto-tagging failed. Check server logs for details.',
     saveFailed: 'The tags could not be saved.',
     unknown: 'The save could not be confirmed. Retry sends the same tags again.',
+    unknownClosed: 'The tag save could not be confirmed. Open Tag image again to check the saved tags.',
     reviewSuffix: ' Prompt association still awaits review.',
 });
 
@@ -94,6 +101,12 @@ export function dedupeTags(names) {
 export function parseManualTags(text) {
     return dedupeTags(typeof text === 'string' ? text.split(',') : []);
 }
+
+/** The server's current set ahead of the user's draft: what the dialog shows after another writer saved. */
+function mergeCurrent(current, draft) {
+    return dedupeTags([...current, ...parseManualTags(draft)]).join(', ');
+}
+const savedNow = tags => `Saved now: ${tags.length ? tags.join(', ') : 'no tags'}.`;
 
 /** `null` when *options* are valid for *model*, else `{field, message}` (nothing is sent). */
 export function optionError(model, options) {
@@ -186,7 +199,9 @@ function initialState(source) {
         phase: 'observing', closed: false, source, showScopeNote: source === 'review',
         image: null, savedTags: [], tagRevision: 0, currentTags: null, manual: '',
         model: MODEL_OPTIONS[0].id, options: {...DEFAULTS}, generated: false, suggestions: [],
-        suggestionsText: COPY.initial, statusText: '', generateSupported: false, generateReason: null, toast: null,
+        suggestionsText: COPY.modelChanged, statusText: '', generateSupported: false, generateReason: null, toast: null,
+        // Bumped whenever the controller itself rewrites the option fields or the manual draft, never while typing.
+        optionsRevision: 0, draftRevision: 0,
     };
 }
 
@@ -197,16 +212,18 @@ function derive(state) {
         ...state,
         primaryLabel: state.generated ? 'Approve selected tags' : 'Save manual tags',
         countText: state.generated ? `${state.suggestions.length} ${noun(state.suggestions.length, 'suggestion')}` : 'Not generated',
+        chipHint: state.suggestions.length ? COPY.chipHint : '',
         canSave: editable,
         canGenerate: editable && state.generateSupported,
         canRetry: RETRYABLE.has(state.phase),
     };
 }
 
-export function createImageTaggingController({api, target, source = 'images'} = {}) {
+export function createImageTaggingController({api, target, source = 'images', onLateSave = () => {}} = {}) {
     requireValue(object(api) && ['get', 'post', 'put', 'del'].every(name => typeof api[name] === 'function'), 'An api client is required');
     const imageTarget = validateTarget(target);
     requireValue(SOURCES.has(source), 'Unknown tagging source');
+    requireValue(typeof onLateSave === 'function', 'onLateSave must be a function');
 
     let state = freeze(derive(initialState(source)));
     const listeners = new Set();
@@ -220,6 +237,9 @@ export function createImageTaggingController({api, target, source = 'images'} = 
     let readAbort = null;
     let generateAbort = null;
     let lastBody = null;
+    // A save in flight: closing hands the capture release to its completion.
+    let saving = false;
+    let observedOnce = false;
 
     function set(patch) {
         if (closed) return;
@@ -229,7 +249,7 @@ export function createImageTaggingController({api, target, source = 'images'} = 
 
     function releaseToken(token) {
         // Best effort: an unreleased capture expires on the server's idle timeout.
-        api.del(CAPTURE_URL + encodeURIComponent(token)).catch(() => {});
+        api.del(CAPTURE_URL + encodeURIComponent(token), {keepalive: true}).catch(() => {});
     }
     function releaseCapture() {
         if (capture) releaseToken(capture.token);
@@ -244,16 +264,19 @@ export function createImageTaggingController({api, target, source = 'images'} = 
         return state.generateSupported ? '' : (state.generateReason || '');
     }
 
-    async function open() {
+    /** Observe the file; `keepDraft` (a Retry after a changed file, storage or capture) keeps the typed draft. */
+    async function open({keepDraft = false} = {}) {
         if (closed) return;
         const serial = ++openSerial;
+        const draft = keepDraft ? state.manual : null;
+        const seenRevision = state.tagRevision;
         stopGenerating();
         releaseCapture();
         readAbort?.abort();
         readAbort = new AbortController();
         const defaultsRead = readDefaults(api, readAbort.signal);
         lastBody = null;
-        set({phase: 'observing', statusText: '', toast: null, currentTags: null, generated: false, suggestions: [], suggestionsText: COPY.initial});
+        set({phase: 'observing', statusText: '', toast: null, currentTags: null, generated: false, suggestions: [], suggestionsText: COPY.modelChanged});
         let value;
         try {
             const answer = await api.post(OBSERVE_URL, {target: {...imageTarget}});
@@ -276,14 +299,21 @@ export function createImageTaggingController({api, target, source = 'images'} = 
         epoch = value.library_epoch;
         defaults = await defaultsRead;
         if (closed || serial !== openSerial) return;
+        observedOnce = true;
         const {width, height, media_type: mediaType, preview_url: previewUrl, generate} = value.capture;
+        // A kept draft stays as typed unless another writer changed the set meanwhile: then the set leads it (I2).
+        const changed = draft !== null && value.tag_revision !== seenRevision;
+        const reason = generate.supported ? '' : (generate.reason || '');
         set({
             phase: 'ready',
             image: {filename: value.filename, title: value.title, width, height, mediaType, previewUrl,
                 dimensions: width && height ? `${width} × ${height}` : null},
-            savedTags: value.tags.slice(), tagRevision: value.tag_revision, manual: value.tags.join(', '),
-            options: {...defaults}, generateSupported: generate.supported, generateReason: generate.reason,
-            statusText: generate.supported ? '' : (generate.reason || ''),
+            savedTags: value.tags.slice(), tagRevision: value.tag_revision,
+            manual: draft === null ? value.tags.join(', ') : changed ? mergeCurrent(value.tags, draft) : draft,
+            draftRevision: state.draftRevision + 1,
+            options: {...defaults}, optionsRevision: state.optionsRevision + 1,
+            generateSupported: generate.supported, generateReason: generate.reason,
+            statusText: changed ? `${COPY.changedElsewhere} ${savedNow(value.tags)}${reason ? ` ${reason}` : ''}` : reason,
         });
     }
 
@@ -298,6 +328,7 @@ export function createImageTaggingController({api, target, source = 'images'} = 
         const phase = state.phase === 'generating' || state.phase === 'generate-error' ? 'ready' : state.phase;
         set({
             phase, model: id, generated: false, suggestions: [], suggestionsText: COPY.modelChanged, statusText: reasonText(),
+            optionsRevision: state.optionsRevision + 1,
             // Like the mock, a model change re-renders its fields with the defaults; the count is kept (D91).
             options: {...state.options, general_threshold: defaults.general_threshold,
                 character_threshold: defaults.character_threshold, instructions: defaults.instructions},
@@ -349,44 +380,61 @@ export function createImageTaggingController({api, target, source = 'images'} = 
     async function send(body) {
         const serial = ++saveSerial;
         lastBody = body;
+        saving = true;
         set({phase: 'saving', statusText: ''});
-        let value;
+        let value = null, failure = null;
         try {
-            value = validateReceipt(await api.put(TAGS_URL, body));
+            value = validateReceipt(await api.put(TAGS_URL, body, {keepalive: true}));
         } catch (error) {
-            if (closed || serial !== saveSerial) return false;
-            failSave(error);
+            failure = error;
+        } finally {
+            saving = false;
+        }
+        if (serial !== saveSerial) return false;
+        if (closed) return settleClosed(value, failure);
+        if (failure) {
+            set(failedSave(failure));
             return false;
         }
-        if (closed || serial !== saveSerial) return false;
         lastBody = null;
-        const n = value.tags.length;
-        set({
-            phase: 'saved', savedTags: value.tags.slice(), tagRevision: value.tag_revision, currentTags: null, statusText: '',
-            // The mock's toast verbatim (app.js:1545, without the demo's "in this tab"): "tags" even for one.
-            toast: `${n} tags saved for ${state.image.filename}.${source === 'review' ? COPY.reviewSuffix : ''}`,
-        });
+        set({phase: 'saved', savedTags: value.tags.slice(), tagRevision: value.tag_revision, currentTags: null, statusText: '',
+            toast: toastOf(value)});
         return true;
     }
+    // The mock's toast verbatim (app.js:1545, without the demo's "in this tab"): "tags" even for one.
+    function toastOf(value) {
+        return `${value.tags.length} tags saved for ${state.image.filename}.${source === 'review' ? COPY.reviewSuffix : ''}`;
+    }
+    /** The dialog closed while its save was in flight: release the capture now, then report the outcome. */
+    function settleClosed(value, failure) {
+        releaseCapture();
+        if (!failure) {
+            onLateSave({saved: true, filename: state.image.filename, tags: value.tags.slice(), toast: toastOf(value)});
+            return true;
+        }
+        const {phase, statusText} = failedSave(failure);
+        // A conflict's own sentence, not its merged "Saved now" view: the dialog that would show it is gone.
+        const message = phase === 'unknown-outcome' ? COPY.unknownClosed : phase === 'conflict' ? failure.message : statusText;
+        onLateSave({saved: false, message});
+        return false;
+    }
 
-    function failSave(error) {
+    /** The state patch of a failed save. */
+    function failedSave(error) {
         if (!isApiError(error) || error.status < 400 || UNCONFIRMED_STATUS.has(error.status)) {
-            set({phase: 'unknown-outcome', statusText: COPY.unknown});
-            return;
+            return {phase: 'unknown-outcome', statusText: COPY.unknown};
         }
         lastBody = null;
         if (error.code === 'tag-conflict') {
-            // The user reviews the current set; a second Save is against the revision now shown.
+            // The current set is shown (status and field) ahead of the draft; a second Save is against its revision.
             const current = error.current;
-            set({phase: 'conflict', statusText: error.message, currentTags: current ? current.tags.slice() : null,
-                ...(current ? {tagRevision: current.tag_revision} : {})});
-            return;
+            if (!current) return {phase: 'conflict', statusText: error.message, currentTags: null};
+            return {phase: 'conflict', currentTags: current.tags.slice(), tagRevision: current.tag_revision,
+                statusText: `${error.message} ${savedNow(current.tags)}`,
+                manual: mergeCurrent(current.tags, state.manual), draftRevision: state.draftRevision + 1};
         }
-        if (REOPEN[error.code]) {
-            set({phase: REOPEN[error.code], statusText: error.message});
-            return;
-        }
-        set({phase: 'write-error', statusText: messageOf(error, COPY.saveFailed)});
+        if (REOPEN[error.code]) return {phase: REOPEN[error.code], statusText: error.message};
+        return {phase: 'write-error', statusText: messageOf(error, COPY.saveFailed)};
     }
 
     async function save() {
@@ -400,7 +448,8 @@ export function createImageTaggingController({api, target, source = 'images'} = 
 
     async function retry() {
         if (closed || !state.canRetry) return false;
-        if (state.phase === 'observe-error') return open();
+        if (state.phase === 'observe-error') return open({keepDraft: observedOnce});
+        if (REOBSERVE.has(state.phase)) return open({keepDraft: true});
         if (state.phase === 'generate-error') return generate();
         return send(lastBody);
     }
@@ -410,11 +459,11 @@ export function createImageTaggingController({api, target, source = 'images'} = 
         set({closed: true});
         closed = true;
         openSerial += 1;
-        saveSerial += 1;
         stopGenerating();
         readAbort?.abort();
         readAbort = null;
-        releaseCapture();
+        // A save in flight keeps its capture until it settles (send releases it); aborting cannot undo the write.
+        if (!saving) releaseCapture();
     }
 
     function dispose() {

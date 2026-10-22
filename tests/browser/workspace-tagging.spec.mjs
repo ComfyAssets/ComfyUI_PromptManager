@@ -3,13 +3,15 @@
 // downloaded or loaded: the fake answers, and every test checks that no download request was sent.
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
-import { seedConcept, openConcept, openProduction, saveImageTags } from './concept-inventory.mjs';
+import { saveImageTags } from './concept-inventory.mjs';
+import { taggingInventory } from './tagging-canonical-comparison.mjs';
 
 const images = '/prompt_manager/workspace#/images';
 const MODULE = '/prompt_manager/js/workspace/image-tagging.mjs';
 const MODEL_LABELS = ['WD14 SwinV2 · ~400 MB', 'WD14 ViT · ~400 MB', 'GGUF JoyCaption (Recommended) · ~4.5 GB', 'HuggingFace JoyCaption · ~16 GB'];
-const INITIAL_COPY = 'Choose a model, then generate tags. Remove anything you do not want to add.';
+// The concept's on-screen opening sentence (its renderTagModelOptions replaces the markup's at once, D83).
 const MODEL_CHANGED = 'Generate suggestions with the selected model before approving.';
+const CHIP_HINT = 'Remove anything you do not want to add.';
 const ALL_REMOVED = 'All suggestions removed. Generate again or enter tags manually.';
 const card = (page, path) => page.locator(`article[data-image-key="0:${path}"]`);
 const tagButton = (page, path) => card(page, path).getByRole('button', { name: `Tag or auto-tag ${path.split('/').pop()}`, exact: true });
@@ -106,7 +108,7 @@ test('tag dialog control inventory and order match M2', async ({ page }) => {
     await expect(suggestions).toHaveAttribute('aria-labelledby', 'tag-suggestions-title');
     await expect(suggestions.locator('h3#tag-suggestions-title')).toHaveText('Review suggestions');
     await expect(suggestions.locator('#suggestion-count')).toHaveText('Not generated');
-    await expect(suggestions.locator('#tag-suggestions > p.small')).toHaveText(INITIAL_COPY);
+    await expect(suggestions.locator('#tag-suggestions > p.small')).toHaveText(MODEL_CHANGED);
     await expect(status(page)).toHaveAttribute('role', 'status');
     await expect(status(page)).toHaveText('');
     await expect(body.locator('.dialog-actions button')).toHaveText(['Cancel', 'Save manual tags']);
@@ -122,6 +124,9 @@ test('generate shows real fixture percentages for WD14 and Suggested for GGUF, a
     const answer = await generated(page);
     expect(answer.request().postDataJSON()).toMatchObject({ model_type: 'wd14-swinv2', options: { general_threshold: 0.35, character_threshold: 0.85, suggestion_limit: 10 } });
     await expect(chips(page)).toHaveCount(10);
+    // D83: ruling T4's instruction leads the chips, only while chips exist.
+    await expect(dialog(page).locator('#tag-suggestions > *')).toHaveCount(2);
+    await expect(dialog(page).locator('#tag-suggestions > p.small')).toHaveText(CHIP_HINT);
     await expect(chips(page).first().locator(':scope > span').first()).toHaveText('sandstone');
     await expect(chips(page).locator('.tag-confidence').first()).toHaveText('98%');
     await expect(chips(page).nth(1).locator('.tag-confidence')).toHaveText('97%');
@@ -244,7 +249,7 @@ test('unavailable model shows inline status and never downloads', async ({ page,
     await expect(status(page)).toHaveText('WD14 SwinV2 is not downloaded. Download it from the legacy Auto-tag page.');
     await expect(chips(page)).toHaveCount(0);
     await expect(dialog(page).locator('#suggestion-count')).toHaveText('Not generated');
-    // Retry (ruling T5) leads the actions while the controller allows it, and generates again.
+    // D116: Retry leads the actions while the controller allows it, and generates again.
     await expect(dialog(page).locator('.dialog-actions button')).toHaveText(['Retry', 'Cancel', 'Save manual tags']);
     await expect(await request.post('/__test__/tagging/models', { data: { unavailable: [] } })).toBeOK();
     const again = page.waitForResponse(item => item.url().endsWith('/image-annotations/suggest'));
@@ -436,32 +441,6 @@ test('virtualized cards release listeners on unmount', async ({ page, request })
     expect(await count()).toBe(mounted);
 });
 
-// Paired captures for review (the exact concept comparison is plan Task C4): the concept's dialog and production's,
-// before and after Generate, on the concept-shaped fixture. Only that both open and generate is asserted here.
-for (const [width, height] of [[1600, 1100], [390, 844]]) test(`paired Tag dialog captures ${width}x${height}`, async ({ page, request }, testInfo) => {
-    await seedConcept(request);
-    await page.setViewportSize({ width, height });
-    const shot = async name => {
-        await page.evaluate(async () => { await document.fonts.ready; await Promise.all([...document.images].map(image => image.decode().catch(() => {}))); });
-        const path = testInfo.outputPath(`${name}.png`);
-        await page.screenshot({ path });
-        await testInfo.attach(name, { path, contentType: 'image/png' });
-    };
-    for (const side of ['concept', 'production']) {
-        if (side === 'concept') await openConcept(page, 'images', 'dark');
-        else await openProduction(page, 'images', 'dark');
-        const first = page.locator(side === 'concept' ? '#image-grid > article.media-card' : 'article[data-image-key]').first();
-        await first.getByRole('button', { name: /^Tag or auto-tag / }).click();
-        const shell = page.getByRole('dialog', { name: 'Tag image', exact: true });
-        await expect(shell).toBeVisible();
-        if (side === 'production') await expect(shell.locator('img.tag-image-preview')).toHaveAttribute('src', /capture/);
-        await shot(`${side}-tag-dialog-${width}`);
-        await shell.getByRole('button', { name: 'Generate suggestions', exact: true }).click();
-        await expect(shell.locator('#suggestion-count')).not.toHaveText('Not generated');
-        await shot(`${side}-tag-dialog-generated-${width}`);
-    }
-});
-
 // Task C3 (D88): the side panel and the viewer details draw the file's own current image tags first, then D21's linked
 // tags not already shown (case-insensitive). Panel image tags are Tags filter buttons; the viewer's chips are plain.
 const panel = page => page.getByRole('complementary', { name: 'Selected image details', exact: true });
@@ -581,6 +560,10 @@ test('a save under a Tags filter re-reads the listing: the selection stays while
     await expect(cards(page)).toHaveCount(2);
     // The newest match (SECOND) is selected once the filter applies.
     await expect(card(page, SECOND)).toHaveClass(/\bselected\b/);
+    // Both matches checked: the selection bar keeps only what the refreshed result still lists (I7).
+    for (const path of [SECOND, UNLINKED]) await card(page, path).getByRole('checkbox', { name: `Select ${path.split('/').pop()}`, exact: true }).check();
+    const bulkbar = page.locator('#bulkbar .bulkbar');
+    await expect(bulkbar.locator('strong')).toHaveText('2 selected');
     // Tagging the other match keeps both cards and SECOND selected; the listing is re-read.
     await openTag(page, UNLINKED, { goto: false });
     await manual(page).fill('shared, extra');
@@ -603,6 +586,15 @@ test('a save under a Tags filter re-reads the listing: the selection stays while
     await expect(card(page, UNLINKED)).toHaveClass(/\bselected\b/);
     await expect(panel(page).locator('.panel-heading h2')).toHaveText('unlinked.png');
     await expect(page.getByText('1 of 1 image', { exact: false }).first()).toBeVisible();
+    await expect(bulkbar.locator('strong')).toHaveText('1 selected');
+    await expect(card(page, UNLINKED).getByRole('checkbox')).toBeChecked();
+    // Export metadata acts on exactly the one file the bar counts.
+    const exported = [];
+    page.on('request', item => { if (item.url().includes('/prompt_manager/images/inspect/')) exported.push(new URL(item.url()).pathname); });
+    const download = page.waitForEvent('download');
+    await bulkbar.getByRole('button', { name: 'Export metadata', exact: true }).click();
+    await download;
+    expect(exported).toEqual([`/prompt_manager/images/inspect/${UNLINKED}`]);
 });
 
 test('a save under a search keeps the scroll position and the loaded range', async ({ page, request }) => {
@@ -635,4 +627,123 @@ test('a save under a search keeps the scroll position and the loaded range', asy
     await expect(tagButton(page, path)).toBeFocused();
     await expect(continuation).toHaveText(loaded);
     expect(Math.abs(await page.evaluate(() => window.scrollY) - y)).toBeLessThanOrEqual(1);
+});
+
+// Final review round (I1, I2, I9, M5, M6).
+test('the option fields show the server defaults that Generate sends (I1)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/tagging/defaults', { data: { general: 0.5, character: 0.9, limit: 7 } })).toBeOK();
+    await openTag(page);
+    const field = name => dialog(page).getByRole('spinbutton', { name, exact: true });
+    await expect(field('General confidence')).toHaveValue('0.5');
+    await expect(field('Character confidence')).toHaveValue('0.9');
+    await expect(field('Suggestions')).toHaveValue('7');
+    const answer = await generated(page);
+    expect(answer.request().postDataJSON().options).toEqual({ general_threshold: 0.5, character_threshold: 0.9, suggestion_limit: 7 });
+    await expect(chips(page)).toHaveCount(7);
+    // A model change re-renders the new model's fields from the server defaults, and keeps the count (D91).
+    await field('Suggestions').fill('4');
+    await model(page).selectOption('wd14-vit');
+    await expect(field('General confidence')).toHaveValue('0.5');
+    await expect(field('Suggestions')).toHaveValue('4');
+});
+
+test('a tag conflict shows the other writer\'s tags before Save, and a second Save keeps them (I2)', async ({ page, request }) => {
+    await openTag(page);
+    await manual(page).fill('mine');
+    // Another writer (a second tab, the legacy page) saves while the dialog is open.
+    expect(await saveImageTags(request, FIRST, ['changed_elsewhere'])).toEqual(['changed_elsewhere']);
+    const conflict = page.waitForResponse(item => item.url().endsWith('/image-annotations/tags') && item.request().method() === 'PUT');
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    expect((await conflict).status()).toBe(409);
+    await expect(status(page)).toContainText('Saved now: changed_elsewhere.');
+    await expect(manual(page)).toHaveValue('changed_elsewhere, mine');
+    await expect(dialog(page)).toBeVisible();
+    const second = page.waitForResponse(item => item.url().endsWith('/image-annotations/tags') && item.request().method() === 'PUT');
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    expect((await second).request().postDataJSON().tags).toEqual(['changed_elsewhere', 'mine']);
+    await expect(toast(page)).toHaveText('2 tags saved for dunes_00001.png.');
+    expect(await savedTags(request, FIRST)).toEqual(['changed_elsewhere', 'mine']);
+});
+
+test('D116: Retry leads the actions after an unconfirmed save and resends the same tags', async ({ page, request }) => {
+    await openTag(page);
+    await manual(page).fill('retried');
+    let lost = true;
+    await page.route('**/prompt_manager/image-annotations/tags', route => (lost ? (lost = false, route.fulfill({ status: 504, body: 'Gateway Timeout' })) : route.continue()));
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await expect(status(page)).toHaveText('The save could not be confirmed. Retry sends the same tags again.');
+    const inventory = await page.locator('dialog#modal').evaluate(taggingInventory);
+    expect(inventory.actions.buttons.map(button => [button.text, button.primary, button.disabled])).toEqual(
+        [['Retry', false, false], ['Cancel', false, false], ['Save manual tags', true, true]]);
+    expect(inventory.actions.buttons[0].minHeight).toBe(inventory.actions.buttons[1].minHeight);
+    const resent = page.waitForResponse(item => item.url().endsWith('/image-annotations/tags') && item.request().method() === 'PUT');
+    await dialog(page).getByRole('button', { name: 'Retry', exact: true }).click();
+    expect((await resent).request().postDataJSON().tags).toEqual(['retried']);
+    await expect(toast(page)).toHaveText('1 tags saved for dunes_00001.png.');
+    expect(await savedTags(request, FIRST)).toEqual(['retried']);
+    await page.unroute('**/prompt_manager/image-annotations/tags');
+});
+
+test('D116: Retry after an expired capture observes again and keeps the typed draft (M5)', async ({ page, request }) => {
+    await openTag(page);
+    await manual(page).fill('kept_draft');
+    // The store forgets every capture (as its idle sweep would), so Save answers capture-expired.
+    await expect(await request.post('/__test__/tagging/suggestions', { data: { scored: null } })).toBeOK();
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await expect(dialog(page).locator('.dialog-actions .ca-primary')).toHaveAttribute('aria-disabled', 'true');
+    const observed = page.waitForResponse(item => item.url().endsWith('/image-annotations/observe'));
+    await dialog(page).getByRole('button', { name: 'Retry', exact: true }).click();
+    expect((await observed).status()).toBe(200);
+    await expect(dialog(page).locator('.dialog-actions button')).toHaveText(['Cancel', 'Save manual tags']);
+    await expect(manual(page)).toHaveValue('kept_draft');
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await expect(toast(page)).toHaveText('1 tags saved for dunes_00001.png.');
+    expect(await savedTags(request, FIRST)).toEqual(['kept_draft']);
+});
+
+test('a tag save from Tags reloads a filtered Images visit instead of restoring it (M6)', async ({ page, request }) => {
+    await saveImageTags(request, SECOND, ['shared']);
+    await saveImageTags(request, UNLINKED, ['shared']);
+    await page.goto(images);
+    await infoButton(page, SECOND).click();
+    const filtered = listingOf(page, query => query.get('tags') === 'shared');
+    await tagRow(page).getByRole('button', { name: 'shared', exact: true }).click();
+    await filtered;
+    await expect(cards(page)).toHaveCount(2);
+    await expect(card(page, SECOND)).toHaveClass(/\bselected\b/);
+    // Tags › Auto-tag images tags the selected SECOND without the filter tag.
+    await nav(page, 'Tags & categories').click();
+    await page.locator('#workspace-main .heading-actions').getByRole('button', { name: 'Auto-tag images', exact: true }).click();
+    await expect(manual(page)).toHaveValue('shared');
+    await manual(page).fill('other');
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    await expect(toast(page)).toHaveText('1 tags saved for dunes_00002.png.');
+    const reloaded = listingOf(page, query => query.get('tags') === 'shared' && !query.has('cursor'));
+    await nav(page, 'Images').click();
+    await reloaded;
+    await expect(cards(page)).toHaveCount(1);
+    await expect(card(page, UNLINKED)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Filters · 1', exact: true })).toBeVisible();
+});
+
+test('a failed listing re-read after a save says so and keeps the cards (M2)', async ({ page, request }) => {
+    await saveImageTags(request, SECOND, ['shared']);
+    await saveImageTags(request, UNLINKED, ['shared']);
+    await page.goto(images);
+    await infoButton(page, SECOND).click();
+    const filtered = listingOf(page, query => query.get('tags') === 'shared');
+    await tagRow(page).getByRole('button', { name: 'shared', exact: true }).click();
+    await filtered;
+    await expect(cards(page)).toHaveCount(2);
+    await openTag(page, SECOND, { goto: false });
+    await manual(page).fill('');
+    const failing = url => url.pathname === '/prompt_manager/images/output' && url.searchParams.get('tags') === 'shared';
+    await page.route(failing, route => route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false,"error":"down"}' }));
+    const reread = page.waitForResponse(item => failing(new URL(item.url())));
+    await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
+    expect((await reread).status()).toBe(500);
+    await expect(toast(page)).toHaveText('Images could not be refreshed after the tag save. Refresh image collection to retry.');
+    await expect(cards(page)).toHaveCount(2);
+    await expect(page.locator('#gallery-continuation [aria-disabled="true"]')).toHaveCount(0);
+    await page.unroute(failing);
 });

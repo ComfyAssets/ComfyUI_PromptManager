@@ -15,7 +15,10 @@ import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
-import { createTagButton, isTagButton, openImageTagging, onImageTagsSaved } from './image-tagging.mjs';
+import { createTagButton, onImageTagsSaved } from './image-tagging.mjs';
+import { followImageTagSaves, openCardTagging } from './images-tagging.mjs';
+import { favoriteBusy, paintStar, receiveFavorites, setFavoriteVisitTarget, toggleFavorite } from './images-favorites.mjs';
+export { onFavoriteChange } from './images-favorites.mjs';
 
 /** The concept's panel without an image (app.js updateImages a456–458). */
 function noSelection() {
@@ -74,38 +77,17 @@ function rescanFinished(result) {
     if (![total, roots].every(value => Number.isSafeInteger(value) && value >= 0)) return 'Rescan finished.';
     return `Rescan finished. ${total.toLocaleString('en-US')} ${noun(total, 'file')} in ${roots.toLocaleString('en-US')} output ${noun(roots, 'folder')}.`;
 }
-// D7 = A: the concept's star (app.js actions.favorite) against the favorites store; its toasts without the demo's
-// "in this tab". The concept has no failure copy, so a failure follows the workspace "could not be …" pattern.
-const FAVORITE_URL = '/prompt_manager/images/favorite';
-const FAVORITE_DONE = Object.freeze({true:'Added to favorites.', false:'Removed from favorites.'});
-const FAVORITE_FAILED = Object.freeze({true:'Favorite could not be added. Try again.', false:'Favorite could not be removed. Try again.'});
 // The concept card's first `.media-info` reservation and list row (image-layout.mjs); real rows are measured.
 const INITIAL_METRICS = Object.freeze({columns:1, gap:13, footerHeight:54, listHeight:97});
 
 let lastVisit = null;
-// One favorite request per file at a time (TESTING.md): the requests outlive the Images page that sent them, so the keys
-// in flight and the page that receives each answer live here, beside the saved visit.
-const favoritePending = new Set();
-let favoriteTarget = null;
-// Library-embedded galleries showing media cards (#249 PR E); keyed like the Images page, so each repaints its own copy.
-const embeddedFavoriteTargets = new Set();
-/**
- * Give a favorite state to the mounted Images page, or to the saved visit while none is mounted, and to every mounted
- * Library-embedded gallery.
- */
-function deliverFavorite(key, favorite) {
-    if (favoriteTarget) favoriteTarget(key, favorite);
-    else if (lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
-    for (const target of embeddedFavoriteTargets) target(key, favorite);
-}
-// Told after every confirmed favorite change, wherever it was made (the shell's Favorites count, #249 D51).
-const favoriteListeners = new Set();
-/** Run `listener()` after each confirmed favorite change; returns the unsubscribe. */
-export function onFavoriteChange(listener) {
-    favoriteListeners.add(listener);
-    return () => favoriteListeners.delete(listener);
-}
+// The star's answers patch the saved visit while no Images page is mounted (D7).
+setFavoriteVisitTarget((key, favorite) => {
+    if (lastVisit?.state) lastVisit = {...lastVisit, state: withItem(lastVisit.state, key, {favorite})};
+});
 
+// A tag save made while Images is left (Tags › Auto-tag images) may change what a filtered visit lists: it reloads (M6).
+onImageTagsSaved(() => { if (lastVisit?.filters.tags.length || lastVisit?.filters.q) lastVisit = {...lastVisit, stale: true}; });
 /** The image selected in Images when it was last left (the concept's `state.selectedImage`, for Tags › Auto-tag images). */
 export function selectedImage() {
     const key = lastVisit?.selection;
@@ -134,10 +116,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
     const saved = embedded || !savedState ? null : imagesFilters(savedState);
-    const visit = embedded || saved || favorites ? null : lastVisit;
-    let density = visit?.density || 'comfortable';
+    const prior = embedded || saved || favorites ? null : lastVisit;
+    // A stale visit keeps its filters, layout and size, and lists again instead of restoring (M6).
+    const visit = prior?.stale ? null : prior;
+    let density = prior?.density || 'comfortable';
     let metrics = {...INITIAL_METRICS};
-    let layout = visit?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
+    let layout = prior?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
     let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
     // Discovered sources (each with its own folders) and every folder, for "Refine this view" and the scope chip.
     let roots = [], folders = [];
@@ -145,7 +129,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let refine = null;
     const rendered = new Map();
     const itemIndexes = new Map();
-    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...visit?.filters, ...saved,
+    const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...prior?.filters, ...saved,
         favorites: favorites || saved?.favorites === true };
     filters.tags = [...filters.tags];
     if (!IMAGE_SORT_OPTIONS.some(([value]) => value === filters.sort)) filters.sort = 'newest';
@@ -339,7 +323,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (typeof image.favorite === 'boolean') {
             const star = createButton('', 'star-button');
             star.setAttribute('aria-label', `Favorite ${image.filename}`);
-            paintStar(star, image.favorite, favoritePending.has(key));
+            paintStar(star, image.favorite, favoriteBusy(key));
             overlays.append(star);
         }
         art.append(open, overlays);
@@ -357,67 +341,24 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         markSelected(card, key === selection);
         return card;
     }
-    /** A star whose request is still in flight is marked busy: pressing it again does nothing until the answer. */
-    function paintStar(button, favorite, pending) {
-        button.textContent = favorite ? '★' : '☆';
-        button.setAttribute('aria-pressed', String(favorite));
-        if (pending) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled');
-    }
     function setFavorite(key, favorite) {
         if (scope.signal.aborted) return;
         stream.updateItem(key, {favorite});
         const button = rendered.get(key)?.querySelector('.star-button');
-        if (button) paintStar(button, favorite, favoritePending.has(key));
+        if (button) paintStar(button, favorite, favoriteBusy(key));
     }
     // The Images page and every Library-embedded gallery receive favorite answers (#249 D7, PR E).
-    if (!embedded) {
-        favoriteTarget = setFavorite;
-        scope.cleanup(() => { if (favoriteTarget === setFavorite) favoriteTarget = null; });
-    } else {
-        embeddedFavoriteTargets.add(setFavorite);
-        scope.cleanup(() => embeddedFavoriteTargets.delete(setFavorite));
-    }
-    /** Optimistic toggle: the star changes at once and returns to its previous state if the store refuses. */
-    async function toggleFavorite(image) {
-        const key = imageKey(image);
-        if (favoritePending.has(key)) return;
-        const favorite = !image.favorite;
-        favoritePending.add(key);
-        deliverFavorite(key, favorite);
-        const body = {root_index: image.root_index, path: image.path};
-        let saved = false;
-        try {
-            await (favorite ? api.put(FAVORITE_URL, body) : api.del(FAVORITE_URL, {body}));
-            saved = true;
-        } catch {
-            // Announced below; the star returns to its previous state.
-        }
-        favoritePending.delete(key);
-        deliverFavorite(key, saved ? favorite : !favorite);
-        showWorkspaceToast(saved ? FAVORITE_DONE[favorite] : FAVORITE_FAILED[favorite]);
-        // On Favorites an unstarred card stays (with ☆) until the next load, so the star can be undone in place (D51).
-        if (saved) for (const listener of favoriteListeners) listener();
-    }
+    receiveFavorites({scope, embedded, setFavorite});
     scope.listen(grid, 'click', event => {
         const card = event.target.closest('article[data-image-key]');
         if (!card) return;
         const image = state.items.find(item => imageKey(item) === card.dataset.imageKey);
         if (!image) return;
         const action = event.target.closest('.image-card-actions button');
-        if (event.target.closest('.star-button')) toggleFavorite(image);
+        if (event.target.closest('.star-button')) toggleFavorite(api, image);
         else if (event.target.closest('.image-open')) previewImage(image);
-        // Tag opens the dialog without selecting the card, as the concept's `image-tag` does.
-        else if (isTagButton(action)) openImageTagging({api, scope, image, source: embedded ? 'library' : 'images', trigger: action});
-        else if (action) inspect(image);
+        else if (action && !openCardTagging({api, scope, image, action, embedded})) inspect(image);
     });
-    // A saved tag set re-reads the selected file's details (its inspector envelope carries the image tags) without a
-    // loading flash. Under a Tags filter or a search the saved file may now match or stop matching: the loaded range
-    // is re-read in place first, keeping the scroll and the selection while it still matches.
-    scope.cleanup(onImageTagsSaved(async ({target}) => {
-        const key = `${target.root_index}:${target.path}`;
-        if (!embedded && !recovering && (filters.tags.length || filters.q)) await stream.refresh();
-        if (!scope.signal.aborted && selection === key) inspection.refresh();
-    }));
 
     function renderVisible() {
         if (!state || scope.signal.aborted) return;
@@ -561,8 +502,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             if (!next.items.length || replaced) itemIndexes.clear();
             for (let index = replaced ? 0 : state?.items.length || 0; index < next.items.length; index++) itemIndexes.set(imageKey(next.items[index]), index);
         }
-        // The selected file left the refreshed result: the panel follows the collection, as after a reload.
+        // The selected file left the refreshed result: the panel follows the collection, as after a reload; the
+        // selection bar keeps only the checked files still listed (I7).
         if (replaced && selection !== null && !itemIndexes.has(selection)) dropSelection();
+        if (replaced) bar?.retain(key => itemIndexes.has(key));
         state = next;
         if (!embedded) {
             setText(count, countLine(next));
@@ -586,12 +529,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         scheduleLoad();
     }
     const stream = createImageStream({ api, fetchPage, onChange: renderState, restore: visit ? {filters, state:visit.state} : undefined });
+    followImageTagSaves({scope, stream, inspection, selection:() => selection, filtered:() => !embedded && !recovering && Boolean(filters.tags.length || filters.q),
+        onRefreshing:busy => more.setAttribute('aria-disabled', String(busy || Boolean(state?.loading) || recovering))});
     scope.cleanup(() => {
         stream.dispose();
         for (const video of body.querySelectorAll('video')) releaseVideo(video);
     });
     function pressLoad() {
-        if (recovering || state?.loading) return;
+        // A refresh re-reads the loaded range: Load more waits for it (and focus stays where it is, M3).
+        if (recovering || state?.loading || stream.refreshing) return;
         focusAfterLoad = state?.loaded ?? 0;
         stream.loadMore();
     }
@@ -631,26 +577,23 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         scopeText.textContent = ` ${scopeLabel(filters, roots)}`;
         toolbar?.setActiveFilters(activeRefinements(filters));
     }
-    function dropSelection() {
-        inspection.clear();
-        detailInspector?.dispose(); detailInspector = null;
+    /** No selected file; `keepPanel` (recovering sources) leaves the panel's details shown. */
+    function dropSelection({keepPanel = false} = {}) {
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
-        details.replaceChildren(noSelection());
-        selection = null;
-    }
-    function reset() {
-        mediaViewer.stopSlideshow();
-        main.querySelector('#viewer-dialog[open]')?.close();
-        if (!recovering) {
+        if (!keepPanel) {
             inspection.clear();
             detailInspector?.dispose(); detailInspector = null;
             details.replaceChildren(noSelection());
         }
         selection = null;
+    }
+    function reset() {
+        mediaViewer.stopSlideshow();
+        main.querySelector('#viewer-dialog[open]')?.close();
+        dropSelection({keepPanel:recovering});
         focusAfterLoad = null;
         // The ruled selection lifetime: a replaced collection may no longer hold the checked files.
         bar?.clear();
-        for (const video of details.querySelectorAll('video')) releaseVideo(video);
         // A toolbar change while discovery is still pending keeps the saved Source and Folder; the settled discovery
         // then lists the view with every current value (#249 M3).
         if (savedScopePending && !discoverySettled) { updateScope(); return; }

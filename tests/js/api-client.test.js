@@ -315,3 +315,14 @@ test("ApiError exposes only a validated current tag set from a tag-conflict body
         });
     }
 });
+
+test("keepalive is forwarded only when asked, so a request can outlive its page", async () => {
+    const fetch = fakeFetch();
+    const api = createApiClient(fetch);
+    const writes = [api.del("/x", { keepalive: true }), api.put("/x", {}, { keepalive: true }), api.post("/x", {}, { keepalive: true }),
+        api.del("/x"), api.put("/x", {}), api.get("/x")];
+    assert.deepEqual(fetch.calls.map(call => call.init.keepalive), [true, true, true, undefined, undefined, undefined]);
+    assert.equal("keepalive" in fetch.calls[3].init, false);
+    for (const call of fetch.calls) call.resolve(jsonResponse(200, { success: true }));
+    await Promise.all(writes);
+});
