@@ -1512,6 +1512,25 @@ test('Refine opened before discovery settles lists the discovered sources and fo
 });
 
 // #249 final review m1: as in the old field row, a Source offers only its own folders.
+test('a search reload keeps the Filters label node, so a click landing during the reload is not lost', async ({ page, request }) => {
+    // WebKit drops a click whose mousedown hit a text node that was replaced before mouseup; the reload reports the
+    // (unchanged) active count, so the label must keep its node.
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 80 } })).toBeOK();
+    await page.goto(workspace);
+    const button = filtersButton(page);
+    await button.click();await expect(refineDialog(page).getByLabel('Folder', { exact: true }).locator('option[value="bulk"]')).toHaveCount(1);await page.keyboard.press('Escape');
+    await refine(page, { Source: '0', Folder: 'bulk' });
+    await expect(button).toHaveText('Filters · 2');
+    const label = await button.evaluateHandle(node => node.firstChild);
+    const reloaded = page.waitForResponse(response => {
+        const url = new URL(response.url());return imagePages(url) && url.searchParams.get('q') === 'png';
+    });
+    await search(page).fill('png');
+    await reloaded;
+    await expect(button).toHaveText('Filters · 2');
+    expect(await button.evaluate((node, text) => node.firstChild === text && text.isConnected, label)).toBe(true);
+});
+
 test('Refine offers only the chosen source folders', async ({ page, request }) => {
     await expect(await request.post('/__test__/add-nested-image')).toBeOK();
     await page.goto(workspace);
