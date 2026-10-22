@@ -15,7 +15,23 @@ export const LOCAL_SESSION_MESSAGES = Object.freeze({
     unsupported: 'This file type cannot be previewed or inspected here. Choose an image or video file.',
     previewFailed: 'The preview could not be displayed. Metadata and the original remain available in the viewer.',
     containerOnly: 'Metadata in AVI and WMV files is not read here. The preview and the original remain available.',
+    // A file that could not be read after choosing: the shared inspector's own unreadable copy (file-inspector.mjs).
+    unreadable: 'Embedded metadata could not be read.',
 });
+
+// The browser's declared type for a file whose bytes could not be read, mapped to the kind its bytes would have
+// classified as. Only a supported declared type opens the unreadable record; anything else stays unsupported.
+const DECLARED_KINDS = Object.freeze({
+    'image/png': ['image', 'png'], 'image/jpeg': ['image', 'jpeg'], 'image/webp': ['image', 'webp'],
+    'video/mp4': ['video', 'iso-bmff'], 'video/quicktime': ['video', 'iso-bmff'], 'video/x-m4v': ['video', 'iso-bmff'],
+    'video/webm': ['video', 'matroska'], 'video/x-matroska': ['video', 'matroska'],
+    'video/x-msvideo': ['video', 'avi'], 'video/avi': ['video', 'avi'], 'video/x-ms-wmv': ['video', 'asf'], 'video/x-ms-asf': ['video', 'asf'],
+});
+function declaredClassification(file) {
+    const kind = DECLARED_KINDS[String(file?.type || '').toLowerCase()];
+    return kind ? Object.freeze({ media: kind[0], kind: kind[1] }) : null;
+}
+const readFailure = error => error instanceof DOMException && error.name !== 'AbortError';
 
 const abortError = () => new DOMException('The local selection was replaced', 'AbortError');
 const defaultSchedulerYield = () => (typeof globalThis.scheduler?.yield === 'function' ? () => globalThis.scheduler.yield() : null);
@@ -84,7 +100,19 @@ export function createLocalSession({
         try {
             await yieldControl(signal);
             if (!live(token, signal)) return;
-            const prefix = new Uint8Array(await file.slice(0, Math.min(PREFIX_BYTES, file.size)).arrayBuffer());
+            let prefix;
+            try {
+                prefix = new Uint8Array(await file.slice(0, Math.min(PREFIX_BYTES, file.size)).arrayBuffer());
+            } catch (error) {
+                if (!live(token, signal) || !readFailure(error)) throw error;
+                const declared = declaredClassification(file);
+                if (!declared) { publish({ phase: 'unsupported', message: LOCAL_SESSION_MESSAGES.unsupported }); return; }
+                // Unreadable after choosing: no preview and no URL; the record is the inspector's unreadable state.
+                handle = createLocalFileHandle({ file, url: null, classification: declared });
+                publish({ phase: 'ready', preview: null, message: LOCAL_SESSION_MESSAGES.unreadable });
+                controller.select(handle);
+                return;
+            }
             if (!live(token, signal)) return;
             const reader = pngMetadata ?? pngReader();
             const classification = prefix.length ? reader.classifyPrefix(prefix) : null;

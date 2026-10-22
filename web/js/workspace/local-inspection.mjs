@@ -168,7 +168,14 @@ export const localFileAdapter = Object.freeze({
     inspectionPath(handle) { return `local-file:${owned(handle).key}`; },
     async read(handle, { signal } = {}) {
         const secret = owned(handle);
-        const { result } = await readLocalFile(secret.file, { classification: secret.classification, signal });
+        let result = null;
+        try {
+            ({ result } = await readLocalFile(secret.file, { classification: secret.classification, signal }));
+        } catch (error) {
+            // The browser could not read the bytes (removed, moved or denied after choosing): the server's
+            // MetadataReadError, an unreadable record. Abort and programming errors still reject.
+            if (!(error instanceof DOMException) || error.name === 'AbortError' || signal?.aborted) throw error;
+        }
         return fitLocalPayload(buildLocalPayload({ read: result, file: { name: secret.filename, size: secret.file.size, lastModified: secret.file.lastModified }, classification: secret.classification }), MAX_RESPONSE_BYTES, { signal });
     },
     toRecord(result, handle, extractFacts) {

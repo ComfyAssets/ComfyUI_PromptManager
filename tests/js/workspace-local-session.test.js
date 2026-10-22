@@ -87,7 +87,7 @@ const recorded = (controller) => until(controller, (state) => state.record !== n
 test("contract", () => {
     assert.equal(typeof m.createLocalSession, "function", "createLocalSession is exported");
     assert.equal(typeof m.createYield, "function", "createYield is exported");
-    assert.deepEqual(Object.keys(m.LOCAL_SESSION_MESSAGES).sort(), ["containerOnly", "directory", "multiple", "previewFailed", "unsupported"]);
+    assert.deepEqual(Object.keys(m.LOCAL_SESSION_MESSAGES).sort(), ["containerOnly", "directory", "multiple", "previewFailed", "unreadable", "unsupported"]);
     const { session: value } = session();
     for (const name of ["select", "retry", "subscribe", "dispose"]) assert.equal(typeof value[name], "function", name);
     assert.equal(value.state.phase, "empty");
@@ -189,9 +189,36 @@ test("unclassified input creates no object URL", async () => {
         assert.equal(value.controller.state.record, null);
         assert.ok(file.ranges.every(([start, end]) => start === 0 && end <= 32), "only the prefix is read");
     }
-    // A file that cannot be read (removed after choosing) is never classified.
+    // A file that cannot be read after choosing (removed or denied) is not an unsupported type: when the browser
+    // declares a supported type it opens the inspector's unreadable state, with no preview and no URL (ledger ruling).
     const gone = pngFile("gone.png", "fox", { gate: () => Promise.reject(new DOMException("The file was removed", "NotReadableError")) });
     assert.equal(value.select([gone]), "accepted");
+    await settle();
+    const unreadable = value.controller.state;
+    assert.ok(unreadable.record, "the unreadable record is published");
+    assert.deepEqual([value.state.phase, value.state.message, value.state.preview], ["ready", m.LOCAL_SESSION_MESSAGES.unreadable, null]);
+    assert.equal(m.LOCAL_SESSION_MESSAGES.unreadable, "Embedded metadata could not be read.");
+    assert.equal(value.entry.filename, "gone.png");
+    assert.equal(unreadable.record.metadata.status, "unreadable");
+    assert.equal(unreadable.record.download, null);
+    assert.equal(spies.created.length, 0);
+    // A prefix read that fails for another reason than the browser's read failure is not claimed as unreadable.
+    const broken = pngFile("broken.png", "fox", { gate: () => Promise.reject(new TypeError("not a read failure")) });
+    assert.equal(value.select([broken]), "accepted");
+    await settle();
+    assert.deepEqual([value.state.phase, value.state.message, value.entry], ["unsupported", m.LOCAL_SESSION_MESSAGES.unsupported, null]);
+    // A read failure for a selection already replaced publishes nothing for it.
+    const slow = deferred();
+    const replaced = pngFile("replaced.png", "fox", { gate: () => slow.promise });
+    value.select([replaced]);
+    await settle();
+    value.select([new RecordingFile([new Uint8Array(4)], "next.txt")]);
+    slow.reject(new DOMException("The file was removed", "NotReadableError"));
+    await settle();
+    assert.deepEqual([value.state.phase, value.entry], ["unsupported", null]);
+    // An unreadable file the browser declares no supported type for stays unsupported.
+    const unknown = new RecordingFile([new Uint8Array(8)], "gone.bin", { gate: () => Promise.reject(new DOMException("The file was removed", "NotReadableError")) });
+    assert.equal(value.select([unknown]), "accepted");
     await settle();
     assert.deepEqual([value.state.phase, value.state.message, value.entry], ["unsupported", m.LOCAL_SESSION_MESSAGES.unsupported, null]);
     assert.equal(spies.created.length, 0);
