@@ -7,6 +7,7 @@ import struct
 import tempfile
 import threading
 import time
+import unicodedata
 import unittest
 import warnings
 import zlib
@@ -239,6 +240,41 @@ class CaptureStoreTestCase(unittest.TestCase):
         with self.assertRaises(CaptureDenied):
             self.capture(store, "alias.png")
         self.assert_empty(store)
+
+    def test_case_and_unicode_spellings_of_a_listed_file_are_denied(self):
+        # On a case- or normalization-insensitive filesystem (macOS APFS,
+        # Windows) these spellings open the listed file while realpath keeps
+        # the requested spelling, which would store its tags under a second
+        # locator. Every OS denies them; the listed spelling is the control.
+        nfc = unicodedata.normalize("NFC", "caf\u00e9.png")
+        nfd = unicodedata.normalize("NFD", nfc)
+        self.assertNotEqual(nfc, nfd)
+        self.write("a.png", png_bytes(1, 1))
+        self.write(nfc, png_bytes(1, 1))
+        self.write("Sub/b.png", png_bytes(1, 1))
+        store = self.make_store()
+
+        for relative in ("a.png", nfc, "Sub/b.png"):
+            with self.subTest(listed=relative):
+                cap = self.capture(store, relative)
+                self.assertEqual(
+                    cap.locator,
+                    os.path.normcase(
+                        os.path.join(os.path.realpath(self.root), *relative.split("/"))
+                    ),
+                )
+                self.assertTrue(store.release(cap.token))
+        for alias in ("A.PNG", "A.png", nfd, "sub/b.png", "SUB/B.PNG", "Sub/B.png"):
+            with self.subTest(alias=alias):
+                with self.assertRaises(CaptureDenied):
+                    self.capture(store, alias)
+                with self.assertRaises(CaptureDenied):
+                    store.verify(self.root, alias)
+        # A missing file with no other spelling keeps its usual outcome.
+        with self.assertRaises(CaptureChanged):
+            self.capture(store, "Sub/missing.png")
+        self.assert_empty(store)
+        assert_closed(self, self.parent)
 
     def test_locator_matches_listing_identity_for_symlinked_root(self):
         real_root = self.parent / "real-output"

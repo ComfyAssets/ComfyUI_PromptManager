@@ -26,6 +26,7 @@ import stat as stat_module
 import tempfile
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Callable
 
@@ -652,4 +653,33 @@ def _resolve(root, parts: list[str]) -> tuple[str, str]:
     locator = os.path.normcase(candidate)
     if os.path.normcase(os.path.realpath(candidate)) != locator:
         raise CaptureDenied("The file is not a listed rooted file")
+    _deny_spelling_aliases(real_root, parts)
     return candidate, locator
+
+
+def _spelling_key(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _deny_spelling_aliases(real_root: str, parts: list[str]) -> None:
+    """Deny a case or Unicode spelling of an entry the directory spells otherwise.
+
+    On a case- or normalization-insensitive filesystem (macOS APFS, Windows)
+    ``A.PNG`` or an NFD name opens the listed ``a.png`` or NFC name, while
+    ``realpath`` keeps the requested spelling (macOS), so the tags would be
+    stored under a second locator. Each part must be spelled as its directory
+    lists it. A part with no entry of any spelling is left to the open that
+    follows (a missing file keeps its usual outcome).
+    """
+    directory = real_root
+    for part in parts:
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+        if part not in names:
+            key = _spelling_key(part)
+            if any(_spelling_key(name) == key for name in names):
+                raise CaptureDenied("The file is not a listed rooted file")
+            return
+        directory = os.path.join(directory, part)

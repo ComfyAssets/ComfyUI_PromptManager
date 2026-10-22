@@ -282,6 +282,18 @@ class TestObserve(AnnotationAPITestCase):
                 self.assertEqual(response.status, 400)
             capture.assert_not_called()
 
+    async def test_observe_denies_case_spellings_of_the_listed_file(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        for alias in ("sub/A.PNG", "SUB/a.png"):
+            with self.subTest(alias=alias):
+                status, body = await self.observe({"target": self.target(alias)})
+                # Denied as an alias, like a symlink to the listed file.
+                self.assertEqual((status, body["code"]), (409, "source-changed"))
+                self.assert_no_paths(body)
+        store = self.api._captures
+        self.assertFalse(any(Path(store.directory).iterdir()))
+        await self.observe_ok("sub/a.png")
+
     async def test_observe_returns_saved_tags_for_exact_bytes_only(self):
         path = make_png(self.output_dir / "sub" / "a.png")
         original = path.read_bytes()
