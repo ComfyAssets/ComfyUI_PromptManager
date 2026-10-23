@@ -1,12 +1,11 @@
 """Needs review decisions and queue reads (#249 E3).
 
 The queue lists pending items oldest first behind an HMAC cursor bound to the
-storage epoch and the review index revision; ``total`` is the exact pending
-count. A decision is explicit: Apply links the chosen sampler's pair only
-under the ingester's compatible rules and only for the current, re-hashed
-bytes of the reviewed file, in one transaction with its decision row; Leave
-unresolved records the decision and links nothing. Responses never carry a
-server path.
+storage epoch; ``total`` is the exact pending count. A decision is explicit:
+Apply links the chosen sampler's pair only under the ingester's compatible
+rules and only for the current, re-hashed bytes of the reviewed file, in one
+transaction with its decision row; Leave unresolved records the decision and
+links nothing. Responses never carry a server path.
 """
 
 import json
@@ -199,12 +198,22 @@ class TestQueueReads(ReviewRoutesTestCase):
                 "unavailable",
                 "candidate_count",
                 "limited",
+                "url",
+                "thumbnail_url",
+                "is_video",
             },
         )
         self.assertEqual(
             (item["state"], item["revision"], item["filename"]),
             ("pending", 0, "f0.png"),
         )
+        # The card's media URL, formatted like the Images listing's (no stat).
+        scope = item["target"]["root_scope"]
+        self.assertEqual(
+            item["url"],
+            f"/prompt_manager/images/serve/f0.png?root=0&root_scope={scope}",
+        )
+        self.assertIs(item["is_video"], False)
         self.assertEqual(item["candidate_count"], 2)
         self.assertIs(item["unavailable"], False)
         self.assertEqual(item["target"]["path"], "f0.png")
@@ -242,7 +251,7 @@ class TestQueueReads(ReviewRoutesTestCase):
         status, data = await self._json("GET", ITEMS_URL + "?cursor=" + "x" * 5000)
         self.assertEqual(status, 400)
 
-    async def test_cursor_invalidated_by_decision_and_restore(self):
+    async def test_cursor_survives_queue_changes_and_is_invalidated_by_restore(self):
         self._require_routes()
         for index in range(3):
             self._record(self._ambiguous(f"f{index}.png", color=(index, 0, 0)))
@@ -264,16 +273,43 @@ class TestQueueReads(ReviewRoutesTestCase):
             status, data = await self._json("GET", f"{ITEMS_URL}?cursor={cursor}")
         self.assertEqual((status, data["code"]), (409, "review-conflict"), data)
         self.assertEqual(data["library_epoch"], first["library_epoch"])
-        # A decision moves the review index revision: the old cursor is stale.
+        # The cursor is bound to the storage epoch only (M3): a decision and a
+        # new item (the monitor records one per generation) leave "load more"
+        # working, because the (created_at, id) keyset is stable under both.
         item, detail, observed = await self._open()
+        self.assertEqual(item["id"], first["items"][0]["id"])
         status, data = await self._decide(
             item["id"], {**self._body(detail, observed, "unresolved")}
         )
         self.assertEqual(status, 200, data)
+        self._record(self._ambiguous("late.png", color=(9, 9, 9)))
+        rows = self._items()
         status, data = await self._json("GET", f"{ITEMS_URL}?limit=1&cursor={cursor}")
-        self.assertEqual(status, 409, data)
-        self.assertEqual(data["code"], "review-conflict")
-        self.assertEqual(data["total"], 2)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["total"], 3)
+        self.assertEqual([i["filename"] for i in data["items"]], ["f1.png"])
+        seen = ["f1.png"]
+        while data["next_cursor"]:
+            data = await self._list(f"?limit=1&cursor={data['next_cursor']}")
+            seen.extend(i["filename"] for i in data["items"])
+        self.assertEqual(seen, ["f1.png", "f2.png", "late.png"])
+        self.assertEqual(len(rows), 4)
+        # A decision on an item after the cursor drops it from later pages.
+        second = await self._list("?limit=1")
+        self.assertEqual([i["filename"] for i in second["items"]], ["f1.png"])
+        conn = self.api.db.model.get_connection()
+        with conn:
+            conn.execute(
+                "UPDATE media_review_items SET state='selected', revision=1 "
+                "WHERE id=(SELECT i.id FROM media_review_items i "
+                "WHERE i.spelled_path LIKE ?)",
+                ("%f2.png",),
+            )
+        data = await self._list(f"?limit=1&cursor={second['next_cursor']}")
+        self.assertEqual(
+            ([i["filename"] for i in data["items"]], data["total"]),
+            (["late.png"], 2),
+        )
         fresh = (await self._list("?limit=1"))["next_cursor"]
         conn = self.api.db.model.get_connection()
         with conn:  # a restore replaces the storage epoch
@@ -354,8 +390,33 @@ class TestQueueReads(ReviewRoutesTestCase):
             (item["unavailable"], item["target"], item["filename"]),
             (True, None, "two.png"),
         )
+        self.assertEqual((item["url"], item["is_video"]), (None, False))
+        self.assertIsNone(item["thumbnail_url"])
         detail = await self._detail(item["id"])
         self.assertIs(detail["unavailable"], True)
+        self._no_paths()
+
+    async def test_queue_cards_use_the_images_listing_thumbnail(self):
+        # M10: a known thumbnail is the card's media, as on the Images page;
+        # without one the card falls back to the original.
+        self._require_routes()
+        from py.api.images import _output_image_entry
+
+        path = self._ambiguous("sub/f0.png")
+        self._record(path)
+        item = (await self._list())["items"][0]
+        self.assertIsNone(item["thumbnail_url"])
+        thumb = self.output_dir / "thumbnails" / "sub" / "f0_thumb.png"
+        thumb.parent.mkdir(parents=True)
+        write_png(thumb, prompt=ambiguous_graph("cat", "dog"), color=(1, 2, 3))
+        item = (await self._list())["items"][0]
+        scope = item["target"]["root_scope"]
+        listed = _output_image_entry(path, self.output_dir, 0, root_scope=scope)
+        self.assertIsNotNone(listed["thumbnail_url"])
+        self.assertEqual(item["thumbnail_url"], listed["thumbnail_url"])
+        self.assertEqual(item["url"], listed["url"])
+        detail = await self._detail(item["id"])
+        self.assertEqual(detail["thumbnail_url"], listed["thumbnail_url"])
         self._no_paths()
 
     def test_target_formatting_keeps_the_recorded_spelling_on_windows(self):

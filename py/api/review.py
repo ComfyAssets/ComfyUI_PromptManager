@@ -1,8 +1,9 @@
 """Needs review routes (#249 E3): the pending queue, item detail, decisions.
 
 ``GET /prompt_manager/review/items`` lists pending items oldest first behind
-an HMAC keyset cursor bound to the storage epoch and the review index
-revision (any decision, new item or restore makes an old cursor stale);
+an HMAC keyset cursor bound to the storage epoch only (a restore makes an
+old cursor stale; a decision or a new item does not, because the
+``(created_at, id)`` keyset stays ordered when items leave or are appended);
 ``total`` is the exact pending count. ``GET .../items/{id}`` adds the
 candidates and the dependency fingerprint. ``POST .../items/{id}/decision``
 records one explicit decision: Apply links the chosen sampler's pair only
@@ -23,10 +24,13 @@ import hmac
 import json
 import os
 import re
+import urllib.parse
 
 from aiohttp import web
 
 from .annotations import _HEX64, _TOKEN, _UUID, _capture_error, _error
+from .images import media_thumbnail_url
+from .inspection_service import VIDEO_EXTENSIONS
 from .prompts import bad_request
 
 try:
@@ -153,9 +157,9 @@ class _StaleCursor(ValueError):
     """A well-formed cursor this process cannot verify (e.g. after a restart)."""
 
 
-def _encode_cursor(epoch: str, revision: int, key: tuple) -> str:
+def _encode_cursor(epoch: str, key: tuple) -> str:
     payload = json.dumps(
-        {"v": 1, "e": epoch, "r": revision, "k": list(key)},
+        {"v": 2, "e": epoch, "k": list(key)},
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode()
@@ -164,7 +168,7 @@ def _encode_cursor(epoch: str, revision: int, key: tuple) -> str:
 
 
 def _decode_cursor(token: str) -> tuple:
-    """``(epoch, revision, (created_at, id))`` of a cursor.
+    """``(epoch, (created_at, id))`` of a cursor.
 
     ``ValueError`` when malformed; :class:`_StaleCursor` when well-formed but
     signed by another secret (the per-process secret changes on every start,
@@ -185,15 +189,14 @@ def _decode_cursor(token: str) -> tuple:
         data = json.loads(payload)
         key = data["k"]
         if (
-            data["v"] != 1
+            data["v"] != 2
             or not isinstance(data["e"], str)
-            or type(data["r"]) is not int
             or not isinstance(key, list)
             or len(key) != 2
             or not all(isinstance(part, str) for part in key)
         ):
             raise ValueError()
-        return data["e"], data["r"], tuple(key)
+        return data["e"], tuple(key)
     except _StaleCursor:
         raise
     except (ValueError, KeyError, TypeError, UnicodeError, binascii.Error):
@@ -253,7 +256,7 @@ class ReviewRoutesMixin:
     def _review_view(self, row: dict, roots, real_roots) -> dict:
         """The public ReviewItem of one stored row (no path, no locator)."""
         found = format_review_target(row["spelled_path"], row["locator"], real_roots)
-        target = None
+        target = url = thumbnail_url = None
         if found is not None:
             index, relative = found
             target = {
@@ -261,16 +264,30 @@ class ReviewRoutesMixin:
                 "root_scope": self._gallery_root_scope(roots[index], index),
                 "path": relative,
             }
+            # The Images listing's media URL for the same file (formatting only).
+            url = (
+                "/prompt_manager/images/serve/"
+                f"{urllib.parse.quote(relative, safe='/')}?root={index}"
+                f"&root_scope={target['root_scope']}"
+            )
+            # The Images listing's thumbnail, when one exists (one stat).
+            thumbnail_url = media_thumbnail_url(
+                roots[index], relative, index, root_scope=target["root_scope"]
+            )
+        filename = os.path.basename(row["spelled_path"])
         return {
             "id": row["id"],
             "state": row["state"],
             "revision": row["revision"],
             "created_at": row["created_at"],
-            "filename": os.path.basename(row["spelled_path"]),
+            "filename": filename,
             "target": target,
             "unavailable": target is None,
             "candidate_count": row["candidate_count"],
             "limited": row["limited"],
+            "url": url,
+            "thumbnail_url": thumbnail_url,
+            "is_video": os.path.splitext(filename)[1].lower() in VIDEO_EXTENSIONS,
         }
 
     @staticmethod
@@ -299,26 +316,26 @@ class ReviewRoutesMixin:
                 return bad_request(str(exc))
         try:
             page, views = await self._run_in_executor(
-                self._review_page, limit, bound[2] if bound else None
+                self._review_page, limit, bound[1] if bound else None
             )
         except Exception:
             self.logger.exception("Review queue read failed")
             return _failed()
         if bound is not None and bound[0] != page["epoch"]:
             return _coded("storage-changed", library_epoch=page["epoch"])
-        if bound is not None and bound[1] != page["revision"]:
-            return _coded("review-conflict", total=page["total"])
         items = page["items"]
         next_cursor = None
         if page["more"] and items:
             last = items[-1]
             next_cursor = _encode_cursor(
-                page["epoch"], page["revision"], (last["created_at"], last["id"])
+                page["epoch"], (last["created_at"], last["id"])
             )
         return web.json_response(
             {
                 "success": True,
                 "library_epoch": page["epoch"],
+                # F3: the queue version the change stream's ``ready`` names.
+                "review_revision": page["revision"],
                 "total": page["total"],
                 "items": views,
                 "next_cursor": next_cursor,

@@ -627,8 +627,9 @@ Recorded shell deviations:
   `a saved view row matches the concept's` saves one view in both documents and
   compares the rows; `tests/browser/workspace-saved-views.spec.mjs` covers saving,
   reopening, the defaults that replace rejected values, and failed reads and saves.
-- **D50**: no "Needs review" row in SAVED VIEWS until the tag-review slice (maintainer
-  ruling, 2026-10-21). The comparison maps only that row out.
+- **D50** (retired by #249 PR F, ruling R5): SAVED VIEWS now lists the concept's
+  "Needs review" row after Favorites, with its count; the comparison maps nothing out
+  for it (only the concept's sample count "3" reads as the fixture's "0").
 - **D51** (maintainer ruling, 2026-10-21, beyond the concept): SAVED VIEWS starts with
   the concept's Favorites row (star icon, name, count). Its count is the Favorites
   listing's own `limit=1` total (`/images/output?mode=workspace&favorites=1`), follows
@@ -1880,6 +1881,187 @@ npm run --prefix tools/vendor test:workflows -- inspect-concept.spec.mjs workspa
 npm run --prefix tools/vendor test:comfyui -- inspect-sender.spec.mjs
 ```
 
+### Needs review page and recorded deviations (#249 PR F)
+
+`#/review` is the concept's Metadata review page (app.js `renderReview` a749–760) over
+the review routes (`web/js/workspace/review.mjs`, `review-state.mjs`): breadcrumb and
+document title "Review" (the concept's), heading "Metadata review" with its line and
+**Open activity** (`#/activity`), the `.notice` "N images need a decision" with the
+concept's sentence, then `.gallery-layout`: the queue's concept media cards
+(`image-card.mjs`, shared with Images; the image opens the shared viewer, Info selects
+the item, Tag opens the shared Tag image dialog with the review scope note) and
+`section.surface` "Resolve the association" (filename, Tag image, Sampler context,
+the chosen path's prompt blocks, Leave for later and primary Apply association). The
+first item is selected on load, as the concept's first image is. Sampler context lists
+"Sampler <id> · <positive> / <negative>" per candidate (the server's label), disables
+unusable ones, preselects the first workable one and ends with "Leave unresolved"
+(rulings R2/R3); "Leave unresolved" shows the ambiguous status in both blocks. Apply
+takes a fresh capture (`observe`) and posts the decision; Leave unresolved on a file
+under no current root posts without a capture. Both actions return to Images (R7); a
+recorded decision re-reads the row's count, as does every metadata scan that ends. A
+refused decision keeps the selection and shows the server's sentence (the
+association conflict's explanation included) as `p.warning-note` in the panel; a
+restored storage or a changed queue reads the queue again; a request with no answer
+keeps its capture and body, and the next Apply of the same choice resends it once.
+The SAVED VIEWS row "Needs review" (review icon) follows Favorites with the exact
+pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
+
+- **D86** (plan D63, ruling R6): an empty queue shows only the notice, "No images need a
+  decision" and "Ambiguous images are added when a metadata scan or a new generation
+  finds more than one sampler path."
+- **D87** (plan D64): an ended metadata scan whose `scope.review_items` is above 0
+  carries the concept's **Review metadata** (app.js a738 `go-review`): in its Activity
+  item after the item's line, and in its job view's heading after Download report. The
+  item's chip still names its state (D54), where the concept's says "Needs attention".
+- **D119**: the queue cards have no selection checkbox and
+  no star (the page has no selection bar and the queue carries no favorite state); a
+  file under no current root has an empty, `aria-disabled` image button and Tag; more
+  than 40 items add the Images page's `.infinite-continuation` ("40 of 45 images",
+  Load more images) after the layout; loading and a failed read are the page's status
+  line (with Retry); a limited or unavailable file and the decision states are text in
+  the panel's `p.warning-note`; the toasts "Association accepted." and "Left
+  unresolved." replace the concept's prototype toast. The concept's "Sample review
+  queue" chip and "sample" wording are prototype copy (D29). When a re-read (below)
+  finds the open item gone, the next one opens with "<file> was decided elsewhere, so
+  the next image is open."; a failed re-read keeps the queue and says "The review queue
+  could not be read again. Reload the page to see the latest images." A queue card's
+  title is its file name and its line the extension only (an undecided item names no
+  prompt, and D11 omits the size and seed a queue item does not carry); its image's alt
+  is the file name; the panel's Copy and Send buttons carry no prompt title in their
+  names; the Tag image dialog opened from the queue heads with the file name. An
+  unavailable file's empty media button keeps the concept's 1.33 media area, so its
+  card lines up with the others. A long file name in the panel's `p.small` wraps inside
+  the panel (`overflow-wrap: anywhere`), where the concept's short sample name never
+  overflows. A queue card shows the Images listing's thumbnail when the server knows one
+  (`thumbnail_url`, the same URL the Images page uses), else the original; a re-read
+  rebuilds a card whose media, target or availability changed (a root came or went), so
+  Open and Tag follow it. When an unanswered decision's item leaves the queue in a
+  re-read, the decision was recorded: the page finishes as a recorded decision does (its
+  toast, back to Images), not with "decided elsewhere".
+- **D120** (the concept has no live-update state): while the
+  change stream is down, the heading carries the quiet status line "Live updates are
+  paused: changes made elsewhere appear once the connection returns." (`p.small
+  .review-live`, `role="status"`); the stream's next `ready` hides it.
+
+**Live queue (F2).** An open Needs review page holds one server-sent event stream,
+`GET /prompt_manager/review/events` (`py/api/review_events.py`): `event: ready` when it
+opens, then `event: change` after each committed queue change (an item the scan or the
+monitor recorded, a spelling refresh, a decision from any tab; `database/review_changes.py`
+notifies after the commit, from whichever thread wrote it) and after a restore. `change`
+carries no data. `ready` carries the queue's version `{library_epoch, review_revision}`,
+read after the stream subscribed, and every list read answers the same pair
+(`review_revision` is the review index revision, which every queue change moves; a
+restore moves the epoch). **One read per visit (F3):** the page re-reads on `ready` only
+when the queue it shows is older than that version (an unknown version, `{}` when it
+cannot be read, re-reads); a `ready` heard while the first read runs is compared once that
+read answers. The test server counts a stream as open only once it has sent `ready`, so a
+browser test that changes the queue after that count is a `change`, never part of the
+version. The page re-reads on every `change`, keeping the open item, its choice and an
+unanswered decision; re-reads asked for while one runs collapse into one more. A change
+heard while a decision is in flight is owed: a refused or unanswered decision reads it
+once the panel is idle again (a recorded one leaves the page). Load more asked for during
+a re-read waits for it and continues after the queue it read; a re-read started during
+Load more takes that click over and reads one page deeper, and a failed re-read leaves
+Load more clickable. Apply fences on the epoch of the detail it decides: an observe under
+another storage releases its capture and reads the queue and the item again, and any
+re-read under another epoch reads the open item again. **Every re-read keeps the loaded depth (F3):** it
+reads page after page (40 each, the route's limit) until it holds as many items as Load
+more had shown, so the cards stay and the scroll position does not move; a restore met
+after the first page reads once more from the first page. The row's count follows the
+total the page shows (no count read per change). Nothing polls: a `: keepalive` comment
+every 25 s only lets the server drop a closed tab's subscription. The server sends the
+first change at once and collapses the notices of the next 0.4 s into one trailing
+`change` (`COALESCE_SECONDS`), so a busy scan costs an open page one re-read per 0.4 s at
+most. Shutdown (`on_shutdown`) ends every stream and answers a later one 503. A
+reconnect the browser gives up on (a 503, or a proxy's error while ComfyUI restarts) is
+opened again by the page after 3 s, doubling to 30 s, with D120's line shown while
+the stream is down; its `ready` re-syncs the queue. The stream lives only while the tab is
+visible: a hidden tab closes it and a visible one opens it again, and that `ready` reads
+only when the queue changed meanwhile. A duplicate recording and a refused decision change
+nothing and send nothing. Residual: each visible Needs review page holds one HTTP/1.1
+connection (browsers allow six per origin, shared with ComfyUI's editor), so several
+side-by-side visible windows on the page, during a metadata scan's job stream, can still
+queue the origin's other requests; a re-read of a deep queue costs one request per 40
+items shown.
+
+Pinned by `tests/test_api_review_events.py`, `tests/js/workspace-review-state.test.js`
+("refresh …", "a refresh keeps the loaded depth …", "ready naming …") and
+`tests/browser/workspace-review.spec.mjs` ("an open page shows …", "a visit reads its
+queue once …", "a live re-read keeps the loaded depth and the scroll position", "a stream
+the browser gives up on …", "a hidden tab closes its stream …", "a re-read refreshes a
+card …"); the controller's owed, Load more and epoch cases are "I1: …", "I2: …", "M3:
+…", "M5: …" and "M7: …" in `workspace-review-state.test.js`, and the coalescing is "a
+burst of changes …" in `test_api_review_events.py`.
+Leaving the page mid-decision releases that decision's capture (the server may never see
+the request), and leaving during the observe releases the capture it then answers
+("leaving during the observe …").
+**Concept comparison (F3).** `tests/browser/review-concept.spec.mjs` measures the whole
+page (`reviewInventory` in `tests/browser/tagging-canonical-comparison.mjs`: every shown
+box below `main` with its place, fonts, edges and layout, a leaf's text, a button's name,
+a select's options) in the concept at `#review` and in production on the fixture's
+concept-shaped queue (`POST /__test__/review/reset {items: 3, concept: true}`: the
+concept's first three image names and sizes, and the concept's first prompt on the open
+item), and `mapConceptReview` applies only: D29 (no "Sample review queue" chip, no
+"sample" in the panel heading and Apply), D119 (above), D3 (the grid's
+`position: relative`), production's hooks and accessible names (`review-queue`,
+`review-panel`, the list roles, the region names) and sample data (the candidate options
+except Leave unresolved; widths and heights that follow from the changed copy, moved by
+exactly that much). It then matches at 1600×1100 and 390×844 in both themes on all four
+projects; the gallery layout follows the concept at 1600, 1200, 900 and 390px (310px,
+275px with a 15px gap, 280px, one column); the SAVED VIEWS rows match with Needs review
+after Favorites; the queue's Tag image dialog matches the concept's needs-review dialog
+(`needs-review-tagging.png`) under the C4 mapping; and the comparison is shown to notice
+a dropped notice border and reordered actions. The paired captures (populated queue in
+both themes and widths, conflict, limited item, unavailable file, empty queue) are test
+artifacts; no screenshot baseline is added. The comparison found one gap, the collapsed
+media area of an unavailable file's card, fixed above (`workspace-review.spec.mjs` "a
+limited item and an unavailable file …" pins it).
+
+- **D3** and **D20** apply to the queue grid (its cards stay in the grid's flow; it is
+  not virtualized) and to the panel's prompt blocks (their mount point is transparent).
+
+Tests: `tests/browser/review-concept.spec.mjs` (concept comparison),
+`tests/js/workspace-review-state.test.js` (controller),
+`tests/js/workspace-state.test.js` (route and count),
+`tests/browser/workspace-review.spec.mjs` (queue, count, apply, leave, Tag, empty
+queue, Load more, Activity's Review metadata; items recorded by the real recorder in
+`tests/browser/workspace_review_fixture.py`), and the SAVED VIEWS rows in
+`shell-concept.spec.mjs` and `workspace-saved-views.spec.mjs`.
+
+### Native image tagging and Needs review (#249 PRs A–F)
+
+One place for the whole image-tagging slice; the details live in the sections named.
+
+- **Routes.** Tagging: `POST /prompt_manager/image-annotations/observe`, `GET`/`DELETE
+  /prompt_manager/image-annotations/capture/<token>`, `POST
+  /prompt_manager/image-annotations/suggest`, `PUT /prompt_manager/image-annotations/tags`
+  ("Tag image dialog and recorded deviations"). Needs review: `GET
+  /prompt_manager/review/items?limit=1..40&cursor=` (answers `library_epoch`,
+  `review_revision`, `total`), `GET /prompt_manager/review/items/<id>`, `POST
+  /prompt_manager/review/items/<id>/decision` and the change stream `GET
+  /prompt_manager/review/events` ("Needs review decisions and queue reads", "Needs review
+  page and recorded deviations"). Every legacy route keeps its payload; the only legacy
+  change is `409 model-busy` from the legacy Auto-tag routes while another model
+  operation holds the shared gate.
+- **S1 (fingerprint-current reads, ruled 2026-10-22).** The Images Tags filter, search and
+  the inspector/viewer chips use a byte record only while the file's `(st_size,
+  st_mtime_ns)` equals its verified fingerprint; writes hash the bytes. Residual risk
+  under "Image annotations schema".
+- **Capture limits.** 256 MiB per file, 8 completed captures, 512 MiB reserved, 2
+  capture/verify workers, 900 s idle, 1800 s hard; the browser fixtures release every
+  capture on reset, and leaving the Needs review page mid-decision releases its capture.
+- **The record-changing job.** Bulk Add tags and Auto-tag selected run as the
+  `image-tags` Activity job (PR D); like the metadata scan it is a record-changing job, so
+  a start while another runs is refused (`busy`). Needs review items come from that scan
+  and from the live monitor, and a decision changes links only when compatible
+  (`association-conflict` otherwise, with zero writes).
+- **No downloads.** No automated test downloads or loads a model: the browser server
+  injects `TestModel` (its `download_model` raises), native routes and jobs never
+  download, and every tagging spec asserts no `/autotag/download/` request.
+- **Restart.** PRs A, B, D and E and PR F (the review change stream, the queue version)
+  change Python: the maintainer restarts ComfyUI once after merging. HTML, CSS and JS
+  changes need only a browser refresh.
+
 ### Native System (#249 System)
 
 `#/system/<section>` is a native workspace route rendered by `web/js/workspace/system.mjs`
@@ -2059,8 +2241,8 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   integrity" is "Not checked" until a check ran this session, then "N issues" (checks
   that found issues, even beside a check that could not run), "Passed" or "Incomplete".
   The review row is "N ambiguous image links" (the Needs review queue's pending count,
-  `needs_review.pending`) with the concept's line; its Review metadata action is
-  `aria-disabled` (CSS under D93) until the Needs review page ships (#288). A count
+  `needs_review.pending`) with the concept's line; its Review metadata action opens
+  `#/review` (the concept's `go-review`). A count
   that is not an integer reads "Ambiguous image links" / "Not available yet." (Q6).
   "Backup status" reads "No retained backup record." until verified backups exist (S8).
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
@@ -2571,13 +2753,18 @@ Needs review decisions and queue reads (#249, `py/api/review.py`,
 `database/review.py`, `database/review_decisions.py`,
 `tests/test_api_review.py`): `GET /prompt_manager/review/items?limit=1..40&cursor=`
 answers `{success, library_epoch, total, items, next_cursor}` with pending items
-oldest first; `total` is the exact pending count. The cursor is an HMAC keyset
-on `(created_at, id)` bound to the storage epoch and `review_index_revision`: a
-malformed one is 400, a well-formed one this process cannot verify (tampered,
-or opened before a ComfyUI restart: the secret is per process) is 409
-`review-conflict` with the current `total`, one from before a restore is 409
-`storage-changed`, one from before any queue change (a decision, a new item, a
-refreshed spelling) is 409 `review-conflict`.
+oldest first (each item adds the card's `url`, the Images listing's
+`/prompt_manager/images/serve/<path>?root=<i>&root_scope=<scope>` formatted without a
+stat, null when the file is under no current root, and `is_video` from its extension); `total` is the exact pending count. The cursor is an HMAC keyset
+on `(created_at, id)` bound to the storage epoch only (ruling M3, so "load more"
+keeps working while the monitor adds an item per generation): a malformed one
+is 400, a well-formed one this process cannot verify (tampered, or opened
+before a ComfyUI restart: the secret is per process) is 409 `review-conflict`
+with the current `total`, and one from before a restore is 409
+`storage-changed`. A decision or a new item leaves an open cursor valid: a
+decided item drops out of later pages and new items (stamped `utc_now_iso()`,
+microseconds) append after it. Residual risk: an item recorded after a wall
+clock step backwards sorts before an open cursor and shows only on reload.
 Targets are formatted from `spelled_path` against the current roots (the
 roots' real paths are the only file access); a file under no current root is
 `unavailable` with a null target. Every read and decision lists the roots and

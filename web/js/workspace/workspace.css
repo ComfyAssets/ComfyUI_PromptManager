@@ -394,6 +394,17 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
     .ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 40px; min-inline-size: 40px; }
 }
 
+/* Needs review (#249 PR F): the concept's Metadata review page (app.js a749–760) in its own classes. */
+/* #249 D3: the review queue is not virtualized, so its cards stay in the concept grid's flow. */
+.image-grid.review-queue > .media-card { position: static; /* D3 */ }
+/* #249 D20: the prompt blocks' mount point is transparent, so the chosen path's sections sit in the panel as the
+   concept's do. */
+.review-panel > .prompt-inspector { display: contents; /* D20 */ }
+/* D119: a file that cannot be served (no current root) has an inert, empty media button that keeps the concept's
+   1.33 media area (app.js `.image-open img`), so its card lines up with the queue's other cards. */
+.review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; aspect-ratio: 1.33; /* D119 */ }
+/* D119: a long file name in the panel wraps inside the panel, where the concept's sample name never overflows. */
+.review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; /* D119 */ }
 /* Auto-tag selected images (#249 PR D, D85/D90): the Tag image dialog's model panel, then How to apply, a radio group
    in the concept's `.field` row whose radios keep their own size (the concept's `.field input` is a full-width text
    field) beside their label, as the concept's own radio rows (s1160 `.compare-item label`). */

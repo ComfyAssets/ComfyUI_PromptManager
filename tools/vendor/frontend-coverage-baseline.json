@@ -221,6 +221,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/image-card.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/image-layout.mjs": {
     "lines": 98,
     "branches": 98,
@@ -442,6 +448,18 @@
     "branches": 83,
     "functions": 80,
     "statements": 95
+  },
+  "workspace/review-state.mjs": {
+    "lines": 96,
+    "branches": 84,
+    "functions": 98,
+    "statements": 96
+  },
+  "workspace/review.mjs": {
+    "lines": 98,
+    "branches": 89,
+    "functions": 93,
+    "statements": 98
   },
   "workspace/saved-views.mjs": {
     "lines": 98,

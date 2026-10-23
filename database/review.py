@@ -31,6 +31,7 @@ from .annotation_schema import (
 )
 from .annotations import _new_id, _validate_locator, _validate_target
 from .models import normalize_image_path, utc_now_iso
+from .review_changes import notify_review_change
 from .review_schema import (
     DECISIONS_TABLE,
     ITEMS_TABLE,
@@ -315,7 +316,9 @@ class ReviewOperations:
             refreshed = _refresh_spelling(conn, locator, spelled_path)
             if inserted or refreshed:
                 conn.execute(_BUMP_REVIEW_INDEX)
-            return inserted
+        if inserted or refreshed:
+            notify_review_change(self.model.db_path)
+        return inserted
 
     def refresh_review_spelling(self, locator: str, spelled_path: str) -> bool:
         """Record ``spelled_path`` as the spelling of every item at ``locator``.
@@ -332,7 +335,9 @@ class ReviewOperations:
             refreshed = _refresh_spelling(conn, locator, spelled_path)
             if refreshed:
                 conn.execute(_BUMP_REVIEW_INDEX)
-            return refreshed
+        if refreshed:
+            notify_review_change(self.model.db_path)
+        return refreshed
 
     def review_index_revision(self) -> int:
         """The queue's revision (moved by every queue change)."""
@@ -340,6 +345,19 @@ class ReviewOperations:
         if row is None:
             raise sqlite3.DatabaseError("Missing review queue metadata")
         return row[0]
+
+    def review_queue_version(self) -> dict:
+        """``{library_epoch, review_revision}`` of the queue, from one snapshot.
+
+        The pair a list read answers: equal pairs mean the same queue (a
+        restore moves the epoch, every queue change moves the revision).
+        """
+        with self._annotation_read() as conn:
+            epoch = conn.execute(_EPOCH).fetchone()
+            revision = conn.execute(_REVIEW_INDEX).fetchone()
+        if epoch is None or revision is None:
+            raise sqlite3.DatabaseError("Missing review queue metadata")
+        return {"library_epoch": epoch[0], "review_revision": revision[0]}
 
     def review_items_for(self, locator: str) -> list:
         """Every item of the file at ``locator``, oldest first, evidence parsed."""
@@ -423,6 +441,8 @@ class ReviewOperations:
                     removed += conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
             if removed:
                 conn.execute(_BUMP_REVIEW_INDEX)
+        if removed:
+            notify_review_change(self.model.db_path)
         return removed
 
     def settle_untraced_review_items(self, locators) -> int:

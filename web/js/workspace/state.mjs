@@ -12,6 +12,10 @@ export const routes = [
     { id: 'overview', label: 'Overview' },
     // SAVED VIEWS' first row (#249 D51): Images filtered to favorites. No href, so Overview lists no card for it.
     { id: 'favorites', label: 'Favorites' },
+    // SAVED VIEWS' Needs review row (ruling R5): the concept's Metadata review page (app.js renderReview 749–760; its
+    // breadcrumb is "Review", app.js render 1175–1188),
+    // the queue of ambiguous sampler evidence. No href: no Overview card.
+    { id: 'review', label: 'Needs review', title: 'Review' },
     // The concept's Activity (app.js renderActivity 732–738): this server session's jobs. No href: no Overview card.
     { id: 'activity', label: 'Activity' },
     // Native System (#249 System S2): `#/system/<section>`. Q12: Overview's card opens its Overview section (`native`:
@@ -21,7 +25,7 @@ export const routes = [
         description: 'Configuration, maintenance and recovery—with browsing kept in the workspace.', action: 'Open System' },
 ];
 
-const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity', 'system']);
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity', 'review', 'system']);
 
 /**
  * System's sections in the concept's order (app.js `systemSections` 635–644); the concept's `general` is production's
@@ -88,6 +92,8 @@ const NAV_COUNT_SOURCES = Object.freeze([
     ['favorites', '/prompt_manager/images/output?mode=workspace&favorites=1&limit=1'],
     ['library', '/prompt_manager/library?limit=1'],
     ['tags', '/prompt_manager/vocabulary/tags?limit=1'],
+    // Needs review (ruling R5): the queue's `total` is the exact pending count.
+    ['review', '/prompt_manager/review/items?limit=1'],
 ]);
 
 /** Route id -> count for the sidebar links; null when a page is missing or its total is not a count. */
@@ -102,7 +108,7 @@ export function summarizeNavCounts(pages = {}) {
  * Read the counts; a failed read yields null for its route only. `onCount(id, count)` runs as each read settles, so a
  * slow listing (the Images output scan) never holds back the cheap Library and Tags counts.
  */
-/** The sidebar routes that carry a count (WORKSPACE, plus SAVED VIEWS' Favorites). */
+/** The sidebar routes that carry a count (WORKSPACE, plus SAVED VIEWS' Favorites and Needs review). */
 export const NAV_COUNT_ROUTES = Object.freeze(NAV_COUNT_SOURCES.map(([id]) => id));
 
 /** The counts a confirmed Library or vocabulary write can change; the Images listing cannot. */
@@ -110,6 +116,8 @@ export const LIBRARY_WRITE_COUNTS = Object.freeze(['library', 'tags']);
 
 /** The count a confirmed favorite change can change. */
 export const FAVORITE_WRITE_COUNTS = Object.freeze(['favorites']);
+/** The count a review decision or a finished metadata scan can change. */
+export const REVIEW_WRITE_COUNTS = Object.freeze(['review']);
 // Trailing delay that coalesces quick star toggles into one Favorites count read (#249 M1).
 export const FAVORITE_COUNT_DELAY_MS = 300;
 
