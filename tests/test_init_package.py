@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import unittest.mock as mock
@@ -368,10 +369,29 @@ class TestConsoleBanner(unittest.TestCase):
         self.assertIn("Loaded:", banner)
 
 
+class PriorFileHandler(logging.FileHandler):
+    """A caller-owned sink that stays closed once its owner closes it.
+
+    ``FileHandler.emit`` reopens the file when ``stream`` is None, so a record
+    that selected this handler before ``close()`` would reopen prior.log after
+    it, and Windows then refuses the temp directory cleanup (WinError 32).
+    ``Handler.handle`` and ``FileHandler.close`` hold the same handler lock, so
+    checking ``_closed`` in ``emit`` is race free (as in the product's
+    ``_OwnedRotatingFileHandler``).
+    """
+
+    def emit(self, record):
+        if not self._closed:
+            super().emit(record)
+
+
 class TestPackageLoggerIsolation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Runs after restore_logging, before the cleanup Windows refuses while
+        # prior.log is open; /proc makes Linux fail the same way.
+        self.addCleanup(self.assert_tmp_has_no_open_handles)
         self.logger = logging.getLogger("prompt_manager")
         self.previous = (
             self.logger.handlers[:],
@@ -381,7 +401,7 @@ class TestPackageLoggerIsolation(unittest.TestCase):
         )
         self.addCleanup(self.restore_logging)
         self.path = os.path.join(self.tmp.name, "prior.log")
-        self.handler = logging.FileHandler(self.path)
+        self.handler = PriorFileHandler(self.path)
         self.logger.handlers = [self.handler]
         self.logger.setLevel(logging.DEBUG)
         self.logger.propagate = True
@@ -398,16 +418,20 @@ class TestPackageLoggerIsolation(unittest.TestCase):
         self.server.PromptServer.instance.prompt_queue.task_done = lambda *a, **k: None
 
     def restore_logging(self):
-        for handler in self.logger.handlers:
-            if handler not in self.previous[0]:
-                handler.close()
-        self.handler.close()
+        # Detach before closing, so new records stop selecting these handlers.
+        retired = [h for h in self.logger.handlers if h not in self.previous[0]]
         (
             self.logger.handlers,
             self.logger.level,
             self.logger.propagate,
             self.logger.disabled,
         ) = self.previous
+        for handler in retired:
+            handler.close()
+        self.handler.close()
+
+    def assert_tmp_has_no_open_handles(self):
+        self.assertEqual(open_handles_under(self.tmp.name), [])
 
     def assert_logging_restored(self, handlers, registration):
         for key, module in self.saved_modules.items():
@@ -455,6 +479,49 @@ class TestPackageLoggerIsolation(unittest.TestCase):
                 registration.dispose = dispose
         self.assertEqual(open_at_disposal, [True])
         self.assert_logging_restored(handlers, registration)
+
+    def test_record_in_flight_at_restore_cannot_reopen_prior_log(self):
+        """A record that selected prior.log before restore never reopens it.
+
+        Leaked daemon threads of other tests (image workers, watchdog) log
+        under ``prompt_manager.*``. One that reaches the prior handler while
+        restore_logging closes it would, with a plain FileHandler, reopen the
+        file on emit and keep it open through TemporaryDirectory.cleanup().
+        """
+        message = "record selected before restore_logging"
+        selected = threading.Event()
+        resume = threading.Event()
+        errors = []
+
+        def pause_before_handler_lock(record):
+            if record.getMessage() == message:
+                selected.set()
+                if not resume.wait(5):
+                    raise RuntimeError("logging thread was not released")
+            return True
+
+        def log_from_background_thread():
+            try:
+                logging.getLogger("prompt_manager.late_emitter").warning(message)
+            except BaseException as error:
+                errors.append(error)
+
+        self.handler.addFilter(pause_before_handler_lock)
+        worker = threading.Thread(target=log_from_background_thread, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(selected.wait(5), "record did not select prior.log")
+            self.restore_logging()
+            self.assertIsNone(self.handler.stream)
+        finally:
+            resume.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive(), "logging thread did not finish")
+        self.assertEqual(errors, [])
+        self.assertIsNone(self.handler.stream)
+        self.assert_tmp_has_no_open_handles()
+        with open(self.path, encoding="utf-8") as log:
+            self.assertNotIn(message, log.read())
 
     def test_failed_package_import_closes_handlers_and_restores_logging(self):
         name = "prompt_manager_pkg_logger_failure"
