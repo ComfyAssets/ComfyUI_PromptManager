@@ -8,6 +8,7 @@ Split into domain-specific mixins for maintainability:
 - AutotagRoutesMixin: auto-tagging model management and tagging
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 - ReviewRoutesMixin: the Needs review queue, item detail and decisions
+- ReviewRecordingMixin: Needs review recording for the scan and the monitor
 """
 
 import asyncio
@@ -29,6 +30,7 @@ from .library import LibraryRoutesMixin
 from .vocabulary import VocabularyRoutesMixin
 from .annotations import AnnotationRoutesMixin
 from .review import ReviewRoutesMixin
+from .review_recording import ReviewRecordingMixin
 from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
@@ -257,6 +259,7 @@ class PromptManagerAPI(
     VocabularyRoutesMixin,
     AnnotationRoutesMixin,
     ReviewRoutesMixin,
+    ReviewRecordingMixin,
     SavedViewRoutesMixin,
     HistoryRoutesMixin,
     PromptRoutesMixin,

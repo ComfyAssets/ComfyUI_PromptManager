@@ -222,9 +222,9 @@ class TestScanRecording(ReviewTestCase):
             if recorder is None:
                 counts = api._ingest_scan_batch_sync(batch, roots, outcomes)
             else:
-                from py.api import admin
+                from py.api import review_recording
 
-                with patch.object(admin, "record_ambiguous_file", recorder):
+                with patch.object(review_recording, "record_ambiguous_file", recorder):
                     counts = api._ingest_scan_batch_sync(batch, roots, outcomes)
             prompts = api.db.get_recent_prompts()["prompts"]
             return counts, outcomes, sorted(p["text"] for p in prompts)
