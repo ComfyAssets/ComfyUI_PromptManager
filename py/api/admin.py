@@ -804,6 +804,9 @@ class AdminRoutesMixin:
             result = await self._run_in_executor(
                 self._delete_duplicate_images_sync, image_paths, output_dir
             )
+            if result["deleted_count"]:
+                # The cached listing would keep (and count) the deleted files.
+                self.invalidate_gallery_cache()
 
             response_data = {
                 "success": True,
