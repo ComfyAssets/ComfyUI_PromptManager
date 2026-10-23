@@ -16,10 +16,16 @@ nesting before it is validated. Every class appears in exactly one prompt
 category; classes that are not listed stay ``unsupported-node``. ``lineage``
 (image and latent pass-through outputs for multi-stage chains) describes no
 prompt, so its classes are not claimed by a category.
+
+``Semantics.version`` is the SHA-256 of the table's canonical JSON (sorted
+keys, no whitespace): any change of content, never of layout, moves it.
+Needs review folds it into the version of the items it records from the
+inspection profile (``utils.review_capture``).
 """
 
+import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
@@ -118,6 +124,8 @@ class Semantics:
     stage_inputs: Mapping[str, Tuple[str, ...]]
     facts: Mapping[str, Any]
     all_classes: FrozenSet[str]
+    # SHA-256 of the canonical table JSON (set by ``load_semantics``).
+    version: str = ""
 
 
 def _freeze(value: Any) -> Frozen:
@@ -521,7 +529,13 @@ def load_semantics(path: Optional[Union[str, Path]] = None) -> Semantics:
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise SemanticsError(f"cannot read semantics table {source.name}: {error}")
     _check_nesting(doc)
-    return _validate(doc)
+    return replace(_validate(doc), version=table_version(doc))
+
+
+def table_version(doc: Any) -> str:
+    """SHA-256 of ``doc`` as canonical JSON: content, not layout."""
+    text = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 @lru_cache(maxsize=1)

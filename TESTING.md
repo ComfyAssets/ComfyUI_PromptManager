@@ -2615,7 +2615,26 @@ still have made the file, so that text is not certain either. Both report
 undecided items whose own evidence offers no choice (a limited item counts as
 a choice when it holds at least two candidates) leave the queue on the next
 scan or monitor pass (`settle_untraced_review_items`). The maintainer's
-second live check found 39 items whose 11 candidates were all "unresolved". The queue heals itself: after each batch, the scan removes the pending
+second live check found 39 items whose 11 candidates were all "unresolved".
+Inspection-profile choices (`tests/test_review_inspection.py`, ruling a): when
+the default profile is ambiguous without a choice and nothing links the file,
+the scan (never the monitor) resolves it again with `INSPECTION_PROFILE`, which
+knows `TextEncodeQwenImageEdit`, `StringConstantMultiline`, `JoinStringMulti`
+and the rest of `web/js/inspection-semantics.json`. With at least two choosable
+candidates there, the file is `ambiguous` and is queued from that profile's
+evidence, which adds `profile: "inspection"` and `semantics` (the table's
+`version`, SHA-256 of its canonical JSON); the item's `resolver_version` is
+`inspection_review_version()`, 2^40 plus 40 bits of SHA-256 over the profile,
+`RESOLVER_VERSION` and the table version. A table change therefore behaves like
+a resolver change (I2): a rescan records the new evidence beside the pending
+item, which stays applicable while the bytes still offer its chosen candidate.
+Apply re-resolves the capture with the profile the item recorded and re-checks
+the chosen hash; the link goes through the same compatible-only ingestion. The
+inspection profile never links on its own, and ingestion keeps the default
+profile (D1). The heavier profile runs only for files already ambiguous without
+a choice (twice per new file: once on the scanned metadata, once on the
+capture; a rescan's stat shortcut skips the capture). The 16-candidate limited
+rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
 (`settle_linked_review_items`; the review index revision moves). Only an

@@ -8,7 +8,8 @@ already. A file the fallback links, an exact pair the ingester stored and an
 already linked file are never queued. Neither is an ambiguous file with
 nothing to choose: fewer than two of its candidates carry a prompt
 (``utils.review_capture.reviewable``); the scan reports it unresolved ("could
-not be traced").
+not be traced") unless the inspection profile finds a choice in it. Only the
+scan asks that profile (``inspection=True``); the monitor never does.
 
 The queue heals itself: a pending item whose file is now linked (by the
 fallback, a later resolution or the monitor) is removed by the next scan
@@ -57,7 +58,9 @@ class ReviewRecordingMixin:
     def _record_scanned_review(self, media_file, roots, review=None):
         """Record one ambiguous, unlinked scanned file (logged and counted)."""
         try:
-            outcome = self._record_review_sync(media_file, roots, review)
+            outcome = self._record_review_sync(
+                media_file, roots, review, inspection=True
+            )
         except Exception:
             self.logger.warning(
                 f"{media_file.name} could not be added to Needs review",
@@ -73,9 +76,11 @@ class ReviewRecordingMixin:
         if outcome in QUEUED_OUTCOMES:
             review["queued"] += 1
 
-    def _record_review_sync(self, media_file, roots, review=None):
+    def _record_review_sync(self, media_file, roots, review=None, inspection=False):
         """``record_ambiguous_file`` for a file under one of ``roots`` (blocking).
 
+        ``inspection`` (the scan only) lets a file without a choice under the
+        default profile be recorded from the inspection profile's choices.
         An ``untraced`` file (its captured bytes offer nothing to choose) also
         loses its pending items that offer nothing either.
         """
@@ -84,7 +89,12 @@ class ReviewRecordingMixin:
             return "skipped"
         root, index, relative, _spelled = located
         outcome = record_ambiguous_file(
-            self.db, self._capture_store(), Path(root), index, relative
+            self.db,
+            self._capture_store(),
+            Path(root),
+            index,
+            relative,
+            inspection=inspection,
         )
         if outcome == "untraced":
             self._settle_untraced_reviews([media_file], roots, review)

@@ -45,7 +45,7 @@ try:
         parse_page_json,
     )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
-    from ...utils.review_capture import reviewable
+    from ...utils.review_capture import inspection_offers_choice, reviewable
 except ImportError:
     from database.operations import PromptDatabase
     from database.pair_ingestion import ingest_resolved_pair
@@ -56,7 +56,7 @@ except ImportError:
         parse_page_json,
     )
     from utils.prompt_pair_resolver import resolve_prompt_pair
-    from utils.review_capture import reviewable
+    from utils.review_capture import inspection_offers_choice, reviewable
 
 
 try:
@@ -250,6 +250,22 @@ def _file_size(path):
         return os.path.getsize(path)
     except OSError:
         return None
+
+
+def _untraced_outcome(media_file, canonical, ambiguous, untraced):
+    """The status of an unlinked file the default profile found ambiguous
+    without a choice: ``"ambiguous"`` when the inspection profile offers one
+    (the file moves from ``untraced`` to ``ambiguous``), else ``"unresolved"``.
+
+    Asked only when ``ambiguous`` is a list (the scan, which records review
+    items), so other callers never pay for the heavier profile.
+    """
+    if ambiguous is None or not inspection_offers_choice(canonical):
+        return "unresolved"
+    if untraced is not None and media_file in untraced:
+        untraced.remove(media_file)
+    ambiguous.append(media_file)
+    return "ambiguous"
 
 
 def _with_file_size(canonical, media_file):
@@ -1714,7 +1730,10 @@ class AdminRoutesMixin:
         ``"ambiguous"`` (nothing linked it) is a Needs review case. An
         ambiguous result with nothing to choose (``reviewable`` is False: fewer
         than two candidates carry a prompt) that nothing links returns
-        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``.
+        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``,
+        unless the inspection profile offers a choice (only asked when
+        ``ambiguous`` is a list, so only by the scan): then it is
+        ``"ambiguous"`` and goes to ``ambiguous``. That profile never links.
         """
         if not metadata:
             return None
@@ -1756,9 +1775,13 @@ class AdminRoutesMixin:
             # Graphs without a recognized sampler keep the legacy extractor below.
             prompt_text = self._graph_prompt_text(metadata)
             if not prompt_text:
-                return "unresolved" if unchoosable else resolution["state"]
+                if unchoosable:
+                    return _untraced_outcome(media_file, canonical, ambiguous, untraced)
+                return resolution["state"]
         elif resolution["state"] == "ambiguous":
-            return "unresolved" if unchoosable else "ambiguous"
+            if unchoosable:
+                return _untraced_outcome(media_file, canonical, ambiguous, untraced)
+            return "ambiguous"
         elif resolution["state"] == "unresolved" and not isinstance(
             canonical.get("parameters"), str
         ):
