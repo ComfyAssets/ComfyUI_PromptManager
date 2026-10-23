@@ -153,11 +153,15 @@ function itemFor(job, scope) {
             progress.textContent = `${next.progress}%`;
             progress.setAttribute('aria-label', `${next.title} progress`);
             if (!progress.isConnected) item.insertBefore(progress, actions.isConnected ? actions : null);
-            if (!actions.isConnected) item.append(actions);
         } else {
+            progress.remove();
+        }
+        // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel job.
+        if (running && next.cancellable) {
+            if (!actions.isConnected) item.append(actions);
+        } else if (actions.isConnected) {
             // A focused Cancel job that goes away hands its focus to the item's title link, never to the page body.
             if (actions.contains(document.activeElement)) link.focus();
-            progress.remove();
             actions.remove();
         }
     };

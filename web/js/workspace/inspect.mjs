@@ -40,36 +40,24 @@ function element(tag, className, text) {
 
 // The status shown for the selection; AVI/WMV's note and an empty status keep the toast's "metadata is available".
 const TOASTABLE = new Set(['', LOCAL_SESSION_MESSAGES.containerOnly]);
-// How long a released video still starting may take to settle before its deferred reset is dropped.
-const DEFERRED_RESET_MS = 15000;
+// How long a replaced video still starting may stay in place before it is released anyway.
+const STARTING_VIDEO_MS = 15000;
 
-/**
- * Resets a released video once it settles. Removing `src` alone never aborts a load already under way, and WebKit
- * (GStreamer) blocked the page when a pipeline still starting was reset, so load() waits for metadata or an error.
- * The fallback only drops the waiting listeners (a WebKit load cut off by the revoked URL stalls and never settles),
- * so the detached node is never pinned.
- */
-function resetWhenSettled(node) {
-    const waiting = new AbortController();
-    const fallback = setTimeout(() => waiting.abort(), DEFERRED_RESET_MS);
-    const reset = () => { waiting.abort(); clearTimeout(fallback); node.load(); };
-    for (const type of ['loadedmetadata', 'error']) node.addEventListener(type, reset, { once: true, signal: waiting.signal });
+/** A video whose pipeline is still starting: it has a source but neither metadata nor an error yet. */
+function isStarting(node) {
+    return node instanceof HTMLMediaElement && node.hasAttribute('src') && node.readyState < HTMLMediaElement.HAVE_METADATA && node.error === null;
 }
 
 /**
- * Stops a preview from holding its blob: URL: its own listeners end, media is paused and its src dropped before the
- * session revokes the URL, and the node leaves the page. A settled video (metadata read, or failed) is then reset with
- * load() to free its decoder at once; one still starting is reset as soon as it settles.
+ * Stops a preview from holding its blob: URL: its own listeners end, media is paused, its src dropped and it is reset
+ * with load() (which frees its decoder), and the node leaves the page, all before its URL is revoked.
  */
 function releaseMedia(preview) {
     if (!preview) return;
     const { node, listeners } = preview;
     listeners.abort();
     if (node instanceof HTMLMediaElement) {
-        const settled = node.readyState >= HTMLMediaElement.HAVE_METADATA || node.error !== null;
-        node.pause(); node.removeAttribute('src');
-        if (settled) node.load();
-        else resetWhenSettled(node);
+        node.pause(); node.removeAttribute('src'); node.load();
     } else node.removeAttribute('src');
     node.remove();
 }
@@ -111,7 +99,33 @@ export function mountInspect(main, { parentScope, api, sender }) {
     // The session ends after the viewer has closed and the inline media is gone, so no element holds its URL then.
     // The page owns page leave for the same reason: the session listens for no `pagehide` of its own.
     const sessionScope = createScope();
-    const session = createLocalSession({ parentScope: sessionScope, pageTarget: null });
+    // Replaced videos still starting, by URL. WebKit (GStreamer) deadlocked the page when a video left the page or
+    // the viewport before its pipeline had started, so such a video stays where it is, inert, until it reports
+    // metadata or an error; only then is it released and its URL, which the session asked to revoke, revoked.
+    const retiring = new Map();
+    function finishRetiring(url) {
+        const entry = retiring.get(url);
+        if (!entry) return;
+        retiring.delete(url);
+        entry.waiting.abort(); clearTimeout(entry.timer);
+        releaseMedia(entry.preview);
+        if (entry.revoke) URL.revokeObjectURL(url);
+    }
+    function retire(preview, url) {
+        const waiting = new AbortController();
+        const entry = { preview, waiting, revoke: false, timer: setTimeout(() => finishRetiring(url), STARTING_VIDEO_MS) };
+        retiring.set(url, entry);
+        preview.listeners.abort();
+        preview.node.inert = true; preview.node.setAttribute('aria-hidden', 'true');
+        for (const type of ['loadedmetadata', 'error']) preview.node.addEventListener(type, () => finishRetiring(url), { once: true, signal: waiting.signal });
+    }
+    const finishAllRetiring = () => { for (const url of [...retiring.keys()]) finishRetiring(url); };
+    const revokeObjectURL = url => {
+        const entry = retiring.get(url);
+        if (entry) entry.revoke = true;
+        else URL.revokeObjectURL(url);
+    };
+    const session = createLocalSession({ parentScope: sessionScope, pageTarget: null, revokeObjectURL });
     const viewer = createMediaViewer({ api, container: main, parentScope: scope, inspectionController: session.controller, sender,
         adapter: localFileAdapter, onRestoreFocus: () => { if (open.isConnected) open.focus({ preventScroll: true }); } });
 
@@ -156,7 +170,9 @@ export function mountInspect(main, { parentScope, api, sender }) {
     function showMedia(state) {
         const url = state.preview?.url ?? null;
         if (url === mediaUrl) return;
-        releaseMedia(media); media = null; mediaUrl = url;
+        if (media && isStarting(media.node) && !retiring.has(mediaUrl)) retire(media, mediaUrl);
+        else releaseMedia(media);
+        media = null; mediaUrl = url;
         if (!url) return;
         const video = state.preview.media === 'video';
         const node = element(video ? 'video' : 'img', 'local-file-preview');
@@ -176,7 +192,10 @@ export function mountInspect(main, { parentScope, api, sender }) {
         }, { once: true, signal: current.listeners.signal });
         node.src = url;
         media = current;
-        preview.prepend(node);
+        // A video still starting keeps its place, so the new preview goes after it and never moves it.
+        const anchor = [...retiring.values()].map(entry => entry.preview.node).filter(item => item.parentNode === preview).at(-1);
+        if (anchor) anchor.after(node);
+        else preview.prepend(node);
     }
     scope.cleanup(session.subscribe(state => {
         showMedia(state);
@@ -193,6 +212,7 @@ export function mountInspect(main, { parentScope, api, sender }) {
     // viewer (on abort), drops the media, then ends the session.
     scope.cleanup(() => viewer.dispose());
     scope.cleanup(() => { releaseMedia(media); media = null; mediaUrl = null; });
+    scope.cleanup(finishAllRetiring);
     scope.cleanup(() => sessionScope.dispose());
 
     // Page leave: the viewer closes and the inline media goes before the session revokes the URL, and the chooser is
@@ -201,6 +221,7 @@ export function mountInspect(main, { parentScope, api, sender }) {
         clearRejection();
         viewer.close();
         releaseMedia(media); media = null; mediaUrl = null;
+        finishAllRetiring();
         session.clear();
         chosen = null; input.value = '';
     }
