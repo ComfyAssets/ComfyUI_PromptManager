@@ -405,6 +405,13 @@ naming it, here and in a detailer's image ancestry; a latent that is not a link 
 reaches its own sampler is `malformed`; running out of budget is `work-limit` or
 `depth-limit`, never single stage. Each sampler's walk runs once per resolution;
 selector branch runs share it and other candidates are charged its visit cost.
+A UI workflow node whose `type` is a list or an object (read only for the overwritten
+PromptManager check) is skipped like a non-object node, since it can be neither a
+subgraph instance nor a PromptManager node, so a prompt that resolves still resolves
+and the other nodes still feed the check; a list or object `class_type` is never a
+preview output. Before #286 both raised and the inspect route answered 500
+(`test_unhashable_*` in `tests/test_api_prompt_inspector.py`, the `workflow-type-*`
+golden cases on both sides).
 Text encoders: `single` encoders (the Qwen image encoders, `TextEncodeQwenImage21`
 slot 0 `prompt` and slot 1 `negative_prompt`, `KikoTextEncode`) read one string
 input unchanged. `parts-equal` encoders (CLIPTextEncodeSDXL, Flux, SD3) resolve when
@@ -1588,7 +1595,43 @@ AVI/WMV preview only), chosen or dropped, previews inline. The heading's one act
 the shared viewer with the full inspector on a record read entirely in this browser
 (`web/js/workspace/inspect.mjs`, `local-session.mjs`, `local-inspection.mjs` and the L1
 readers `png-metadata.js`, `local-video.mjs`, `local-projection.mjs`). Nothing is
-uploaded, imported or stored. Only HTML and JS change, so no ComfyUI restart is needed.
+uploaded, imported or stored. PRs L1 and L2 change only HTML and JS, so they need no
+ComfyUI restart; PR L3 does (below).
+
+Local roles (#249 PR L3, decision LI-1): the prompts and resolution of a local record are
+the server inspector's for the same records. `web/js/workspace/local-resolver.mjs` (with
+`local-resolver-support.mjs`, `local-resolver-stages.mjs`, `local-parameters.mjs` and
+`py-json.mjs`) ports `inspect_prompt_evidence` with `INSPECTION_PROFILE`: execution
+evidence, graph tracing, every bound, several sampler candidates with the
+identical-branch rule (#270), preview-only stages, detailer stages (multistage) and A1111
+`parameters`. It reads the server's own node table, `web/js/inspection-semantics.json`,
+which the page fetches once through the API client as it mounts, before any selection
+(`local-semantics.mjs`; `/prompt_manager/js/inspection-semantics.json` is the one JSON
+file the static route serves, by exact path). A table that cannot be fetched answers
+"The inspector's node table is unavailable." as the server does. The legacy fill in
+`projectInspectionPayload` then applies to a local record exactly where it applies to the
+Images answer for the same bytes. Python is the oracle:
+`tests/test_local_inspect_parity.py` `LocalResolverParityTests` compares the local
+evidence byte for byte with `inspect_prompt_evidence` for every parity PNG and inspection
+vector (prompts, resolution and facts), the golden and selection record sets
+(`tests/local_resolver_cases.py`, `tests/local_resolver_selection_cases.py`), every work
+bound and 1,200 seeded fuzz cases; `tests/fixtures/local-inspect/resolver-vectors.json`
+holds the committed answers the Node unit test reads. The browser spec `chooser shows the
+Images roles and resolution for every parity PNG` compares the rail with Images for all
+25 committed parity PNGs. The static route change and the resolver fixes (Python) need a
+ComfyUI restart.
+
+Main thread (M4): the resolver runs on the page's thread, not a worker. On a desktop
+(Node 26) `resolveLocalEvidence` on maximal 2 MiB graphs (a 19,990-sampler chain, 6,600
+independent samplers, a consumer-dense scan, a 100,000-node PromptManager workflow) took
+130–455 ms; the server took 80–905 ms on the same inputs. `localFileAdapter.read` runs in
+bounded steps (read, table, parse and resolve, project, fit) with a turn of the event
+loop between them, every wait ends with the selection's signal (a stalled table request
+included), and the inspector carries `aria-busy="true"` with "Loading file details…"
+until the answer lands. `tests/js/workspace-local-inspection.test.js` pins a 2,500 ms
+budget per step on maximal independent-sampler and stage-chain graphs, checks that the
+stepped read answers byte for byte as one synchronous build, and that an abort at any
+step ends the read.
 
 Bounds (the server's own budgets, ported by PR L1; see "Follow-up: local Inspect parity"
 under "Chronological Library history" for the known divergences):
@@ -1607,7 +1650,8 @@ under "Chronological Library history" for the known divergences):
 
 Privacy, asserted by `local inspection makes no content request or storage write` and
 `local roles send exactly` in `tests/browser/workspace-inspect.spec.mjs`, and by the
-managed-host spec below: no request carries the file's bytes, name or text (fetch, XHR,
+managed-host spec below: the only static file Inspect reads is its node table, once per
+page and before any selection; no request carries the file's bytes, name or text (fetch, XHR,
 beacon, WebSocket, EventSource); Inspect writes nothing to `localStorage`,
 `sessionStorage` or IndexedDB; only an explicit Send crosses the host bridge, and its
 payload carries neither the `blob:` URL nor the filename; no console message names the
@@ -1634,19 +1678,27 @@ mapped differences"):
   `image/png,image/jpeg,image/webp` plus `video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.wmv`. A
   video previews in the same `#local-preview` slot as `video.local-file-preview` with
   native `controls`, `playsInline`, `preload="metadata"` and `muted`, never autoplays
-  inline, and is paused, has its `src` removed and is removed from the page on replacement
-  or dispose, before its URL is revoked. Each preview owns its listeners, so the page never
-  pins a released node. A settled video (metadata read, or failed) is then reset with
-  `load()` at once; one still starting is reset only once it reports metadata or an error,
-  because WebKit (GStreamer) blocked the page when such a pipeline was reset (`replacing a
-  video that just started loading never blocks the page`, `a video replaced while still
-  starting is reset once it settles`). A WebKit load cut off by the revoked URL usually
-  stalls and never settles; a fallback then only drops the waiting listeners. The viewer's
-  own video teardown was checked the same way (`closing the viewer on a video that just
-  started never blocks the page`, 15 fresh pages on WebKit) and needed no change.
-  Follow-up: on WebKit, a video released exactly at its `loadstart` sometimes blocks the
-  page, with or without any reset and also before the deferred reset (2 of 24 runs in the
-  pinned image), so the `loadstart` spec is skipped on WebKit until that is investigated.
+  inline. On replacement or dispose it is paused, has its `src` removed, is reset with
+  `load()` (which frees its decoder) and is removed from the page, before its URL is
+  revoked. Each preview owns its listeners, so the page never pins a released node.
+  A video replaced while still starting (a source, but neither metadata nor an error yet)
+  stays where it is, inert and `aria-hidden`, with the new preview inserted after it, and
+  the session's revoke of its URL waits; once it reports metadata or an error (or after
+  15 s) it is released as above and only then is its URL revoked. Page leave and dispose
+  release it at once. Cause, found with native stacks of the hung WPE web process in the
+  pinned image: WebKit (GStreamer) deadlocks when a video leaves the page or the viewport
+  before its pipeline has started. The main thread changes the pipeline state and waits
+  for the source's streaming thread, which is itself waiting on the main thread in a
+  synchronous bus handler. Removing the video, hiding it, or only pushing it below the
+  fold with a taller preview inserted before it all hung (7 to 21 of 120 fresh pages each,
+  replaced at `loadstart` + 0–7 ms), and none of the earlier steps (`pause()`, removing
+  `src`, `load()`, revoking the URL) was the cause on its own; pushing it out after
+  `loadedmetadata` hung 0 of 180. Specs: `replacing a video that just started loading
+  never blocks the page`, and `a video replaced while still starting is reset once it
+  settles`, which now runs on WebKit too (15 fresh pages, replaced at `loadstart` + 0–4
+  ms). The viewer's own video teardown was checked the same way (`closing the viewer on a
+  video that just started never blocks the page`, 15 fresh pages on WebKit) and needed no
+  change.
 - **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
   concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose
   one image or video file.", "This file type cannot be previewed or inspected here.
@@ -1671,6 +1723,29 @@ mapped differences"):
   Modified with no Path row and no Show in folder, and ends with "Local file; no saved
   library association was checked." and Download original. There is no Prompt history
   action and no category or tag chips.
+- **D117** (Copy settings summary, LI-4): the legacy metadata
+  page's COPY ALL, consolidated into the shared full inspector (the viewer's
+  `#viewer-details`, so Images, the recorded history's current file and Inspect all have
+  it). The concept has no such action. One plain button "Copy settings summary" follows
+  the six facts (before "File & provenance"); the Images side panel keeps the concept's
+  footer and has none. Its text is the legacy `copyAllData` template, line for line:
+  `Checkpoint`, `Positive Prompt`, `Negative Prompt`, `Steps`, `CFG Scale`, `Sampler`,
+  `Seed`, with the legacy placeholders ("Unknown", "No prompt found", "No negative prompt
+  found"). The values are the ones the inspector shows: a confirmed prompt and a known
+  fact verbatim, anything else (an explicitly empty prompt included, as the legacy parse
+  treats '') the placeholder. Against the legacy page, for the same file, only these
+  differ: numbers keep the server's spelling ("8.0" where the legacy page wrote 8); a fact
+  the legacy parse could not read can be known; and a negative the #249 ZeroOut guard
+  zeroed reads "No negative prompt found" where the legacy parse read the positive's text
+  through the zero-out. `workspace-file-inspector.test.js` runs the template taken from
+  `web/metadata.html` itself on the legacy parse of every parity PNG: 22 of 25 are
+  byte-equal, f01b and f23 differ by the ZeroOut guard and f17 by facts the legacy parse
+  missed. Copying works as the concept's prompt copy: the toast "Settings summary
+  copied.", or, without a clipboard or when it is refused, the select-to-copy dialog
+  titled "Copy settings summary". `.ca-tools #viewer-details > div > button` wraps
+  (`white-space: normal`) in the narrow rail at 200% zoom, as D20's buttons do. The concept
+  comparisons add the button to the concept's viewer at runtime (a copy of its own plain
+  button) and to the Inspect rail's section order.
 
 The chooser keeps naming the chosen file, as the concept's does: it is cleared as the
 picker opens (so choosing the same file again is a new selection), not after `change`,
@@ -1684,9 +1759,8 @@ Legacy floor (`web/metadata.html`), dispositions:
 - Full text (the old "Show more"): the prompt blocks show the whole text.
 - Raw workflow view and Download workflow JSON: kept, in "Workflow & raw metadata".
 - Copy all summary and filename copy (LI-4): the filename is selectable text in the rail
-  and Download original saves the file under its name. The ruled "Copy settings summary"
-  button after the six facts of the shared full inspector is not part of PR L2; until it
-  lands, the legacy page keeps COPY ALL and stays reachable from Overview.
+  and Download original saves the file under its name. COPY ALL is the shared full
+  inspector's "Copy settings summary" (D117), with the legacy text.
 - Fully browser-local reading: kept and asserted (privacy above).
 - Case-variant keys `Workflow|comfy|ComfyUI|Prompt|Parameters` (LI-5): a separate
   backend issue; Inspect follows the server's readers, so the two never disagree.
@@ -2279,12 +2353,41 @@ skip without ffmpeg). The remaining known divergences, checked against ffprobe 9
   `unreadable`); ffprobe reads such files.
 - An EBML DocType other than `matroska`/`webm` is an invalid container locally; ffmpeg
   only warns and reads it.
-- Envelope JSON deeper than 1,000 levels is refused locally as Python's default
-  recursion limit refuses it; the server's real limit depends on the interpreter and
-  call stack. A duplicate key in an object enclosing a nest deeper than the running
+- Deep JSON (local roles, PR L3, and video envelopes): both browser CPython-JSON
+  parsers (`py-json.mjs`, `local-video.mjs`) share one cap, `JSON_MAX_DEPTH` = 1,000
+  nested arrays or objects (each counts, an empty one too); past it a record is invalid
+  JSON locally. The server's `json.loads` raises RecursionError at a limit that depends
+  on the Python, measured on Linux x86-64: 993 levels from a bare script on 3.10 and
+  3.11 (the 1,000 recursion limit minus the caller's frames, so about 990 inside the
+  server), 9,997 on 3.12 and 9,998 on 3.13 (the C recursion counter; lower on Windows
+  builds), and about 52,150 on 3.14 (stack-based, varies with the thread's stack).
+  The record kinds answer: a deep `prompt` graph (or `comfyassets_prompt_pairs`
+  envelope) is malformed; a deep `workflow` is ignored, so the overwritten PromptManager
+  check (R1) does not run and a prompt can resolve; a deep video `comment` or
+  `description` envelope makes the file unreadable on both sides (the server's
+  RecursionError reaches `read_inspection_file`). That gives two directions:
+  - 3.10/3.11, between the server's limit and 1,000: the server refuses and the local
+    page reads, so a deep prompt resolves locally while the server says malformed, and
+    a deep workflow can make R1 refuse locally where the server resolves.
+  - 3.12 and newer, from 1,001 up to the server's limit: the local page refuses and
+    the server reads, so a deep prompt is malformed locally while the server resolves,
+    and a deep workflow is ignored locally while the server can refuse it under R1.
+  Past both limits they agree. `test_local_json_depth_cap_at_its_boundary` checks the
+  local answer at 999, 1,000 and 1,001 for both kinds and that any server difference
+  is only one of the two directions above.
+- Local roles (PR L3): `\d` in the A1111 settings footer is any Unicode decimal
+  digit on both sides, but the browser's Unicode version can be newer than the server
+  Python's, so a footer whose step count uses a digit added after Unicode 15 can differ.
+  `str.lower()` and `toLowerCase()` differ only for characters no node class name uses.
+- A duplicate key in an object enclosing a nest deeper than the running
   Python's json limit is `malformed` locally and `limited` on that Python.
 - Decimal exponent limits assume CPython's C `_decimal`; on a `_pydecimal` interpreter
   the server would read the over-limit exponents the local projection refuses.
+- Follow-up (two CPython-JSON emulations, review M6): `local-video.mjs`
+  (`pythonJsonLoads`/`pythonFloatRepr`, numbers kept as lexemes) and `py-json.mjs`
+  (`pyJsonLoads`/`pyFloatRepr`, Python value kinds) both emulate `json.loads`; only the
+  depth cap is shared so far. A fix to one parser can miss the other, so the video
+  reader should move onto `py-json.mjs` in a later PR.
 
 Preserve raw logs, failed traces, paired PNGs, geometry, runtime versions and
 source hashes before later managed commands clear their output directories.
