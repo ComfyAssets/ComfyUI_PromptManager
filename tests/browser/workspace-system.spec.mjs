@@ -168,15 +168,17 @@ test('a failed thumbnail read is unavailable, never zero', async ({ page }) => {
     await expect(layout.locator('.metric').nth(2).locator('strong')).toHaveText('24');
 });
 
-test('ambiguous row reads the pending count; its action waits for the review page', async ({ page }) => {
+test('ambiguous row reads the pending count and Review metadata opens Needs review', async ({ page }) => {
     const layout = await openOverview(page);
     const row = layout.locator('.operation').filter({ hasText: 'ambiguous image links' });
     await expect(row.locator('h3')).toHaveText('0 ambiguous image links');
     await expect(row.locator('p')).toHaveText('Review metadata before assigning a positive / negative pair.');
     const review = row.getByRole('button', { name: 'Review metadata', exact: true });
-    await expect(review).toHaveAttribute('aria-disabled', 'true');
-    await review.click({ force: true });
-    await expect(page).toHaveURL(`${workspace}#/system/overview`);
+    await expect(review).not.toHaveAttribute('aria-disabled');
+    await review.click();
+    // The concept's go-review: the Needs review page.
+    await expect(page).toHaveURL(`${workspace}#/review`);
+    await expect(page.getByRole('heading', { name: 'Metadata review', exact: true })).toBeVisible();
 });
 
 test('View backups / Appearance / Manage sources switch sections', async ({ page }) => {
