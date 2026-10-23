@@ -278,6 +278,8 @@ test('reload during a scan reattaches to the running job', async ({ page, reques
 });
 
 test('lost server clears the pill and marks jobs ended', async ({ page, request }) => {
+    // The failed re-reads back off for 1 + 2 + 4 s before the third is seen.
+    test.setTimeout(60_000);
     await page.setViewportSize({ width: 1600, height: 1100 });
     const job = await startJob(request);
     await step(request, job.id, { processed: 4000 });
@@ -308,9 +310,14 @@ test('lost server clears the pill and marks jobs ended', async ({ page, request 
     await expect(await request.post('/__test__/jobs/restart')).toBeOK();
     await expect(pill(page)).toBeHidden();
     await expect(items(page).filter({ hasText: LOST })).toHaveCount(1);
-    await page.waitForTimeout(3500);
-    // 1 s, then 2 s: at most two re-reads in 3.5 s.
-    expect(failed.length).toBeLessThanOrEqual(2);
+    // 1 s, then 2 s, then 4 s: each failed re-read waits twice as long as the one before. The gaps between the
+    // reads themselves are the evidence, so a slow runner noticing the ended job late cannot add a read to a window.
+    await expect.poll(() => failed.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+    const gaps = failed.slice(1, 3).map((at, index) => at - failed[index]);
+    // A request is reported to the test a little after the browser sends it; that delay is not a shorter backoff.
+    const REPORT_SLACK_MS = 100;
+    expect(gaps[0]).toBeGreaterThanOrEqual(2000 - REPORT_SLACK_MS);
+    expect(gaps[1]).toBeGreaterThanOrEqual(4000 - REPORT_SLACK_MS);
     await page.unroute('**/prompt_manager/jobs**');
     expect(second.id).not.toBe(job.id);
 });
