@@ -343,7 +343,9 @@ class TestDatabaseUri(unittest.TestCase):
 
     def test_uri_opens_a_path_with_uri_characters(self):
         with tempfile.TemporaryDirectory() as temp:
-            path = os.path.join(os.path.realpath(temp), "a #b?c%20.db")
+            # "?" is not a valid Windows file name character; "#", "%" and spaces are.
+            name = "a #b%20 c.db" if os.name == "nt" else "a #b?c%20.db"
+            path = os.path.join(os.path.realpath(temp), name)
             conn = sqlite3.connect(path)
             try:
                 conn.execute("CREATE TABLE t(a)")
@@ -516,7 +518,19 @@ class TestMissingFiles(HealthTestCase):
                 (prompt, str(self.root / "else\x00where.png"), "bad.png"),
             )
         conn.close()
-        with self.assertLogs("prompt_manager.database.health", "ERROR"):
+        real_realpath = os.path.realpath
+
+        def realpath(path, *args, **kwargs):
+            # POSIX (and Windows before Python 3.11) raise for the NUL byte;
+            # newer ntpath returns it unchanged. Raise everywhere, as POSIX does.
+            if "\x00" in str(path):
+                raise ValueError("embedded null byte")
+            return real_realpath(path, *args, **kwargs)
+
+        with (
+            patch.object(health.os.path, "realpath", side_effect=realpath),
+            self.assertLogs("prompt_manager.database.health", "ERROR"),
+        ):
             report = self.run_checks(review_count=0)
         statuses = {c["id"]: c["status"] for c in report["checks"]}
         self.assertEqual(statuses.pop("missing_files"), "failed")
