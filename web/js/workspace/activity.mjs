@@ -148,18 +148,20 @@ function itemFor(job, scope) {
         chip.textContent = state;
         detail.textContent = jobDetail(next);
         const running = next.state === 'running';
+        // parentNode, not isConnected: on the first render the item is not in the page yet, so a job that had already
+        // ended when Activity opened kept its Cancel job (and a running one's progress moved after its actions).
         if (running) {
             progress.value = next.progress;
             progress.textContent = `${next.progress}%`;
             progress.setAttribute('aria-label', `${next.title} progress`);
-            if (!progress.isConnected) item.insertBefore(progress, actions.isConnected ? actions : null);
+            if (!progress.parentNode) item.insertBefore(progress, actions.parentNode ? actions : null);
         } else {
             progress.remove();
         }
         // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel job.
         if (running && next.cancellable) {
-            if (!actions.isConnected) item.append(actions);
-        } else if (actions.isConnected) {
+            if (!actions.parentNode) item.append(actions);
+        } else if (actions.parentNode) {
             // A focused Cancel job that goes away hands its focus to the item's title link, never to the page body.
             if (actions.contains(document.activeElement)) link.focus();
             actions.remove();

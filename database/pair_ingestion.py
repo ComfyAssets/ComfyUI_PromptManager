@@ -1,6 +1,5 @@
 """Atomic metadata enrichment for a single known generation context."""
 
-import json
 import os
 from typing import Any, Dict
 
@@ -9,9 +8,11 @@ from .operations import _coerce_file_info
 
 try:
     from ..utils.hashing import generate_prompt_hash
+    from ..utils.json_strict import dumps_strict
     from ..utils.prompt_pair_resolver import RESOLVER_VERSION
 except ImportError:
     from utils.hashing import generate_prompt_hash
+    from utils.json_strict import dumps_strict
     from utils.prompt_pair_resolver import RESOLVER_VERSION
 
 
@@ -57,9 +58,7 @@ def _ingest_resolved_pair_in(
             "positive": positive,
             "negative": negative,
         }
-    encoded = json.dumps(
-        provenance, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
+    encoded = dumps_strict(provenance, sort_keys=True, separators=(",", ":"))
     images = conn.execute(
         "SELECT gi.*,p.hash AS positive_hash FROM generated_images gi "
         "JOIN prompts p ON p.id=gi.prompt_id "
@@ -97,8 +96,9 @@ def _ingest_resolved_pair_in(
     pair = conn.execute("SELECT * FROM prompt_pairs WHERE id=?", (pair_id,)).fetchone()
     pairs_added = int(prior_pair is None)
     file_size, width, height, image_format = _coerce_file_info(metadata)
+    # ComfyUI's NaN/Infinity are stored as null: the snapshot is strict JSON.
     snapshots = {
-        column: json.dumps(metadata[key], sort_keys=True, allow_nan=False)
+        column: dumps_strict(metadata[key], sort_keys=True)
         for column, key in (
             ("workflow_data", "workflow"),
             ("prompt_metadata", "prompt"),

@@ -10,6 +10,7 @@ Split into domain-specific mixins for maintainability:
 - ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
 - ReviewRoutesMixin: the Needs review queue, item detail and decisions
 - ReviewRecordingMixin: Needs review recording for the scan and the monitor
+- SystemRoutesMixin: System health check, Overview and usage statistics
 """
 
 import asyncio
@@ -17,6 +18,7 @@ import datetime
 import functools
 import gzip as gzip_module
 import json
+import math
 import ntpath
 import os
 import re
@@ -39,6 +41,7 @@ from .admin import AdminRoutesMixin
 from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
+from .system import SystemRoutesMixin
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
@@ -275,6 +278,7 @@ class PromptManagerAPI(
     SettingsRoutesMixin,
     JobRoutesMixin,
     ImageTagJobsMixin,
+    SystemRoutesMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
@@ -333,6 +337,11 @@ class PromptManagerAPI(
         self._scan_job = None
         # The current duplicate scan (a py/api/jobs.Job outside the registry).
         self._duplicate_job = None
+        # The last System health report this session and the database
+        # generation it describes, bumped when a restore replaces self.db
+        # (py/api/system.py).
+        self._health_report = None
+        self._db_generation = 0
 
         # Run cleanup on initialization to remove any existing duplicates
         try:
@@ -491,6 +500,7 @@ class PromptManagerAPI(
         self._register_admin_routes(routes)
         self._register_settings_routes(routes)
         self._register_job_routes(routes)
+        self._register_system_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)
@@ -609,12 +619,12 @@ class PromptManagerAPI(
         return prompts
 
     def _clean_nan_recursive(self, obj):
-        """Recursively clean NaN values from nested data structures."""
+        """Recursively replace NaN and Infinity in nested data with None."""
         if isinstance(obj, dict):
             return {key: self._clean_nan_recursive(value) for key, value in obj.items()}
         elif isinstance(obj, list):
             return [self._clean_nan_recursive(item) for item in obj]
-        elif isinstance(obj, float) and str(obj) == "nan":
+        elif isinstance(obj, float) and not math.isfinite(obj):
             return None
         else:
             return obj
@@ -737,6 +747,13 @@ class PromptManagerAPI(
         Returns:
             List[Path]: Validated directory paths, possibly empty.
         """
+        return self._output_dirs_with_origin()[0]
+
+    def _output_dirs_with_origin(self):
+        """``(dirs, auto_detected)``: the ``_get_all_output_dirs`` list, and
+        whether it comes from detection or ComfyUI's output rather than from
+        a valid configured root (False when there is no directory at all).
+        """
         from ..config import GalleryConfig
 
         configured = list(GalleryConfig.MONITORING_DIRECTORIES)
@@ -755,15 +772,16 @@ class PromptManagerAPI(
             output_dirs.append(Path(real))
 
         if output_dirs:
-            return output_dirs
+            return output_dirs, False
 
         if configured:
             # Every configured root was rejected: never let auto-detection
             # resurrect it, serve ComfyUI's own output directory instead.
-            return self._comfyui_output_dir_list()
-
-        fallback = self._find_comfyui_output_dir()
-        return [Path(fallback)] if fallback else []
+            fallback_dirs = self._comfyui_output_dir_list()
+        else:
+            fallback = self._find_comfyui_output_dir()
+            fallback_dirs = [Path(fallback)] if fallback else []
+        return fallback_dirs, bool(fallback_dirs)
 
     def _comfyui_output_dir_list(self):
         """ComfyUI's output directory as a one-element list, or [] if unknown."""
