@@ -868,6 +868,23 @@ class TestDeleteDuplicatesEndpoint(AdminAPITestCase):
         self.assertFalse(target.exists())
         self.assertTrue(thumb_dir.exists())
 
+    async def test_deleted_files_leave_the_cached_gallery_listing(self):
+        # The listing is cached for 30 s; a delete must not leave the gallery
+        # listing (and counting) a file that is gone.
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+        for name in ("keep.png", "gone.png"):
+            (self.output_dir / name).write_bytes(b"same bytes")
+
+        async def listed():
+            resp = await self.client.get("/prompt_manager/images/output")
+            data = await resp.json()
+            return data["total"], sorted(i["filename"] for i in data["images"])
+
+        self.assertEqual(await listed(), (2, ["gone.png", "keep.png"]))
+        resp = await self._post({"image_paths": ["gone.png"]})
+        self.assertEqual((await resp.json())["deleted_count"], 1)
+        self.assertEqual(await listed(), (1, ["keep.png"]))
+
     def test_unexpected_error_per_file_is_reported_without_path(self):
         self.api._delete_one_duplicate = lambda *a: (_ for _ in ()).throw(
             PermissionError(13, "Permission denied", os.path.join(self.tmpdir, "x.png"))

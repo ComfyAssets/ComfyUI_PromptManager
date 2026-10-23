@@ -35,7 +35,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         if (scope.signal.aborted) return;
         active?.close(false);
         const {items,selectedKey,trigger = document.activeElement} = options;
-        let mounted = false, initial, entry, currentKey, viewer = null, mediaScope = null, closed = false;
+        let mounted = false, initial, entry, currentKey, viewer = null, withoutViewer = false, mediaScope = null, closed = false;
         let originalDownload = null, inspectionState = inspectionController.state;
         const session = createViewerSession({adapter,items,initialKey:selectedKey,onChange:(state,selected) => {
             if (!mounted) { initial = [state,selected]; return; }
@@ -115,7 +115,9 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
             mediaScope?.dispose();mediaScope = createScope();viewer = null;
             for (const child of [...stage.children]) if (child !== failure) child.remove();
             failure.hidden = true;
-            const mediaLocal = mediaScope, key = session.state.key;
+            const mediaLocal = mediaScope, key = session.state.key, ViewerJs = window.Viewer;
+            // Transforms follow the Viewer.js this media was built with, which builds once the image has loaded.
+            withoutViewer = !ViewerJs;
             const current = () => !local.signal.aborted && !mediaLocal.signal.aborted && session.state.key === key;
             // An adapter's own media URL (a session-owned blob:) is used exactly, so a retry reuses it; a server
             // original gets a fresh cache-buster on every build.
@@ -142,15 +144,23 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 },{once:true});
             } else {
                 node.alt = selected.filename;node.decoding = 'async';
-                node.hidden = !!window.Viewer;
+                node.hidden = !!ViewerJs;
                 // With Viewer.js the src is released after the viewer (see release below).
-                if (!window.Viewer) {
+                if (!ViewerJs) {
                     mediaLocal.listen(node,'load',() => {if (current()) session.ready(key);});
                     mediaLocal.cleanup(() => node.removeAttribute('src'));
                 }
             }
             node.src = src;stage.append(node);
-            if (!selected.is_video && window.Viewer) {
+            if (!selected.is_video && ViewerJs) {
+                // Viewer.js is built on an image that has loaded. Its own cancel removes its image listeners only
+                // while `image.complete` is false, so an image left with its load event still queued would build a
+                // viewer into the released image after destroy() (#293). Until then no viewer exists to cancel.
+                let mountedViewer = false;
+                mediaLocal.listen(node,'load',() => { if (current()) { mountedViewer = true;mountViewer(); } },{once:true});
+                mediaLocal.cleanup(() => { if (!mountedViewer) node.removeAttribute('src'); });
+            }
+            function mountViewer() {
                 let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
                 const release = () => {
                     if (released) return;
@@ -166,7 +176,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                         fitWidth = width;fitHeight = height;instance.resize();
                     });
                 };
-                const instance = new window.Viewer(node,{inline:true,toolbar:false,navbar:false,title:false,button:false,
+                const instance = new ViewerJs(node,{inline:true,toolbar:false,navbar:false,title:false,button:false,
                     keyboard:false,fullscreen:false,transition:false,viewed() {
                         viewSettled = true;
                         if (mediaLocal.signal.aborted) { release(); return; }
@@ -176,10 +186,12 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 const observer = new ResizeObserver(scheduleFit);observer.observe(stage);
                 viewer = instance;mediaLocal.cleanup(() => {
                     observer.disconnect();cancelAnimationFrame(fitFrame);
-                    // Inline Viewer.js keeps viewing a still-loading image after destroy(), and that view
-                    // rebuilds its list from images that still have a src; keep both until the view
-                    // settles, fails or times out.
-                    if (viewSettled) { release(); return; }
+                    // Before Viewer.js has built (its zero-delay build is pending), destroy() cancels that build;
+                    // deferring it would let the build run into the image the stage has just dropped.
+                    // Once built, inline Viewer.js keeps viewing a still-loading image after destroy(), and that
+                    // view rebuilds its list from images that still have a src; keep both until the view settles,
+                    // fails or times out.
+                    if (viewSettled || !instance.ready) { release(); return; }
                     node.addEventListener('error',release,{once:true});
                     fallback = setTimeout(release,PENDING_VIEW_DESTROY_MS);
                 });
@@ -188,7 +200,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         }
         function updateControls(state) {
             const unavailable = inspectionState.refreshRequired ? inspectionState.message : state.phase === 'error' ? 'Media could not be loaded. Retry this file.' : entry.is_video ?
-                'Image transforms are unavailable for video.' : !viewer ?
+                'Image transforms are unavailable for video.' : withoutViewer ?
                 'Image transforms are unavailable because Viewer.js could not load.' : !state.mediaReady ? 'Image transforms are available when the image is ready.' : '';
             reason.textContent = unavailable;reason.hidden = !unavailable;
             for (const node of transforms) {

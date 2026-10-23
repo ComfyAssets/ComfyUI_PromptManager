@@ -41,7 +41,7 @@ try:
         PLACEHOLDERS,
         GenerationParamsError,
         extract_generation_params,
-        parse_js_json,
+        parse_page_json,
     )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
 except ImportError:
@@ -51,7 +51,7 @@ except ImportError:
         PLACEHOLDERS,
         GenerationParamsError,
         extract_generation_params,
-        parse_js_json,
+        parse_page_json,
     )
     from utils.prompt_pair_resolver import resolve_prompt_pair
 
@@ -804,6 +804,9 @@ class AdminRoutesMixin:
             result = await self._run_in_executor(
                 self._delete_duplicate_images_sync, image_paths, output_dir
             )
+            if result["deleted_count"]:
+                # The cached listing would keep (and count) the deleted files.
+                self.invalidate_gallery_cache()
 
             response_data = {
                 "success": True,
@@ -1271,6 +1274,7 @@ class AdminRoutesMixin:
                 self.logger.info(f"Removed {len(removed)} old safety backups")
             previous = self.db
             self.db = PromptDatabase(model.db_path)
+            self._database_replaced()  # a health report described the old one
             # Its connections would otherwise linger (a file lock on Windows)
             previous.close_all()
             prompt_count = self.db.model.get_database_info().get("total_prompts", 0)
@@ -1602,11 +1606,14 @@ class AdminRoutesMixin:
 
     @staticmethod
     def _graph_prompt_text(metadata):
-        """The positive prompt the browser parser traces from the graphs, or None."""
+        """The positive prompt the browser parser traces from the graphs, or None.
+
+        Records parse as the legacy pages parsed them (NaN reads as null).
+        """
         records = {}
         for key in ("prompt", "workflow"):
             value = metadata.get(key)
-            records[key] = parse_js_json(value) if isinstance(value, str) else value
+            records[key] = parse_page_json(value) if isinstance(value, str) else value
         try:
             positive = extract_generation_params(records)["positivePrompt"]
         except GenerationParamsError:
