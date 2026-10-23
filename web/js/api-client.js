@@ -107,20 +107,28 @@
     }
 
     /**
+     * @param {{lifetime?: AbortSignal}} [options] - `lifetime` ends with the page (its pagehide):
+     *   then no call starts a request, the one in flight is aborted, and both resolve to STALE.
+     *   WebKit fails a fetch that a leaving page starts and logs it as a page error.
      * @returns {(run: (signal: AbortSignal) => Promise<*>) => Promise<*>} wrapper that
      *   aborts the previous call's signal and resolves superseded calls to STALE
      */
-    function latestOnly() {
+    function latestOnly({ lifetime } = {}) {
         let current = null;
+        lifetime?.addEventListener("abort", () => current?.abort(), { once: true });
         return async function (run) {
             if (current) current.abort();
+            if (lifetime?.aborted) {
+                current = null;
+                return STALE;
+            }
             const controller = new AbortController();
             current = controller;
             try {
                 const result = await run(controller.signal);
-                return controller === current ? result : STALE;
+                return controller === current && !lifetime?.aborted ? result : STALE;
             } catch (error) {
-                if (controller !== current) return STALE;
+                if (controller !== current || lifetime?.aborted) return STALE;
                 throw error;
             }
         };
