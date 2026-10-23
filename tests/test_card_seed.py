@@ -68,6 +68,55 @@ class CardSeed(unittest.TestCase):
         self.assertIn(expected, (111, 222))
         self.assertEqual(info_seed(info), str(expected))
 
+    def test_a_chain_the_inspector_names_one_stage_of_shows_no_differing_seed(self):
+        # The inspector shows the named final stage's seed (D19, pass-through
+        # chains); the parser shows another stage's. Never two seeds: none.
+        extra = {"2": {"class_type": "EmptyLatentImage", "inputs": {}}}
+        extra["20"] = {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0]}}
+        extra["21"] = {
+            "class_type": "FaceDetailer",
+            "inputs": {
+                "seed": 333,
+                "image": ["20", 0],
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+            },
+        }
+        info = graph(seeded(111), extra=extra)
+        self.assertEqual(extract_from_records(info["prompt"], None)["seed"], 111)
+        self.assertIsNone(info_seed(info))
+        # The same chain on one seed keeps it; so does a refiner over a decode.
+        extra["21"]["inputs"]["seed"] = 111
+        self.assertEqual(info_seed(graph(seeded(111), extra=extra)), "111")
+        refiner = seeded(222, latent_image=["22", 0])
+        extra["22"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["20", 0]}}
+        del extra["21"]
+        self.assertIsNone(info_seed(graph(seeded(111), refiner, extra=extra)))
+        refiner["inputs"]["seed"] = 111
+        self.assertEqual(info_seed(graph(seeded(111), refiner, extra=extra)), "111")
+
+    def test_a_seed_that_agrees_with_the_named_stage_is_kept(self):
+        # Review I3: a saved sampler (seed 7) beside a preview-only sampler
+        # (seed 5): the parser and the inspector both show 7, as on main.
+        extra = {"2": {"class_type": "EmptyLatentImage", "inputs": {}}}
+        extra["20"] = {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0]}}
+        extra["21"] = {"class_type": "SaveImage", "inputs": {"images": ["20", 0]}}
+        extra["30"] = {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0]}}
+        extra["31"] = {"class_type": "PreviewImage", "inputs": {"images": ["30", 0]}}
+        info = graph(seeded(7), seeded(5), extra=extra)
+        self.assertEqual(info_seed(info), "7")
+
+    def test_a_named_ambiguous_chain_keeps_the_parser_seed(self):
+        # Review M2: multistage-differs names a sampler, but its facts merge,
+        # and the inspector fills the parser's seed: the card keeps it.
+        extra = {"2": {"class_type": "EmptyLatentImage", "inputs": {}}}
+        extra["8"] = encoder("another scene")
+        extra["20"] = {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0]}}
+        extra["22"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["20", 0]}}
+        refiner = ksampler(("8", 0), ("7", 0), seed=222, latent_image=["22", 0])
+        self.assertEqual(info_seed(graph(seeded(111), refiner, extra=extra)), "111")
+
     def test_card_seed_linked_input_follows_shared_parser(self):
         primitive = {"class_type": "PrimitiveNode", "inputs": {"value": 555}}
         info = graph(seeded(["20", 0]), extra={"20": primitive})
@@ -207,6 +256,7 @@ class CardSeed(unittest.TestCase):
         self.assertIsNone(parsed_positive(unparsable))
 
     def test_every_shared_case_reads_the_projected_graphs(self):
+        withheld = []
         for name, case in CASES.items():
             with self.subTest(case=name):
                 info = {k: v for k, v in case.items() if v is not None}
@@ -225,11 +275,18 @@ class CardSeed(unittest.TestCase):
                 except GenerationParamsError:
                     self.assertIsNone(params)
                     continue
+                if name == "shared-prompt-pipeline":
+                    # The inspector names the detailer (seed 333); the parser
+                    # reads the base sampler (111): the card shows none.
+                    self.assertEqual(expected["seed"], 111)
+                    expected = {**expected, "seed": None}
+                    withheld.append(name)
                 self.assertEqual(params, expected)
                 # Prompt text is the same as from a plain parse of the records.
                 if len(values) == len(info):
                     raw = extract_from_records(case["prompt"], case["workflow"])
                     self.assertEqual(params["positivePrompt"], raw["positivePrompt"])
+        self.assertEqual(withheld, ["shared-prompt-pipeline"])
 
 
 if __name__ == "__main__":
