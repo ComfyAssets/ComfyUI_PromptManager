@@ -17,6 +17,22 @@ const HOST = '127.0.0.1';
 // tests/browser/server.py prints this once it holds its listening socket. Only a
 // complete line counts: a chunk may end mid-number.
 const PORT_ANNOUNCEMENT = /^PM_TEST_SERVER_PORT=(\d+)\r?\n/m;
+// tests/browser/slow_reset_watch.py starts every line of a slow-reset report with
+// this. Those lines go to the worker's stderr, so the job log shows a slow reset
+// even when its test passes.
+export const SLOW_RESET_PREFIX = 'pm-slow-reset| ';
+
+// A stderr chunk handler that passes every complete line starting with `prefix`
+// to `write`. A line split across chunks is held until its newline arrives.
+export function forwardPrefixedLines(prefix, write) {
+    let pending = '';
+    return chunk => {
+        const lines = (pending + chunk).split('\n');
+        pending = lines.pop().slice(-STDERR_TAIL_BYTES);
+        const matched = lines.filter(line => line.startsWith(prefix));
+        if (matched.length) write(matched.map(line => `${line}\n`).join(''));
+    };
+}
 
 // The server exits when its stdin closes, so a worker that dies without teardown
 // (SIGKILL) leaves no server behind; the launcher holds the pipe's other end.
@@ -40,6 +56,7 @@ export async function startBrowserServer({
     cwd = repositoryRoot,
     timeoutMs = STARTUP_TIMEOUT_MS,
     stderrLogChars = STDERR_LOG_CHARS,
+    report = chunk => process.stderr.write(chunk),
 } = {}) {
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
         throw new Error(`startBrowserServer needs a port from 0 to 65535, got ${port}`);
@@ -50,7 +67,9 @@ export async function startBrowserServer({
     let stderr = '';
     let stderrTotal = 0;
     child.stderr.setEncoding('utf8');
+    const forwardReport = forwardPrefixedLines(SLOW_RESET_PREFIX, report);
     child.stderr.on('data', chunk => {
+        forwardReport(chunk);
         stderr = (stderr + chunk).slice(-Math.max(stderrLogChars, STDERR_TAIL_BYTES));
         stderrTotal += chunk.length;
     });

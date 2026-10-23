@@ -50,6 +50,13 @@ stdin open and the server (`--exit-on-stdin-eof`) shuts down cleanly, removing i
 temp root, when that pipe closes, so a worker killed without teardown leaves no
 server behind. A test that fails gets the stderr its server wrote during the test
 attached to the report as `server-stderr` (an aiohttp traceback behind a 500).
+A `/__test__/.../reset` still running after 2 s writes a report to the job log,
+passing test or not: every thread's stack taken while it waits, the default
+executor's threads and queue, the open connections and WAL size, then the total
+and how long each executor call queued and ran. Its lines start with
+`pm-slow-reset| ` (`tests/browser/slow_reset_watch.py`). The report never reads a
+connection another thread is using: one that is busy inside SQLite would block
+that read with the GIL held and freeze the whole server.
 
 The coverage run can be split the way CI splits it, and each shard keeps the raw
 V8 files it writes under `coverage/js/raw`:
