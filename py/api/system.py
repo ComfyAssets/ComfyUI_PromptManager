@@ -40,6 +40,19 @@ _HEALTH_STATUS_LINES = {
 _StoredReport = namedtuple("_StoredReport", "generation report")
 
 
+async def _gather_settled(*reads):
+    """Await every read, then raise the first failure.
+
+    Unlike a plain gather, a failure never answers while the other executor
+    reads still run against the database.
+    """
+    results = await asyncio.gather(*reads, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return results
+
+
 def _failure(message, status=500, code=None):
     return web.json_response(
         {"success": False, "code": code, "error": message}, status=status
@@ -154,7 +167,7 @@ class SystemRoutesMixin:
         from ..config import GalleryConfig
 
         try:
-            (output_dirs, auto_detected), counts = await asyncio.gather(
+            (output_dirs, auto_detected), counts = await _gather_settled(
                 self._run_in_executor(self._output_dirs_with_origin),
                 self._run_in_executor(self.db.library_counts),
             )
@@ -188,7 +201,7 @@ class SystemRoutesMixin:
 
     async def get_system_statistics(self, request):
         try:
-            by_category, totals, counts = await asyncio.gather(
+            by_category, totals, counts = await _gather_settled(
                 self._run_in_executor(self.db.usage_by_category),
                 self._run_in_executor(self.db.get_statistics),
                 self._run_in_executor(self.db.library_counts),

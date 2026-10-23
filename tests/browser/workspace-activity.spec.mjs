@@ -284,6 +284,19 @@ test('reload during a scan reattaches to the running job', async ({ page, reques
     await expect(pill(page)).toBeHidden();
 });
 
+test('an empty Activity says no job has run, and a list that cannot be read says so', async ({ page }) => {
+    // The empty and failed states were only reached in passing by other tests, so their coverage depended on timing.
+    const empty = main(page).locator('section.surface > p.empty-state');
+    await page.goto(`${workspace}#/activity`);
+    await expect(empty).toHaveText('No jobs have run since ComfyUI started. Scans and other long operations appear here.');
+    await expect(empty).not.toHaveAttribute('role');
+    await expect(items(page)).toHaveCount(0);
+    await page.route(url => url.pathname === '/prompt_manager/jobs', route => route.abort());
+    await page.reload();
+    await expect(empty).toHaveText('Activity could not be read. It is tried again shortly.');
+    await expect(empty).toHaveAttribute('role', 'alert');
+});
+
 test('lost server clears the pill and marks jobs ended', async ({ page, request }) => {
     // A poll interval after the restart, then failed re-reads backing off for 1 + 2 + 4 s.
     test.setTimeout(90_000);
