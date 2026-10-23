@@ -582,6 +582,8 @@ def create_app(root: Path) -> web.Application:
         api.db.close_all()
 
     seed()
+    # Open Needs review change streams end first, as on the real host.
+    app.on_shutdown.append(api.close_review_events)
     app.on_cleanup.append(cleanup)
     app.add_routes(routes)
     return app
