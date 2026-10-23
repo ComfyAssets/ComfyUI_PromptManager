@@ -14,8 +14,10 @@ after the plain ones in this order:
 - ``conflict``: an item whose file was linked to another prompt ("Misty
   forest path") after it was queued (the next scan or monitor pass would
   remove the item); applying a sampler path then conflicts with that link.
-- ``limited``: an A1111 ``parameters`` block with two negative lines, which
-  the recorder stores ``limited`` (no candidates).
+- ``limited``: a graph of 17 samplers, each with its own prompt, which the
+  recorder stores ``limited`` (more than 16 candidates, so none are stored).
+  An A1111 block with two negative lines is not queued any more: it offers
+  no candidate to choose (#284).
 - ``unavailable``: a file recorded under the ``temp`` directory while it was a
   gallery root; the root is then removed again, so no current root lists it.
 
@@ -67,6 +69,8 @@ CONCEPT_POSITIVE = (
     "mountain peaks, cinematic composition, atmospheric mist, fine detail"
 )
 CONCEPT_NEGATIVE = "blurry, low quality, low resolution"
+# More candidates than an item stores (16): the ``limited`` item.
+LIMITED_SAMPLERS = 17
 # More than one queue page (40), so Load more has a second page.
 MAX_ITEMS = 45
 _TABLES = (
@@ -237,14 +241,8 @@ def seed_review(
         if kind == "conflict":
             _linked_after_queueing(api, path)
         elif kind == "limited":
-            _png(
-                path,
-                (90, 90, 90),
-                parameters=(
-                    f"{POSITIVES[0]}\nNegative prompt: blur\nNegative prompt: noise\n"
-                    "Steps: 20, Sampler: Euler"
-                ),
-            )
+            many = tuple(f"{POSITIVES[0]} {n}" for n in range(LIMITED_SAMPLERS))
+            _png(path, (90, 90, 90), graph=_graph(positives=many))
             _record(api, path, "limited")
         else:
             _png(path, (20, 140, 90))
