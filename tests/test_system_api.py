@@ -292,7 +292,7 @@ class TestOverviewRoute(SystemAPITestCase):
         body = await self.json("GET", "/prompt_manager/system/overview")
         self.assertIsNone(body["health"])
         self.assertIsNone(body["backup"])
-        self.assertEqual(body["needs_review"], {"pending": None})
+        self.assertEqual(body["needs_review"], {"pending": 0})
         self.save("Any")
         await self.run_health()
         report = (await self.json("GET", "/prompt_manager/system/health"))["report"]

@@ -8,6 +8,8 @@ Split into domain-specific mixins for maintainability:
 - AutotagRoutesMixin: auto-tagging model management and tagging
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 - ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
+- ReviewRoutesMixin: the Needs review queue, item detail and decisions
+- ReviewRecordingMixin: Needs review recording for the scan and the monitor
 - SystemRoutesMixin: System health check, Overview and usage statistics
 """
 
@@ -30,6 +32,8 @@ from .pairs import PairRoutesMixin
 from .library import LibraryRoutesMixin
 from .vocabulary import VocabularyRoutesMixin
 from .annotations import AnnotationRoutesMixin
+from .review import ReviewRoutesMixin
+from .review_recording import ReviewRecordingMixin
 from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
@@ -264,6 +268,8 @@ class PromptManagerAPI(
     LibraryRoutesMixin,
     VocabularyRoutesMixin,
     AnnotationRoutesMixin,
+    ReviewRoutesMixin,
+    ReviewRecordingMixin,
     SavedViewRoutesMixin,
     HistoryRoutesMixin,
     PromptRoutesMixin,
@@ -304,6 +310,8 @@ class PromptManagerAPI(
         # created on first use with their restore subscription.
         self._captures = None
         self._captures_unsubscribe = None
+        # Set by close_annotation_captures (shutdown): no store is recreated.
+        self._captures_closed = False
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
@@ -484,6 +492,7 @@ class PromptManagerAPI(
         self._register_library_routes(routes)
         self._register_vocabulary_routes(routes)
         self._register_annotation_routes(routes)
+        self._register_review_routes(routes)
         self._register_saved_view_routes(routes)
         self._register_history_routes(routes)
         self._register_prompt_routes(routes)

@@ -169,8 +169,9 @@ function mapOverviewConcept(reference, overview) {
     const relabel = { 'Database integrity': 'Not checked', 'Positive prompts': number(overview.library.positive_prompts),
         'Negative variants': number(overview.library.negative_variants), Images: number(overview.images.indexed) };
     const rows = {
-        // D93 (Q6): no review queue yet, so no count and the action is unavailable (dimmed, as the Save row's D92).
-        '3 ambiguous image links': row => ({ ...row, title: 'Ambiguous image links', description: 'Not available yet.',
+        // D93: the real pending count; the action is unavailable (dimmed, as the Save row's D92) until the review page.
+        '3 ambiguous image links': row => ({ ...row,
+            title: `${number(overview.needs_review.pending)} ambiguous image link${overview.needs_review.pending === 1 ? '' : 's'}`,
             action: { ...row.action, opacity: '0.55', cursor: 'not-allowed' } }),
         // D93: no backup has been recorded (verified backups arrive with S8).
         'Backup status': row => ({ ...row, description: 'No retained backup record.' }),
@@ -230,12 +231,12 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
     });
 }
 
-// The recorded differences, by path: D93 the review row (title, Not available yet, dimmed action), the backup row, the
+// The recorded differences, by path: D93 the review row (its real count, dimmed action), the backup row, the
 // preferences row and the sources row, and metric 4; D96 the statistics row; D92 the chip, the status and the dimmed
 // Save; D122 the nav label. (The fixture's first three metrics are the concept's own counts.)
 const UNMAPPED_PATHS = [
     'columns.surfaces.0.rows.0.action.cursor', 'columns.surfaces.0.rows.0.action.opacity',
-    'columns.surfaces.0.rows.0.description', 'columns.surfaces.0.rows.0.title', 'columns.surfaces.0.rows.1.description',
+    'columns.surfaces.0.rows.0.title', 'columns.surfaces.0.rows.1.description',
     'columns.surfaces.1.rows.0.description', 'columns.surfaces.1.rows.1.title', 'columns.surfaces.1.rows.2.description',
     'heading.actions.0', 'heading.actions.length', 'metrics.items.3.value', 'nav.label',
     'save.button.cursor', 'save.button.opacity', 'save.status.text',

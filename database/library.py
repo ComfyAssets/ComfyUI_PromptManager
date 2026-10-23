@@ -637,7 +637,8 @@ class LibraryOperations:
         pairs (every pair's positive is eligible). ``images`` counts indexed
         ``generated_images`` rows, not files on disk. An image has no rating
         of its own (it shows its linked prompt's), so ``rated_images`` counts
-        the indexed images whose linked prompt is rated.
+        the indexed images whose linked prompt is rated. ``review_pending`` is
+        the Needs review queue's pending total.
         """
         with self.library_snapshot() as (conn, _epoch, _ceiling):
             row = conn.execute(
@@ -645,13 +646,15 @@ class LibraryOperations:
                 "(SELECT COUNT(*) FROM prompt_pairs WHERE archived=0),"
                 "(SELECT COUNT(*) FROM generated_images),"
                 "(SELECT COUNT(*) FROM generated_images gi JOIN prompts r "
-                "ON r.id=gi.prompt_id WHERE r.rating IS NOT NULL)"
+                "ON r.id=gi.prompt_id WHERE r.rating IS NOT NULL),"
+                "(SELECT COUNT(*) FROM media_review_items WHERE state='pending')"
             ).fetchone()
         return {
             "positive_prompts": row[0],
             "negative_variants": row[1],
             "images": row[2],
             "rated_images": row[3],
+            "review_pending": row[4],
         }
 
     def usage_by_category(self) -> list[dict]:

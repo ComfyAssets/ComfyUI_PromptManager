@@ -471,6 +471,19 @@ class TestUiRoutes(CoreRoutesTestCase):
         self.assertIn(("POST", "/prompt_manager/jobs/scan"), table)
         self.assertIn(("POST", "/prompt_manager/jobs/image-tags"), table)
 
+    async def test_review_routes_are_registered(self):
+        table = {
+            (route.method, route.resource.canonical)
+            for route in self.app.router.routes()
+            if route.resource is not None
+        }
+        for entry in (
+            ("GET", "/prompt_manager/review/items"),
+            ("GET", "/prompt_manager/review/items/{item_id}"),
+            ("POST", "/prompt_manager/review/items/{item_id}/decision"),
+        ):
+            self.assertIn(entry, table)
+
 
 class TestStaticRoutes(CoreRoutesTestCase):
 

@@ -258,6 +258,10 @@ class PairSchemaTests(unittest.TestCase):
                 ],
                 [(1, 1, 0)],
             )
+            self.assertEqual(
+                [tuple(r) for r in conn.execute("SELECT * FROM media_review_metadata")],
+                [(1, 1, 0)],
+            )
         self.assertTrue(PromptModel.verify_database_file(live.db_path)[0])
         self.assertTrue(
             PromptModel.verify_database_file(live.db_path, require_library_state=True)[

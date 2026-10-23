@@ -114,6 +114,8 @@ def seed_workspace_visual(api: PromptManagerAPI, root: Path) -> None:
         for table in (
             "saved_views",
             "image_favorites",
+            "media_review_decisions",
+            "media_review_items",
             "media_image_tags",
             "media_annotation_bytes",
             "media_annotation_files",

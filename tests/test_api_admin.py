@@ -107,6 +107,9 @@ class AdminAPITestCase(AioHTTPTestCase):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if api is not None:
+            # A scan of an ambiguous file captures it for Needs review.
+            api.close_annotation_captures()
         PromptModel.close_all_instances()  # restore may have swapped api.db
         assert_closed(self, self.tmpdir)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -2239,7 +2242,9 @@ class TestActivityJobs(AdminAPITestCase):
         for name in names:
             (self.output_dir / name).write_bytes(b"not an image")
 
-        def fake_ingest(media_file, metadata, detailed=False):
+        def fake_ingest(
+            media_file, metadata, detailed=False, ambiguous=None, untraced=None
+        ):
             key = Path(media_file).relative_to(self.output_dir).as_posix()
             outcome = names[key]
             if isinstance(outcome, Exception):
@@ -2368,8 +2373,10 @@ class TestActivityJobs(AdminAPITestCase):
         first_done, release = threading.Event(), threading.Event()
         original = self.api._ingest_scan_batch_sync
 
-        def gated(batch_results, roots=(), outcomes=None):
-            counts = original(batch_results, roots=roots, outcomes=outcomes)
+        def gated(batch_results, roots=(), outcomes=None, review=None):
+            counts = original(
+                batch_results, roots=roots, outcomes=outcomes, review=review
+            )
             first_done.set()
             release.wait(5)
             return counts

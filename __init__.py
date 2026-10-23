@@ -122,6 +122,21 @@ try:
     _global_prompt_tracker = get_prompt_tracker(_global_db)
     _global_image_monitor = get_image_monitor(_global_db, _global_prompt_tracker)
 
+    # The Needs review pass for ambiguous new outputs runs through the API's
+    # capture store (the one the scan and the Tag dialog use): a linked output
+    # is never queued and its pending items leave the queue. It stops before
+    # that store is closed at shutdown.
+    _review_api = globals().get("api")
+    if _review_api is not None:
+        _global_image_monitor.set_review_recorder(_review_api.record_review_file)
+        _review_host = getattr(config.server_instance, "app", None)
+        if _review_host is not None and hasattr(_review_host, "on_cleanup"):
+
+            async def _stop_review_recording(app, monitor=_global_image_monitor):
+                monitor.set_review_recorder(None)
+
+            _review_host.on_cleanup.insert(0, _stop_review_recording)
+
     # Start monitoring
     _global_image_monitor.start_monitoring()
     _init_logger.info("Global image monitoring system started successfully")

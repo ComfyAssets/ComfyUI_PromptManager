@@ -38,6 +38,11 @@ def _graph(text):
     }
 
 
+def _scope_part(scope):
+    """The per-source scope keys this module pins (other features add counters)."""
+    return {key: scope[key] for key in ("files", "roots", "output_folders")}
+
+
 class ScanScopeTestCase(AdminAPITestCase):
     """Helpers: link files the way the scan and the monitor do, spy on reads."""
 
@@ -342,7 +347,8 @@ class TestPerSourceScope(ScanScopeTestCase):
         self.assertEqual(walked, [["b"]])
         self.assertEqual(reads, ["in_b.png"])
         self.assertEqual(
-            job["scope"], {"files": "all", "roots": [1], "output_folders": 1}
+            _scope_part(job["scope"]),
+            {"files": "all", "roots": [1], "output_folders": 1},
         )
         self.assertEqual(
             job["outcomes"]["added"],
@@ -378,7 +384,8 @@ class TestPerSourceScope(ScanScopeTestCase):
 
         unscoped = await self._scan({"scope": "all"})
         self.assertEqual(
-            unscoped["scope"], {"files": "all", "roots": None, "output_folders": 2}
+            _scope_part(unscoped["scope"]),
+            {"files": "all", "roots": None, "output_folders": 2},
         )
         self.assertIn("Scan started · 2 output folders · all files", unscoped["log"][0])
 
@@ -452,7 +459,7 @@ class TestPerSourceScope(ScanScopeTestCase):
         self.assertEqual(final["directories"], ["output/a", "output/b"])
         self.assertEqual(final["added"], 2)
         self.assertEqual(
-            self.api._scan_job.scope,
+            _scope_part(self.api._scan_job.scope),
             {"files": "all", "roots": None, "output_folders": 2},
         )
 

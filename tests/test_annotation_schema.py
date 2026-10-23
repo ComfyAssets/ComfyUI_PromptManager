@@ -30,6 +30,11 @@ FILES = "media_annotation_files"
 BYTES = "media_annotation_bytes"
 IMAGE_TAGS = "media_image_tags"
 TABLES = (METADATA, FILES, BYTES, IMAGE_TAGS)
+REVIEW_TABLES = (
+    "media_review_decisions",
+    "media_review_items",
+    "media_review_metadata",
+)
 # The exact DDL the plan pins; the module must produce precisely these objects.
 DDL = {
     METADATA: (
@@ -202,10 +207,14 @@ class AnnotationSchemaTests(unittest.TestCase):
         )
 
     def drop_group(self, path):
-        """Remove the group from a closed database file (an old backup)."""
+        """Remove the group from a closed database file (an old backup).
+
+        The review queue group cites annotation bytes and predates nothing, so
+        an old backup lacks it as well.
+        """
         with closing(sqlite3.connect(path)) as raw, raw:
             raw.execute("PRAGMA foreign_keys=OFF")
-            for table in reversed(TABLES):
+            for table in REVIEW_TABLES + tuple(reversed(TABLES)):
                 raw.execute(f"DROP TABLE {table}")
 
     def test_fresh_install_and_reopen_is_idempotent(self):

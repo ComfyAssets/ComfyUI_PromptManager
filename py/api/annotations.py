@@ -13,6 +13,7 @@ import datetime
 import functools
 import os
 import re
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -73,6 +74,9 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 # secrets.token_urlsafe(32) is 43 characters; the bound only rejects junk.
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# The store is created on first use by the event loop, the scan's executor or
+# the monitor's worker (Needs review), so its creation is serialized.
+_CAPTURE_STORE_LOCK = threading.Lock()
 
 _PREVIEW_TYPES = {
     ".png": "image/png",
@@ -259,31 +263,46 @@ class AnnotationRoutesMixin:
         Created lazily so an API object that never observes a file (most tests,
         a server that never opens the Tag dialog) owns no temp directory. A
         restore of the database dooms every capture (``invalidate_all``).
+        Thread-safe: Needs review recording calls it off the event loop.
+        Raises ``CaptureError`` after ``close_annotation_captures``.
         """
-        if self._captures is None:
-            self._captures = CaptureStore()
-        if self._captures_unsubscribe is None:
-            self._captures_unsubscribe = subscribe_history_restore(
-                self.db.model.db_path, self._invalidate_captures
-            )
-        return self._captures
+        with _CAPTURE_STORE_LOCK:
+            if getattr(self, "_captures_closed", False):
+                # A recording still in flight at shutdown must not create a
+                # new temp directory after the cleanup removed the old one.
+                raise CaptureError("The capture store is closed")
+            if self._captures is None:
+                self._captures = CaptureStore()
+            if self._captures_unsubscribe is None:
+                self._captures_unsubscribe = subscribe_history_restore(
+                    self.db.model.db_path, self._invalidate_captures
+                )
+            return self._captures
 
     def _invalidate_captures(self) -> None:
         store = self._captures
         if store is not None:
             store.invalidate_all()
 
-    def close_annotation_captures(self) -> None:
-        """Remove every capture file and the owned directory. Idempotent."""
-        unsubscribe, self._captures_unsubscribe = self._captures_unsubscribe, None
+    def close_annotation_captures(self, *, final: bool = False) -> None:
+        """Remove every capture file and the owned directory. Idempotent.
+
+        Taken under the store lock. ``final`` (the shutdown cleanup) also makes
+        ``_capture_store`` refuse to create another store, so a recording
+        still in flight cannot leak a new temp directory after it.
+        """
+        with _CAPTURE_STORE_LOCK:
+            if final:
+                self._captures_closed = True
+            unsubscribe, self._captures_unsubscribe = self._captures_unsubscribe, None
+            store, self._captures = self._captures, None
         if unsubscribe is not None:
             unsubscribe()
-        store, self._captures = self._captures, None
         if store is not None:
             store.close()
 
     async def cleanup_annotation_captures(self, app: web.Application) -> None:
-        self.close_annotation_captures()
+        self.close_annotation_captures(final=True)
 
     # -- shared request steps --------------------------------------------------
 
@@ -329,7 +348,10 @@ class AnnotationRoutesMixin:
         root, error = self._scoped_root(index, scope)
         if error is not None:
             return error
-        store = self._capture_store()
+        try:
+            store = self._capture_store()
+        except CaptureError as exc:  # the server is shutting down
+            return _capture_error(exc)
         try:
             epoch = await self._run_in_executor(self.db.get_execution_epoch)
             capture = await _settled(
