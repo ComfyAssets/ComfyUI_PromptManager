@@ -289,8 +289,10 @@ test('summaries are validated and the copy follows the spec', async () => {
 
     const scan = parseJob(summary({ progress: 42, processed: 8240, total: 19622, counters: { added: 1, errors: 1 } }));
     assert.deepEqual(pillParts(scan), { label: 'Scanning · 42%', files: ' · 8,240 / 19,622', text: 'Scanning · 42% · 8,240 / 19,622' });
-    assert.equal(pillParts({ ...scan, total: 0 }).text, 'Scanning · 42%');
-    assert.equal(pillParts({ ...scan, kind: 'thumbnails', title: 'Thumbnails' }).text, 'Thumbnails · 42% · 8,240 / 19,622');
+    // D111: without a total the progress is indeterminate, so the pill shows no percentage.
+    assert.equal(pillParts({ ...scan, total: 0 }).text, 'Scanning');
+    // A kind without a pill verb shows its title (D111: thumbnails have their own, see workspace-activity-kinds.test.js).
+    assert.equal(pillParts({ ...scan, kind: 'backup', title: 'Backup' }).text, 'Backup · 42% · 8,240 / 19,622');
     assert.equal(finishToast({ ...scan, state: 'finished' }), 'Scan finished · 1 added · 1 error');
     assert.equal(finishToast({ ...scan, state: 'cancelled' }), 'Scan cancelled · 1 added');
     assert.equal(finishToast({ ...scan, state: 'failed' }), 'Scan failed · 1 added · 1 error');
@@ -332,7 +334,8 @@ test('image-tags jobs get their own tiles outcomes and pill verb', async () => {
         'Add tags to images finished · 0 tagged · 0 errors');
 });
 
-test('unknown kinds keep the generic view', async () => {
+// D111 (S5): an unknown kind no longer borrows the scan's tiles (S1 review M6, S2 review M3); it has none.
+test('unknown kinds get the generic view without the scan tiles', async () => {
     const { jobView } = await source;
     const scan = jobView('scan');
     assert.deepEqual(scan.tiles, [['added', 'Added to Library', 'added'], ['known', 'Already known', ''],
@@ -343,7 +346,7 @@ test('unknown kinds keep the generic view', async () => {
     assert.deepEqual([scan.log, scan.cancel], ['Scan log', 'Cancel scan']);
     for (const kind of ['maintenance', '', 'constructor', '__proto__']) {
         const view = jobView(kind);
-        assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [scan.tiles, scan.outcomes, [...scan.openable]]);
+        assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [[], [], []]);
         assert.deepEqual([view.log, view.cancel], ['Job log', 'Cancel job']);
     }
 });

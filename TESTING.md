@@ -1352,8 +1352,8 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
   the selection bar's tagging shows is the concept's or the plan's (D85, D90, D91).
 - **D89** (plan D66, Activity for the `image-tags` job): the job's Activity item and its
   view are the scan's (D54, D56, D57, D59) with the job kind's own counters, from one
-  per-kind table (`JOB_VIEWS` in `activity-store.mjs`; a kind without one keeps the
-  scan's tiles under "Job log" and "Cancel job"). The titles are the server's: "Add
+  per-kind table (`activity-kinds.mjs` since S5, D111; a kind without one gets no
+  tiles, "Job log" and "Cancel job"). The titles are the server's: "Add
   tags to images" and "Auto-tag images".
   - The pill's verb is "Tagging" ("Tagging · 41% · 8,240 / 19,622").
   - The item line and the view's heading line read "Started HH:MM · N images · closing
@@ -1386,7 +1386,7 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
     finished · N tagged · M errors", "<title> cancelled · N tagged" or "<title> failed ·
     N tagged · M errors".
   - Tests: `tests/js/workspace-activity-store.test.js` ("image-tags jobs get their own
-    tiles outcomes and pill verb", "unknown kinds keep the generic view");
+    tiles outcomes and pill verb", "unknown kinds get the generic view without the scan tiles");
     `tests/browser/workspace-activity.spec.mjs` ("an image tagging job shows Tagged
     Unchanged Skipped Errors and opens tagged rows", "cancel tagging stops at a file
     boundary", "the report download names the kind", on fake `image-tags` jobs from
@@ -2031,7 +2031,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121–D128 assigned):
+Recorded deviations (plan D60–D66, D79–D81 renumbered D92–D98 and D111–D113; D121–D128 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2111,6 +2111,26 @@ Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121�
   legacy gallery's `/gallery/rescan` and toasts "Files refreshed. N files in M output
   folders." or "Files could not be refreshed. Try again.". The concept's "sample path"
   note is prototype copy and is dropped.
+- **D111** (Activity, S5): each job kind's pill verb, toasts, line, tiles, outcomes,
+  openable rows and labels come from one descriptor table (`activity-kinds.mjs`;
+  `activity-store.mjs` re-exports it). The scan's (D56) and image tagging's (D89) are
+  unchanged. A thumbnail job reads "Generating thumbnails · N% · a / b" in the pill,
+  counts Generated (green), Skipped and Errors (red), lists Generated, Errors, Skipped
+  (Generated and Skipped rows open the viewer), says "Thumbnails finished · N generated ·
+  M errors" ("cancelled · N generated", "failed · …") and keeps "Job log" and "Cancel
+  job". Every other kind (the health check, a kind this page does not know) gets the
+  generic descriptor: title-based toasts and no tiles or Results, so it never shows the
+  scan's zero tiles (S1 review M6, S2 review M3). A running job without a known total
+  has an indeterminate `<progress>` (no `value`) and a pill without a percentage. Only a
+  running job the server can cancel shows Cancel. Tests:
+  `tests/js/workspace-activity-kinds.test.js`, and in `workspace-activity.spec.mjs` "a
+  thumbnail job shows Generated Skipped Errors, its pill verb and its toasts" and "a held
+  legacy job and the health check show no tiles, no Results and no made-up percentage".
+- **D112** (Activity, S5): a legacy-page operation held on the registry (not
+  cancellable, no outcome groups) reads as its server title ("Database restore (admin
+  page)", "Thumbnail clear (gallery page)"), with no tiles, no Results, no Cancel, an
+  indeterminate bar while it runs and "<title> finished." when it ends, whatever its
+  kind (the gallery's clear is a `thumbnails` hold).
 - **D113** (Sources): the Worker threads range ends at the server's `cpu_count` (the
   concept's fixed `max=16`) and shows the server's real `worker_threads` (the concept's
   sample 4).

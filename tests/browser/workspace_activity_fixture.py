@@ -5,8 +5,11 @@ reading files, so a test sets its progress and counters exactly:
 
 - ``POST /__test__/jobs/start`` starts one (``kind``, ``title``, ``total``,
   ``output_folders``; for ``kind: "image-tags"`` the image tagging job's
-  groups and its ``{mode, images}`` scope instead) and returns its summary,
-  or 409 while one runs;
+  groups and its ``{mode, images}`` scope instead; for ``kind:
+  "thumbnails"`` the thumbnail job's groups, ``guarded`` admission and its
+  ``{mode, size, quality, output_folders}`` scope; for ``kind: "health"`` the
+  health check's: no groups, ``read``, not cancellable, with its status
+  line) and returns its summary, or 409 while one runs;
 - ``POST /__test__/jobs/{id}/step`` records ``records`` (``{group, path,
   root, root_index, detail}`` file outcomes, counted, listed and logged as the scan
   records them) and ``bulk`` (``{group, count, root}``: ``count`` numbered
@@ -14,9 +17,10 @@ reading files, so a test sets its progress and counters exactly:
   the progress to every subscriber;
 - ``POST /__test__/jobs/{id}/finish`` ends it as ``finished``, ``cancelled``
   or ``failed``; a cancel through the real route ends it ``cancelled``;
-- ``POST /__test__/jobs/hold`` opens a legacy-page hold (``kind``, ``title``):
-  a running, non-cancellable ``records`` job, as a legacy restore or
-  maintenance request takes, until ``finish`` ends it;
+- ``POST /__test__/jobs/hold`` opens a legacy-page hold (``kind``, ``title``,
+  ``admission``, default ``records``): a running, non-cancellable job with no
+  outcome groups, as a legacy restore, maintenance or thumbnail clear request
+  takes, until ``finish`` ends it;
 - ``POST /__test__/jobs/restart`` acts out a ComfyUI restart: the open job
   streams drop without a final event and the registry starts empty.
 """
@@ -35,6 +39,9 @@ PREFIXES = {"added": "+", "known": "=", "review": "?", "errors": "!"}
 PREFIXES["no_metadata"] = "-"
 # The image tagging job's groups (#249 PR D), logged with the runner's prefixes.
 PREFIXES.update({"tagged": "+", "unchanged": "=", "skipped": "-"})
+# The thumbnail job's (#249 System S5).
+PREFIXES["generated"] = "+"
+HEALTH_STATUS_LINE = "Checking the database and image links"
 ROOT_INDEXES = {"output": 0, "input": 1}
 
 
@@ -80,9 +87,12 @@ def outcome_records(data):
 
 def register_activity_commands(app, routes, api):
     from py.api.jobs import (
+        HEALTH_JOB_KIND,
         IMAGE_TAG_GROUP_NAMES,
         IMAGE_TAG_JOB_KIND,
         SCAN_GROUP_NAMES,
+        THUMBNAIL_GROUP_NAMES,
+        THUMBNAILS_JOB_KIND,
         JobBusy,
         JobRegistry,
     )
@@ -138,7 +148,21 @@ def register_activity_commands(app, routes, api):
         data = await body(request)
         ending = asyncio.get_running_loop().create_future()
         kind = str(data.get("kind", "scan"))
-        if kind == IMAGE_TAG_JOB_KIND:
+        admission, cancellable = "records", True
+        if kind == THUMBNAILS_JOB_KIND:
+            title = "Thumbnail generation"
+            scope = {
+                "mode": str(data.get("mode", "missing")),
+                "size": count(data.get("size"), 512),
+                "quality": str(data.get("quality", "medium")),
+                "output_folders": count(data.get("output_folders"), 2),
+            }
+            groups = THUMBNAIL_GROUP_NAMES
+            admission = "guarded"
+        elif kind == HEALTH_JOB_KIND:
+            title, scope, groups = "Health check", {}, ()
+            admission, cancellable = "read", False
+        elif kind == IMAGE_TAG_JOB_KIND:
             title = "Add tags to images"
             scope = {
                 "mode": str(data.get("mode", "add")),
@@ -156,7 +180,8 @@ def register_activity_commands(app, routes, api):
             job = api._jobs.start(
                 kind,
                 str(data.get("title", title)),
-                record_changing=True,
+                admission=admission,
+                cancellable=cancellable,
                 scope=scope,
                 runner=fake_runner(ending),
                 groups=groups,
@@ -164,6 +189,8 @@ def register_activity_commands(app, routes, api):
         except JobBusy:
             raise web.HTTPConflict()
         job.update(total=count(data.get("total")))
+        if kind == HEALTH_JOB_KIND:
+            job.update(status_line=HEALTH_STATUS_LINE)
         endings[job.id] = ending
         return web.json_response({"success": True, "job": job.summary()})
 
@@ -178,7 +205,7 @@ def register_activity_commands(app, routes, api):
             async with api._jobs.hold(
                 str(data.get("kind", "restore")),
                 str(data.get("title", "Database restore (admin page)")),
-                admission="records",
+                admission=str(data.get("admission", "records")),
             ) as job:
                 entered.set_result(job)
                 state = await ending

@@ -44,7 +44,7 @@
   "gallery.js": {
     "lines": 41,
     "branches": 63,
-    "functions": 44,
+    "functions": 45,
     "statements": 41
   },
   "html-escape.js": {
@@ -161,6 +161,12 @@
     "functions": 98,
     "statements": 97
   },
+  "workspace/activity-kinds.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/activity-scan.mjs": {
     "lines": 96,
     "branches": 78,
@@ -175,7 +181,7 @@
   },
   "workspace/activity.mjs": {
     "lines": 96,
-    "branches": 87,
+    "branches": 90,
     "functions": 98,
     "statements": 96
   },

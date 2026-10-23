@@ -1008,3 +1008,77 @@ test('the report download names the kind', async ({ page, request }) => {
     expect(report.outcomes.tagged.rows.map(row => [row.path, row.detail])).toEqual([['sub/a.png', 'Added 1 tag']]);
     await expect(toast(page)).toHaveText('Job report downloaded.');
 });
+
+// D111 (System S5): each kind's own descriptor. A thumbnail job counts Generated (green), Skipped and Errors (red),
+// its pill says "Generating thumbnails" and its toasts "Thumbnails finished · N generated · M errors".
+const THUMB_JOB = { kind: 'thumbnails', total: 10, output_folders: 2 };
+
+test('a thumbnail job shows Generated Skipped Errors, its pill verb and its toasts', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request, THUMB_JOB);
+    await step(request, job.id, { processed: 4, records: [
+        { group: 'generated', path: 'sub/a.png', root: 'output', detail: 'Preview written' },
+        { group: 'skipped', path: 'b.png', root: 'input', detail: 'Preview already up to date' },
+        { group: 'errors', path: 'broken.png', root: 'output', detail: 'Not a valid image file' },
+    ] });
+    await page.goto(`${workspace}#/images`);
+    await expect(pill(page)).toHaveText('Generating thumbnails · 40% · 4 / 10');
+    await page.goto(`${workspace}#/activity`);
+    await expect(items(page).first().locator('p')).toHaveText(/^Started \d\d:\d\d · 2 output folders · closing this view does not cancel it$/);
+    await expect(items(page).first().locator('progress')).toHaveAttribute('value', '40');
+    await openJob(page, job.id);
+    await expect(heading(page).locator('h1')).toHaveText('Thumbnail generation');
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report', 'Cancel job']);
+    expect(await tileValues(page)).toEqual([['stat added', 'Generated', '1'], ['stat', 'Skipped', '1'], ['stat bad', 'Errors', '1']]);
+    await expect(outcomeButtons(page)).toHaveText(['Generated1', 'Errors1', 'Skipped1']);
+    await expect(fileRows(page).first().locator('.path')).toHaveText('sub/a.png');
+    expect(await fileRows(page).first().evaluate(node => node.localName)).toBe('button');
+    await outcomeButtons(page).filter({ hasText: 'Errors' }).click();
+    expect(await fileRows(page).first().evaluate(node => node.localName)).toBe('div');
+    await expect(scanLog(page).locator('summary')).toHaveText('● Job log — raw detail, click to show');
+
+    await finish(request, job.id);
+    await expect(toast(page)).toHaveText('Thumbnails finished · 1 generated · 1 error');
+    await expect(heading(page).locator('p.muted')).toHaveText(/^Finished \d\d:\d\d · 1 generated · 1 error$/);
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
+});
+
+test('a held legacy job and the health check show no tiles, no Results and no made-up percentage', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const response = await request.post('/__test__/jobs/hold',
+        { data: { kind: 'thumbnails', title: 'Thumbnail clear (gallery page)', admission: 'guarded' } });
+    await expect(response).toBeOK();
+    const held = (await response.json()).job;
+    await page.goto(`${workspace}#/images`);
+    // D112: the pill names the held operation and shows no percentage.
+    await expect(pill(page)).toHaveText('Thumbnail clear (gallery page)');
+    await page.goto(`${workspace}#/activity`);
+    const item = items(page).filter({ has: page.getByRole('link', { name: /Thumbnail clear \(gallery page\)$/ }) });
+    await expect(item.locator('p')).toHaveText(/^Started \d\d:\d\d · closing this view does not cancel it$/);
+    await expect(item.locator('progress')).toHaveCount(1);
+    await expect(item.locator('progress')).not.toHaveAttribute('value');
+    await expect(item.getByRole('button', { name: 'Cancel job', exact: true })).toHaveCount(0);
+    await item.getByRole('link').click();
+    await expect(heading(page).locator('h1')).toHaveText('Thumbnail clear (gallery page)');
+    await expect(progressSection(page).locator('progress')).not.toHaveAttribute('value');
+    await expect(progressSection(page).locator('dl.stat-row')).toHaveCount(0);
+    await expect(resultsSection(page)).toHaveCount(0);
+    await expect(scanLog(page)).toHaveCount(1);
+    await finish(request, held.id);
+    await expect(toast(page)).toHaveText('Thumbnail clear (gallery page) finished.');
+    await expect(heading(page).locator('p.muted')).toHaveText(/^Finished \d\d:\d\d$/);
+    await expect(progressSection(page).locator('progress')).toHaveAttribute('value', '100');
+
+    // The health check (a read job of its own kind): its status line, no tiles, no Cancel.
+    const health = await startJob(request, { kind: 'health', total: 0 });
+    await openJob(page, health.id);
+    await expect(heading(page).locator('h1')).toHaveText('Health check');
+    await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('Checking the database and image links');
+    await expect(progressSection(page).locator('progress')).not.toHaveAttribute('value');
+    await expect(progressSection(page).locator('dl.stat-row')).toHaveCount(0);
+    await expect(resultsSection(page)).toHaveCount(0);
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
+    await expect(pill(page)).toHaveText('Health check');
+    await finish(request, health.id);
+    await expect(toast(page)).toHaveText('Health check finished.');
+});

@@ -12,13 +12,15 @@
  *   "Cancelled", "Failed", "Ended"), its line says when and what, and a running job shows its `<progress>` and
  *   "Cancel job" (no "Simulate completion").
  * - D89: an image tagging job's line names its images and, once ended, "N tagged · M errors".
+ * - D111: what a line says (scope, counters, what a cancel kept) is the job kind's descriptor (activity-kinds.mjs); a
+ *   job without a known total shows an indeterminate `<progress>`, and only a job the server can stop shows Cancel.
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { navigateTo } from './state.mjs';
 import { pageHeading } from './heading.mjs';
 import { showWorkspaceToast } from './toast.mjs';
-import { countOf, noun } from './plural.mjs';
-import { pillParts, outcomeLine, addedOf, taggedOf, LOST_DETAIL } from './activity-store.mjs';
+import { pillParts, outcomeLine, LOST_DETAIL } from './activity-store.mjs';
+import { viewOf, canCancel, showProgress } from './activity-kinds.mjs';
 
 export const ACTIVITY_DESCRIPTION = 'Scans, tagging, downloads and maintenance share one history.';
 export const EMPTY_ACTIVITY = 'No jobs have run since ComfyUI started. Scans and other long operations appear here.';
@@ -45,20 +47,9 @@ export function clockTime(seconds) {
 
 const join = parts => parts.filter(Boolean).join(' · ');
 
-const whole = value => Number.isSafeInteger(value) && value >= 0;
-
-/** What a job covers: "2 output folders" for a scan, "4 images" for image tagging (D89). */
-function scopeLine(job) {
-    // D89: grouped as the server writes its lines ("19,622 images").
-    const images = job.scope?.images;
-    if (job.kind === 'image-tags') return whole(images) ? `${images.toLocaleString('en-US')} ${noun(images, 'image')}` : '';
-    const folders = job.scope?.output_folders;
-    return whole(folders) ? countOf(folders, 'output folder') : '';
-}
-
-/** What a cancelled job kept: "N added" for a scan, "N tagged" for image tagging (D89). */
-const KEPT = Object.freeze({ __proto__: null, scan: addedOf, 'image-tags': taggedOf }); // D89
-const keptOf = job => KEPT[job.kind]?.(job) ?? '';
+/** What a job covers ("2 output folders", "4 images") and what a cancelled one kept ("N added"), by kind (D111). */
+const scopeLine = job => viewOf(job).scope(job);
+const keptOf = job => viewOf(job).kept(job);
 
 /** The item's line under its title, by state. */
 export function jobDetail(job) {
@@ -151,15 +142,14 @@ function itemFor(job, scope) {
         // parentNode, not isConnected: on the first render the item is not in the page yet, so a job that had already
         // ended when Activity opened kept its Cancel job (and a running one's progress moved after its actions).
         if (running) {
-            progress.value = next.progress;
-            progress.textContent = `${next.progress}%`;
+            showProgress(progress, next); // D111: no value while the total is unknown
             progress.setAttribute('aria-label', `${next.title} progress`);
             if (!progress.parentNode) item.insertBefore(progress, actions.parentNode ? actions : null);
         } else {
             progress.remove();
         }
         // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel job.
-        if (running && next.cancellable) {
+        if (canCancel(next)) {
             if (!actions.parentNode) item.append(actions);
         } else if (actions.parentNode) {
             // A focused Cancel job that goes away hands its focus to the item's title link, never to the page body.

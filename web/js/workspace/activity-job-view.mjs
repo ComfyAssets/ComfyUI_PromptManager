@@ -13,7 +13,11 @@
  * - Log: `details.term` "Scan log", collapsed, holding the raw timestamped lines in `pre[tabindex=0]`.
  * - D89: the tiles, the outcome list, the openable rows and the log and cancel labels are the job kind's (`jobView`):
  *   an image tagging job shows Tagged, Unchanged, Skipped and Errors, opens Tagged and Unchanged rows, and reads
- *   "Tagging log" and "Cancel tagging"; another kind keeps the scan's tiles as "Job log" and "Cancel job".
+ *   "Tagging log" and "Cancel tagging".
+ * - D111: the kind's descriptor (activity-kinds.mjs `viewOf`) decides them for every kind: a thumbnail job counts
+ *   Generated, Skipped and Errors; a kind without groups (the health check, a held legacy-page operation) shows no
+ *   tiles and no Results, never another kind's zeros. A job without a known total has an indeterminate `<progress>`;
+ *   only a job the server can stop shows Cancel.
  *
  * The summary follows the Activity store (one SSE stream per running job); the listed rows and the log are read from
  * `GET /prompt_manager/jobs/<id>` at most once a second while the job runs, and once more when it ends.
@@ -22,7 +26,8 @@ import { createButton } from '../shared/toolkit/core.js';
 import { pageHeading } from './heading.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
-import { parseJob, jobView, JOB_VIEWS, JOBS_URL, LOST_DETAIL } from './activity-store.mjs';
+import { parseJob, JOB_VIEWS, JOBS_URL, LOST_DETAIL } from './activity-store.mjs';
+import { viewOf, canCancel, showProgress } from './activity-kinds.mjs';
 import { jobDetail, CANCEL_FAILED_TOAST } from './activity.mjs';
 import { downloadJobReport } from './activity-scan.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
@@ -70,7 +75,10 @@ export function parseDetail(raw) {
 /** The progress line: the server's while running, then what the job got through. */
 export function progressLine(job) {
     const files = `${number(job.processed)} of ${number(job.total)} ${noun(job.total, 'file')}`;
-    if (job.state === 'running') return job.status_line || `${job.progress}%`;
+    // D111: a job that never counted files (a held legacy job, the health check) says only what the server says.
+    const counted = job.total > 0;
+    if (job.state === 'running') return job.status_line || (counted ? `${job.progress}%` : '');
+    if (!counted && (job.state === 'finished' || job.state === 'cancelled')) return job.status_line;
     if (job.state === 'finished') return `${files} processed`;
     if (job.state === 'cancelled') return `Cancelled after ${files}`;
     if (job.state === 'lost') return LOST_DETAIL;
@@ -96,7 +104,7 @@ export function filterRows(rows, filter) {
 
 /** The first outcome with files, so a view opens on what happened; the first outcome when nothing has yet. */
 export function defaultOutcome(counters, outcomes = JOB_VIEWS.scan.outcomes) {
-    return (outcomes.find(([group]) => (counters[group] ?? 0) > 0) ?? outcomes[0])[0];
+    return (outcomes.find(([group]) => (counters[group] ?? 0) > 0) ?? outcomes[0])?.[0] ?? null;
 }
 
 function section(title, id) {
@@ -177,9 +185,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const viewer = createMediaViewer({ api, container: main, parentScope: scope, inspectionController: inspection,
         sender: createPromptSender({ scope }), onSelect: image => inspection.select(image) });
 
-    /** The tiles and the outcome list of the job's kind, built once. */
-    function layout(kind) {
-        view = jobView(kind); // D89
+    /** The tiles and the outcome list of the job's kind, built once (D89, D111: only the groups it counts). */
+    function layout(job) {
+        view = viewOf(job);
+        if (!view.tiles.length) stats.remove();
         for (const [group, label, tone] of view.tiles) {
             const tile = element('div', undefined, tone ? `stat ${tone}` : 'stat');
             const value = element('dd', '0');
@@ -201,10 +210,11 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     function showBody(job) {
         if (mounted) return;
         mounted = true;
-        if (!view) layout(job.kind);
+        if (!view) layout(job);
         missing.remove();
         parts.actions.append(download, cancel);
-        main.append(progressPart.node, resultsPart.node, log);
+        // A kind without outcome groups has no Results to browse (D111).
+        main.append(...(view.outcomes.length ? [progressPart.node, resultsPart.node, log] : [progressPart.node, log]));
         selected ??= defaultOutcome(job.counters, view.outcomes);
     }
 
@@ -240,6 +250,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     }
 
     function renderRows(job) {
+        if (!view.outcomes.length) return;
         const rows = detail?.outcomes[selected] ?? [];
         const openable = view.openable.has(selected);
         const wanted = filterRows(rows.map((row, index) => ({ ...row, index })), input.value);
@@ -275,7 +286,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         if (lost && document.activeElement === download) parts.h1.focus();
         download.disabled = lost;
         // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel.
-        if (job.state === 'running' && job.cancellable) {
+        if (canCancel(job)) {
             if (!cancel.isConnected) parts.actions.append(cancel);
         } else if (cancel.isConnected) {
             // A focused Cancel that goes away hands its focus to the job's heading, never to the page body.
@@ -283,8 +294,8 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
             cancel.remove();
         }
         status.textContent = progressLine(job);
-        bar.value = job.progress;
-        bar.textContent = `${job.progress}%`;
+        // D111: no value while the total is unknown; a job that ended with nothing counted shows how it ended.
+        showProgress(bar, job.total > 0 || job.state !== 'finished' ? job : { ...job, progress: 100 });
         bar.setAttribute('aria-label', scan ? 'Scan progress' : `${job.title} progress`);
         for (const [group, value] of tileValues) value.textContent = number(job.counters[group] ?? 0);
         for (const [group, button] of buttons) {
