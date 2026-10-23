@@ -112,7 +112,7 @@ test('Scan changes opens it with that one source ("1 output folder") and starts 
     await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
     // The toast says it started (or, for a scan this quick, that it already finished); Activity shows its progress.
     await expect(toast(page)).toHaveText(/^Scan (started\.|finished · )/);
-    expect(bodies).toEqual([{ scope: 'new', roots: [1] }]);
+    expect(bodies).toEqual([{ scope: 'new', roots: [1], paths: ['input'] }]);
     const id = page.url().split('/').pop();
     // The job walks only that source (the count is recorded once the walk has listed it).
     await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.scope)
@@ -165,12 +165,14 @@ test('invalid source shows the server reason', async ({ page, request }) => {
     const layout = await openSources(page);
     await layout.getByRole('button', { name: '+ Add source', exact: true }).click();
     const field = dialog(page).locator('#action-input');
-    for (const [path, reason] of [
-        ['output/not-there', 'Gallery root does not exist'],
-        ['/etc', OUTSIDE_REASON],
+    for (const [path, reason, submit] of [
+        ['output/not-there', 'Gallery root does not exist', 'click'],
+        // Enter in the field adds too (M6).
+        ['/etc', OUTSIDE_REASON, 'Enter'],
     ]) {
         await field.fill(path);
-        await dialog(page).getByRole('button', { name: 'Add', exact: true }).click();
+        if (submit === 'Enter') await field.press('Enter');
+        else await dialog(page).getByRole('button', { name: 'Add', exact: true }).click();
         await expect(dialog(page).locator('p.small[role="alert"]')).toHaveText(reason);
         await expect(field).toHaveAttribute('aria-invalid', 'true');
         await expect(field).toHaveValue(path);
@@ -253,10 +255,17 @@ test('Watch for new outputs saves monitoring_enabled; a restart applies it', asy
     await saveButton(page).click();
     const answer = await (await saved).json();
     expect(answer.restart_required_fields).toEqual(['monitoring_enabled']);
-    await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
-    // Saved for the next start: the running observer keeps watching until ComfyUI restarts, and the list says so.
+    // D-NEW-S4-2: saved for the next start, and the status says a restart applies it.
+    await expect(statusOf(page)).toHaveText('Saved to the server configuration. Restart ComfyUI to apply: Watch for new outputs.');
+    // The running observer keeps watching until ComfyUI restarts, and the list says so.
     const { settings, monitor } = await serverJson(request, SETTINGS_URL);
     expect([settings.monitoring_enabled, monitor.observer_alive]).toEqual([false, true]);
+    await expect(sourceList(page).locator('.operation p')).toHaveText(['output · watching until restart', 'input · watching until restart']);
+    await expect(sourceList(page).locator('.operation .row-actions > button:first-child')).toHaveText(['Scan changes', 'Scan changes']);
+    // Switched back on before the restart: the observer still runs, so nothing waits for one.
+    await monitoring.check();
+    await saveButton(page).click();
+    await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
     await expect(sourceList(page).locator('.operation p')).toHaveText(['output · watching', 'input · watching']);
 });
 
@@ -318,6 +327,15 @@ test('a save refused by a running scan shows the busy link toast', async ({ page
     // The draft is kept for the next Save, and the server still has both sources.
     await expect(sourceList(page).locator('.operation')).toHaveCount(1);
     expect((await serverJson(request, SETTINGS_URL)).sources.configured).toHaveLength(2);
+    // An answer that does not name its job (an older server): the toast names the running one from the job list.
+    await page.route(`**${SETTINGS_URL}`, route => (route.request().method() === 'POST'
+        ? route.fulfill({ status: 409, json: { success: false, code: 'busy', error: 'Scan for metadata already running' } })
+        : route.continue()));
+    await page.locator('#workspace-toast').evaluate(node => { node.textContent = ''; });
+    await saveButton(page).click();
+    await expect(toast(page)).toHaveText('Another job is running: Scan for metadata.');
+    await expect(toast(page).getByRole('link', { name: 'Scan for metadata', exact: true })).toHaveAttribute('href', `#/activity/${running.job.id}`);
+    await page.unroute(`**${SETTINGS_URL}`);
     await request.post(`/__test__/jobs/${running.job.id}/finish`, { data: { state: 'finished' } });
 });
 
@@ -334,4 +352,50 @@ test('a source list that cannot be read says so and retries', async ({ page }) =
     failing = false;
     await sourceList(page).getByRole('button', { name: 'Retry', exact: true }).click();
     await expect(sourceList(page).locator('.operation')).toHaveCount(2);
+});
+
+test('a scan from a list that changed since it was read starts nothing, says why and reads the list again', async ({ page, request }) => {
+    await openSources(page);
+    // The legacy page (or another tab) removes ComfyUI output: the page's "input" is index 1, now past the end.
+    await expect(await request.post(SETTINGS_URL, { data: { gallery_root_paths: ['input'] } })).toBeOK();
+    const refused = page.waitForResponse(response => response.url().endsWith('/prompt_manager/jobs/scan'));
+    await sourceRow(page, 'ComfyUI input').getByRole('button', { name: 'Scan folder', exact: true }).click();
+    await dialog(page).getByRole('button', { name: 'Start scan', exact: true }).click();
+    const answer = await refused;
+    expect([answer.status(), (await answer.json()).code]).toEqual([409, 'sources-changed']);
+    await expect(toast(page)).toHaveText('The sources changed since they were loaded. Reload them.');
+    // No scan started (the other save ran as its own source-change hold).
+    expect((await serverJson(request, '/prompt_manager/jobs')).jobs.map(job => job.kind)).toEqual(['source_change']);
+    // Read again: the one source is index 0 now, and its scan starts.
+    await expect.poll(rowsOf.bind(null, page)).toEqual([['ComfyUI input', 'input · manual scan', ['Scan folder', 'Remove']]]);
+    await expect(statusOf(page)).toHaveText('No unsaved changes.');
+    const started = page.waitForRequest(item => item.method() === 'POST' && item.url().endsWith('/prompt_manager/jobs/scan'));
+    await sourceRow(page, 'ComfyUI input').getByRole('button', { name: 'Scan folder', exact: true }).click();
+    await dialog(page).getByRole('button', { name: 'Start scan', exact: true }).click();
+    expect((await started).postDataJSON()).toEqual({ scope: 'new', roots: [0], paths: ['input'] });
+    await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+});
+
+test('a save refused for one unusable source names it and marks its row', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/missing-source', { data: { inside: true } })).toBeOK();
+    await openSources(page);
+    await expect(sourceRow(page, 'unplugged').locator('p')).toHaveText('output/unplugged · manual scan');
+    // The drive is unplugged after the page read the list; removing another source resends the whole list.
+    await expect(await request.post('/__test__/system/unplug')).toBeOK();
+    await sourceRow(page, 'ComfyUI input').getByRole('button', { name: 'Remove', exact: true }).click();
+    const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(SETTINGS_URL));
+    await saveButton(page).click();
+    const answer = await saved;
+    expect(answer.status()).toBe(400);
+    expect(await answer.json()).toMatchObject({ code: 'invalid-source', source: 'output/unplugged', index: 1 });
+    await expect(statusOf(page)).toHaveText("output/unplugged can't be used: Gallery root does not exist. Remove it or reconnect it, then save.");
+    await expect(sourceRow(page, 'unplugged')).toHaveAttribute('aria-invalid', 'true');
+    await expect(sourceList(page).locator('.operation[aria-invalid="true"]')).toHaveCount(1);
+    expect((await serverJson(request, SETTINGS_URL)).sources.configured).toHaveLength(3);
+    // Removed, the list saves.
+    await sourceRow(page, 'unplugged').getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect(sourceList(page).locator('.operation[aria-invalid="true"]')).toHaveCount(0);
+    await saveButton(page).click();
+    await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
+    expect((await serverJson(request, SETTINGS_URL)).sources.configured.map(source => source.path)).toEqual(['output']);
 });

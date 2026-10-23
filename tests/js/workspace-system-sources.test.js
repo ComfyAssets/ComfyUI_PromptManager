@@ -24,14 +24,17 @@ test('each effective source is the concept row: label, "<path> · watching|manua
     const { rows, note } = sourceRows({ sources: STATUS, saved, current: saved });
     assert.equal(note, null);
     assert.deepEqual(rows, [
-        { key: 'output', title: 'ComfyUI output', description: 'output · watching', scan: { label: 'Scan changes', root: 0 }, remove: 'output' },
-        { key: 'input', title: 'ComfyUI input', description: 'input · manual scan', scan: { label: 'Scan folder', root: 1 }, remove: 'input' },
+        { key: 'output', title: 'ComfyUI output', description: 'output · watching', scan: { label: 'Scan changes', root: 0, path: 'output' },
+            remove: 'output' },
+        { key: 'input', title: 'ComfyUI input', description: 'input · manual scan', scan: { label: 'Scan folder', root: 1, path: 'input' },
+            remove: 'input' },
     ]);
 });
 
 test('watching only with a live observer; restart pending otherwise (D98)', async () => {
     const { sourceRows, WATCH_COPY } = await sourcesModule;
-    assert.deepEqual(WATCH_COPY, { watching: 'watching', manual: 'manual scan', restart_pending: 'restart pending' });
+    assert.deepEqual(WATCH_COPY, { watching: 'watching', stopping: 'watching until restart', manual: 'manual scan',
+        restart_pending: 'restart pending' });
     const sources = { ...STATUS, effective: STATUS.effective.map(source => ({ ...source, watch: 'restart_pending' })) };
     const { rows } = sourceRows({ sources, saved: ['output', 'input'], current: ['output', 'input'] });
     assert.deepEqual(rows.map(row => [row.description, row.scan.label]),
@@ -73,7 +76,8 @@ test('auto-detected sources are listed without Remove, with the line that says h
     const { sourceRows, NOTES } = await sourcesModule;
     const auto = { configured: [], effective: [{ label: 'ComfyUI output', path: 'output', root_index: 0, watch: 'manual' }], auto_detected: true };
     assert.deepEqual(sourceRows({ sources: auto, saved: [], current: [] }), { rows: [
-        { key: 'auto:0', title: 'ComfyUI output', description: 'output · manual scan', scan: { label: 'Scan folder', root: 0 }, remove: null },
+        { key: 'auto:0', title: 'ComfyUI output', description: 'output · manual scan', scan: { label: 'Scan folder', root: 0, path: 'output' },
+            remove: null },
     ], note: NOTES.autoDetected });
     // Every configured source unusable: ComfyUI's output folder is used instead.
     const fallback = { ...auto, configured: [{ label: 'gone', path: 'gone', valid: false, code: 'not-found', reason: 'Gallery root does not exist' }] };
@@ -120,4 +124,22 @@ test('Refresh files toasts the rescan counts, or says it finished when they are 
     assert.equal(refreshedText({ total: 1, roots: 1 }), 'Files refreshed. 1 file in 1 output folder.');
     assert.equal(refreshedText({ total: -1, roots: 1 }), 'Files refreshed.');
     assert.equal(refreshedText(null), 'Files refreshed.');
+});
+
+test('monitoring switched off: a source still watched says so until the restart (D-NEW-S4-2)', async () => {
+    const { sourceRows } = await sourcesModule;
+    const sources = { ...STATUS, effective: [{ ...STATUS.effective[0], watch: 'stopping' }, STATUS.effective[1]] };
+    const { rows } = sourceRows({ sources, saved: ['output', 'input'], current: ['output', 'input'] });
+    assert.deepEqual(rows.map(row => [row.description, row.scan.label]),
+        [['output · watching until restart', 'Scan changes'], ['input · manual scan', 'Scan folder']]);
+});
+
+test('a valid configured source missing from the effective list is another spelling of a listed folder (D-NEW-S4-2)', async () => {
+    const { sourceRows, DUPLICATE_SOURCE } = await sourcesModule;
+    assert.equal(DUPLICATE_SOURCE, 'same folder as another source');
+    const sources = { ...STATUS, configured: [...STATUS.configured,
+        { label: 'output', path: 'output/.', valid: true, code: null, reason: null }] };
+    const saved = ['output', 'input', 'output/.'];
+    assert.deepEqual(sourceRows({ sources, saved, current: saved }).rows.at(-1), { key: 'output/.', title: 'output',
+        description: 'output/. · same folder as another source', scan: null, remove: 'output/.' });
 });

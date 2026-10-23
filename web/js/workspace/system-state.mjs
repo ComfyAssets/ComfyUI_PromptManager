@@ -17,8 +17,10 @@
  * Adapters: `readBrowser()` and `readRuntime()` return the values; `readHost()` returns `{values, revision}`.
  * `writeBrowser(changes)` returns `{persisted}` (false: kept for this tab only) and throws an error with `code:
  * 'settings-changed'` when another page changed a drafted value (a conflict: the browser values are read again),
- * `writeHost(changes, {expected_revision})` the settings response (`{success, persisted, revision}`), `writeRuntime(changes)` anything;
- * a write that throws failed.
+ * `writeHost(changes, {expected_revision})` the settings response (`{success, persisted, revision}`, and the
+ * `restart_required_fields` the status names), `writeRuntime(changes)` anything; a write that throws failed. A host
+ * write refused as `invalid-source` (its error's `source` and server message) makes that message the status and
+ * `invalidSource()` that source, so Sources marks its row (S4).
  */
 export { SYSTEM_SECTIONS, isSystemSection } from './state.mjs';
 
@@ -32,21 +34,35 @@ export const SETTINGS_STATUS = Object.freeze({
     partial: 'Some changes were not saved. Review the highlighted settings.',
     tabOnly: 'Saved for this tab only; browser storage is unavailable.',
     conflict: 'Settings changed elsewhere. Reload this section to see them.',
+    // D-NEW-S4-2: a saved setting the running server applies only after a restart.
+    restart: 'Restart ComfyUI to apply:',
 });
+
+/** D-NEW-S4-2: the settings a host save can report in `restart_required_fields`, by their row label. */
+export const RESTART_LABELS = Object.freeze({ monitoring_enabled: 'Watch for new outputs' });
 
 export const DRAFT_DOMAINS = Object.freeze(['browser', 'host', 'runtime']);
 const CONFLICT_CODE = 'settings-changed';
+const INVALID_SOURCE_CODE = 'invalid-source';
 const ADAPTERS = ['readBrowser', 'readHost', 'readRuntime', 'writeBrowser', 'writeHost', 'writeRuntime'];
 
-/** The status copy of one `save()` outcome (`{browser, host, runtime}`, each clean/saved/tab-only/applied/failed/conflict). */
+/**
+ * The status copy of one `save()` outcome (`{browser, host, runtime}`, each clean/saved/tab-only/applied/failed/conflict).
+ * `restart` lists the host fields the server applies at its next start, `invalid` the source a refused host save named
+ * (`{source, message}`): its message is the status (D-NEW-S4-2).
+ */
 export function statusText(outcome) {
     const results = DRAFT_DOMAINS.map(domain => outcome?.[domain]);
     if (results.includes('conflict')) return SETTINGS_STATUS.conflict;
-    if (results.includes('failed')) return SETTINGS_STATUS.partial;
+    if (results.includes('failed')) return outcome?.invalid?.message || SETTINGS_STATUS.partial;
     const saved = [];
     if (outcome?.browser === 'saved') saved.push(SETTINGS_STATUS.browser);
     if (outcome?.browser === 'tab-only') saved.push(SETTINGS_STATUS.tabOnly);
-    if (outcome?.host === 'saved') saved.push(SETTINGS_STATUS.host);
+    if (outcome?.host === 'saved') {
+        saved.push(SETTINGS_STATUS.host);
+        const restart = (outcome.restart ?? []).map(field => RESTART_LABELS[field]).filter(Boolean);
+        if (restart.length) saved.push(`${SETTINGS_STATUS.restart} ${restart.join(', ')}.`);
+    }
     if (outcome?.runtime === 'applied') saved.push(SETTINGS_STATUS.runtime);
     return saved.join(' ') || SETTINGS_STATUS.clean;
 }
@@ -68,6 +84,8 @@ export function createSystemDrafts(adapters) {
     let hostRead = 'pending';
     let outcome = null;
     let saving = null;
+    // What the last host save said beyond its result: the restart fields, or the source it refused.
+    let hostDetail = {};
 
     const notify = () => { for (const listener of [...listeners]) listener(); };
     const changes = domain => Object.fromEntries(drafts[domain]);
@@ -150,6 +168,8 @@ export function createSystemDrafts(adapters) {
                 if (result?.code === CONFLICT_CODE) { fail(domain, written); return 'conflict'; }
                 if (!result?.success || result.persisted !== true) { fail(domain, written); return 'failed'; }
                 if (typeof result.revision === 'string') revision = result.revision;
+                const restart = result.restart_required_fields;
+                if (Array.isArray(restart)) hostDetail.restart = restart.filter(field => typeof field === 'string');
                 commit(domain, written);
                 return 'saved';
             }
@@ -158,6 +178,9 @@ export function createSystemDrafts(adapters) {
             return 'applied';
         } catch (error) {
             fail(domain, written);
+            if (domain === 'host' && error?.code === INVALID_SOURCE_CODE && typeof error.message === 'string') {
+                hostDetail.invalid = { source: typeof error.source === 'string' ? error.source : null, message: error.message };
+            }
             return error?.code === CONFLICT_CODE ? 'conflict' : 'failed';
         }
     }
@@ -172,8 +195,10 @@ export function createSystemDrafts(adapters) {
     function save() {
         saving ??= (async () => {
             for (const domain of DRAFT_DOMAINS) failedKeys[domain].clear();
+            hostDetail = {};
             const result = {};
             for (const domain of DRAFT_DOMAINS) result[domain] = await saveDomain(domain);
+            Object.assign(result, hostDetail);
             // Settings changed elsewhere: read them (and their revision), keeping the drafts (Q10).
             if (result.host === 'conflict') await reloadHost();
             if (result.browser === 'conflict') await load('browser').catch(() => {});
@@ -228,6 +253,8 @@ export function createSystemDrafts(adapters) {
         changes,
         saving: () => saving !== null,
         failed: domain => { requireDomain(domain); return new Set(failedKeys[domain]); },
+        /** The source the last save was refused for (its public path), until the next edit; else null. */
+        invalidSource: () => outcome?.invalid?.source ?? null,
         /** The Save row's text: the last save's outcome until the next edit, else unsaved or clean. */
         statusText: () => (outcome ? statusText(outcome) : dirty() ? SETTINGS_STATUS.dirty : SETTINGS_STATUS.clean),
         subscribe(listener) {

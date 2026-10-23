@@ -39,11 +39,12 @@ export const SECTION_HANDOFFS = Object.freeze({
 export const NOT_DELIVERED = 'This setting is not available here yet.';
 
 let drafts = null;
-// The Activity store of the System page shown last: a refused host save names the running job from its list.
+// The Activity store of the System page shown last: a refused host save that does not name its job reads the list.
 let jobs = null;
 
-/** The running job that holds the registry, from a fresh list read (the store's load never throws). */
-async function runningJob() {
+/** The running job a 409 `busy` named, else the first running one from a fresh list read (the load never throws). */
+async function runningJob(error) {
+    if (error?.running) return error.running;
     await jobs.load();
     return jobs.running()[0];
 }
@@ -86,7 +87,7 @@ export function systemDrafts(api) {
                 return await api.post(SETTINGS_URL, { ...changes, expected_revision });
             } catch (error) {
                 // A sources change waits for a running record-changing job (S4): name it, as a refused start does (D57).
-                if (error?.code === 'busy') showWorkspaceToast(busyToast(await runningJob()));
+                if (error?.code === 'busy') showWorkspaceToast(busyToast(await runningJob(error)));
                 throw error;
             }
         },

@@ -584,7 +584,9 @@ function measureSources(mainSelector) {
     };
 }
 
-const WATCH_TEXT = { watching: 'watching', manual: 'manual scan', restart_pending: 'restart pending' };
+// D-NEW-S4-2: "watching until restart" after monitoring was switched off while the observer still runs.
+const WATCH_TEXT = { watching: 'watching', stopping: 'watching until restart', manual: 'manual scan', restart_pending: 'restart pending' };
+const WATCHED = new Set(['watching', 'stopping']);
 // D98: the operation Sources adds after the concept's own, as production renders it.
 const REFRESH_FILES = { title: 'Refresh files', description: 'Read every source again to find files added or removed outside ComfyUI.',
     label: 'Refresh' };
@@ -599,7 +601,7 @@ function mapSourcesConcept(reference, { settings, sources }) {
         // a plain button after its scan.
         sources: sources.effective.map(source => ({ ...sample, title: source.label,
             description: `${source.path} · ${WATCH_TEXT[source.watch]}`,
-            actions: [{ ...scan, text: source.watch === 'watching' ? 'Scan changes' : 'Scan folder' }, { ...scan, text: 'Remove' }] })),
+            actions: [{ ...scan, text: WATCHED.has(source.watch) ? 'Scan changes' : 'Scan folder' }, { ...scan, text: 'Remove' }] })),
         rows: reference.rows.map(row => {
             if (row.control.id === 'monitoring') return { ...row, control: { ...row.control, checked: settings.monitoring_enabled } };
             // D113: the range ends at the server's core count (the concept's fixed 16) and shows the real worker count.
@@ -685,4 +687,92 @@ test('sources comparison detects mutations', async ({ page, request }) => {
     expect(await paths()).toEqual(expect.arrayContaining(['operation.borderTopColor']));
     await undoToken();
     expect(diffInventory(expected, await measure())).toEqual([]);
+});
+
+/**
+ * Runs in the page: the open "Add image source" dialog (the concept's `simpleInput`, app.js 1138 and 1497): its title,
+ * the body's tree, the field's label and input, and the actions, with the concept's geometry and tokens.
+ */
+function measureAddSource() {
+    const dialog = document.querySelector('dialog#modal[open]');
+    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
+    const name = node => [node.localName, ...[...node.classList].sort()].join('.');
+    const text = node => node?.textContent.trim() ?? null;
+    const body = dialog.querySelector('#modal-body');
+    const field = body.querySelector(':scope > .field');
+    const label = field?.querySelector(':scope > label');
+    const input = field?.querySelector(':scope > input');
+    const actions = body.querySelector(':scope > .dialog-actions');
+    const rect = dialog.getBoundingClientRect();
+    return {
+        title: text(dialog.querySelector('#modal-title')),
+        tree: [...body.children].map(name),
+        field: field && { tree: [...field.children].map(name), ...css(field, 'display', 'flexDirection', 'rowGap', 'marginBottom') },
+        label: label && { text: text(label), for: label.htmlFor, ...css(label, 'fontSize', 'fontWeight', 'color') },
+        input: input && { id: input.id, type: input.type, value: input.value,
+            ...css(input, 'height', 'paddingLeft', 'fontSize', 'color', 'backgroundColor', 'borderTopColor', 'borderTopLeftRadius') },
+        actions: { tree: [...actions.children].map(name), ...css(actions, 'display', 'justifyContent', 'columnGap', 'marginTop'),
+            buttons: [...actions.children].map(button => ({ text: text(button), className: button.className,
+                ...css(button, 'backgroundColor', 'color', 'fontSize', 'paddingTop', 'paddingLeft', 'borderTopColor') })) },
+        width: Math.round(rect.width),
+    };
+}
+
+/** D127: the field is "Folder path", starts empty (no sample folder) and its action is "Add". */
+function mapAddSourceConcept(reference) {
+    const [cancel, apply] = reference.actions.buttons;
+    return { ...reference, label: { ...reference.label, text: 'Folder path' }, input: { ...reference.input, value: '' },
+        actions: { ...reference.actions, buttons: [cancel, { ...apply, text: 'Add' }] } };
+}
+
+async function conceptAddSource(page, theme) {
+    await conceptSources(page, theme, { notice: false });
+    await page.locator('#main .panel-heading').getByRole('button', { name: '+ Add source', exact: true }).click();
+    await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Add image source');
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureAddSource);
+}
+
+async function productionAddSource(page, theme) {
+    await productionSources(page, theme, { notice: false });
+    await page.locator('#workspace-main .panel-heading').getByRole('button', { name: '+ Add source', exact: true }).click();
+    await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Add image source');
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureAddSource);
+}
+
+for (const theme of THEMES) for (const [width, height] of SIZES) {
+    test(`add source dialog matches the concept ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width, height });
+        await watchedSources(request);
+        const concept = await conceptAddSource(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`concept-add-source-${theme}-${width}.png`) });
+        const production = await productionAddSource(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`production-add-source-${theme}-${width}.png`) });
+        expect(diffInventory(mapAddSourceConcept(concept), production)).toEqual([]);
+    });
+}
+
+test('add source comparison detects mutations', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await watchedSources(request);
+    const concept = await conceptAddSource(page, 'dark');
+    const expected = mapAddSourceConcept(concept);
+    const production = await productionAddSource(page, 'dark');
+    expect(diffInventory(expected, production)).toEqual([]);
+    // Unmapped, the concept differs only where D127 is recorded.
+    expect(diffInventory(concept, production).map(item => item.path).sort())
+        .toEqual(['actions.buttons.1.text', 'input.value', 'label.text']);
+    const paths = async () => diffInventory(expected, await page.evaluate(measureAddSource)).map(item => item.path);
+    // A changed label, a swapped action order and a changed style.
+    await page.evaluate(() => { document.querySelector('dialog#modal[open] label[for="action-input"]').textContent = 'Folder'; });
+    expect(await paths()).toEqual(['label.text']);
+    await page.evaluate(() => { document.querySelector('dialog#modal[open] label[for="action-input"]').textContent = 'Folder path'; });
+    await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
+    expect(await paths()).toEqual(expect.arrayContaining(['actions.buttons.0.text', 'actions.buttons.1.text']));
+    await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
+    const undoStyle = await mutate(page, { css: 'dialog#modal #action-input { border-color: rgb(255, 0, 0); } dialog#modal .dialog-actions { gap: 31px; }' });
+    expect(await paths()).toEqual(expect.arrayContaining(['input.borderTopColor', 'actions.columnGap']));
+    await undoStyle();
+    expect(diffInventory(expected, await page.evaluate(measureAddSource))).toEqual([]);
 });

@@ -11,7 +11,10 @@ read. These per-server hooks only change what a System test needs on top:
   requests for ``path`` (a ``/prompt_manager/system/`` route) with the routes'
   500 error envelope;
 - ``POST /__test__/system/missing-source`` configures one more source that
-  does not exist (an unmounted drive);
+  does not exist (an unmounted drive); with ``{"inside": true}`` it is an
+  existing folder inside the output folder (``output/unplugged``), which
+  ``POST /__test__/system/unplug`` then removes (a drive unplugged while the
+  page shows it);
 - ``POST /__test__/system/missing-file`` deletes the newest linked image's
   file from disk, leaving its database row (a missing-file link);
 - ``POST /__test__/system/unthumbnailed`` ``{count}`` writes ``count`` plain
@@ -74,8 +77,12 @@ def register_system_commands(app, routes, api, root: Path):
 
     app.middlewares.append(inject_failures)
 
+    unplugged = root / "output" / "unplugged"
+
     def reset():
         failures.clear()
+        if unplugged.is_dir():
+            unplugged.rmdir()
         GalleryConfig.MONITORING_DIRECTORIES = list(configured)
         api._health_report = None
         (
@@ -115,13 +122,25 @@ def register_system_commands(app, routes, api, root: Path):
 
     @routes.post("/__test__/system/missing-source")
     async def missing_source(request):
-        absent = str(root / "unmounted-drive")
-        if os.path.exists(absent):
-            raise web.HTTPConflict()
+        data = await request.json() if request.can_read_body else {}
+        if data.get("inside") is True:
+            unplugged.mkdir(exist_ok=True)
+            absent = str(unplugged)
+        else:
+            absent = str(root / "unmounted-drive")
+            if os.path.exists(absent):
+                raise web.HTTPConflict()
         GalleryConfig.MONITORING_DIRECTORIES = [*configured, absent]
         return web.json_response(
             {"success": True, "configured": len(GalleryConfig.MONITORING_DIRECTORIES)}
         )
+
+    @routes.post("/__test__/system/unplug")
+    async def unplug(request):
+        if not unplugged.is_dir():
+            raise web.HTTPConflict()
+        unplugged.rmdir()
+        return web.json_response({"success": True})
 
     @routes.post("/__test__/system/missing-file")
     async def missing_file(request):

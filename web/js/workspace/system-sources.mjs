@@ -5,9 +5,11 @@
  *   update notice (`pm_update_notice_dismissed`, the legacy admin page's own key). Later dismisses it without scanning;
  *   Review scan dismisses it, as the legacy page's Scan does, and reviews every source.
  * - "Image sources" lists the server's sources (GET /settings, S4 Task 9) in `#source-list`, one `.operation` each:
- *   its label, "<path> · watching | manual scan | restart pending" and "Scan changes" (watched) or "Scan folder", which
- *   opens the shared "Review metadata scan" (D55) for that one source ("1 output folder") and starts the session job over
- *   it (`roots`, S4 Task 10). The job opens in Activity; the toast only says it started.
+ *   its label, "<path> · watching | watching until restart | manual scan | restart pending" and "Scan changes"
+ *   (watched) or "Scan folder", which opens the shared "Review metadata scan" (D55) for that one source ("1 output
+ *   folder") and starts the session job over it (`roots` with its public path, S4 Task 10). The job opens in Activity;
+ *   the toast only says it started. When the sources changed since they were read, nothing starts: the toast says so
+ *   and the list is read again.
  * - "+ Add source" asks the server whether a folder can be a source (`validate-source`, which writes nothing), then adds
  *   it to the host draft of `gallery_root_paths`; Remove takes one out. Both wait for the one Save row.
  * - "Watch for new outputs" (`monitoring_enabled`) and "Worker threads" (`worker_threads`, a range up to the server's
@@ -17,8 +19,11 @@
  *
  * D98: per-source Remove; an added source reads "not saved yet" until Save; the line under the list says when
  * ComfyUI's output folder is used instead; "restart pending" for a source the running monitor does not watch yet; the
- * "Refresh files" operation (`/gallery/rescan`) closes the surface. D-NEW-S4-1: the add dialog's field is "Folder
- * path", starts empty and says the server's reason in place; its action is "Add".
+ * "Refresh files" operation (`/gallery/rescan`) closes the surface. D127: the add dialog's field is "Folder path",
+ * starts empty and says the server's reason in place; its action is "Add", and Enter adds too.
+ * D-NEW-S4-2: "watching until restart" for a source the running monitor still watches after monitoring was switched off;
+ * "same folder as another source" for a configured source the effective list already holds under another spelling; a
+ * save refused for one source (`invalid-source`) marks that row and the status says the server's reason.
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { closeWorkspaceDialog, field, openContentDialog } from './workspace-dialogs.mjs';
@@ -36,8 +41,12 @@ const ROOTS_KEY = 'gallery_root_paths';
 
 export const NOTICE_KEY = 'pm_update_notice_dismissed';
 export const NOTICE_VERSION = '3.2.0';
-export const WATCH_COPY = Object.freeze({ watching: 'watching', manual: 'manual scan', restart_pending: 'restart pending' });
+export const WATCH_COPY = Object.freeze({ watching: 'watching', stopping: 'watching until restart', manual: 'manual scan',
+    restart_pending: 'restart pending' });
+// The states whose observer runs now: their scan only has to catch up on changes.
+const WATCHED = new Set(['watching', 'stopping']);
 const NOT_SAVED = 'not saved yet';
+export const DUPLICATE_SOURCE = 'same folder as another source';
 /** D98: the line under the source list when it does not say everything by itself. */
 export const NOTES = Object.freeze({
     removedAll: 'No source is configured. After saving, ComfyUI’s output folder is used.',
@@ -85,15 +94,16 @@ export function draftRoots(next, saved) {
 const folderName = path => path.split('/').filter(Boolean).at(-1) ?? path;
 
 function effectiveRow(source, remove) {
-    const watched = source.watch === 'watching';
+    const watched = WATCHED.has(source.watch);
     return { key: remove ?? `auto:${source.root_index}`, title: source.label,
         description: `${source.path} · ${WATCH_COPY[source.watch] ?? WATCH_COPY.manual}`,
-        scan: { label: watched ? 'Scan changes' : 'Scan folder', root: source.root_index }, remove };
+        scan: { label: watched ? 'Scan changes' : 'Scan folder', root: source.root_index, path: source.path }, remove };
 }
 
 /**
  * The source list for `sources` (GET /settings' `sources`), the saved `gallery_root_paths` and the drafted ones
- * (`current`): `{rows: [{key, title, description, scan: {label, root} | null, remove: path | null}], note}`.
+ * (`current`): `{rows: [{key, title, description, scan: {label, root, path} | null, remove: path | null}], note}`.
+ * A valid configured source missing from the effective list is another spelling of a folder already listed.
  */
 export function sourceRows({ sources, saved, current, labels = addedLabels }) {
     const configured = sources.configured ?? [];
@@ -107,7 +117,8 @@ export function sourceRows({ sources, saved, current, labels = addedLabels }) {
         const live = entry?.valid ? effective.find(source => source.path === path) : undefined;
         if (live) rows.push(effectiveRow(live, path));
         else if (entry) {
-            rows.push({ key: path, title: entry.label, description: `${path} · ${entry.reason ?? WATCH_COPY.manual}`, scan: null, remove: path });
+            const why = entry.valid ? DUPLICATE_SOURCE : entry.reason ?? WATCH_COPY.manual;
+            rows.push({ key: path, title: entry.label, description: `${path} · ${why}`, scan: null, remove: path });
         } else rows.push({ key: path, title: labels.get(path) ?? folderName(path), description: `${path} · ${NOT_SAVED}`, scan: null, remove: path });
     }
     if (dirty) return { rows, note: roots.length ? null : NOTES.removedAll };
@@ -149,8 +160,8 @@ function noticeNode({ scope, onLater, onReview }) {
 }
 
 /**
- * "Add image source" (the concept's `simpleInput`, D-NEW-S4-1): the server checks the folder; a refused one keeps the
- * dialog open with the server's reason under the field.
+ * "Add image source" (the concept's `simpleInput`, D127): the server checks the folder; a refused one keeps the
+ * dialog open with the server's reason under the field. Enter in the field adds, as the Add button does.
  */
 function openAddSource({ api, scope, trigger, listed, onAdd }) {
     const input = el('input');
@@ -165,12 +176,18 @@ function openAddSource({ api, scope, trigger, listed, onAdd }) {
         input.setAttribute('aria-invalid', 'true');
         input.focus();
     };
-    input.addEventListener('input', () => {
+    scope.listen(input, 'input', () => {
         reason.remove();
         input.removeAttribute('aria-invalid');
     });
-    cancel.addEventListener('click', () => closeWorkspaceDialog());
-    add.addEventListener('click', async () => {
+    scope.listen(input, 'keydown', event => {
+        if (event.key !== 'Enter' || event.isComposing) return;
+        event.preventDefault();
+        submit();
+    });
+    scope.listen(cancel, 'click', () => closeWorkspaceDialog());
+    scope.listen(add, 'click', () => submit());
+    async function submit() {
         const path = input.value.trim();
         if (!path) { input.focus(); return; }
         if (add.getAttribute('aria-disabled') === 'true') return;
@@ -189,7 +206,7 @@ function openAddSource({ api, scope, trigger, listed, onAdd }) {
         } finally {
             add.removeAttribute('aria-disabled');
         }
-    });
+    }
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(cancel, add);
     openContentDialog({ scope, title: 'Add image source', trigger, nodes: [field('Folder path', input, 'action-input'), actions],
@@ -278,7 +295,8 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
         const actions = [];
         if (row.scan) {
             const scan = createButton(row.scan.label);
-            scope.listen(scan, 'click', () => openMetadataScan({ scope, store: activity, trigger: scan, sources: 1, roots: [row.scan.root] }));
+            scope.listen(scan, 'click', () => openMetadataScan({ scope, store: activity, trigger: scan, sources: 1,
+                roots: [row.scan.root], paths: [row.scan.path], onStale: reread }));
             actions.push(scan);
         }
         if (row.remove !== null) {
@@ -288,6 +306,8 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
             actions.push(remove);
         }
         const node = el('div', undefined, 'operation');
+        // D-NEW-S4-2: the source the last save was refused for; the status says why.
+        if (row.remove !== null && row.remove === drafts.invalidSource?.()) node.setAttribute('aria-invalid', 'true');
         const text = el('div');
         text.append(el('h3', row.title), el('p', row.description));
         const group = el('div', undefined, 'row-actions');
@@ -333,6 +353,12 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
                 if (!row.note) { row.note = el('p', HOST_UNAVAILABLE, 'small'); row.text.append(row.note); }
             } else if (row.note) { row.note.remove(); row.note = null; }
         }
+    }
+
+    // The sources changed since this page read them (a refused per-source scan): read them and the saved values again.
+    function reread() {
+        load();
+        drafts.reloadHost?.();
     }
 
     async function load() {
