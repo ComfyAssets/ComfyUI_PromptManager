@@ -18,29 +18,63 @@ def _not_found():
     return web.json_response({"success": False, "error": "Job not found"}, status=404)
 
 
-def _bad_request(message):
-    return web.json_response({"success": False, "error": message}, status=400)
+MAX_SCAN_ROOTS = 64
+_SCOPE_ERROR = 'The scan scope must be "new" or "all"'
+_ROOTS_ERROR = (
+    f"roots must be a non-empty list of up to {MAX_SCAN_ROOTS} source indexes"
+)
 
 
-async def _scan_scope(request):
-    """The requested scan scope ("new" or "all"), or None when the body is invalid.
+def _bad_request(message, code=None):
+    body = {"success": False, "error": message}
+    if code is not None:
+        body["code"] = code
+    return web.json_response(body, status=400)
 
-    An empty body (also a chunked one with no bytes), or one without
-    ``scope``, asks for the default.
+
+def _scan_roots(body):
+    """``(roots, error)``: the sorted, deduplicated source indexes, or None.
+
+    Absent ``roots`` means every source. When present it is a non-empty list
+    of at most MAX_SCAN_ROOTS non-negative ints (never bools or floats).
     """
+    if "roots" not in body:
+        return None, None
+    raw = body["roots"]
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_SCAN_ROOTS:
+        return None, _ROOTS_ERROR
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None, _ROOTS_ERROR
+    return sorted(set(raw)), None
+
+
+async def _scan_request(request):
+    """``({files, roots}, None)`` for a scan start, or ``(None, message)``.
+
+    ``files`` is the scope ("new" or "all"); ``roots`` the selected source
+    indexes or None for every source. An empty body (also a chunked one with
+    no bytes), or one without ``scope``, asks for the default scope.
+    """
+    default = {"files": DEFAULT_SCAN_SCOPE, "roots": None}
     if not request.can_read_body:
-        return DEFAULT_SCAN_SCOPE
+        return default, None
     text = await request.text()
     if not text.strip():  # e.g. a chunked POST that sent no bytes
-        return DEFAULT_SCAN_SCOPE
+        return default, None
     try:
         body = json.loads(text)
     except ValueError:
-        return None
+        return None, _SCOPE_ERROR
     if not isinstance(body, dict):
-        return None
-    scope = body.get("scope", DEFAULT_SCAN_SCOPE)
-    return scope if scope in SCAN_SCOPES else None
+        return None, _SCOPE_ERROR
+    files = body.get("scope", DEFAULT_SCAN_SCOPE)
+    if files not in SCAN_SCOPES:
+        return None, _SCOPE_ERROR
+    roots, error = _scan_roots(body)
+    if error:
+        return None, error
+    return {"files": files, "roots": roots}, None
 
 
 def busy_response(busy: JobBusy):
@@ -132,13 +166,26 @@ class JobRoutesMixin:
         """Start the metadata scan as a job (202), or 409 naming the busy job.
 
         The body's ``scope`` is "new" (the default: new and unresolved files)
-        or "all"; anything else is a 400.
+        or "all". ``roots``, when given, selects sources by their index in
+        the effective sources (``_get_all_output_dirs``); an index past them
+        is a 400 ``unknown-source`` and starts nothing. The job walks the
+        sources resolved here, so a later source change cannot move it.
         """
-        files = await _scan_scope(request)
-        if files is None:
-            return _bad_request('The scan scope must be "new" or "all"')
+        scan, error = await _scan_request(request)
+        if error:
+            return _bad_request(error)
+        output_dirs = None
+        if scan["roots"] is not None:
+            output_dirs = await self._run_in_executor(self._get_all_output_dirs)
+            if scan["roots"][-1] >= len(output_dirs):
+                return _bad_request(
+                    "That source is no longer configured. Reload the sources.",
+                    code="unknown-source",
+                )
         try:
-            job = self._start_scan_job(files)
+            job = self._start_scan_job(
+                scan["files"], roots=scan["roots"], output_dirs=output_dirs
+            )
         except JobBusy as busy:
             return busy_response(busy)
         return web.json_response({"success": True, "job": job.summary()}, status=202)
