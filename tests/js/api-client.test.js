@@ -236,6 +236,35 @@ test("latestOnly: errors from the current call propagate, errors from superseded
     assert.equal(await first, STALE);
 });
 
+test("latestOnly with a lifetime: once it ends, no request starts and the call is STALE", async () => {
+    const fetch = fakeFetch();
+    const api = createApiClient(fetch);
+    const page = new AbortController();
+    const latest = latestOnly({ lifetime: page.signal });
+    page.abort();
+    assert.equal(await latest((signal) => api.get("/recent", { signal })), STALE);
+    assert.equal(fetch.calls.length, 0, "a leaving page starts no read");
+});
+
+test("latestOnly with a lifetime: its end aborts the request in flight, which is STALE, not an error", async () => {
+    const fetch = fakeFetch();
+    const api = createApiClient(fetch);
+    const page = new AbortController();
+    const latest = latestOnly({ lifetime: page.signal });
+    const call = latest((signal) => api.get("/recent", { signal }));
+    page.abort();
+    assert.equal(fetch.calls[0].aborted, true, "the read in flight is aborted");
+    fetch.calls[0].reject(new DOMException("The operation was aborted.", "AbortError"));
+    assert.equal(await call, STALE);
+});
+
+test("latestOnly with a lifetime: real errors still propagate while the page lives", async () => {
+    const page = new AbortController();
+    const latest = latestOnly({ lifetime: page.signal });
+    await assert.rejects(latest(async () => { throw new Error("server down"); }), /server down/);
+    assert.equal(await latest(async () => "fine"), "fine");
+});
+
 test("ApiError exposes only validated history recovery actions on all error paths", async () => {
     const permitted = [null, { action: "refresh-history" }, { action: "reload-outputs" },
         { action: "retry-read" }, { action: "smaller-limit", limit: 1 },
