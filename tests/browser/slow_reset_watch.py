@@ -61,6 +61,7 @@ class ResetWatch:
         self._start = time.monotonic()
         self._calls: list[str] = []
         self._calls_lock = threading.Lock()
+        self._stalled = threading.Event()
         self._timer = threading.Timer(threshold, self._report_stall)
         self._timer.daemon = True
         self._timer.name = "pm-slow-reset-watch"
@@ -81,13 +82,16 @@ class ResetWatch:
     def finish(self, outcome: str) -> None:
         self._timer.cancel()
         elapsed = self.elapsed()
-        if elapsed < self.threshold:
+        # A coarse clock (Windows) can fire the timer just short of the
+        # threshold; a reset that was reported always gets its summary.
+        if elapsed < self.threshold and not self._stalled.is_set():
             return
         with self._calls_lock:
             calls = list(self._calls)
         self._write([f"{self.label} {outcome} after {elapsed:.3f}s", *calls])
 
     def _report_stall(self) -> None:
+        self._stalled.set()
         lines = [f"{self.label} still running after {self.elapsed():.3f}s"]
         try:
             lines.extend(self._describe())

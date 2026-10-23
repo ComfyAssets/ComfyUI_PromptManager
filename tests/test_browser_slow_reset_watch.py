@@ -153,7 +153,7 @@ class TestSlowResetOnTheServer(unittest.TestCase):
     def reset(self) -> tuple[int, float]:
         request = urllib.request.Request(
             self.base + "/__test__/reset",
-            data=b'{"chronological_history": true}',
+            data=b"{}",
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -168,7 +168,7 @@ class TestSlowResetOnTheServer(unittest.TestCase):
         return self.stderr.read().decode("utf-8", "replace")
 
     def test_a_reset_held_behind_a_write_lock_names_the_wait_and_ends_with_it(self):
-        self.assertEqual(self.reset()[0], 200)
+        self.assertEqual(self.reset()[0], 200, self.server_stderr())
         self.assertNotIn(REPORT_PREFIX, self.server_stderr())
 
         held = threading.Event()
@@ -201,6 +201,7 @@ class TestSlowResetOnTheServer(unittest.TestCase):
             time.sleep(PROBE_INTERVAL_SECONDS)
         resetting.join()
         lock.join()
+        self.assertEqual(len(outcome), 1, self.server_stderr())
         [(status, elapsed)] = outcome
 
         self.assertLess(slowest, RESPONSIVE_SECONDS)
@@ -220,10 +221,12 @@ class TestSlowResetOnTheServer(unittest.TestCase):
             self.assertRegex(
                 text, r"kernel: asyncio_\d+ \(0x[0-9a-f]{16}\) state \w, waiting in "
             )
-        self.assertIn("in seed_workspace_visual", text)
+        # The plain reset's seed() waits on its first DELETE.
+        self.assertRegex(text, r"line \d+ in seed\n")
         self.assertIn("POST /__test__/reset answered 200 after", text)
         self.assertRegex(
-            text, r"executor call .*reset.*: queued \d+\.\d+s, ran \d+\.\d+s"
+            text,
+            r"executor call create_app.<locals>.seed: queued \d+\.\d+s, ran \d+\.\d+s",
         )
 
 
