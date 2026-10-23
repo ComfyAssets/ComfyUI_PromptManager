@@ -128,7 +128,8 @@ export function optionError(model, options) {
     return null;
 }
 
-function requestOptions(model, options) {
+/** The options a request sends for `model`: numbers parsed, only the model's own keys. */
+export function requestOptions(model, options) {
     const body = {suggestion_limit: numberOf(options.suggestion_limit)};
     if (modelOf(model).classifier) {
         return {general_threshold: numberOf(options.general_threshold), character_threshold: numberOf(options.character_threshold), ...body};
@@ -177,28 +178,48 @@ function validateReceipt(value) {
     return value;
 }
 
-/** Thresholds, instructions and suggestion count from the server, else the documented defaults. */
+/**
+ * Thresholds, instructions and suggestion count from the server, else the documented defaults, and the models'
+ * download status (`models`, null when unknown).
+ */
 async function readDefaults(api, signal) {
     try {
         const value = await api.get(MODELS_URL, {signal, cache: 'no-store'});
-        if (!object(value)) return DEFAULTS;
+        if (!object(value)) return {defaults: DEFAULTS, models: null};
         return {
-            general_threshold: unit(value.wd14_general_threshold) ? value.wd14_general_threshold : DEFAULTS.general_threshold,
-            character_threshold: unit(value.wd14_character_threshold) ? value.wd14_character_threshold : DEFAULTS.character_threshold,
-            instructions: typeof value.default_prompt === 'string' ? value.default_prompt : DEFAULTS.instructions,
-            suggestion_limit: limit(value.suggestion_limit) ? value.suggestion_limit : DEFAULTS.suggestion_limit,
+            defaults: {
+                general_threshold: unit(value.wd14_general_threshold) ? value.wd14_general_threshold : DEFAULTS.general_threshold,
+                character_threshold: unit(value.wd14_character_threshold) ? value.wd14_character_threshold : DEFAULTS.character_threshold,
+                instructions: typeof value.default_prompt === 'string' ? value.default_prompt : DEFAULTS.instructions,
+                suggestion_limit: limit(value.suggestion_limit) ? value.suggestion_limit : DEFAULTS.suggestion_limit,
+            },
+            models: object(value.models) ? value.models : null,
         };
     } catch {
         // The defaults keep the dialog usable; Generate reports a real failure itself.
-        return DEFAULTS;
+        return {defaults: DEFAULTS, models: null};
     }
 }
 
-function initialState(source) {
+const UNAVAILABLE_HINT = 'Download it from the legacy Auto-tag page.';
+/**
+ * Why `model` cannot run, from the `/autotag/models` status (the server's own `model-unavailable` sentence), else ''
+ * (downloaded, or the status is unknown: the job then reports a missing model itself).
+ */
+export function modelUnavailable(models, model) {
+    const option = modelOf(model);
+    requireValue(option, 'Unknown tagging model');
+    const status = object(models) && object(models[model]) ? models[model] : null;
+    if (!status || status.downloaded !== false) return '';
+    const name = typeof status.name === 'string' && status.name.trim() ? status.name : option.label.split(' · ')[0];
+    return `${name} is not downloaded. ${UNAVAILABLE_HINT}`;
+}
+
+function initialState(source, preset) {
     return {
         phase: 'observing', closed: false, source, showScopeNote: source === 'review',
         image: null, savedTags: [], tagRevision: 0, currentTags: null, manual: '',
-        model: MODEL_OPTIONS[0].id, options: {...DEFAULTS}, generated: false, suggestions: [],
+        model: preset?.model ?? MODEL_OPTIONS[0].id, options: {...DEFAULTS, ...preset?.options}, generated: false, suggestions: [],
         suggestionsText: COPY.modelChanged, statusText: '', generateSupported: false, generateReason: null, toast: null,
         // Bumped whenever the controller itself rewrites the option fields or the manual draft, never while typing.
         optionsRevision: 0, draftRevision: 0,
@@ -219,13 +240,31 @@ function derive(state) {
     };
 }
 
-export function createImageTaggingController({api, target, source = 'images', onLateSave = () => {}} = {}) {
+/** A `{model, options}` preset (the bulk review's choice) when valid, else a TypeError. */
+function validatePreset(preset) {
+    if (preset === null || preset === undefined) return null;
+    requireValue(object(preset) && modelOf(preset.model) && object(preset.options), 'Invalid tagging preset');
+    const options = {};
+    for (const [key, value] of Object.entries(preset.options)) {
+        requireValue(OPTION_KEYS.has(key), 'Unknown tagging option');
+        options[key] = value;
+    }
+    requireValue(!optionError(preset.model, {...DEFAULTS, ...options}), 'Invalid tagging preset');
+    return Object.freeze({model: preset.model, options: Object.freeze(options)});
+}
+
+/**
+ * `preset` ({model, options}, D90's review session) starts the dialog on that model, and every observation applies
+ * those options over the server's defaults.
+ */
+export function createImageTaggingController({api, target, source = 'images', onLateSave = () => {}, preset = null} = {}) {
     requireValue(object(api) && ['get', 'post', 'put', 'del'].every(name => typeof api[name] === 'function'), 'An api client is required');
     const imageTarget = validateTarget(target);
     requireValue(SOURCES.has(source), 'Unknown tagging source');
     requireValue(typeof onLateSave === 'function', 'onLateSave must be a function');
+    const chosen = validatePreset(preset);
 
-    let state = freeze(derive(initialState(source)));
+    let state = freeze(derive(initialState(source, chosen)));
     const listeners = new Set();
     let closed = false;
     let capture = null;
@@ -297,7 +336,7 @@ export function createImageTaggingController({api, target, source = 'images', on
         }
         capture = {token: value.capture.token, sha256: value.capture.sha256};
         epoch = value.library_epoch;
-        defaults = await defaultsRead;
+        ({defaults} = await defaultsRead);
         if (closed || serial !== openSerial) return;
         observedOnce = true;
         const {width, height, media_type: mediaType, preview_url: previewUrl, generate} = value.capture;
@@ -311,7 +350,7 @@ export function createImageTaggingController({api, target, source = 'images', on
             savedTags: value.tags.slice(), tagRevision: value.tag_revision,
             manual: draft === null ? value.tags.join(', ') : changed ? mergeCurrent(value.tags, draft) : draft,
             draftRevision: state.draftRevision + 1,
-            options: {...defaults}, optionsRevision: state.optionsRevision + 1,
+            options: {...defaults, ...chosen?.options}, optionsRevision: state.optionsRevision + 1,
             generateSupported: generate.supported, generateReason: generate.reason,
             statusText: changed ? `${COPY.changedElsewhere} ${savedNow(value.tags)}${reason ? ` ${reason}` : ''}` : reason,
         });
@@ -480,5 +519,68 @@ export function createImageTaggingController({api, target, source = 'images', on
     return {
         get state() {return state;},
         subscribe, open, setManual, setModel, setOption, generate, remove, save, retry, cancel, dispose,
+    };
+}
+
+/**
+ * The model and options of the bulk "Auto-tag selected images" dialog (D85): the same fields as the Tag image dialog's
+ * model panel, without an image. open() reads the server's defaults and the models' download status once; until it
+ * lands Start waits (`canStart` false). `unavailable` is why the chosen model cannot run ('' when it can), so the
+ * dialog refuses to start a job that would fail at once.
+ */
+export function createTaggingOptionsController({api} = {}) {
+    requireValue(object(api) && typeof api.get === 'function', 'An api client is required');
+    const listeners = new Set();
+    let closed = false;
+    let defaults = DEFAULTS;
+    let models = null;
+    let abort = null;
+    const deriveOptions = value => ({...value, canGenerate: false, unavailable: modelUnavailable(models, value.model),
+        canStart: value.phase === 'ready' && !modelUnavailable(models, value.model)});
+    let state = freeze(deriveOptions({phase: 'loading', model: MODEL_OPTIONS[0].id, options: {...DEFAULTS}, optionsRevision: 0}));
+
+    function set(patch) {
+        if (closed) return;
+        state = freeze(deriveOptions({...state, ...patch}));
+        for (const listener of [...listeners]) listener(state);
+    }
+    async function open() {
+        if (closed || abort) return;
+        abort = new AbortController();
+        const read = await readDefaults(api, abort.signal);
+        if (closed) return;
+        ({defaults, models} = read);
+        set({phase: 'ready', options: {...defaults}, optionsRevision: state.optionsRevision + 1});
+    }
+    function setModel(id) {
+        requireValue(modelOf(id), 'Unknown tagging model');
+        if (closed || id === state.model) return;
+        // As in the Tag image dialog: the model's fields start from the defaults again; the count is kept (D91).
+        set({model: id, optionsRevision: state.optionsRevision + 1,
+            options: {...state.options, general_threshold: defaults.general_threshold,
+                character_threshold: defaults.character_threshold, instructions: defaults.instructions}});
+    }
+    function setOption(key, value) {
+        requireValue(OPTION_KEYS.has(key), 'Unknown tagging option');
+        set({options: {...state.options, [key]: value}});
+    }
+    /** `{model_type, options}` for a job or a review session, or null while the options are invalid. */
+    function request() {
+        if (optionError(state.model, state.options)) return null;
+        return {model_type: state.model, options: requestOptions(state.model, state.options)};
+    }
+    function dispose() {
+        closed = true;
+        listeners.clear();
+        abort?.abort();
+    }
+    function subscribe(listener) {
+        requireValue(typeof listener === 'function', 'A listener function is required');
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+    }
+    return {
+        get state() {return state;},
+        subscribe, open, setModel, setOption, request, dispose,
     };
 }

@@ -7,6 +7,7 @@ Split into domain-specific mixins for maintainability:
 - LoggingRoutesMixin: log management endpoints
 - AutotagRoutesMixin: auto-tagging model management and tagging
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
+- ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
 """
 
 import asyncio
@@ -32,6 +33,7 @@ from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
 from .job_routes import JobRoutesMixin
+from .image_tag_jobs import ImageTagJobsMixin
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
@@ -260,6 +262,7 @@ class PromptManagerAPI(
     ImageRoutesMixin,
     AdminRoutesMixin,
     JobRoutesMixin,
+    ImageTagJobsMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,

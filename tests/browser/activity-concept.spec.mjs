@@ -249,14 +249,16 @@ const EXPECTED_JOB_VIEW = {
     pressed: { border: true, background: true, added: true, bad: true, warn: true },
 };
 
-async function openRunningJob(page, request, theme, viewport = { width: 1600, height: 1100 }) {
+const SCAN_START = { start: { total: 19622 }, step: { processed: 8240,
+    counters: { known: 6511, review: 37, no_metadata: 254, errors: 18 },
+    records: [{ group: 'added', path: 'CCC/mabes9sans-dataset-v1/IMG_GEN_00369_.png', detail: 'Added to the Library as “Mabes portrait”' }] } };
+
+async function openRunningJob(page, request, theme, viewport = { width: 1600, height: 1100 }, data = SCAN_START) {
     await page.setViewportSize(viewport);
-    const started = await request.post('/__test__/jobs/start', { data: { total: 19622 } });
+    const started = await request.post('/__test__/jobs/start', { data: data.start });
     await expect(started).toBeOK();
     const { job } = await started.json();
-    await expect(await request.post(`/__test__/jobs/${job.id}/step`, { data: { processed: 8240,
-        counters: { known: 6511, review: 37, no_metadata: 254, errors: 18 },
-        records: [{ group: 'added', path: 'CCC/mabes9sans-dataset-v1/IMG_GEN_00369_.png', detail: 'Added to the Library as “Mabes portrait”' }] } })).toBeOK();
+    await expect(await request.post(`/__test__/jobs/${job.id}/step`, { data: data.step })).toBeOK();
     await openProduction(page, `activity/${job.id}`, theme);
     await expect(page.locator('#workspace-main .file-row')).toHaveCount(1);
     return job;
@@ -276,6 +278,30 @@ for (const theme of THEMES) test(`job view follows the approved mockup ${theme}`
         .toEqual(['div', 'section', 'section']);
     await undoDom();
     expect(await page.evaluate(measureJobView)).toEqual(EXPECTED_JOB_VIEW);
+});
+
+// D89 (plan D66): an image tagging job's view is the same mockup with its own four tiles (Tagged green, Unchanged,
+// Skipped warning, Errors red) in the mockup's five-column row, its own outcome list and "Tagging log".
+const TAG_START = { start: { kind: 'image-tags', title: 'Auto-tag images', mode: 'auto', images: 4, total: 4 }, step: { processed: 2,
+    counters: { unchanged: 1, errors: 1 }, records: [{ group: 'tagged', path: 'CCC/mabes9sans-dataset-v1/IMG_GEN_00369_.png', detail: 'Added 3 tags' }] } };
+const EXPECTED_TAG_VIEW = {
+    ...EXPECTED_JOB_VIEW,
+    progress: [MOCKUP_PROGRESS[0], MOCKUP_PROGRESS[1], 'dl.stat-row(div.added.stat,div.stat,div.stat.warn,div.bad.stat)'],
+    summary: '● Tagging log — raw detail, click to show',
+};
+
+for (const theme of THEMES) test(`image tagging job view follows the approved mockup ${theme}`, async ({ page, request }) => {
+    await seedConcept(request);
+    await openRunningJob(page, request, theme, undefined, TAG_START);
+    expect(await page.evaluate(measureJobView)).toEqual(EXPECTED_TAG_VIEW);
+    await expect(page.locator('#workspace-main .outcome-list > button')).toHaveText(['Tagged1', 'Errors1', 'Skipped0', 'Unchanged1']);
+    // Mutation check: the scan's five tiles and the scan's log label are both noticed.
+    expect(diffInventory(EXPECTED_JOB_VIEW, await page.evaluate(measureJobView)).map(item => item.path).sort())
+        .toEqual(['progress.2', 'summary']);
+    const undoCss = await mutate(page, { css: '#workspace-main .stat-row .stat.warn dd { color: red; }' });
+    expect(diffInventory(EXPECTED_TAG_VIEW, await page.evaluate(measureJobView)).map(item => item.path)).toEqual(['pressed.warn']);
+    await undoCss();
+    expect(await page.evaluate(measureJobView)).toEqual(EXPECTED_TAG_VIEW);
 });
 
 test('job view fits a phone without page scroll', async ({ page, request }) => {

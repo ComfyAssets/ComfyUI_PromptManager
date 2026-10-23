@@ -462,6 +462,15 @@ class TestUiRoutes(CoreRoutesTestCase):
         ):
             self.assertIn(entry, table)
 
+    async def test_image_tag_job_route_is_registered_beside_the_scan_job(self):
+        table = {
+            (route.method, route.resource.canonical)
+            for route in self.app.router.routes()
+            if route.resource is not None
+        }
+        self.assertIn(("POST", "/prompt_manager/jobs/scan"), table)
+        self.assertIn(("POST", "/prompt_manager/jobs/image-tags"), table)
+
 
 class TestStaticRoutes(CoreRoutesTestCase):
 

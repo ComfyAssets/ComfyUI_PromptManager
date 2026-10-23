@@ -799,3 +799,114 @@ test('a failed report download says so and leaves the button usable', async ({ p
     await expect(toast(page)).toHaveText('The report could not be downloaded. Try again.');
     await expect(button).not.toHaveAttribute('aria-disabled', 'true');
 });
+
+// ── #249 PR D Task D3 (D89, plan D66): image tagging jobs in Activity ─────────────────────────
+
+const TAG_JOB = { kind: 'image-tags', title: 'Auto-tag images', mode: 'auto', images: 4, total: 4 };
+
+test('an image tagging job shows Tagged Unchanged Skipped Errors and opens tagged rows', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request, TAG_JOB);
+    await step(request, job.id, { processed: 3, records: [
+        { group: 'tagged', path: 'shared/same.png', root: 'output', detail: 'Added 2 tags' },
+        { group: 'unchanged', path: 'shared/same.png', root: 'input', detail: 'No new tags' },
+        { group: 'skipped', path: 'video/clip_0004.webm', root: 'output', detail: 'Video: manual tags only' },
+    ] });
+    await page.goto(`${workspace}#/images`);
+    // The pill names the kind's verb.
+    await expect(pill(page)).toHaveText('Tagging · 75% · 3 / 4');
+    await openJob(page, job.id);
+    await expect(heading(page).locator('h1')).toHaveText('Auto-tag images');
+    await expect(page).toHaveTitle('Auto-tag images · Prompt Manager');
+    // The header's scope is the number of images, and the job cancels as "Cancel tagging" (danger).
+    await expect(heading(page).locator('p.muted')).toHaveText(/^Started \d\d:\d\d · 4 images · closing this view does not cancel it$/);
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report', 'Cancel tagging']);
+    await expect(heading(page).getByRole('button', { name: 'Cancel tagging', exact: true })).toHaveClass(/danger/);
+    await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('Processing file 3 of 4');
+    await expect(progressSection(page).locator('progress')).toHaveAttribute('aria-label', 'Auto-tag images progress');
+    // Four tiles in the scan's tones: Tagged green, Unchanged plain, Skipped warning, Errors red.
+    expect(await tileValues(page)).toEqual([
+        ['stat added', 'Tagged', '1'], ['stat', 'Unchanged', '1'], ['stat warn', 'Skipped', '1'], ['stat bad', 'Errors', '0'],
+    ]);
+    // What got tagged and what went wrong first, as the scan's list does.
+    await expect(outcomeButtons(page)).toHaveText(['Tagged1', 'Errors0', 'Skipped1', 'Unchanged1']);
+    await expect(outcomeButtons(page).first()).toHaveAttribute('aria-pressed', 'true');
+
+    // Tagged rows open the viewer on that file (D57's identity).
+    const tagged = fileRows(page).first();
+    expect(await tagged.evaluate(node => node.localName)).toBe('button');
+    await expect(tagged.locator('.path')).toHaveText('shared/same.png');
+    await expect(tagged.locator('.why')).toHaveText('Added 2 tags');
+    await expect(resultsNote(page)).toHaveText('Each row opens the image in the viewer.');
+    await tagged.click();
+    const viewer = page.locator('dialog#viewer-dialog[open]');
+    await expect(viewer.locator('#viewer-stage img').first()).toHaveAttribute('src', /[?&]root=0(&|$)/);
+    await page.keyboard.press('Escape');
+    await expect(viewer).toHaveCount(0);
+    await expect(tagged).toBeFocused();
+    // Unchanged rows open too, here the input root's file.
+    await outcomeButtons(page).filter({ hasText: 'Unchanged' }).click();
+    await fileRows(page).first().click();
+    await expect(page.locator('dialog#viewer-dialog[open] #viewer-stage img').first()).toHaveAttribute('src', /[?&]root=1(&|$)/);
+    await page.keyboard.press('Escape');
+    // Skipped rows are plain text with their reason.
+    await outcomeButtons(page).filter({ hasText: 'Skipped' }).click();
+    expect(await fileRows(page).first().evaluate(node => node.localName)).toBe('div');
+    await expect(fileRows(page).first().locator('.why')).toHaveText('Video: manual tags only');
+    await expect(resultsNote(page)).toHaveCount(0);
+    // The log is the job's own: "Tagging log", with the runner's prefixes.
+    await expect(scanLog(page).locator('summary')).toHaveText('● Tagging log — raw detail, click to show');
+    await scanLog(page).locator('summary').click();
+    await expect(scanLog(page).locator('pre')).toContainText('+ shared/same.png · Added 2 tags');
+
+    // An error, then the end: the header and the Activity item read "N tagged · M errors".
+    await step(request, job.id, { processed: 4, records: [
+        { group: 'errors', path: 'broken/truncated.png', root: 'output', detail: 'Auto-tagging failed. Check server logs for details.' },
+    ] });
+    await expect(tiles(page).last().locator('dd')).toHaveText('1');
+    await finish(request, job.id);
+    await expect(toast(page)).toHaveText('Auto-tag images finished · 1 tagged · 1 error');
+    await expect(heading(page).locator('p.muted')).toHaveText(/^Finished \d\d:\d\d · 1 tagged · 1 error$/);
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
+    await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('4 of 4 files processed');
+    await page.goto(`${workspace}#/activity`);
+    await expect(items(page).first().locator('h3')).toHaveText('✓ Auto-tag images');
+    await expect(items(page).first().locator('p')).toHaveText(/^Finished \d\d:\d\d · 1 tagged · 1 error$/);
+});
+
+test('cancel tagging stops at a file boundary', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request, { ...TAG_JOB, title: 'Add tags to images', mode: 'add', images: 1250, total: 1250 });
+    await step(request, job.id, { processed: 2, counters: { tagged: 2 } });
+    await page.goto(`${workspace}#/activity`);
+    await expect(items(page).first().locator('p')).toHaveText(/^Started \d\d:\d\d · 1,250 images · closing this view does not cancel it$/);
+    await openJob(page, job.id);
+    await heading(page).getByRole('button', { name: 'Cancel tagging', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(toast(page)).toHaveText('Add tags to images cancelled · 2 tagged');
+    await expect(heading(page).locator('h1')).toBeFocused();
+    await expect(heading(page).locator('p.muted')).toHaveText(/^Cancelled \d\d:\d\d at a file boundary · 2 tagged · completed work is kept$/);
+    await expect(heading(page).getByRole('button', { name: 'Cancel tagging', exact: true })).toHaveCount(0);
+    await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('Cancelled after 2 of 1,250 files');
+    expect((await tileValues(page)).map(([, , value]) => value)).toEqual(['2', '0', '0', '0']);
+    expect((await listed(request))[0].state).toBe('cancelled');
+});
+
+test('the report download names the kind', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request, TAG_JOB);
+    await step(request, job.id, { processed: 1, records: [
+        { group: 'tagged', path: 'sub/a.png', root: 'output', detail: 'Added 1 tag' },
+    ] });
+    await finish(request, job.id);
+    await openJob(page, job.id);
+    const button = heading(page).getByRole('button', { name: 'Download report', exact: true });
+    const [download] = await Promise.all([page.waitForEvent('download'), button.click()]);
+    expect(download.suggestedFilename()).toMatch(/^prompt-manager-image-tags-\d{8}-\d{4}\.json$/);
+    const report = JSON.parse(await (await import('node:fs/promises')).readFile(await download.path(), 'utf8'));
+    expect(report.job.kind).toBe('image-tags');
+    expect(report.job.scope).toEqual({ mode: 'auto', images: 4 });
+    expect(Object.keys(report.outcomes)).toEqual(['tagged', 'unchanged', 'skipped', 'errors']);
+    expect(report.outcomes.tagged.rows.map(row => [row.path, row.detail])).toEqual([['sub/a.png', 'Added 1 tag']]);
+    await expect(toast(page)).toHaveText('Job report downloaded.');
+});

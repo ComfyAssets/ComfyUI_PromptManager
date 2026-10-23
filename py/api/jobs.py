@@ -9,8 +9,9 @@ as a snapshot and then every event published after it, until the job ends.
 
 Jobs live only in server memory and are gone after a restart. The registry
 keeps the running jobs and this session's last ``MAX_FINISHED_JOBS`` finished
-ones. Record-changing jobs (the metadata scan, and later maintenance, cleanup
-and restore) never run together, and one job of a kind runs at a time.
+ones. Record-changing jobs (the metadata scan, bulk image tagging, and later
+maintenance, cleanup and restore) never run together, and one job of a kind
+runs at a time.
 """
 
 import asyncio
@@ -53,6 +54,11 @@ SCAN_GROUPS = {
     "unresolved": "review",
     "failed": "errors",
 }
+
+# Bulk image tagging (#249 D1): Add tags and Auto-tag over selected images.
+# Record-changing: it writes image tag sets and new vocabulary names.
+IMAGE_TAG_JOB_KIND = "image-tags"
+IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
 
 
 def _relative_path(path) -> str:
@@ -292,13 +298,9 @@ class JobRegistry:
         running or when ``record_changing`` and another record-changing job
         runs. Must be called from the event loop.
         """
-        same_kind = self.active(kind)
-        if same_kind is not None:
-            raise JobBusy(same_kind)
-        if record_changing:
-            for job in self._jobs.values():
-                if job.running and job.record_changing:
-                    raise JobBusy(job)
+        blocker = self.blocker(kind, record_changing=record_changing)
+        if blocker is not None:
+            raise JobBusy(blocker)
         self._prune()
         job = Job(
             kind, title, record_changing=record_changing, scope=scope, groups=groups
@@ -306,6 +308,17 @@ class JobRegistry:
         self._jobs[job.id] = job
         job.task = asyncio.ensure_future(self._run(job, runner))
         return job
+
+    def blocker(self, kind, *, record_changing):
+        """The running job a new ``kind`` job would be refused for, or None."""
+        same_kind = self.active(kind)
+        if same_kind is not None:
+            return same_kind
+        if record_changing:
+            for job in self._jobs.values():
+                if job.running and job.record_changing:
+                    return job
+        return None
 
     async def _run(self, job, runner):
         try:

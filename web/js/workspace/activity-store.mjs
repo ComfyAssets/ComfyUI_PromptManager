@@ -23,9 +23,51 @@ export const LOST_DETAIL = 'This job ended when ComfyUI restarted.';
 const SERVER_STATES = new Set(['running', 'finished', 'cancelled', 'failed']);
 const FINAL_STATES = new Set(['finished', 'cancelled', 'failed']);
 const JOB_ID = /^[0-9a-f]{32}$/;
-// The pill's verb for each job kind; a kind without one shows its title.
-const PILL_VERBS = Object.freeze({ scan: 'Scanning' });
+// The pill's verb for each job kind; a kind without one shows its title (D89: image tagging jobs read "Tagging").
+const PILL_VERBS = Object.freeze({ scan: 'Scanning', 'image-tags': 'Tagging' });
 const START_TOASTS = Object.freeze({ scan: 'Scan started.' });
+
+/** The scan's job view (D56): its counter tiles `[group, label, tone]` and outcome list in the mockup's orders. */
+const SCAN_VIEW = Object.freeze({
+    tiles: Object.freeze([
+        ['added', 'Added to Library', 'added'], ['known', 'Already known', ''], ['review', 'Needs review', 'warn'],
+        ['no_metadata', 'No usable metadata', ''], ['errors', 'Errors', 'bad'],
+    ].map(Object.freeze)),
+    // What got added and what went wrong first.
+    outcomes: Object.freeze([
+        ['added', 'Added to Library'], ['review', 'Needs review'], ['errors', 'Errors'],
+        ['no_metadata', 'No usable metadata'], ['known', 'Already known'],
+    ].map(Object.freeze)),
+    // Rows that open the file in the viewer (D57); the others are plain text.
+    openable: Object.freeze(new Set(['added', 'known'])),
+    log: 'Scan log',
+    cancel: 'Cancel scan',
+});
+
+/**
+ * Each job kind's view: its tiles, outcome list, openable rows, log label and cancel label. D89: an image tagging job
+ * (`image-tags`) counts Tagged (green), Unchanged, Skipped (warning) and Errors (red), lists what got tagged and what
+ * went wrong first, and opens Tagged and Unchanged rows in the viewer like the scan's (D57).
+ */
+export const JOB_VIEWS = Object.freeze({
+    scan: SCAN_VIEW,
+    'image-tags': Object.freeze({
+        tiles: Object.freeze([['tagged', 'Tagged', 'added'], ['unchanged', 'Unchanged', ''], ['skipped', 'Skipped', 'warn'],
+            ['errors', 'Errors', 'bad']].map(Object.freeze)),
+        outcomes: Object.freeze([['tagged', 'Tagged'], ['errors', 'Errors'], ['skipped', 'Skipped'],
+            ['unchanged', 'Unchanged']].map(Object.freeze)),
+        openable: Object.freeze(new Set(['tagged', 'unchanged'])),
+        log: 'Tagging log',
+        cancel: 'Cancel tagging',
+    }),
+});
+// Another kind keeps the scan's tiles and outcomes under the generic labels.
+const GENERIC_VIEW = Object.freeze({ ...SCAN_VIEW, log: 'Job log', cancel: 'Cancel job' });
+
+/** The view of a job `kind`; an unknown kind gets the generic one. */
+export function jobView(kind) {
+    return Object.hasOwn(JOB_VIEWS, kind) ? JOB_VIEWS[kind] : GENERIC_VIEW;
+}
 
 /** The wait before the `attempt`-th re-read (0-based): 1 s, 2 s, 4 s … never more than 30 s. */
 export function backoffDelay(attempt) {
@@ -70,20 +112,31 @@ const errorsOf = job => `${number(job.counters.errors ?? 0)} ${noun(job.counters
 /** "1,420 added". */
 export const addedOf = job => `${number(job.counters.added ?? 0)} added`;
 
-/** The toast when a job ends: "Scan finished · N added · M errors", "Scan cancelled · N added". */
+/**
+ * The toast when a job ends: "Scan finished · N added · M errors", "Scan cancelled · N added"; an image tagging job
+ * the same way with its own title and count (D89): "Auto-tag images finished · N tagged · M errors".
+ */
 export function finishToast(job) {
     if (job.kind === 'scan') {
         if (job.state === 'cancelled') return `Scan cancelled · ${addedOf(job)}`;
         if (job.state === 'failed') return `Scan failed · ${addedOf(job)} · ${errorsOf(job)}`;
         return `Scan finished · ${addedOf(job)} · ${errorsOf(job)}`;
     }
+    if (job.kind === 'image-tags') {
+        if (job.state === 'cancelled') return `${job.title} cancelled · ${taggedOf(job)}`;
+        return `${job.title} ${job.state === 'failed' ? 'failed' : 'finished'} · ${outcomeLine(job)}`;
+    }
     if (job.state === 'cancelled') return `${job.title} was cancelled.`;
     if (job.state === 'failed') return `${job.title} failed.`;
     return `${job.title} finished.`;
 }
 
+// D85: an image tagging job says which of its two modes started.
+const IMAGE_TAG_START_TOASTS = Object.freeze({ add: 'Tagging started.', auto: 'Auto-tagging started.' });
+
 /** The toast after this tab starts a job. */
 export function startToast(job) {
+    if (job.kind === 'image-tags' && IMAGE_TAG_START_TOASTS[job.scope.mode]) return IMAGE_TAG_START_TOASTS[job.scope.mode];
     return START_TOASTS[job.kind] ?? `${job.title} started.`;
 }
 
@@ -94,9 +147,14 @@ export function pillParts(job) {
     return { label, files, text: label + files };
 }
 
-/** The scan's counters as one line: "N added · M errors"; other kinds have none yet. */
+/** "12 tagged" (D89). */
+export const taggedOf = job => `${number(job.counters.tagged ?? 0)} tagged`;
+
+/** The counters as one line: "N added · M errors" for a scan, "N tagged · M errors" for image tagging (D89). */
 export function outcomeLine(job) {
-    return job.kind === 'scan' ? `${addedOf(job)} · ${errorsOf(job)}` : '';
+    if (job.kind === 'scan') return `${addedOf(job)} · ${errorsOf(job)}`;
+    if (job.kind === 'image-tags') return `${taggedOf(job)} · ${errorsOf(job)}`;
+    return '';
 }
 
 function defaultConnect(url) {
