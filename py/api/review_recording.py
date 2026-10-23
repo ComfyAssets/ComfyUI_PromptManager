@@ -5,13 +5,18 @@ final outcome is ambiguous and unlinked. The strict resolver must find it
 ``ambiguous``, the scan's legacy fallback (the browser parser,
 ``_graph_prompt_text``) must not link it, and no saved row may link it
 already. A file the fallback links, an exact pair the ingester stored and an
-already linked file are never queued.
+already linked file are never queued. Neither is an ambiguous file with
+nothing to choose: fewer than two of its candidates carry a prompt
+(``utils.review_capture.reviewable``); the scan reports it unresolved ("could
+not be traced").
 
 The queue heals itself: a pending item whose file is now linked (by the
 fallback, a later resolution or the monitor) is removed by the next scan
-that lists the file or by the monitor's next pass over it. Only an
-undecided item goes (``pending``, revision 0, no decision row); a decision
-is never deleted or changed (``settle_linked_review_items``).
+that lists the file or by the monitor's next pass over it, and so is a
+pending item without a choice whose file is still ambiguous without one
+(``settle_untraced_review_items``). Only an undecided item goes
+(``pending``, revision 0, no decision row); a decision is never deleted or
+changed (``settle_linked_review_items``).
 
 The scan records through ``_record_scanned_review`` (best effort: a failure
 is logged and counted); the monitor calls ``record_review_file`` from its
@@ -42,6 +47,9 @@ try:
 except ImportError:
     from utils.review_capture import record_ambiguous_file
 
+# The scan log's reason for items that leave the queue with nothing to choose.
+NOTHING_TO_CHOOSE = "nothing to choose"
+
 
 class ReviewRecordingMixin:
     """Record the scan's and the monitor's ambiguous files for Needs review."""
@@ -49,7 +57,7 @@ class ReviewRecordingMixin:
     def _record_scanned_review(self, media_file, roots, review=None):
         """Record one ambiguous, unlinked scanned file (logged and counted)."""
         try:
-            outcome = self._record_review_sync(media_file, roots)
+            outcome = self._record_review_sync(media_file, roots, review)
         except Exception:
             self.logger.warning(
                 f"{media_file.name} could not be added to Needs review",
@@ -65,15 +73,22 @@ class ReviewRecordingMixin:
         if outcome in QUEUED_OUTCOMES:
             review["queued"] += 1
 
-    def _record_review_sync(self, media_file, roots):
-        """``record_ambiguous_file`` for a file under one of ``roots`` (blocking)."""
+    def _record_review_sync(self, media_file, roots, review=None):
+        """``record_ambiguous_file`` for a file under one of ``roots`` (blocking).
+
+        An ``untraced`` file (its captured bytes offer nothing to choose) also
+        loses its pending items that offer nothing either.
+        """
         located = self._review_location(media_file, roots)
         if located is None:
             return "skipped"
         root, index, relative, _spelled = located
-        return record_ambiguous_file(
+        outcome = record_ambiguous_file(
             self.db, self._capture_store(), Path(root), index, relative
         )
+        if outcome == "untraced":
+            self._settle_untraced_reviews([media_file], roots, review)
+        return outcome
 
     @staticmethod
     def _review_location(media_file, roots, real_roots=None):
@@ -129,6 +144,33 @@ class ReviewRecordingMixin:
             review["settled"] += settled
         return settled
 
+    def _settle_untraced_reviews(self, media_files, roots, review=None):
+        """Remove the pending items without a choice of untraced ``media_files``.
+
+        ``media_files`` are files found ambiguous with fewer than two
+        candidates that carry a prompt. Blocking; best effort like the linked
+        settle (a failure is logged and counted in ``review["errors"]``).
+        Returns how many items left.
+        """
+        locators = []
+        for media_file in media_files:
+            located = self._review_location(media_file, roots)
+            if located is not None:
+                locators.append(os.path.normcase(located[3]))
+        try:
+            removed = self.db.settle_untraced_review_items(locators) if locators else 0
+        except Exception:
+            self.logger.warning(
+                "Needs review items without a choice could not be removed",
+                exc_info=True,
+            )
+            if review is not None:
+                review["errors"] += 1
+            return 0
+        if review is not None:
+            review["untraced"] += removed
+        return removed
+
     def _fallback_links(self, metadata):
         """True when the scan's legacy fallback would link these records."""
         return bool(metadata.get("prompt")) and bool(self._graph_prompt_text(metadata))
@@ -140,7 +182,9 @@ class ReviewRecordingMixin:
         current root is ``skipped``. A linked file is never queued: its
         pending items are removed and the answer is ``linked``. An unlinked
         file the scan's fallback would link is ``skipped`` (the next scan
-        links it); any other file is recorded when it is ambiguous. While a
+        links it); any other file is recorded when it is ambiguous with a
+        choice, and is ``untraced`` (its pending items without a choice
+        removed) when it is ambiguous without one. While a
         job runs that a ``records`` job may not run beside, nothing is written
         and the answer is ``deferred``. Errors propagate: the monitor logs
         them and keeps its link.
@@ -182,6 +226,12 @@ class ReviewRecordingMixin:
             job.log_line(
                 f"{SCAN_LOG_PREFIXES['known']} "
                 f"{_plural(review['settled'], 'image')} left Needs review · now linked"
+            )
+        if review["untraced"]:
+            job.log_line(
+                f"{SCAN_LOG_PREFIXES['known']} "
+                f"{_plural(review['untraced'], 'image')} left Needs review · "
+                f"{NOTHING_TO_CHOOSE}"
             )
         if review["errors"]:
             job.log_line(

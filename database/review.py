@@ -39,6 +39,7 @@ from .review_schema import (
     METADATA_TABLE,
     canonical_evidence,
     evidence_digest,
+    evidence_offers_choice,
 )
 
 # Only this module's table constants are interpolated into the SQL below.
@@ -91,6 +92,13 @@ _PENDING_AT = (
 # Pending items of one file: the candidates a link settles.
 _PENDING_OF_LOCATOR = (
     f"SELECT i.id FROM {FILES_TABLE} f "  # nosec B608
+    f"JOIN {BYTES_TABLE} b ON b.file_id=f.id "
+    f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
+    "WHERE f.locator=? AND i.state='pending'"
+)
+# Pending items of one file with their evidence: an untraced file's settle.
+_PENDING_EVIDENCE_OF_LOCATOR = (
+    f"SELECT i.id,i.evidence FROM {FILES_TABLE} f "  # nosec B608
     f"JOIN {BYTES_TABLE} b ON b.file_id=f.id "
     f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
     "WHERE f.locator=? AND i.state='pending'"
@@ -412,6 +420,41 @@ class ReviewOperations:
                 for (item_id,) in conn.execute(
                     _PENDING_OF_LOCATOR, (locator,)
                 ).fetchall():
+                    removed += conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
+            if removed:
+                conn.execute(_BUMP_REVIEW_INDEX)
+        return removed
+
+    def settle_untraced_review_items(self, locators) -> int:
+        """Remove the pending, undecided items that offer nothing to choose.
+
+        ``locators`` are files the caller found ambiguous without a choice
+        (fewer than two candidates carry a prompt). Of their items, one leaves
+        the queue only when its own stored evidence offers no choice either
+        (``evidence_offers_choice``) and it is still ``pending`` at revision 0
+        with no decision row, the same safe delete as
+        ``settle_linked_review_items``. Files without a pending item cost one
+        indexed read and open no write transaction. Returns how many items
+        were removed (the review index revision moves when any was).
+        """
+        locators = list(locators)
+        for locator in locators:
+            _validate_locator(locator)
+        conn = self.model.get_connection()
+        pending = [
+            locator
+            for locator in locators
+            if conn.execute(_PENDING_OF_LOCATOR, (locator,)).fetchone() is not None
+        ]
+        if not pending:
+            return 0
+        removed = 0
+        with self._pair_transaction() as conn:
+            for locator in pending:
+                rows = conn.execute(_PENDING_EVIDENCE_OF_LOCATOR, (locator,)).fetchall()
+                for item_id, evidence in rows:
+                    if evidence_offers_choice(json.loads(evidence)):
+                        continue
                     removed += conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
             if removed:
                 conn.execute(_BUMP_REVIEW_INDEX)

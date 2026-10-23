@@ -200,6 +200,44 @@ def canonical_evidence(value: Any) -> str:
     return text
 
 
+def choosable(candidate: Any) -> bool:
+    """True when a candidate offers a prompt to choose: it is ``resolved`` and
+    its positive side carries non-blank text. The page disables any other
+    candidate, so it is never something to choose.
+    """
+    if not isinstance(candidate, dict) or candidate.get("state") != "resolved":
+        return False
+    positive = candidate.get("positive")
+    if not isinstance(positive, dict):
+        return False
+    text = positive.get("text")
+    return isinstance(text, str) and bool(text.strip())
+
+
+# An item is worth a decision only when at least this many candidates offer
+# a prompt; with fewer there is nothing to choose between (maintainer test of
+# #284/#288: 39 items whose candidates were all "unresolved").
+MIN_CHOOSABLE = 2
+
+
+def evidence_offers_choice(evidence: Any) -> bool:
+    """False when stored evidence provably offers nothing to choose.
+
+    Unlimited evidence must list ``MIN_CHOOSABLE`` choosable candidates. A
+    limited item stores none, only ``candidate_total``; it may offer a choice
+    (more than ``MAX_CANDIDATES`` prompts) unless that total is too small.
+    """
+    if not isinstance(evidence, dict):
+        return False
+    if evidence.get("limited"):
+        total = evidence.get("candidate_total")
+        return type(total) is int and total >= MIN_CHOOSABLE
+    candidates = evidence.get("candidates")
+    if not isinstance(candidates, list):
+        return False
+    return sum(1 for c in candidates if choosable(c)) >= MIN_CHOOSABLE
+
+
 def evidence_digest(text: str) -> str:
     """SHA-256 of canonical evidence text (ASCII, hence UTF-8 identical)."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

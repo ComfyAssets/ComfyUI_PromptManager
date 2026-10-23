@@ -6,15 +6,21 @@ finds ``ambiguous`` to :func:`record_ambiguous_file`. It captures the file
 reads the metadata again from the capture, resolves it with the default
 (ingestion) profile and stores only an ``ambiguous`` result, bound to the
 capture's byte record. The evidence a reviewer chooses from is therefore the
-evidence of exactly those bytes. Nothing here links a file, loads a model or
-decodes pixels; the capture is released before the database write.
+evidence of exactly those bytes. An ambiguous result is stored only when it
+is ``reviewable``: at least two candidates carry a resolved prompt text. With
+none the file could not be traced; with exactly one, the untraced branches
+may still have made the file, so that text is not certain and the file stays
+unresolved (the resolver never flattens unknown semantics into a guess).
+Nothing here links a file, loads a model or decodes pixels; the capture is
+released before the database write.
 
 Evidence is small on purpose (startup validates every row): the resolver's
 reason and, per candidate sampler, ``{sampler_id, state, reason, positive,
 negative}`` where each side is ``{text, storage_text, provenance}``. A
 candidate's ``hash`` is the SHA-256 of its canonical JSON without the hash.
-More than ``MAX_CANDIDATES`` candidates, none at all, or evidence over the
-8 MiB bound make a ``limited`` item without candidates.
+More than ``MAX_CANDIDATES`` candidates or evidence over the 8 MiB bound make
+a ``limited`` item without candidates (a result without any candidate is not
+``reviewable`` and is never stored).
 """
 
 from __future__ import annotations
@@ -28,13 +34,23 @@ from typing import Any
 
 try:
     from ..database.library_commands import LibraryCommandError
-    from ..database.review_schema import MAX_CANDIDATES, canonical_evidence
+    from ..database.review_schema import (
+        MAX_CANDIDATES,
+        MIN_CHOOSABLE,
+        canonical_evidence,
+        choosable,
+    )
     from .media_capture import CaptureCapacity, CaptureError
     from .prompt_inspector import MetadataReadError, read_inspection_file
     from .prompt_pair_resolver import RESOLVER_VERSION, resolve_prompt_pair
 except ImportError:  # imported with the repo root on sys.path
     from database.library_commands import LibraryCommandError
-    from database.review_schema import MAX_CANDIDATES, canonical_evidence
+    from database.review_schema import (
+        MAX_CANDIDATES,
+        MIN_CHOOSABLE,
+        canonical_evidence,
+        choosable,
+    )
     from utils.media_capture import CaptureCapacity, CaptureError
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.prompt_pair_resolver import RESOLVER_VERSION, resolve_prompt_pair
@@ -55,7 +71,9 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
     evidence, or the file's current stat is the verified fingerprint of
     bytes an item cites, so it is not even copied, and that item is still
     pending), ``decided`` (as ``duplicate``, but the item carries a decision,
-    so the file is not in the queue) or ``skipped`` (the file
+    so the file is not in the queue), ``untraced`` (ambiguous in its captured
+    bytes, but not ``reviewable``: nothing to choose, nothing stored) or
+    ``skipped`` (the file
     changed, vanished, is not ambiguous in its captured bytes, or storage was
     restored meanwhile).
     ``CaptureCapacity`` and database errors propagate to the caller, which
@@ -87,6 +105,8 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
     resolution = captured[1] if captured is not None else None
     if resolution is None or resolution.get("state") != "ambiguous":
         return "skipped"
+    if not reviewable(resolution):
+        return "untraced"
     evidence, count, limited = review_evidence(resolution)
     try:
         inserted = db.record_review_item(
@@ -178,6 +198,24 @@ def captured_review(store, capture) -> tuple[dict, dict] | None:
         info["format"] = read.format
     canonical["file_info"] = info
     return canonical, resolve_prompt_pair(canonical)
+
+
+def reviewable(resolution: Any) -> bool:
+    """True when an ambiguous result offers a choice: ``MIN_CHOOSABLE`` of its
+    selectable candidates (nested ambiguous stages flattened) are choosable.
+
+    Counted before the evidence is bounded, so a ``limited`` item (more than
+    ``MAX_CANDIDATES`` candidates) with prompts to choose is still queued.
+    """
+    if not isinstance(resolution, dict) or resolution.get("state") != "ambiguous":
+        return False
+    count = 0
+    for candidate in _flattened(resolution.get("candidates"), 0):
+        if choosable(candidate):
+            count += 1
+            if count >= MIN_CHOOSABLE:
+                return True
+    return False
 
 
 def review_evidence(resolution: dict) -> tuple[dict, int, bool]:
