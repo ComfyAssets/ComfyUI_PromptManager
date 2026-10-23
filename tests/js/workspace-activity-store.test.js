@@ -283,6 +283,41 @@ test('summaries are validated and the copy follows the spec', async () => {
     assert.deepEqual([-1, 0, 1, 4, 5, 6, 1e9, 0.5].map(backoffDelay), [1000, 1000, 2000, 16000, 30000, 30000, 30000, 1000]);
 });
 
+// D89 (plan D66): an image tagging job's view has its own tiles, outcomes, openable rows, log and cancel labels.
+test('image-tags jobs get their own tiles outcomes and pill verb', async () => {
+    const { parseJob, jobView, pillParts, outcomeLine, startToast } = await source;
+    assert.equal(typeof jobView, 'function');
+    const job = parseJob(summary({ kind: 'image-tags', title: 'Auto-tag images', progress: 40, processed: 2, total: 5,
+        counters: { tagged: 1420, unchanged: 3, skipped: 2, errors: 1 }, scope: { mode: 'auto', images: 5, model_type: 'wd14-vit' } }));
+    const view = jobView(job.kind);
+    assert.deepEqual(view.tiles, [['tagged', 'Tagged', 'added'], ['unchanged', 'Unchanged', ''], ['skipped', 'Skipped', 'warn'],
+        ['errors', 'Errors', 'bad']]);
+    assert.deepEqual(view.outcomes, [['tagged', 'Tagged'], ['errors', 'Errors'], ['skipped', 'Skipped'], ['unchanged', 'Unchanged']]);
+    assert.deepEqual([...view.openable].sort(), ['tagged', 'unchanged']);
+    assert.equal(view.log, 'Tagging log');
+    assert.equal(view.cancel, 'Cancel tagging');
+    assert.deepEqual(pillParts(job), { label: 'Tagging · 40%', files: ' · 2 / 5', text: 'Tagging · 40% · 2 / 5' });
+    assert.equal(outcomeLine(job), '1,420 tagged · 1 error');
+    assert.equal(outcomeLine({ ...job, counters: {} }), '0 tagged · 0 errors');
+    assert.equal(startToast(job), 'Auto-tagging started.');
+});
+
+test('unknown kinds keep the generic view', async () => {
+    const { jobView } = await source;
+    const scan = jobView('scan');
+    assert.deepEqual(scan.tiles, [['added', 'Added to Library', 'added'], ['known', 'Already known', ''],
+        ['review', 'Needs review', 'warn'], ['no_metadata', 'No usable metadata', ''], ['errors', 'Errors', 'bad']]);
+    assert.deepEqual(scan.outcomes, [['added', 'Added to Library'], ['review', 'Needs review'], ['errors', 'Errors'],
+        ['no_metadata', 'No usable metadata'], ['known', 'Already known']]);
+    assert.deepEqual([...scan.openable].sort(), ['added', 'known']);
+    assert.deepEqual([scan.log, scan.cancel], ['Scan log', 'Cancel scan']);
+    for (const kind of ['maintenance', '', 'constructor', '__proto__']) {
+        const view = jobView(kind);
+        assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [scan.tiles, scan.outcomes, [...scan.openable]]);
+        assert.deepEqual([view.log, view.cancel], ['Job log', 'Cancel job']);
+    }
+});
+
 test('pagehide stops polling, closes streams and aborts the in-flight read; pageshow resumes', async () => {
     const { createActivityStore } = await source;
     const { world, api, ...deps } = harness();

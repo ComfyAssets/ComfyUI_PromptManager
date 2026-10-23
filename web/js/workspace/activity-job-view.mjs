@@ -11,6 +11,9 @@
  *   filter, and the selected outcome's listed rows (at most 200 per outcome, so "Showing N of M"). Rows under Added and
  *   Already known open the file in the existing viewer through its listing identity (D57); the others are plain text.
  * - Log: `details.term` "Scan log", collapsed, holding the raw timestamped lines in `pre[tabindex=0]`.
+ * - D89: the tiles, the outcome list, the openable rows and the log and cancel labels are the job kind's (`jobView`):
+ *   an image tagging job shows Tagged, Unchanged, Skipped and Errors, opens Tagged and Unchanged rows, and reads
+ *   "Tagging log" and "Cancel tagging"; another kind keeps the scan's tiles as "Job log" and "Cancel job".
  *
  * The summary follows the Activity store (one SSE stream per running job); the listed rows and the log are read from
  * `GET /prompt_manager/jobs/<id>` at most once a second while the job runs, and once more when it ends.
@@ -19,7 +22,7 @@ import { createButton } from '../shared/toolkit/core.js';
 import { pageHeading } from './heading.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
-import { parseJob, JOBS_URL, LOST_DETAIL } from './activity-store.mjs';
+import { parseJob, jobView, JOB_VIEWS, JOBS_URL, LOST_DETAIL } from './activity-store.mjs';
 import { jobDetail, CANCEL_FAILED_TOAST } from './activity.mjs';
 import { downloadJobReport } from './activity-scan.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
@@ -35,18 +38,6 @@ export const VIEWER_HINT = 'each row opens the image in the viewer';
 export const FILE_GONE = 'This file is no longer in Images. Rescan from Import and try again.';
 export const OPEN_FAILED = 'The file could not be opened. Try again.';
 const LISTING_LIMIT = 5;
-
-/** The counter tiles, in the spec's order and the mockup's tones. */
-export const TILES = Object.freeze([
-    ['added', 'Added to Library', 'added'], ['known', 'Already known', ''], ['review', 'Needs review', 'warn'],
-    ['no_metadata', 'No usable metadata', ''], ['errors', 'Errors', 'bad'],
-]);
-/** The outcome list, in the mockup's order: what got added and what went wrong first. */
-export const OUTCOMES = Object.freeze([
-    ['added', 'Added to Library'], ['review', 'Needs review'], ['errors', 'Errors'],
-    ['no_metadata', 'No usable metadata'], ['known', 'Already known'],
-]);
-const OPENABLE = new Set(['added', 'known']);
 
 function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -103,9 +94,9 @@ export function filterRows(rows, filter) {
     return rows.filter(row => `${row.root}/${row.path}`.toLocaleLowerCase().includes(wanted));
 }
 
-/** The first outcome with files, so a view opens on what happened; Added when nothing has yet. */
-export function defaultOutcome(counters) {
-    return OUTCOMES.find(([group]) => (counters[group] ?? 0) > 0)?.[0] ?? 'added';
+/** The first outcome with files, so a view opens on what happened; the first outcome when nothing has yet. */
+export function defaultOutcome(counters, outcomes = JOB_VIEWS.scan.outcomes) {
+    return (outcomes.find(([group]) => (counters[group] ?? 0) > 0) ?? outcomes[0])[0];
 }
 
 function section(title, id) {
@@ -132,13 +123,6 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     bar.max = 100;
     const stats = element('dl', undefined, 'stat-row');
     const tileValues = new Map();
-    for (const [group, label, tone] of TILES) {
-        const tile = element('div', undefined, tone ? `stat ${tone}` : 'stat');
-        const value = element('dd', '0');
-        tile.append(element('dt', label), value);
-        tileValues.set(group, value);
-        stats.append(tile);
-    }
     progressPart.node.append(bar, stats);
 
     const resultsPart = section('Results', 'job-results-title');
@@ -155,15 +139,6 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     list.setAttribute('aria-label', 'Outcomes');
     const files = element('div', undefined, 'outcome-files');
     const buttons = new Map();
-    for (const [group, label] of OUTCOMES) {
-        const button = createButton('');
-        const count = element('span', '0');
-        button.append(element('span', label), count);
-        button.setAttribute('aria-pressed', 'false');
-        button.count = count;
-        buttons.set(group, button);
-        list.append(button);
-    }
     outcomes.append(list, files);
     resultsPart.node.append(outcomes);
 
@@ -181,6 +156,8 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     missing.append(element('p', NOT_FOUND, 'empty-state'), back);
 
     let detail = null;
+    // The job's kind decides its tiles, outcomes and labels (D89); it is known once the job is.
+    let view = null;
     let selected = null;
     let mounted = false;
     let lastRead = 0;
@@ -200,13 +177,35 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const viewer = createMediaViewer({ api, container: main, parentScope: scope, inspectionController: inspection,
         sender: createPromptSender({ scope }), onSelect: image => inspection.select(image) });
 
+    /** The tiles and the outcome list of the job's kind, built once. */
+    function layout(kind) {
+        view = jobView(kind); // D89
+        for (const [group, label, tone] of view.tiles) {
+            const tile = element('div', undefined, tone ? `stat ${tone}` : 'stat');
+            const value = element('dd', '0');
+            tile.append(element('dt', label), value);
+            tileValues.set(group, value);
+            stats.append(tile);
+        }
+        for (const [group, label] of view.outcomes) {
+            const button = createButton('');
+            const count = element('span', '0');
+            button.append(element('span', label), count);
+            button.setAttribute('aria-pressed', 'false');
+            button.count = count;
+            buttons.set(group, button);
+            list.append(button);
+        }
+    }
+
     function showBody(job) {
         if (mounted) return;
         mounted = true;
+        if (!view) layout(job.kind);
         missing.remove();
         parts.actions.append(download, cancel);
         main.append(progressPart.node, resultsPart.node, log);
-        selected ??= defaultOutcome(job.counters);
+        selected ??= defaultOutcome(job.counters, view.outcomes);
     }
 
     /** The job is not (or no longer) in this session: say so instead of an empty view. */
@@ -242,7 +241,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
 
     function renderRows(job) {
         const rows = detail?.outcomes[selected] ?? [];
-        const openable = OPENABLE.has(selected);
+        const openable = view.openable.has(selected);
         const wanted = filterRows(rows.map((row, index) => ({ ...row, index })), input.value);
         const kept = new Map(wanted.map(row => rowNode(row, row.index, openable)));
         rowNodes = kept;
@@ -270,7 +269,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         parts.h1.textContent = job.title;
         document.title = `${job.title} · Prompt Manager`;
         parts.description.textContent = jobDetail(job);
-        cancel.textContent = scan ? 'Cancel scan' : 'Cancel job';
+        cancel.textContent = view.cancel;
         // A job lost with the server has no report there (review M9).
         const lost = job.state === 'lost';
         if (lost && document.activeElement === download) parts.h1.focus();
@@ -291,7 +290,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
             button.count.textContent = number(job.counters[group] ?? 0);
             button.setAttribute('aria-pressed', String(group === selected));
         }
-        logLabel.textContent = `● ${scan ? 'Scan' : 'Job'} log`;
+        logLabel.textContent = `● ${view.log}`;
         const text = detail?.log.length ? detail.log.join('\n') : 'No log lines yet.';
         if (pre.textContent !== text) {
             // Replacing the text clamps the scroll position, so keep it: pinned readers follow the end, others stay.

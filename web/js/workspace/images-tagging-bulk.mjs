@@ -26,13 +26,14 @@ import { showWorkspaceToast } from './toast.mjs';
 export const IMAGE_TAG_JOB = 'image-tags';
 export const MAX_BULK_IMAGES = 500;
 export const TOO_MANY = 'Select at most 500 images.';
-export const NO_TAGS = 'Enter at least one tag.';
+export const NO_TAGS = 'Enter at least one tag.'; // D117
 export const ADD_DIALOG = Object.freeze({title: 'Tag selected images', label: 'Tags, separated by commas', action: 'Apply'});
 export const AUTO_TITLE = 'Auto-tag selected images';
 export const APPLY_CHOICES = Object.freeze([
     Object.freeze({value: 'auto', label: 'Apply automatically', action: 'Start auto-tagging'}),
     Object.freeze({value: 'review', label: 'Review each image', action: 'Start review'}),
 ]);
+// D117: the concept has no copy for these; they follow D55's "The scan could not start. Try again.".
 const START_FAILED = Object.freeze({add: 'Tagging could not start. Try again.', auto: 'Auto-tagging could not start. Try again.'});
 const FINAL = new Set(['finished', 'cancelled', 'failed']);
 
@@ -144,7 +145,7 @@ export function openAutoTag({api, scope, store, images, trigger, onTagged = () =
     const options = createTaggingOptionsController({api});
     // D85: the Tag image dialog's model panel without Generate; its Suggestions field is the job's count (D91).
     const {element: panel, validate} = renderModelPanel({scope: local, controller: options,
-        heading: `Auto-tag ${countOf(listed.length, 'image')}`, generate: false});
+        heading: `Auto-tag ${countOf(listed.length, 'image')}`, generate: false}); // D117
     let choice = APPLY_CHOICES[0];
     const actions = el('div', undefined, 'dialog-actions');
     const cancel = createButton('Cancel');

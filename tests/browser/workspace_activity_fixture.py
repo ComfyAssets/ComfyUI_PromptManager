@@ -4,7 +4,9 @@ A fake job is a real registry job whose runner waits for commands instead of
 reading files, so a test sets its progress and counters exactly:
 
 - ``POST /__test__/jobs/start`` starts one (``kind``, ``title``, ``total``,
-  ``output_folders``) and returns its summary, or 409 while one runs;
+  ``output_folders``; for ``kind: "image-tags"`` the image tagging job's
+  groups and its ``{mode, images}`` scope instead) and returns its summary,
+  or 409 while one runs;
 - ``POST /__test__/jobs/{id}/step`` records ``records`` (``{group, path,
   root, root_index, detail}`` file outcomes, counted, listed and logged as the scan
   records them) and ``bulk`` (``{group, count, root}``: ``count`` numbered
@@ -28,6 +30,8 @@ POLL_SECONDS = 0.02
 
 PREFIXES = {"added": "+", "known": "=", "review": "?", "errors": "!"}
 PREFIXES["no_metadata"] = "-"
+# The image tagging job's groups (#249 PR D), logged with the runner's prefixes.
+PREFIXES.update({"tagged": "+", "unchanged": "=", "skipped": "-"})
 ROOT_INDEXES = {"output": 0, "input": 1}
 
 
@@ -72,7 +76,13 @@ def outcome_records(data):
 
 
 def register_activity_commands(app, routes, api):
-    from py.api.jobs import SCAN_GROUP_NAMES, JobBusy, JobRegistry
+    from py.api.jobs import (
+        IMAGE_TAG_GROUP_NAMES,
+        IMAGE_TAG_JOB_KIND,
+        SCAN_GROUP_NAMES,
+        JobBusy,
+        JobRegistry,
+    )
 
     streams = set()
     endings = {}
@@ -123,17 +133,29 @@ def register_activity_commands(app, routes, api):
     async def start_job(request):
         data = await body(request)
         ending = asyncio.get_running_loop().create_future()
+        kind = str(data.get("kind", "scan"))
+        if kind == IMAGE_TAG_JOB_KIND:
+            title = "Add tags to images"
+            scope = {
+                "mode": str(data.get("mode", "add")),
+                "images": count(data.get("images"), 0),
+            }
+            groups = IMAGE_TAG_GROUP_NAMES
+        else:
+            title = "Scan for metadata"
+            scope = {
+                "files": str(data.get("files", "new")),
+                "output_folders": count(data.get("output_folders"), 2),
+            }
+            groups = SCAN_GROUP_NAMES
         try:
             job = api._jobs.start(
-                str(data.get("kind", "scan")),
-                str(data.get("title", "Scan for metadata")),
+                kind,
+                str(data.get("title", title)),
                 record_changing=True,
-                scope={
-                    "files": str(data.get("files", "new")),
-                    "output_folders": count(data.get("output_folders"), 2),
-                },
+                scope=scope,
                 runner=fake_runner(ending),
-                groups=SCAN_GROUP_NAMES,
+                groups=groups,
             )
         except JobBusy:
             raise web.HTTPConflict()

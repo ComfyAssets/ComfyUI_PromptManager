@@ -1256,6 +1256,50 @@ stays after every start, refusal and review.
   returns focus to Auto-tag selected.
 - **D91** extends to the bulk dialog: its Suggestions field is the job's and the
   review's `suggestion_limit`.
+- **D117** (copy the concept has no line for; the concept's `bulk-apply` only toasts a
+  demo sentence): an Add tags field that parses to no names toasts "Enter at least one
+  tag."; a start refused for no coded reason toasts "Tagging could not start. Try
+  again." or "Auto-tagging could not start. Try again." (as D55's "The scan could not
+  start. Try again."); and the bulk dialog's model panel is headed "Auto-tag <N>
+  image(s)" where the Tag image dialog's reads "Auto-tag this image". Everything else
+  the selection bar's tagging shows is the concept's or the plan's (D85, D90, D91).
+- **D89** (plan D66, Activity for the `image-tags` job): the job's Activity item and its
+  view are the scan's (D54, D56, D57, D59) with the job kind's own counters, from one
+  per-kind table (`JOB_VIEWS` in `activity-store.mjs`; a kind without one keeps the
+  scan's tiles under "Job log" and "Cancel job"). The titles are the server's: "Add
+  tags to images" and "Auto-tag images".
+  - The pill's verb is "Tagging" ("Tagging · 41% · 8,240 / 19,622").
+  - The item line and the view's heading line read "Started HH:MM · N images · closing
+    this view does not cancel it" (the job's image count, grouped "en-US"), "Finished
+    HH:MM · N tagged · M errors", "Cancelled HH:MM at a file boundary · N tagged ·
+    completed work is kept" or "Stopped on an error at HH:MM · N tagged · M errors".
+  - The view's actions are Download report and, while running, "Cancel tagging"
+    (`.danger`); the progress bar is "<title> progress".
+  - Four `dl.stat-row` tiles in the mockup's tones: Tagged (`.added`, green),
+    Unchanged, Skipped (`.warn`, warning), Errors (`.bad`, red). They keep the
+    mockup's five-column row (two columns on a phone), so a tile is the scan's width
+    and the fifth cell stays empty.
+  - The outcome list reads Tagged, Errors, Skipped, Unchanged (what got tagged and what
+    went wrong first, as the scan's), and the view opens on the first with files.
+  - Rows under Tagged and Unchanged are D57's `button.file-row`s that open the file in
+    the viewer by its listing identity; Skipped and Errors rows are plain text.
+  - The log is "● Tagging log — raw detail, click to show".
+  - The row and log wording is the job's (D1), since neither the concept nor the
+    mockup has a line for it: "Added N tag(s)", "No new tags", and the skip reasons
+    "Video: manual tags only", "Too large to verify", "File changed", "File not found"
+    and "Not a supported still image". Log prefixes are `+` tagged, `=` unchanged, `-`
+    skipped and `!` error.
+  - Download report saves `prompt-manager-image-tags-<YYYYMMDD-HHMM>.json`.
+  - The toasts stay the generic ones: "Tagging started." / "Auto-tagging started."
+    (D85) and "<title> finished.", "<title> was cancelled." or "<title> failed.".
+  - Tests: `tests/js/workspace-activity-store.test.js` ("image-tags jobs get their own
+    tiles outcomes and pill verb", "unknown kinds keep the generic view");
+    `tests/browser/workspace-activity.spec.mjs` ("an image tagging job shows Tagged
+    Unchanged Skipped Errors and opens tagged rows", "cancel tagging stops at a file
+    boundary", "the report download names the kind", on fake `image-tags` jobs from
+    `workspace_activity_fixture.py`); `tests/browser/activity-concept.spec.mjs` ("image
+    tagging job view follows the approved mockup", dark and light, with a mutation
+    check). The scan's view is unchanged.
 
 Browser tests (`tests/browser/workspace-tagging-bulk.spec.mjs`, on the tagging
 fixture): "selection bar shows Add tags then Auto-tag selected before Set category",
@@ -1274,6 +1318,8 @@ images gain tags" and "a running scan makes the start report busy". Units:
 | Auto-tag selected and its dialog | D85 (ruling L1) |
 | How to apply and the Review each image session | D90 (ruling T3-bulk) |
 | Suggestions count in the bulk dialog | D91 |
+| Copy without a concept line: no tags, start fallbacks, the panel heading | D117 |
+| Activity item and job view for image tagging jobs | D89 (plan D66) |
 
 Native image tagging (#249 PR B routes, PR C UI): `POST
 /prompt_manager/image-annotations/observe` (capture one listed file, its saved set and
