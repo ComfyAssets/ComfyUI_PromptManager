@@ -15,6 +15,7 @@ import datetime
 import functools
 import gzip as gzip_module
 import json
+import math
 import ntpath
 import os
 import re
@@ -600,12 +601,12 @@ class PromptManagerAPI(
         return prompts
 
     def _clean_nan_recursive(self, obj):
-        """Recursively clean NaN values from nested data structures."""
+        """Recursively replace NaN and Infinity in nested data with None."""
         if isinstance(obj, dict):
             return {key: self._clean_nan_recursive(value) for key, value in obj.items()}
         elif isinstance(obj, list):
             return [self._clean_nan_recursive(item) for item in obj]
-        elif isinstance(obj, float) and str(obj) == "nan":
+        elif isinstance(obj, float) and not math.isfinite(obj):
             return None
         else:
             return obj

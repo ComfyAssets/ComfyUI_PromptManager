@@ -41,7 +41,7 @@ try:
         PLACEHOLDERS,
         GenerationParamsError,
         extract_generation_params,
-        parse_js_json,
+        parse_page_json,
     )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
 except ImportError:
@@ -51,7 +51,7 @@ except ImportError:
         PLACEHOLDERS,
         GenerationParamsError,
         extract_generation_params,
-        parse_js_json,
+        parse_page_json,
     )
     from utils.prompt_pair_resolver import resolve_prompt_pair
 
@@ -1606,7 +1606,8 @@ class AdminRoutesMixin:
         records = {}
         for key in ("prompt", "workflow"):
             value = metadata.get(key)
-            records[key] = parse_js_json(value) if isinstance(value, str) else value
+            # As the legacy pages parse it: ComfyUI's NaN/Infinity read as null.
+            records[key] = parse_page_json(value) if isinstance(value, str) else value
         try:
             positive = extract_generation_params(records)["positivePrompt"]
         except GenerationParamsError:
