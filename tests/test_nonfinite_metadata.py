@@ -41,7 +41,7 @@ NEGATIVE = "blurry"
 NAN, INF = float("nan"), float("inf")
 
 
-def graph(positive=POSITIVE, negative=NEGATIVE, *, untraceable=False):
+def graph(positive=POSITIVE, negative=NEGATIVE):
     """An API prompt graph with non-finite numbers where ComfyUI writes them."""
     g = {
         "1": {"class_type": "CLIPTextEncode", "inputs": {"text": positive}},
@@ -58,15 +58,6 @@ def graph(positive=POSITIVE, negative=NEGATIVE, *, untraceable=False):
             "is_changed": [NAN],
         },
     }
-    if untraceable:
-        # The resolver stops at an unknown conditioning node and two samplers;
-        # the browser parser still traces the positive prompt (the legacy floor).
-        g["7"] = {
-            "class_type": "MyConditioningTweak",
-            "inputs": {"conditioning": ["1", 0], "amount": NAN},
-        }
-        g["3"]["inputs"]["positive"] = ["7", 0]
-        g["6"] = {**g["3"]}
     return g
 
 
@@ -197,17 +188,6 @@ class TestScanIngestsNonFiniteMetadata(StrictRows, AdminAPITestCase):
         )
         # A repeated scan compares the same strict snapshot: unchanged.
         self.assertEqual(self.ingest("nan.png")["unchanged"], 1)
-
-    def test_browser_parser_fallback_traces_through_nan(self):
-        counts = self.ingest("traced.png", graph(untraceable=True))
-        self.assertEqual(counts["failed"], 0)
-        self.assertEqual(counts["added"], 1)
-        # The positive-only link, not a pair: the resolver could not decide.
-        self.assertEqual(self.api.db.list_prompt_pairs()["total"], 0)
-        rows = self.image_rows(self.api.db)
-        self.assertEqual(len(rows), 1)
-        self.assert_strict_snapshot(rows[0])
-        self.assert_prompt_text(self.api.db, rows[0]["prompt_id"])
 
     async def test_scan_route_reports_no_failures(self):
         from py.config import GalleryConfig

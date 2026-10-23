@@ -28,7 +28,6 @@ __all__ = [
     "extract_generation_params",
     "extract_from_records",
     "parse_js_json",
-    "parse_page_json",
 ]
 
 PLACEHOLDERS = MappingProxyType(
@@ -949,29 +948,6 @@ def parse_js_json(text):
     try:
         return json.loads(
             text, parse_constant=_reject_constant, parse_int=_double_integer
-        )
-    except (ValueError, RecursionError):
-        return None
-
-
-def _null_constant(_name):
-    return None
-
-
-def parse_page_json(text):
-    """A metadata record as the legacy pages parse it, or None where they fail.
-
-    The gallery, admin and metadata pages replace ComfyUI's ``NaN`` with
-    ``null`` before ``JSON.parse``. Here every non-finite literal ComfyUI
-    writes (``NaN``, ``Infinity``, ``-Infinity``) is null, and only where it is
-    a number: unlike the pages' text replacement, a prompt that spells "NaN"
-    keeps its text.
-    """
-    if not isinstance(text, str):
-        return None
-    try:
-        return json.loads(
-            text, parse_constant=_null_constant, parse_int=_double_integer
         )
     except (ValueError, RecursionError):
         return None

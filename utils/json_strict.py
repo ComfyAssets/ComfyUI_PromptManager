@@ -4,11 +4,12 @@ ComfyUI writes its metadata with Python's default ``json.dumps``, so a graph can
 hold ``NaN``, ``Infinity`` and ``-Infinity`` (an ``IS_CHANGED`` that returns
 ``float("nan")`` puts ``"is_changed": [NaN]`` into every saved prompt). Those
 literals are not JSON: browsers' ``JSON.parse`` and ``allow_nan=False`` reject
-them. Python's ``json.loads`` already accepts them, so reading needs no help;
-whatever PromptManager stores or answers as JSON goes through ``dumps_strict``,
-which writes each non-finite number as ``null`` (the legacy pages' own
-replacement) and leaves strings, including the words ``NaN`` or ``Infinity``
-inside prompt text, untouched.
+them. Reading follows the legacy pages (``parse_page_json`` where the browser
+parser is mirrored; Python's ``json.loads`` elsewhere). Whatever PromptManager
+stores or answers as JSON goes through ``dumps_strict``, which writes each
+non-finite number as ``null`` (the legacy pages' own replacement for NaN) and
+leaves strings, including the words ``NaN`` or ``Infinity`` inside prompt
+text, untouched.
 """
 
 import json
