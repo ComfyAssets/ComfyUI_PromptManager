@@ -261,8 +261,13 @@ test('summaries are validated and the copy follows the spec', async () => {
     const loose = parseJob({ id: ID_A, state: 'running', progress: 140.4, processed: -1, total: 1.5, counters: { added: 'x', errors: 2 },
         title: '  ', started_at: 'x', scope: [] });
     assert.deepEqual(loose, { id: ID_A, kind: '', title: 'Background job', state: 'running', started_at: null, finished_at: null,
-        progress: 100, status_line: '', processed: 0, total: 0, counters: { added: 0, errors: 2 }, scope: {}, listed: {}, log_length: 0 });
+        progress: 100, status_line: '', processed: 0, total: 0, counters: { added: 0, errors: 2 }, scope: {}, listed: {}, log_length: 0,
+        cancellable: true });
     assert.equal(parseJob(summary({ progress: -3 })).progress, 0);
+    // A held legacy job cannot be cancelled; an older server sends no key, which keeps Cancel.
+    assert.equal(parseJob(summary({ cancellable: false })).cancellable, false);
+    assert.equal(parseJob(summary({ cancellable: true })).cancellable, true);
+    assert.equal(parseJob(summary()).cancellable, true);
 
     const scan = parseJob(summary({ progress: 42, processed: 8240, total: 19622, counters: { added: 1, errors: 1 } }));
     assert.deepEqual(pillParts(scan), { label: 'Scanning · 42%', files: ' · 8,240 / 19,622', text: 'Scanning · 42% · 8,240 / 19,622' });
@@ -281,6 +286,48 @@ test('summaries are validated and the copy follows the spec', async () => {
     assert.equal(outcomeLine(scan), '1 added · 1 error');
     assert.equal(outcomeLine(other), '');
     assert.deepEqual([-1, 0, 1, 4, 5, 6, 1e9, 0.5].map(backoffDelay), [1000, 1000, 2000, 16000, 30000, 30000, 30000, 1000]);
+});
+
+// D89 (plan D66): an image tagging job's view has its own tiles, outcomes, openable rows, log and cancel labels.
+test('image-tags jobs get their own tiles outcomes and pill verb', async () => {
+    const { parseJob, jobView, pillParts, outcomeLine, startToast } = await source;
+    assert.equal(typeof jobView, 'function');
+    const job = parseJob(summary({ kind: 'image-tags', title: 'Auto-tag images', progress: 40, processed: 2, total: 5,
+        counters: { tagged: 1420, unchanged: 3, skipped: 2, errors: 1 }, scope: { mode: 'auto', images: 5, model_type: 'wd14-vit' } }));
+    const view = jobView(job.kind);
+    assert.deepEqual(view.tiles, [['tagged', 'Tagged', 'added'], ['unchanged', 'Unchanged', ''], ['skipped', 'Skipped', 'warn'],
+        ['errors', 'Errors', 'bad']]);
+    assert.deepEqual(view.outcomes, [['tagged', 'Tagged'], ['errors', 'Errors'], ['skipped', 'Skipped'], ['unchanged', 'Unchanged']]);
+    assert.deepEqual([...view.openable].sort(), ['tagged', 'unchanged']);
+    assert.equal(view.log, 'Tagging log');
+    assert.equal(view.cancel, 'Cancel tagging');
+    assert.deepEqual(pillParts(job), { label: 'Tagging · 40%', files: ' · 2 / 5', text: 'Tagging · 40% · 2 / 5' });
+    assert.equal(outcomeLine(job), '1,420 tagged · 1 error');
+    assert.equal(outcomeLine({ ...job, counters: {} }), '0 tagged · 0 errors');
+    assert.equal(startToast(job), 'Auto-tagging started.');
+    // The design's toast pattern, as the scan's: "<Job> finished · N tagged · M errors".
+    const { finishToast } = await source;
+    assert.equal(finishToast({ ...job, state: 'finished' }), 'Auto-tag images finished · 1,420 tagged · 1 error');
+    assert.equal(finishToast({ ...job, state: 'cancelled' }), 'Auto-tag images cancelled · 1,420 tagged');
+    assert.equal(finishToast({ ...job, state: 'failed' }), 'Auto-tag images failed · 1,420 tagged · 1 error');
+    assert.equal(finishToast({ ...job, title: 'Add tags to images', counters: {}, state: 'finished' }),
+        'Add tags to images finished · 0 tagged · 0 errors');
+});
+
+test('unknown kinds keep the generic view', async () => {
+    const { jobView } = await source;
+    const scan = jobView('scan');
+    assert.deepEqual(scan.tiles, [['added', 'Added to Library', 'added'], ['known', 'Already known', ''],
+        ['review', 'Needs review', 'warn'], ['no_metadata', 'No usable metadata', ''], ['errors', 'Errors', 'bad']]);
+    assert.deepEqual(scan.outcomes, [['added', 'Added to Library'], ['review', 'Needs review'], ['errors', 'Errors'],
+        ['no_metadata', 'No usable metadata'], ['known', 'Already known']]);
+    assert.deepEqual([...scan.openable].sort(), ['added', 'known']);
+    assert.deepEqual([scan.log, scan.cancel], ['Scan log', 'Cancel scan']);
+    for (const kind of ['maintenance', '', 'constructor', '__proto__']) {
+        const view = jobView(kind);
+        assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [scan.tiles, scan.outcomes, [...scan.openable]]);
+        assert.deepEqual([view.log, view.cancel], ['Job log', 'Cancel job']);
+    }
 });
 
 test('pagehide stops polling, closes streams and aborts the in-flight read; pageshow resumes', async () => {

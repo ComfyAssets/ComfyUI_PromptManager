@@ -25,8 +25,10 @@
                 this.tagsPage = null;
 
                 this.api = ApiClient.createApiClient();
-                // Search and page loads share one guard: whichever list request is newest wins
-                this.listRequest = ApiClient.latestOnly();
+                // The page's lifetime ends when it starts to leave. WebKit cancels the page's reads
+                // between beforeunload and pagehide; a save's follow-up read started then fails and is
+                // logged as a page error ("Fetch API cannot load … due to access control checks.").
+                this.startPageLifetime();
                 this.infiniteScroll = false; // session value; seeded from settings, toggled in the header
                 this.infiniteScrollChosen = false;
                 this.loadingMore = false;
@@ -150,7 +152,18 @@
                 // Output scan: a server-side job that survives modal dismissal and reloads
                 this.scanState = ScanProgress.initialState();
                 this.scanSource = null;
-                window.addEventListener("beforeunload", (e) => this.warnIfScanRunning(e));
+                window.addEventListener("beforeunload", (e) => {
+                    this.warnIfScanRunning(e);
+                    // A page that asks to stay (a running scan) keeps its reads until it really goes.
+                    if (!e.defaultPrevented) this.pageLifetime.abort();
+                });
+                window.addEventListener("pagehide", () => this.pageLifetime.abort());
+                // A page restored from the back/forward cache lives again, and so does one whose
+                // navigation never left (stopped, or answered with a download): its next input revives it.
+                window.addEventListener("pageshow", (e) => { if (e.persisted) this.revivePageLifetime(); });
+                for (const type of ["pointerdown", "keydown"]) {
+                    window.addEventListener(type, () => this.revivePageLifetime(), true);
+                }
 
                 this.bindModalEvents();
 
@@ -319,9 +332,24 @@
                 }
             }
 
+            /** A new lifetime once the old one has ended; a living page keeps its list guard. */
+            revivePageLifetime() {
+                if (this.pageLifetime.signal.aborted) this.startPageLifetime();
+            }
+
+            /** A fresh page lifetime, and the list guard bound to it. */
+            startPageLifetime() {
+                this.pageLifetime = new AbortController();
+                // Search and page loads share one guard: whichever list request is newest wins
+                this.listRequest = ApiClient.latestOnly({ lifetime: this.pageLifetime.signal });
+            }
+
             async loadStatistics() {
+                // A leaving page starts no read; one in flight is aborted with the page and not reported.
+                const { signal } = this.pageLifetime;
+                if (signal.aborted) return;
                 try {
-                    const response = await ApiClient.fetchUrl("/prompt_manager/stats");
+                    const response = await ApiClient.fetchUrl("/prompt_manager/stats", { signal });
                     if (response.ok) {
                         const data = await response.json();
                         
@@ -340,6 +368,7 @@
                         console.error("Stats API HTTP error:", response.status, response.statusText);
                     }
                 } catch (error) {
+                    if (signal.aborted) return;
                     console.error("Stats error:", error);
                     // Set some default values if API fails
                     document.getElementById("totalPrompts").textContent = this.prompts.length || 0;
@@ -1151,6 +1180,11 @@
                                         `Done — ${data.imported} imported, ${data.skipped} skipped`;
                                     this.loadStatistics();
                                     setTimeout(() => this.hideModal("loraImportModal"), 2000);
+                                } else if (data.type === "error") {
+                                    // A refusal (another job runs) or a failed import: name it and close the modal.
+                                    document.getElementById("loraImportStatus").textContent = `Error: ${data.message}`;
+                                    this.showNotification(`LoRA import failed: ${data.message}`, "error");
+                                    setTimeout(() => this.hideModal("loraImportModal"), 3000);
                                 }
                             } catch (e) { /* skip malformed SSE */ }
                         }
@@ -1202,10 +1236,13 @@
                         }
                         this.hideModal("settingsModal");
                     } else {
-                        throw new Error("Failed to save settings");
+                        // A refusal names its reason (a corrupt config.json, a changed file): show it.
+                        const data = await response.json().catch(() => ({}));
+                        throw new Error(data.error ? `Failed to save settings: ${data.error}` : "Failed to save settings");
                     }
                 } catch (error) {
-                    this.showNotification("Failed to save settings", "error");
+                    const reason = error.message.startsWith("Failed to save settings:") ? error.message : "Failed to save settings";
+                    this.showNotification(reason, "error");
                 }
             }
 
@@ -1819,7 +1856,9 @@
                             throw new Error(data.error || 'Maintenance failed');
                         }
                     } else {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                        // A refusal names the job that runs ("Scan for metadata already running").
+                        const data = await response.json().catch(() => ({}));
+                        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
                     }
                 } catch (error) {
                     console.error('Maintenance error:', error);

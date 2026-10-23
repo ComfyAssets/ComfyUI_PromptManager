@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
+from .jobs import AUTOTAG_BATCH_JOB_KIND
 from .prompts import thumbnail_url_for
 from .. import model_gate
 
@@ -61,6 +62,12 @@ def path_is_within(candidate, root) -> bool:
     except (OSError, RuntimeError, ValueError):
         return False
     return child != parent and child.is_relative_to(parent)
+
+
+async def _refusal(title):
+    """The single error event of an auto-tag batch refused by another job."""
+    message = f"{title} already running"
+    yield {"type": "error", "status": "error", "message": message}
 
 
 class AutotagRoutesMixin:
@@ -425,6 +432,8 @@ class AutotagRoutesMixin:
                 "general_threshold and character_threshold must be numeric"
             )
 
+        errors = []  # an error event ends the run; Activity lists it failed
+
         async def events():
             try:
                 from ..autotag import get_autotag_service
@@ -432,14 +441,40 @@ class AutotagRoutesMixin:
                 async for event in self._autotag_batch_events(
                     get_autotag_service(), opts
                 ):
+                    if event.get("type") == "error":
+                        errors.append(event)
                     yield event
             except Exception:
                 self.logger.exception("AutoTag error")
+                errors.append(_INTERNAL_ERROR)
                 yield {
                     "type": "error",
                     "message": _INTERNAL_ERROR,
                 }
 
+        # The batch writes prompt tags: a records hold on the registry, so it
+        # never runs beside a scan, restore or the workspace tagging job.
+        busy = self._jobs.blocker(AUTOTAG_BATCH_JOB_KIND, admission="records")
+        if busy is not None:
+            if busy.kind == AUTOTAG_BATCH_JOB_KIND:  # unchanged payload
+                return web.json_response(
+                    {"success": False, "error": _BUSY_ERROR}, status=409
+                )
+            # Both legacy pages read this route as a stream, where a 409 reads
+            # as a lost connection: refuse with one error frame instead (the
+            # admin page keys on ``type``, the gallery on ``status``).
+            return await self._stream_sse(request, _refusal(busy.title))
+        async with self._jobs.hold(
+            AUTOTAG_BATCH_JOB_KIND,
+            "Auto-tag images (legacy page)",
+            admission="records",
+        ) as job:
+            response = await self._start_autotag_batch(request, opts, events)
+            if response.status >= 400 or errors:
+                job.finish("failed")
+            return response
+
+    async def _start_autotag_batch(self, request, opts, events):
         if not _autotag_batch_lock.acquire(blocking=False):
             return web.json_response(
                 {"success": False, "error": _BUSY_ERROR}, status=409

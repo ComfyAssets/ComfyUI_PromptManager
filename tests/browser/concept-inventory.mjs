@@ -149,10 +149,12 @@ export async function hoverStateOf(page,locator) {
 /**
  * Mutate the open page so a comparison can be shown to notice a change (the A7 mutation check): `css` is appended as
  * the last stylesheet, so it wins over equally specific concept rules, and every element matching a `remove` selector
- * is detached. Returns an async undo that restores the stylesheet and the removed elements in place.
+ * is detached; each `clone` ({selector, text}) inserts a copy of the first match after it, holding `text` and no
+ * `data-action` (a control production adds beside a concept one, D85). Returns an async undo that restores the
+ * stylesheet and the removed elements in place and drops the copies.
  */
-export async function mutate(page,{css=null,remove=[]}={}) {
-    const token=await page.evaluate(({css,remove})=>{
+export async function mutate(page,{css=null,remove=[],clone=[]}={}) {
+    const token=await page.evaluate(({css,remove,clone})=>{
         const token=`mutation-${Math.random().toString(36).slice(2)}`;
         const undo=[];
         if(css) {
@@ -167,9 +169,15 @@ export async function mutate(page,{css=null,remove=[]}={}) {
                 node.remove();undo.push(()=>parent.insertBefore(node,next));
             }
         }
+        for(const {selector,text} of clone) {
+            const node=document.querySelector(selector);
+            if(!node)throw new Error(`mutate: nothing matches ${selector}`);
+            const copy=node.cloneNode(true);copy.textContent=text;copy.removeAttribute('data-action');
+            node.after(copy);undo.push(()=>copy.remove());
+        }
         (window.__conceptMutations??=new Map()).set(token,undo);
         return token;
-    },{css,remove});
+    },{css,remove,clone});
     return ()=>page.evaluate(token=>{
         const undo=window.__conceptMutations?.get(token);
         if(!undo)throw new Error('mutate: this mutation was already undone or the page reloaded');

@@ -23,10 +23,13 @@ export function openCardTagging({api, scope, image, action, embedded}) {
 /**
  * Follow confirmed tag saves until `scope` ends. `filtered()` tells whether a Tags filter or a search is active,
  * `selection()` is the selected image key, and `onRefreshing(busy)` marks Load more busy while the re-read runs.
+ * Returns `refresh(keys)`, the same re-read for the files a bulk tagging job tagged (once per job, D85).
  */
 export function followImageTagSaves({scope, stream, inspection, filtered, selection, onRefreshing}) {
-    scope.cleanup(onImageTagsSaved(async ({target}) => {
-        const key = `${target.root_index}:${target.path}`;
+    scope.cleanup(onImageTagsSaved(({target}) => refresh(new Set([`${target.root_index}:${target.path}`]))));
+    return refresh;
+
+    async function refresh(keys) {
         if (filtered()) {
             onRefreshing(true);
             try {
@@ -37,6 +40,6 @@ export function followImageTagSaves({scope, stream, inspection, filtered, select
                 if (!scope.signal.aborted) onRefreshing(false);
             }
         }
-        if (!scope.signal.aborted && selection() === key) inspection.refresh();
-    }));
+        if (!scope.signal.aborted && keys.has(selection())) inspection.refresh();
+    }
 }

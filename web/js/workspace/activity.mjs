@@ -11,13 +11,14 @@
  * - D54: each `.activity-item` is a real job. Its chip names the state (green "Completed", or blue "Running",
  *   "Cancelled", "Failed", "Ended"), its line says when and what, and a running job shows its `<progress>` and
  *   "Cancel job" (no "Simulate completion").
+ * - D89: an image tagging job's line names its images and, once ended, "N tagged · M errors".
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { navigateTo } from './state.mjs';
 import { pageHeading } from './heading.mjs';
 import { showWorkspaceToast } from './toast.mjs';
-import { countOf } from './plural.mjs';
-import { pillParts, outcomeLine, addedOf, LOST_DETAIL } from './activity-store.mjs';
+import { countOf, noun } from './plural.mjs';
+import { pillParts, outcomeLine, addedOf, taggedOf, LOST_DETAIL } from './activity-store.mjs';
 
 export const ACTIVITY_DESCRIPTION = 'Scans, tagging, downloads and maintenance share one history.';
 export const EMPTY_ACTIVITY = 'No jobs have run since ComfyUI started. Scans and other long operations appear here.';
@@ -44,11 +45,20 @@ export function clockTime(seconds) {
 
 const join = parts => parts.filter(Boolean).join(' · ');
 
-/** What a job covers: "2 output folders" for a scan. */
+const whole = value => Number.isSafeInteger(value) && value >= 0;
+
+/** What a job covers: "2 output folders" for a scan, "4 images" for image tagging (D89). */
 function scopeLine(job) {
+    // D89: grouped as the server writes its lines ("19,622 images").
+    const images = job.scope?.images;
+    if (job.kind === 'image-tags') return whole(images) ? `${images.toLocaleString('en-US')} ${noun(images, 'image')}` : '';
     const folders = job.scope?.output_folders;
-    return Number.isSafeInteger(folders) && folders >= 0 ? countOf(folders, 'output folder') : '';
+    return whole(folders) ? countOf(folders, 'output folder') : '';
 }
+
+/** What a cancelled job kept: "N added" for a scan, "N tagged" for image tagging (D89). */
+const KEPT = Object.freeze({ __proto__: null, scan: addedOf, 'image-tags': taggedOf }); // D89
+const keptOf = job => KEPT[job.kind]?.(job) ?? '';
 
 /** The item's line under its title, by state. */
 export function jobDetail(job) {
@@ -58,8 +68,7 @@ export function jobDetail(job) {
     }
     if (job.state === 'lost') return LOST_DETAIL;
     if (job.state === 'cancelled') {
-        return join([`Cancelled ${at} at a file boundary`, job.kind === 'scan' ? addedOf(job) : '',
-            'completed work is kept']);
+        return join([`Cancelled ${at} at a file boundary`, keptOf(job), 'completed work is kept']);
     }
     if (job.state === 'failed') return join([`Stopped on an error at ${at}`, outcomeLine(job)]);
     return join([`Finished ${at}`, outcomeLine(job)]);
@@ -144,11 +153,15 @@ function itemFor(job, scope) {
             progress.textContent = `${next.progress}%`;
             progress.setAttribute('aria-label', `${next.title} progress`);
             if (!progress.isConnected) item.insertBefore(progress, actions.isConnected ? actions : null);
-            if (!actions.isConnected) item.append(actions);
         } else {
+            progress.remove();
+        }
+        // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel job.
+        if (running && next.cancellable) {
+            if (!actions.isConnected) item.append(actions);
+        } else if (actions.isConnected) {
             // A focused Cancel job that goes away hands its focus to the item's title link, never to the page body.
             if (actions.contains(document.activeElement)) link.focus();
-            progress.remove();
             actions.remove();
         }
     };

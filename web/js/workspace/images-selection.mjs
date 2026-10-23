@@ -4,6 +4,7 @@ import { inspectPath, toInspectionRecord } from './inspection-state.mjs';
 import { BUNDLE_FILENAME, metadataBundle, collectImagesMetadata, exportOutcome } from './images-export.mjs';
 import { CATEGORY_DIALOG, CATEGORY_FAILED, CATEGORY_MAX_LENGTH, CATEGORY_NONE_LINKED, categoryOutcome, categoryTargets, updatedCount } from './images-category.mjs';
 import { openInputDialog } from './workspace-dialogs.mjs';
+import { openAddTags, openAutoTag } from './images-tagging-bulk.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
 const CHECKBOX = '.image-overlays input[type="checkbox"]';
@@ -26,8 +27,11 @@ function el(tag, text, className) {
  * - `onCategorySet()` reloads the categories and the listing after a successful Set category (the reload clears the
  *   selection through `clear`); focus then moves to `focusFallback` if it was on the hidden action.
  * - `retain(kept)` drops the checked files a refreshed listing no longer holds (a tag save under a filter, I7).
+ * - With the Activity store `activity`, Add tags and Auto-tag selected (D85) follow the count, as the concept's Add tags
+ *   leads its actions; `onTagged(keys)` re-reads the files a finished tagging job tagged. The selection stays.
  */
-export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, checked: initial = Object.freeze(new Set()) }) {
+export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
+    checked: initial = Object.freeze(new Set()) }) {
     let checked = initial;
     let exporting = false, categorizing = false;
     const element = el('div');
@@ -40,7 +44,15 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
     const clearButton = createButton('Clear');
     // Clear hides the bar it sits in, so focus moves to the page heading instead of falling to the page.
     scope.listen(clearButton, 'click', () => { clear(); focusFallback.focus({ preventScroll: true }); });
-    bulk.append(count, setCategory, exportMetadata, clearButton);
+    bulk.append(count);
+    if (activity) {
+        const addTags = createButton('Add tags');
+        scope.listen(addTags, 'click', () => openAddTags({ scope, store: activity, images: checkedImages(), trigger: addTags, onTagged }));
+        const autoTag = createButton('Auto-tag selected'); // D85
+        scope.listen(autoTag, 'click', () => openAutoTag({ api, scope, store: activity, images: checkedImages(), trigger: autoTag, onTagged }));
+        bulk.append(addTags, autoTag);
+    }
+    bulk.append(setCategory, exportMetadata, clearButton);
 
     /** The count updates in place: the same bar and `strong`, its text written only when it changes. */
     function render() {

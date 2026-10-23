@@ -12,6 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from py.api import jobs as jobs_module  # noqa: E402
 from py.api.jobs import (  # noqa: E402
     DEFAULT_SCAN_SCOPE,
     LOG_CAP_LINE,
@@ -181,7 +182,12 @@ class TestJobRegistry(unittest.IsolatedAsyncioTestCase):
                 "scope",
                 "listed",
                 "log_length",
+                "cancellable",
+                "admission",
             },
+        )
+        self.assertEqual(
+            (summary["cancellable"], summary["admission"]), (True, "records")
         )
         self.assertEqual(summary["scope"], {"files": "new", "output_folders": 2})
         # What the detail would list, so a view reads it only when that changed.
@@ -413,6 +419,14 @@ class TestJobOutcomesAndLog(unittest.TestCase):
         self.assertEqual((SCAN_SCOPES, DEFAULT_SCAN_SCOPE), (("new", "all"), "new"))
         self.assertEqual(
             SCAN_GROUP_NAMES, ("added", "known", "review", "no_metadata", "errors")
+        )
+
+    def test_image_tag_job_kind_and_groups(self):
+        # #249 D1: bulk Add tags / Auto-tag, counter-tile order.
+        self.assertEqual(getattr(jobs_module, "IMAGE_TAG_JOB_KIND", None), "image-tags")
+        self.assertEqual(
+            getattr(jobs_module, "IMAGE_TAG_GROUP_NAMES", None),
+            ("tagged", "unchanged", "skipped", "errors"),
         )
 
 

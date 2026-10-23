@@ -7,6 +7,7 @@ Split into domain-specific mixins for maintainability:
 - LoggingRoutesMixin: log management endpoints
 - AutotagRoutesMixin: auto-tagging model management and tagging
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
+- ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
 """
 
 import asyncio
@@ -31,7 +32,9 @@ from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
+from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
+from .image_tag_jobs import ImageTagJobsMixin
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
@@ -105,16 +108,20 @@ STATIC_MIME_TYPES = {
     ".html": "text/html",
 }
 _STATIC_SEPARATORS = re.compile(r"[\\/]+")
+# Served by exact request path beside the extension allow-list: the browser's
+# copy of the inspection node table (local Inspect resolves with it, #249).
+STATIC_EXACT_FILES = {("js", "inspection-semantics.json"): "application/json"}
 
 
-def _resolve_static_file(root, filepath):
+def _resolve_static_file(root, filepath, allowed=STATIC_MIME_TYPES):
     """Real path of ``filepath`` under ``root``, or None when it must not be served.
 
     The request path is untrusted. It is rejected when it is empty, carries a
     ``..`` segment, is absolute on any platform (a leading slash or backslash,
     a drive letter such as ``C:`` or a UNC ``\\\\server\\share`` prefix all
     re-anchor ``os.path.join`` on Windows), has an extension outside
-    STATIC_MIME_TYPES, or resolves (symlinks included) outside ``root``.
+    ``allowed`` (STATIC_MIME_TYPES), or resolves (symlinks included) outside
+    ``root``.
     """
     if not isinstance(filepath, str) or not filepath:
         return None
@@ -127,7 +134,7 @@ def _resolve_static_file(root, filepath):
     segments = _STATIC_SEPARATORS.split(filepath)
     if any(segment in ("", ".", "..") for segment in segments):
         return None
-    if os.path.splitext(filepath)[1].lower() not in STATIC_MIME_TYPES:
+    if os.path.splitext(filepath)[1].lower() not in allowed:
         return None
     try:
         root_real = Path(os.path.normcase(os.path.realpath(root)))
@@ -259,7 +266,9 @@ class PromptManagerAPI(
     PromptRoutesMixin,
     ImageRoutesMixin,
     AdminRoutesMixin,
+    SettingsRoutesMixin,
     JobRoutesMixin,
+    ImageTagJobsMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
@@ -358,6 +367,24 @@ class PromptManagerAPI(
         """409 envelope for a long job that is already running."""
         return _json_error(f"{label} already running", 409)
 
+    async def _run_held(self, kind, title, admission, operation):
+        """Run a legacy-page operation under a registry hold (D80).
+
+        While ``operation()`` runs, the registry lists it as a running,
+        non-cancellable job, so workspace jobs its admission class conflicts
+        with are refused, naming it. When the registry refuses the hold, the
+        legacy 409 envelope names the running job and nothing is done. A
+        response of 400 or above ends the hold ``failed``.
+        """
+        busy = self._jobs.blocker(kind, admission=admission)
+        if busy is not None:
+            return self._long_job_busy_response(busy.title)
+        async with self._jobs.hold(kind, title, admission=admission) as job:
+            response = await operation()
+            if getattr(response, "status", 200) >= 400:
+                job.finish("failed")
+            return response
+
     async def _run_in_executor(self, func, *args, **kwargs):
         """Run a blocking function in the default thread pool executor.
 
@@ -453,6 +480,7 @@ class PromptManagerAPI(
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
         self._register_admin_routes(routes)
+        self._register_settings_routes(routes)
         self._register_job_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
@@ -475,15 +503,20 @@ class PromptManagerAPI(
     def _serve_static_file(self, subdir, filepath):
         """Serve ``web/<subdir>/<filepath>``; 403 outside it, 404 when missing."""
         root = os.path.join(_get_project_root(), "web", subdir)
-        file_path = _resolve_static_file(root, filepath)
+        exact = STATIC_EXACT_FILES.get((subdir, filepath))
+        # An exact file passes the same containment check, its extension only.
+        allowed = STATIC_MIME_TYPES if exact is None else {".json"}
+        file_path = _resolve_static_file(root, filepath, allowed)
         if file_path is None:
             return web.Response(text="Forbidden", status=403)
+        content_type = (
+            exact or STATIC_MIME_TYPES[os.path.splitext(file_path)[1].lower()]
+        )
         if not os.path.isfile(file_path):
             return web.Response(text="Not Found", status=404)
-        ext = os.path.splitext(file_path)[1].lower()
         with open(file_path, "rb") as f:
             content = f.read()
-        return web.Response(body=content, content_type=STATIC_MIME_TYPES[ext])
+        return web.Response(body=content, content_type=content_type)
 
     def _serve_html_page(self, filename, title, cache=True):
         """Serve ``web/<filename>``; 404 when missing, 500 when unreadable."""
