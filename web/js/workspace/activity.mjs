@@ -22,7 +22,7 @@ import { navigateTo } from './state.mjs';
 import { pageHeading } from './heading.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { pillParts, outcomeLine, LOST_DETAIL } from './activity-store.mjs';
-import { viewOf, canCancel, showProgress } from './activity-kinds.mjs';
+import { viewOf, canCancel, showProgress, indeterminate } from './activity-kinds.mjs';
 
 export const ACTIVITY_DESCRIPTION = 'Scans, tagging, downloads and maintenance share one history.';
 export const EMPTY_ACTIVITY = 'No jobs have run since ComfyUI started. Scans and other long operations appear here.';
@@ -110,7 +110,10 @@ export function mountActivityTopbar({ store, scope, doc = document }) {
         const parts = pillParts(job);
         label.textContent = parts.label;
         files.textContent = parts.files;
-        fill.style.width = `${job.progress}%`;
+        // D111 (S5 review M5): no total, no fill: the bar sweeps instead of showing an empty determinate 0%.
+        const unknown = indeterminate(job);
+        bar.classList.toggle('indeterminate', unknown);
+        fill.style.width = unknown ? '' : `${job.progress}%`;
         pill.href = `#/activity/${job.id}`;
         pill.setAttribute('aria-label', parts.text);
     };

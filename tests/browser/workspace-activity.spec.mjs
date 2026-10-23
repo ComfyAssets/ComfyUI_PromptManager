@@ -54,8 +54,8 @@ async function step(request, id, data) {
     await expect(await request.post(`/__test__/jobs/${id}/step`, { data })).toBeOK();
 }
 
-async function finish(request, id, state = 'finished') {
-    const response = await request.post(`/__test__/jobs/${id}/finish`, { data: { state } });
+async function finish(request, id, state = 'finished', extra = {}) {
+    const response = await request.post(`/__test__/jobs/${id}/finish`, { data: { state, ...extra } });
     await expect(response).toBeOK();
     return (await response.json()).job;
 }
@@ -1050,8 +1050,13 @@ test('a held legacy job and the health check show no tiles, no Results and no ma
     await expect(response).toBeOK();
     const held = (await response.json()).job;
     await page.goto(`${workspace}#/images`);
-    // D112: the pill names the held operation and shows no percentage.
+    // D112: the pill names the held operation and shows no percentage; its bar is indeterminate, not an empty fill
+    // (S5 review M5), and stays hidden from assistive tech, which reads the label.
     await expect(pill(page)).toHaveText('Thumbnail clear (gallery page)');
+    await expect(pill(page)).toHaveAttribute('aria-label', 'Thumbnail clear (gallery page)');
+    await expect(pill(page).locator('.activity-pill-bar')).toHaveClass('activity-pill-bar indeterminate');
+    await expect(pill(page).locator('.activity-pill-bar')).toHaveAttribute('aria-hidden', 'true');
+    expect(await pill(page).locator('.activity-pill-bar i').evaluate(node => node.style.width)).toBe('');
     await page.goto(`${workspace}#/activity`);
     const item = items(page).filter({ has: page.getByRole('link', { name: /Thumbnail clear \(gallery page\)$/ }) });
     await expect(item.locator('p')).toHaveText(/^Started \d\d:\d\d · closing this view does not cancel it$/);
@@ -1081,4 +1086,18 @@ test('a held legacy job and the health check show no tiles, no Results and no ma
     await expect(pill(page)).toHaveText('Health check');
     await finish(request, health.id);
     await expect(toast(page)).toHaveText('Health check finished.');
+});
+
+// S5 review I3: a thumbnail job with nothing to generate ends on the server's final line ("No previews to generate · N
+// already up to date"), never on a stale "Processing file 0 of 0" under the Completed chip.
+test('a finished thumbnail job with nothing to do says so', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const job = await startJob(request, { ...THUMB_JOB, total: 0 });
+    await step(request, job.id, { total: 0, processed: 0 }); // the stale line an older server left
+    await openJob(page, job.id);
+    const line = progressSection(page).locator('.panel-heading > span.small');
+    await finish(request, job.id, 'finished', { status_line: 'No previews to generate · 24 already up to date' });
+    await expect(line).toHaveText('No previews to generate · 24 already up to date');
+    await expect(page.getByText('Processing file 0 of 0')).toHaveCount(0);
+    await expect(progressSection(page).locator('progress')).toHaveAttribute('value', '100');
 });

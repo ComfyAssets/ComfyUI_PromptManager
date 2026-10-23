@@ -24,6 +24,10 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .activity-pill:hover { border-color: var(--ca-accent); /* D53 */ }
 .activity-pill-bar { display: block; inline-size: 70px; block-size: 5px; border-radius: 3px; background: var(--line); overflow: hidden; /* D53 */ }
 .activity-pill-bar i { display: block; block-size: 100%; inline-size: 0; background: var(--ca-accent); /* D53 */ }
+/* D111 (S5): a running job without a known total sweeps a short segment; reduced motion shows a dimmed full bar. */
+.activity-pill-bar.indeterminate i { inline-size: 40%; animation: activity-pill-sweep 1.4s ease-in-out infinite; /* D111 */ }
+@keyframes activity-pill-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+@media (prefers-reduced-motion: reduce) { .activity-pill-bar.indeterminate i { inline-size: 100%; opacity: .45; animation: none; /* D111 */ } }
 @media (pointer: coarse) { .activity-pill:not([hidden]) { min-block-size: 40px; /* D53 */ } }
 @media (max-width: 700px) {
     /* D52: with the Activity button the full-width row can be wider than a zoomed phone, so its items wrap. */

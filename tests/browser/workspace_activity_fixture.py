@@ -16,7 +16,8 @@ reading files, so a test sets its progress and counters exactly:
   rows), sets ``processed`` (and ``total``) and ``counters``, then publishes
   the progress to every subscriber;
 - ``POST /__test__/jobs/{id}/finish`` ends it as ``finished``, ``cancelled``
-  or ``failed``; a cancel through the real route ends it ``cancelled``;
+  or ``failed``, with the runner's final ``status_line`` when given; a cancel
+  through the real route ends it ``cancelled``;
 - ``POST /__test__/jobs/hold`` opens a legacy-page hold (``kind``, ``title``,
   ``admission``, default ``records``): a running, non-cancellable job with no
   outcome groups, as a legacy restore, maintenance or thumbnail clear request
@@ -259,9 +260,12 @@ def register_activity_commands(app, routes, api):
     @routes.post("/__test__/jobs/{job_id}/finish")
     async def finish_job(request):
         job = job_or_404(request)
-        state = (await body(request)).get("state", "finished")
+        data = await body(request)
+        state = data.get("state", "finished")
         if state not in FINAL_STATES:
             raise web.HTTPBadRequest()
+        if isinstance(data.get("status_line"), str):  # the runner's final line
+            job.update(status_line=data["status_line"])
         ending = endings[job.id]
         if not ending.done():
             ending.set_result(state)
