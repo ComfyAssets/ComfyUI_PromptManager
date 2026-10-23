@@ -7,6 +7,7 @@ import { pageHeading } from './heading.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { createLocalSession, LOCAL_SESSION_MESSAGES } from './local-session.mjs';
 import { localFileAdapter } from './local-inspection.mjs';
+import { loadInspectionSemantics } from './local-semantics.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { showWorkspaceToast, TOAST_MS } from './toast.mjs';
 
@@ -72,6 +73,8 @@ export function mountInspect(main, { parentScope, api, sender }) {
     if (parentScope.signal.aborted) { scope.dispose(); return { dispose }; }
     parentScope.signal.addEventListener('abort', dispose, { once: true });
     scope.cleanup(() => parentScope.signal.removeEventListener('abort', dispose));
+    // The node table the local roles resolve with, read before any file is chosen (one request per page).
+    loadInspectionSemantics();
 
     // The concept DOM: section.surface > h2, p; div.file-drop.spaced-20 > icon, label, input, span.small; #local-preview.
     const surface = element('section', 'surface');
