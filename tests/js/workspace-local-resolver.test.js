@@ -136,6 +136,17 @@ test('an unusable semantics table is refused', () => {
     for (const doc of [null, {schema: 2}, {schema: 1, samplers: []}]) assert.throws(() => resolver.compileSemantics(doc), resolver.SemanticsError);
 });
 
+test('the lineage section is compiled, and a bad one refuses the table', () => {
+    const doc = JSON.parse(fs.readFileSync(new URL('../../web/js/inspection-semantics.json', import.meta.url), 'utf8'));
+    assert.deepEqual(semantics.lineage.get('Image Filter\u00001'), { strategy: 'continue', input: 'latents' });
+    // Lineage describes no prompt: its classes are not table classes for the stage walk.
+    assert.equal(semantics.allClasses.has('VAEEncode'), false);
+    const row = { class: 'VAEEncode', slot: 0, strategy: 'continue', input: 'pixels' };
+    for (const lineage of [undefined, {}, [null], [{ ...row, slot: -1 }], [{ ...row, strategy: 'passthrough' }], [{ ...row, input: '' }], [row, row]]) {
+        assert.throws(() => resolver.compileSemantics({ ...doc, lineage }), resolver.SemanticsError, JSON.stringify(lineage));
+    }
+});
+
 // The committed server answers (tests/fixtures/local-inspect/resolver-vectors.json, written by
 // `python3 -m tests.local_resolver_cases --write` and checked current by the Python suite).
 test('committed server answers equal the local evidence', () => {

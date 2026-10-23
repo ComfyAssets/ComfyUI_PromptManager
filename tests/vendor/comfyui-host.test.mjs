@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
-import { launchComfyHost } from '../../tools/vendor/comfyui-host.mjs';
+import { createServer as createHttpServer } from 'node:http';
+import { launchComfyHost, assertPortFree, waitForOwnHost, hostBaseDirectory } from '../../tools/vendor/comfyui-host.mjs';
 
 async function fixture(t, program) {
     const directory = await mkdtemp(join(tmpdir(), 'pm-host-test-'));
@@ -231,4 +232,52 @@ test('execution launcher refuses an occupied port without touching an existing s
         await execution?.dispose();
         await new Promise(resolve => server.close(resolve));
     }
+});
+
+// A stand-in ComfyUI that answers /system_stats with its own argv, as the real host does.
+const answersOwnArgv = `const args = process.argv.slice(1);
+require('node:http').createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ system: { argv: args } }));
+}).listen(Number(args[args.indexOf('--port') + 1]), '127.0.0.1');`;
+
+async function listen(t, port, handler = (request, response) => response.end()) {
+    const server = createHttpServer(handler);
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    return server;
+}
+
+test('real-host launcher refuses a port another run already holds and leaves that server running', async t => {
+    const server = await listen(t, 8199);
+    await assert.rejects(assertPortFree(8199), /8199 is already in use.*never shared/s);
+    assert.equal(server.listening, true);
+});
+
+test('real-host launcher is ready only when its own ComfyUI answers the port', async t => {
+    const options = await fixture(t, answersOwnArgv);
+    await assertPortFree(options.port);
+    const host = await launchComfyHost(options);
+    t.after(() => host.stop());
+    await waitForOwnHost(host, options.port);
+    const stats = await (await fetch(`http://127.0.0.1:${options.port}/system_stats`)).json();
+    assert.equal(hostBaseDirectory(stats), host.stateDirectory);
+});
+
+test('real-host launcher refuses a host it did not start that answers before its own binds', async t => {
+    await listen(t, 8199, (request, response) => {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ system: { argv: ['main.py', '--base-directory', '/other-run-state'] } }));
+    });
+    const options = await fixture(t, idle);
+    const host = await launchComfyHost(options);
+    t.after(() => host.stop());
+    await assert.rejects(waitForOwnHost(host, options.port), /did not start \(base directory \/other-run-state\)/);
+});
+
+test('real-host launcher reports a host that exits before it answers', async t => {
+    const options = await fixture(t, 'process.exit(3);');
+    const host = await launchComfyHost(options);
+    t.after(() => host.stop());
+    await assert.rejects(waitForOwnHost(host, options.port), /exited before it answered on port 8199 \(exit=3/);
 });

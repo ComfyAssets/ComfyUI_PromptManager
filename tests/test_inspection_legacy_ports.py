@@ -800,10 +800,15 @@ class TestUpstreamVerifiedNodeSemantics(unittest.TestCase):
         prompt["31"] = dict(prompt["3"], inputs=dict(prompt["3"]["inputs"]))
         prompt["31"]["inputs"]["latent_image"] = ["3", 0]
         prompt["8"]["inputs"]["samples"] = ["31", 0]
-        # Unanchored, two listed samplers are two branches, as for KSampler.
-        self.assertEqual(_inspect({"prompt": prompt})["state"], "ambiguous")
+        # 31 continues 3's latent: the stages are compared, as for KSampler.
+        for anchor in (None, "9"):
+            result = _inspect({"prompt": prompt}, output_node_id=anchor)
+            self.assertEqual(
+                (result["state"], result["sampler_id"]), ("resolved", "31")
+            )
+        prompt["31"]["inputs"]["positive"] = ["7", 0]
         result = _inspect({"prompt": prompt}, output_node_id="9")
-        self.assertEqual(result["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
+        self.assertEqual(result["reason_code"], "multistage-differs")
 
     def test_seed_variance_enhancer_passes_its_conditioning(self):
         prompt = _f02(

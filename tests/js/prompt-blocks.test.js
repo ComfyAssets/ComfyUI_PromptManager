@@ -82,6 +82,32 @@ test('a zeroed conditioning negative shows as an explicit empty negative without
     }finally{scope.dispose();f.restore();}
 });
 
+test('a prompt that left out run-time trigger words says so under its text (D125)',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div'),sent=[];
+    const note='Text added at run time, such as trigger words, is not included.';
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:roles=>sent.push(roles)},prompts:{positive:{status:'resolved',text:'own text',source:'runtime-parts-omitted'},negative:{status:'resolved',text:'blur',source:'graph-inferred'}}});
+        const notes=f.walk(container,node=>node.textContent===note);
+        assert.equal(notes.length,1,'one note, under the positive only');
+        assert.equal(notes[0].parent.attributes['aria-label'],'Positive prompt');
+        container.click(f.walk(container,node=>node.dataset.sendRole==='pair')[0]);
+        assert.deepEqual(sent,[{positive:'own text',negative:'blur'}],'the note is never sent');
+    }finally{scope.dispose();f.restore();}
+});
+
+test('a prompt a later stage added conditioning to says so, and both lines show together (D126)',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div');
+    const added='Conditioning added at a later stage is not included.', runtime='Text added at run time, such as trigger words, is not included.';
+    try{
+        const view=module.mountPromptBlocks(container,{parentScope:scope,prompts:{positive:{status:'resolved',text:'base',source:'added-conditioning'}}});
+        assert.deepEqual(f.walk(container,node=>node.className==='small muted').map(node=>node.textContent),[added]);
+        view.update({positive:{status:'resolved',text:'base',source:'runtime-parts-omitted-and-added-conditioning'}});
+        assert.deepEqual(f.walk(container,node=>node.className==='small muted').map(node=>node.textContent),[runtime,added]);
+        view.update({positive:{status:'resolved',text:'base',source:'graph-inferred'}});
+        assert.equal(f.walk(container,node=>node.className==='small muted').length,0);
+    }finally{scope.dispose();f.restore();}
+});
+
 const unresolved=message=>({status:'unresolved',text:null,source:null,...(message===undefined?{}:{message})});
 const statusLines=(f,container)=>f.walk(container,node=>node.tagName==='p'&&node.className==='prompt-text muted').map(node=>node.textContent);
 test('unsupported node status names the class',()=>{

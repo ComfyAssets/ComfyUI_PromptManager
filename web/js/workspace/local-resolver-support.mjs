@@ -31,6 +31,11 @@ export const RUNTIME_REASON = 'Text is decided at run time';
 export const EMPTY_POSITIVE_REASON = 'Positive prompt is empty';
 export const IDENTICAL_BRANCHES_REASON = 'Every sampler branch uses the same prompt pair';
 export const MULTISTAGE_UNATTRIBUTED_REASON = 'Multistage sampler ancestry is ambiguous';
+export const ADDED_CONDITIONING_REASON = 'A later stage adds conditioning to the base prompt';
+export const RUNTIME_PARTS_SOURCE = 'runtime-parts-omitted';
+export const RUNTIME_PARTS_REASON = 'Text added at run time, such as trigger words, is not included';
+export const ADDED_CONDITIONING_SOURCE = 'added-conditioning';
+export const RUNTIME_AND_ADDED_SOURCE = 'runtime-parts-omitted-and-added-conditioning';
 export const MALFORMED_EVIDENCE_REASON = 'Prompt evidence is malformed';
 export const UNREADABLE_METADATA_REASON = 'Media metadata could not be read';
 export const SEMANTICS_UNAVAILABLE_REASON = 'Inspection node semantics are unavailable';
@@ -118,6 +123,11 @@ export function isLink(value) {
     if (!isList(value) || value.length !== 2) return false;
     const [source, slot] = value;
     return (typeof source === 'string' || isInt(source)) && isInt(slot) && (typeof slot === 'bigint' ? slot >= 0n : slot >= 0);
+}
+/** `_reroute_value`: a Reroute's one input (`value`, `input` or `in`), else null. */
+export function rerouteValue(inputs) {
+    const keys = ['value', 'input', 'in'].filter(key => inputs.has(key));
+    return keys.length === 1 ? inputs.get(keys[0]) : null;
 }
 export const nodeRef = (nodeId, classType) => ({ id: pySlice(nodeId, CLASS_NAME_LENGTH), class_type: typeof classType === 'string' ? pySlice(classType, CLASS_NAME_LENGTH) : null });
 
@@ -225,10 +235,20 @@ export function compileSemantics(doc) {
     const composites = byClass('composites'), savers = byClass('savers');
     const conditioning = bySlot('conditioning'), encoders = bySlot('encoders'), strings = bySlot('strings');
     const runtime = bySet('runtime'), nonFileOutputs = bySet('non_file_outputs');
+    // `lineage` describes an output's image or latent, not its prompt: its classes are not claimed.
+    if (!Array.isArray(doc.lineage)) fail('category lineage must be a list');
+    const lineage = new Map();
+    for (const row of doc.lineage) {
+        if (!plain(row) || typeof row.class !== 'string' || !Number.isInteger(row.slot) || row.slot < 0 || row.slot > 255) fail('lineage row');
+        if (row.strategy !== 'continue' || typeof row.input !== 'string' || !row.input) fail('lineage row');
+        const key = slotKey(row.class, row.slot);
+        if (lineage.has(key)) fail('lineage: duplicate output key');
+        lineage.set(key, { strategy: row.strategy, input: row.input });
+    }
     const stageInputs = doc.stage_inputs;
     if (!plain(stageInputs) || !Array.isArray(stageInputs.shaped) || !Array.isArray(stageInputs.with_model)) fail('stage_inputs');
     return Object.freeze({
-        samplers, guiders, selectors, composites, savers, conditioning, encoders, strings, runtime, nonFileOutputs,
+        samplers, guiders, selectors, composites, savers, conditioning, encoders, strings, runtime, nonFileOutputs, lineage,
         stageInputs: { shaped: [...stageInputs.shaped], withModel: [...stageInputs.with_model] }, allClasses: new Set(owners.keys()),
     });
 }
