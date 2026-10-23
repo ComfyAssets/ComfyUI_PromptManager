@@ -37,6 +37,15 @@ def _lora_settings_mutation(values):
     return mutate
 
 
+def _lora_error_frame(message):
+    """An import stream's error event, as the admin page's modal reads it.
+
+    The modal shows ``status`` and ``progress`` from every frame and closes
+    on ``type: error``, naming ``message``.
+    """
+    return {"type": "error", "status": message, "progress": 0, "message": message}
+
+
 class LoraIntegrationMixin:
     """Mixin providing LoraManager detection, scanning, and trigger word endpoints."""
 
@@ -290,7 +299,7 @@ class LoraIntegrationMixin:
             if busy is not None:
                 await response.prepare(request)
                 message = f"{busy.title} already running"
-                await send_progress({"type": "error", "message": message})
+                await send_progress(_lora_error_frame(message))
                 await response.write_eof()
                 return response
 
@@ -303,9 +312,7 @@ class LoraIntegrationMixin:
                 except Exception as e:
                     self.logger.exception("LoRA scan failed")
                     job.finish("failed")
-                    await send_progress(
-                        {"type": "error", "message": self._public_error(e)}
-                    )
+                    await send_progress(_lora_error_frame(self._public_error(e)))
 
                 await response.write_eof()
             return response

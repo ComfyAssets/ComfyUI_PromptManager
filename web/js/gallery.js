@@ -2129,8 +2129,11 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                 headers: { 'Content-Type': 'application/json' }
                             });
                             
-                            if (response.ok) {
-                                const data = await response.json();
+                            if (!response.ok) {
+                                // Refused (a running job holds the thumbnails): say why and claim nothing.
+                                const data = await response.json().catch(() => ({}));
+                                this.showNotification(`Thumbnails were not cleared: ${data.error || `HTTP ${response.status}`}`, 'error');
+                                return;
                             }
                         } catch (e) {
                             console.warn('Could not clear server thumbnails:', e);

@@ -64,6 +64,12 @@ def path_is_within(candidate, root) -> bool:
     return child != parent and child.is_relative_to(parent)
 
 
+async def _refusal(title):
+    """The single error event of an auto-tag batch refused by another job."""
+    message = f"{title} already running"
+    yield {"type": "error", "status": "error", "message": message}
+
+
 class AutotagRoutesMixin:
     """Mixin providing auto-tagging API endpoints."""
 
@@ -454,7 +460,10 @@ class AutotagRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": _BUSY_ERROR}, status=409
                 )
-            return self._long_job_busy_response(busy.title)
+            # Both legacy pages read this route as a stream, where a 409 reads
+            # as a lost connection: refuse with one error frame instead (the
+            # admin page keys on ``type``, the gallery on ``status``).
+            return await self._stream_sse(request, _refusal(busy.title))
         async with self._jobs.hold(
             AUTOTAG_BATCH_JOB_KIND,
             "Auto-tag images (legacy page)",

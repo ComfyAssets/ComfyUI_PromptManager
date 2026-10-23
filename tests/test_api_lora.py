@@ -767,6 +767,12 @@ class TestLoraScanRoute(LoraAPITestCase):
         body = await resp.text()
         self.assertNotIn(str(self.tmp_root), body)
         self.assertIn("x.db", body)
+        # The admin page's modal shows the failure as its status and closes.
+        error = self._sse_events(body)[-1]
+        self.assertEqual(
+            (error["type"], error["status"], error["progress"]),
+            ("error", error["message"], 0),
+        )
 
     @staticmethod
     def _sse_events(text):

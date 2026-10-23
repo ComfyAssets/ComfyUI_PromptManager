@@ -295,6 +295,70 @@ class TestLegacyRoutesHoldTheRegistry(_LegacyHoldCase):
         await self._busy(resp)
         self.assertEqual(self._db_digest(), before)
 
+    async def test_read_only_maintenance_runs_during_scan(self):
+        # The legacy statistics and consistency checks only read: they hold
+        # the registry as "read", so a long scan does not block them.
+        self.api.db.save_prompt(text="keep me", prompt_hash="h1")
+        _gate, scan = self._run_job()
+        listed = []
+        real = self.api._run_maintenance_operations
+
+        def observed(operations):
+            listed.extend(
+                (job.kind, job.admission, job.state) for job in self.api._jobs.list()
+            )
+            return real(operations)
+
+        self.api._run_maintenance_operations = observed
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/maintenance",
+            json={
+                "operations": [
+                    "statistics",
+                    "check_consistency",
+                    "check_hash_duplicates",
+                ]
+            },
+        )
+        body = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertIs(body["success"], True)
+        self.assertEqual(
+            set(body["results"]),
+            {"statistics", "check_consistency", "check_hash_duplicates"},
+        )
+        self.assertIn(("maintenance", "read", "running"), listed)
+        self.assertEqual(scan.state, "running")
+        maintenance = self.api._jobs.list()[-1]
+        self.assertEqual(
+            (maintenance.kind, maintenance.admission, maintenance.state),
+            ("maintenance", "read", "finished"),
+        )
+
+    async def test_mixed_maintenance_selection_is_refused_during_scan(self):
+        # One write operation among read-only ones makes the run "records".
+        self.api.db.save_prompt(text="keep me", prompt_hash="h1")
+        before = self._db_digest()
+        self._run_job()
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/maintenance",
+            json={"operations": ["statistics", "vacuum"]},
+        )
+        await self._busy(resp)
+        self.assertEqual(self._db_digest(), before)
+
+    async def test_default_maintenance_selection_is_refused_during_scan(self):
+        # No "operations" key means the default list, which vacuums.
+        self.api.db.save_prompt(text="keep me", prompt_hash="h1")
+        before = self._db_digest()
+        self._run_job()
+        resp = await self.client.request("POST", "/prompt_manager/maintenance", json={})
+        await self._busy(resp)
+        self.assertEqual(self._db_digest(), before)
+        self.assertEqual([j.kind for j in self.api._jobs.list()], ["scan"])
+
     async def test_legacy_maintenance_refused_while_image_tags_runs(self):
         self._run_job("image-tags", "Add tags to 3 images")
         resp = await self.client.request("POST", "/prompt_manager/maintenance")
@@ -365,18 +429,43 @@ class TestLegacyRoutesHoldTheRegistry(_LegacyHoldCase):
             text = await resp.text()
         self.assertEqual(resp.status, 200)  # the legacy page reads a stream
         events = [json.loads(line[6:]) for line in text.split("\n\n") if line]
+        # The admin page's modal shows ``status`` and closes on ``type: error``.
+        message = "Scan for metadata already running"
         self.assertEqual(
             events,
-            [{"type": "error", "message": "Scan for metadata already running"}],
+            [{"type": "error", "status": message, "progress": 0, "message": message}],
         )
         self.assertEqual(imported, [])
 
     async def test_legacy_autotag_refused_while_scan_runs(self):
+        # Both pages read this route as a stream (a 409 reads as a lost
+        # connection there), so a refusal by another job is one error frame:
+        # the admin page keys on ``type``, the gallery on ``status``.
         self._run_job()
         resp = await self.client.request(
             "POST", "/prompt_manager/autotag/start", json={}
         )
-        await self._busy(resp)
+        text = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Content-Type"], "text/event-stream")
+        events = [json.loads(line[6:]) for line in text.split("\n\n") if line]
+        message = "Scan for metadata already running"
+        self.assertEqual(
+            events, [{"type": "error", "status": "error", "message": message}]
+        )
+        self.assertEqual(
+            [j.kind for j in self.api._jobs.list() if j.kind == "autotag"], []
+        )
+
+    async def test_second_legacy_autotag_batch_keeps_its_json_409(self):
+        from py.api.autotag_routes import _BUSY_ERROR
+
+        self._run_job("autotag", "Auto-tag images (legacy page)")
+        resp = await self.client.request(
+            "POST", "/prompt_manager/autotag/start", json={}
+        )
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(await resp.json(), {"success": False, "error": _BUSY_ERROR})
 
     async def test_legacy_payloads_unchanged_when_idle(self):
         resp = await self.client.request(
