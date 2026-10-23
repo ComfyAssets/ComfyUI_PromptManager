@@ -76,6 +76,7 @@ function fakeDOM() {
         get activeElement() { return active ?? body; },
         createElement: tag => new Element(tag),
         createElementNS: (namespace, tag) => new Element(tag),
+        createTextNode: text => Object.assign(new Element('#text'), { _text: String(text) }),
     };
     const all = (root, predicate, found = []) => {
         if (predicate(root)) found.push(root);
@@ -783,6 +784,148 @@ test('the Filters button shows the active refinement count', async () => {
             activeFilters: -1, onChange() {}, onFilters() {}, onSaveView() {} }), TypeError);
     } finally {
         scope.dispose();
+        dom.restore();
+    }
+});
+
+// #249 System S2 Task 5: the scan review's dialog and backup box (D55) generalised for every record-changing review.
+const scanModule = import('../../web/js/workspace/activity-scan.mjs');
+const bodyShape = dom => byId(dom, 'modal-body').children.map(node => [node.tagName.toLowerCase(), node.className].filter(Boolean).join('.'));
+
+test('backupNotice is the concept .notice with its copy and one Back up now action', async () => {
+    const { backupNotice, SCAN_BACKUP_COPY } = await dialogsModule;
+    const dom = fakeDOM();
+    try {
+        let calls = 0;
+        const notice = backupNotice({ copy: SCAN_BACKUP_COPY, onBackup: () => { calls++; } });
+        assert.equal(notice.className, 'notice');
+        assert.deepEqual(tags(notice), ['div', 'div']);
+        assert.deepEqual(tags(notice.children[0]), ['h3', 'p']);
+        assert.equal(notice.children[0].children[0].textContent, 'Back up the database first (recommended)');
+        assert.equal(notice.children[0].children[1].textContent,
+            'Downloads a copy of the prompts database before the scan changes any records.');
+        assert.equal(notice.children[1].className, 'row-actions');
+        const action = button(notice, 'Back up now');
+        action.click();
+        assert.equal(calls, 1);
+        assert.throws(() => backupNotice({ copy: { heading: '', text: 'x' }, onBackup() {} }), TypeError);
+        assert.throws(() => backupNotice({ copy: SCAN_BACKUP_COPY }), TypeError);
+    } finally {
+        dom.restore();
+    }
+});
+
+test('openReviewDialog lays out heading, grid, options, sentence, backup box and actions', async () => {
+    const { openReviewDialog, closeWorkspaceDialog } = await dialogsModule;
+    const { createScope } = await coreModule;
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        const trigger = new dom.Element('button');
+        dom.body.append(trigger);
+        const option = new dom.Element('div');
+        option.className = 'setting-row';
+        const started = [];
+        const review = openReviewDialog({ scope, title: 'Review maintenance plan', heading: 'Missing-file links',
+            grid: [['Scope', '2 stale image links'], ['Media on disk', 'No source files removed']], options: [option],
+            sentence: 'Cancelling leaves all data untouched.', backup: { copy: { heading: 'Back up first', text: 'A copy.' }, onBackup() {} },
+            cancelLabel: 'Cancel', primary: { label: 'Apply reviewed operation' }, onStart: () => started.push('start'), trigger });
+        assert.equal(byId(dom, 'modal-title').textContent, 'Review maintenance plan');
+        assert.deepEqual(bodyShape(dom), ['h3', 'dl.meta-grid', 'div.setting-row', 'p.small', 'div.notice', 'div.dialog-actions']);
+        const grid = byId(dom, 'modal-body').children[1];
+        assert.deepEqual(grid.children.map(entry => [tags(entry), entry.children[0].textContent, entry.children[1].textContent]), [
+            [['dt', 'dd'], 'Scope', '2 stale image links'], [['dt', 'dd'], 'Media on disk', 'No source files removed']]);
+        review.setValue('Scope', '3 stale image links');
+        assert.equal(grid.children[0].children[1].textContent, '3 stale image links');
+        const actions = byId(dom, 'modal-body').children.at(-1);
+        assert.deepEqual(actions.children.map(node => [node.textContent, node.className]),
+            [['Cancel', ''], ['Apply reviewed operation', 'ca-primary']]);
+        actions.children[1].click();
+        assert.deepEqual(started, ['start']);
+        assert.equal(modal(dom).open, false);
+        assert.equal(document.activeElement, trigger);
+
+        // A danger primary (the concept's Restore) has no sentence, heading, options or backup box when none is given.
+        openReviewDialog({ scope, title: 'Restore preview', grid: [['Integrity', 'Verified']], backup: null,
+            cancelLabel: 'Cancel', primary: { label: 'Restore', danger: true }, onStart() {} });
+        assert.deepEqual(bodyShape(dom), ['dl.meta-grid', 'div.dialog-actions']);
+        assert.equal(button(byId(dom, 'modal-body'), 'Restore').className, 'danger');
+        button(byId(dom, 'modal-body'), 'Cancel').click();
+        assert.equal(modal(dom).open, false);
+        assert.throws(() => openReviewDialog({ scope, title: 'x', grid: [['a']], cancelLabel: 'Cancel', primary: { label: 'Go' },
+            onStart() {} }), TypeError);
+        assert.throws(() => openReviewDialog({ scope, title: 'x', grid: [], cancelLabel: 'Cancel', primary: {}, onStart() {} }), TypeError);
+    } finally {
+        scope.dispose();
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
+test('review dialog backup box keeps the dialog open and toasts the outcome', async () => {
+    const { openReviewDialog, closeWorkspaceDialog, SCAN_BACKUP_COPY } = await dialogsModule;
+    const { downloadDatabaseBackup, BACKUP_DONE, BACKUP_FAILED } = await scanModule;
+    const { createScope } = await coreModule;
+    const dom = fakeDOM();
+    const scope = createScope();
+    const created = URL.createObjectURL;
+    const revoked = URL.revokeObjectURL;
+    URL.createObjectURL = () => 'blob:backup';
+    URL.revokeObjectURL = () => {};
+    try {
+        const toasts = [];
+        let answer;
+        const fetchUrl = () => new Promise(resolve => { answer = resolve; });
+        openReviewDialog({ scope, title: 'Review metadata scan', grid: [['Sources', '2 output folders']],
+            backup: { copy: SCAN_BACKUP_COPY, onBackup: () => downloadDatabaseBackup({ fetchUrl, notify: text => toasts.push(text) }) },
+            cancelLabel: 'Cancel', primary: { label: 'Start scan' }, onStart() { throw new Error('not started'); } });
+        const action = button(byId(dom, 'modal-body'), 'Back up now');
+        action.click();
+        assert.equal(action.textContent, 'Backing up…');
+        assert.equal(action.getAttribute('aria-disabled'), 'true');
+        // A second press while the copy downloads is ignored.
+        action.click();
+        answer({ ok: true, blob: async () => new Blob(['db']), headers: { get: () => 'attachment; filename="prompts_backup_1.db"' } });
+        await tick();
+        assert.deepEqual(toasts, [BACKUP_DONE]);
+        assert.equal(modal(dom).open, true);
+        assert.equal(action.textContent, 'Back up now');
+        assert.equal(action.getAttribute('aria-disabled'), null);
+        action.click();
+        answer({ ok: false, status: 500 });
+        await tick();
+        assert.deepEqual(toasts, [BACKUP_DONE, BACKUP_FAILED]);
+        assert.equal(modal(dom).open, true);
+    } finally {
+        URL.createObjectURL = created;
+        URL.revokeObjectURL = revoked;
+        scope.dispose();
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
+test('the scan review is a thin openReviewDialog caller with its scope switch', async () => {
+    const { openScanReviewDialog, closeWorkspaceDialog } = await dialogsModule;
+    const { createScope } = await coreModule;
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        const starts = [];
+        openScanReviewDialog({ scope, sources: 2, onBackup() {}, onStart: value => starts.push(value) });
+        assert.equal(byId(dom, 'modal-title').textContent, 'Review metadata scan');
+        assert.deepEqual(bodyShape(dom), ['dl.meta-grid', 'div.setting-row', 'p.small', 'div.notice', 'div.dialog-actions']);
+        const grid = byId(dom, 'modal-body').children[0];
+        assert.deepEqual(grid.children.map(entry => entry.textContent), ['Sources2 output folders', 'ScopeNew and unresolved files']);
+        const allFiles = byId(dom, 'scan-all-files');
+        allFiles.checked = true;
+        allFiles.dispatchEvent(new Event('change'));
+        assert.equal(grid.children[1].children[1].textContent, 'All files');
+        button(byId(dom, 'modal-body'), 'Start scan').click();
+        assert.deepEqual(starts, [{ scope: 'all' }]);
+    } finally {
+        scope.dispose();
+        closeWorkspaceDialog();
         dom.restore();
     }
 });

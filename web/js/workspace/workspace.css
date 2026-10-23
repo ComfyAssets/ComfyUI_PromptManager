@@ -82,6 +82,13 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .tool-card p { flex: 1; margin: 0 0 12px; }
 .workspace-link { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
 .handoff .workspace-link { margin-top: 12px; }
+/* D94: a System section not delivered yet links every legacy tool that still owns it, side by side. */
+.handoff .workspace-link + .workspace-link { margin-inline-start: 18px; /* D94 */ }
+
+/* D92: System's Save row is aria-disabled while nothing is unsaved (or a save runs), and a setting the last save could
+   not save is highlighted, as its "Review the highlighted settings" status says. */
+.save-row button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* D92 */ }
+.setting-row [aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; /* D92 */ }
 @media (max-width: 700px) {
     .stat-grid { gap: 8px; }
     .stat { padding: 16px; }

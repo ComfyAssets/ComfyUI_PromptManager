@@ -326,6 +326,8 @@ class TestMissingFiles(HealthTestCase):
         )
 
     def test_missing_file_vs_unavailable_root(self):
+        # Per source (S2 ruling): the readable source is counted, the absent
+        # one reports "unavailable" with no count, and the report is incomplete.
         prompt = self.save("Images")
         absent = self.root / "unmounted"
         absent.mkdir()
@@ -335,13 +337,76 @@ class TestMissingFiles(HealthTestCase):
         absent.rmdir()
         report = self.run_checks([str(self.output), str(absent)], review_count=0)
         missing = self.check(report, "missing_files")
+        self.assertEqual(missing["status"], "issues")
+        self.assertEqual(missing["count"], 1)
+        self.assertTrue(missing["partial"])
+        self.assertEqual(
+            missing["sources"],
+            [
+                {"name": "output", "status": "checked", "count": 1},
+                {"name": "unmounted", "status": "unavailable", "count": None},
+            ],
+        )
+        self.assertEqual(
+            missing["detail"][0],
+            "1 image source is unavailable, so its files were not counted.",
+        )
+        self.assertRegex(missing["detail"][1], r"^Image \d+: gone\.png is missing$")
+        # The link under the unavailable source is neither counted nor "outside".
+        self.assertEqual(len(missing["detail"]), 2)
+        self.assertNotIn(str(self.root), " ".join(missing["detail"]))
+        self.assertEqual(report["status"], "incomplete")
+
+    def test_partial_sources_with_no_missing_file_are_not_passed(self):
+        prompt = self.save("Images")
+        self.image(prompt, "here.png")
+        absent = self.root / "unmounted"
+        missing = self.check(
+            self.run_checks([str(self.output), str(absent)], review_count=0),
+            "missing_files",
+        )
+        self.assertEqual(missing["status"], "unavailable")
+        self.assertEqual(missing["count"], 0)
+        self.assertTrue(missing["partial"])
+        self.assertEqual(
+            [s["status"] for s in missing["sources"]], ["checked", "unavailable"]
+        )
+
+    def test_every_source_unavailable_counts_nothing(self):
+        prompt = self.save("Images")
+        absent = self.root / "unmounted"
+        self.image(prompt, "gone.png", exists=False, folder=self.output)
+        report = self.run_checks([str(absent)], review_count=0)
+        missing = self.check(report, "missing_files")
         self.assertEqual(missing["status"], "unavailable")
         self.assertIsNone(missing["count"])
+        self.assertFalse(missing["partial"])
+        self.assertEqual(
+            missing["sources"],
+            [{"name": "unmounted", "status": "unavailable", "count": None}],
+        )
         self.assertEqual(
             missing["detail"],
             ["1 image source is unavailable, so missing files were not counted."],
         )
-        self.assertEqual(report["status"], "incomplete")
+
+    def test_each_source_counts_its_own_missing_files(self):
+        prompt = self.save("Images")
+        archive = self.root / "archive"
+        archive.mkdir()
+        self.image(prompt, "a.png", exists=False)
+        self.image(prompt, "b.png", exists=False, folder=archive)
+        self.image(prompt, "c.png", exists=False, folder=archive)
+        missing = self.check(
+            self.run_checks([str(self.output), str(archive)], review_count=0),
+            "missing_files",
+        )
+        self.assertEqual(missing["count"], 3)
+        self.assertFalse(missing["partial"])
+        self.assertEqual(
+            [(s["name"], s["count"]) for s in missing["sources"]],
+            [("output", 1), ("archive", 2)],
+        )
 
     def test_no_sources_is_unavailable(self):
         self.save("Images")
@@ -349,6 +414,8 @@ class TestMissingFiles(HealthTestCase):
         self.assertEqual(missing["status"], "unavailable")
         self.assertIsNone(missing["count"])
         self.assertEqual(missing["detail"], ["No image source is available."])
+        self.assertEqual(missing["sources"], [])
+        self.assertFalse(missing["partial"])
 
 
 class TestAmbiguousMetadata(HealthTestCase):
@@ -386,6 +453,9 @@ class TestOverallStatus(unittest.TestCase):
             health.overall_status(checks("issues", "unavailable")), "incomplete"
         )
         self.assertEqual(health.overall_status(checks("failed")), "incomplete")
+        # A check that found issues under only some sources is incomplete too.
+        partial = [{"status": "issues", "partial": True}, {"status": "passed"}]
+        self.assertEqual(health.overall_status(partial), "incomplete")
 
 
 if __name__ == "__main__":

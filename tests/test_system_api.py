@@ -138,7 +138,7 @@ class TestHealthRoute(SystemAPITestCase):
         after = (await self.json("GET", "/prompt_manager/system/health"))["report"]
         self.assertEqual(after, before)
 
-    async def test_absent_configured_source_makes_missing_files_unavailable(self):
+    async def test_absent_configured_source_is_reported_per_source(self):
         prompt = self.save("Images")
         self.image(prompt, "gone.png", exists=False)
         absent = self.comfy_dir / "output" / "unmounted"
@@ -149,8 +149,15 @@ class TestHealthRoute(SystemAPITestCase):
         await self.run_health()
         report = (await self.json("GET", "/prompt_manager/system/health"))["report"]
         missing = next(c for c in report["checks"] if c["id"] == "missing_files")
-        self.assertEqual(missing["status"], "unavailable")
-        self.assertIsNone(missing["count"])
+        # Per source: the readable output is counted, the absent one is not.
+        self.assertEqual(missing["status"], "issues")
+        self.assertEqual(missing["count"], 1)
+        self.assertTrue(missing["partial"])
+        self.assertEqual(
+            [(s["status"], s["count"]) for s in missing["sources"]],
+            [("checked", 1), ("unavailable", None)],
+        )
+        self.assertEqual(report["status"], "incomplete")
 
 
 class TestOverviewRoute(SystemAPITestCase):
@@ -166,7 +173,7 @@ class TestOverviewRoute(SystemAPITestCase):
         self.assertEqual(
             body["library"], {"positive_prompts": 2, "negative_variants": 1}
         )
-        self.assertEqual(body["images"], {"indexed": 2})
+        self.assertEqual(body["images"], {"indexed": 2, "rated": 0})
         self.assertEqual(
             set(body),
             {
@@ -180,6 +187,14 @@ class TestOverviewRoute(SystemAPITestCase):
                 "thumbnails",
             },
         )
+
+    async def test_overview_rated_counts_images_of_rated_prompts(self):
+        rated = self.save("Rated", rating=5)
+        self.image(rated, "a.png")
+        self.image(rated, "b.png")
+        self.image(self.save("Unrated"), "c.png")
+        body = await self.json("GET", "/prompt_manager/system/overview")
+        self.assertEqual(body["images"], {"indexed": 3, "rated": 2})
 
     async def test_overview_never_fabricates_backup_or_health(self):
         body = await self.json("GET", "/prompt_manager/system/overview")

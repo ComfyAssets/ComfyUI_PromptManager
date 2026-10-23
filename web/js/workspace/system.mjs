@@ -1,0 +1,133 @@
+/**
+ * Native System (#249 System S2 Task 5): the concept's `renderSystem` shell (app.js 698–706) at `#/system/<section>`.
+ * Under the page heading it renders the section nav (`.section-nav`, one button per section, the shown one
+ * `aria-pressed`; a press navigates to its hash), then `.settings-layout` with the section's body and the Save row
+ * (`span.small#settings-status` + "Save preferences"). D92: no "Sample configuration" chip, the status copy is
+ * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
+ * per-section hand-off to its legacy tool (D94), never mock placeholders.
+ *
+ * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
+ * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
+ */
+import { createButton, createScope } from '../shared/toolkit/core.js';
+import { SYSTEM_SECTIONS, navigateTo } from './state.mjs';
+import { createSystemDrafts, DRAFT_DOMAINS } from './system-state.mjs';
+import { sectionNav } from './system-controls.mjs';
+
+const SETTINGS_URL = '/prompt_manager/settings';
+const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existing administration' });
+const GALLERY = Object.freeze({ href: '/prompt_manager/gallery', label: 'Open existing image gallery' });
+/**
+ * D94: where each section's capabilities live until its PR (the plan's legacy capability coverage): the admin page's
+ * dashboard, Settings, Maintenance, Backup, Restore, Scan, Logs, Diagnostics and Auto-tag tools, and the gallery's
+ * settings, thumbnails, duplicates and cache tools.
+ */
+export const SECTION_HANDOFFS = Object.freeze({
+    overview: [ADMIN],
+    appearance: [GALLERY, ADMIN],
+    sources: [ADMIN, GALLERY],
+    integrations: [ADMIN],
+    tagging: [ADMIN],
+    maintenance: [ADMIN, GALLERY],
+    backups: [ADMIN],
+    diagnostics: [ADMIN],
+});
+export const NOT_DELIVERED = 'This setting is not available here yet.';
+
+let drafts = null;
+
+function el(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+}
+
+/** A domain whose settings no delivered section edits yet: nothing can be drafted, and a write would say it failed. */
+const undelivered = async () => { throw new Error(NOT_DELIVERED); };
+
+/** The page session's drafts (Q10); the host domain reads and saves the server settings with their revision (#220). */
+export function systemDrafts(api) {
+    drafts ??= createSystemDrafts({
+        readBrowser: () => ({}),
+        readRuntime: () => ({}),
+        writeBrowser: undelivered,
+        writeRuntime: undelivered,
+        async readHost() {
+            const result = await api.get(SETTINGS_URL, { cache: 'no-store' });
+            return { values: result.settings ?? {}, revision: result.revision ?? null };
+        },
+        writeHost: (changes, { expected_revision }) => api.post(SETTINGS_URL, { ...changes, expected_revision }),
+    });
+    return drafts;
+}
+
+/** D94: the shared hand-off panel, linking each legacy tool that still owns this section. */
+function handoff(section) {
+    const panel = el('section', undefined, 'surface handoff');
+    panel.append(el('h2', 'Your current tools are ready'),
+        el('p', 'This workspace is being introduced in stages. Continue in the existing tool with your saved data.'));
+    for (const tool of SECTION_HANDOFFS[section]) {
+        const link = el('a', tool.label, 'workspace-link');
+        link.href = window.ApiClient.resolveUrl(tool.href);
+        panel.append(link);
+    }
+    return [panel];
+}
+
+/** D92: highlight the controls of the settings the last save could not save. */
+function markFailed(layout, store) {
+    const failed = new Set(DRAFT_DOMAINS.flatMap(domain => [...store.failed(domain)]));
+    for (const control of layout.querySelectorAll('[data-setting]')) {
+        if (failed.has(control.dataset.setting)) control.setAttribute('aria-invalid', 'true');
+        else control.removeAttribute('aria-invalid');
+    }
+}
+
+/**
+ * Mount System under the heading `renderHeading` wrote in `main`. Returns `{show(section)}`, which shows another
+ * section in place. `scope` is the page's view scope; `sections` maps a section id to a delivered section's mount
+ * (`(container, {api, scope, drafts}) => nodes`), and every other section hands off.
+ */
+export function mountSystem(main, api, scope, { section, sections = {}, navigate = navigateTo }) {
+    const store = systemDrafts(api);
+    const nav = sectionNav({ label: 'System sections', sections: SYSTEM_SECTIONS, active: section, scope,
+        onSelect: id => navigate(`#/system/${id}`) });
+    const layout = el('div', undefined, 'settings-layout');
+    const saveRow = el('div', undefined, 'save-row');
+    const status = el('span', undefined, 'small');
+    status.id = 'settings-status';
+    const save = createButton('Save preferences', 'ca-primary');
+    saveRow.append(status, save);
+    layout.append(saveRow);
+    main.append(nav, layout);
+
+    const paintStatus = () => {
+        status.textContent = store.statusText();
+        if (store.dirty() && !store.saving()) save.removeAttribute('aria-disabled');
+        else save.setAttribute('aria-disabled', 'true');
+        markFailed(layout, store);
+    };
+    scope.cleanup(store.subscribe(paintStatus));
+    scope.listen(save, 'click', () => {
+        if (save.getAttribute('aria-disabled') === 'true') return;
+        const saving = store.save();
+        paintStatus();
+        saving.then(() => { if (!scope.signal.aborted) paintStatus(); });
+    });
+
+    let sectionScope = null;
+    scope.cleanup(() => sectionScope?.dispose());
+    function show(next) {
+        sectionScope?.dispose();
+        sectionScope = createScope();
+        for (const button of nav.children) button.setAttribute('aria-pressed', String(button.dataset.value === next));
+        while (layout.firstChild !== saveRow) layout.firstChild.remove();
+        const mount = sections[next];
+        const nodes = mount ? mount(layout, { api, scope: sectionScope, drafts: store }) : handoff(next);
+        layout.prepend(...nodes);
+        paintStatus();
+    }
+    show(section);
+    return { show };
+}

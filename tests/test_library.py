@@ -1731,6 +1731,7 @@ class LibraryCounts(unittest.TestCase):
         # Cat+Blur and Dog+Titled negative; the archived pair is excluded.
         self.assertEqual(counts["negative_variants"], 2)
         self.assertEqual(counts["images"], 2)
+        self.assertEqual(counts["rated_images"], 0)
         listed = self.db.list_library()
         self.assertEqual(counts["positive_prompts"], listed["total"])
         self.assertEqual(counts["negative_variants"], listed["variant_total"])
@@ -1738,8 +1739,28 @@ class LibraryCounts(unittest.TestCase):
     def test_counts_of_an_empty_library_are_zero(self):
         self.assertEqual(
             self.db.library_counts(),
-            {"positive_prompts": 0, "negative_variants": 0, "images": 0},
+            {
+                "positive_prompts": 0,
+                "negative_variants": 0,
+                "images": 0,
+                "rated_images": 0,
+            },
         )
+
+    def test_rated_images_follow_their_linked_prompt_rating(self):
+        # An image carries no rating of its own: it shows its linked prompt's
+        # (the Images "Highest rated" sort), so "rated" counts those images.
+        folder = Path(self.temp.name)
+        rated = self.save("Rated", rating=4)
+        unrated = self.save("Unrated")
+        for name in ("a.png", "b.png", "c.png"):
+            self.db.link_image_to_prompt(rated, str(folder / name))
+        self.db.link_image_to_prompt(unrated, str(folder / "d.png"))
+        counts = self.db.library_counts()
+        self.assertEqual(counts["images"], 4)
+        self.assertEqual(counts["rated_images"], 3)
+        self.db.update_prompt_rating(unrated, 2)
+        self.assertEqual(self.db.library_counts()["rated_images"], 4)
 
     def test_statistics_sum_real_run_counts(self):
         a = self.save("Alpha", category="Landscapes", rating=5)

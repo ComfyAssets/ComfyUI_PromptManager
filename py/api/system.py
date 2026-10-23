@@ -146,7 +146,10 @@ class SystemRoutesMixin:
                     "positive_prompts": counts["positive_prompts"],
                     "negative_variants": counts["negative_variants"],
                 },
-                "images": {"indexed": counts["images"]},
+                "images": {
+                    "indexed": counts["images"],
+                    "rated": counts["rated_images"],
+                },
                 "health": health_summary(self._health_report),
                 "backup": None,  # no verified backup status exists yet (S8)
                 "needs_review": {"pending": None},  # no review queue yet (Q6)

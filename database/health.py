@@ -3,8 +3,10 @@
 ``run_health_checks`` opens its own ``mode=ro`` connection, reads one
 snapshot and closes the connection in ``finally``; it never writes. Each
 check reports ``passed``, ``issues`` (with an exact ``count``),
-``unavailable`` (it could not be checked here, so ``count`` is None) or
-``failed`` (it raised). At most ``MAX_DETAIL`` detail strings are returned per
+``unavailable`` (it could not be checked here, so ``count`` is None, or
+``missing_files`` checked only some sources and found nothing) or ``failed``
+(it raised). ``missing_files`` also reports each source and whether the check
+was ``partial``. At most ``MAX_DETAIL`` detail strings are returned per
 check, and none of them carries a server path.
 """
 
@@ -135,59 +137,95 @@ def _readable(root):
     return os.path.isdir(root) and os.access(root, os.R_OK | os.X_OK)
 
 
-def _root_prefixes(roots):
-    return [normalize_image_path(root).rstrip("\\/") + os.sep for root in roots]
+def _root_prefix(root):
+    return normalize_image_path(root).rstrip("\\/") + os.sep
 
 
-def _under(path, prefixes):
-    return any(path.startswith(prefix) for prefix in prefixes)
+def _source_name(root, index):
+    """A source's folder name for the report (never its server path)."""
+    return os.path.basename(str(root).rstrip("\\/")) or f"Source {index + 1}"
+
+
+def _owner(path, prefixes):
+    """Index of the longest source prefix *path* lies under, or None."""
+    owner, longest = None, -1
+    for index, prefix in enumerate(prefixes):
+        if path.startswith(prefix) and len(prefix) > longest:
+            owner, longest = index, len(prefix)
+    return owner
+
+
+def _image_owner(image_path, file_path, prefixes):
+    spelled = file_path or normalize_image_path(image_path)
+    owner = _owner(spelled, prefixes)
+    if owner is None:
+        owner = _owner(normalize_image_path(os.path.realpath(image_path)), prefixes)
+    return owner
+
+
+def _unavailable_line(unavailable, *, partial):
+    noun = "source is" if unavailable == 1 else "sources are"
+    effect = "its files were" if unavailable == 1 else "their files were"
+    if not partial:
+        effect = "missing files were"
+    return f"{unavailable} image {noun} unavailable, so {effect} not counted."
 
 
 def _missing_files(conn, roots):
-    """Links whose file is gone, counted only under readable sources.
+    """Links whose file is gone, counted per source (only readable ones).
 
-    A source that is not readable (an unmounted drive) makes the whole check
-    unavailable rather than turning its links into a count; links outside
-    every source are named in the detail, not counted.
+    Each source reports ``checked`` with its own count, or ``unavailable``
+    (an unmounted drive) with no count: its links are never turned into a
+    count, while the readable sources still are. The check's ``count`` is the
+    readable sources' total (None when none is readable) and ``partial`` says
+    some sources were not checked. Links outside every source are named in the
+    detail, not counted.
     """
     if not roots:
-        return _result(None, ["No image source is available."], status="unavailable")
-    unavailable = [root for root in roots if not _readable(root)]
-    if unavailable:
-        noun = "source is" if len(unavailable) == 1 else "sources are"
-        return _result(
-            None,
-            [
-                f"{len(unavailable)} image {noun} unavailable, "
-                "so missing files were not counted."
-            ],
-            status="unavailable",
+        result = _result(None, ["No image source is available."], status="unavailable")
+        return {**result, "partial": False, "sources": []}
+    readable = [_readable(root) for root in roots]
+    sources = [
+        {
+            "name": _source_name(root, index),
+            "status": "checked" if ok else "unavailable",
+            "count": 0 if ok else None,
+        }
+        for index, (root, ok) in enumerate(zip(roots, readable))
+    ]
+    unavailable = readable.count(False)
+    if not any(readable):
+        result = _result(
+            None, [_unavailable_line(unavailable, partial=False)], status="unavailable"
         )
-    prefixes = _root_prefixes(roots)
-    count, outside, detail = 0, 0, []
+        return {**result, "partial": False, "sources": sources}
+    prefixes = [_root_prefix(root) for root in roots]
+    outside, missing = 0, []
     cursor = conn.execute(
         "SELECT id,image_path,filename,file_path FROM generated_images ORDER BY id"
     )
     while rows := cursor.fetchmany(BATCH_ROWS):
         for image_id, image_path, filename, file_path in rows:
-            spelled = file_path or normalize_image_path(image_path)
-            if not _under(spelled, prefixes) and not _under(
-                normalize_image_path(os.path.realpath(image_path)), prefixes
-            ):
+            owner = _image_owner(image_path, file_path, prefixes)
+            if owner is None:
                 outside += 1
-            elif not os.path.exists(image_path):
-                count += 1
-                if len(detail) < MAX_DETAIL:
+            elif readable[owner] and not os.path.exists(image_path):
+                sources[owner]["count"] += 1
+                if len(missing) < MAX_DETAIL:
                     name = filename or os.path.basename(image_path)
-                    detail.append(f"Image {image_id}: {name} is missing")
-    result = _result(count, detail)
-    if outside and len(result["detail"]) < MAX_DETAIL:
+                    missing.append(f"Image {image_id}: {name} is missing")
+    count = sum(source["count"] or 0 for source in sources)
+    detail = [_unavailable_line(unavailable, partial=True)] if unavailable else []
+    detail += missing
+    if outside:
         links = "link" if outside == 1 else "links"
         verb = "was" if outside == 1 else "were"
-        result["detail"].append(
+        detail.append(
             f"{outside} {links} outside the image sources {verb} not checked."
         )
-    return result
+    status = None if count or not unavailable else "unavailable"
+    result = _result(count, detail, status=status)
+    return {**result, "partial": bool(unavailable), "sources": sources}
 
 
 def _ambiguous(review_count):
@@ -199,7 +237,9 @@ def _ambiguous(review_count):
 def overall_status(checks) -> str:
     """``passed`` only when every check passed; any check not run is incomplete."""
     statuses = {check["status"] for check in checks}
-    if statuses & {"unavailable", "failed"}:
+    if statuses & {"unavailable", "failed"} or any(
+        check.get("partial") for check in checks
+    ):
         return "incomplete"
     return "issues" if "issues" in statuses else "passed"
 
@@ -240,7 +280,7 @@ class HealthOperations:
         Args:
             roots: The image source directories to judge missing files under:
                 the effective sources plus any configured source that is not
-                available (which makes ``missing_files`` unavailable).
+                available (reported as an unavailable source of ``missing_files``).
             review_count: The Needs-review pending count, or None while no
                 review queue exists (``ambiguous_metadata`` is then unavailable).
         """
