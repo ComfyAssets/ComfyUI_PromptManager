@@ -9,9 +9,21 @@ as a snapshot and then every event published after it, until the job ends.
 
 Jobs live only in server memory and are gone after a restart. The registry
 keeps the running jobs and this session's last ``MAX_FINISHED_JOBS`` finished
-ones. Record-changing jobs (the metadata scan, bulk image tagging, and later
-maintenance, cleanup and restore) never run together, and one job of a kind
-runs at a time.
+ones. One job of a kind runs at a time, and each job has an admission class
+(``ADMISSIONS``) that decides what may run beside it:
+
+- ``records`` changes library records or files (the metadata scan, bulk image
+  tagging, and the legacy restore, maintenance, cleanup, duplicate delete,
+  LoRA import and batch auto-tag routes). It is refused while any
+  ``records`` or ``guarded`` job runs.
+- ``guarded`` must not overlap record changes but may overlap other guarded
+  work (thumbnail generation and clearing, later backup). It is refused while
+  a ``records`` job runs.
+- ``read`` only reads; it is refused only by a running job of its own kind.
+
+A short legacy-page operation takes a ``hold``: a running, non-cancellable
+job that lasts as long as the request, so the Activity page lists it and a
+workspace job is refused while it runs (and the other way round).
 """
 
 import asyncio
@@ -60,6 +72,41 @@ SCAN_GROUPS = {
 IMAGE_TAG_JOB_KIND = "image-tags"
 IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
 
+ADMISSIONS = ("read", "guarded", "records")
+# What each admission class is refused beside (besides its own kind).
+_REFUSED_BESIDE = {
+    "read": frozenset(),
+    "guarded": frozenset({"records"}),
+    "records": frozenset({"records", "guarded"}),
+}
+
+# Kinds of the legacy-page operations that hold the registry (D80; titles in
+# their handlers end in "(admin page)", "(gallery page)" or "(legacy page)").
+RESTORE_JOB_KIND = "restore"
+MAINTENANCE_JOB_KIND = "maintenance"
+DUPLICATE_CLEANUP_JOB_KIND = "duplicate_cleanup"
+THUMBNAILS_JOB_KIND = "thumbnails"
+LORA_IMPORT_JOB_KIND = "lora_import"
+AUTOTAG_BATCH_JOB_KIND = "autotag"
+
+
+def resolve_admission(admission=None, record_changing=None) -> str:
+    """The admission class for a start call; ``record_changing`` is an alias.
+
+    ``record_changing=True`` means ``records`` and ``False`` means ``read``;
+    with neither given the class is ``read``. Raises ValueError for an
+    unknown class or one that contradicts ``record_changing``.
+    """
+    if admission is None:
+        return "records" if record_changing else "read"
+    if admission not in ADMISSIONS:
+        raise ValueError(f"Unknown job admission {admission!r}")
+    if record_changing is not None and record_changing != (admission == "records"):
+        raise ValueError(
+            f"record_changing={record_changing!r} contradicts admission {admission!r}"
+        )
+    return admission
+
 
 def _relative_path(path) -> str:
     """``path`` as a root-relative POSIX path; an absolute one keeps its name."""
@@ -85,13 +132,23 @@ class Job:
     """One tracked operation: state, counters, outcomes, log and subscribers."""
 
     def __init__(
-        self, kind, title, *, record_changing=False, scope=None, groups=(), clock=None
+        self,
+        kind,
+        title,
+        *,
+        admission=None,
+        record_changing=None,
+        cancellable=True,
+        scope=None,
+        groups=(),
+        clock=None,
     ):
         self._clock = clock or time.time
         self.id = uuid.uuid4().hex
         self.kind = kind
         self.title = title
-        self.record_changing = record_changing
+        self.admission = resolve_admission(admission, record_changing)
+        self.cancellable = bool(cancellable)
         self.scope = dict(scope or {})
         self.state = "running"
         self.started_at = self._clock()
@@ -109,6 +166,10 @@ class Job:
         self.last_event = None
         self.task = None
         self._subscribers = set()
+
+    @property
+    def record_changing(self):
+        return self.admission == "records"
 
     @property
     def running(self):
@@ -240,6 +301,9 @@ class Job:
             # What detail() lists, so a view re-reads it only when it changed.
             "listed": {group: len(rows) for group, rows in self.outcomes.items()},
             "log_length": len(self.log),
+            # A view offers Cancel only when the server can stop the job.
+            "cancellable": self.cancellable,
+            "admission": self.admission,
         }
 
     def detail(self):
@@ -291,33 +355,88 @@ class JobRegistry:
         self._logger = logger_ or logger
         self._jobs = {}
 
-    def start(self, kind, title, *, record_changing, scope, runner, groups=()) -> Job:
+    def start(
+        self,
+        kind,
+        title,
+        *,
+        admission=None,
+        record_changing=None,
+        cancellable=True,
+        scope=None,
+        runner,
+        groups=(),
+    ) -> Job:
         """Create a job and run ``runner(job)`` as a task.
 
-        Raises JobBusy, naming the job in the way, when a job of ``kind`` is
-        running or when ``record_changing`` and another record-changing job
-        runs. Must be called from the event loop.
+        ``admission`` is one of ``ADMISSIONS``; ``record_changing=True`` is
+        the older spelling of ``records`` and ``False`` of ``read``. One of
+        the two is required (TypeError otherwise), so no new job runs as
+        ``read`` beside a scan by omission. Raises JobBusy, naming the job in
+        the way, when the admission class refuses it (see the module
+        docstring). Must be called from the event loop.
         """
-        blocker = self.blocker(kind, record_changing=record_changing)
-        if blocker is not None:
-            raise JobBusy(blocker)
-        self._prune()
-        job = Job(
-            kind, title, record_changing=record_changing, scope=scope, groups=groups
+        if admission is None and record_changing is None:
+            raise TypeError(
+                f"JobRegistry.start({kind!r}) needs an admission class "
+                "(admission= or record_changing=)"
+            )
+        job = self._admit(
+            kind,
+            title,
+            admission=admission,
+            record_changing=record_changing,
+            cancellable=cancellable,
+            scope=scope,
+            groups=groups,
         )
-        self._jobs[job.id] = job
         job.task = asyncio.ensure_future(self._run(job, runner))
         return job
 
-    def blocker(self, kind, *, record_changing):
-        """The running job a new ``kind`` job would be refused for, or None."""
+    def hold(self, kind, title, *, admission, scope=None):
+        """A running, non-cancellable job for a legacy-page operation.
+
+        Returns an async context manager. Entering it registers the job and
+        yields it, or raises JobBusy at once, without waiting, when the
+        admission class refuses it; nothing is registered until then, so a
+        hold that is never entered leaves no job behind. The job ends when
+        the block exits: ``finished``, or ``failed`` when it raised (unless
+        the body already ended it). A caller that answers a refusal in its
+        own way checks ``blocker(kind, admission=...)`` first, with no await
+        before the ``async with``.
+        """
+        resolve_admission(admission)  # an unknown class fails at the call
+        return _Hold(
+            lambda: self._admit(
+                kind, title, admission=admission, cancellable=False, scope=scope
+            )
+        )
+
+    def _admit(self, kind, title, *, admission, record_changing=None, **job_args):
+        resolved = resolve_admission(admission, record_changing)
+        blocker = self.blocker(kind, admission=resolved)
+        if blocker is not None:
+            raise JobBusy(blocker)
+        self._prune()
+        job = Job(kind, title, admission=resolved, **job_args)
+        self._jobs[job.id] = job
+        return job
+
+    def blocker(self, kind, *, admission=None, record_changing=None):
+        """The running job a new ``kind`` job would be refused for, or None.
+
+        The same kind refuses first; then the oldest running job whose class
+        the new job's admission class may not run beside.
+        """
         same_kind = self.active(kind)
         if same_kind is not None:
             return same_kind
-        if record_changing:
-            for job in self._jobs.values():
-                if job.running and job.record_changing:
-                    return job
+        refused = _REFUSED_BESIDE[resolve_admission(admission, record_changing)]
+        running = [job for job in self._jobs.values() if job.running]
+        running.sort(key=lambda job: job._started_seq)
+        for job in running:
+            if job.admission in refused:
+                return job
         return None
 
     async def _run(self, job, runner):
@@ -362,11 +481,28 @@ class JobRegistry:
     def cancel(self, job_id) -> bool:
         """Ask a running job to stop at its next safe boundary.
 
-        Returns whether a cancellation was requested: False for a finished or
-        unknown job, so a cancel after the end is a no-op.
+        Returns whether a cancellation was requested: False for a finished,
+        unknown or non-cancellable job, so a cancel after the end is a no-op.
         """
         job = self._jobs.get(job_id)
-        if job is None or job.finished:
+        if job is None or job.finished or not job.cancellable:
             return False
         job.cancelled = True
         return True
+
+
+class _Hold:
+    """The async context manager ``JobRegistry.hold`` returns."""
+
+    def __init__(self, admit):
+        self._admit = admit
+        self._job = None
+
+    async def __aenter__(self):
+        self._job = self._admit()
+        return self._job
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._job.running:
+            self._job.finish("finished" if exc_type is None else "failed")
+        return False

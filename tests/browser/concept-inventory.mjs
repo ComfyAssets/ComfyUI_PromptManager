@@ -79,6 +79,17 @@ export async function seedConcept(request,data={}) {
 }
 
 /**
+ * Seed the concept fixture and fix the browser's clock at the fixture's own instant (`manifest.now`), so the page and
+ * the fixture read one "now": a prompt used now reads "Used today" and the caption names the fixture's day even when
+ * the run crosses midnight between seeding and rendering. Timers keep running; only `Date` stands still.
+ */
+export async function seedConceptAt(page,request,data={}) {
+    const manifest=await seedConcept(request,data);
+    await page.clock.setFixedTime(new Date(manifest.now*1000));
+    return manifest;
+}
+
+/**
  * Save `tags` as the current image tag set of the listed file at `path` (root 0) through the real observe and tag
  * routes (#249 PR C), releasing the capture afterwards; returns the receipt's saved names.
  */

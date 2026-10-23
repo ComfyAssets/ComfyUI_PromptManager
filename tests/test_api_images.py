@@ -5,11 +5,13 @@ Uses aiohttp's test client against a real PromptManagerAPI wired to a
 temporary SQLite database and a temporary output directory.
 """
 
+import asyncio
 import json
 import os
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -636,6 +638,93 @@ class TestGenerateThumbnailsPost(ThumbnailTestCase):
         data = await resp.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["total_images"], 0)
+
+
+class TestThumbnailRoutesHoldTheRegistry(ThumbnailTestCase):
+    """Thumbnail work is ``guarded``: never beside a record-changing job."""
+
+    def _run_scan(self):
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+
+        job = self.api._jobs.start(
+            "scan", "Scan for metadata", admission="records", scope={}, runner=runner
+        )
+
+        async def release():
+            gate.set()
+            await asyncio.wait_for(job.task, 5)
+
+        self.addAsyncCleanup(release)
+        return job
+
+    async def test_thumbnail_generate_refused_while_scan_runs(self):
+        make_png(self.output_dir / "a.png")
+        self._run_scan()
+
+        resp = await self.client.request(
+            "POST", "/prompt_manager/images/generate-thumbnails", json={}
+        )
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(
+            await resp.json(),
+            {"success": False, "error": "Scan for metadata already running"},
+        )
+
+        resp = await self.client.request("POST", self.PROGRESS_URL)
+        text = await resp.text()
+        self.assertEqual(resp.status, 200)  # the gallery reads an SSE stream
+        self.assertEqual(
+            text,
+            "event: error\ndata: "
+            + json.dumps(
+                {
+                    "error": "Scan for metadata already running",
+                    "message": "Scan for metadata already running",
+                }
+            )
+            + "\n\n",
+        )
+
+        thumbs = self.output_dir / "thumbnails"
+        make_png(thumbs / "b_thumb.png")
+        resp = await self.client.request(
+            "POST", "/prompt_manager/images/clear-thumbnails"
+        )
+        self.assertEqual(resp.status, 409)
+        self.assertFalse(self._thumb_path("a").exists())
+        self.assertTrue((thumbs / "b_thumb.png").exists())
+
+    async def test_scan_refused_while_thumbnails_generate(self):
+        make_png(self.output_dir / "a.png")
+        entered = threading.Event()
+        release = threading.Event()
+        real = self.api._generate_gallery_thumbnails_sync
+
+        def gated(*args):
+            entered.set()
+            release.wait(10)
+            return real(*args)
+
+        self.api._generate_gallery_thumbnails_sync = gated
+        loop = asyncio.get_running_loop()
+        generate = asyncio.ensure_future(
+            self.client.request(
+                "POST", "/prompt_manager/images/generate-thumbnails", json={}
+            )
+        )
+        self.assertTrue(await loop.run_in_executor(None, entered.wait, 10))
+        resp = await self.client.request("POST", "/prompt_manager/jobs/scan")
+        body = await resp.json()
+        self.assertEqual((resp.status, body["code"]), (409, "busy"))
+        self.assertEqual(
+            body["running"]["title"], "Thumbnail generation (gallery page)"
+        )
+        release.set()
+        self.assertEqual((await generate).status, 200)
+        self.assertTrue(self._thumb_path("a").exists())
 
 
 class TestRecentImagesCaps(ImageAPITestCase):

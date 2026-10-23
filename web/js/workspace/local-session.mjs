@@ -70,7 +70,7 @@ function chosenFile(input) {
 }
 
 export function createLocalSession({
-    parentScope, createObjectURL = file => URL.createObjectURL(file), revokeObjectURL = url => URL.revokeObjectURL(url),
+    parentScope, createObjectURL = file => URL.createObjectURL(file), revokeObjectURL = URL.revokeObjectURL.bind(URL),
     schedulerYield = defaultSchedulerYield(), setTimer = setTimeout, clearTimer = clearTimeout,
     pageTarget = globalThis.window, extractFacts, pngMetadata,
 } = {}) {

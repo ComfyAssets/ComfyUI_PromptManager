@@ -1237,10 +1237,13 @@ class _GraphResolver:
 
     def non_file_outputs(self) -> set:
         names = self.semantics.non_file_outputs
+        # Only a string names a class: a list or object is never looked up (#286).
         return {
             node_id
             for node_id, node in self.graph.items()
-            if isinstance(node, dict) and node.get("class_type") in names
+            if isinstance(node, dict)
+            and isinstance(node.get("class_type"), str)
+            and node["class_type"] in names
         }
 
     def producers_of(self, starts: list, previews: set) -> set:
@@ -1832,6 +1835,8 @@ def _shared_pair(candidates: list) -> Optional[Dict[str, Any]]:
 
 # Bounds for walking a UI workflow's subgraph instances (R1 only).
 _MAX_SUBGRAPH_DEPTH = 8
+# The inspector's own line for evidence it cannot read (``inspect_prompt_evidence``).
+MALFORMED_EVIDENCE_REASON = "Prompt evidence is malformed"
 _MAX_WORKFLOW_NODES = 100_000
 
 
@@ -1862,7 +1867,9 @@ def _prompt_manager_widgets(workflow: Any) -> Dict[str, str]:
 
     Nodes inside a subgraph run as ``"<instance>:<inner>"`` API IDs (nested
     instances chain their IDs); a definition without an instance runs nothing.
-    The walk is bounded in depth and in nodes visited.
+    The walk is bounded in depth and in nodes visited. A node whose ``type`` is
+    a list or an object is skipped: it is neither a subgraph instance nor a
+    PromptManager node (#286).
     """
     nodes = workflow.get("nodes") if isinstance(workflow, dict) else None
     if not isinstance(nodes, list):
@@ -1882,6 +1889,9 @@ def _prompt_manager_widgets(workflow: Any) -> Dict[str, str]:
             if not isinstance(node_id, (str, int)) or isinstance(node_id, bool):
                 continue
             api_id = f"{prefix}{node_id}"
+            if isinstance(kind, (list, dict)):
+                # JSON's unhashable values are never a node type (#286).
+                continue
             if kind in subgraphs and depth < _MAX_SUBGRAPH_DEPTH:
                 stack.append((subgraphs[kind], api_id + ":", depth + 1))
                 continue

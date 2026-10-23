@@ -5,12 +5,16 @@ stream the upload to disk, reject anything that is not a healthy prompts
 database and leave the live database untouched when it does.
 """
 
+import asyncio
 import glob
+import hashlib
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 _mock_server = MagicMock()
@@ -140,6 +144,85 @@ class TestBackupRoute(BackupRestoreTestCase):
         data = await resp.json()
         self.assertFalse(data["success"])
         self.assertIn("backup", data["error"].lower())
+
+
+class TestRestoreHoldsTheRegistry(BackupRestoreTestCase):
+    """A legacy restore and a workspace job refuse each other (#269 gap)."""
+
+    def _digest(self):
+        return {
+            suffix: hashlib.sha256(Path(self.db_path + suffix).read_bytes()).hexdigest()
+            for suffix in ("", "-wal")
+            if os.path.exists(self.db_path + suffix)
+        }
+
+    async def test_legacy_restore_refused_while_scan_job_runs(self):
+        self._save("keep me")
+        upload = self._make_db_file(["restored"])
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+
+        scan = self.api._jobs.start(
+            "scan", "Scan for metadata", record_changing=True, scope={}, runner=runner
+        )
+        before = self._digest()
+        try:
+            resp = await self._restore(upload)
+            self.assertEqual(resp.status, 409)
+            self.assertEqual(
+                await resp.json(),
+                {"success": False, "error": "Scan for metadata already running"},
+            )
+            self.assertEqual(self._digest(), before)
+            self.assertEqual(
+                [p["text"] for p in self.api.db.search_prompts()], ["keep me"]
+            )
+            self.assertEqual(glob.glob(self.db_path + ".backup_*"), [])
+        finally:
+            gate.set()
+            await asyncio.wait_for(scan.task, 5)
+
+    async def test_scan_refused_while_legacy_restore_holds(self):
+        upload = self._make_db_file(["restored"])
+        entered = threading.Event()
+        release = threading.Event()
+        model = self.api.db.model
+        real_verify = model.verify_database_file
+
+        def gated(path, **kwargs):
+            entered.set()
+            release.wait(10)
+            return real_verify(path, **kwargs)
+
+        loop = asyncio.get_running_loop()
+        with patch.object(model, "verify_database_file", gated):
+            restore = asyncio.ensure_future(self._restore(upload))
+            self.assertTrue(await loop.run_in_executor(None, entered.wait, 10))
+            resp = await self.client.post("/prompt_manager/jobs/scan")
+            body = await resp.json()
+            listed = (await (await self.client.get("/prompt_manager/jobs")).json())[
+                "jobs"
+            ]
+            release.set()
+            restored = await restore
+
+        self.assertEqual((resp.status, body["code"]), (409, "busy"))
+        self.assertEqual(body["running"]["title"], "Database restore (admin page)")
+        self.assertEqual(
+            [(j["kind"], j["state"], j["cancellable"]) for j in listed],
+            [("restore", "running", False)],
+        )
+        self.assertEqual(restored.status, 200)
+        self.assertEqual(self.api._jobs.list()[0].state, "finished")
+        self.assertIsNone(self.api._jobs.active("restore"))
+
+    async def test_rejected_upload_ends_its_hold_failed(self):
+        resp = await self._restore(self._write("notes.txt", b"not a database"))
+        self.assertEqual(resp.status, 400)
+        job = self.api._jobs.list()[0]
+        self.assertEqual((job.kind, job.state), ("restore", "failed"))
 
 
 class TestRestoreRoute(BackupRestoreTestCase):

@@ -14,6 +14,9 @@ reading files, so a test sets its progress and counters exactly:
   the progress to every subscriber;
 - ``POST /__test__/jobs/{id}/finish`` ends it as ``finished``, ``cancelled``
   or ``failed``; a cancel through the real route ends it ``cancelled``;
+- ``POST /__test__/jobs/hold`` opens a legacy-page hold (``kind``, ``title``):
+  a running, non-cancellable ``records`` job, as a legacy restore or
+  maintenance request takes, until ``finish`` ends it;
 - ``POST /__test__/jobs/restart`` acts out a ComfyUI restart: the open job
   streams drop without a final event and the registry starts empty.
 """
@@ -86,6 +89,7 @@ def register_activity_commands(app, routes, api):
 
     streams = set()
     endings = {}
+    holders = set()
 
     @web.middleware
     async def track_streams(request, handler):
@@ -163,6 +167,36 @@ def register_activity_commands(app, routes, api):
         endings[job.id] = ending
         return web.json_response({"success": True, "job": job.summary()})
 
+    @routes.post("/__test__/jobs/hold")
+    async def hold_job(request):
+        data = await body(request)
+        loop = asyncio.get_running_loop()
+        ending = loop.create_future()
+        entered = loop.create_future()
+
+        async def hold():
+            async with api._jobs.hold(
+                str(data.get("kind", "restore")),
+                str(data.get("title", "Database restore (admin page)")),
+                admission="records",
+            ) as job:
+                entered.set_result(job)
+                state = await ending
+                if state != "finished":
+                    job.finish(state)
+
+        holder = asyncio.ensure_future(hold())
+        holders.add(holder)
+        holder.add_done_callback(holders.discard)
+        await asyncio.wait({entered, holder}, return_when=asyncio.FIRST_COMPLETED)
+        if not entered.done():
+            if isinstance(holder.exception(), JobBusy):
+                raise web.HTTPConflict()
+            raise holder.exception()
+        job = entered.result()
+        endings[job.id] = ending
+        return web.json_response({"success": True, "job": job.summary()})
+
     @routes.post("/__test__/jobs/{job_id}/step")
     async def step_job(request):
         job = job_or_404(request)
@@ -210,6 +244,7 @@ def register_activity_commands(app, routes, api):
         for transport in list(streams):
             transport.close()
         tasks = [job.task for job in old.list() if job.task and not job.task.done()]
+        tasks += [holder for holder in holders if not holder.done()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
