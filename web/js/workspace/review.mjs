@@ -13,7 +13,9 @@
  *   are text: `p.warning-note` in the panel, or the page's status line (D119).
  * - The open page re-reads its queue on each `change` of the review change stream (`/prompt_manager/review/events`,
  *   F2): items a scan or the monitor added, and decisions made in other tabs. Each `ready` (the first one, and one
- *   after the browser reconnects a dropped stream) re-reads too, since a change may have come before it. Nothing polls.
+ *   after the browser reconnects a dropped stream) names the queue's version, and the page re-reads only when the
+ *   queue it shows is older (F3: one read per visit). A re-read keeps the depth Load more had reached. Nothing polls.
+ * - The SAVED VIEWS row's count follows the total the page shows (`onTotal`), so a change costs no count read.
  * - D119: the queue cards carry no selection checkbox and no star (this page has no selection bar, and the queue
  *   carries no favorite state); more than 40 items add the Images page's `.infinite-continuation` Load more after the
  *   layout; the toasts "Association accepted." and "Left unresolved." stand in for the concept's prototype toast.
@@ -58,12 +60,22 @@ export function imageOf(item) {
         url: item.url, is_video: item.is_video === true, media_type: item.is_video ? 'video' : 'image' };
 }
 
+/** The queue version a `ready` event names, or null (the page then re-reads). */
+export function readyVersion(event) {
+    try {
+        const version = JSON.parse(event?.data ?? 'null');
+        return version && typeof version === 'object' ? version : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
- * Mount the page under the shell's heading. `onDecision()` runs after a recorded decision and `onQueueChange()` after
- * a change elsewhere (the shell re-reads the Needs review count); `controller` and `connect` (the change stream's
- * EventSource) are injectable for tests.
+ * Mount the page under the shell's heading. `onDecision()` runs after a recorded decision and `onTotal(total)` each
+ * time the pending total the page shows changes (the shell's Needs review count); `controller` and `connect` (the
+ * change stream's EventSource) are injectable for tests.
  */
-export function mountReview(main, { api, scope, onDecision = () => {}, onQueueChange,
+export function mountReview(main, { api, scope, onDecision = () => {}, onTotal = () => {},
     connect = openEvents, controller = createReviewController({ api }) }) {
     scope.cleanup(() => controller.dispose());
     const heading = pageHeading(main);
@@ -248,17 +260,19 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onQueueCh
         controller.select(item.id);
     });
 
+    let shownTotal = null;
+    const reportTotal = state => {
+        if (state.status !== 'ready' || state.phase === 'done' || state.total === shownTotal) return;
+        shownTotal = state.total;
+        onTotal(state.total);
+    };
     scope.cleanup(controller.subscribe(render));
+    scope.cleanup(controller.subscribe(reportTotal));
     render(controller.state);
     controller.load();
     const events = connect(REVIEW_EVENTS_URL);
     scope.cleanup(() => events.close());
-    const changed = () => {
-        if (scope.signal.aborted) return;
-        controller.refresh();
-        onQueueChange?.();
-    };
-    events.addEventListener('ready', changed);
-    events.addEventListener('change', changed);
+    events.addEventListener('ready', event => { if (!scope.signal.aborted) controller.sync(readyVersion(event)); });
+    events.addEventListener('change', () => { if (!scope.signal.aborted) controller.refresh(); });
     return { controller };
 }

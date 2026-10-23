@@ -328,6 +328,8 @@ class ReviewRoutesMixin:
             {
                 "success": True,
                 "library_epoch": page["epoch"],
+                # F3: the queue version the change stream's ``ready`` names.
+                "review_revision": page["revision"],
                 "total": page["total"],
                 "items": views,
                 "next_cursor": next_cursor,

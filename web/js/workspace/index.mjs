@@ -113,12 +113,20 @@ function mountWorkspace() {
             countRequests.set(id, request);
             // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
             loadNavCounts(api, request.signal, (_, count) => {
-                if (request.signal.aborted) return;
-                const link = sidebar.querySelector(`nav [data-route="${id}"]`);
-                link?.querySelector('.nav-count')?.remove();
-                if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+                if (!request.signal.aborted) showCount(id, count);
             }, [id]);
         }
+    }
+    function showCount(id, count) {
+        const link = sidebar.querySelector(`nav [data-route="${id}"]`);
+        link?.querySelector('.nav-count')?.remove();
+        if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+    }
+    /** A count a page has just read itself: it replaces the badge, and an older read in flight no longer lands. */
+    function setCount(id, count) {
+        countRequests.get(id)?.abort();
+        countRequests.delete(id);
+        showCount(id, count);
     }
     scope.cleanup(() => { for (const request of countRequests.values()) request.abort(); });
     // A confirmed Library or vocabulary write cannot change the Images count, so only Library and Tags are re-read.
@@ -251,9 +259,10 @@ function mountWorkspace() {
             return;
         }
         if (route.id === 'review') {
-            // Needs review (ruling R5): a recorded decision, and a change the open page hears of, re-read the row's count.
+            // Needs review (ruling R5): a recorded decision re-reads the row's count, and the open page's total is the
+            // count (F3: a change the page hears of costs no count read).
             mountReview(main, { api, scope: view, onDecision: () => refreshCounts(REVIEW_WRITE_COUNTS),
-                onQueueChange: () => refreshCounts(REVIEW_WRITE_COUNTS) });
+                onTotal: total => setCount('review', total) });
             return;
         }
         if (route.id === 'inspect') {

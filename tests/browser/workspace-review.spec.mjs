@@ -358,6 +358,56 @@ test('a decision in another tab leaves the open page and opens the next image', 
     await expect(context(page)).toBeEnabled();
 });
 
+/** The queue reads (`?limit=40`, cursors) and count reads (`?limit=1`) the page sends from now on. */
+function reviewReads(page) {
+    const reads = [];
+    page.on('request', item => {
+        const url = new URL(item.url());
+        if (url.pathname === '/prompt_manager/review/items') reads.push(url.searchParams.get('cursor') ? 'more' : url.search);
+    });
+    return reads;
+}
+
+test('a visit reads its queue once, and a change reads it once more', async ({ page, request }) => {
+    // F3 ruling: the stream's ready must not read a queue the first read already holds.
+    await seed(request, 1);
+    const reads = reviewReads(page);
+    await open(page);
+    await expect.poll(async () => (await streams(request)).streams).toBe(1);
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(cards(page)).toHaveCount(2);
+    await expect(reviewRow(page)).toHaveText('Needs review2');
+    // The page's first read and the change's re-read; the shell's count read at start, and the row follows the page.
+    expect(reads.filter(search => search === '?limit=40')).toHaveLength(2);
+    expect(reads.filter(search => search === '?limit=1')).toHaveLength(1);
+});
+
+test('a live re-read keeps the loaded depth and the scroll position', async ({ page, request }) => {
+    // F3 ruling: a queue change re-reads as many items as Load more had shown, and the page does not jump.
+    await seed(request, 45);
+    await open(page);
+    await expect.poll(async () => (await streams(request)).streams).toBe(1);
+    await main(page).getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(cards(page)).toHaveCount(45);
+    await cards(page).last().scrollIntoViewIfNeeded();
+    const scrollTop = () => cards(page).first().evaluate(node => {
+        for (let el = node.parentElement; el; el = el.parentElement) {
+            const style = getComputedStyle(el);
+            if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight) return el.scrollTop;
+        }
+        return document.scrollingElement.scrollTop;
+    });
+    const before = await scrollTop();
+    expect(before).toBeGreaterThan(0);
+    const reads = reviewReads(page);
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(main(page).locator('.notice h2')).toHaveText('46 images need a decision');
+    await expect(cards(page)).toHaveCount(46);
+    expect(await scrollTop()).toBe(before);
+    expect(reads).toEqual(['?limit=40', 'more']);
+    await expect(main(page).locator('.infinite-continuation')).toHaveCount(0);
+});
+
 test('teardown releases captures listeners and requests', async ({ page, request }) => {
     await seed(request, 1);
     await open(page);

@@ -1635,20 +1635,33 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
 `GET /prompt_manager/review/events` (`py/api/review_events.py`): `event: ready` when it
 opens, then `event: change` after each committed queue change (an item the scan or the
 monitor recorded, a spelling refresh, a decision from any tab; `database/review_changes.py`
-notifies after the commit, from whichever thread wrote it) and after a restore. Events
-carry no data. The page re-reads its first page on every `ready` and `change`, keeping
-the open item, its choice and an unanswered decision; re-reads asked for while one runs
-collapse into one more, and one waits while a decision is in flight. The row's count is
-re-read with it. Nothing polls: a `: keepalive` comment every 25 s only lets the server
-drop a closed tab's subscription. Shutdown (`on_shutdown`) ends every stream and answers
-a later one 503; the browser's own EventSource reconnection then stops. A duplicate
-recording and a refused decision change nothing and send nothing. Residual: the stream
-is one HTTP/1.1 connection per open Needs review page (browsers allow six per origin), so
-it lives only while the page is open; the re-read replaces Load more's extra pages with
-the first 40.
+notifies after the commit, from whichever thread wrote it) and after a restore. `change`
+carries no data. `ready` carries the queue's version `{library_epoch, review_revision}`,
+read after the stream subscribed, and every list read answers the same pair
+(`review_revision` is the review index revision, which every queue change moves; a
+restore moves the epoch). **One read per visit (F3):** the page re-reads on `ready` only
+when the queue it shows is older than that version (an unknown version, `{}` when it
+cannot be read, re-reads); a `ready` heard while the first read runs is compared once that
+read answers. The test server counts a stream as open only once it has sent `ready`, so a
+browser test that changes the queue after that count is a `change`, never part of the
+version. The page re-reads on every `change`, keeping the open item, its choice and an
+unanswered decision; re-reads asked for while one runs collapse into one more, and one
+waits while a decision is in flight. **Every re-read keeps the loaded depth (F3):** it
+reads page after page (40 each, the route's limit) until it holds as many items as Load
+more had shown, so the cards stay and the scroll position does not move; a restore met
+after the first page reads once more from the first page. The row's count follows the
+total the page shows (no count read per change). Nothing polls: a `: keepalive` comment
+every 25 s only lets the server drop a closed tab's subscription. Shutdown (`on_shutdown`)
+ends every stream and answers a later one 503; the browser's own EventSource reconnection
+then stops. A duplicate recording and a refused decision change nothing and send nothing.
+Residual: the stream is one HTTP/1.1 connection per open Needs review page (browsers allow
+six per origin), so it lives only while the page is open; a re-read of a deep queue costs
+one request per 40 items shown.
 
 Pinned by `tests/test_api_review_events.py`, `tests/js/workspace-review-state.test.js`
-("refresh …") and `tests/browser/workspace-review.spec.mjs` ("an open page shows …").
+("refresh …", "a refresh keeps the loaded depth …", "ready naming …") and
+`tests/browser/workspace-review.spec.mjs` ("an open page shows …", "a visit reads its
+queue once …", "a live re-read keeps the loaded depth and the scroll position").
 Leaving the page mid-decision releases that decision's capture (the server may never see
 the request).
 - **D3** and **D20** apply to the queue grid (its cards stay in the grid's flow; it is

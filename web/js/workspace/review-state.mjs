@@ -11,10 +11,14 @@
  *   a restored storage or a changed queue reads the queue again. A request that got no answer keeps its capture and
  *   its exact body, and the next Apply of the same choice (`retry()`) resends that body once.
  * - Leave for later writes nothing. Tagging the image (the shared Tag dialog) never changes the item.
- * - `refresh()` re-reads the first page quietly when the server says the queue changed (F2: the review change stream:
+ * - `refresh()` re-reads the queue quietly when the server says the queue changed (F2: the review change stream:
  *   a scan or the monitor added items, another tab decided one). The open item, its choice and an unanswered decision
  *   stay; when the open item has left the queue the next one opens with a note. Refreshes asked for while one runs
- *   collapse into one more read.
+ *   collapse into one more read. Every re-read keeps the loaded depth (F3): it reads page after page until it holds as
+ *   many items as were shown, so Load more pages stay and the page does not jump.
+ * - `sync(version)` is the stream's `ready`: it re-reads only when the queue read last is older than the version the
+ *   stream names (`{library_epoch, review_revision}`, the pair every list read answers), so a visit reads its queue
+ *   once (F3). An unknown version re-reads.
  */
 import { noun } from './plural.mjs';
 
@@ -102,14 +106,18 @@ const initial = () => ({
 /**
  * @param {{api: {get: Function, post: Function, del: Function}}} options
  * @returns the controller: `state`, `subscribe(listener)`, `load()`, `refresh()`, `loadMore()`, `select(id)`, `choose(value)`,
- *   `apply()`, `retry()`, `leave()`, `dispose()`.
+ *   `sync(version)`, `apply()`, `retry()`, `leave()`, `dispose()`.
  */
 export function createReviewController({ api }) {
     let state = Object.freeze(initial());
     const listeners = new Set();
     const lifetime = new AbortController();
     let listRead = null, detailRead = null, pending = null, disposed = false;
-    let refreshing = null, refreshAgain = false, refreshAfterLoad = false;
+    let refreshing = null, refreshAgain = false;
+    // What the first read owes once it answers: nothing, a re-read ('always'), or a re-read unless it is this version.
+    let afterLoad = null;
+    // The version of the queue read last: {epoch, revision}.
+    let shown = null;
 
     function set(update) {
         if (disposed) return;
@@ -127,9 +135,46 @@ export function createReviewController({ api }) {
         pending = null;
     }
 
+    const isVersion = version => typeof version?.library_epoch === 'string' && Number.isSafeInteger(version?.review_revision);
+    const current = version => isVersion(version) && shown !== null && shown.epoch === version.library_epoch &&
+        shown.revision >= version.review_revision;
+
+    /** One list page; `cursor` continues after the last item already read. */
+    function readPage(read, cursor) {
+        const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+        if (cursor) query.set('cursor', cursor);
+        return api.get(`${REVIEW_URL}?${query}`, { signal: signalOf(read), cache: 'no-store' });
+    }
+
     /**
-     * Read the first page; `stale` re-reads the selected item's detail too (its revision or epoch moved). `quiet` (a
-     * refresh) keeps the page as it is while reading and after a failed read.
+     * The queue down to `depth` items: the first page, then the next ones while fewer than `depth` are held. A restore
+     * met after the first page (its cursor names the old storage) reads once more from the first page.
+     */
+    async function readQueue(read, depth) {
+        for (let attempt = 0; ; attempt += 1) {
+            const first = await readPage(read, null);
+            const items = [...(first.items ?? [])];
+            let { total } = first;
+            let next = first.next_cursor ?? null;
+            try {
+                while (next && items.length < depth) {
+                    const page = await readPage(read, next);
+                    const known = new Set(items.map(entry => entry.id));
+                    items.push(...(page.items ?? []).filter(entry => !known.has(entry.id)));
+                    total = page.total;
+                    next = page.next_cursor ?? null;
+                }
+            } catch (error) {
+                if (attempt === 0 && RELOAD.has(error?.code)) continue;
+                throw error;
+            }
+            return { first, items, total, next };
+        }
+    }
+
+    /**
+     * Read the queue as deep as it is shown; `stale` re-reads the selected item's detail too (its revision or epoch
+     * moved). `quiet` (a refresh) keeps the page as it is while reading and after a failed read.
      */
     async function load({ keepWarning = false, stale = false, quiet = false } = {}) {
         listRead?.abort();
@@ -137,11 +182,14 @@ export function createReviewController({ api }) {
         if (!quiet) set({ status: state.items.length ? state.status : 'loading', ...(keepWarning ? {} : { warning: '' }) });
         let readOk = false;
         try {
-            const page = await api.get(`${REVIEW_URL}?limit=${PAGE_LIMIT}`, { signal: signalOf(read), cache: 'no-store' });
+            // One page, or as many as Load more had shown.
+            const queue = await readQueue(read, state.items.length > PAGE_LIMIT ? state.items.length : 0);
             if (read !== listRead || disposed) return;
-            const items = Object.freeze((page.items ?? []).map(entry => Object.freeze({ ...entry })));
+            const items = Object.freeze(queue.items.map(entry => Object.freeze({ ...entry })));
             const left = state.items.find(entry => entry.id === state.selectedId);
-            set({ status: 'ready', epoch: page.library_epoch, total: page.total, items, nextCursor: page.next_cursor ?? null,
+            shown = Number.isSafeInteger(queue.first.review_revision)
+                ? { epoch: queue.first.library_epoch, revision: queue.first.review_revision } : null;
+            set({ status: 'ready', epoch: queue.first.library_epoch, total: queue.total, items, nextCursor: queue.next,
                 more: 'idle' });
             readOk = true;
             const keep = items.find(entry => entry.id === state.selectedId);
@@ -157,12 +205,26 @@ export function createReviewController({ api }) {
             if (quiet && state.status === 'ready') set({ warning: COPY.refreshFailed });
             else set({ status: 'error' });
         } finally {
-            // A change heard while the first read ran: that read may predate it, so read once more.
-            if (readOk && refreshAfterLoad && !disposed) {
-                refreshAfterLoad = false;
-                refresh();
+            // A change heard while the first read ran: that read may predate it, so read once more (unless the
+            // stream's ready named a version this read already holds).
+            const owed = afterLoad;
+            if (readOk && owed && !disposed) {
+                afterLoad = null;
+                if (owed === 'always' || !current(owed)) refresh();
             }
         }
+    }
+
+    /** The stream's `ready`: re-read only when the queue shown is older than `version`. */
+    function sync(version) {
+        if (disposed) return Promise.resolve();
+        if (state.status === 'loading') {
+            // A second version, or a change, while the first read runs: no longer one version to compare.
+            afterLoad = afterLoad === null && isVersion(version) ? version : 'always';
+            return Promise.resolve();
+        }
+        if (state.status === 'ready' && current(version)) return Promise.resolve();
+        return refresh();
     }
 
     /** Re-read the queue after a change elsewhere; calls made while one runs collapse into one more read. */
@@ -170,7 +232,7 @@ export function createReviewController({ api }) {
         if (disposed) return Promise.resolve();
         // Before the queue has been read there is nothing to keep: the first read (or Retry) reads the latest.
         if (state.status !== 'ready') {
-            if (state.status === 'loading') refreshAfterLoad = true;
+            if (state.status === 'loading') afterLoad = 'always';
             return Promise.resolve();
         }
         if (refreshing) {
@@ -311,7 +373,7 @@ export function createReviewController({ api }) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        load: () => load(), refresh, loadMore, select: id => select(id), choose, apply, retry, leave,
+        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply, retry, leave,
         dispose() {
             if (disposed) return;
             dropPending();

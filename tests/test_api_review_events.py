@@ -9,6 +9,7 @@ decision and a duplicate recording change nothing and send nothing.
 """
 
 import asyncio
+import json
 import sqlite3
 import threading
 
@@ -51,15 +52,29 @@ class ReviewEventsTestCase(ReviewRoutesTestCase):
 
     async def _event(self, resp):
         """The next event's name (keepalive comments are skipped)."""
-        name = None
+        return (await self._event_with_data(resp))[0]
+
+    async def _event_with_data(self, resp):
+        """The next event's name and its parsed ``data`` line."""
+        name, data = None, None
         while True:
             line = await asyncio.wait_for(resp.content.readline(), READ_SECONDS)
             self.assertTrue(line, "the stream ended")
             text = line.decode("utf-8").rstrip("\n")
             if text.startswith("event: "):
                 name = text[len("event: ") :]
+            elif text.startswith("data: "):
+                data = json.loads(text[len("data: ") :])
             elif text == "" and name is not None:
-                return name
+                return name, data
+
+    async def _ready_version(self):
+        resp = await self.client.get(EVENTS_URL)
+        self.assertEqual(resp.status, 200)
+        self.addAsyncCleanup(self._close, resp)
+        name, data = await self._event_with_data(resp)
+        self.assertEqual(name, "ready")
+        return data
 
     async def _record_in_thread(self, path):
         """Record as the monitor does: from a worker thread, not the loop."""
@@ -124,6 +139,70 @@ class TestReviewEvents(ReviewEventsTestCase):
         job = await self._scan("all")
         self.assertEqual(job["scope"]["review_items"], 1)
         self.assertEqual(await self._event(stream), "change")
+
+    async def test_ready_carries_the_version_a_list_read_answers(self):
+        # F3 (no double read per visit): the page skips the re-read on
+        # ``ready`` when its first read already answered this version.
+        self._require_events()
+        self._record(self._ambiguous())
+        page = await self._list()
+        self.assertIsInstance(page.get("review_revision"), int, page)
+        version = await self._ready_version()
+        self.assertEqual(
+            version,
+            {
+                "library_epoch": page["library_epoch"],
+                "review_revision": page["review_revision"],
+            },
+        )
+
+    async def test_a_queue_change_moves_the_version_ready_carries(self):
+        self._require_events()
+        before = await self._list()
+        self._record(self._ambiguous())
+        after = await self._list()
+        self.assertIn("review_revision", after)
+        self.assertGreater(after["review_revision"], before["review_revision"])
+        version = await self._ready_version()
+        self.assertEqual(version["review_revision"], after["review_revision"])
+        self.assertNotEqual(version["review_revision"], before["review_revision"])
+
+    async def test_ready_names_no_version_when_it_cannot_be_read(self):
+        # The page then re-reads, as it did before versions existed.
+        self._require_events()
+
+        def broken():
+            raise sqlite3.DatabaseError("locked")
+
+        self.api.db.review_queue_version = broken
+        self.assertEqual(await self._ready_version(), {})
+
+    async def test_a_stream_counts_as_open_once_it_has_sent_ready(self):
+        # The browser fixture waits on this count before it changes the
+        # queue, so a change after it is a ``change`` event and never part of
+        # the version ``ready`` named.
+        self._require_events()
+        reading, release = asyncio.Event(), asyncio.Event()
+        original = self.api._queue_version
+
+        async def held():
+            reading.set()
+            await release.wait()
+            return await original()
+
+        self.api._queue_version = held
+        opening = asyncio.ensure_future(self._ready_version())
+        await asyncio.wait_for(reading.wait(), READ_SECONDS)
+        self.assertEqual(self.api.review_stream_count(), 0)
+        release.set()
+        await asyncio.wait_for(opening, READ_SECONDS)
+        self.assertEqual(self.api.review_stream_count(), 1)
+
+    async def test_change_events_carry_no_data(self):
+        self._require_events()
+        stream = await self._stream()
+        self._record(self._ambiguous())
+        self.assertEqual(await self._event_with_data(stream), ("change", {}))
 
     async def test_closing_the_stream_unsubscribes(self):
         self._require_events()

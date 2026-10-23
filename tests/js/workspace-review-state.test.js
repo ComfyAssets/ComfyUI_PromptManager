@@ -464,3 +464,145 @@ test('a change heard during the first read re-reads once after it, and a failed 
     assert.equal(broken.state.status, 'error');
     assert.equal(failing.of('GET', `${ITEMS}?`).length, 1, 'Retry is the way back, not a re-read');
 });
+
+// F3 rulings: a live re-read keeps the loaded depth, and the stream's `ready` reads nothing when the first read is current.
+
+/** A keyset pager over `source()`: pages of 40 with an index cursor, each answering `version()`. */
+function pager(source, version = () => 0, { onPage } = {}) {
+    return call => {
+        const query = new URL(call.url, 'http://x').searchParams;
+        const cursor = query.get('cursor');
+        const all = source();
+        const from = cursor ? Number(cursor.slice(1)) : 0;
+        const answer = onPage?.(cursor);
+        if (answer) return answer;
+        const items = all.slice(from, from + 40);
+        const next = from + 40 < all.length ? `c${from + 40}` : null;
+        return response(200, page(items, { total: all.length, next_cursor: next, review_revision: version() }));
+    };
+}
+const many = (count, prefix = 'i') => Array.from({ length: count }, (_, index) => item(`${prefix}${String(index).padStart(3, '0')}`));
+function syncOf(c, version) {
+    assert.equal(typeof c.sync, 'function', 'sync is not implemented');
+    return c.sync(version);
+}
+const version = revision => ({ library_epoch: EPOCH, review_revision: revision });
+
+test('a refresh keeps the loaded depth: it re-reads as many items as were loaded', async () => {
+    let queue = many(100);
+    const { c, h } = await loaded({ [`GET ${ITEMS}`]: pager(() => queue) });
+    await c.loadMore();
+    assert.equal(c.state.items.length, 80);
+    const before = h.of('GET', `${ITEMS}?`).length;
+    queue = [...queue, item('late')];
+    await refreshOf(c);
+    await settle();
+    assert.equal(c.state.items.length, 80, 'the Load more page is kept');
+    assert.deepEqual(c.state.items.map(entry => entry.id), queue.slice(0, 80).map(entry => entry.id));
+    assert.equal(c.state.total, 101);
+    assert.equal(c.state.nextCursor, 'c80', 'Load more continues after the kept depth');
+    assert.deepEqual(h.of('GET', `${ITEMS}?`).slice(before).map(call => call.url),
+        [`${ITEMS}?limit=40`, `${ITEMS}?limit=40&cursor=c40`]);
+    assert.equal(c.state.selectedId, 'i000');
+});
+
+test('a refresh after decisions elsewhere fills the loaded depth from what is left', async () => {
+    let queue = many(85);
+    const { c } = await loaded({ [`GET ${ITEMS}`]: pager(() => queue) });
+    await c.loadMore();
+    await c.loadMore();
+    assert.equal(c.state.items.length, 85);
+    queue = queue.filter((_, index) => index % 10 !== 5);
+    await refreshOf(c);
+    await settle();
+    assert.equal(c.state.items.length, queue.length);
+    assert.equal(c.state.nextCursor, null);
+});
+
+test('a deep refresh whose next page meets a restore reads again from the first page', async () => {
+    let restored = false;
+    let queue = many(60);
+    const { c, h } = await loaded({ [`GET ${ITEMS}`]: pager(() => queue, () => 0, {
+        onPage: cursor => {
+            if (cursor && restored) { restored = false; return fail(409, 'storage-changed', 'The library was restored.'); }
+            return null;
+        },
+    }) });
+    await c.loadMore();
+    const before = h.of('GET', `${ITEMS}?`).length;
+    restored = true;
+    queue = many(60, 'r');
+    await refreshOf(c);
+    await settle();
+    assert.deepEqual(h.of('GET', `${ITEMS}?`).slice(before).map(call => call.url),
+        [`${ITEMS}?limit=40`, `${ITEMS}?limit=40&cursor=c40`, `${ITEMS}?limit=40`, `${ITEMS}?limit=40&cursor=c40`]);
+    assert.equal(c.state.items.length, 60);
+    assert.equal(c.state.items[0].id, 'r000');
+    assert.notEqual(c.state.warning, 'The review queue could not be read again. Reload the page to see the latest images.',
+        'a restore met mid-read is not a failed re-read');
+    assert.equal(c.state.status, 'ready');
+});
+
+test('ready naming the version the first read answered reads nothing more', async () => {
+    const { c, h } = await loaded({ [`GET ${ITEMS}`]: pager(() => QUEUE, () => 4) });
+    await syncOf(c, version(4));
+    await settle();
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 1, 'one list read per visit');
+    assert.equal(h.of('GET', `${ITEMS}/one`).length, 1);
+});
+
+test('ready naming a newer version, another epoch or no version re-reads once', async () => {
+    const { c, h } = await loaded({ [`GET ${ITEMS}`]: pager(() => QUEUE, () => 4) });
+    await syncOf(c, version(5));
+    await settle();
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 2);
+    await syncOf(c, { library_epoch: '22222222-2222-4222-8222-222222222222', review_revision: 4 });
+    await settle();
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 3);
+    await syncOf(c, {});
+    await settle();
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 4, 'an unknown version is read, as before versions existed');
+});
+
+test('ready heard during the first read re-reads only when that read is older', async () => {
+    const { createReviewController } = await load();
+    for (const [readRevision, readyRevision, reads] of [[4, 4, 1], [5, 4, 1], [4, 5, 2]]) {
+        let release;
+        let lists = 0;
+        const answer = pager(() => QUEUE, () => (lists === 1 ? readRevision : readyRevision));
+        const h = harness(routes({ [`GET ${ITEMS}`]: async call => {
+            lists += 1;
+            if (lists === 1) await new Promise(resolve => { release = resolve; });
+            return answer(call);
+        } }));
+        const c = createReviewController({ api: h.api });
+        const first = c.load();
+        await settle();
+        syncOf(c, version(readyRevision));
+        release();
+        await first;
+        await settle();
+        assert.equal(lists, reads, `first read r${readRevision}, ready r${readyRevision}`);
+        c.dispose();
+    }
+});
+
+test('a change heard during the first read still re-reads after a current ready', async () => {
+    const { createReviewController } = await load();
+    let release;
+    let lists = 0;
+    const h = harness(routes({ [`GET ${ITEMS}`]: async call => {
+        lists += 1;
+        if (lists === 1) await new Promise(resolve => { release = resolve; });
+        return pager(() => QUEUE, () => 4)(call);
+    } }));
+    const c = createReviewController({ api: h.api });
+    const first = c.load();
+    await settle();
+    syncOf(c, version(4));
+    refreshOf(c);
+    release();
+    await first;
+    await settle();
+    assert.equal(lists, 2);
+});

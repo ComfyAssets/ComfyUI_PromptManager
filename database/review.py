@@ -317,6 +317,19 @@ class ReviewOperations:
             raise sqlite3.DatabaseError("Missing review queue metadata")
         return row[0]
 
+    def review_queue_version(self) -> dict:
+        """``{library_epoch, review_revision}`` of the queue, from one snapshot.
+
+        The pair a list read answers: equal pairs mean the same queue (a
+        restore moves the epoch, every queue change moves the revision).
+        """
+        with self._annotation_read() as conn:
+            epoch = conn.execute(_EPOCH).fetchone()
+            revision = conn.execute(_REVIEW_INDEX).fetchone()
+        if epoch is None or revision is None:
+            raise sqlite3.DatabaseError("Missing review queue metadata")
+        return {"library_epoch": epoch[0], "review_revision": revision[0]}
+
     def review_items_for(self, locator: str) -> list:
         """Every item of the file at ``locator``, oldest first, evidence parsed."""
         _validate_locator(locator)
