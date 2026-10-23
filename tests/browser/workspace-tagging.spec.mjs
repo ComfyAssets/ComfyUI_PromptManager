@@ -340,6 +340,9 @@ test('Tag opens the dialog without selecting the card', async ({ page }) => {
     const panel = page.getByRole('complementary', { name: 'Selected image details', exact: true });
     await page.goto(images);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
+    // Capture the panel once it shows the first card's details, not while it is still reading them.
+    await expect(panel.getByRole('heading', { level: 2 })).toBeVisible();
+    await expect(panel).not.toContainText('Loading file details');
     const before = await panel.innerText();
     await openTag(page, SECOND, { goto: false });
     await page.keyboard.press('Escape');
