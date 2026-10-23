@@ -1,4 +1,7 @@
         class GalleryManager {
+            // A Cancel on a thumbnail job another tab or System started (#249 System S5, review I1).
+            static THUMBNAILS_STOPPED_FOLLOWING = 'Stopped following thumbnail generation started elsewhere; it keeps running in Activity';
+
             constructor() {
                 this.images = [];
                 this.currentPage = 1;
@@ -1911,22 +1914,52 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            /**
-             * Stop the running thumbnail job (#249 System S5), whichever page started it: there is one at a time.
-             * Resolves whether a cancellation was asked for; a held legacy operation cannot be cancelled.
-             */
-            async cancelThumbnailJob() {
+            /** Ask the server to stop thumbnail job `jobId` at its next file boundary (#249 System S5). */
+            async cancelThumbnailJob(jobId) {
                 try {
-                    const data = await this.api.get('/prompt_manager/jobs');
-                    const job = (Array.isArray(data?.jobs) ? data.jobs : []).find(item => item?.kind === 'thumbnails'
-                        && item.state === 'running' && item.cancellable !== false && typeof item.id === 'string');
-                    if (!job) return false;
-                    await this.api.post(`/prompt_manager/jobs/${encodeURIComponent(job.id)}/cancel`, {});
+                    await this.api.post(`/prompt_manager/jobs/${encodeURIComponent(jobId)}/cancel`, {});
                     return true;
                 } catch (error) {
                     console.warn('The thumbnail job could not be cancelled:', error);
                     return false;
                 }
+            }
+
+            /**
+             * Cancel for one thumbnail stream (#249 System S5, review I1). The stream's first frame, `job {id, started}`,
+             * names the job it follows and whether it started it. `request()` stops that job by its id, and only when this
+             * stream started it: a job another tab or System started keeps running, and the stream just stops following.
+             * A request before the `job` frame keeps the stream open until the frame arrives; `ended()` (the stream closed
+             * or refused without naming a job) leaves nothing to cancel.
+             */
+            thumbnailCanceller(eventSource) {
+                let job = null;
+                let wanted = false;
+                let done = false;
+                const apply = () => {
+                    if (done || !wanted || !job) return;
+                    done = true;
+                    eventSource.close();
+                    if (job.started) this.cancelThumbnailJob(job.id);
+                };
+                return {
+                    identify(raw) {
+                        if (job) return;
+                        let data = null;
+                        try { data = JSON.parse(raw); } catch (error) { return; }
+                        if (typeof data?.id !== 'string' || !data.id) return;
+                        job = { id: data.id, started: data.started === true };
+                        apply();
+                    },
+                    request() { wanted = true; apply(); },
+                    /** True once the stream named a job this page did not start. */
+                    get following() { return job !== null && !job.started; },
+                    ended() {
+                        if (done || !wanted || job) return;
+                        done = true;
+                        eventSource.close();
+                    },
+                };
             }
 
             async generateThumbnailsWithProgress(options) {
@@ -1950,15 +1983,19 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     let cancelled = false;
                     let resultData = null;
+                    const canceller = this.thumbnailCanceller(eventSource);
+                    eventSource.addEventListener('job', event => canceller.identify(event.data));
                     
                     // Handle cancellation. The work is an Activity job that outlives this stream, so closing it no
-                    // longer stops anything: ask the server to stop the job at its next file boundary too.
+                    // longer stops anything: ask the server to stop this stream's job by its id (review I1).
                     const cancelHandler = () => {
+                        if (cancelled) return;
                         cancelled = true;
-                        eventSource.close();
+                        cancelBtn.removeEventListener('click', cancelHandler);
                         cancelBtn.classList.add('hidden');
-                        this.cancelThumbnailJob();
-                        reject(new Error('Thumbnail generation cancelled by user'));
+                        const following = canceller.following;
+                        canceller.request();
+                        reject(new Error(following ? GalleryManager.THUMBNAILS_STOPPED_FOLLOWING : 'Thumbnail generation cancelled by user'));
                     };
                     cancelBtn.addEventListener('click', cancelHandler);
                     
@@ -2033,7 +2070,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     // Handle completion
                     eventSource.addEventListener('complete', (event) => {
-                        if (cancelled) return;
+                        if (cancelled) { canceller.ended(); return; }
                         resultData = JSON.parse(event.data);
                         
                         // Update final progress
@@ -2081,7 +2118,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                     // Handle errors
                     eventSource.addEventListener('error', (event) => {
-                        if (cancelled) return;
+                        if (cancelled) { canceller.ended(); return; }
                         const data = JSON.parse(event.data);
                         
                         // Clean up
@@ -2094,7 +2131,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     
                     // Handle EventSource errors
                     eventSource.onerror = (error) => {
-                        if (cancelled) return;
+                        if (cancelled) { canceller.ended(); return; }
                         console.error('EventSource error:', error);
                         console.error('EventSource readyState:', eventSource.readyState);
                         
@@ -2117,6 +2154,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                     // Stream ended without a complete/error frame (close() does not trigger this)
                     eventSource.onclose = () => {
+                        if (cancelled) canceller.ended();
                         if (cancelled || resultData) return;
                         cancelBtn.removeEventListener('click', cancelHandler);
                         cancelBtn.classList.add('hidden');
@@ -2712,12 +2750,15 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     statusMessages.scrollTop = statusMessages.scrollHeight;
                 };
                 
-                // Handle cancel
+                // Handle cancel: the stream's own job stops at its next file boundary (#249 System S5, review I1)
+                let cancelStream = null;
                 cancelBtn.addEventListener('click', () => {
+                    if (isCancelled) return;
                     isCancelled = true;
                     addStatusMessage('Cancellation requested...', 'warning');
                     cancelBtn.disabled = true;
                     cancelBtn.textContent = 'Cancelling...';
+                    cancelStream?.();
                 });
                 
                 // Handle close (only appears when done)
@@ -2741,7 +2782,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         progressDetails,
                         progressETA,
                         addStatusMessage,
-                        isCancelled: () => isCancelled
+                        isCancelled: () => isCancelled,
+                        onCancel: handler => { cancelStream = handler; }
                     });
                     
                     // Show completion
@@ -2761,10 +2803,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     }
                     
                 } catch (error) {
-                    console.error('Thumbnail generation failed:', error);
-                    addStatusMessage(`Generation failed: ${error.message}`, 'error');
-                    progressBar.classList.add('bg-pm-error');
-                    progressBar.classList.remove('bg-pm-accent');
+                    if (isCancelled) {
+                        addStatusMessage(error.message, 'warning');
+                    } else {
+                        console.error('Thumbnail generation failed:', error);
+                        addStatusMessage(`Generation failed: ${error.message}`, 'error');
+                        progressBar.classList.add('bg-pm-error');
+                        progressBar.classList.remove('bg-pm-accent');
+                    }
                 } finally {
                     // Show close button and hide cancel
                     cancelBtn.classList.add('hidden');
@@ -2782,7 +2828,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     }, 100);
                 }
             }            async generateThumbnailsWithProgressInModal(uiElements) {
-                const { progressText, progressPercent, progressBar, progressDetails, progressETA, addStatusMessage, isCancelled } = uiElements;
+                const { progressText, progressPercent, progressBar, progressDetails, progressETA, addStatusMessage, isCancelled, onCancel } = uiElements;
                 
                 return new Promise((resolve, reject) => {
                     addStatusMessage('Starting thumbnail generation...');
@@ -2796,6 +2842,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     const eventSource = SseStream.connect(`/prompt_manager/images/generate-thumbnails/progress?quality=${encodeURIComponent(quality)}`, { method: 'POST' });
                     
                     let resultData = null;
+                    const canceller = this.thumbnailCanceller(eventSource);
+                    eventSource.addEventListener('job', event => canceller.identify(event.data));
+                    // Cancel stops this stream's job by id, keeps what it wrote, and settles the dialog.
+                    onCancel?.(() => {
+                        const following = canceller.following;
+                        canceller.request();
+                        reject(new Error(following ? GalleryManager.THUMBNAILS_STOPPED_FOLLOWING : 'Thumbnail generation cancelled; previews already written are kept'));
+                    });
                     
                     // Handle scanning/status events
                     eventSource.addEventListener('status', (event) => {

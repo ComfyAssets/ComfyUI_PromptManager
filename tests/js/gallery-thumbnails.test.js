@@ -112,32 +112,121 @@ test('saving gallery settings retains the remembered thumbnail dismissal', () =>
 });
 
 // #249 System S5: the stream's work is now an Activity job that outlives the page's connection, so the gallery's
-// Cancel asks the server to stop the running thumbnail job instead of only closing the stream.
-test('Cancel stops the running thumbnail job on the server', async () => {
-    const f = fixture({});
+// Cancel asks the server to stop the job. The stream's first frame, `job {id, started}`, names the job; the gallery
+// cancels by that id, only a job this stream started, and a Cancel before the id waits for it (review I1).
+const JOB = 'b'.repeat(32);
+
+function streamFixture({ modal = false, postFails = false } = {}) {
     const posts = [];
-    const running = { id: 'b'.repeat(32), kind: 'thumbnails', state: 'running', cancellable: true };
-    f.manager.api = {
-        get: async url => { f.requests.push(url); return { success: true, jobs: [
-            { id: 'a'.repeat(32), kind: 'scan', state: 'running', cancellable: true },
-            { id: 'c'.repeat(32), kind: 'thumbnails', state: 'finished', cancellable: true }, running] }; },
-        post: async (url, body) => { posts.push([url, body]); return { success: true, cancellation_requested: true }; },
-    };
-    assert.equal(await f.manager.cancelThumbnailJob(), true);
-    assert.deepEqual(f.requests, ['/prompt_manager/jobs']);
-    assert.equal(JSON.stringify(posts), JSON.stringify([[`/prompt_manager/jobs/${running.id}/cancel`, {}]]));
+    const warnings = [];
+    const gets = [];
+    const listeners = {};
+    const source = { closed: 0, readyState: 1, CLOSED: 2, url: null,
+        addEventListener(type, handler) { (listeners[type] ||= []).push(handler); },
+        close() { this.closed += 1; } };
+    const element = () => ({ classList: { add() {}, remove() {} }, style: {}, textContent: '', handlers: {},
+        addEventListener(type, handler) { this.handlers[type] = handler; },
+        removeEventListener(type, handler) { if (this.handlers[type] === handler) delete this.handlers[type]; },
+        click() { this.handlers.click?.(); } });
+    const elements = {};
+    const document = { addEventListener() {}, getElementById: id => elements[id] ||= element(),
+        createElement: () => element(), body: { appendChild() {}, removeChild() {} } };
+    const context = vm.createContext({ document, window: {},
+        console: { debug() {}, warn: (...args) => warnings.push(args), error() {} },
+        setTimeout() {}, localStorage: { setItem() {} },
+        SseStream: { connect: (url, options) => { source.url = url; source.options = options; return source; } } });
+    const file = path.join(__dirname, '../../web/js/gallery.js');
+    const Manager = vm.runInContext(fs.readFileSync(file, 'utf8') + '\nGalleryManager;', context, { filename: file });
+    const manager = Object.create(Manager.prototype);
+    Object.assign(manager, { getSettings: () => ({}),
+        api: { get: async url => { gets.push(url); return { success: true, jobs: [] }; },
+            post: async (url, body) => {
+                posts.push([url, body]);
+                if (postFails) throw new Error('offline');
+                return { success: true };
+            } } });
+    const emit = (type, data) => (listeners[type] || []).forEach(handler => handler({ data: JSON.stringify(data) }));
+    const ui = { addStatusMessage() {}, progressText: element(), progressPercent: element(), progressBar: element(),
+        progressDetails: element(), progressETA: element(), isCancelled: () => false,
+        onCancel: handler => { ui.cancel = handler; } };
+    const result = modal ? manager.generateThumbnailsWithProgressInModal(ui)
+        : manager.generateThumbnailsWithProgress({ quality: 'medium' });
+    const outcome = result.then(value => ({ value }), error => ({ error: error.message }));
+    const cancel = () => (modal ? ui.cancel() : elements.cancelThumbnailsBtn.click());
+    const settle = () => new Promise(resolve => setImmediate(resolve));
+    return { emit, source, posts, gets, warnings, outcome, cancel, settle };
+}
+
+const cancelUrl = id => `/prompt_manager/jobs/${id}/cancel`;
+
+test('Cancel before the job id arrives cancels that job once it does', async () => {
+    const f = streamFixture();
+    f.cancel();
+    await f.settle();
+    assert.deepEqual(f.posts, []);
+    assert.equal(f.source.closed, 0); // kept open until the stream names its job
+    assert.deepEqual(await f.outcome, { error: 'Thumbnail generation cancelled by user' });
+    f.emit('status', { phase: 'scanning', message: 'Scanning…' });
+    f.emit('job', { id: JOB, started: true });
+    await f.settle();
+    assert.equal(JSON.stringify(f.posts), JSON.stringify([[cancelUrl(JOB), {}]]));
+    assert.equal(f.source.closed, 1);
+    f.emit('job', { id: 'c'.repeat(32), started: true }); // a stray second frame changes nothing
+    await f.settle();
+    assert.equal(f.posts.length, 1);
+    assert.deepEqual(f.gets, []); // never looks a job up by kind
 });
 
-test('Cancel posts nothing when no cancellable thumbnail job runs, and survives a failed read', async () => {
-    const f = fixture({});
-    const posts = [];
-    f.manager.api = {
-        get: async () => ({ success: true, jobs: [{ id: 'd'.repeat(32), kind: 'thumbnails', state: 'running',
-            cancellable: false }] }),
-        post: async url => { posts.push(url); return {}; },
-    };
-    assert.equal(await f.manager.cancelThumbnailJob(), false);
-    f.manager.api.get = async () => { throw new Error('offline'); };
-    assert.equal(await f.manager.cancelThumbnailJob(), false);
-    assert.deepEqual(posts, []);
+test('Cancel after the id cancels it at once, and a double Cancel posts once', async () => {
+    const f = streamFixture();
+    f.emit('job', { id: JOB, started: true });
+    f.cancel();
+    f.cancel();
+    await f.settle();
+    assert.equal(JSON.stringify(f.posts), JSON.stringify([[cancelUrl(JOB), {}]]));
+    assert.equal(f.source.closed, 1);
+    assert.deepEqual(await f.outcome, { error: 'Thumbnail generation cancelled by user' });
+    assert.deepEqual(f.gets, []);
+});
+
+test("Cancel leaves another tab's or System's job running and only stops following it", async () => {
+    const f = streamFixture();
+    f.emit('job', { id: JOB, started: false });
+    f.cancel();
+    await f.settle();
+    assert.deepEqual(f.posts, []);
+    assert.deepEqual(f.gets, []);
+    assert.equal(f.source.closed, 1);
+    assert.match((await f.outcome).error, /keeps running/);
+});
+
+test('a Cancel the stream never names a job for posts nothing and closes when it ends', async () => {
+    const f = streamFixture();
+    f.cancel();
+    f.emit('error', { error: 'Scan for metadata already running' });
+    await f.settle();
+    assert.deepEqual(f.posts, []);
+    assert.equal(f.source.closed, 1);
+});
+
+test('a cancel post that fails is reported, not thrown', async () => {
+    const f = streamFixture({ postFails: true });
+    f.emit('job', { id: JOB, started: true });
+    f.cancel();
+    await f.settle();
+    assert.equal(f.posts.length, 1);
+    assert.equal(f.warnings.length, 1);
+    assert.deepEqual(await f.outcome, { error: 'Thumbnail generation cancelled by user' });
+});
+
+test('the startup dialog cancels its own job by id too', async () => {
+    const f = streamFixture({ modal: true });
+    f.cancel();
+    await f.settle();
+    assert.deepEqual(f.posts, []);
+    f.emit('job', { id: JOB, started: true });
+    await f.settle();
+    assert.equal(JSON.stringify(f.posts), JSON.stringify([[cancelUrl(JOB), {}]]));
+    assert.equal(f.source.closed, 1);
+    assert.match((await f.outcome).error, /cancelled/);
 });
