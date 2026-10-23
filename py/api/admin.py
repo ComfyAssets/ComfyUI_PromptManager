@@ -41,7 +41,7 @@ try:
         PLACEHOLDERS,
         GenerationParamsError,
         extract_generation_params,
-        parse_js_json,
+        parse_page_json,
     )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
 except ImportError:
@@ -51,7 +51,7 @@ except ImportError:
         PLACEHOLDERS,
         GenerationParamsError,
         extract_generation_params,
-        parse_js_json,
+        parse_page_json,
     )
     from utils.prompt_pair_resolver import resolve_prompt_pair
 
@@ -1602,11 +1602,14 @@ class AdminRoutesMixin:
 
     @staticmethod
     def _graph_prompt_text(metadata):
-        """The positive prompt the browser parser traces from the graphs, or None."""
+        """The positive prompt the browser parser traces from the graphs, or None.
+
+        Records parse as the legacy pages parsed them (NaN reads as null).
+        """
         records = {}
         for key in ("prompt", "workflow"):
             value = metadata.get(key)
-            records[key] = parse_js_json(value) if isinstance(value, str) else value
+            records[key] = parse_page_json(value) if isinstance(value, str) else value
         try:
             positive = extract_generation_params(records)["positivePrompt"]
         except GenerationParamsError:

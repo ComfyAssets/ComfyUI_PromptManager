@@ -165,6 +165,122 @@ class TestPairScan(AdminAPITestCase):
         )
         self.assertEqual(self.api.db.get_recent_prompts()["prompts"], [])
 
+    def _nan_scanned(self, name, prompt_graph):
+        """Scan ``prompt_graph`` as ComfyUI writes it: ``is_changed`` is NaN."""
+        stamped = {
+            node_id: {**node, "is_changed": [float("nan")]}
+            for node_id, node in prompt_graph.items()
+        }
+        text = json.dumps(stamped)
+        self.assertIn("NaN", text)
+        return self._scanned_text(name, text)
+
+    def _scanned_text(self, name, prompt_text):
+        meta = {"prompt": prompt_text}
+        return self.api._ingest_scanned_file(self.output_dir / name, meta)
+
+    @staticmethod
+    def _hires_fix_graph(positive):
+        """A PromptManager prompt on a base sampler and a hires-fix sampler.
+
+        The base latent comes from a custom batch node and the hires pass from
+        a custom image filter: no sampler branch traces, so the scan links the
+        prompt the legacy pages show.
+        """
+        return {
+            "1": {
+                "class_type": "CheckpointLoaderSimple",
+                "inputs": {"ckpt_name": "m.safetensors"},
+            },
+            "2": {
+                "class_type": "MyTriggerWords",
+                "inputs": {"trigger_words": ["1", 2]},
+            },
+            "3": {
+                "class_type": "PromptManager",
+                "inputs": {
+                    "text": positive,
+                    "prepend_text": ["2", 0],
+                    "append_text": "",
+                    "clip": ["1", 1],
+                },
+            },
+            "4": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "blur", "clip": ["1", 1]},
+            },
+            "5": {"class_type": "MyLatentBatch", "inputs": {"batch_size": 6}},
+            "6": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 7,
+                    "model": ["1", 0],
+                    "positive": ["3", 0],
+                    "negative": ["4", 0],
+                    "latent_image": ["5", 0],
+                },
+            },
+            "7": {
+                "class_type": "VAEDecode",
+                "inputs": {"samples": ["6", 0], "vae": ["1", 2]},
+            },
+            "8": {"class_type": "MyImageFilter", "inputs": {"images": ["7", 0]}},
+            "9": {
+                "class_type": "VAEEncode",
+                "inputs": {"pixels": ["8", 0], "vae": ["1", 2]},
+            },
+            "14": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": 7,
+                    "denoise": 0.25,
+                    "model": ["1", 0],
+                    "positive": ["3", 0],
+                    "negative": ["4", 0],
+                    "latent_image": ["9", 0],
+                },
+            },
+            "15": {
+                "class_type": "VAEDecode",
+                "inputs": {"samples": ["14", 0], "vae": ["1", 2]},
+            },
+            "16": {"class_type": "SaveImage", "inputs": {"images": ["15", 0]}},
+        }
+
+    def test_hires_fix_prompt_links_with_or_without_nan_is_changed(self):
+        # Legacy parity: the legacy pages read NaN as null before parsing, so they
+        # showed this prompt; the scan left NaN-stamped files in review.
+        for name, scan in (("plain.png", None), ("stamped.png", "nan")):
+            with self.subTest(name=name):
+                g = self._hires_fix_graph("cat on a sofa")
+                if scan:
+                    status = self._nan_scanned(name, g)
+                else:
+                    status = self._scanned(name, g)
+                self.assertIn(status, ("added", "linked"))
+                self.assertEqual(self._texts(), ["cat on a sofa"])
+
+    def test_untraced_single_sampler_links_the_legacy_prompt_with_nan(self):
+        g = self._hires_fix_graph("cat on a sofa")
+        for node_id in ("7", "8", "9", "14", "15"):
+            del g[node_id]
+        g["16"]["inputs"]["images"] = ["6", 0]
+        self.assertEqual(self._nan_scanned("single.png", g), "added")
+        self.assertEqual(self._texts(), ["cat on a sofa"])
+
+    def test_nan_inside_prompt_text_is_kept(self):
+        # Only the NaN number reads as null; legacy's regex also rewrote text.
+        g = self._hires_fix_graph("NaN cat, value: NaN")
+        self.assertEqual(self._nan_scanned("text.png", g), "added")
+        self.assertEqual(self._texts(), ["NaN cat, value: NaN"])
+
+    def test_infinity_is_still_unreadable_like_the_legacy_pages(self):
+        text = json.dumps(self._hires_fix_graph("cat")).replace(
+            '"seed": 7', '"seed": Infinity'
+        )
+        self.assertIn(self._scanned_text("inf.png", text), ("ambiguous", "unresolved"))
+        self.assertEqual(self._texts(), [])
+
     def test_raw_png_workflow_is_stored_as_object_and_repeat_is_unchanged(self):
         path = self.output_dir / "workflow.png"
         workflow = {"nodes": [{"id": 1, "type": "PromptManagerPair"}]}
