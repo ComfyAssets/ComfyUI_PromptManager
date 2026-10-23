@@ -11,7 +11,8 @@
  *   Rescan; no "Import portable recipes" (D15). Rescan shows its running state (aria-disabled "Rescanning…"). D55: the
  *   concept's own "Scan an output folder → Review scan" row follows as "Scan for metadata".
  * - "Review metadata scan" (a1428–1432 `scan-review`, D55): Sources and Scope in a `dl.meta-grid`, the concept's
- *   sentence, a backup `.notice` ("Back up now") and Cancel / Start scan; no sample-plan note.
+ *   sentence, a backup `.notice` ("Back up now") and Cancel / Start scan; no sample-plan note. It is one caller of
+ *   `openReviewDialog`, the review every record-changing System operation shares, with its `backupNotice`.
  * - "Copy prompt" (a1223–1241): the select-to-copy fallback when the clipboard is unavailable (D22).
  * - One-value input (a1138 `simpleInput`): a "Category"-style field (`input#action-input`) and Cancel / a primary
  *   action; used by the Images selection bar's "Set category" (#249 D8) and the toolbar's Save view.
@@ -367,6 +368,98 @@ const BACKUP_BUSY_LABEL = 'Backing up…';
 
 export const SCAN_SCOPE_LABELS = { new: 'New and unresolved files', all: 'All files' };
 export const SCAN_ALL_FILES_HINT = 'Also read the files already linked to their prompt again.';
+/** The scan review's backup box copy (D55). */
+export const SCAN_BACKUP_COPY = Object.freeze({ heading: 'Back up the database first (recommended)',
+    text: 'Downloads a copy of the prompts database before the scan changes any records.' });
+
+/**
+ * The D55 backup box: the concept's System `.notice` (`div` > `h3` + `p`, then `.row-actions` with "Back up now").
+ * `onBackup` runs the backup and toasts its outcome; until it settles the button reads "Backing up…" and is
+ * aria-disabled, so a second press is ignored. It never closes the dialog it sits in.
+ */
+export function backupNotice({ copy, onBackup }) {
+    if (typeof copy?.heading !== 'string' || !copy.heading || typeof copy.text !== 'string' || !copy.text) {
+        throw new TypeError('The backup box needs its heading and text');
+    }
+    requireCallbacks({ onBackup });
+    const notice = el('div', undefined, 'notice');
+    const text = el('div');
+    text.append(el('h3', copy.heading), el('p', copy.text));
+    const actions = el('div', undefined, 'row-actions');
+    const backup = createButton(BACKUP_LABEL);
+    actions.append(backup);
+    notice.append(text, actions);
+    backup.addEventListener('click', async () => {
+        if (backup.getAttribute('aria-disabled') === 'true') return;
+        backup.setAttribute('aria-disabled', 'true');
+        backup.textContent = BACKUP_BUSY_LABEL;
+        try {
+            await onBackup();
+        } finally {
+            backup.removeAttribute('aria-disabled');
+            backup.textContent = BACKUP_LABEL;
+        }
+    });
+    return notice;
+}
+
+function requireGrid(grid) {
+    if (!Array.isArray(grid) || grid.length === 0 || grid.some(row => !Array.isArray(row) || row.length !== 2 ||
+        typeof row[0] !== 'string' || !row[0] || typeof row[1] !== 'string')) {
+        throw new TypeError('The review needs its [term, value] grid');
+    }
+}
+
+/**
+ * The shared record-changing review (the concept's `scan-review`, maintenance plan and restore preview): an optional
+ * `h3` heading, the `dl.meta-grid` of `[term, value]` rows, page-built `options` nodes, the optional `p.small`
+ * sentence, the D55 backup box when `backup` is `{copy, onBackup}`, then `.dialog-actions` with `cancelLabel` and the
+ * primary (`ca-primary`, or the concept's `danger` when `primary.danger`). The primary closes the dialog, then calls
+ * `onStart()`. Returns `{setValue(term, text)}` for a grid value that follows an option.
+ */
+export function openReviewDialog({ scope, title, heading = null, grid, options = [], sentence = null, backup = null,
+    cancelLabel, primary, onStart, trigger = null }) {
+    requireScope(scope);
+    requireCallbacks({ onStart });
+    for (const [name, text] of Object.entries({ title, cancelLabel, label: primary?.label })) {
+        if (typeof text !== 'string' || !text) throw new TypeError(`The review needs its ${name}`);
+    }
+    requireGrid(grid);
+    if (!Array.isArray(options) || options.some(node => !node || typeof node !== 'object')) {
+        throw new TypeError('The review options must be nodes');
+    }
+    const nodes = [];
+    if (heading) nodes.push(el('h3', heading));
+    const list = el('dl', undefined, 'meta-grid');
+    const values = new Map();
+    for (const [term, value] of grid) {
+        const entry = el('div');
+        const dd = el('dd', value);
+        values.set(term, dd);
+        entry.append(el('dt', term), dd);
+        list.append(entry);
+    }
+    nodes.push(list, ...options);
+    if (sentence) nodes.push(el('p', sentence, 'small'));
+    if (backup) nodes.push(backupNotice(backup));
+    const cancel = createButton(cancelLabel);
+    const start = createButton(primary.label, primary.danger ? 'danger' : 'ca-primary');
+    cancel.addEventListener('click', () => finish());
+    start.addEventListener('click', () => {
+        finish();
+        onStart();
+    });
+    const actions = el('div', undefined, 'dialog-actions');
+    actions.append(cancel, start);
+    nodes.push(actions);
+    show(title, nodes, { scope, trigger });
+    return {
+        setValue(term, text) {
+            const dd = values.get(term);
+            if (dd) dd.textContent = text;
+        },
+    };
+}
 
 /**
  * The concept's "Review metadata scan" (`scan-review`, D55). `sources` is the number of output folders the scan reads.
@@ -379,18 +472,9 @@ export function openScanReviewDialog({ scope, sources, onBackup, onStart, trigge
     requireScope(scope);
     requireCallbacks({ onBackup, onStart });
     if (!Number.isSafeInteger(sources) || sources < 0) throw new TypeError('The scan review needs its source count');
-    const grid = el('dl', undefined, 'meta-grid');
-    const values = {};
-    for (const [term, value] of [['Sources', `${sources.toLocaleString('en-US')} output ${sources === 1 ? 'folder' : 'folders'}`],
-        ['Scope', SCAN_SCOPE_LABELS.new]]) {
-        const entry = el('div');
-        values[term] = el('dd', value);
-        entry.append(el('dt', term), values[term]);
-        grid.append(entry);
-    }
     // The concept's System toggle: a `.setting-row` whose checkbox is the Toolkit switch (concept `hydrateSwitches`).
     const toggle = createSwitch('', '', 'scan-all-files');
-    const allFiles = toggle.querySelector('input');
+    const allFiles = toggle.children[0];
     allFiles.checked = false;
     const option = el('div', undefined, 'setting-row');
     const optionText = el('div');
@@ -402,35 +486,10 @@ export function openScanReviewDialog({ scope, sources, onBackup, onStart, trigge
     optionText.append(optionLabel, hint);
     option.append(optionText, toggle);
     const chosenScope = () => (allFiles.checked ? 'all' : 'new');
-    allFiles.addEventListener('change', () => { values.Scope.textContent = SCAN_SCOPE_LABELS[chosenScope()]; });
-    const notice = el('div', undefined, 'notice');
-    const copy = el('div');
-    copy.append(el('h3', 'Back up the database first (recommended)'),
-        el('p', 'Downloads a copy of the prompts database before the scan changes any records.'));
-    const backupActions = el('div', undefined, 'row-actions');
-    const backup = createButton(BACKUP_LABEL);
-    backupActions.append(backup);
-    notice.append(copy, backupActions);
-    backup.addEventListener('click', async () => {
-        if (backup.getAttribute('aria-disabled') === 'true') return;
-        backup.setAttribute('aria-disabled', 'true');
-        backup.textContent = BACKUP_BUSY_LABEL;
-        try {
-            await onBackup();
-        } finally {
-            backup.removeAttribute('aria-disabled');
-            backup.textContent = BACKUP_LABEL;
-        }
-    });
-    const cancel = createButton('Cancel');
-    const start = createButton('Start scan', 'ca-primary');
-    cancel.addEventListener('click', () => finish());
-    start.addEventListener('click', () => {
-        const files = chosenScope();
-        finish();
-        onStart({ scope: files });
-    });
-    const actions = el('div', undefined, 'dialog-actions');
-    actions.append(cancel, start);
-    show('Review metadata scan', [grid, option, el('p', SCAN_REVIEW_SENTENCE, 'small'), notice, actions], { scope, trigger });
+    const review = openReviewDialog({ scope, trigger, title: 'Review metadata scan',
+        grid: [['Sources', `${sources.toLocaleString('en-US')} output ${sources === 1 ? 'folder' : 'folders'}`],
+            ['Scope', SCAN_SCOPE_LABELS.new]],
+        options: [option], sentence: SCAN_REVIEW_SENTENCE, backup: { copy: SCAN_BACKUP_COPY, onBackup },
+        cancelLabel: 'Cancel', primary: { label: 'Start scan' }, onStart: () => onStart({ scope: chosenScope() }) });
+    allFiles.addEventListener('change', () => review.setValue('Scope', SCAN_SCOPE_LABELS[chosenScope()]));
 }
