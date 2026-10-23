@@ -1,7 +1,9 @@
 """The concept fixture files carry the concept inspector facts (app.js:400-414)."""
 
 import json
+import math
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -15,6 +17,8 @@ except ImportError:  # discovered with tests/ as the top-level directory
 from tests.browser.workspace_concept_fixture import (
     CONCEPT_MODEL,
     CONCEPT_PROMPTS,
+    MAX_EPOCH_SECONDS,
+    _instant,
     write_concept_png,
 )
 from utils.prompt_inspector import inspect_prompt_evidence, read_inspection_file
@@ -78,6 +82,30 @@ class TestWorkspaceConceptFixture(unittest.TestCase):
         for prompt_index, size in enumerate(expected):
             _, image = self.write(prompt_index, 1)
             self.assertEqual((image["width"], image["height"]), size)
+
+
+class TestConceptFixtureInstant(unittest.TestCase):
+    """One "now" for every relative time the fixture writes (PR #284's midnight)."""
+
+    def test_a_chosen_instant_is_kept(self):
+        self.assertEqual(_instant(1_792_713_598), 1_792_713_598.0)
+        self.assertEqual(_instant(1_792_713_598.25), 1_792_713_598.25)
+
+    def test_the_wall_clock_when_omitted(self):
+        before = time.time()
+        now = _instant(None)
+        self.assertLessEqual(before, now)
+        self.assertLessEqual(now, time.time())
+
+    def test_a_non_number_is_refused(self):
+        for value in (True, "1792713598", [1]):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                _instant(value)
+
+    def test_an_instant_out_of_range_is_refused(self):
+        for value in (0, -1, MAX_EPOCH_SECONDS, math.inf, math.nan):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                _instant(value)
 
 
 if __name__ == "__main__":

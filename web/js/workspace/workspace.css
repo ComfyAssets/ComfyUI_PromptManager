@@ -212,6 +212,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #249 D20: the viewer details' pair send and history buttons wrap inside the narrow rail at 200% zoom with wider fonts,
    where the toolkit's `nowrap` would push them past its edge. */
 .ca-tools #viewer-details > button { white-space: normal; /* D20 */ }
+/* LI-4: "Copy settings summary" after the facts wraps the same way in the narrow rail. */
+.ca-tools #viewer-details .settings-summary { white-space: normal; /* D117 */ }
 /* The Images page narrows to one column inside a narrow container (the Library-embedded gallery). */
 .images-main { container: images-page / inline-size; }
 @container images-page (inline-size < 600px) {
@@ -376,3 +378,9 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
     /* D83: the chip's × keeps the concept's 40px coarse target. */
     .ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 40px; min-inline-size: 40px; }
 }
+
+/* Auto-tag selected images (#249 PR D, D85/D90): the Tag image dialog's model panel, then How to apply, a radio group
+   in the concept's `.field` row whose radios keep their own size (the concept's `.field input` is a full-width text
+   field) beside their label, as the concept's own radio rows (s1160 `.compare-item label`). */
+.field[role="radiogroup"] > label { display: flex; align-items: center; gap: 8px; /* D90 */ }
+.field[role="radiogroup"] input[type="radio"] { width: auto; margin: 0; /* D90 */ }

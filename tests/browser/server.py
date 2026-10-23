@@ -18,10 +18,13 @@ from aiohttp.web_runner import GracefulExit
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from tests.browser.request_hold import register_request_holds
+from tests.browser import slow_reset_watch
 from tests.browser.workspace_activity_fixture import register_activity_commands
 from tests.browser.workspace_concept_fixture import (
     MAX_EXTRA_IMAGES as CONCEPT_MAX_EXTRA_IMAGES,
     MAX_SEEDLESS_IMAGES as CONCEPT_MAX_SEEDLESS_IMAGES,
+    MAX_EPOCH_SECONDS as CONCEPT_MAX_EPOCH_SECONDS,
     seed_workspace_concept,
 )
 from tests.browser.workspace_visual_fixture import seed_workspace_visual
@@ -195,6 +198,8 @@ def create_app(root: Path) -> web.Application:
     register_tagging_commands(routes, api, root, model)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
+    request_holds = register_request_holds(app, routes)
+    slow_reset_watch.install(app, api)
 
     async def canonical_asset(request: web.Request) -> web.Response:
         filename, content_type = CANONICAL_ASSETS[request.path]
@@ -376,6 +381,7 @@ def create_app(root: Path) -> web.Application:
     @routes.post("/__test__/reset")
     async def reset(request: web.Request) -> web.Response:
         nonlocal history_fixture
+        request_holds.release()
         library_editor_commands.reset()
         data = await request.json() if request.can_read_body else {}
         if not isinstance(data, dict):
@@ -488,8 +494,17 @@ def create_app(root: Path) -> web.Application:
         if (
             request.query
             or not isinstance(data, dict)
-            or set(data) - set(limits) - {"short_seedless"}
+            or set(data) - set(limits) - {"short_seedless", "now"}
             or not isinstance(data.get("short_seedless", False), bool)
+            # A chosen "now" (epoch seconds) pins every time the fixture writes.
+            or (
+                "now" in data
+                and (
+                    isinstance(data["now"], bool)
+                    or not isinstance(data["now"], (int, float))
+                    or not 0 < data["now"] < CONCEPT_MAX_EPOCH_SECONDS
+                )
+            )
             or any(
                 isinstance(data.get(key, 0), bool)
                 or not isinstance(data.get(key, 0), int)
@@ -509,6 +524,7 @@ def create_app(root: Path) -> web.Application:
                 extra_images=data.get("extra_images", 0),
                 seedless_images=data.get("seedless_images", 0),
                 short_seedless=data.get("short_seedless", False),
+                now=data.get("now"),
             )
         )
         return web.json_response({"success": True, **manifest})
