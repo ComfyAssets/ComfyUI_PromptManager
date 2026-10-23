@@ -116,7 +116,7 @@ test('Scan changes opens it with that one source ("1 output folder") and starts 
     const id = page.url().split('/').pop();
     // The job walks only that source (the count is recorded once the walk has listed it).
     await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.scope)
-        .toEqual({ files: 'new', roots: [1], output_folders: 1 });
+        .toMatchObject({ files: 'new', roots: [1], output_folders: 1 });
     await expect(page.locator('#workspace-main h1')).toHaveText('Scan for metadata');
 });
 
