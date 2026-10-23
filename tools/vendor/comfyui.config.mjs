@@ -1,5 +1,6 @@
 import { defineConfig } from './node_modules/@playwright/test/index.mjs';
 import { fileURLToPath } from 'node:url';
+import { HOST_READY_MARKER } from './comfyui-host.mjs';
 
 if (!process.env.PM_COMFY_ROOT) throw new Error('Set PM_COMFY_ROOT to a pinned disposable ComfyUI checkout');
 const host = new URL(process.env.PM_COMFY_URL || 'http://127.0.0.1:8189/');
@@ -7,7 +8,11 @@ if (host.protocol !== 'http:' || host.hostname !== '127.0.0.1' || !host.port) th
 const servers = [{
     command: 'node tools/vendor/comfyui-host.mjs',
     cwd: fileURLToPath(new URL('../../', import.meta.url)),
-    url: new URL('system_stats', host).href, timeout: 120000, reuseExistingServer: false,
+    // No URL wait: any server on the port would satisfy it, including another run's host that
+    // then stops mid-test. The launcher refuses a used port and prints this line only once its
+    // own ComfyUI answers; the group reaches the tests as PM_COMFY_HOST_BASE.
+    wait: { stdout: new RegExp(`^${HOST_READY_MARKER} base-directory=(?<pm_comfy_host_base>.+?)\r?$`, 'm') },
+    timeout: 120000, reuseExistingServer: false,
     env: { PM_COMFY_PORT: host.port },
     gracefulShutdown: { signal: 'SIGTERM', timeout: 10000 },
 }];
