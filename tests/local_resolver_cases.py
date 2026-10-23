@@ -7,7 +7,8 @@ same bytes. ``golden_cases`` names one case per traced strategy, bound and
 malformed shape; ``fuzz_cases`` builds coherent single-sampler graphs from the
 same node vocabulary, then corrupts some of them. All content is synthetic.
 ``single_chain`` says, from the server's own sampler table, whether a record
-set resolves without candidate selection (the Task 8 subset).
+set resolves without candidate selection (the Task 8 subset);
+``local_resolver_selection_cases`` holds the candidate-selection cases.
 """
 
 import argparse
@@ -1300,26 +1301,41 @@ def single_chain(records):
     )
 
 
+def _utf8(records):
+    """Whether the record texts can be written as UTF-8 (no lone surrogate)."""
+    try:
+        json.dumps(records, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def committed_vectors():
     """The committed record sets with the server's evidence, in a stable order."""
+    try:
+        from tests import local_resolver_selection_cases as selection
+    except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
+        import local_resolver_selection_cases as selection
+
+    named = {**golden_cases(), **selection.selection_cases()}
     cases = {
         name: records
-        for name, records in golden_cases().items()
-        if len(json.dumps(records)) <= MAX_VECTOR_CHARS
+        for name, records in named.items()
+        if len(json.dumps(records)) <= MAX_VECTOR_CHARS and _utf8(records)
     }
     cases.update(fuzz_cases(*COMMITTED_FUZZ))
-    vectors = []
-    for name, records in cases.items():
-        gap = not single_chain(records)
-        evidence = (
-            None
-            if gap
-            else inspect_prompt_evidence(records, None, profile=INSPECTION_PROFILE)
-        )
-        vectors.append(
-            {"name": name, "records": records, "gap": gap, "evidence": evidence}
-        )
-    return {"version": 1, "vectors": vectors}
+    cases.update(selection.selection_fuzz_cases(*COMMITTED_FUZZ))
+    vectors = [
+        {
+            "name": name,
+            "records": records,
+            "evidence": inspect_prompt_evidence(
+                records, None, profile=INSPECTION_PROFILE
+            ),
+        }
+        for name, records in cases.items()
+    ]
+    return {"version": 2, "vectors": vectors}
 
 
 def main():

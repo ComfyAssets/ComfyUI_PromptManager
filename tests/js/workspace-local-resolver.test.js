@@ -1,4 +1,4 @@
-// PR L3 Task 8: the server's inspection resolver in this browser. The values below are what CPython answers
+// PR L3 Tasks 8-9: the server's inspection resolver in this browser. The values below are what CPython answers
 // (json.loads, len, str.strip, repr, utils/prompt_inspector.inspect_prompt_evidence); the full comparison with the
 // server runs in tests/test_local_inspect_parity.py through tests/js/support/local-inspect-oracle.mjs.
 import test from 'node:test';
@@ -82,9 +82,35 @@ test('execution evidence replaces a PromptManagerPair text when it matches the n
     assert.equal(stale.resolution.reason, 'Execution evidence does not match recorded node inputs');
 });
 
-test('several samplers and A1111 parameters are left to Task 9', () => {
-    assert.throws(() => resolver.resolveLocalEvidence({prompt: JSON.stringify(base({'9': sampler()}))}, semantics), resolver.LocalResolverGap);
-    assert.throws(() => resolver.resolveLocalEvidence({parameters: 'a fox\nSteps: 20, Sampler: euler'}, semantics), resolver.LocalResolverGap);
+test('identical sampler branches resolve to their shared pair, differing ones stay ambiguous (#270)', () => {
+    const shared = resolver.resolveLocalEvidence({prompt: JSON.stringify(base({'9': sampler()}))}, semantics);
+    assert.deepEqual(shared.resolution, {state: 'resolved', sampler_id: null, reason: 'Every sampler branch uses the same prompt pair', reason_code: null, node: null});
+    assert.equal(shared.prompts.positive.text, 'a fox');
+    const differ = resolver.resolveLocalEvidence({prompt: JSON.stringify(base({'9': sampler({positive: ['8', 0]}), '8': encode('a cat')}))}, semantics);
+    assert.deepEqual(differ.resolution, {state: 'ambiguous', sampler_id: null, reason: 'Multiple sampler branches', reason_code: null, node: null});
+    assert.equal(differ.prompts.positive.status, 'ambiguous');
+});
+
+test('a detailer stage is compared with the sampler in its image ancestry', () => {
+    const graph = base({'10': {class_type: 'VAEDecode', inputs: {samples: ['3', 0]}}, '8': encode('a cat'), '12': {class_type: 'SaveImage', inputs: {images: ['11', 0]}},
+        '11': {class_type: 'FaceDetailer', inputs: {image: ['10', 0], model: ['4', 0], positive: ['8', 0], negative: ['7', 0]}}});
+    const evidence = resolver.resolveLocalEvidence({prompt: JSON.stringify(graph)}, semantics);
+    assert.deepEqual(evidence.resolution, {state: 'ambiguous', sampler_id: '11', reason: 'Sampler stages have different prompts', reason_code: 'multistage-differs', node: null});
+    assert.equal(evidence.prompts.positive.message, undefined);
+});
+
+test('A1111 parameters split on the unique settings footer as Python does', () => {
+    const read = text => resolver.resolveLocalEvidence({parameters: text}, semantics);
+    assert.deepEqual(read('a fox\nNegative prompt: blur\nSteps: 20, Sampler: euler').prompts, {
+        positive: {status: 'resolved', text: 'a fox', source: 'embedded-parameters'}, negative: {status: 'resolved', text: 'blur', source: 'embedded-parameters'},
+    });
+    // Python's multiline ^ and $ break only at \n: a U+2028 or a lone \r never starts the footer line.
+    for (const text of ['a fox\u2028Steps: 20, x', 'a fox\rSteps: 20, x']) assert.equal(read(text).resolution.reason, 'A1111 settings footer is not unique');
+    // \d is any Unicode decimal digit and \s spans line breaks, as in Python's re.
+    assert.equal(read('a fox\nSteps: \u0662\u0660, x').resolution.reason, 'Negative prompt delimiter is absent');
+    assert.equal(read('a fox\nSteps:\n 20 \n, x').resolution.state, 'absent');
+    assert.equal(read('a fox\nSteps: 1, x\nNegative Template: n\nTemplate: t').resolution.reason_code, 'malformed');
+    assert.equal(read('\u{1f600}'.repeat(60000) + '\nSteps: 1, x').resolution.state, 'absent', 'the length limit counts code points');
 });
 
 test('an unusable semantics table is refused', () => {
@@ -98,15 +124,11 @@ test('committed server answers equal the local evidence', () => {
     const canonical = value => Array.isArray(value) ? value.map(canonical) :
         value !== null && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
     let compared = 0;
-    for (const {name, records, gap, evidence} of vectors) {
-        if (gap) {
-            assert.throws(() => resolver.resolveLocalEvidence(records, semantics), resolver.LocalResolverGap, name);
-            continue;
-        }
+    for (const {name, records, evidence} of vectors) {
         assert.deepEqual(canonical(resolver.resolveLocalEvidence(records, semantics)), canonical(evidence), name);
         compared++;
     }
-    assert.ok(compared > 140, `compared ${compared}`);
+    assert.ok(compared > 280, `compared ${compared}`);
 });
 
 test('a list or object workflow node type is malformed evidence, as on the server (#286)', () => {

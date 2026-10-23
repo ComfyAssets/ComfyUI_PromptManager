@@ -183,8 +183,8 @@ export function pySlice(text, count) {
 }
 
 // `str.isspace()`: Unicode Zs plus the bidi classes B, S and WS (not U+FEFF, unlike `trim()`).
-const SPACE = '\\t\\n\\x0b\\x0c\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
-const LEADING = new RegExp(`^[${SPACE}]+`), TRAILING = new RegExp(`[${SPACE}]+$`);
+export const PY_SPACE = '\\t\\n\\x0b\\x0c\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const LEADING = new RegExp(`^[${PY_SPACE}]+`), TRAILING = new RegExp(`[${PY_SPACE}]+$`);
 /** `text.strip()`. */
 export const pyStrip = text => text.replace(LEADING, '').replace(TRAILING, '');
 

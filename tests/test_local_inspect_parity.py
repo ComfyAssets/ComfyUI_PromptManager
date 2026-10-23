@@ -51,17 +51,19 @@ from utils.prompt_inspector import (
     read_inspection_file,
 )
 
-from utils.prompt_inspector import inspect_prompt_evidence
+from utils.prompt_inspector import inspect_prompt_evidence, unreadable_evidence
 from utils.prompt_pair_resolver import INSPECTION_PROFILE
 
 try:
     from tests import inspection_parity as parity
     from tests import local_resolver_cases as resolver_cases
+    from tests import local_resolver_selection_cases as selection_cases
     from tests.open_handles import assert_closed
     from tests.test_utils_video_metadata import HAVE_FFMPEG, write_video
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
     import inspection_parity as parity
     import local_resolver_cases as resolver_cases
+    import local_resolver_selection_cases as selection_cases
     from open_handles import assert_closed
     from test_utils_video_metadata import HAVE_FFMPEG, write_video
 
@@ -1121,14 +1123,13 @@ def _server_evidence(records):
 
 
 class LocalResolverParityTests(unittest.TestCase):
-    """``resolveLocalEvidence`` answers as ``inspect_prompt_evidence`` (PR L3 Task 8).
+    """``resolveLocalEvidence`` answers as ``inspect_prompt_evidence`` (L3 Tasks 8-9).
 
     Python is the oracle: every expected value is the server's own answer on the
-    same record texts. Task 8 ports one sampler's tracing; a record set whose
-    graph has several sampler candidates or a detailer stage, or only A1111
-    ``parameters``, is a gap the port reports until Task 9, and exactly those
-    are gaps (``local_resolver_cases.single_chain`` decides from the server's
-    table).
+    same record texts. Task 8 ported one sampler's tracing; Task 9 ports
+    candidate selection (several samplers, the identical-branch rule of #270,
+    preview-only stages, detailer stages) and A1111 ``parameters``, so no
+    record set is left to the server any more.
     """
 
     def setUp(self):
@@ -1138,7 +1139,7 @@ class LocalResolverParityTests(unittest.TestCase):
         self.directory = Path(temporary.name)
 
     def _compare(self, cases):
-        """Assert each record set equal or a recorded gap; return the server answers."""
+        """Assert each record set's local evidence equal; return the server answers."""
         observed = _run_oracle(
             self,
             [
@@ -1150,13 +1151,6 @@ class LocalResolverParityTests(unittest.TestCase):
         for name, records in cases.items():
             with self.subTest(case=name):
                 local = observed[name]
-                self.assertEqual(
-                    local.get("gap", False),
-                    not resolver_cases.single_chain(records),
-                    "a gap is exactly a Task 9 path",
-                )
-                if local.get("gap"):
-                    continue
                 server = _server_evidence(records)
                 answers[name] = server
                 self.assertEqual(
@@ -1184,20 +1178,17 @@ class LocalResolverParityTests(unittest.TestCase):
             for vector in json.loads(parity.VECTORS_PATH.read_text(encoding="utf-8"))
             if vector["profile"] == "inspection"
         }
-        compared = gaps = 0
+        compared = 0
         for name, path in files.items():
             with self.subTest(fixture=name):
                 local = observed[name]
                 try:
                     records = read_inspection_file(path).metadata
                 except MetadataReadError:
-                    self.assertEqual(local, {"unreadable": True})
+                    self.assertTrue(local["unreadable"])
                     continue
-                self.assertEqual(
-                    local.get("gap", False), not resolver_cases.single_chain(records)
-                )
-                if local.get("gap"):
-                    gaps += 1
+                # The single-chain subset (Task 8); the rest is Task 9's test below.
+                if not resolver_cases.single_chain(records):
                     continue
                 server = _server_evidence(records)
                 self.assertEqual(
@@ -1210,9 +1201,111 @@ class LocalResolverParityTests(unittest.TestCase):
                     server["resolution"]["reason_code"], expect["reason_code"]
                 )
                 compared += 1
-        # f01, f09 (several samplers) and f19 (multistage detailer) wait for Task 9.
         self.assertGreaterEqual(compared, 20)
-        self.assertGreaterEqual(gaps, 1)
+
+    def test_local_roles_match_inspection_vectors(self):
+        """Every inspection vector: local prompts, resolution and facts equal Images'.
+
+        The facts are ``extractGenerationFacts`` (with the legacy fill) on the
+        local payload, against the facts the committed vectors pin for the
+        server's response on the same file.
+        """
+        vectors = [
+            vector
+            for vector in json.loads(parity.VECTORS_PATH.read_text(encoding="utf-8"))
+            if vector["profile"] == "inspection"
+        ]
+        files = {}
+        for vector in vectors:
+            name = vector["fixture"]
+            if name in parity.TEST_TIME:
+                path = parity.fixture_path(name, self.directory)
+                parity.write_png(path, parity.build(name))
+            else:
+                path = parity.fixture_path(name)
+            files[name] = path
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "path": str(path)}
+                for name, path in files.items()
+            ],
+        )
+        for vector in vectors:
+            name = vector["fixture"]
+            with self.subTest(fixture=name):
+                local, expect = observed[name], vector["expect"]
+                try:
+                    server = _server_evidence(
+                        read_inspection_file(files[name]).metadata
+                    )
+                except MetadataReadError:
+                    server = unreadable_evidence()
+                    self.assertTrue(local["unreadable"])
+                self.assertEqual(
+                    _canonical_bytes(local["evidence"]), _canonical_bytes(server)
+                )
+                resolution, prompts = (
+                    local["evidence"]["resolution"],
+                    local["evidence"]["prompts"],
+                )
+                self.assertEqual(
+                    (
+                        resolution["state"],
+                        resolution["reason"],
+                        resolution["reason_code"],
+                    ),
+                    (expect["state"], expect["reason"], expect["reason_code"]),
+                )
+                self.assertEqual(
+                    [
+                        parity._role_text(
+                            prompts[role]["status"], prompts[role]["text"]
+                        )
+                        for role in ("positive", "negative")
+                    ],
+                    [expect["positive"], expect["negative"]],
+                )
+                self.assertEqual(local["facts"], expect["facts"])
+        self.assertEqual(len(vectors), 28)
+
+    def test_local_roles_match_selection_record_sets(self):
+        answers = self._compare(selection_cases.selection_cases())
+        reasons = {answer["resolution"]["reason"] for answer in answers.values()}
+        self.assertTrue(
+            {
+                "Every sampler branch uses the same prompt pair",
+                "Multiple sampler branches",
+                "Sampler stages have different prompts",
+                "Cyclic sampler stage ancestry",
+                "Expected an image link",
+                "Unsupported sampler stage ancestry",
+                "Resolution depth limit reached",
+                "A1111 settings footer is not unique",
+                "Multiple negative prompt delimiters",
+                "Negative prompt delimiter is absent",
+                "Parameters exceed the length limit",
+                "No A1111 parameters",
+            }
+            <= reasons
+        )
+        # A stage reaching only previews is dropped: one sampler is named.
+        self.assertEqual(
+            answers["select-preview-dropped"]["resolution"]["sampler_id"], "3"
+        )
+
+    def test_local_roles_match_fuzzed_selection_sets(self):
+        cases = {}
+        for seed in range(4):
+            cases.update(selection_cases.selection_fuzz_cases(seed, 150))
+        answers = self._compare(cases)
+        reasons = [answer["resolution"]["reason"] for answer in answers.values()]
+        self.assertGreater(reasons.count("Multiple sampler branches"), 20)
+        self.assertGreater(reasons.count("Sampler stages have different prompts"), 0)
+        self.assertGreater(
+            reasons.count("Every sampler branch uses the same prompt pair"), 0
+        )
+        self.assertGreater(reasons.count("A1111 settings footer is not unique"), 0)
 
     def test_local_roles_match_golden_record_sets(self):
         answers = self._compare(resolver_cases.golden_cases())

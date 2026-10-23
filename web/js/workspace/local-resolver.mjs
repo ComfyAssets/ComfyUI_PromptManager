@@ -4,8 +4,8 @@
 // tests/test_local_inspect_parity.py compares every answer with the server's on the same records. Values follow
 // Python's model (py-json.mjs): dict order, int versus float, code-point lengths, `str.strip()`.
 //
-// Task 8 ports execution evidence and graph tracing for one sampler. Candidate selection among several samplers,
-// detailer stages and A1111 `parameters` are Task 9; until then they raise `LocalResolverGap`. No DOM.
+// Task 8 ported execution evidence and graph tracing for one sampler; Task 9 adds candidate selection among several
+// samplers and detailer stages (local-resolver-stages.mjs) and A1111 `parameters` (local-parameters.mjs). No DOM.
 import { PyValueError, isDict, isList, isInt, pyJsonLoads, pyLen, pySlice, pyStrip, pyStr, pyGet } from './py-json.mjs';
 import {
     ADAPTERS,
@@ -13,13 +13,11 @@ import {
     Budget,
     CANDIDATE_STRATEGIES,
     CLASS_NAME_LENGTH,
-    DETAILER,
     Diverging,
     EMPTY_POSITIVE,
     EMPTY_POSITIVE_REASON,
     GUIDER_ABSENT_REASON,
     INCOMPATIBLE_SLOT,
-    LocalResolverGap,
     MALFORMED_EVIDENCE_REASON,
     MAX_BRANCH_CANDIDATES,
     MAX_JOIN_INPUTS,
@@ -33,6 +31,7 @@ import {
     RUNTIME_REASON,
     SAMPLER_LIKE_INPUTS,
     SEMANTICS_UNAVAILABLE_REASON,
+    UNREADABLE_METADATA_REASON,
     UNVERIFIABLE_CODES,
     Unresolved,
     ZEROED_SOURCE,
@@ -45,8 +44,10 @@ import {
     sideOf,
     slotKey,
 } from './local-resolver-support.mjs';
+import { finalStages, outcomeKey, sharedPair, stage } from './local-resolver-stages.mjs';
+import { parameters } from './local-parameters.mjs';
 
-export { LocalResolverGap, SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
+export { SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
 
 class GraphResolver {
     constructor(graph, metadata, semantics, overwritten) {
@@ -481,24 +482,13 @@ class GraphResolver {
         return this.branches(samplerId);
     }
 
-    /** One sampler's result. A detailer stage compared with its upstream stages is Task 9. */
-    stage(samplerId, later) {
-        if (later.size >= this.maxDepth) return result('unresolved', { samplerId, reason: 'Resolution depth limit reached', reasonCode: 'depth-limit' });
-        const own = this.sides(samplerId);
-        if (own.state === 'unresolved') return own;
-        const [name] = this.node(samplerId);
-        const entry = this.semantics.samplers.get(name);
-        if (entry === undefined || entry.strategy !== DETAILER) return own;
-        throw new LocalResolverGap('Detailer stages are compared in Task 9');
-    }
-
     branches(samplerId) {
         const pending = [new Map()], results = [];
         try {
             while (pending.length) {
                 this.choices = pending.shift();
                 try {
-                    results.push(this.stage(samplerId, new Set()));
+                    results.push(stage(this, samplerId, new Set()));
                 } catch (error) {
                     if (!(error instanceof Diverging)) throw error;
                     if (results.length + pending.length + 2 > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
@@ -609,8 +599,6 @@ class GraphResolver {
     }
 }
 
-const roleText = side => side !== null && typeof side === 'object' ? side.text : null;
-const outcomeKey = item => JSON.stringify([item.state, roleText(item.positive), roleText(item.negative)]);
 
 /** `_sampler_like_classes`: distinct classes, in graph order, of nodes shaped like samplers or guiders. */
 function samplerLikeClasses(graph) {
@@ -697,7 +685,7 @@ function resolve(metadata, semantics) {
     if (!isDict(metadata) || !metadata.size) return result('absent', { reason: 'No parsed prompt metadata' });
     let graph;
     if (metadata.has('prompt')) graph = metadata.get('prompt');
-    else if (metadata.has('parameters')) throw new LocalResolverGap('A1111 parameters are resolved in Task 9');
+    else if (metadata.has('parameters')) return parameters(metadata.get('parameters'), PROFILE.maxTextLength);
     else graph = metadata;
     if (!isDict(graph) || !graph.size) return result('unresolved', { reason: 'API graph is missing or malformed', reasonCode: 'malformed' });
     if (graph.size > PROFILE.nodeCeiling) return result('unresolved', { reason: 'Prompt graph exceeds the inspection node ceiling', reasonCode: 'graph-ceiling' });
@@ -710,10 +698,12 @@ function resolve(metadata, semantics) {
         }
     }
     const resolver = new GraphResolver(graph, metadata.has('prompt') ? metadata : null, semantics, overwritten);
-    const samplerIds = [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' && resolver.samplerClasses.has(node.get('class_type'))).map(([id]) => id);
+    const samplerIds = finalStages(resolver, [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' &&
+        resolver.samplerClasses.has(node.get('class_type'))).map(([id]) => id));
     if (!samplerIds.length) return noSampler(graph);
-    if (samplerIds.length > 1 || samplerIds.some(id => semantics.samplers.get(graph.get(id).get('class_type')).strategy === DETAILER)) {
-        throw new LocalResolverGap('Several sampler candidates are selected in Task 9');
+    if (samplerIds.length > 1) {
+        const candidates = samplerIds.map(id => resolver.pair(id));
+        return sharedPair(candidates) ?? result('ambiguous', { reason: 'Multiple sampler branches', candidates });
     }
     return resolver.pair(samplerIds[0]);
 }
@@ -741,6 +731,12 @@ function parsedWorkflow(value) {
         }
     }
     return isDict(value) ? value : null;
+}
+
+/** `unreadable_evidence`: both roles when the file's metadata could not be read at all. */
+export function unreadableEvidence() {
+    const resolution = { state: 'unresolved', sampler_id: null, reason: UNREADABLE_METADATA_REASON, reason_code: null, node: null };
+    return { prompts: explained({ positive: sideOf('unresolved'), negative: sideOf('unresolved') }, resolution), resolution };
 }
 
 /**

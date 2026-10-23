@@ -14,9 +14,11 @@
 //         the carrier rule alone, as the server selects from ffprobe's tag map.
 //         A {records} entry (records null = an unreadable file) answers
 //         {classified: null, result: null, metadata} for the projection alone.
-// A {mode: 'resolve'} entry (PR L3) answers {evidence} or {gap: true}: resolveLocalEvidence of its
-// {path}'s local read, or of its {records} texts, with the repository semantics table
-// (gap: a path the port leaves to Task 9).
+// A {mode: 'resolve'} entry (PR L3) answers {evidence}: resolveLocalEvidence of its {records} texts
+// with the repository semantics table. With a {path} it reads the file locally and also answers
+// {facts} (and {unreadable: true} with the server's unreadable evidence when nothing could be read):
+// extractGenerationFacts on the local payload through projectInspectionPayload, exactly as
+// tests/js/support/inspection-parity-facts.mjs reads the server's response for vectors.json.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -31,17 +33,20 @@ const web = path.join(here, '..', '..', '..', 'web', 'js', 'workspace');
 const { selectVideoCarrier } = await import(moduleUrl(path.join(web, 'local-video.mjs')));
 const { projectMetadata } = await import(moduleUrl(path.join(web, 'local-projection.mjs')));
 const { readLocalFile, toInspectionRead } = await import(moduleUrl(path.join(web, 'local-inspection.mjs')));
-const { resolveLocalEvidence, compileSemantics, LocalResolverGap } = await import(moduleUrl(path.join(web, 'local-resolver.mjs')));
+const { resolveLocalEvidence, compileSemantics, unreadableEvidence } = await import(moduleUrl(path.join(web, 'local-resolver.mjs')));
+const { buildLocalPayload } = await import(moduleUrl(path.join(web, 'local-inspection.mjs')));
+const { projectInspectionPayload } = await import(moduleUrl(path.join(web, 'inspection-state.mjs')));
 const semantics = compileSemantics(JSON.parse(fs.readFileSync(path.join(here, '..', '..', '..', 'web', 'js', 'inspection-semantics.json'), 'utf8')));
+const { extractGenerationFacts } = require(path.join(here, '..', '..', '..', 'web', 'js', 'comfy-metadata.js'));
 
-/** The local evidence for one set of record texts, or {gap: true}. */
-function resolved(records) {
-    try {
-        return { evidence: resolveLocalEvidence(records, semantics) };
-    } catch (error) {
-        if (error instanceof LocalResolverGap) return { gap: true };
-        throw error;
-    }
+/** The local evidence for one set of record texts. */
+const resolved = records => ({ evidence: resolveLocalEvidence(records, semantics) });
+
+/** The six facts for one local read (no legacy fill here, as in the vectors' own harness). */
+function localFacts(read, file, classification, evidence) {
+    const payload = { ...buildLocalPayload({ read, file, classification }), prompts: evidence.prompts, resolution: evidence.resolution };
+    const record = projectInspectionPayload(payload, { kind: 'local-file', key: 'local:1', path: file.name }, null, extractGenerationFacts);
+    return Object.fromEntries(Object.entries(record.generation).map(([field, fact]) => [field, { status: fact.status, value: fact.value }]));
 }
 
 const selectionRead = (selection) => selection.status === 'complete' ?
@@ -54,9 +59,12 @@ for (const entry of JSON.parse(Buffer.concat(chunks).toString('utf8'))) {
     const { name } = entry;
     if (entry.mode === 'resolve') {
         if (entry.records !== undefined) { output[name] = resolved(entry.records); continue; }
-        const { classification, result } = await readLocalFile(await fs.openAsBlob(entry.path), { pngMetadata });
+        const blob = await fs.openAsBlob(entry.path);
+        const { classification, result } = await readLocalFile(blob, { pngMetadata });
         const read = classification === null ? null : toInspectionRead(classification, result).read;
-        output[name] = read === null ? { unreadable: true } : resolved(read.records);
+        if (classification === null) { output[name] = { unreadable: true }; continue; }
+        const answer = read === null ? { unreadable: true, evidence: unreadableEvidence() } : resolved(read.records);
+        output[name] = { ...answer, facts: localFacts(result, { name: path.basename(entry.path), size: blob.size }, classification, answer.evidence) };
         continue;
     }
     if (entry.records !== undefined) {

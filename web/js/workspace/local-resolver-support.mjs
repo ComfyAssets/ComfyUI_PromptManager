@@ -1,15 +1,7 @@
-// Tables, evidence reader, bounds and outcome lines for local-resolver.mjs (#249 local Inspect, PR L3 Task 8):
+// Tables, evidence reader, bounds and outcome lines for local-resolver.mjs (#249 local Inspect, PR L3 Tasks 8-9):
 // the constants of utils/prompt_pair_resolver.py and utils/inspection_outcomes.py, utils/pair_execution.py
 // `read_pair_execution` and the semantics table check of utils/inspection_semantics.py. No DOM.
 import { PyFloat, PyValueError, isDict, isList, isInt, pyJsonLoads, pyLen, pySlice, pyStrip, pyTruthy, pyEqualsOne, pyStr, pyGet } from './py-json.mjs';
-
-/** A resolution path Task 9 ports (several samplers, a detailer stage, A1111 parameters). */
-export class LocalResolverGap extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'LocalResolverGap';
-    }
-}
 
 /** The semantics table is unusable: the server's `SemanticsError`. */
 export class SemanticsError extends Error {
@@ -19,7 +11,7 @@ export class SemanticsError extends Error {
     }
 }
 
-// INSPECTION_PROFILE (prompt_pair_resolver.py 152-166).
+// INSPECTION_PROFILE (prompt_pair_resolver.py 152-166); its drop_preview_only_stages is always on here.
 export const PROFILE = Object.freeze({
     perCandidateVisits: 2000, totalVisits: 20000, maxDepth: 64, maxTextLength: 100000, nodeCeiling: 20000,
     maxPathEntries: 64 * 20000, maxBuiltChars: 16 * 100000, maxScannedUnits: 8000000,
@@ -37,8 +29,10 @@ export const ZEROED_SOURCE = 'zeroed-conditioning';
 export const MAX_BRANCH_CANDIDATES = 32;
 export const RUNTIME_REASON = 'Text is decided at run time';
 export const EMPTY_POSITIVE_REASON = 'Positive prompt is empty';
+export const IDENTICAL_BRANCHES_REASON = 'Every sampler branch uses the same prompt pair';
 export const MULTISTAGE_UNATTRIBUTED_REASON = 'Multistage sampler ancestry is ambiguous';
 export const MALFORMED_EVIDENCE_REASON = 'Prompt evidence is malformed';
+export const UNREADABLE_METADATA_REASON = 'Media metadata could not be read';
 export const SEMANTICS_UNAVAILABLE_REASON = 'Inspection node semantics are unavailable';
 export const INCOMPATIBLE_SLOT = 'Output slot has an incompatible type';
 export const OVERWRITTEN_PROMPT_REASON = 'Saved PromptManager text was overwritten by another node';
@@ -67,7 +61,7 @@ export const UNCODED_LINES = {
     [EMPTY_POSITIVE_REASON]: 'Positive prompt is empty.',
     [MULTISTAGE_UNATTRIBUTED_REASON]: 'Several sampler stages were found; their prompts were not compared.',
     [SEMANTICS_UNAVAILABLE_REASON]: "The inspector's node table is unavailable.",
-    'Media metadata could not be read': 'Metadata in this file could not be read.',
+    [UNREADABLE_METADATA_REASON]: 'Metadata in this file could not be read.',
 };
 
 // Output adapters (prompt_pair_resolver.py 44-105): [inputName, kind, {compose, storageInput, comma, strip, default}].
