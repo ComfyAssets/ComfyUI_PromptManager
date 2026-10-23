@@ -1685,8 +1685,20 @@ mapped differences"):
   A video replaced while still starting (a source, but neither metadata nor an error yet)
   stays where it is, inert and `aria-hidden`, with the new preview inserted after it, and
   the session's revoke of its URL waits; once it reports metadata or an error (or after
-  15 s) it is released as above and only then is its URL revoked. Page leave and dispose
-  release it at once. Cause, found with native stacks of the hung WPE web process in the
+  15 s) it is released as above and only then is its URL revoked. For that moment (the
+  time to metadata, or at most 15 s for a video that never settles) the old video and the
+  new preview both show, the new one below it: a known, brief overlap. Stacking them in one
+  slot instead hung again, because it changes the video's own box: the old video
+  absolutely positioned in its own box hung 5 of 120 pages (8 of 120 with `opacity: 0`),
+  and a one-cell grid 4 of 120. Only `opacity: 0` on the video, left in the flow, did not
+  hang (0 of 120), and alone it would leave an empty hole above the new preview. A route
+  change within the workspace waits the same way: the shell renders the next route once a
+  video still starting on Inspect settles (`leaveGuard`; the latest route wins). Route
+  changes at `loadstart` + 0–7 ms hung 4–5 of 120 pages before and 0 of 120 after.
+  A real page leave cannot wait. With no page code releasing anything, navigating
+  away hung 8 of 120 pages and reload 22 of 120 (3 and 8 of 120 with the page's own
+  release), so that WebKit teardown stays a known limitation; dispose still releases at
+  once. Cause, found with native stacks of the hung WPE web process in the
   pinned image: WebKit (GStreamer) deadlocks when a video leaves the page or the viewport
   before its pipeline has started. The main thread changes the pipeline state and waits
   for the source's streaming thread, which is itself waiting on the main thread in a
@@ -1697,8 +1709,9 @@ mapped differences"):
   `loadedmetadata` hung 0 of 180. Specs: `replacing a video that just started loading
   never blocks the page`, and `a video replaced while still starting is reset once it
   settles`, which now runs on WebKit too (15 fresh pages, replaced at `loadstart` + 0–4
-  ms). The viewer's own video teardown was checked the same way (`closing the viewer on a
-  video that just started never blocks the page`, 15 fresh pages on WebKit) and needed no
+  ms), and `leaving for another route while a video starts waits for it to settle`. The
+  viewer's own video teardown was checked the same way (`closing the viewer on a video
+  that just started never blocks the page`, 15 fresh pages on WebKit) and needed no
   change.
 - **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
   concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose
@@ -1984,6 +1997,142 @@ One place for the whole image-tagging slice; the details live in the sections na
 - **Restart.** PRs A, B, D and E and PR F (the review change stream, the queue version)
   change Python: the maintainer restarts ComfyUI once after merging. HTML, CSS and JS
   changes need only a browser refresh.
+
+### Native System (#249 System)
+
+`#/system/<section>` is a native workspace route rendered by `web/js/workspace/system.mjs`
+on the concept's `renderSystem` markup (app.js a698–706; `concept.css` 709–895). `#/system`
+is Overview under the sidebar's own hash; `#/system/overview|appearance|sources|
+integrations|tagging|maintenance|backups|diagnostics` select a section, and an unknown
+child (the concept's `#/system/general`) is replaced by `#/system/overview`. The
+production hub `#/overview` is unchanged (D28); its System card opens
+`#/system/overview` (Q12). Switching sections keeps the shell, the drafts and focus on
+the pressed section button and disposes the previous section's scope, so its reads,
+listeners and dialogs never outlive it.
+
+Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
+browser fields, then the host fields (`POST /prompt_manager/settings` with
+`expected_revision`, #220), then the runtime fields. A failed domain keeps its drafts and
+highlights their controls; `settings-changed` is a conflict and keeps the draft. System
+reads the host values on mount and again after a conflict; until a read returned a
+revision, a host save fails without a request, so it never sends a blind
+`expected_revision: null` (which S1 merges into the file on disk). No delivered section
+edits a setting yet, so Save stays disabled until Appearance (S3).
+
+Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
+visit through `latestOnly()` on the section scope; a late answer after the section left
+paints nothing. Until it answers, the section shows "Loading the overview…"; a failure
+shows "The overview could not be loaded. Your saved data has not changed." and Retry,
+never zeros. The thumbnail row is a separate read of `/images/thumbnails/status` (a
+walk of every source), so the other values never wait for it: "Checking thumbnails…"
+until it answers. The health check (`POST /prompt_manager/system/health`) is a `read`
+registry job of kind `health`: one at a time, beside a scan, not cancellable and with
+no file outcomes. The page tracks the started job in the Activity store (its event
+stream; the store marks it lost if the server stops listing it), never by polling. A press while one runs (another tab) waits
+for that one. The last report lives for this server session (`GET
+/prompt_manager/system/health`) and describes the database it was taken from: a
+restore that replaces the database forgets it, and a check that started before the
+swap is not kept. The check's own connection opens a `mode=ro` URI that keeps a Windows
+UNC path (`file:////server/share/prompts.db`; pathlib's `file://server/share/...` is a
+remote authority SQLite refuses). A check that raises fails only itself, and the
+missing-files check reads its rows inside the snapshot but stats the files after it
+ended, so a slow source never pins the WAL. Statistics
+read `GET /prompt_manager/system/statistics` (`by_category`, the legacy `/stats` totals
+and `rated_images`).
+
+Read-only standard for a check or preview (S2's health check; S6 and S8 previews use
+the same): the database and `-wal` bytes are unchanged, the `-shm` size is unchanged,
+the connection's `total_changes` is 0 at close and the data reads back unchanged. The
+`-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
+reader can keep it byte-identical (`test_health_check_never_writes`).
+
+Recorded deviations (plan D60–D64 renumbered D92–D96; D121, D122 and D123 assigned):
+
+- **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
+  unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
+  configuration." / "Applied until the server restarts.", "Some changes were not saved.
+  Review the highlighted settings.", "Saved for this tab only; browser storage is
+  unavailable." and "Settings changed elsewhere. Reload this section to see them."
+  "Save preferences" is `aria-disabled` (opacity .55, `not-allowed`) while clean or
+  saving; a setting the last save could not save gets a red outline. CSS under D92.
+- **D93** (Overview): real values. The metrics are the Library's eligible positives
+  and active saved negatives and the indexed `generated_images` rows (Q2). "Database
+  integrity" is "Not checked" until a check ran this session, then "N issues" (checks
+  that found issues, even beside a check that could not run), "Passed" or "Incomplete".
+  "Ambiguous image links" reads "Not available yet." with its Review metadata action
+  `aria-disabled` (CSS under D93) until the Needs review queue reports a count (Q6).
+  "Backup status" reads "No retained backup record." until verified backups exist (S8).
+  The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
+  missing thumbnails", "N missing thumbnails" (the pending count of
+  `/images/thumbnails/status`) or "Thumbnail status unavailable"; Review thumbnails
+  opens Sources until the thumbnail dialog (S5). "One display configuration" says "Grid
+  and density settings are shared across views." (no paging). The sources row is
+  "N output sources" with "Monitoring and enrichment share one source list.", prefixed
+  by "M of N configured sources available." or "None configured is available; ComfyUI's
+  output folder is used." when that is the case.
+- **D94** (all sections): a section not delivered yet shows the hand-off panel "Your
+  current tools are ready" with a link to each legacy tool that still owns it (the
+  plan's legacy coverage table); retired section by section, gone after S12.
+- **D95** (health report): the concept's `health-check` dialog titled "Health report",
+  with no sample note. It lists every check in the server's order: Integrity check,
+  Foreign keys & pair references, Canonical hashes, Pair uniqueness (added), Missing
+  files, Ambiguous metadata, Consistency (added). Missing files has one row per image
+  source when there are several ("Missing files · output"). Each chip is the real
+  result: "Passed", a count with what was found ("2 broken references", "1 link needs
+  review", the concept's "N links need review" and "N images need review"; "100+
+  problems found" when SQLite's integrity check stopped at its limit), "Not
+  available" (an unavailable source), "Not available yet" (Ambiguous metadata, Q6) or
+  "Could not check". A `p.small` after the list says when it was checked and whether
+  every check passed, some could not run, or issues need review. Close / Review missing
+  links (to Maintenance, its hand-off until S7). Nothing is changed by a check.
+- **D96** (Statistics): "Usage statistics" without the sample note: the concept's
+  "Runs by category" table (Category / Runs / Avg. rating) with the real runs and
+  average rating of eligible parents per category ("Uncategorized", "Not rated"),
+  then a second table "Library totals" (Total / Count: Prompts, Tags, Images from the
+  legacy statistics, and Rated images: indexed images whose linked prompt is rated).
+  The Overview row says "Runs and ratings by category, with library totals." because
+  that is what the dialog shows (the concept's own dialog shows only "Runs by
+  category"); per-prompt run counts, prompt tags and dated runs are recorded, but no
+  table of them exists yet. A failed read toasts "Statistics could not
+  be loaded. Your saved data has not changed."
+- **D121** (production hub): the Overview hub's System card reads the concept's System
+  heading and "Open System"; the concept has no hub card.
+- **D122** (shell): the section nav's `aria-label` is "System sections"; the concept's
+  literal label is its prototype action name "system-tab sections".
+- **D123** (Maintenance): the concept's Maintenance notice
+  ("Check first. Review changes. Then apply." + Run health checks) is delivered ahead of
+  the rest of Maintenance, above its D94 hand-off, as the native place that runs the
+  health check. A press shows "Checking…" (`aria-disabled`) and opens the report; a
+  failed check toasts "The health check could not finish. Nothing was changed."
+
+`tests/browser/system-concept.spec.mjs` compares the shell and Overview with the concept
+(dark and light, 1600×1100 and 390×844), mapping only the deviations above; unmapped,
+the difference is exactly the D92, D93, D96 and D122 paths. Each surface's `top` is
+measured, which pins the concept's `.surface + .surface` 18px offset that concept.css
+also applies inside `.two-col` (copied as is). `statistics and health dialogs match
+the concept` maps D95 from the concept's own five rows (labels verbatim): it inserts
+Pair uniqueness after Canonical hashes and Consistency last, splits Missing files per
+source when there are several, replaces only the chips with the fixture's expected
+results, and asserts the full unmapped path list; it maps D96 and compares the
+Maintenance notice unchanged. `system comparison detects mutations` removes a row,
+renames a metric label, swaps the `--line` token, recolours a chip, renames a check,
+removes the totals table and renames a caption. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
+`{concept,production}-{statistics,health}-{dark,light}.png`) are test artifacts; there
+are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real counts,
+the health check and metric 4, a failed check, the thumbnail row against the status
+endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
+route, a load failure with Retry and late answers after leaving. Its hooks are
+`tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
+failures, an absent source, a deleted linked file, unthumbnailed files) on the
+concept-shaped fixture, with delays through the shared request holds.
+
+```sh
+python3 -m unittest tests.test_database_health tests.test_system_api tests.test_library -v
+node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-controls.test.js \
+  tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js
+npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+```
 
 ## Workspace data fields for the concept pages (#249)
 

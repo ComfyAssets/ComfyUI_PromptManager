@@ -21,6 +21,7 @@ from PIL.PngImagePlugin import PngInfo
 from tests.browser.request_hold import register_request_holds
 from tests.browser import slow_reset_watch
 from tests.browser.workspace_activity_fixture import register_activity_commands
+from tests.browser.workspace_system_fixture import register_system_commands
 from tests.browser.workspace_concept_fixture import (
     MAX_EXTRA_IMAGES as CONCEPT_MAX_EXTRA_IMAGES,
     MAX_SEEDLESS_IMAGES as CONCEPT_MAX_SEEDLESS_IMAGES,
@@ -200,6 +201,7 @@ def create_app(root: Path) -> web.Application:
     register_review_commands(routes, api, root)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
+    register_system_commands(app, routes, api, root)
     request_holds = register_request_holds(app, routes)
     slow_reset_watch.install(app, api)
 

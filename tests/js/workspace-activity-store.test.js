@@ -182,6 +182,24 @@ test('start returns busy with the running job', async () => {
     world.dispose();
 });
 
+test('track follows a job another route started, with no read of its own', async () => {
+    const { createActivityStore } = await source;
+    const { world, ...deps } = harness();
+    const store = createActivityStore(deps);
+    const seen = [];
+    store.subscribe(() => seen.push(store.find(ID_A)?.state));
+    const job = store.track(summary({ kind: 'health', title: 'Health check' }));
+    assert.equal(job.id, ID_A);
+    assert.equal(world.gets, 0, 'the started job is known without a list read');
+    assert.deepEqual(world.open().map(stream => stream.url), [`/prompt_manager/jobs/${ID_A}/events`]);
+    assert.deepEqual(world.toasts, [], 'the route that started it says so itself');
+    send(world.open()[0], summary({ kind: 'health', title: 'Health check', state: 'finished', progress: 100 }));
+    assert.deepEqual(seen, ['running', 'finished']);
+    assert.equal(world.open().length, 0, 'an ended job is no longer followed');
+    assert.throws(() => store.track({ id: 'nope' }), /Invalid job/);
+    world.dispose();
+});
+
 test('a list that is not a job list counts as a failed read', async () => {
     const { createActivityStore } = await source;
     const { world, api, ...deps } = harness();

@@ -88,6 +88,9 @@ DUPLICATE_CLEANUP_JOB_KIND = "duplicate_cleanup"
 THUMBNAILS_JOB_KIND = "thumbnails"
 LORA_IMPORT_JOB_KIND = "lora_import"
 AUTOTAG_BATCH_JOB_KIND = "autotag"
+# The System health check (py/api/system.py): a read-only ``read`` job with
+# no file outcomes, so it may run beside a scan.
+HEALTH_JOB_KIND = "health"
 
 
 def resolve_admission(admission=None, record_changing=None) -> str:

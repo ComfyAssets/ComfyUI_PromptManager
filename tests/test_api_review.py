@@ -597,6 +597,33 @@ class TestDecisions(ReviewRoutesTestCase):
         self.assertEqual((await self._detail(item["id"]))["state"], "unresolved")
         self._no_paths()
 
+    async def test_system_overview_counts_pending_items(self):
+        self._require_routes()
+
+        async def pending():
+            status, data = await self._json("GET", "/prompt_manager/system/overview")
+            self.assertEqual(status, 200, data)
+            return data["needs_review"]
+
+        self.assertEqual(await pending(), {"pending": 0})
+        self._record(self._ambiguous("two.png"))
+        self._record(self._ambiguous("other.png", color=(0, 0, 9)))
+        self.assertEqual(await pending(), {"pending": 2})
+        item, detail, _observed = await self._open()
+        body = {
+            "expected_epoch": self.api.db.get_execution_epoch(),
+            "expected_revision": 0,
+            "capture_token": None,
+            "sha256": detail["sha256"],
+            "dependency_fingerprint": detail["dependency_fingerprint"],
+            "choice": "unresolved",
+        }
+        status, data = await self._decide(item["id"], body)
+        self.assertEqual(status, 200, data)
+        # A decided item leaves the count: it is the queue's own total.
+        self.assertEqual(await pending(), {"pending": data["total"]})
+        self.assertEqual(data["total"], 1)
+
     async def test_changed_bytes_or_evidence_reject_apply(self):
         self._require_routes()
         path = self._ambiguous("two.png")

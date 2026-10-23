@@ -85,6 +85,10 @@ def write_png(path, *, prompt=None, parameters=None, color=(255, 0, 0)):
     Image.new("RGB", (2, 2), color).save(str(path), pnginfo=info)
 
 
+def _reject_constant(name):
+    raise ValueError(f"non-strict JSON constant {name}")
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -430,6 +434,55 @@ class TestScanRecording(ReviewTestCase):
         self.assertEqual(final["type"], "complete")
         self.assertNotIn("review_items", final)
         self.assertEqual(len(self._items()), 1)
+
+
+class TestNonFiniteGraphs(ReviewTestCase):
+    """ComfyUI stamps NaN/Infinity into graphs; review stores them as null."""
+
+    @staticmethod
+    def _nan_stamped(*positives):
+        graph = ambiguous_graph(*positives)
+        for node in graph.values():
+            node["is_changed"] = [float("nan")]
+            if node["class_type"] == "KSampler":
+                node["inputs"].update({"cfg": float("inf"), "denoise": float("-inf")})
+        return graph
+
+    async def test_scan_records_a_nan_stamped_ambiguous_graph(self):
+        self._require_module()
+        self._roots()
+        path = self.output_dir / "nan.png"
+        # json.dumps' default writes the bare NaN/Infinity literals, as ComfyUI.
+        write_png(path, prompt=self._nan_stamped("cat NaN", "dog Infinity"))
+        self.assertIn(b"NaN", path.read_bytes())
+
+        job = await self._scan()
+
+        self.assertEqual(job["scope"]["review_items"], 1, job)
+        (item,) = self._items()
+        self.assertEqual((item["limited"], item["candidate_count"]), (0, 2))
+        evidence = json.loads(item["evidence"], parse_constant=_reject_constant)
+        self.assertEqual(canonical_evidence(evidence), item["evidence"])
+        self.assertEqual(
+            sorted(c["positive"]["text"] for c in evidence["candidates"]),
+            ["cat NaN", "dog Infinity"],
+        )
+
+    async def test_record_review_file_records_a_nan_stamped_graph(self):
+        self._require_module()
+        self._roots()
+        path = self.output_dir / "nan.png"
+        write_png(path, prompt=self._nan_stamped("cat", "dog"))
+
+        self.assertEqual(self.api.record_review_file(str(path)), "recorded")
+        (item,) = self._items()
+        self.assertEqual(item["candidate_count"], 2)
+
+    def test_canonical_evidence_writes_non_finite_numbers_as_null(self):
+        value = {"b": [float("nan"), float("inf")], "a": -float("inf"), "t": "NaN"}
+        text = canonical_evidence(value)
+        self.assertEqual(text, '{"a":null,"b":[null,null],"t":"NaN"}')
+        self.assertEqual(canonical_evidence(json.loads(text)), text)
 
 
 class TestRecordAmbiguousFile(ReviewTestCase):

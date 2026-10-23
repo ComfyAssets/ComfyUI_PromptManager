@@ -18,11 +18,29 @@ export const routes = [
     { id: 'review', label: 'Needs review', title: 'Review' },
     // The concept's Activity (app.js renderActivity 732–738): this server session's jobs. No href: no Overview card.
     { id: 'activity', label: 'Activity' },
-    { id: 'system', label: 'System', href: '/prompt_manager/admin',
-        description: 'Open the current dashboard, then choose Settings or Maintenance for configuration, scans, backups and diagnostics.', action: 'Open existing administration' },
+    // Native System (#249 System S2): `#/system/<section>`. Q12: Overview's card opens its Overview section (`native`:
+    // a workspace hash, not a legacy page); each undelivered section hands off to its legacy tool (D94). The
+    // description is the concept's System heading (app.js renderSystem 700).
+    { id: 'system', label: 'System', href: '#/system/overview', native: true,
+        description: 'Configuration, maintenance and recovery—with browsing kept in the workspace.', action: 'Open System' },
 ];
 
-const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity', 'review']);
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity', 'review', 'system']);
+
+/**
+ * System's sections in the concept's order (app.js `systemSections` 635–644); the concept's `general` is production's
+ * `overview`, so `#/system/overview` sits beside the production hub `#/overview` (D28).
+ */
+export const SYSTEM_SECTIONS = Object.freeze([
+    ['overview', 'Overview'], ['appearance', 'Appearance'], ['sources', 'Sources & scans'], ['integrations', 'Integrations'],
+    ['tagging', 'Auto-tagging'], ['maintenance', 'Maintenance'], ['backups', 'Backup & export'], ['diagnostics', 'Diagnostics & logs'],
+].map(section => Object.freeze(section)));
+const SYSTEM_SECTION_IDS = new Set(SYSTEM_SECTIONS.map(([id]) => id));
+
+/** Whether `id` names a System section. */
+export function isSystemSection(id) {
+    return typeof id === 'string' && SYSTEM_SECTION_IDS.has(id);
+}
 
 /** A saved view (#249 D16): the shell resolves its id to the view's page, name and state. */
 const SAVED_ROUTE = Object.freeze({ id: 'saved', label: 'Saved view' });
@@ -43,6 +61,14 @@ export function resolveRoute(hash) {
     // One job of the Activity page (its id is the registry's uuid4 hex).
     const job = /^#\/activity\/([0-9a-f]{32})$/.exec(hash);
     if (job) return {...routes.find(route => route.id === 'activity'), jobId:job[1], hash};
+    // `#/system` is the Overview section under the sidebar's own hash; an unknown child is Overview, its hash replaced.
+    const system = /^#\/system(?:\/(.*))?$/.exec(hash);
+    if (system) {
+        const route = routes.find(item => item.id === 'system');
+        if (system[1] === undefined) return {...route, section:'overview', hash};
+        const section = isSystemSection(system[1]) ? system[1] : 'overview';
+        return {...route, section, hash:`#/system/${section}`};
+    }
     const match = /^#\/library\/([1-9]\d*)$/.exec(hash);
     if (match && Number.isSafeInteger(Number(match[1]))) {
         return {...routes.find(route => route.id === 'library'), positiveId:Number(match[1]), hash};
@@ -125,7 +151,7 @@ export function mountRouter(win, onRoute) {
         const hash = route.hash || `#/${route.id}`;
         if (win.location.hash !== hash) win.history.replaceState(win.history.state, '', hash);
         if (current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId &&
-            current?.jobId === route.jobId) return;
+            current?.jobId === route.jobId && current?.section === route.section) return;
         current = route;
         onRoute(route);
     };
