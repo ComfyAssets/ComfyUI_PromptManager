@@ -1757,12 +1757,17 @@ never cascaded, when the pair or image is deleted, through
 `idx_media_review_decisions_pair`/`_image`). Evidence is canonical JSON
 (`canonical_evidence`: one object, sorted keys, no whitespace, ASCII only, no
 NaN/infinity, at most 8 MiB) and `evidence_hash` is its SHA-256. The group is
-valid only beside a valid annotation group (a review group without one is
-refused before the annotation install), installs like the annotation group
-(optional in old backups, required once current under `require_library_state`,
-SAVEPOINT install validated before and after), and validation re-canonicalizes
-every evidence document in one streamed pass at startup and on restore (about
-0.6 s for 4,000 items plus 4,000 decisions of 3 KB). The browser fixtures clear
+valid only beside a valid annotation group (a review group without annotation
+tables is refused, catalog only, before the annotation install), installs like
+the annotation group (optional in old backups, required once current under
+`require_library_state`, SAVEPOINT install validated before and after), and
+validation re-canonicalizes every evidence document in one streamed pass. A
+startup runs that pass once (`test_startup_validates_stored_evidence_once`; the
+install trusts the annotation group it has just validated, and the SQL row
+predicates check type and size only, because the streamed pass proves the
+rest): 2.5 s to open a database of 40,000 items with 4 KiB of evidence each,
+was 7.7 s with two passes. Restore and `verify_database_file` keep the full
+validation, annotation group included. The browser fixtures clear
 `media_review_decisions` and `media_review_items` before the annotation tables,
 never the metadata row.
 
@@ -1787,12 +1792,22 @@ decoded. Scan statuses, counters, outcome rows and the legacy SSE events are
 unchanged; the job's `scope` gains `review_items` (new items) and
 `review_errors`, and the log ends with `? N images added to Needs review` (and
 `! N images could not be added to Needs review` on failures, e.g. capture
-capacity). The monitor records after its fallback link, best effort: a failure
+capacity). Recording captures in the background: it never takes the store's
+last worker or capture slot, which stay free for an interactive Tag dialog or
+Apply, and waits up to 2 s for room before counting the file as not added
+(`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor records after its fallback link, best effort: a failure
 is logged and the link stays. A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
 `mtime_ns` equal the verified fingerprint of bytes an item already cites (a
 stat compare); the file still stays in the default "new" scope, because it is
-not a known image.
+not a known image. The skip and a duplicate insert record the current spelling
+of the locator on its items (`refresh_review_spelling`, the review index
+revision moves, item revisions do not), so a case-only rename on Windows or
+macOS keeps its item applicable. Residual risks of the skip, like S1's: an
+in-place rewrite that keeps both size and `mtime_ns` is never re-queued (Apply
+still re-hashes, so it cannot link those bytes), and a file that is deleted or
+moved leaves its pending item counted in `total` (its target then formats as
+`unavailable` or fails to open, and Leave unresolved clears it).
 
 Needs review decisions and queue reads (#249, `py/api/review.py`,
 `database/review.py`, `database/review_decisions.py`,
@@ -1800,27 +1815,44 @@ Needs review decisions and queue reads (#249, `py/api/review.py`,
 answers `{success, library_epoch, total, items, next_cursor}` with pending items
 oldest first; `total` is the exact pending count. The cursor is an HMAC keyset
 on `(created_at, id)` bound to the storage epoch and `review_index_revision`: a
-forged one is 400, one from before a restore is 409 `storage-changed`, one from
-before any queue change (a decision, a new item) is 409 `review-conflict`.
+malformed one is 400, a well-formed one this process cannot verify (tampered,
+or opened before a ComfyUI restart: the secret is per process) is 409
+`review-conflict` with the current `total`, one from before a restore is 409
+`storage-changed`, one from before any queue change (a decision, a new item, a
+refreshed spelling) is 409 `review-conflict`.
 Targets are formatted from `spelled_path` against the current roots (the
 roots' real paths are the only file access); a file under no current root is
-`unavailable` with a null target. `GET .../items/{id}` adds `candidates`
+`unavailable` with a null target. Every read and decision lists the roots and
+resolves real paths on a worker thread, never on the event loop. `GET .../items/{id}` adds `candidates`
 (`hash`, `sampler_id`, `state` resolved/unresolved, `reason`, `label` "<positive
 title> / <negative title>" from the saved prompt's Library title else the
 first line, and the role texts), `dependency_fingerprint` (SHA-256 of the
-file's exact legacy rows, positive hashes and pair links with their negative
-hashes, as the ingester reads them) and `sha256`; a detail over 8 MiB, or a
+file's legacy rows under every spelling of the same physical file, positive
+hashes and pair links with their negative hashes, as the ingester reads them) and `sha256`; a detail over 8 MiB, or a
 limited item, has no candidates. `POST .../items/{id}/decision
 {expected_epoch, expected_revision, capture_token, sha256, dependency_fingerprint,
 choice}` with a candidate hash (Apply) requires a capture of the item's file
 whose bytes are the item's, re-hashes the current file (`file-changed`
 otherwise, also for a fresh capture of new bytes), re-reads the capture and
-requires the same evidence digest (`review-conflict` otherwise), then in one
-`_pair_transaction` checks the epoch, the item revision and state
-(`review-conflict` with the current item for a repeat), the dependency
-fingerprint and the public ingester's compatible-only rules through
-`_ingest_resolved_pair_in` (either refusal is 409 `association-conflict`
-with zero writes, explained inline; Apply never reparents a link), and writes
+requires that its bytes are still ambiguous and still offer the chosen
+candidate (`review-conflict` otherwise; a resolver change that rewords the
+reason or reorders candidates leaves the item applicable, and
+`RESOLVER_VERSION` in `utils/prompt_pair_resolver.py` is the one version
+ingestion provenance and review share), then in one `_pair_transaction`
+checks the epoch, the item revision and state (`review-conflict` with the
+current item for a repeat), the re-hashed digest, the dependency fingerprint
+and the public ingester's compatible-only rules through
+`_ingest_resolved_pair_in` (any refusal is 409 `association-conflict` with
+zero writes, explained inline; Apply never reparents a link). Physical
+identity: the roots are real paths while the monitor links under the
+directory it watches, so a symlinked or junctioned root, `subst` or a mapped
+drive spells the same file otherwise. Every legacy row whose spelling ends with
+the file's name (the link summaries' unindexed suffix lookup) is resolved by
+`normcase(realpath)` against the locator, else `samefile`; two rows of the
+file refuse the choice, one is enriched under the spelling it was linked
+with, and a same-name row the request did not classify is a changed
+association (`TestPhysicalIdentity`, symlinked root and a portable fake
+junction), and writes
 the link with `kind:"user-selection"` provenance (decision id, reviewed digest,
 candidate hash, resolver version, role provenance), the decision row, the
 item's new state and revision and `review_index_revision`. `"unresolved"`
@@ -1846,8 +1878,12 @@ directories are `CaptureDenied`; the locator is
 `normcase(join(realpath(root), relative))`, so a symlinked root shares the
 listing's identity. Fixed limits: 256 MiB per file (stat and stream), 8
 completed captures, 512 MiB reserved, 2 capture/verify workers, 900 s idle,
-1800 s hard; admission is nonblocking (`CaptureCapacity`) and lifetimes are
-tested with an injected clock. An acquired capture outlives expiry and release
+1800 s hard; interactive admission is nonblocking (`CaptureCapacity`), a
+`background=True` capture (Needs review recording) never takes the last worker
+or capture slot and waits up to `BACKGROUND_WAIT_SECONDS` (2 s) for room, and
+lifetimes are tested with an injected clock. The host's on_cleanup close is
+final: a recording still in flight gets a capture error instead of creating a
+new temp directory after it. An acquired capture outlives expiry and release
 until its last use ends. Header-only dimensions (4096 px per side,
 16,777,216 px) and video mark Generate unsupported; `verify` re-hashes the
 current file without a copy. Every handle closes before unlink (a patched
