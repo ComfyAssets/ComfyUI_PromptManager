@@ -1911,6 +1911,24 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
+            /**
+             * Stop the running thumbnail job (#249 System S5), whichever page started it: there is one at a time.
+             * Resolves whether a cancellation was asked for; a held legacy operation cannot be cancelled.
+             */
+            async cancelThumbnailJob() {
+                try {
+                    const data = await this.api.get('/prompt_manager/jobs');
+                    const job = (Array.isArray(data?.jobs) ? data.jobs : []).find(item => item?.kind === 'thumbnails'
+                        && item.state === 'running' && item.cancellable !== false && typeof item.id === 'string');
+                    if (!job) return false;
+                    await this.api.post(`/prompt_manager/jobs/${encodeURIComponent(job.id)}/cancel`, {});
+                    return true;
+                } catch (error) {
+                    console.warn('The thumbnail job could not be cancelled:', error);
+                    return false;
+                }
+            }
+
             async generateThumbnailsWithProgress(options) {
                 const progressBar = document.getElementById('progressBar');
                 const progressText = document.getElementById('progressText');
@@ -1933,11 +1951,13 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     let cancelled = false;
                     let resultData = null;
                     
-                    // Handle cancellation
+                    // Handle cancellation. The work is an Activity job that outlives this stream, so closing it no
+                    // longer stops anything: ask the server to stop the job at its next file boundary too.
                     const cancelHandler = () => {
                         cancelled = true;
                         eventSource.close();
                         cancelBtn.classList.add('hidden');
+                        this.cancelThumbnailJob();
                         reject(new Error('Thumbnail generation cancelled by user'));
                     };
                     cancelBtn.addEventListener('click', cancelHandler);

@@ -421,6 +421,28 @@ class TestJobOutcomesAndLog(unittest.TestCase):
             SCAN_GROUP_NAMES, ("added", "known", "review", "no_metadata", "errors")
         )
 
+    def test_record_counted_counts_exactly_lists_capped_and_logs_nothing(self):
+        job = Job("thumbnails", "Thumbnail generation", groups=("skipped",))
+        rows = [
+            {"path": os.path.abspath(f"out{os.sep}f{i}.png"), "root": "output"}
+            for i in range(MAX_OUTCOME_ROWS + 5)
+        ]
+        job.record_counted("skipped", 10_000, rows)
+        job.record_counted("skipped", 1, [{"path": "late.png", "root_index": True}])
+        self.assertEqual(job.counters["skipped"], 10_001)
+        self.assertEqual(len(job.outcomes["skipped"]), MAX_OUTCOME_ROWS)
+        self.assertEqual(job.outcomes["skipped"][0]["path"], "f0.png")
+        self.assertIsNone(job.outcomes["skipped"][0]["root_index"])
+        self.assertEqual(job.log, [])
+        with self.assertRaises(ValueError):
+            job.record_counted("bogus", 1)
+
+    def test_thumbnail_job_groups(self):
+        self.assertEqual(
+            jobs_module.THUMBNAIL_GROUP_NAMES, ("generated", "skipped", "errors")
+        )
+        self.assertEqual(jobs_module.THUMBNAILS_JOB_KIND, "thumbnails")
+
     def test_image_tag_job_kind_and_groups(self):
         # #249 D1: bulk Add tags / Auto-tag, counter-tile order.
         self.assertEqual(getattr(jobs_module, "IMAGE_TAG_JOB_KIND", None), "image-tags")

@@ -72,6 +72,9 @@ SCAN_GROUPS = {
 IMAGE_TAG_JOB_KIND = "image-tags"
 IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
 
+# Thumbnail generation (#249 System S5): previews written, already fresh, failed.
+THUMBNAIL_GROUP_NAMES = ("generated", "skipped", "errors")
+
 ADMISSIONS = ("read", "guarded", "records")
 # What each admission class is refused beside (besides its own kind).
 _REFUSED_BESIDE = {
@@ -246,6 +249,32 @@ class Job:
                 }
             )
         self.log_line(log_line)
+
+    def record_counted(self, group, count, rows=()):
+        """Count ``count`` outcomes in ``group`` at once, listing ``rows``.
+
+        For outcomes that need no log line each (a thumbnail job's already
+        fresh previews): the counter is exact, ``rows`` (``record``'s row
+        shape) are listed up to MAX_OUTCOME_ROWS, and nothing is logged.
+        """
+        if group not in self.counters:
+            raise ValueError(f"Unknown outcome group {group!r} for {self.kind}")
+        self.counters[group] += max(0, int(count))
+        listed = self.outcomes[group]
+        for row in rows:
+            if len(listed) >= MAX_OUTCOME_ROWS:
+                break
+            index = row.get("root_index")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                index = None
+            listed.append(
+                {
+                    "path": _relative_path(row.get("path")),
+                    "root": str(row.get("root") or ""),
+                    "root_index": index,
+                    "detail": str(row.get("detail") or ""),
+                }
+            )
 
     def finish(self, state="finished"):
         """End the job in ``state`` and release every subscriber.

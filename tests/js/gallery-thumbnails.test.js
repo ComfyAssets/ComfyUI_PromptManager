@@ -110,3 +110,34 @@ test('saving gallery settings retains the remembered thumbnail dismissal', () =>
     f.manager.saveSettings();
     assert.equal(JSON.parse(f.storage.get('gallerySettings')).thumbnailPromptDismissed, 'remembered-state');
 });
+
+// #249 System S5: the stream's work is now an Activity job that outlives the page's connection, so the gallery's
+// Cancel asks the server to stop the running thumbnail job instead of only closing the stream.
+test('Cancel stops the running thumbnail job on the server', async () => {
+    const f = fixture({});
+    const posts = [];
+    const running = { id: 'b'.repeat(32), kind: 'thumbnails', state: 'running', cancellable: true };
+    f.manager.api = {
+        get: async url => { f.requests.push(url); return { success: true, jobs: [
+            { id: 'a'.repeat(32), kind: 'scan', state: 'running', cancellable: true },
+            { id: 'c'.repeat(32), kind: 'thumbnails', state: 'finished', cancellable: true }, running] }; },
+        post: async (url, body) => { posts.push([url, body]); return { success: true, cancellation_requested: true }; },
+    };
+    assert.equal(await f.manager.cancelThumbnailJob(), true);
+    assert.deepEqual(f.requests, ['/prompt_manager/jobs']);
+    assert.equal(JSON.stringify(posts), JSON.stringify([[`/prompt_manager/jobs/${running.id}/cancel`, {}]]));
+});
+
+test('Cancel posts nothing when no cancellable thumbnail job runs, and survives a failed read', async () => {
+    const f = fixture({});
+    const posts = [];
+    f.manager.api = {
+        get: async () => ({ success: true, jobs: [{ id: 'd'.repeat(32), kind: 'thumbnails', state: 'running',
+            cancellable: false }] }),
+        post: async url => { posts.push(url); return {}; },
+    };
+    assert.equal(await f.manager.cancelThumbnailJob(), false);
+    f.manager.api.get = async () => { throw new Error('offline'); };
+    assert.equal(await f.manager.cancelThumbnailJob(), false);
+    assert.deepEqual(posts, []);
+});

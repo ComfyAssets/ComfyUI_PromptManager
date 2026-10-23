@@ -20,7 +20,7 @@ from typing import Callable, NamedTuple
 from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
-from .jobs import THUMBNAILS_JOB_KIND
+from .jobs import MAX_OUTCOME_ROWS, THUMBNAILS_JOB_KIND
 from .prompts import bad_request, parse_page_params, publish_image_paths
 from .prompts import thumbnail_url_for
 from .prompts import safe_error_message as _safe_error
@@ -235,6 +235,8 @@ MEDIA_EXTENSIONS = GALLERY_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 # Caps on request-triggered filesystem work.
 MAX_SCAN_DEPTH = 12
 MAX_THUMBNAIL_FILES = 10_000
+# Already-fresh files a thumbnail job lists under Skipped (its counter stays exact).
+MAX_FRESH_LISTED = MAX_OUTCOME_ROWS
 
 
 def _worker_threads():
@@ -271,15 +273,31 @@ def _atomic_save(img, dst, fmt=None, **save_kwargs):
             tmp.unlink()
 
 
-def _write_image_thumbnail(src, dst, thumbnail_size):
-    """Resize *src* into *dst* (blocking PIL work), atomically."""
+# Encoder settings per thumbnail quality (the System thumbnail dialog's
+# "Medium · optimized", "High · original", "Low · fastest"). The legacy
+# routes always encode as "medium", which is what they always wrote.
+THUMBNAIL_ENCODINGS = {
+    "low": {"quality": 70, "optimize": False},
+    "medium": {"quality": 85, "optimize": True},
+    "high": {"quality": 95, "optimize": True},
+}
+DEFAULT_THUMBNAIL_ENCODING = THUMBNAIL_ENCODINGS["medium"]
+
+
+def _write_image_thumbnail(src, dst, thumbnail_size, encoding=None):
+    """Resize *src* into *dst* (blocking PIL work), atomically.
+
+    ``encoding`` is one of THUMBNAIL_ENCODINGS (medium when None); a PNG
+    preview keeps only its ``optimize`` flag.
+    """
+    encoding = encoding or DEFAULT_THUMBNAIL_ENCODING
     with Image.open(src) as img:
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGB")
         img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
-        save_kwargs = {"quality": 85, "optimize": True}
+        save_kwargs = dict(encoding)
         if dst.suffix.lower() == ".png":
-            save_kwargs = {"optimize": True}
+            save_kwargs = {"optimize": encoding["optimize"]}
         _atomic_save(img, dst, **save_kwargs)
 
 
@@ -931,6 +949,10 @@ class ImageRoutesMixin:
         @routes.get("/prompt_manager/images/thumbnails/status")
         async def thumbnail_status_route(request):
             return await self.get_thumbnail_status(request)
+
+        @routes.get("/prompt_manager/images/thumbnails/plan")
+        async def thumbnail_plan_route(request):
+            return await self.get_thumbnail_plan(request)
 
         @routes.post("/prompt_manager/images/generate-thumbnails")
         async def generate_thumbnails_route(request):
@@ -1804,15 +1826,30 @@ class ImageRoutesMixin:
         self.logger.info(payload["message"])
         return payload
 
-    def _plan_gallery_thumbnails(self, output_dirs: list[Path]) -> dict:
-        """Plan every gallery root with one shared per-run generation cap."""
-        combined = {"targets": [], "skipped": 0, "remaining": 0}
+    def _plan_gallery_thumbnails(
+        self, output_dirs: list[Path], rebuild: bool = False
+    ) -> dict:
+        """Plan every gallery root with one shared per-run generation cap.
+
+        See ``_plan_thumbnails``; ``fresh_files`` keeps at most
+        MAX_FRESH_LISTED files across the roots.
+        """
+        combined = {
+            "targets": [],
+            "skipped": 0,
+            "remaining": 0,
+            "fresh": 0,
+            "fresh_files": [],
+        }
         for root in output_dirs:
             root = Path(root)
-            plan = self._plan_thumbnails(root, root / "thumbnails")
+            plan = self._plan_thumbnails(root, root / "thumbnails", rebuild=rebuild)
             available = max(0, MAX_THUMBNAIL_FILES - len(combined["targets"]))
             combined["targets"].extend(plan["targets"][:available])
             combined["skipped"] += plan["skipped"]
+            combined["fresh"] += plan["fresh"]
+            room = max(0, MAX_FRESH_LISTED - len(combined["fresh_files"]))
+            combined["fresh_files"].extend(plan["fresh_files"][:room])
             combined["remaining"] += plan["remaining"] + max(
                 0, len(plan["targets"]) - available
             )
@@ -1845,21 +1882,26 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(exc)}, status=500
             )
 
-    def _plan_thumbnails(self, output_path, thumbnails_dir):
+    def _plan_thumbnails(self, output_path, thumbnails_dir, rebuild=False):
         """Decide which media files need a thumbnail (blocking walk).
 
-        Returns ``{"targets": [(src, dst, is_video)], "skipped": n, "remaining": n}``.
-        Files whose thumbnail is already newer than the source are counted as
-        skipped and never queued, so a large library that is mostly done only
-        pays for the files that changed. The walk is bounded like the gallery
-        listing (MAX_SCAN_DEPTH, MAX_GALLERY_FILES, no symlinks) and at most
-        MAX_THUMBNAIL_FILES pending files are queued per run; ``remaining``
-        counts the pending files beyond that cap.
+        Returns ``{"targets": [(src, dst, is_video)], "skipped": n,
+        "remaining": n, "fresh": n, "fresh_files": [src]}``. Files whose
+        thumbnail is already newer than the source are ``fresh``. Without
+        ``rebuild`` they are counted as skipped and never queued, so a large
+        library that is mostly done only pays for the files that changed;
+        ``fresh_files`` lists the first MAX_FRESH_LISTED of them. With
+        ``rebuild`` every file is a target (nothing is skipped). The walk is
+        bounded like the gallery listing (MAX_SCAN_DEPTH, MAX_GALLERY_FILES,
+        no symlinks) and at most MAX_THUMBNAIL_FILES targets are queued per
+        run; ``remaining`` counts the targets beyond that cap.
         """
         output_path = Path(output_path)
         targets = []
         skipped = 0
         remaining = 0
+        fresh = 0
+        fresh_files = []
         for src in _iter_media_files(output_path, MAX_GALLERY_FILES):
             suffix = src.suffix.lower()
             is_video = suffix in VIDEO_EXTENSIONS
@@ -1870,8 +1912,12 @@ class ImageRoutesMixin:
                 self.logger.warning(f"Skipping thumbnail outside safe dir: {src.name}")
                 continue
             if _thumbnail_is_fresh(src, dst):
-                skipped += 1
-                continue
+                fresh += 1
+                if not rebuild:
+                    skipped += 1
+                    if len(fresh_files) < MAX_FRESH_LISTED:
+                        fresh_files.append(src)
+                    continue
             if len(targets) >= MAX_THUMBNAIL_FILES:
                 remaining += 1
                 continue
@@ -1881,189 +1927,76 @@ class ImageRoutesMixin:
                 f"Thumbnail run capped at {MAX_THUMBNAIL_FILES} new files; "
                 f"{remaining} more will be generated on the next run"
             )
-        return {"targets": targets, "skipped": skipped, "remaining": remaining}
+        return {
+            "targets": targets,
+            "skipped": skipped,
+            "remaining": remaining,
+            "fresh": fresh,
+            "fresh_files": fresh_files,
+        }
 
     def _thumbnail_targets(self, output_path, thumbnails_dir):
         """Pending (src, dst, is_video) triples; see _plan_thumbnails."""
         return self._plan_thumbnails(output_path, thumbnails_dir)["targets"]
 
-    def _generate_batch(self, targets, thumbnail_size):
+    def _generate_batch(self, targets, thumbnail_size, **options):
         """Create thumbnails for ``targets`` on the configured worker threads.
 
-        Blocking; returns one result dict per target, in order.
+        Blocking; returns one result dict per target, in order. ``options``
+        go to ``_generate_one`` (``encoding``, ``rebuild``, ``stop``).
         """
 
         def one(target):
             src, dst, is_video = target
-            return self._generate_one(src, dst, thumbnail_size, is_video)
+            return self._generate_one(src, dst, thumbnail_size, is_video, **options)
 
         return map_parallel(one, targets, _worker_threads())
 
-    def _generate_one(self, src, dst, thumbnail_size, is_video):
-        """Create one thumbnail (blocking). Never raises; returns a result dict."""
+    def _generate_one(
+        self,
+        src,
+        dst,
+        thumbnail_size,
+        is_video,
+        encoding=None,
+        rebuild=False,
+        stop=None,
+    ):
+        """Create one thumbnail (blocking). Never raises; returns a result dict.
+
+        ``stop()`` true before the file starts gives ``action: "cancelled"``
+        and touches nothing (a job's file boundary). ``rebuild`` writes a
+        fresh preview again and never replaces an existing video preview with
+        the placeholder. Every write is atomic, so a failure keeps the old
+        preview.
+        """
         result = {
             "file": src.name,
             "dir": src.parent.name,
             "type": "video" if is_video else "image",
         }
         try:
+            if stop is not None and stop():
+                return {**result, "action": "cancelled"}
             if not src.is_file():
                 return {**result, "action": "error", "error": "File no longer exists"}
-            if _thumbnail_is_fresh(src, dst):
+            if not rebuild and _thumbnail_is_fresh(src, dst):
                 return {**result, "action": "skipped"}
             dst.parent.mkdir(parents=True, exist_ok=True)
             if is_video:
-                if not self._generate_video_thumbnail(src, dst, thumbnail_size):
+                made = self._generate_video_thumbnail(
+                    src, dst, thumbnail_size, encoding, keep_existing=rebuild
+                )
+                if not made:
                     return {**result, "action": "error", "error": "Video decode failed"}
             else:
-                _write_image_thumbnail(src, dst, thumbnail_size)
+                _write_image_thumbnail(src, dst, thumbnail_size, encoding)
             return {**result, "action": "generated"}
         except UnidentifiedImageError:
             return {**result, "action": "error", "error": "Not a valid image file"}
         except Exception as e:
             self.logger.warning(f"Thumbnail failed for {src.name}", exc_info=True)
             return {**result, "action": "error", "error": _safe_error(e)}
-
-    async def generate_thumbnails_with_progress(self, request):
-        """Generate thumbnails with Server-Sent Events progress updates (POST).
-
-        ``quality`` is read from the query string so a POST-capable SSE
-        client can keep using the same URL shape. Every blocking step (scan,
-        PIL/ffmpeg) runs in the executor; the event loop only writes SSE
-        frames between files.
-        """
-        thumbnail_size = self._thumbnail_size(request.query.get("quality", "medium"))
-        response = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-        busy = self._jobs.blocker(THUMBNAILS_JOB_KIND, admission="guarded")
-        if busy is not None:
-            # The gallery reads this stream: refuse with its error event.
-            await response.prepare(request)
-            message = f"{busy.title} already running"
-            await self._emit_sse(
-                response, "error", {"error": message, "message": message}
-            )
-            return response
-        async with self._jobs.hold(
-            THUMBNAILS_JOB_KIND, THUMBNAIL_GENERATION_TITLE, admission="guarded"
-        ) as job:
-            await response.prepare(request)
-            if not await self._thumbnail_progress_stream(response, thumbnail_size):
-                job.finish("failed")  # an error event ended the stream
-        return response
-
-    async def _thumbnail_progress_stream(self, response, thumbnail_size) -> bool:
-        """Stream one generation run; False when it ended with an error event."""
-        try:
-            output_dirs = self._get_all_output_dirs()
-            if not output_dirs:
-                await self._emit_sse(
-                    response, "error", {"error": "ComfyUI output directory not found"}
-                )
-                return False
-
-            await self._emit_sse(
-                response,
-                "status",
-                {"phase": "scanning", "message": "Scanning for images and videos..."},
-            )
-            plan = await self._run_in_executor(
-                self._plan_gallery_thumbnails, output_dirs
-            )
-            await self._stream_thumbnails(
-                response,
-                plan["targets"],
-                thumbnail_size,
-                skipped=plan["skipped"],
-                remaining=plan["remaining"],
-            )
-            self.invalidate_gallery_cache()
-            return True
-        except Exception:
-            self.logger.exception("Thumbnail generation failed")
-            await self._emit_sse(
-                response,
-                "error",
-                {
-                    "error": "An internal error occurred",
-                    "message": "Thumbnail generation failed. Check server logs.",
-                },
-            )
-            return False
-
-    async def _stream_thumbnails(
-        self, response, targets, thumbnail_size, skipped=0, remaining=0
-    ):
-        """Process pending *targets* in worker-thread batches, emitting SSE per file.
-
-        ``skipped`` files already had fresh thumbnails and ``remaining`` were
-        left for the next run; both only feed the start/complete payloads.
-        """
-        total = len(targets)
-        video_count = sum(1 for _, _, is_video in targets if is_video)
-        message = (
-            f"Found {total - video_count} images and {video_count} videos to process"
-        )
-        if skipped:
-            message += f" ({skipped} already have thumbnails)"
-        connected = await self._emit_sse(
-            response,
-            "start",
-            {
-                "total_images": total,
-                "skipped": skipped,
-                "remaining": remaining,
-                "phase": "processing",
-                "image_count": total - video_count,
-                "video_count": video_count,
-                "message": message,
-            },
-        )
-        if not connected:
-            return
-        stats = _new_thumbnail_stats()
-        stats["skipped"] = skipped
-        start = _time.monotonic()
-        batch_size = _thumbnail_batch_size(_worker_threads())
-        index = 0
-        for batch_start in range(0, total, batch_size):
-            batch = targets[batch_start : batch_start + batch_size]
-            results = await self._run_in_executor(
-                self._generate_batch, batch, thumbnail_size
-            )
-            for result in results:
-                index += 1
-                _record_thumbnail_result(stats, result)
-                if result["action"] == "error":
-                    await self._emit_sse(
-                        response,
-                        "file_error",
-                        {"file": result["file"], "error": result["error"]},
-                    )
-                connected = await self._emit_sse(
-                    response,
-                    "progress",
-                    _thumbnail_progress_payload(index, total, stats, result, start),
-                )
-                if not connected:
-                    self.logger.info("Thumbnail client disconnected; stopping early")
-                    return
-            await asyncio.sleep(0)  # let other requests run between batches
-        payload = _thumbnail_complete_payload(
-            total + skipped + remaining,
-            stats,
-            start,
-            remaining=remaining,
-            processed=total,
-        )
-        await self._emit_sse(response, "complete", payload)
-        self.logger.info(payload["message"])
 
     async def _emit_sse(self, response, event, data) -> bool:
         """Write one SSE frame. Returns False once the client has gone away."""
@@ -2075,8 +2008,22 @@ class ImageRoutesMixin:
             self.logger.warning(f"Failed to send SSE message: {e}")
             return False
 
-    def _generate_video_thumbnail(self, video_path, thumbnail_path, thumbnail_size):
-        """Generate thumbnail from video file. Returns True if successful."""
+    def _generate_video_thumbnail(
+        self,
+        video_path,
+        thumbnail_path,
+        thumbnail_size,
+        encoding=None,
+        keep_existing=False,
+    ):
+        """Generate thumbnail from video file. Returns True if successful.
+
+        ``encoding`` is one of THUMBNAIL_ENCODINGS (medium when None). With
+        ``keep_existing`` an existing preview is kept, and the run fails,
+        when no frame could be decoded, rather than replaced by the
+        placeholder.
+        """
+        encoding = encoding or DEFAULT_THUMBNAIL_ENCODING
         try:
             # Try using OpenCV first (most reliable)
             try:
@@ -2100,7 +2047,7 @@ class ImageRoutesMixin:
 
                 img = Image.fromarray(frame_rgb)
                 img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
-                _atomic_save(img, thumbnail_path, "JPEG", quality=85, optimize=True)
+                _atomic_save(img, thumbnail_path, "JPEG", **encoding)
                 self.logger.debug(
                     f"Generated video thumbnail using OpenCV: {thumbnail_path}"
                 )
@@ -2147,6 +2094,12 @@ class ImageRoutesMixin:
                     tmp_path.unlink()
                 except (NameError, OSError):
                     pass
+
+            if keep_existing and thumbnail_path.exists():
+                self.logger.warning(
+                    f"No frame decoded for {video_path.name}; keeping its preview"
+                )
+                return False
 
             # Last resort: create a placeholder thumbnail
             try:

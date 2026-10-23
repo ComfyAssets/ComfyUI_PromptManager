@@ -1979,6 +1979,31 @@ Review options opens the legacy gallery in a new tab (D94) until its review dial
 A list that cannot be read shows "Sources could not be loaded. Your saved data has not
 changed." and Retry, never an empty list.
 
+Thumbnail generation is an Activity job (S5, `py/api/thumbnail_jobs.py`). `GET
+/prompt_manager/images/thumbnails/plan?mode=missing|rebuild&size=128..2048&quality=low|medium|high`
+counts the work (`targets`, `fresh`, `remaining` past the 10,000-file cap, the source
+labels) and writes nothing; a value out of range is a 400 `invalid-request` that starts
+nothing. `POST /prompt_manager/jobs/thumbnails {mode, size, quality}` starts the
+`thumbnails` job ("Thumbnail generation"): admission `guarded` (never beside a scan or
+another record-changing job, one at a time, a legacy clear refused while it runs),
+cancellable at a file boundary (a file not yet started is left alone; written previews
+stay), outcome groups Generated / Skipped (already fresh, listed without a log line
+each) / Errors. `size` is the longest edge and `quality` the encoder (low: JPEG 70, no
+optimize; medium: 85, optimized, what the legacy routes always wrote; high: 95,
+optimized). `rebuild` writes fresh previews again, each through the same temp-file
+rename, so nothing is cleared first and a failed file keeps its old preview (a video
+whose frame cannot be decoded keeps its preview instead of getting the placeholder);
+originals are only read (`tests/test_thumbnail_jobs.py`).
+
+Deliberate change: the legacy gallery stream `POST /images/generate-thumbnails/progress`
+now starts this job (missing previews, its quality preset as the size, medium encoding)
+or attaches to the running one, and streams the job's unchanged `status`/`start`/
+`progress`/`file_error`/`complete` frames. A client that goes away no longer stops the
+work (`test_thumbnail_job_survives_client_disconnect`); the gallery's Cancel asks the
+server to cancel the running thumbnail job, and a job cancelled from Activity ends the
+stream with the error frame "Thumbnail generation was cancelled". The blocking
+`POST /images/generate-thumbnails` and the clear stay legacy holds.
+
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
 paints nothing. Until it answers, the section shows "Loading the overview…"; a failure
