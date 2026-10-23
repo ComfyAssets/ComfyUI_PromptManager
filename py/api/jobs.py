@@ -432,7 +432,8 @@ class JobRegistry:
         if same_kind is not None:
             return same_kind
         refused = _REFUSED_BESIDE[resolve_admission(admission, record_changing)]
-        running = [job for job in self._jobs.values() if job.running]
+        # A snapshot: the monitor's worker thread asks too (Needs review).
+        running = [job for job in tuple(self._jobs.values()) if job.running]
         running.sort(key=lambda job: job._started_seq)
         for job in running:
             if job.admission in refused:
@@ -463,8 +464,8 @@ class JobRegistry:
         return self._jobs.get(job_id)
 
     def active(self, kind):
-        """The running job of ``kind``, or None."""
-        for job in self._jobs.values():
+        """The running job of ``kind``, or None (safe off the event loop)."""
+        for job in tuple(self._jobs.values()):
             if job.kind == kind and job.running:
                 return job
         return None

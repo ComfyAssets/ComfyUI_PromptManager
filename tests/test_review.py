@@ -756,6 +756,45 @@ class TestMonitorRecording(ReviewTestCase):
         self.assertEqual(self.api.record_review_file(str(outside)), "skipped")
         self.assertEqual(self._items(), [])
 
+    async def test_monitor_recording_is_refused_beside_record_changing_jobs(self):
+        """S1 admission: a ``records`` recording waits for no job; it is refused.
+
+        While a ``records`` or ``guarded`` job runs, the monitor's recording
+        records nothing and answers ``deferred`` (its fallback link stands and
+        a later scan reads the ambiguous file again); a ``read`` job does not
+        refuse it, and it records once the blocking job has ended.
+        """
+        self._require_module()
+        from py.api.jobs import RESTORE_JOB_KIND, THUMBNAILS_JOB_KIND
+
+        self._roots()
+        path = self.output_dir / "held.png"
+        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+
+        for kind, admission in (
+            (RESTORE_JOB_KIND, "records"),
+            (THUMBNAILS_JOB_KIND, "guarded"),
+        ):
+            with self.subTest(admission=admission):
+                async with self.api._jobs.hold(
+                    kind, f"{kind} (admin page)", admission=admission
+                ):
+                    with self.assertLogs("prompt_manager", logging.INFO) as logs:
+                        outcome = await asyncio.to_thread(
+                            self.api.record_review_file, str(path)
+                        )
+                self.assertEqual(outcome, "deferred")
+                self.assertEqual(self._items(), [])
+                self.assertTrue(
+                    any(f"{kind} (admin page)" in line for line in logs.output),
+                    logs.output,
+                )
+
+        async with self.api._jobs.hold("probe-read", "Read probe", admission="read"):
+            outcome = await asyncio.to_thread(self.api.record_review_file, str(path))
+        self.assertEqual(outcome, "recorded")
+        self.assertEqual(len(self._items()), 1)
+
     async def test_monitor_wiring_reaches_new_and_existing_handlers(self):
         self._require_module()
         from utils.image_monitor import ImageMonitor

@@ -2014,7 +2014,12 @@ capacity). Recording captures in the background: it never takes the store's
 last worker or capture slot, which stay free for an interactive Tag dialog or
 Apply, and waits up to 2 s for room before counting the file as not added
 (`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor records after its fallback link, best effort: a failure
-is logged and the link stays. A new item moves `review_index_revision`. A
+is logged and the link stays. Recording follows the registry's `records`
+admission (#289): the scan's recording runs under its own `records` job, and
+the monitor's (one file, not a job) is refused while a `records` or `guarded`
+job or hold runs. It then records nothing, logs that the file waits for the
+next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
+again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
 `mtime_ns` equal the verified fingerprint of bytes an item already cites (a
 stat compare); the file still stays in the default "new" scope, because it is

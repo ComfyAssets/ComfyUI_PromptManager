@@ -5,12 +5,21 @@ The scan hands every file the ingestion resolver finds ambiguous to
 the monitor calls ``record_review_file`` from its worker thread after its
 fallback link. Both go through ``utils.review_capture.record_ambiguous_file``
 on the API's capture store. Nothing here links a file.
+
+Recording changes records, so it follows the registry's ``records``
+admission (#289). The scan records under its own ``records`` job. The
+monitor's recording lasts one file and is not a job: it is refused while a
+``records`` or ``guarded`` job runs (``deferred``), and the next scan reads
+the ambiguous file again.
 """
 
 import os
 from pathlib import Path
 
 from .admin import SCAN_LOG_PREFIXES, _plural, _scan_location, _scan_roots
+
+# The kind the monitor's recording checks admission under (never registered).
+REVIEW_RECORDING_KIND = "review_recording"
 
 try:
     from ...utils.review_capture import record_ambiguous_file
@@ -50,9 +59,18 @@ class ReviewRecordingMixin:
         """Needs review recording for the live monitor (its worker thread).
 
         Maps ``image_path`` to the gallery root that lists it (the listing's
-        ``root_index``); a file under no current root is ``skipped``. Errors
-        propagate: the monitor logs them and keeps its link.
+        ``root_index``); a file under no current root is ``skipped``. While a
+        job runs that a ``records`` job may not run beside, nothing is recorded
+        and the answer is ``deferred``. Errors propagate: the monitor logs them
+        and keeps its link.
         """
+        busy = self._jobs.blocker(REVIEW_RECORDING_KIND, admission="records")
+        if busy is not None:
+            self.logger.info(
+                f"{os.path.basename(str(image_path))} was not added to Needs "
+                f"review while {busy.title} runs; the next scan reads it again"
+            )
+            return "deferred"
         full = os.path.abspath(str(image_path))
         located = Path(os.path.realpath(os.path.dirname(full))) / os.path.basename(full)
         return self._record_review_sync(
