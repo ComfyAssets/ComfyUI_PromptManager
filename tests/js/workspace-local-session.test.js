@@ -193,8 +193,8 @@ test("unclassified input creates no object URL", async () => {
     // declares a supported type it opens the inspector's unreadable state, with no preview and no URL (ledger ruling).
     const gone = pngFile("gone.png", "fox", { gate: () => Promise.reject(new DOMException("The file was removed", "NotReadableError")) });
     assert.equal(value.select([gone]), "accepted");
-    await settle();
-    const unreadable = value.controller.state;
+    // The read yields between its steps (local-inspection.mjs): wait for the answer, not a fixed number of turns.
+    const unreadable = await recorded(value.controller);
     assert.ok(unreadable.record, "the unreadable record is published");
     assert.deepEqual([value.state.phase, value.state.message, value.state.preview], ["ready", m.LOCAL_SESSION_MESSAGES.unreadable, null]);
     assert.equal(m.LOCAL_SESSION_MESSAGES.unreadable, "Embedded metadata could not be read.");

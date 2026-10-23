@@ -181,7 +181,7 @@
   },
   "workspace/file-inspector.mjs": {
     "lines": 96,
-    "branches": 92,
+    "branches": 93,
     "functions": 92,
     "statements": 96
   },
@@ -296,7 +296,7 @@
   "workspace/inspect.mjs": {
     "lines": 98,
     "branches": 92,
-    "functions": 92,
+    "functions": 93,
     "statements": 98
   },
   "workspace/inspection-state.mjs": {
@@ -341,11 +341,41 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/local-parameters.mjs": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/local-projection.mjs": {
     "lines": 97,
     "branches": 96,
     "functions": 98,
     "statements": 97
+  },
+  "workspace/local-resolver-stages.mjs": {
+    "lines": 94,
+    "branches": 93,
+    "functions": 98,
+    "statements": 94
+  },
+  "workspace/local-resolver-support.mjs": {
+    "lines": 96,
+    "branches": 80,
+    "functions": 98,
+    "statements": 96
+  },
+  "workspace/local-resolver.mjs": {
+    "lines": 96,
+    "branches": 86,
+    "functions": 98,
+    "statements": 96
+  },
+  "workspace/local-semantics.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/local-session.mjs": {
     "lines": 98,
@@ -388,6 +418,12 @@
     "branches": 91,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/py-json.mjs": {
+    "lines": 97,
+    "branches": 92,
+    "functions": 98,
+    "statements": 97
   },
   "workspace/recorded-run.mjs": {
     "lines": 95,
