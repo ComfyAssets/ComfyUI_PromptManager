@@ -416,6 +416,54 @@ class TestStatisticsRoute(SystemAPITestCase):
         )
 
 
+class TestReadsSettleBeforeTheAnswer(SystemAPITestCase):
+    """A failed read answers only after its sibling reads ended.
+
+    ``asyncio.gather`` does not stop executor work, so an early answer left a
+    sibling read on the database while the caller went on (in the suite, the
+    test's teardown deleted the database under it: a segfault on py3.10).
+    """
+
+    def _slow(self, target, name):
+        real = getattr(target, name)
+        finished = threading.Event()
+
+        def slow(*args, **kwargs):
+            threading.Event().wait(0.3)  # still reading when the sibling fails
+            try:
+                return real(*args, **kwargs)
+            finally:
+                finished.set()
+
+        return patch.object(target, name, side_effect=slow), finished
+
+    async def _failing(self, url, failing, slow_target, slow_name):
+        slow, finished = self._slow(slow_target, slow_name)
+        with (
+            slow,
+            patch.object(self.api.db, failing, side_effect=RuntimeError("secret")),
+            self.assertLogs("prompt_manager.api", "ERROR"),
+        ):
+            await self.json("GET", url, 500)
+            self.assertTrue(finished.is_set(), "a sibling read outlived the answer")
+
+    async def test_statistics_failure_waits_for_its_sibling_reads(self):
+        await self._failing(
+            "/prompt_manager/system/statistics",
+            "usage_by_category",
+            self.api.db,
+            "get_statistics",
+        )
+
+    async def test_overview_failure_waits_for_its_sibling_reads(self):
+        await self._failing(
+            "/prompt_manager/system/overview",
+            "library_counts",
+            self.api,
+            "_output_dirs_with_origin",
+        )
+
+
 if __name__ == "__main__":
     import unittest
 
