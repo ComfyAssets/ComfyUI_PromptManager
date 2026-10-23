@@ -124,23 +124,32 @@ test('real inspection navigation preserves slideshow across two advances and def
     } finally {view.dispose();controller.dispose();parentScope.dispose();globalThis.setTimeout=oldSetTimeout;globalThis.clearTimeout=oldClearTimeout;f.restore();}
 });
 
-test('an inline Viewer not yet built is destroyed and its image released at once', async () => {
+test('Viewer.js is built only on a loaded image and an unbuilt viewer is released at once', async () => {
     const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
     const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d')];
     const instances = [];
-    // Viewer.js builds an inline viewer only once its image loads; until then `ready` is false and destroy() cancels it.
+    // On a loaded image Viewer.js schedules its inline build; until it runs `ready` is false and destroy() cancels it.
     f.win.Viewer = class { constructor(node,options) { this.node = node; this.options = options; this.destroyed = 0; this.ready = false; this.viewed = false; instances.push(this); }
         destroy() { this.destroyed++; } resize() {} };
     const globals = {ResizeObserver:globalThis.ResizeObserver, requestAnimationFrame:globalThis.requestAnimationFrame, cancelAnimationFrame:globalThis.cancelAnimationFrame};
     Object.assign(globalThis, {ResizeObserver:class { observe() {} disconnect() {} }, requestAnimationFrame:() => 1, cancelAnimationFrame() {}});
     const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
     try {
-        view.open({items,selectedKey:'c'.repeat(64)});
+        const stageImage = () => f.walk(f.container,n => n.tagName === 'img')[0];
+        view.open({items,selectedKey:'d'.repeat(64)});
+        // Viewer.js's own cancel misses an image whose load event is still queued, so none exists before the load.
+        const unloaded = stageImage(), dropped = [];unloaded.removeAttribute = key => dropped.push(key);
+        assert.equal(instances.length, 0, 'no Viewer.js before the image loads');
+        f.walk(f.container,n => n.attributes['aria-label'] === 'Previous media')[0].fire('click');
+        assert.deepEqual(dropped, ['src'], 'an image left before it loads is released at once');
+        unloaded.fire('load');
+        assert.equal(instances.length, 0, 'its late load builds no Viewer.js');
+        stageImage().fire('load');
         const [loading] = instances, image = loading.node, removed = [];
         image.removeAttribute = key => removed.push(key);
-        // Next drops the still-loading image from the stage; a deferred destroy would let its late load build there.
+        // Next drops the image whose build is pending; a deferred destroy would let that build run there.
         f.walk(f.container,n => n.attributes['aria-label'] === 'Next media')[0].fire('click');
-        assert.equal(instances.length, 2, 'Next builds the next image');
+        stageImage().fire('load');assert.equal(instances.length, 2, 'the next image builds its own Viewer.js once loaded');
         assert.equal(loading.destroyed, 1, 'an unbuilt viewer is destroyed at once');
         assert.deepEqual(removed, ['src'], 'and its image is released at once');
         loading.options.viewed.call(loading);
@@ -159,7 +168,7 @@ test('an inline Viewer still loading its image is destroyed only after it has vi
     Object.assign(globalThis, {ResizeObserver:class { observe() {} disconnect() {} }, requestAnimationFrame:() => 1, cancelAnimationFrame() {}});
     const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
     try {
-        view.open({items,selectedKey:'c'.repeat(64)});
+        view.open({items,selectedKey:'c'.repeat(64)});f.walk(f.container,n => n.tagName === 'img')[0].fire('load');
         const [loading] = instances, image = loading.node, removed = [];
         image.removeAttribute = key => removed.push(key);
         f.walk(f.container,n => n.attributes['aria-label'] === 'Close image viewer')[0].fire('click');
@@ -172,7 +181,7 @@ test('an inline Viewer still loading its image is destroyed only after it has vi
         loading.options.viewed.call(loading);
         assert.equal(loading.destroyed, 1, 'never destroyed twice');
 
-        view.open({items,selectedKey:'c'.repeat(64)});
+        view.open({items,selectedKey:'c'.repeat(64)});f.walk(f.container,n => n.tagName === 'img')[0].fire('load');
         const shown = instances[1]; shown.viewed = true; shown.options.viewed.call(shown);
         f.walk(f.container,n => n.attributes['aria-label'] === 'Close image viewer')[0].fire('click');
         assert.equal(shown.destroyed, 1, 'a viewed image is destroyed at once');
@@ -260,7 +269,7 @@ test('viewer uses adapter.mediaUrl for image and video', async () => {
         const img = f.walk(f.container,n => n.tagName === 'img')[0];
         assert.equal(img.src, image.url, 'the blob URL is used exactly');
         assert.doesNotMatch(img.src, /\?/);
-        assert.equal(instances[0].node, img, 'Viewer.js shows the blob image');
+        img.fire('load');assert.equal(instances[0].node, img, 'Viewer.js shows the blob image');
         const download = f.walk(f.container,n => n.attributes['aria-label'] === 'Download original')[0];
         assert.equal(download.href, image.url);assert.equal(download.download, 'a.png');
         f.walk(f.container,n => n.attributes['aria-label'] === 'Next media')[0].fire('click');

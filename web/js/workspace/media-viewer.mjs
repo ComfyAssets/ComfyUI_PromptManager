@@ -151,6 +151,14 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
             }
             node.src = src;stage.append(node);
             if (!selected.is_video && window.Viewer) {
+                // Viewer.js is built on an image that has loaded. Its own cancel removes its image listeners only
+                // while `image.complete` is false, so an image left with its load event still queued would build a
+                // viewer into the released image after destroy() (#293). Until then no viewer exists to cancel.
+                let mountedViewer = false;
+                mediaLocal.listen(node,'load',() => { if (current()) { mountedViewer = true;mountViewer(); } },{once:true});
+                mediaLocal.cleanup(() => { if (!mountedViewer) node.removeAttribute('src'); });
+            }
+            function mountViewer() {
                 let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
                 const release = () => {
                     if (released) return;
@@ -176,8 +184,8 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 const observer = new ResizeObserver(scheduleFit);observer.observe(stage);
                 viewer = instance;mediaLocal.cleanup(() => {
                     observer.disconnect();cancelAnimationFrame(fitFrame);
-                    // Before Viewer.js has built (its image still loading), destroy() cancels the pending build;
-                    // deferring it would let the late load build into the image the stage has just dropped.
+                    // Before Viewer.js has built (its zero-delay build is pending), destroy() cancels that build;
+                    // deferring it would let the build run into the image the stage has just dropped.
                     // Once built, inline Viewer.js keeps viewing a still-loading image after destroy(), and that
                     // view rebuilds its list from images that still have a src; keep both until the view settles,
                     // fails or times out.
@@ -190,7 +198,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         }
         function updateControls(state) {
             const unavailable = inspectionState.refreshRequired ? inspectionState.message : state.phase === 'error' ? 'Media could not be loaded. Retry this file.' : entry.is_video ?
-                'Image transforms are unavailable for video.' : !viewer ?
+                'Image transforms are unavailable for video.' : !window.Viewer ?
                 'Image transforms are unavailable because Viewer.js could not load.' : !state.mediaReady ? 'Image transforms are available when the image is ready.' : '';
             reason.textContent = unavailable;reason.hidden = !unavailable;
             for (const node of transforms) {
