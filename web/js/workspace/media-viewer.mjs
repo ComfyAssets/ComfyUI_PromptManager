@@ -2,14 +2,14 @@ import {createScope, createButton} from '../shared/toolkit/core.js';
 import {createViewerSession} from './viewer-state.mjs';
 import {rootedFileAdapter} from './inspection-state.mjs';
 import {mountFileInspector} from './file-inspector.mjs';
+import {readPreferences} from './preferences.mjs';
 
 let viewerId = 0;
 // Upper bound on waiting for a closed Viewer's in-flight image view before destroying it.
 const PENDING_VIEW_DESTROY_MS = 10000;
+/** The video defaults, read through the shared display defaults (preferences.mjs, #249 System S3). */
 export function readViewerPreferences(getStorage = () => window.localStorage, normalize = globalThis.GallerySettings.normalizeGallerySettings) {
-    let stored;
-    try { stored = JSON.parse(getStorage().getItem('gallerySettings')); } catch { stored = null; }
-    const {videoAutoplay,videoMute,videoLoop} = normalize(stored);
+    const {videoAutoplay,videoMute,videoLoop} = readPreferences(getStorage,normalize).values;
     return {videoAutoplay,videoMute,videoLoop};
 }
 function element(tag, className, text) {

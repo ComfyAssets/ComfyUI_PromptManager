@@ -37,15 +37,15 @@
   },
   "gallery-settings.js": {
     "lines": 98,
-    "branches": 90,
+    "branches": 94,
     "functions": 98,
     "statements": 98
   },
   "gallery.js": {
-    "lines": 40,
+    "lines": 41,
     "branches": 63,
     "functions": 44,
-    "statements": 40
+    "statements": 41
   },
   "html-escape.js": {
     "lines": 98,
@@ -399,6 +399,12 @@
     "lines": 98,
     "branches": 98,
     "functions": 98,
+    "statements": 98
+  },
+  "workspace/preferences.mjs": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 91,
     "statements": 98
   },
   "workspace/prompt-blocks.mjs": {
