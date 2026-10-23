@@ -425,7 +425,7 @@ for (const width of [1600, 390]) test(`overview and handoff render with concept 
 const SYSTEM_SECTION_LABELS = ['Overview', 'Appearance', 'Sources & scans', 'Integrations', 'Auto-tagging', 'Maintenance',
     'Backup & export', 'Diagnostics & logs'];
 const SYSTEM_HASHES = ['overview', 'appearance', 'sources', 'integrations', 'tagging', 'maintenance', 'backups', 'diagnostics'];
-const SYSTEM_HANDOFFS = { appearance: ['/prompt_manager/gallery', '/prompt_manager/admin'], sources: ['/prompt_manager/admin', '/prompt_manager/gallery'],
+const SYSTEM_HANDOFFS = { sources: ['/prompt_manager/admin', '/prompt_manager/gallery'],
     maintenance: ['/prompt_manager/admin', '/prompt_manager/gallery'] };
 
 test('System is native: the concept shell, section navigation, sections, hand-offs and the Save row', async ({ page }) => {
@@ -462,14 +462,14 @@ test('System is native: the concept shell, section navigation, sections, hand-of
         await expect(nav.locator('[aria-pressed="true"]')).toHaveCount(1);
         // The section changes in place: focus stays on the pressed section, not the page title.
         await expect(button).toBeFocused();
-        // S2 Task 6: Overview is native (workspace-system.spec.mjs); Maintenance shows its health-check notice above
-        // the hand-off (D123); every other section hands off.
+        // S2 Task 6: Overview is native (workspace-system.spec.mjs), and so is Appearance (S3 Task 8); Maintenance shows
+        // its health-check notice above the hand-off (D123); every other section hands off.
         if (hash === 'overview') await expect(layout.locator(':scope > .summary-metrics')).toBeVisible();
         expect(await layout.evaluate(node => [...node.children].map(child => `${child.localName}.${child.className}`)))
-            .toEqual({ overview: ['div.summary-metrics', 'div.two-col', 'div.save-row'],
+            .toEqual({ overview: ['div.summary-metrics', 'div.two-col', 'div.save-row'], appearance: ['section.surface', 'div.save-row'],
                 maintenance: ['div.notice', 'section.surface handoff', 'div.save-row'] }[hash]
                 ?? ['section.surface handoff', 'div.save-row']);
-        if (hash === 'overview') continue;
+        if (hash === 'overview' || hash === 'appearance') continue;
         const handoff = layout.locator('section.handoff');
         await expect(handoff.locator('h2')).toHaveText('Your current tools are ready');
         expect(await handoff.locator('a.workspace-link').evaluateAll(links => links.map(link => link.getAttribute('href'))))

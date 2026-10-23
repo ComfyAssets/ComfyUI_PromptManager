@@ -1,6 +1,17 @@
 import { noun } from './plural.mjs';
 
 /** Identity is the source and relative path; content hashes may be shared by files. */
+/**
+ * The layout and thumbnail size an Images visit starts with (#249 System S3). The last visit (the current view) keeps
+ * its own; a saved view starts as before, at Grid and Comfortable; any other new visit starts from System ›
+ * Appearance's defaults (`preferences`, preferences.mjs values, or null when unavailable).
+ */
+export function initialImagesView({ prior = null, saved = null, preferences = null } = {}) {
+    if (prior) return { layout: prior.layout || 'grid', density: prior.density || 'comfortable' };
+    if (saved || !preferences) return { layout: 'grid', density: 'comfortable' };
+    return { layout: preferences.workspaceLayout || 'grid', density: preferences.workspaceDensity || 'comfortable' };
+}
+
 export function imageKey(image) {
     return `${image.root_index}:${image.path}`;
 }

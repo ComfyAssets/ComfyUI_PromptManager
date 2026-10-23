@@ -416,6 +416,63 @@ class TestStatisticsRoute(SystemAPITestCase):
         )
 
 
+class TestFailedReadsSettleFirst(SystemAPITestCase):
+    """A failed read answers only after the route's other reads finished.
+
+    Answering on the first failure (``asyncio.gather`` without
+    ``return_exceptions``) left the other executor reads running against a
+    database the caller may already be closing; on Python 3.10 CI that
+    crashed the test process inside SQLite.
+    """
+
+    async def assert_answers_after_reads(self, url, failing, slow, error):
+        raised, release, finished = (threading.Event() for _ in range(3))
+        real = getattr(*slow)
+
+        def fail(*args, **kwargs):
+            raised.set()
+            raise RuntimeError("secret")
+
+        def held(*args, **kwargs):
+            release.wait()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                finished.set()
+
+        with (
+            patch.object(*failing, side_effect=fail),
+            patch.object(*slow, side_effect=held),
+            self.assertLogs("prompt_manager.api", "ERROR"),
+        ):
+            answer = asyncio.ensure_future(self.json("GET", url, 500))
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, raised.wait)
+                done, _ = await asyncio.wait({answer}, timeout=0.5)
+                self.assertEqual(done, set(), "answered while a read still ran")
+            finally:
+                release.set()
+            body = await answer
+        self.assertTrue(finished.is_set())
+        self.assertEqual(body, {"success": False, "code": None, "error": error})
+
+    async def test_statistics(self):
+        await self.assert_answers_after_reads(
+            "/prompt_manager/system/statistics",
+            (self.api.db, "usage_by_category"),
+            (self.api.db, "get_statistics"),
+            "Failed to read statistics",
+        )
+
+    async def test_overview(self):
+        await self.assert_answers_after_reads(
+            "/prompt_manager/system/overview",
+            (self.api.db, "library_counts"),
+            (self.api, "_output_dirs_with_origin"),
+            "Failed to read the overview",
+        )
+
+
 if __name__ == "__main__":
     import unittest
 
