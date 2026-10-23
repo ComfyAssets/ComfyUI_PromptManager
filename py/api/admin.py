@@ -825,8 +825,18 @@ class AdminRoutesMixin:
         """Delete duplicate image files from disk.
 
         Single flight with the duplicate scan, and a records hold on the
-        registry, so no scan, restore or tagging job runs meanwhile.
+        registry, so no scan, restore or tagging job runs meanwhile. A body
+        without paths is refused before the hold (it is no job).
         """
+        data, error_response = await _read_json(request)
+        if error_response is not None:
+            return error_response
+        image_paths = data.get("image_paths", [])
+        if not image_paths or not isinstance(image_paths, list):
+            return web.json_response(
+                {"success": False, "error": "No image paths provided"},
+                status=400,
+            )
         guard = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
         if guard is None:
             return self._long_job_busy_response("Duplicate scan or delete")
@@ -834,7 +844,7 @@ class AdminRoutesMixin:
         async def delete():
             # No await since the check above: the lock is still free.
             async with guard:
-                return await self._delete_duplicate_images(request)
+                return await self._delete_duplicate_images(image_paths)
 
         return await self._run_held(
             DUPLICATE_CLEANUP_JOB_KIND,
@@ -843,19 +853,8 @@ class AdminRoutesMixin:
             delete,
         )
 
-    async def _delete_duplicate_images(self, request):
+    async def _delete_duplicate_images(self, image_paths):
         try:
-            data, error_response = await _read_json(request)
-            if error_response is not None:
-                return error_response
-            image_paths = data.get("image_paths", [])
-
-            if not image_paths or not isinstance(image_paths, list):
-                return web.json_response(
-                    {"success": False, "error": "No image paths provided"},
-                    status=400,
-                )
-
             output_dir = await self._run_in_executor(self._find_comfyui_output_dir)
             result = await self._run_in_executor(
                 self._delete_duplicate_images_sync, image_paths, output_dir

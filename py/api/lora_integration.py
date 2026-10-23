@@ -6,7 +6,7 @@ from pathlib import Path
 from aiohttp import web
 
 from ..config_store import ConfigUnreadable, RevisionConflict, get_config_store
-from .jobs import LORA_IMPORT_JOB_KIND, JobBusy
+from .jobs import LORA_IMPORT_JOB_KIND
 
 # Flags of POST /lora/enable; each must be a JSON boolean when present.
 _LORA_FLAGS = ("enabled", "trigger_words_enabled", "clear_civitai_api_key")
@@ -286,20 +286,17 @@ class LoraIntegrationMixin:
 
             # The import replaces prompts and images: a records hold, so it
             # never runs beside a scan, restore or tagging job.
-            try:
-                held = self._jobs.hold(
-                    LORA_IMPORT_JOB_KIND,
-                    "LoRA import (admin page)",
-                    admission="records",
-                )
-            except JobBusy as busy:
+            busy = self._jobs.blocker(LORA_IMPORT_JOB_KIND, admission="records")
+            if busy is not None:
                 await response.prepare(request)
-                message = f"{busy.running.title} already running"
+                message = f"{busy.title} already running"
                 await send_progress({"type": "error", "message": message})
                 await response.write_eof()
                 return response
 
-            async with held as job:
+            async with self._jobs.hold(
+                LORA_IMPORT_JOB_KIND, "LoRA import (admin page)", admission="records"
+            ) as job:
                 await response.prepare(request)
                 try:
                     await self._lora_scan_stream(allowed, send_progress)

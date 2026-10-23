@@ -81,7 +81,7 @@ _REFUSED_BESIDE = {
 }
 
 # Kinds of the legacy-page operations that hold the registry (D80; titles in
-# their handlers end in "(admin page)" or "(gallery page)").
+# their handlers end in "(admin page)", "(gallery page)" or "(legacy page)").
 RESTORE_JOB_KIND = "restore"
 MAINTENANCE_JOB_KIND = "maintenance"
 DUPLICATE_CLEANUP_JOB_KIND = "duplicate_cleanup"
@@ -369,11 +369,18 @@ class JobRegistry:
     ) -> Job:
         """Create a job and run ``runner(job)`` as a task.
 
-        ``admission`` is one of ``ADMISSIONS`` (default ``read``);
-        ``record_changing=True`` is the older spelling of ``records``. Raises
-        JobBusy, naming the job in the way, when the admission class refuses
-        it (see the module docstring). Must be called from the event loop.
+        ``admission`` is one of ``ADMISSIONS``; ``record_changing=True`` is
+        the older spelling of ``records`` and ``False`` of ``read``. One of
+        the two is required (TypeError otherwise), so no new job runs as
+        ``read`` beside a scan by omission. Raises JobBusy, naming the job in
+        the way, when the admission class refuses it (see the module
+        docstring). Must be called from the event loop.
         """
+        if admission is None and record_changing is None:
+            raise TypeError(
+                f"JobRegistry.start({kind!r}) needs an admission class "
+                "(admission= or record_changing=)"
+            )
         job = self._admit(
             kind,
             title,
@@ -387,18 +394,23 @@ class JobRegistry:
         return job
 
     def hold(self, kind, title, *, admission, scope=None):
-        """Register a running, non-cancellable job for a legacy-page operation.
+        """A running, non-cancellable job for a legacy-page operation.
 
-        Returns an async context manager yielding the job; the job ends when
+        Returns an async context manager. Entering it registers the job and
+        yields it, or raises JobBusy at once, without waiting, when the
+        admission class refuses it; nothing is registered until then, so a
+        hold that is never entered leaves no job behind. The job ends when
         the block exits: ``finished``, or ``failed`` when it raised (unless
-        the body already ended it). Raises JobBusy at once, without waiting,
-        when the admission class refuses it. Use it directly in ``async with``
-        so the job cannot outlive the operation.
+        the body already ended it). A caller that answers a refusal in its
+        own way checks ``blocker(kind, admission=...)`` first, with no await
+        before the ``async with``.
         """
-        job = self._admit(
-            kind, title, admission=admission, cancellable=False, scope=scope
+        resolve_admission(admission)  # an unknown class fails at the call
+        return _Hold(
+            lambda: self._admit(
+                kind, title, admission=admission, cancellable=False, scope=scope
+            )
         )
-        return _Hold(job)
 
     def _admit(self, kind, title, *, admission, record_changing=None, **job_args):
         resolved = resolve_admission(admission, record_changing)
@@ -482,10 +494,12 @@ class JobRegistry:
 class _Hold:
     """The async context manager ``JobRegistry.hold`` returns."""
 
-    def __init__(self, job):
-        self._job = job
+    def __init__(self, admit):
+        self._admit = admit
+        self._job = None
 
     async def __aenter__(self):
+        self._job = self._admit()
         return self._job
 
     async def __aexit__(self, exc_type, exc, tb):

@@ -62,10 +62,12 @@ class TestAdmissionClasses(unittest.IsolatedAsyncioTestCase):
             **kwargs,
         )
 
-    async def test_admission_names_and_default(self):
+    async def test_admission_names_and_explicit_read(self):
         self.assertEqual(ADMISSIONS, ("read", "guarded", "records"))
         registry = JobRegistry()
-        job = registry.start("report", "Report", scope={}, runner=_noop)
+        job = registry.start(
+            "report", "Report", admission="read", scope={}, runner=_noop
+        )
         await asyncio.wait_for(job.task, 2)
         self.assertEqual(job.admission, "read")
         self.assertFalse(job.record_changing)
@@ -80,6 +82,20 @@ class TestAdmissionClasses(unittest.IsolatedAsyncioTestCase):
                 scope={},
                 runner=_noop,
             )
+
+    async def test_start_requires_an_admission_class(self):
+        # A job that forgets its class must not silently run as "read" beside
+        # a scan or restore: every start call decides.
+        registry = JobRegistry()
+        with self.assertRaises(TypeError) as raised:
+            registry.start("review", "Review", scope={}, runner=_noop)
+        self.assertIn("admission", str(raised.exception))
+        self.assertEqual(registry.list(), [])
+        job = registry.start(
+            "review", "Review", record_changing=False, scope={}, runner=_noop
+        )
+        await asyncio.wait_for(job.task, 2)
+        self.assertEqual(job.admission, "read")
 
     async def test_record_changing_is_an_alias_for_records(self):
         registry = JobRegistry()
@@ -179,7 +195,8 @@ class TestAdmissionClasses(unittest.IsolatedAsyncioTestCase):
         gate = asyncio.Event()
         scan = self._start(registry, "scan", "records", gate)
         with self.assertRaises(JobBusy) as raised:
-            registry.hold("maintenance", "Maintenance", admission="records")
+            async with registry.hold("maintenance", "Maintenance", admission="records"):
+                self.fail("a refused hold must not run its body")
         self.assertIs(raised.exception.running, scan)
         self.assertEqual([j.kind for j in registry.list()], ["scan"])
         gate.set()
@@ -197,6 +214,19 @@ class TestAdmissionClasses(unittest.IsolatedAsyncioTestCase):
         async with again as second:
             second.finish("failed")  # the body may end it itself
         self.assertEqual(second.state, "failed")
+
+    async def test_hold_admits_on_entry_not_at_the_call(self):
+        # A hold created but never entered (an await or an exception between
+        # the call and ``async with``) must not leave a running records job
+        # behind that blocks all record work until a restart.
+        registry = JobRegistry()
+        held = registry.hold("restore", "Restore", admission="records")
+        self.assertEqual(registry.list(), [])
+        self.assertIsNone(registry.blocker("scan", admission="records"))
+        del held
+        async with registry.hold("restore", "Restore", admission="records") as job:
+            self.assertIs(registry.active("restore"), job)
+        self.assertEqual(job.state, "finished")
 
     def test_job_defaults_stay_read_and_cancellable(self):
         job = Job("duplicates", "Duplicate scan")
@@ -369,26 +399,64 @@ class TestLegacyRoutesHoldTheRegistry(_LegacyHoldCase):
             (resp.status, await resp.json()),
             (400, {"success": False, "error": "No image paths provided"}),
         )
-        # Each hold ended with the request; a refused input shows as failed.
-        listed = (
-            await (await self.client.request("GET", "/prompt_manager/jobs")).json()
-        )["jobs"]
+        # Each hold ended with the request; refused input never took one.
+        listed = await self._listed()
         self.assertEqual(
             [(j["kind"], j["state"]) for j in listed],
-            [
-                ("duplicate_cleanup", "failed"),
-                ("maintenance", "finished"),
-                ("maintenance", "finished"),
-            ],
+            [("maintenance", "finished"), ("maintenance", "finished")],
         )
         self.assertEqual(
             [j["title"] for j in listed],
-            [
-                "Duplicate image delete (gallery page)",
-                "Prompt cleanup (admin page)",
-                "Maintenance (admin page)",
-            ],
+            ["Prompt cleanup (admin page)", "Maintenance (admin page)"],
         )
+
+    async def _listed(self):
+        resp = await self.client.request("GET", "/prompt_manager/jobs")
+        return (await resp.json())["jobs"]
+
+
+class TestHeldJobStates(_LegacyHoldCase):
+    """Activity lists what a held legacy operation really did (Minor 7)."""
+
+    async def _listed(self):
+        resp = await self.client.request("GET", "/prompt_manager/jobs")
+        return [(j["kind"], j["state"]) for j in (await resp.json())["jobs"]]
+
+    async def test_refused_input_takes_no_hold(self):
+        resp = await self.client.request(
+            "POST", "/prompt_manager/delete_duplicate_images", json={}
+        )
+        self.assertEqual(resp.status, 400)
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/images/generate-thumbnails",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+        self.assertEqual(await self._listed(), [])
+
+    async def test_thumbnail_stream_that_ends_in_error_is_failed(self):
+        with patch.object(self.api, "_get_all_output_dirs", return_value=[]):
+            resp = await self.client.request(
+                "POST", "/prompt_manager/images/generate-thumbnails/progress"
+            )
+            text = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("event: error", text)
+        self.assertEqual(await self._listed(), [("thumbnails", "failed")])
+
+    async def test_legacy_autotag_that_ends_in_error_is_failed(self):
+        service = MagicMock()
+        service.get_models_status.return_value = {}  # model not downloaded
+        with patch("py.autotag.get_autotag_service", return_value=service):
+            resp = await self.client.request(
+                "POST", "/prompt_manager/autotag/start", json={}
+            )
+            text = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertIn('"type": "error"', text)
+        self.assertEqual(await self._listed(), [("autotag", "failed")])
 
 
 if __name__ == "__main__":

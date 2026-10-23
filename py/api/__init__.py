@@ -34,7 +34,7 @@ from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
-from .jobs import JobBusy, JobRegistry
+from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
 from .lora_integration import LoraIntegrationMixin
@@ -370,11 +370,10 @@ class PromptManagerAPI(
         legacy 409 envelope names the running job and nothing is done. A
         response of 400 or above ends the hold ``failed``.
         """
-        try:
-            held = self._jobs.hold(kind, title, admission=admission)
-        except JobBusy as busy:
-            return self._long_job_busy_response(busy.running.title)
-        async with held as job:
+        busy = self._jobs.blocker(kind, admission=admission)
+        if busy is not None:
+            return self._long_job_busy_response(busy.title)
+        async with self._jobs.hold(kind, title, admission=admission) as job:
             response = await operation()
             if getattr(response, "status", 200) >= 400:
                 job.finish("failed")

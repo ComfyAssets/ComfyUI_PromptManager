@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from .jobs import AUTOTAG_BATCH_JOB_KIND, JobBusy
+from .jobs import AUTOTAG_BATCH_JOB_KIND
 from .prompts import thumbnail_url_for
 from .. import model_gate
 
@@ -426,6 +426,8 @@ class AutotagRoutesMixin:
                 "general_threshold and character_threshold must be numeric"
             )
 
+        errors = []  # an error event ends the run; Activity lists it failed
+
         async def events():
             try:
                 from ..autotag import get_autotag_service
@@ -433,9 +435,12 @@ class AutotagRoutesMixin:
                 async for event in self._autotag_batch_events(
                     get_autotag_service(), opts
                 ):
+                    if event.get("type") == "error":
+                        errors.append(event)
                     yield event
             except Exception:
                 self.logger.exception("AutoTag error")
+                errors.append(_INTERNAL_ERROR)
                 yield {
                     "type": "error",
                     "message": _INTERNAL_ERROR,
@@ -443,21 +448,20 @@ class AutotagRoutesMixin:
 
         # The batch writes prompt tags: a records hold on the registry, so it
         # never runs beside a scan, restore or the workspace tagging job.
-        try:
-            held = self._jobs.hold(
-                AUTOTAG_BATCH_JOB_KIND,
-                "Auto-tag images (legacy page)",
-                admission="records",
-            )
-        except JobBusy as busy:
-            if busy.running.kind == AUTOTAG_BATCH_JOB_KIND:  # unchanged payload
+        busy = self._jobs.blocker(AUTOTAG_BATCH_JOB_KIND, admission="records")
+        if busy is not None:
+            if busy.kind == AUTOTAG_BATCH_JOB_KIND:  # unchanged payload
                 return web.json_response(
                     {"success": False, "error": _BUSY_ERROR}, status=409
                 )
-            return self._long_job_busy_response(busy.running.title)
-        async with held as job:
+            return self._long_job_busy_response(busy.title)
+        async with self._jobs.hold(
+            AUTOTAG_BATCH_JOB_KIND,
+            "Auto-tag images (legacy page)",
+            admission="records",
+        ) as job:
             response = await self._start_autotag_batch(request, opts, events)
-            if response.status >= 400:
+            if response.status >= 400 or errors:
                 job.finish("failed")
             return response
 

@@ -261,8 +261,13 @@ test('summaries are validated and the copy follows the spec', async () => {
     const loose = parseJob({ id: ID_A, state: 'running', progress: 140.4, processed: -1, total: 1.5, counters: { added: 'x', errors: 2 },
         title: '  ', started_at: 'x', scope: [] });
     assert.deepEqual(loose, { id: ID_A, kind: '', title: 'Background job', state: 'running', started_at: null, finished_at: null,
-        progress: 100, status_line: '', processed: 0, total: 0, counters: { added: 0, errors: 2 }, scope: {}, listed: {}, log_length: 0 });
+        progress: 100, status_line: '', processed: 0, total: 0, counters: { added: 0, errors: 2 }, scope: {}, listed: {}, log_length: 0,
+        cancellable: true });
     assert.equal(parseJob(summary({ progress: -3 })).progress, 0);
+    // A held legacy job cannot be cancelled; an older server sends no key, which keeps Cancel.
+    assert.equal(parseJob(summary({ cancellable: false })).cancellable, false);
+    assert.equal(parseJob(summary({ cancellable: true })).cancellable, true);
+    assert.equal(parseJob(summary()).cancellable, true);
 
     const scan = parseJob(summary({ progress: 42, processed: 8240, total: 19622, counters: { added: 1, errors: 1 } }));
     assert.deepEqual(pillParts(scan), { label: 'Scanning · 42%', files: ' · 8,240 / 19,622', text: 'Scanning · 42% · 8,240 / 19,622' });
