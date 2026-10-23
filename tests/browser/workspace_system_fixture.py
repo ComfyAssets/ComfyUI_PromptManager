@@ -31,9 +31,17 @@ MAX_UNTHUMBNAILED = 50
 
 
 def register_system_commands(app, routes, api, root: Path):
-    from py.config import GalleryConfig
+    from py.config import GalleryConfig, PromptManagerConfig
 
     configured = list(GalleryConfig.MONITORING_DIRECTORIES)
+    # System › Appearance saves the host fields to this server's config.json (S3);
+    # reset restores both.
+    config_path = Path(os.environ["PROMPT_MANAGER_CONFIG_PATH"])
+    config_bytes = config_path.read_bytes() if config_path.exists() else None
+    host_values = (
+        PromptManagerConfig.RESULT_TIMEOUT,
+        PromptManagerConfig.WEBUI_DISPLAY_MODE,
+    )
     failures: dict[str, int] = {}
 
     @web.middleware
@@ -52,6 +60,13 @@ def register_system_commands(app, routes, api, root: Path):
         failures.clear()
         GalleryConfig.MONITORING_DIRECTORIES = list(configured)
         api._health_report = None
+        PromptManagerConfig.RESULT_TIMEOUT, PromptManagerConfig.WEBUI_DISPLAY_MODE = (
+            host_values
+        )
+        if config_bytes is None:
+            config_path.unlink(missing_ok=True)
+        else:
+            config_path.write_bytes(config_bytes)
 
     @routes.post("/__test__/system/reset")
     async def system_reset(request):

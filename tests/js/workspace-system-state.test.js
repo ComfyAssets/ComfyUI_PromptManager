@@ -259,3 +259,27 @@ test('a failed read keeps the store usable and drafts survive a reload (Q10)', a
     assert.equal(failing.dirty(), false);
     assert.throws(() => createSystemDrafts({ ...domains, writeHost: null }), TypeError);
 });
+
+test('a rejected value drops its draft and is highlighted; a conflict elsewhere keeps the drafts', async () => {
+    const domains = adapters({ browser: { videoMute: true, videoLoop: true }, host: { result_timeout: 5 } });
+    const drafts = await loaded(domains);
+    assert.deepEqual(drafts.saved('browser'), { videoMute: true, videoLoop: true });
+    drafts.set('host', 'result_timeout', 12);
+    assert.equal(drafts.dirty('host'), true);
+    drafts.reject('host', 'result_timeout');
+    assert.equal(drafts.dirty('host'), false);
+    assert.deepEqual([...drafts.failed('host')], ['result_timeout']);
+    assert.equal(drafts.get('host', 'result_timeout'), 5);
+    // A valid value clears the highlight.
+    drafts.set('host', 'result_timeout', 7);
+    assert.deepEqual([...drafts.failed('host')], []);
+    drafts.discard();
+    drafts.set('browser', 'videoMute', false);
+    drafts.conflict('browser', []);
+    assert.equal(drafts.statusText(), 'Unsaved changes.');
+    drafts.conflict('browser', ['videoMute']);
+    assert.equal(drafts.statusText(), 'Settings changed elsewhere. Reload this section to see them.');
+    assert.deepEqual([...drafts.failed('browser')], ['videoMute']);
+    assert.equal(drafts.get('browser', 'videoMute'), false);
+    assert.throws(() => drafts.reject('nowhere', 'x'), TypeError);
+});

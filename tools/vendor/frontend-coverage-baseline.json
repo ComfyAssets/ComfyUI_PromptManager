@@ -403,8 +403,8 @@
   },
   "workspace/preferences.mjs": {
     "lines": 98,
-    "branches": 94,
-    "functions": 91,
+    "branches": 96,
+    "functions": 98,
     "statements": 98
   },
   "workspace/prompt-blocks.mjs": {
@@ -449,6 +449,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/system-appearance.mjs": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/system-controls.mjs": {
     "lines": 98,
     "branches": 87,
@@ -463,15 +469,15 @@
   },
   "workspace/system-state.mjs": {
     "lines": 98,
-    "branches": 92,
-    "functions": 92,
+    "branches": 93,
+    "functions": 98,
     "statements": 98
   },
   "workspace/system.mjs": {
-    "lines": 93,
-    "branches": 85,
-    "functions": 69,
-    "statements": 93
+    "lines": 96,
+    "branches": 92,
+    "functions": 84,
+    "statements": 96
   },
   "workspace/theme.mjs": {
     "lines": 98,

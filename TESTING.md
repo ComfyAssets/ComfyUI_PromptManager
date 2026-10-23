@@ -1834,8 +1834,36 @@ browser fields, then the host fields (`POST /prompt_manager/settings` with
 highlights their controls; `settings-changed` is a conflict and keeps the draft. System
 reads the host values on mount and again after a conflict; until a read returned a
 revision, a host save fails without a request, so it never sends a blind
-`expected_revision: null` (which S1 merges into the file on disk). No delivered section
-edits a setting yet, so Save stays disabled until Appearance (S3).
+`expected_revision: null` (which S1 merges into the file on disk). Save stays disabled
+until a section has an unsaved change.
+
+Appearance (`system-appearance.mjs`, S3) is the concept's "Browsing & display" surface
+on real values. Its browser rows are this browser's display defaults in the legacy
+gallery's own `gallerySettings` object (`web/js/workspace/preferences.mjs`, Q3): Default
+layout and Thumbnail size (`workspaceLayout` grid/list/masonry, `workspaceDensity`
+comfortable/large/compact, new keys), Load metadata on selection (`autoLoadMetadata`),
+Cache metadata in this browser (`cacheMetadata`), Image loading quality (`imageQuality`:
+Optimized→`medium`, Original→`high`, Fast→`low`; the thumbnail dialog's preselected quality
+once S5 lands), the three video rows (`videoAutoplay`, `videoMute`, `videoLoop`) and Show
+file paths (`showFilePaths`). A write re-reads the stored object and writes back only the
+changed keys, every other key (legacy paging, thumbnail state, unknown keys) as stored;
+the legacy gallery's Save also keeps the keys it does not edit, so the two pages stay in
+sync. The workspace never reads the legacy paging keys (`defaultLimit`, `gridColumns`,
+`infiniteScroll`; README continuous-browsing ruling). A browser that refuses storage
+(denied, or a full quota that leaves the stored bytes as they were) keeps the change for
+this tab only and the status says "Saved for this tab only; browser storage is
+unavailable.", never "Saved in this browser.". Another tab's change (a `storage` event)
+repaints the clean controls; a draft it overtook stays, highlighted, with the conflict
+status. Open from ComfyUI (New tab→`newtab`, Popup window→`popup`) and Node search
+auto-hide (seconds) (a whole number 0–300; anything else is highlighted and never sent)
+are the server's `webui_display_mode` and `result_timeout`, saved through
+`POST /prompt_manager/settings` with the revision. The consumers read the defaults on
+their next visit, never the current view: a new Images visit starts from the layout and
+size (the last visit keeps its own, a saved view opens at Grid and Comfortable as
+before); with metadata off a selection reads nothing until "Load metadata"; with the
+cache off selecting the shown file again re-reads it (on, the one current record is
+reused); paths off leaves out only the Path row of File & provenance; the viewer reads
+the video defaults.
 
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
@@ -1864,7 +1892,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D64 renumbered D92–D96; D121, D122 and D123 assigned):
+Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122 and D123 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -1922,6 +1950,18 @@ Recorded deviations (plan D60–D64 renumbered D92–D96; D121, D122 and D123 as
   the rest of Maintenance, above its D94 hand-off, as the native place that runs the
   health check. A press shows "Checking…" (`aria-disabled`) and opens the report; a
   failed check toasts "The health check could not finish. Nothing was changed."
+- **D97** (Appearance): added rows for the legacy gallery settings the concept leaves
+  out, after its own rows: "Show image details on cards" (`showImageInfo`; off hides a
+  card's title and file line, Info and Tag stay at the end of the row), "Collapse viewer
+  details by default" (`sidebarCollapsedByDefault`; the viewer opens with
+  `#viewer-details` hidden and a "Show details"/"Hide details" toggle with
+  `aria-expanded`, the stage taking the whole width), and the operation "Reset display
+  defaults" ("Restore this browser’s display defaults, then save. Other settings are
+  kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
+  The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D-NEW-S3-1** (inspector): with "Load metadata on selection" off, the Images panel and
+  the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
+  button instead of reading the file; the concept has no such state.
 
 `tests/browser/system-concept.spec.mjs` compares the shell and Overview with the concept
 (dark and light, 1600×1100 and 390×844), mapping only the deviations above; unmapped,
@@ -1934,15 +1974,23 @@ source when there are several, replaces only the chips with the fixture's expect
 results, and asserts the full unmapped path list; it maps D96 and compares the
 Maintenance notice unchanged. `system comparison detects mutations` removes a row,
 renames a metric label, swaps the `--line` token, recolours a chip, renames a check,
-removes the totals table and renames a caption. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
-`{concept,production}-{statistics,health}-{dark,light}.png`) are test artifacts; there
+removes the totals table and renames a caption. `appearance matches the concept` maps
+only D97 and the real timeout (unmapped, exactly those paths differ), and `appearance
+comparison detects mutations` removes a row, renames a label and an option and swaps
+the `--line` token. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
+`{concept,production}-{statistics,health}-{dark,light}.png`,
+`{concept,production}-appearance-{dark,light}-{1600,390}.png`) are test artifacts; there
 are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real counts,
 the health check and metric 4, a failed check, the thumbnail row against the status
 endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
-route, a load failure with Retry and late answers after leaving. Its hooks are
+route, a load failure with Retry and late answers after leaving, and Appearance: new
+visits versus the current view and a saved view, metadata off and on request, the cache,
+hidden paths, the video defaults, the host fields with their revision and a stale one,
+reload and a second tab, storage refused, the D97 rows and reset. Its hooks are
 `tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
 failures, an absent source, a deleted linked file, unthumbnailed files) on the
-concept-shaped fixture, with delays through the shared request holds.
+concept-shaped fixture, with delays through the shared request holds; reset also restores
+the server's host settings and its `config.json`.
 
 ```sh
 python3 -m unittest tests.test_database_health tests.test_system_api tests.test_library -v

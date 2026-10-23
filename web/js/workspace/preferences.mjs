@@ -91,6 +91,11 @@ export function writePreferences(dirty, getStorage = defaultStorage, { baseline 
     return { persisted: true, conflicts };
 }
 
+/** The current values for a display consumer, or null on a page without gallery-settings.js (a unit test). */
+export function displayPreferences(getStorage = defaultStorage) {
+    try { return readPreferences(getStorage).values; } catch { return null; }
+}
+
 export function subscribePreferences(win, onChange, getStorage = defaultStorage) {
     const listener = event => {
         if (event.key !== null && event.key !== PREFERENCES_KEY) return;

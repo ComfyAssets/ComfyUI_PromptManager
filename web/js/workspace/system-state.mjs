@@ -180,9 +180,33 @@ export function createSystemDrafts(adapters) {
         return saving;
     }
 
+    /** A value the control could not take (System S3: a timeout outside 0–300): no draft, and the control is highlighted. */
+    function reject(domain, key) {
+        requireDomain(domain);
+        drafts[domain].delete(key);
+        failedKeys[domain].add(key);
+        notify();
+    }
+
+    /**
+     * Another page changed saved values this tab has drafts for (a browser `storage` event, System S3): the drafts stay
+     * and are highlighted, and the status says the settings changed elsewhere.
+     */
+    function conflict(domain, keys) {
+        requireDomain(domain);
+        if (!keys.length) return;
+        for (const key of keys) failedKeys[domain].add(key);
+        outcome = { [domain]: 'conflict' };
+        notify();
+    }
+
     return {
         load,
         reloadHost,
+        reject,
+        conflict,
+        /** The saved values of a domain (its last read or save), not the drafts. */
+        saved: domain => { requireDomain(domain); return { ...baseline[domain] }; },
         get,
         set,
         dirty,

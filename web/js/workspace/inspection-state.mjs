@@ -344,9 +344,15 @@ export function createInspectionLoader(api, onChange, { extractFacts, adapter = 
     };
 }
 
-const emptyState = () => ({ loading: false, error: false, record: null, prompts: undefined, message: '', refreshRequired: false, code: null, recovery: null });
+const emptyState = () => ({ loading: false, error: false, deferred: false, record: null, prompts: undefined, message: '', refreshRequired: false, code: null, recovery: null });
 
-export function createInspectionController({ api, extractFacts, adapter = rootedFileAdapter }) {
+/**
+ * One selection's inspection. #249 System S3 (Appearance): `autoLoad: false` ("Load metadata on selection" off) makes a
+ * selection publish `deferred` instead of reading, and `load()` reads it once on request; `cache: false` ("Cache
+ * metadata in this browser" off) re-reads the selected file when it is selected again, where the default reuses the one
+ * current record. A read in flight is shared either way.
+ */
+export function createInspectionController({ api, extractFacts, adapter = rootedFileAdapter, autoLoad = true, cache = true }) {
     let state = Object.freeze(emptyState()), current = null, pending = null, disposed = false;
     let attempted, hasAttempt = false;
     const listeners = new Set();
@@ -369,13 +375,19 @@ export function createInspectionController({ api, extractFacts, adapter = rooted
             try {
                 adapter.validate(image);
                 const scope = adapter.scope(image), key = adapter.key(image), path = adapter.inspectionPath(image);
-                if (current?.key === key && current.scope === scope && current.path === path) return pending;
+                if (current?.key === key && current.scope === scope && current.path === path && (cache || state.loading || state.deferred)) return pending;
                 selected = { key, scope, path };
             } catch {
                 // The loader publishes validation errors after invalidating the previous source.
             }
             loader.dispose(); loader = makeLoader(); current = selected;
             attempted = object(image) ? { ...image, ...(adapter !== rootedFileAdapter ? {occurrence:{...image.occurrence}, reference:{...image.reference}} : {}) } : image; hasAttempt = true;
+            if (!autoLoad && selected) { pending = null; publish({ deferred: true }); return undefined; }
+            return read(attempted);
+        },
+        /** Read a deferred selection (the inspector's "Load metadata"); a read already made or running is reused. */
+        load() {
+            if (disposed || !hasAttempt || !state.deferred) return pending ?? undefined;
             return read(attempted);
         },
         retry() {

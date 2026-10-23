@@ -6,6 +6,7 @@ import { createWorkspaceIcon } from './icons.mjs';
 import { navigateTo } from './state.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { openCopyFallback } from './workspace-dialogs.mjs';
+import { displayPreferences } from './preferences.mjs';
 
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
@@ -196,7 +197,10 @@ function prefixedChip(prefix, text) {
  * `variant: 'full'` (the viewer's `#viewer-details`, imageDetails(i, true)) leaves out the cover and adds "File &
  * provenance" and "Workflow & raw metadata" with the downloads. `inline: true` means `panel`; neither means `full`.
  */
-export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onInteraction = () => {}, copyFallback = openCopyFallback}) {
+/** D-NEW-S3-1: the inspector's line while "Load metadata on selection" is off. */
+export const DEFERRED_TEXT = 'Metadata loads when you ask for it.';
+
+export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -235,6 +239,13 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
     function render(state) {
         const inner = el('div', undefined, full ? undefined : 'detail-inner');
         if (state.loading || state.error) {container.append(inner); statusView(state, inner); return;}
+        // D-NEW-S3-1: "Load metadata on selection" is off, so the file's details wait for an explicit request.
+        if (state.deferred) {
+            container.append(inner);
+            const status = el('p', DEFERRED_TEXT, 'small'); status.setAttribute('role', 'status'); inner.append(status);
+            if (onLoad) {const load = createButton('Load metadata'); contentScope.listen(load, 'click', onLoad); inner.append(load);}
+            return;
+        }
         const record = state.record;
         if (!record) return;
         const {file, library} = record;
@@ -326,8 +337,10 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         section.append(el('p', reported ? 'Current file at the reported location · identity unverified' : local ? 'Selected local file · read in this browser' :
             'Current file at this source; historical bytes are not verified.', 'small'));
         const path = el('dd', record.identity.path ?? 'Not available');
+        // System › Appearance "Show file paths" off: the Path row is left out; nothing else changes.
+        const showPath = !local && displayPreferences()?.showFilePaths !== false;
         const facts = file && definitionList([
-            ['Source', file.source_label], ...(local ? [] : [['Path', path]]), ['Size', formatBytes(file.size)],
+            ['Source', file.source_label], ...(showPath ? [['Path', path]] : []), ['Size', formatBytes(file.size)],
             ['Dimensions', file.width && file.height ? `${file.width} × ${file.height}` : null],
             ['Format', file.format || `${extensionOf(record)} extension`], ['Media type', file.media_type],
             ['Modified', file.modified_time !== null ? new Date(file.modified_time * 1000).toLocaleString() : null],
@@ -335,8 +348,9 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         if (facts) {
             // D38: "Show in folder" follows the Path value.
             const target = api ? revealTarget(record.identity) : null;
-            if (target) path.append(' ', revealButton(target));
             section.append(facts);
+            if (target && showPath) path.append(' ', revealButton(target));
+            else if (target) section.append(revealButton(target));
         } else section.append(el('p', 'Current file observations are unavailable for this inspection response.', 'small'));
         // The concept's "Prompt evidence: execution recorded" line, in the D21 badge's words; no badge, no line.
         if (badge) section.append(el('p', `Prompt evidence: ${badge.toLowerCase()}`, 'small'));
