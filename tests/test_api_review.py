@@ -179,6 +179,7 @@ class TestQueueReads(ReviewRoutesTestCase):
                 "candidate_count",
                 "limited",
                 "url",
+                "thumbnail_url",
                 "is_video",
             },
         )
@@ -374,8 +375,32 @@ class TestQueueReads(ReviewRoutesTestCase):
             (True, None, "two.png"),
         )
         self.assertEqual((item["url"], item["is_video"]), (None, False))
+        self.assertIsNone(item["thumbnail_url"])
         detail = await self._detail(item["id"])
         self.assertIs(detail["unavailable"], True)
+        self._no_paths()
+
+    async def test_queue_cards_use_the_images_listing_thumbnail(self):
+        # M10: a known thumbnail is the card's media, as on the Images page;
+        # without one the card falls back to the original.
+        self._require_routes()
+        from py.api.images import _output_image_entry
+
+        path = self._ambiguous("sub/f0.png")
+        self._record(path)
+        item = (await self._list())["items"][0]
+        self.assertIsNone(item["thumbnail_url"])
+        thumb = self.output_dir / "thumbnails" / "sub" / "f0_thumb.png"
+        thumb.parent.mkdir(parents=True)
+        write_png(thumb, prompt=ambiguous_graph("cat", "dog"), color=(1, 2, 3))
+        item = (await self._list())["items"][0]
+        scope = item["target"]["root_scope"]
+        listed = _output_image_entry(path, self.output_dir, 0, root_scope=scope)
+        self.assertIsNotNone(listed["thumbnail_url"])
+        self.assertEqual(item["thumbnail_url"], listed["thumbnail_url"])
+        self.assertEqual(item["url"], listed["url"])
+        detail = await self._detail(item["id"])
+        self.assertEqual(detail["thumbnail_url"], listed["thumbnail_url"])
         self._no_paths()
 
     def test_target_formatting_keeps_the_recorded_spelling_on_windows(self):

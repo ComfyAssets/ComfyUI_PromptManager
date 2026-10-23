@@ -4,7 +4,9 @@
 open Needs review page: ``event: ready`` when it opens, then
 ``event: change`` after each committed queue change (an item the scan or the
 monitor recorded, a decision from any tab, a spelling refresh) and after a
-restore. Notices that arrive while one is being written collapse into one.
+restore. The first notice is sent at once; notices in the next
+``COALESCE_SECONDS`` collapse into one trailing ``change`` (M9: a busy scan
+records file after file, and each event costs every open page a re-read).
 The page re-reads its queue on each ``change``; nothing polls. ``change``
 carries no data (``{}``). ``ready`` carries the queue's version
 ``{library_epoch, review_revision}``, read after the stream subscribed, the
@@ -32,6 +34,8 @@ except ImportError:
 
 EVENTS_URL = "/prompt_manager/review/events"
 HEARTBEAT_SECONDS = 25
+# After a ``change``, the next one waits this long, collapsing the notices in between.
+COALESCE_SECONDS = 0.4
 _CHANGE = b"event: change\ndata: {}\n\n"
 _KEEPALIVE = b": keepalive\n\n"
 
@@ -76,6 +80,14 @@ class _Stream:
             self.changed.clear()
             return "change"
         return "idle"
+
+    async def closed_within(self, timeout: float) -> bool:
+        """Wait up to ``timeout``; true when the stream closed meanwhile."""
+        try:
+            await asyncio.wait_for(self.closed.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
 
 
 class ReviewEventsMixin:
@@ -143,7 +155,12 @@ class ReviewEventsMixin:
                 outcome = await stream.next(HEARTBEAT_SECONDS)
                 if outcome == "closed":
                     break
-                await response.write(_CHANGE if outcome == "change" else _KEEPALIVE)
+                if outcome == "idle":
+                    await response.write(_KEEPALIVE)
+                    continue
+                await response.write(_CHANGE)
+                if await stream.closed_within(COALESCE_SECONDS):
+                    break
             await response.write_eof()
         except (ConnectionError, RuntimeError) as exc:  # the tab went away
             self.logger.debug(f"Needs review stream closed ({exc})")

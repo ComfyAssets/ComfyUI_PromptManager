@@ -29,6 +29,7 @@ import urllib.parse
 from aiohttp import web
 
 from .annotations import _HEX64, _TOKEN, _UUID, _capture_error, _error
+from .images import media_thumbnail_url
 from .inspection_service import VIDEO_EXTENSIONS
 from .prompts import bad_request
 
@@ -255,7 +256,7 @@ class ReviewRoutesMixin:
     def _review_view(self, row: dict, roots, real_roots) -> dict:
         """The public ReviewItem of one stored row (no path, no locator)."""
         found = format_review_target(row["spelled_path"], row["locator"], real_roots)
-        target = url = None
+        target = url = thumbnail_url = None
         if found is not None:
             index, relative = found
             target = {
@@ -269,6 +270,10 @@ class ReviewRoutesMixin:
                 f"{urllib.parse.quote(relative, safe='/')}?root={index}"
                 f"&root_scope={target['root_scope']}"
             )
+            # The Images listing's thumbnail, when one exists (one stat).
+            thumbnail_url = media_thumbnail_url(
+                roots[index], relative, index, root_scope=target["root_scope"]
+            )
         filename = os.path.basename(row["spelled_path"])
         return {
             "id": row["id"],
@@ -281,6 +286,7 @@ class ReviewRoutesMixin:
             "candidate_count": row["candidate_count"],
             "limited": row["limited"],
             "url": url,
+            "thumbnail_url": thumbnail_url,
             "is_video": os.path.splitext(filename)[1].lower() in VIDEO_EXTENSIONS,
         }
 

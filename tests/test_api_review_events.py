@@ -96,21 +96,69 @@ class TestReviewEvents(ReviewEventsTestCase):
         self.assertEqual(await self._event(stream), "change")
 
     async def test_duplicate_recording_and_refused_decision_send_nothing(self):
+        # A spy on the notice itself: a wrong notice would otherwise pass as
+        # the next real change's event.
         self._require_events()
+        from unittest.mock import patch
+
+        from database import review as review_db
+        from database import review_decisions
+
+        calls = []
+        original = review_changes.notify_review_change
+
+        def spy(db_path):
+            calls.append(db_path)
+            original(db_path)
+
         path = self._ambiguous("two.png")
         self._record(path)
-        stream = await self._stream()
-        # The same bytes again: nothing changes.
-        self.assertEqual(await self._record_in_thread(path), "duplicate")
-        item, detail, observed = await self._open()
-        # A stale revision: refused with zero writes.
-        body = {**self._body(detail, observed, "unresolved"), "expected_revision": 9}
-        status, data = await self._decide(item["id"], body)
-        self.assertEqual(status, 409, data)
-        # The next notice is the next real change, so nothing came before it.
-        self._record(self._ambiguous("other.png", color=(0, 0, 9)))
-        self.assertEqual(await self._event(stream), "change")
+        with (
+            patch.object(review_db, "notify_review_change", spy),
+            patch.object(review_decisions, "notify_review_change", spy),
+        ):
+            # The same bytes again: nothing changes.
+            self.assertEqual(await self._record_in_thread(path), "duplicate")
+            self.assertEqual(calls, [], "a duplicate recording sent a notice")
+            item, detail, observed = await self._open()
+            # A stale revision: refused with zero writes.
+            body = {
+                **self._body(detail, observed, "unresolved"),
+                "expected_revision": 9,
+            }
+            status, data = await self._decide(item["id"], body)
+            self.assertEqual(status, 409, data)
+            self.assertEqual(calls, [], "a refused decision sent a notice")
+            self._record(self._ambiguous("other.png", color=(0, 0, 9)))
+            self.assertEqual(len(calls), 1, "a real recording sends one notice")
         self.assertEqual(len(self._items()), 2)
+
+    async def test_a_burst_of_changes_coalesces_into_one_more_event(self):
+        # M9: a busy scan records file after file; an open page hears the
+        # first at once and the rest as one trailing ``change``.
+        self._require_events()
+        from unittest.mock import patch
+
+        path = self.api.db.model.db_path
+        with (
+            patch.object(review_events, "COALESCE_SECONDS", 0.3),
+            patch.object(review_events, "HEARTBEAT_SECONDS", 0.6),
+        ):
+            stream = await self._stream()
+            review_changes.notify_review_change(path)
+            self.assertEqual(await self._event(stream), "change")
+            for _ in range(5):
+                review_changes.notify_review_change(path)
+                await asyncio.sleep(0.02)
+            # Every change event up to the next keepalive: exactly one.
+            changes = 0
+            while True:
+                line = await asyncio.wait_for(stream.content.readline(), READ_SECONDS)
+                self.assertTrue(line, "the stream ended")
+                if line == b": keepalive\n":
+                    break
+                changes += line == b"event: change\n"
+            self.assertEqual(changes, 1)
 
     async def test_decision_from_any_tab_sends_a_change(self):
         self._require_events()
