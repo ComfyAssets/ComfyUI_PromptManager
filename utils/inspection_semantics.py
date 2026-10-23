@@ -12,8 +12,10 @@ valid result. Importing this module reads nothing, and the default (ingestion)
 profile never imports it, so a missing or bad table can never break ingestion.
 An invalid table raises ``SemanticsError`` so a bad edit fails loudly instead of
 silently changing what the inspector resolves. The file is bounded in size and
-nesting before it is validated. Every class appears in exactly one category;
-classes that are not listed stay ``unsupported-node``.
+nesting before it is validated. Every class appears in exactly one prompt
+category; classes that are not listed stay ``unsupported-node``. ``lineage``
+(image and latent pass-through outputs for multi-stage chains) describes no
+prompt, so its classes are not claimed by a category.
 """
 
 import json
@@ -44,6 +46,7 @@ STRATEGIES: Mapping[str, FrozenSet[str]] = MappingProxyType(
         "encoders": frozenset({"single", "parts-equal", "pm-compose", "flag-parts"}),
         "strings": frozenset({"literal", "strip-newlines", "join-multi", "concat"}),
         "savers": frozenset({"comfy-counter", "vhs-counter"}),
+        "lineage": frozenset({"continue"}),
     }
 )
 # Shapes of the facts each sampler class provides (consumed by comfy-metadata.js).
@@ -72,7 +75,7 @@ _CATEGORIES = frozenset(
     + _CLASS_CATEGORIES
     + _SLOT_CATEGORIES
     + _SET_CATEGORIES
-    + ("stage_inputs", "facts")
+    + ("lineage", "stage_inputs", "facts")
 )
 # Input names that make an unlisted node a possible sampler stage in an ancestry
 # walk (``shaped``: pipes, video embeds and custom-sampler parts carry a prompt
@@ -111,6 +114,7 @@ class Semantics:
     runtime: FrozenSet[str]
     savers: Mapping[str, Mapping[str, Any]]
     non_file_outputs: FrozenSet[str]
+    lineage: Mapping[Tuple[str, int], Mapping[str, Any]]
     stage_inputs: Mapping[str, Tuple[str, ...]]
     facts: Mapping[str, Any]
     all_classes: FrozenSet[str]
@@ -225,8 +229,12 @@ def _check_selector(entry: dict, strategy: str, where: str) -> None:
 
 
 def _check_composite(entry: dict, strategy: str, where: str) -> None:
-    _fields(entry, where, frozenset({"strategy", "inputs"}), frozenset())
+    # ``additive``: every part stays in effect (combine, concat), so a later
+    # stage that adds parts to an earlier stage's prompt keeps that prompt.
+    _fields(entry, where, frozenset({"strategy", "inputs"}), frozenset({"additive"}))
     _names(entry["inputs"], where, minimum=2)
+    if "additive" in entry and not isinstance(entry["additive"], bool):
+        raise SemanticsError(f"{where}: additive must be a boolean")
 
 
 def _check_saver(entry: dict, strategy: str, where: str) -> None:
@@ -356,6 +364,35 @@ def _slot_category(doc: dict, category: str, owners: _Owners) -> Mapping:
     return MappingProxyType(result)
 
 
+def _lineage(doc: dict) -> Mapping:
+    """``(class, slot)`` outputs whose image or latent continues one input's.
+
+    These describe an output's image or latent, never its prompt, so they are
+    not prompt categories: a class listed here is not claimed, and stays
+    unsupported (or listed elsewhere) for text. Each output is listed once.
+    """
+    rows = doc["lineage"]
+    if not isinstance(rows, list):
+        raise SemanticsError("category lineage must be a list")
+    result = {}
+    for index, row in enumerate(rows):
+        where = f"lineage[{index}]"
+        if not isinstance(row, dict):
+            raise SemanticsError(f"{where}: entry must be an object")
+        name = _name(row.get("class"), where, "class")
+        slot = _slot(row, where)
+        entry = {
+            key: value for key, value in row.items() if key not in ("class", "slot")
+        }
+        _strategy(entry, "lineage", where)
+        _fields(entry, where, frozenset({"strategy", "input"}), frozenset())
+        _name(entry["input"], where)
+        if (name, slot) in result:
+            raise SemanticsError(f"lineage: duplicate output key {(name, slot)!r}")
+        result[(name, slot)] = _freeze(entry)
+    return MappingProxyType(result)
+
+
 def _set_category(doc: dict, category: str, owners: _Owners) -> FrozenSet[str]:
     rows = doc[category]
     if not isinstance(rows, list):
@@ -452,6 +489,7 @@ def _validate(doc: Any) -> Semantics:
     for category in _SET_CATEGORIES:
         tables[category] = _set_category(doc, category, owners)
     return Semantics(
+        lineage=_lineage(doc),
         stage_inputs=_stage_inputs(doc),
         facts=_facts(doc),
         all_classes=owners.classes(),

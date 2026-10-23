@@ -23,7 +23,6 @@ import {
     MAX_JOIN_INPUTS,
     MAX_SUBGRAPH_DEPTH,
     MAX_WORKFLOW_NODES,
-    MULTISTAGE_UNATTRIBUTED_REASON,
     NO_SAMPLER_NAMES,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
@@ -39,12 +38,14 @@ import {
     explained,
     isLink,
     nodeRef,
+    RUNTIME_PARTS_REASON,
+    RUNTIME_PARTS_SOURCE,
     readPairExecution,
     result,
     sideOf,
     slotKey,
 } from './local-resolver-support.mjs';
-import { finalStages, outcomeKey, sharedPair, stage } from './local-resolver-stages.mjs';
+import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage } from './local-resolver-stages.mjs';
 import { parameters } from './local-parameters.mjs';
 
 export { SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
@@ -69,6 +70,7 @@ class GraphResolver {
         this.active = new Set();
         this.metadata = metadata ?? new Map();
         this.textSources = new Map();
+        this.omitting = new Set();
         this.choices = new Map();
         this.tainted = false;
         this.latentWalks = new Map();
@@ -167,11 +169,13 @@ class GraphResolver {
                     [text, path, storageText] = this.text(pyGet(inputs, adapted.inputName), 'string', depth + 1);
                     if (adapted.compose || adapted.storageInput) storageText = text;
                     if (adapted.compose) {
-                        const [before, beforePath] = this.text(pyGet(inputs, 'prepend_text', ''), 'string', depth + 1);
-                        const [after, afterPath] = this.text(pyGet(inputs, 'append_text', ''), 'string', depth + 1);
+                        const omitted = [];
+                        const [before, beforePath] = promptPart(this, pyGet(inputs, 'prepend_text', ''), depth, omitted);
+                        const [after, afterPath] = promptPart(this, pyGet(inputs, 'append_text', ''), depth, omitted);
                         this.scan(pyLen(before) + pyLen(after) + beforePath.length + path.length + afterPath.length);
                         text = this.built(this.bounded([pyStrip(before), text, pyStrip(after)].filter(part => part).join(' ')));
                         path = [...beforePath, ...path, ...afterPath];
+                        if (omitted.length) this.omitting.add(slotKey(nodeId, slot));
                     }
                 }
             } else if ((name === 'StringConcatenate' || name === 'Text Concatenate') && slot === 0 && kind === 'string') {
@@ -447,6 +451,10 @@ class GraphResolver {
             text_source: this.textSources.get(slotKey(origin.node_id, origin.output_slot)) ?? 'graph-inferred',
         };
         if (guiderId !== null) provenance.guider_id = guiderId;
+        const omitted = [];
+        for (const step of path) if (this.omitting.has(slotKey(step.node_id, step.output_slot)) && !omitted.includes(step.node_id)) omitted.push(step.node_id);
+        // Through encoders, concatenations and chained PromptManagers (D125).
+        if (omitted.length) { provenance.text_source = RUNTIME_PARTS_SOURCE; provenance.omitted_parts = omitted; }
         return { text, storage_text: storageText, provenance };
     }
 
@@ -527,7 +535,8 @@ class GraphResolver {
                 return result('absent', { positive, samplerId, reason: absentReason });
             }
             negative = this.side(inputs.get(negativeName), samplerId, guiderId, depth);
-            return result('resolved', { positive, negative, samplerId });
+            const omitted = [positive, negative].some(side => side.provenance.text_source === RUNTIME_PARTS_SOURCE);
+            return result('resolved', { positive, negative, samplerId, reason: omitted ? RUNTIME_PARTS_REASON : '' });
         } catch (error) {
             if (!(error instanceof Unresolved)) throw error;
             return result('unresolved', { positive, negative, samplerId, reason: error.message, reasonCode: error.code, node: error.node });
@@ -543,11 +552,13 @@ class GraphResolver {
         }
     }
 
+    /** `latent_checked`: `latent_stages` once per sampler; returns the continued earlier stage, or null. */
     latentChecked(samplerId, value) {
-        let error;
+        let error, earlier = null;
         if (this.latentWalks.has(samplerId)) {
-            const [walked, cost] = this.latentWalks.get(samplerId);
+            const [walked, cost, found] = this.latentWalks.get(samplerId);
             error = walked;
+            earlier = found;
             if (!this.latentCharged.has(samplerId)) {
                 this.budget.charge(cost);
                 this.latentCharged.add(samplerId);
@@ -555,16 +566,17 @@ class GraphResolver {
         } else {
             const before = this.budget.allowance;
             try {
-                this.latentStages(samplerId, value);
+                earlier = latentStages(this, samplerId, value);
                 error = null;
             } catch (raised) {
                 if (!(raised instanceof Unresolved) || raised.code === 'work-limit') throw raised;
                 error = raised;
             }
-            this.latentWalks.set(samplerId, [error, before - this.budget.allowance]);
+            this.latentWalks.set(samplerId, [error, before - this.budget.allowance, earlier]);
             this.latentCharged.add(samplerId);
         }
         if (error !== null) throw new Unresolved(error.message, error.code, error.node === null ? null : { ...error.node });
+        return earlier;
     }
 
     enqueue(queue, queued, inputs, depth) {
@@ -581,21 +593,6 @@ class GraphResolver {
         const { shaped, withModel } = this.semantics.stageInputs;
         if (shaped.some(key => isLink(pyGet(inputs, key)))) return true;
         return isLink(pyGet(inputs, 'model')) && withModel.some(key => isLink(pyGet(inputs, key)));
-    }
-
-    latentStages(origin, value) {
-        if (!isLink(value)) throw new Unresolved('Unknown latent ancestry', 'malformed');
-        const start = String(value[0]), queue = [[start, 0]], queued = new Set([start]);
-        for (let head = 0; head < queue.length; head++) {
-            const [nodeId, depth] = queue[head];
-            if (nodeId === origin) throw new Unresolved('Cyclic latent ancestry', 'malformed');
-            if (depth >= this.maxDepth) throw new Unresolved('Resolution depth limit reached', 'depth-limit');
-            this.budget.spend();
-            const [name, inputs] = this.node(nodeId);
-            if (this.stageClasses.has(name)) throw new Unresolved(MULTISTAGE_UNATTRIBUTED_REASON);
-            if (this.stageShaped(name, inputs)) throw this.unsupported('Unsupported latent ancestry', nodeId);
-            this.enqueue(queue, queued, inputs, depth + 1);
-        }
     }
 }
 

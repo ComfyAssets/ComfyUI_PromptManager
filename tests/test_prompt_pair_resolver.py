@@ -1245,7 +1245,7 @@ class TestGuiderSamplers(unittest.TestCase):
         source["3"]["inputs"]["guider"] = [previous, 0]
         self.assertEqual(_inspect(source)["reason_code"], "depth-limit")
 
-    def test_custom_advanced_upstream_of_a_sampler_is_multistage(self):
+    def test_custom_advanced_upstream_of_a_sampler_is_a_compared_stage(self):
         source = _guided()
         source["41"] = {
             "class_type": "KSampler",
@@ -1256,15 +1256,18 @@ class TestGuiderSamplers(unittest.TestCase):
             },
         }
         source["8"]["inputs"]["samples"] = ["41", 0]
+        # 41 continues 3's latent and reads the same texts as 3's guider.
+        for anchor in ("9", None):
+            result = _inspect(source, output_node_id=anchor)
+            self.assertEqual(
+                (result["state"], result["sampler_id"]), ("resolved", "41")
+            )
+        source["41"]["inputs"]["negative"] = ["6", 0]
         result = _inspect(source, output_node_id="9")
-        self.assertEqual(result["sampler_id"], "41")
-        self.assertEqual(result["state"], "unresolved")
-        self.assertEqual(result["reason"], "Multistage sampler ancestry is ambiguous")
-        unanchored = _inspect(source)
-        self.assertEqual(unanchored["state"], "ambiguous")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["reason_code"], "multistage-differs")
         self.assertEqual(
-            sorted(item["sampler_id"] for item in unanchored["candidates"]),
-            ["3", "41"],
+            sorted(item["sampler_id"] for item in result["candidates"]), ["3", "41"]
         )
 
 
@@ -2632,17 +2635,19 @@ class TestLatentAncestry(unittest.TestCase):
                 self.assertEqual(_sides(result), (parity.POS, parity.NEG))
                 self.assertEqual(_inspect(source, output_node_id="9"), result)
 
-    def test_upstream_sampler_through_vaedecode_vaeencode_is_multistage(self):
-        for positive in (OTHER, parity.POS):
-            with self.subTest(positive=positive):
-                result = _inspect(_image_to_image(positive), output_node_id="63")
-                # Until PR3 compares stage texts, never one stage's prompt.
-                self.assertEqual(result["state"], "unresolved")
-                self.assertEqual(result["sampler_id"], "61")
-                self.assertEqual(result["reason"], MULTISTAGE)
-                self.assertIsNone(result["reason_code"])
-                self.assertIsNone(result["positive"])
-                self.assertIsNone(result["negative"])
+    def test_upstream_sampler_through_vaedecode_vaeencode_is_compared(self):
+        # The latent continues the first stage's through lineage nodes: the
+        # stages are compared (spec 9.3), equal prompts resolve, others differ.
+        result = _inspect(_image_to_image(parity.POS), output_node_id="63")
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "61"))
+        self.assertEqual(_sides(result), (parity.POS, parity.NEG))
+        result = _inspect(_image_to_image(OTHER), output_node_id="63")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["sampler_id"], "61")
+        self.assertEqual(result["reason_code"], "multistage-differs")
+        self.assertEqual(
+            [item["sampler_id"] for item in result["candidates"]], ["61", "3"]
+        )
         # An upstream sampler reached through a non-latent input is a stage too.
         source = _latent_from(
             {
@@ -2959,8 +2964,14 @@ class TestLatentAncestry(unittest.TestCase):
         result = _inspect(source, output_node_id="9")
         self.assertEqual(result["reason_code"], "unsupported-node")
         self.assertEqual(result["node"], {"id": "60", "class_type": "MysteryUpscaler"})
-        # The listed stage is now an earlier sampler stage in the ancestry.
+        # The listed stage is now an earlier sampler stage, continued through
+        # VAEEncode: its prompt equals this stage's, so the chain resolves.
         source["60"]["class_type"] = "UltimateSDUpscale"
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
+        # Reached only through an unlisted image node, it stays unattributed.
+        source["61"] = {"class_type": "MysteryFilter", "inputs": {"image": ["60", 0]}}
+        source["5"]["inputs"]["pixels"] = ["61", 0]
         result = _inspect(source, output_node_id="9")
         self.assertEqual(result["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
 

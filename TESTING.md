@@ -392,7 +392,8 @@ with source `zeroed-conditioning`. `easy ifElse` with a literal boolean follows 
 branch only; with a linked boolean both branches are traced, equal texts resolve and
 different texts make the sampler `ambiguous` with one candidate per choice (at most
 32, else `work-limit`). ConditioningCombine/Concat/Average resolve only when every
-part has the same text, otherwise `unresolved` with `composite` naming the node.
+part has the same text, otherwise `unresolved` with `composite` naming the node
+(but see the added-conditioning floor below for a later stage).
 Results that depend on a forced choice are never memoized. A `FaceDetailer`
 (`detailer-stage`) is a sampler stage: the samplers reached through its `image`
 ancestry are compared with it. Equal texts resolve with the detailer as the sampler;
@@ -403,9 +404,65 @@ A sampler's latent ancestry is walked through every link input of non-sampler
 nodes within the same visit and depth budgets: with no earlier sampler it is a
 single stage whatever the origin (VAEEncode, EmptyLatentBatch, EmptyFlux2LatentImage,
 EmptyHunyuanLatentVideo, SetLatentNoiseMask, InpaintModelConditioning or
-WanImageToVideo slot 2). An earlier sampler (img2img from a decode, hires fix) stays
-`unresolved` "Multistage sampler ancestry is ambiguous" until stage texts are
-compared; an unlisted node with sampler-shaped inputs (positive, negative, guider,
+WanImageToVideo slot 2). Pass-through lineage (#304 follow-up, maintainer option B,
+2026-10-23): the table's `lineage` section lists the outputs whose image or latent
+continues one input's (`VAEDecode`/`VAEDecodeTiled` `samples`, `VAEEncode`/
+`VAEEncodeTiled` `pixels`, `ImageUpscaleWithModel`, `ImageScale`, `ImageScaleBy`,
+`ImageScaleToTotalPixels` `image`, `LatentUpscale`/`LatentUpscaleBy` `samples`,
+cg-image-filter `Image Filter` slot 0 `images` and slot 1 `latents`; a selection of
+the same batch), plus Reroutes. Lineage describes no prompt, so its classes are not
+claimed by a prompt category. When the latent walk finds exactly one earlier sampler
+and the latent descends from that sampler's output slot 0 only through lineage
+nodes (a hires-fix or refiner chain, img2img from an in-graph decode, a direct
+latent link), the two stages are compared like a detailer and its upstream stage:
+equal role texts resolve with the later sampler named, different texts are
+`ambiguous` `multistage-differs` with one candidate per stage, and an unreadable
+earlier stage makes the chain `unresolved` with that stage's reason. Unanchored, the
+earlier sampler is judged inside the chain when its output reaches no other file
+output. A size or resolution node reading the same image beside the lineage (a
+`ResolutionCalculator` feeding `ImageScale` width and height) is allowed, since the
+walk then still finds only that sampler. Any other earlier sampler, or one reached
+only through an unlisted image node, stays `unresolved` "Multistage sampler ancestry
+is ambiguous". Added-conditioning floor: a later stage whose own positive fails only
+as `composite` keeps its earlier stages' shared pair ("A later stage adds
+conditioning to the base prompt", naming the earlier stage's sampler) when that
+positive reaches, through Reroutes and conditioning pass-throughs, a composite the
+table marks `additive` (ConditioningCombine, ConditioningConcat; never
+ConditioningAverage, which can weight a part away), one of its parts is exactly the
+earlier stages' positive text, and its negative text equals theirs. This is the
+three-stage Flux run whose UltimateSDUpscale combines the PromptManager prompt with
+a style-trigger encoder: legacy linked the PromptManager text and every stage is
+conditioned on it. The positive is always labelled (maintainer ruling): its source is
+`added-conditioning` (D126; with a D125 omission too,
+`runtime-parts-omitted-and-added-conditioning`) and its provenance names the
+composite (`added_by`), whatever the added text is; no length heuristic. A combine without the base text, a different negative, or
+different earlier stages stay as they were (`composite` or `multistage-differs`).
+An image-edit batch (several samplers with distinct prompts, one shared saver
+prefix) stays `ambiguous`, and text generated at run time stays untraceable
+(`tests/test_resolver_pass_through.py` on synthetic shapes from
+`tests/passthrough_graphs.py`; the browser port is compared on the named
+`select-*` chain cases and `passthrough_fuzz_cases`). Ingestion keeps the default
+profile's historical latent rule (D1), so the admin scan still reaches these files
+through its legacy-parser fallback. Run-time PromptManager parts (maintainer option
+A, 2026-10-23): LoraManager's `TriggerWord Toggle` is a `runtime` class (its output is
+the LoRA's trigger words as filtered at run time). A PromptManager (or
+PromptManagerPair) `prepend_text` or `append_text` linked directly to a `runtime`
+node is left out: the text is the node's own, combined with any other literal or
+traced part exactly as before, the side's source is `runtime-parts-omitted`, and a
+resolved pair's reason is "Text added at run time, such as trigger words, is not
+included". The prompt block shows that line under the text (D125; the evidence
+badge stays "Workflow inferred"). The label follows the text through encoders,
+concatenations and chained PromptManagers: a side is labelled when any node on its
+traced path left a part out, and its provenance lists those PromptManager nodes
+(`omitted_parts`). Comparisons include what a text leaves out, so a prompt that left
+out a part never equals a complete one (a branch with the toggle and one without stay
+ambiguous; such stages are `multistage-differs`). Only classes in the table's
+`runtime` list are left out, never another `runtime-value` source (a JoinStringMulti
+with a linked list flag stays `runtime-value`). The toggle's output is never computed. A run-time node further upstream (inside a
+concatenation), a run-time main `text`, or an unknown feeder keep their outcome
+(`runtime-value` or `unsupported-node`). This is what legacy linked for the June
+hires-fix runs (`TestRunTimePromptManagerParts`, the `select-runtime-*` parity
+cases); an unlisted node with sampler-shaped inputs (positive, negative, guider,
 latent_image, a pipe, video embeds, custom-sampler parts, or a `model` link together
 with conditioning, neg_conditioning, samples or latent) is `unsupported-node`
 naming it, here and in a detailer's image ancestry; a latent that is not a link or
@@ -1899,7 +1956,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123 and D124 assigned):
+Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123, D124, D125 and D126 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -1971,6 +2028,21 @@ Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123 and D
   button instead of reading the file. The concept has no such state, so no concept
   comparison renders it: `metadata off shows an explicit load and loads once on request`
   (workspace-system.spec) pins it instead.
+- **D125** (prompt blocks, maintainer option A): a resolved prompt whose source is
+  `runtime-parts-omitted` (a PromptManager `prepend_text` or `append_text` fed directly
+  by a listed run-time node, such as LoraManager's TriggerWord Toggle, was left out)
+  shows the muted line "Text added at run time, such as trigger words, is not
+  included." under its text. The evidence badge stays "Workflow inferred"; the line is
+  never sent or copied. The concept has no such state (`a prompt that left out run-time
+  trigger words says so under its text (D125)` in `tests/js/prompt-blocks.test.js`).
+- **D126** (prompt blocks, maintainer ruling on the added-conditioning floor): a
+  resolved positive whose source is `added-conditioning` (a later stage combined more
+  conditioning with the base prompt, as UltimateSDUpscale's ConditioningCombine of the
+  PromptManager and a style trigger) shows "Conditioning added at a later stage is not
+  included." the same way. A prompt with both shows both lines, D125 first (source
+  `runtime-parts-omitted-and-added-conditioning`). Always labelled, with no length or
+  "short trigger" heuristic (`a prompt a later stage added conditioning to says so, and
+  both lines show together (D126)`).
 
 Appearance scope and states. The Default layout and Thumbnail size defaults start the
 Images page only (a new visit, not the current view or a saved view); the embedded
@@ -2072,8 +2144,24 @@ and skip the parse.
   integers past 2**53 as their exact digits, so the card and the inspector read
   the same digits. The parse runs after the file handle closes. A record over
   2 MiB (UTF-8), a parser error, a recursion error, a placeholder, or a
-  non-integral, boolean or non-finite seed gives null. A card never shows a seed
-  that differs from the inspector's
+  non-integral, boolean or non-finite seed gives null. When the prompt graph's
+  sampler stages read different seed inputs and the inspector's resolution names
+  one sampler for a resolved pair (a detailer or pass-through chain, whose facts
+  are the named stage's, D19), the card compares that stage's seed (read by the
+  same parser, the other samplers hidden from it) with its own and shows no seed
+  only when they differ. A seed that agrees, or one the named stage does not make
+  known, is kept, as on main (a saved sampler beside a preview-only one keeps its
+  seed; an ambiguous chain, whose facts merge and fill from the parser, keeps it).
+  Only such graphs are resolved for the card, with `INSPECTION_PROFILE`
+  (`test_a_chain_the_inspector_names_one_stage_of_shows_no_differing_seed`,
+  `test_a_seed_that_agrees_with_the_named_stage_is_kept`,
+  `test_a_named_ambiguous_chain_keeps_the_parser_seed`; a literal named seed needs no
+  second parse, and stages sharing one linked seed skip the check. Measured on a
+  200-card page of about 54 KB graphs, half multi-stage with per-stage seeds: 618 ms
+  cold against main's 387 ms, about 1.2 ms more per such card, paid once per file
+  through the header-facts cache below;
+  before this rule a KSampler then FaceDetailer chain with two seeds broke the
+  contract below). A card never shows a seed that differs from the inspector's
   (`test_card_seed_equals_inspector_seed_when_both_present`, which `JSON.parse`s
   the listing in Node and compares `String(seed)` with the inspector's seed,
   including one past 2**53). The card shows no seed for A1111 `parameters` files

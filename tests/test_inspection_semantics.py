@@ -55,6 +55,9 @@ def _minimal():
         "runtime": [],
         "savers": {},
         "non_file_outputs": [],
+        "lineage": [
+            {"class": "VAEEncode", "slot": 0, "strategy": "continue", "input": "pixels"}
+        ],
         "stage_inputs": {"shaped": ["positive"], "with_model": ["samples"]},
         "facts": {
             "configuration_outputs": {},
@@ -199,16 +202,26 @@ class SpecEntriesTest(unittest.TestCase):
             },
         )
 
+        # Combine and concat keep every part in effect (additive); an average
+        # blends its parts, so a part may be weighted away.
         self.assertEqual(
             table.composites["ConditioningCombine"],
-            {"strategy": "combine", "inputs": ("conditioning_1", "conditioning_2")},
+            {
+                "strategy": "combine",
+                "inputs": ("conditioning_1", "conditioning_2"),
+                "additive": True,
+            },
         )
-        for name in ("ConditioningConcat", "ConditioningAverage"):
+        for name, additive in (
+            ("ConditioningConcat", {"additive": True}),
+            ("ConditioningAverage", {}),
+        ):
             self.assertEqual(
                 table.composites[name],
                 {
                     "strategy": "combine",
                     "inputs": ("conditioning_to", "conditioning_from"),
+                    **additive,
                 },
             )
 
@@ -257,7 +270,12 @@ class SpecEntriesTest(unittest.TestCase):
         )
 
         # D18: decided at run time.
-        self.assertEqual(table.runtime, frozenset({"PromptSearchList"}))
+        # LoraManager's TriggerWord Toggle outputs the LoRA's trigger words as
+        # filtered at run time (option A leaves them out of a PromptManager).
+        self.assertEqual(
+            table.runtime,
+            frozenset({"PromptSearchList", "TriggerWord Toggle (LoraManager)"}),
+        )
 
         comfy = "{name}_{counter:05}_.{ext}"
         for name, image in (
@@ -464,6 +482,89 @@ class SpecEntriesTest(unittest.TestCase):
         self.assertIsInstance(table.composites["ConditioningCombine"]["inputs"], tuple)
 
 
+class LineageTableTest(_TableCase):
+    """``lineage``: outputs whose image or latent continues one input's."""
+
+    def test_repository_lineage_lists_the_pass_through_nodes(self):
+        table = load_semantics()
+        self.assertEqual(
+            {key: dict(entry) for key, entry in table.lineage.items()},
+            {
+                ("VAEDecode", 0): {"strategy": "continue", "input": "samples"},
+                ("VAEDecodeTiled", 0): {"strategy": "continue", "input": "samples"},
+                ("VAEEncode", 0): {"strategy": "continue", "input": "pixels"},
+                ("VAEEncodeTiled", 0): {"strategy": "continue", "input": "pixels"},
+                ("ImageUpscaleWithModel", 0): {
+                    "strategy": "continue",
+                    "input": "image",
+                },
+                ("ImageScale", 0): {"strategy": "continue", "input": "image"},
+                ("ImageScaleBy", 0): {"strategy": "continue", "input": "image"},
+                ("ImageScaleToTotalPixels", 0): {
+                    "strategy": "continue",
+                    "input": "image",
+                },
+                ("LatentUpscale", 0): {"strategy": "continue", "input": "samples"},
+                ("LatentUpscaleBy", 0): {"strategy": "continue", "input": "samples"},
+                ("Image Filter", 0): {"strategy": "continue", "input": "images"},
+                ("Image Filter", 1): {"strategy": "continue", "input": "latents"},
+            },
+        )
+        # Lineage describes no prompt: its classes are not prompt categories.
+        self.assertFalse({name for name, _ in table.lineage} & table.all_classes)
+
+    def test_lineage_rows_are_validated(self):
+        def row(**changes):
+            entry = {
+                "class": "VAEEncode",
+                "slot": 0,
+                "strategy": "continue",
+                "input": "pixels",
+            }
+            entry.update(changes)
+            return entry
+
+        cases = (
+            ({"lineage": {}}, "must be a list"),
+            ({"lineage": ["VAEEncode"]}, "must be an object"),
+            ({"lineage": [row(strategy="passthrough")]}, "unknown strategy"),
+            ({"lineage": [row(slot=-1)]}, "slot"),
+            ({"lineage": [row(slot=True)]}, "slot"),
+            ({"lineage": [row(input="")]}, "input name"),
+            ({"lineage": [row(note="x")]}, "field"),
+            ({"lineage": [row(), row()]}, "duplicate"),
+            ({"lineage": [row(**{"class": ""})]}, "class"),
+        )
+        for index, (change, fragment) in enumerate(cases):
+            with self.subTest(case=index):
+                doc = _minimal()
+                doc.update(change)
+                self.assertRejected(doc, fragment)
+        doc = _minimal()
+        doc["lineage"].append(row(slot=1, input="latents"))
+        self.assertEqual(len(self.load_doc(doc).lineage), 2)
+
+    def test_a_lineage_class_may_also_carry_conditioning(self):
+        # InpaintModelConditioning-like: conditioning slots, a latent slot.
+        doc = _minimal()
+        doc["lineage"].append(
+            {"class": "FluxGuidance", "slot": 1, "strategy": "continue", "input": "x"}
+        )
+        self.assertIn(("FluxGuidance", 1), self.load_doc(doc).lineage)
+
+    def test_composite_additive_must_be_a_boolean(self):
+        doc = _minimal()
+        doc["composites"]["ConditioningCombine"] = {
+            "strategy": "combine",
+            "inputs": ["conditioning_1", "conditioning_2"],
+            "additive": "yes",
+        }
+        self.assertRejected(doc, "additive must be a boolean")
+        doc["composites"]["ConditioningCombine"]["additive"] = True
+        table = self.load_doc(doc)
+        self.assertIs(table.composites["ConditioningCombine"]["additive"], True)
+
+
 class ValidationTest(_TableCase):
     def test_minimal_table_loads(self):
         table = self.load_doc(_minimal())
@@ -501,6 +602,7 @@ class ValidationTest(_TableCase):
                     {"literal", "strip-newlines", "join-multi", "concat"}
                 ),
                 "savers": frozenset({"comfy-counter", "vhs-counter"}),
+                "lineage": frozenset({"continue"}),
             },
         )
         with self.assertRaises(TypeError):

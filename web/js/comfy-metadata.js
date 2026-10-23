@@ -462,7 +462,7 @@
         "ControlNetApplyAdvanced", "ControlNetApplySD3", "InpaintModelConditioning", "WanImageToVideo", "ConditioningZeroOut",
         "CLIPTextEncode", "CLIPTextEncodeSDXL", "CLIPTextEncodeFlux", "CLIPTextEncodeSD3", "TextEncodeQwenImageEdit",
         "TextEncodeQwenImageEditPlus", "TextEncodeQwenImage21", "KikoTextEncode", "StringConstant", "StringConstantMultiline",
-        "JoinStringMulti", "PromptSearchList", "PreviewImage", "PreviewAny", "SaveImageWebsocket",
+        "JoinStringMulti", "PromptSearchList", "TriggerWord Toggle (LoraManager)", "PreviewImage", "PreviewAny", "SaveImageWebsocket",
         "Image Comparer (rgthree)", "DetailerForEach", "UltimateSDUpscale", "UltimateSDUpscaleNoUpscale",
         "ControlNetInpaintingAliMamaApply", "LTXVConditioning", "FluxKontextMultiReferenceLatentMethod", "Text to Conditioning",
         "TextInput", "DisplayText", "ClownsharKSampler_Beta", "KSampler (Efficient)", "ttN KSampler_v2",
