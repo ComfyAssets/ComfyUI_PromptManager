@@ -1702,7 +1702,8 @@ test('card checkboxes select images into the concept bar and Clear empties it', 
     const selectedBefore = await cards(page).evaluateAll(nodes => nodes.map(node => node.classList.contains('selected')));
     await checkbox(first, 'same.png').check();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
-    await expect(barButtons(page)).toHaveText(['Set category', 'Export metadata', 'Clear']);
+    // D85: Add tags (the concept's) and Auto-tag selected lead the real actions.
+    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Export metadata', 'Clear']);
     // Toggling neither opens the viewer, nor inspects, nor moves focus.
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await expect(checkbox(first, 'same.png')).toBeFocused();

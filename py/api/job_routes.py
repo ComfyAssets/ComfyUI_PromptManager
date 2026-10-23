@@ -1,8 +1,9 @@
 """Session job routes (Activity): list, inspect, follow and cancel jobs.
 
-The registry itself is ``py/api/jobs.py``; the scan job's runner is in
-``py/api/admin.py``. Every response leaves out absolute server paths: job
-rows already carry root-relative paths and public root labels.
+The registry itself is ``py/api/jobs.py``. The scan job's runner is in
+``py/api/admin.py``, the image tagging job's in ``py/api/image_tag_jobs.py``.
+Every response leaves out absolute server paths: job rows already carry
+root-relative paths and public root labels.
 """
 
 import contextlib
@@ -42,6 +43,20 @@ async def _scan_scope(request):
     return scope if scope in SCAN_SCOPES else None
 
 
+def busy_response(busy: JobBusy):
+    """``409 busy``, naming the running job that holds the slot."""
+    running = busy.running
+    return web.json_response(
+        {
+            "success": False,
+            "code": "busy",
+            "error": str(busy),
+            "running": {"id": running.id, "title": running.title},
+        },
+        status=409,
+    )
+
+
 def _summary_event(job):
     return f"data: {json.dumps(job.summary())}\n\n".encode("utf-8")
 
@@ -57,6 +72,10 @@ class JobRoutesMixin:
         @routes.post("/prompt_manager/jobs/scan")
         async def start_scan_job_route(request):
             return await self.start_scan_job(request)
+
+        @routes.post("/prompt_manager/jobs/image-tags")
+        async def start_image_tag_job_route(request):
+            return await self.start_image_tag_job(request)
 
         @routes.get("/prompt_manager/jobs/{job_id}")
         async def job_detail_route(request):
@@ -121,16 +140,7 @@ class JobRoutesMixin:
         try:
             job = self._start_scan_job(files)
         except JobBusy as busy:
-            running = busy.running
-            return web.json_response(
-                {
-                    "success": False,
-                    "code": "busy",
-                    "error": str(busy),
-                    "running": {"id": running.id, "title": running.title},
-                },
-                status=409,
-            )
+            return busy_response(busy)
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
     async def job_events(self, request):
