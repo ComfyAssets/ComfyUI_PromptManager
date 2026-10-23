@@ -4,7 +4,7 @@
  * `aria-pressed`; a press navigates to its hash), then `.settings-layout` with the section's body and the Save row
  * (`span.small#settings-status` + "Save preferences"). D92: no "Sample configuration" chip, the status copy is
  * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
- * per-section hand-off to its legacy tool (D94), never mock placeholders.
+ * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview is native (system-overview.mjs).
  *
  * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
@@ -13,6 +13,7 @@ import { createButton, createScope } from '../shared/toolkit/core.js';
 import { SYSTEM_SECTIONS, navigateTo } from './state.mjs';
 import { createSystemDrafts, DRAFT_DOMAINS } from './system-state.mjs';
 import { sectionNav } from './system-controls.mjs';
+import { healthNotice, mountOverview } from './system-overview.mjs';
 
 const SETTINGS_URL = '/prompt_manager/settings';
 const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existing administration' });
@@ -85,11 +86,20 @@ function markFailed(layout, store) {
 }
 
 /**
+ * The sections delivered so far: Overview (S2 Task 6), and Maintenance's notice with "Run health checks" above the
+ * hand-off to the maintenance tools that are not native yet (D-NEW-S2-5).
+ */
+export const DELIVERED_SECTIONS = Object.freeze({
+    overview: mountOverview,
+    maintenance: (container, { api, scope }) => [healthNotice({ api, scope }), ...handoff('maintenance')],
+});
+
+/**
  * Mount System under the heading `renderHeading` wrote in `main`. Returns `{show(section)}`, which shows another
  * section in place. `scope` is the page's view scope; `sections` maps a section id to a delivered section's mount
  * (`(container, {api, scope, drafts}) => nodes`), and every other section hands off.
  */
-export function mountSystem(main, api, scope, { section, sections = {}, navigate = navigateTo }) {
+export function mountSystem(main, api, scope, { section, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
     const store = systemDrafts(api);
     const nav = sectionNav({ label: 'System sections', sections: SYSTEM_SECTIONS, active: section, scope,
         onSelect: id => navigate(`#/system/${id}`) });

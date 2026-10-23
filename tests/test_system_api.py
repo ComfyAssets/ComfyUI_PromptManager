@@ -299,6 +299,18 @@ class TestStatisticsRoute(SystemAPITestCase):
         self.assertEqual(body["totals"], self.api.db.get_statistics())
         self.assertTrue(body["success"])
 
+    async def test_statistics_lists_rated_images_for_library_totals(self):
+        # D96: the Statistics dialog's "Library totals" reads the rated count
+        # with the runs (one read), from the same images the Overview counts.
+        rated = self.save("Rated", rating=4)
+        self.image(rated, "a.png")
+        self.image(self.save("Unrated"), "b.png")
+        body = await self.json("GET", "/prompt_manager/system/statistics")
+        self.assertEqual(body["rated_images"], 1)
+        self.assertEqual(
+            set(body), {"success", "by_category", "totals", "rated_images"}
+        )
+
     async def test_statistics_failure_is_an_error_envelope(self):
         with (
             patch.object(

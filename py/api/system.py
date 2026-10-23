@@ -9,7 +9,8 @@
   one, no health result until a check ran, and no Needs-review count until
   the review queue exists.
 - ``GET /prompt_manager/system/statistics`` lists runs and ratings per
-  category, with the legacy ``/stats`` totals.
+  category, with the legacy ``/stats`` totals and the Overview's count of
+  rated images (images whose linked prompt is rated).
 
 New routes answer errors with ``{success:false, code, error}``.
 """
@@ -167,14 +168,20 @@ class SystemRoutesMixin:
 
     async def get_system_statistics(self, request):
         try:
-            by_category, totals = await asyncio.gather(
+            by_category, totals, counts = await asyncio.gather(
                 self._run_in_executor(self.db.usage_by_category),
                 self._run_in_executor(self.db.get_statistics),
+                self._run_in_executor(self.db.library_counts),
             )
         except Exception:
             self.logger.exception("System statistics failed")
             return _failure("Failed to read statistics")
         return web.json_response(
-            {"success": True, "by_category": by_category, "totals": totals},
+            {
+                "success": True,
+                "by_category": by_category,
+                "totals": totals,
+                "rated_images": counts["rated_images"],
+            },
             headers={"Cache-Control": "no-store"},
         )
