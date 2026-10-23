@@ -55,6 +55,8 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     expect([overview.library.positive_prompts, overview.images.indexed, thumbnails.pending]).toEqual([6, 24, 0]);
     // I2: the Overview never walks the sources for thumbnails; the row reads the status route itself.
     expect(overview).not.toHaveProperty('thumbnails');
+    // The fixture records no ambiguous file: the Needs review queue is empty.
+    expect(overview.needs_review).toEqual({ pending: 0 });
     const layout = await openOverview(page);
     expect(await layout.locator('.summary-metrics > .metric').evaluateAll(items => items.map(item =>
         [item.querySelector('strong').textContent, item.querySelector('span').textContent]))).toEqual([
@@ -64,7 +66,7 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
         ['Not checked', 'Database integrity'],
     ]);
     expect(await rowsOf(layout, 'Library health')).toEqual([
-        ['Ambiguous image links', 'Not available yet.', 'Review metadata'],
+        ['0 ambiguous image links', 'Review metadata before assigning a positive / negative pair.', 'Review metadata'],
         ['Backup status', 'No retained backup record.', 'View backups'],
         ['No missing thumbnails', 'Generate only missing previews when necessary.', 'Review thumbnails'],
     ]);
@@ -166,10 +168,11 @@ test('a failed thumbnail read is unavailable, never zero', async ({ page }) => {
     await expect(layout.locator('.metric').nth(2).locator('strong')).toHaveText('24');
 });
 
-test('ambiguous row reads Not available yet (Q6)', async ({ page }) => {
+test('ambiguous row reads the pending count; its action waits for the review page', async ({ page }) => {
     const layout = await openOverview(page);
-    const row = layout.locator('.operation').filter({ hasText: 'Ambiguous image links' });
-    await expect(row.locator('p')).toHaveText('Not available yet.');
+    const row = layout.locator('.operation').filter({ hasText: 'ambiguous image links' });
+    await expect(row.locator('h3')).toHaveText('0 ambiguous image links');
+    await expect(row.locator('p')).toHaveText('Review metadata before assigning a positive / negative pair.');
     const review = row.getByRole('button', { name: 'Review metadata', exact: true });
     await expect(review).toHaveAttribute('aria-disabled', 'true');
     await review.click({ force: true });

@@ -323,7 +323,7 @@ function overviewNodes(overview, { scope, navigate, openStatistics }) {
         description: Number.isSafeInteger(overview.needs_review?.pending)
             ? 'Review metadata before assigning a positive / negative pair.' : NOT_AVAILABLE,
         label: 'Review metadata', onClick: () => {} });
-    // D93 (Q6): the review queue (Needs review) is not part of the workspace yet.
+    // D93: the row reads the queue's pending count; its action waits for the Needs review page (#288).
     review.querySelector('button').setAttribute('aria-disabled', 'true');
     const [sourcesTitle, sourcesDescription] = sourcesCopy(overview.sources);
     const thumbnails = operationRow({ scope, title: THUMBNAILS_LOADING, description: 'Generate only missing previews when necessary.',

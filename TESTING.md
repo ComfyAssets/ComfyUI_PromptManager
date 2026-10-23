@@ -1877,8 +1877,10 @@ Recorded deviations (plan D60–D64 renumbered D92–D96; D121, D122 and D123 as
   and active saved negatives and the indexed `generated_images` rows (Q2). "Database
   integrity" is "Not checked" until a check ran this session, then "N issues" (checks
   that found issues, even beside a check that could not run), "Passed" or "Incomplete".
-  "Ambiguous image links" reads "Not available yet." with its Review metadata action
-  `aria-disabled` (CSS under D93) until the Needs review queue reports a count (Q6).
+  The review row is "N ambiguous image links" (the Needs review queue's pending count,
+  `needs_review.pending`) with the concept's line; its Review metadata action is
+  `aria-disabled` (CSS under D93) until the Needs review page ships (#288). A count
+  that is not an integer reads "Ambiguous image links" / "Not available yet." (Q6).
   "Backup status" reads "No retained backup record." until verified backups exist (S8).
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
   missing thumbnails", "N missing thumbnails" (the pending count of
