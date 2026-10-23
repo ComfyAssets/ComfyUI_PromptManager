@@ -268,7 +268,12 @@ class GalleryConfig:
         """
         monitoring = new_config.get("monitoring", {})
         if "enabled" in monitoring:
-            cls.MONITORING_ENABLED = monitoring["enabled"]
+            if isinstance(monitoring["enabled"], bool):
+                cls.MONITORING_ENABLED = monitoring["enabled"]
+            else:  # a hand-edited "false" would otherwise switch it on
+                config_logger.warning(
+                    "Ignoring gallery monitoring enabled: expected true or false"
+                )
         if "directories" in monitoring:
             directories = cls._validated_directories(monitoring["directories"])
             if directories is not None:
@@ -399,30 +404,41 @@ class GalleryConfig:
             (True, "") when the directory lies inside one of
             :meth:`allowed_gallery_parents`; otherwise (False, reason).
         """
+        code, reason = cls.gallery_root_problem(path)
+        return code is None, reason
+
+    @classmethod
+    def gallery_root_problem(cls, path: Any) -> Tuple[Optional[str], str]:
+        """``(code, reason)`` why ``path`` may not be a gallery root, else (None, "").
+
+        Codes: ``empty``, ``unresolvable``, ``filesystem-root``,
+        ``home-directory``, ``not-found``, ``not-directory`` and
+        ``outside-allowed``. No reason names the path.
+        """
         if not isinstance(path, str) or not path.strip():
-            return False, "Gallery root must be a non-empty path"
+            return "empty", "Gallery root must be a non-empty path"
 
         try:
             canonical = cls.resolve_gallery_root(path)
         except (OSError, ValueError):
-            return False, "Gallery root could not be resolved"
+            return "unresolvable", "Gallery root could not be resolved"
 
         if _is_filesystem_root(canonical):
-            return False, "Gallery root cannot be a filesystem root"
+            return "filesystem-root", "Gallery root cannot be a filesystem root"
         if canonical == _canonical_path(os.path.expanduser("~")):
-            return False, "Gallery root cannot be the home directory"
+            return "home-directory", "Gallery root cannot be the home directory"
         if not os.path.exists(canonical):
-            return False, "Gallery root does not exist"
+            return "not-found", "Gallery root does not exist"
         if not os.path.isdir(canonical):
-            return False, "Gallery root is not a directory"
+            return "not-directory", "Gallery root is not a directory"
 
         candidate = Path(canonical)
         for parent in cls.allowed_gallery_parents():
             if candidate.is_relative_to(Path(parent)):
-                return True, ""
+                return None, ""
 
         return (
-            False,
+            "outside-allowed",
             "Gallery root must be inside a ComfyUI directory "
             f"(output, input, temp, user) or one listed in {EXTRA_GALLERY_ROOTS_ENV}",
         )

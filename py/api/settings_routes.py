@@ -4,8 +4,15 @@ A save validates the payload, commits it to config.json through the config
 store and publishes it at runtime inside that commit; a save that cannot be
 written changes nothing at runtime and says so. ``_config_commit_failure``
 is shared with the LoRA integration's save.
+
+GET also reports the image sources and the monitor (``sources.py``). A save
+that changes the sources runs as a ``source_change`` registry hold, so it is
+refused while a record-changing job (a scan) runs. ``monitoring_enabled``
+takes effect at the next restart. ``POST /prompt_manager/settings/validate-source``
+checks one path and writes nothing.
 """
 
+import contextlib
 import os
 
 from aiohttp import web
@@ -15,7 +22,10 @@ from ..config_store import (
     RevisionConflict,
     get_config_store,
 )
+from . import sources
 from .admin import _current_image_monitor
+from .job_routes import busy_response
+from .jobs import JobBusy
 
 try:
     from ...utils.validators import validate_result_timeout, validate_worker_threads
@@ -23,13 +33,36 @@ except ImportError:
     from utils.validators import validate_result_timeout, validate_worker_threads
 
 
-# Settings owned by POST /settings: config attribute -> (section, key).
+# Settings owned by POST /settings: config attribute -> its keys in config.json.
 _SETTINGS_FILE_KEYS = {
     "RESULT_TIMEOUT": ("web_ui", "result_timeout"),
     "WEBUI_DISPLAY_MODE": ("web_ui", "webui_display_mode"),
     "INFINITE_SCROLL": ("web_ui", "infinite_scroll"),
     "WORKER_THREADS": ("performance", "worker_threads"),
+    "MONITORING_ENABLED": ("gallery", "monitoring", "enabled"),
 }
+# Attributes that live on GalleryConfig; the others on PromptManagerConfig.
+_GALLERY_SETTINGS = frozenset({"MONITORING_ENABLED"})
+SOURCE_CHANGE_JOB_KIND = "source_change"
+SOURCE_CHANGE_JOB_TITLE = "Source change"
+
+
+def _source_identity(path):
+    """The case-folded spelling two roots are the same directory by (Windows)."""
+    return os.path.normcase(path)
+
+
+def _stat_identity(path):
+    """``(st_dev, st_ino)`` of an existing directory, or None.
+
+    Catches case variants on a case-insensitive filesystem whose spelling
+    normcase keeps (macOS).
+    """
+    try:
+        stat = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (stat.st_dev, stat.st_ino) if stat.st_ino else None
 
 
 def _section(config, name):
@@ -47,10 +80,8 @@ def _settings_mutation(updates, new_roots):
 
     def mutate(config):
         for name, value in updates.items():
-            section, key = _SETTINGS_FILE_KEYS[name]
-            merged = _section(config, section)
-            merged[key] = value
-            config[section] = merged
+            *sections, key = _SETTINGS_FILE_KEYS[name]
+            _set_nested(config, sections, key, value)
         if new_roots is not None:
             gallery = _section(config, "gallery")
             monitoring = _section(gallery, "monitoring")
@@ -60,6 +91,16 @@ def _settings_mutation(updates, new_roots):
         return config
 
     return mutate
+
+
+def _set_nested(config, sections, key, value):
+    """``config[s1][s2]...[key] = value``, each section a fresh dict."""
+    if not sections:
+        config[key] = value
+        return
+    merged = _section(config, sections[0])
+    _set_nested(merged, sections[1:], key, value)
+    config[sections[0]] = merged
 
 
 async def _read_json(request):
@@ -81,6 +122,10 @@ class SettingsRoutesMixin:
         async def save_settings_route(request):
             return await self.save_settings(request)
 
+        @routes.post("/prompt_manager/settings/validate-source")
+        async def validate_source_route(request):
+            return await self.validate_source(request)
+
     async def get_settings(self, request):
         """Get current settings."""
         try:
@@ -90,11 +135,15 @@ class SettingsRoutesMixin:
                 self._public_path(d) for d in GalleryConfig.MONITORING_DIRECTORIES
             ]
             revision = await self._run_in_executor(self._config_revision)
+            source_status, monitor = await self._run_in_executor(self._source_status)
             return web.json_response(
                 {
                     "success": True,
                     **revision,
+                    "sources": source_status,
+                    "monitor": monitor,
                     "settings": {
+                        "monitoring_enabled": GalleryConfig.MONITORING_ENABLED,
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
                         "infinite_scroll": PromptManagerConfig.INFINITE_SCROLL,
@@ -114,6 +163,61 @@ class SettingsRoutesMixin:
                 {"success": False, "error": "Failed to get settings"},
                 status=500,
             )
+
+    def _source_status(self):
+        """``(sources, monitor)`` of GET /settings (blocking)."""
+        from ..config import GalleryConfig
+
+        output_dirs, auto_detected = self._output_dirs_with_origin()
+        return sources.describe_sources(
+            configured=list(GalleryConfig.MONITORING_DIRECTORIES),
+            output_dirs=output_dirs,
+            auto_detected=auto_detected,
+            monitor=_current_image_monitor(),
+            enabled=GalleryConfig.MONITORING_ENABLED,
+        )
+
+    async def validate_source(self, request):
+        """Check one source path ``{path}``; writes nothing.
+
+        200 ``{success, valid, label, path, code, reason}``: a valid source
+        answers its label and public path, an invalid one its code and reason
+        only. A body without a string ``path`` is a 400 ``invalid-request``.
+        """
+        data, error_response = await _read_json(request)
+        if error_response is not None:
+            too_large = error_response.status == 413
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "too-large" if too_large else "invalid-request",
+                    "error": (
+                        "Request body too large"
+                        if too_large
+                        else "Request body must be a JSON object"
+                    ),
+                },
+                status=error_response.status,
+            )
+        path = data.get("path")
+        if not isinstance(path, str):
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "invalid-request",
+                    "error": "path must be a string",
+                },
+                status=400,
+            )
+        try:
+            result = await self._run_in_executor(sources.validate_source, path)
+        except Exception:
+            self.logger.exception("Source validation failed")
+            return web.json_response(
+                {"success": False, "code": None, "error": "Failed to check the source"},
+                status=500,
+            )
+        return web.json_response({"success": True, **result})
 
     def _monitored_directories(self):
         """Directories the running image monitor watches, else the configured roots."""
@@ -162,15 +266,30 @@ class SettingsRoutesMixin:
                 # they were written, so the runtime ends on the last one.
                 published.update(self._publish_settings(updates, new_roots))
 
-            try:
-                _saved, revision = await self._run_in_executor(
-                    get_config_store().commit,
-                    _settings_mutation(updates, new_roots),
-                    expected_revision=expected_revision,
-                    publish=publish,
-                )
-            except (ConfigUnreadable, RevisionConflict, OSError) as exc:
-                return self._config_commit_failure(exc)
+            async with contextlib.AsyncExitStack() as stack:
+                hold = None
+                if self._roots_change(new_roots):
+                    try:
+                        hold = await stack.enter_async_context(
+                            self._jobs.hold(
+                                SOURCE_CHANGE_JOB_KIND,
+                                SOURCE_CHANGE_JOB_TITLE,
+                                admission="records",
+                            )
+                        )
+                    except JobBusy as busy:
+                        return busy_response(busy)
+                try:
+                    _saved, revision = await self._run_in_executor(
+                        get_config_store().commit,
+                        _settings_mutation(updates, new_roots),
+                        expected_revision=expected_revision,
+                        publish=publish,
+                    )
+                except (ConfigUnreadable, RevisionConflict, OSError) as exc:
+                    if hold is not None:
+                        hold.finish("failed")
+                    return self._config_commit_failure(exc)
 
             return web.json_response(
                 {
@@ -196,10 +315,11 @@ class SettingsRoutesMixin:
         as ``runtime_applied: false`` with the fields that need a restart;
         nothing is retried or rolled back. Never raises.
         """
-        from ..config import PromptManagerConfig
+        from ..config import GalleryConfig, PromptManagerConfig
 
         for name, value in updates.items():
-            setattr(PromptManagerConfig, name, value)
+            owner = GalleryConfig if name in _GALLERY_SETTINGS else PromptManagerConfig
+            setattr(owner, name, value)
         restart_fields = []
         runtime_applied = True
         if new_roots is not None:
@@ -212,10 +332,32 @@ class SettingsRoutesMixin:
                 )
                 runtime_applied = False
                 restart_fields.append("gallery_root_paths")
+        if "MONITORING_ENABLED" in updates:
+            # The monitor starts with the server: a restart applies the setting
+            # unless the observer already matches it.
+            if updates["MONITORING_ENABLED"] != self._observer_alive():
+                restart_fields.append("monitoring_enabled")
         return {
             "runtime_applied": runtime_applied,
             "restart_required_fields": restart_fields,
         }
+
+    @staticmethod
+    def _roots_change(new_roots):
+        """Whether a save changes the sources (the legacy page resends them)."""
+        from ..config import GalleryConfig
+
+        return new_roots is not None and new_roots != list(
+            GalleryConfig.MONITORING_DIRECTORIES
+        )
+
+    @staticmethod
+    def _observer_alive():
+        """Whether the image monitor's observer is running now. Never raises."""
+        try:
+            return sources.monitor_state(_current_image_monitor())[1]
+        except Exception:
+            return False
 
     def _config_commit_failure(self, exc):
         """The response for a config commit that wrote nothing."""
@@ -283,6 +425,10 @@ class SettingsRoutesMixin:
             if not isinstance(data["infinite_scroll"], bool):
                 raise ValueError("infinite_scroll must be true or false")
             updates["INFINITE_SCROLL"] = data["infinite_scroll"]
+        if "monitoring_enabled" in data:
+            if not isinstance(data["monitoring_enabled"], bool):
+                raise ValueError("monitoring_enabled must be true or false")
+            updates["MONITORING_ENABLED"] = data["monitoring_enabled"]
         if "worker_threads" in data:
             updates["WORKER_THREADS"] = validate_worker_threads(
                 data["worker_threads"], PromptManagerConfig.max_worker_threads()
@@ -312,6 +458,7 @@ class SettingsRoutesMixin:
         from ..config import GalleryConfig
 
         roots = []
+        seen = set()
         for entry in raw:
             if not isinstance(entry, str):
                 return None, "Gallery root paths must be strings"
@@ -324,7 +471,13 @@ class SettingsRoutesMixin:
                     None,
                     f"Invalid gallery root '{os.path.basename(entry)}': {reason}",
                 )
-            roots.append(GalleryConfig.resolve_gallery_root(entry))
+            root = GalleryConfig.resolve_gallery_root(entry)
+            keys = {("path", _source_identity(root)), ("file", _stat_identity(root))}
+            keys.discard(("file", None))
+            if keys & seen:
+                continue  # another spelling of a root already listed
+            seen |= keys
+            roots.append(root)
         return roots, None
 
     def _apply_gallery_roots(self, roots):
