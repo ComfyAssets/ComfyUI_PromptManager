@@ -5,10 +5,35 @@ from pathlib import Path
 
 from aiohttp import web
 
+from ..config_store import ConfigUnreadable, RevisionConflict, get_config_store
+
+# Flags of POST /lora/enable; each must be a JSON boolean when present.
+_LORA_FLAGS = ("enabled", "trigger_words_enabled", "clear_civitai_api_key")
+
 _LORA_PATH_ERROR = (
     "LoraManager path must be a directory under ComfyUI's custom_nodes "
     "whose name contains 'lora'"
 )
+
+
+def _lora_settings_mutation(values):
+    """The config commit for a LoRA save: only ``integrations.lora_manager``.
+
+    The submitted keys replace their values; other LoRA keys, other
+    integrations and every other section stay as they are on disk.
+    """
+
+    def mutate(config):
+        integrations = config.get("integrations")
+        integrations = dict(integrations) if isinstance(integrations, dict) else {}
+        lora = integrations.get("lora_manager")
+        lora = dict(lora) if isinstance(lora, dict) else {}
+        lora.update(values)
+        integrations["lora_manager"] = lora
+        config["integrations"] = integrations
+        return config
+
+    return mutate
 
 
 class LoraIntegrationMixin:
@@ -131,14 +156,25 @@ class LoraIntegrationMixin:
         return allowed, None
 
     async def lora_enable(self, request):
-        """Enable or disable LoraManager integration and save to config.json."""
+        """Enable or disable LoraManager integration and save it to config.json.
+
+        The values are committed through the config store first (#220) and
+        published at runtime only once config.json holds them; a save that
+        cannot be written reports ``persisted: false`` and changes nothing.
+        The CivitAI key is never echoed back.
+        """
         try:
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
+            for flag in _LORA_FLAGS:
+                if flag in data and not isinstance(data[flag], bool):
+                    return self._bad_lora_request(f"{flag} must be true or false")
             enabled = data.get("enabled", False)
             path = data.get("path", "")
             trigger_words = data.get("trigger_words_enabled", False)
 
-            from ..config import IntegrationConfig, PromptManagerConfig
+            from ..config import IntegrationConfig
             from ..lora_utils import get_trigger_cache
 
             # The key is never echoed back to the UI, so a blank or absent
@@ -161,20 +197,35 @@ class LoraIntegrationMixin:
                 if error is not None:
                     return error
 
-            # Update in-memory config
+            values = {
+                "enabled": enabled,
+                "path": path,
+                "trigger_words_enabled": trigger_words,
+                "civitai_api_key": civitai_key,
+            }
+            try:
+                _saved, revision = await self._run_in_executor(
+                    get_config_store().commit,
+                    _lora_settings_mutation(values),
+                    expected_revision=None,
+                )
+            except (ConfigUnreadable, RevisionConflict, OSError) as exc:
+                return self._config_commit_failure(exc)
+
             IntegrationConfig.LORA_MANAGER_ENABLED = enabled
             IntegrationConfig.LORA_MANAGER_PATH = path
             IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED = trigger_words
             IntegrationConfig.CIVITAI_API_KEY = civitai_key
 
-            # Persist to the configured config.json
-            PromptManagerConfig.save_to_file()
-
-            # Load trigger word cache if enabling
             cache = get_trigger_cache()
             if enabled and trigger_words and path:
-                count = await self._run_in_executor(cache.load, path)
-                self.logger.info(f"Trigger word cache loaded: {count} LoRAs")
+                try:
+                    count = await self._run_in_executor(cache.load, path)
+                    self.logger.info(f"Trigger word cache loaded: {count} LoRAs")
+                except Exception as e:
+                    # Saved and enabled; only the trigger words are missing.
+                    self.logger.warning(f"Trigger word cache could not be loaded: {e}")
+                    cache.clear()
             elif not enabled:
                 cache.clear()
 
@@ -184,6 +235,10 @@ class LoraIntegrationMixin:
                     "enabled": enabled,
                     "path": self._public_path(path),
                     "trigger_words_enabled": trigger_words,
+                    "persisted": True,
+                    "revision": revision,
+                    "runtime_applied": True,
+                    "cache_loaded": cache.is_loaded,
                 }
             )
         except Exception as e:

@@ -4,11 +4,13 @@ Filesystem detection and network downloads are patched out so the tests run
 anywhere without a LoraManager install or a CivitAI connection.
 """
 
+import asyncio
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -36,8 +38,14 @@ from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
 from py import lora_utils
 from py.config import IntegrationConfig, PromptManagerConfig
+from py.api import admin as admin_module
 from py.lora_utils import get_trigger_cache
 from utils.hashing import generate_prompt_hash
+
+try:
+    from tests.open_handles import assert_closed
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed
 
 SECRET_KEY = "sk-civitai-super-secret-0123456789"
 
@@ -56,7 +64,13 @@ class LoraAPITestCase(AioHTTPTestCase):
             return_value=[self.custom_nodes],
         )
         self._custom_nodes_patch.start()
-        self._real_save = PromptManagerConfig.save_to_file
+        # Never the repository's config.json (live user data): every save in
+        # these tests goes to a file in this test's temp directory.
+        self.config_file = self.tmp_root / "config.json"
+        self._env_patch = patch.dict(
+            os.environ, {"PROMPT_MANAGER_CONFIG_PATH": str(self.config_file)}
+        )
+        self._env_patch.start()
 
         self._config_patch = patch.multiple(
             IntegrationConfig,
@@ -70,8 +84,6 @@ class LoraAPITestCase(AioHTTPTestCase):
             "py.lora_utils.detect_lora_manager", return_value=None
         )
         self.detect_mock = self._detect_patch.start()
-        self._save_patch = patch.object(PromptManagerConfig, "save_to_file")
-        self.save_mock = self._save_patch.start()
         get_trigger_cache().clear()
 
         app = web.Application()
@@ -83,7 +95,7 @@ class LoraAPITestCase(AioHTTPTestCase):
 
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
-        self._save_patch.stop()
+        self._env_patch.stop()
         self._detect_patch.stop()
         self._config_patch.stop()
         self._custom_nodes_patch.stop()
@@ -96,7 +108,18 @@ class LoraAPITestCase(AioHTTPTestCase):
         ):
             if os.path.exists(path):
                 os.unlink(path)
+        assert_closed(self, self.tmp_root)
         shutil.rmtree(self.tmp_root, ignore_errors=True)
+
+    def _saved(self):
+        return json.loads(self.config_file.read_text())
+
+    def _make_unwritable(self):
+        """Point the config path under a regular file, so no write can succeed."""
+        blocker = self.tmp_root / "not-a-dir"
+        blocker.write_text("x")
+        self.config_file = blocker / "config.json"
+        os.environ["PROMPT_MANAGER_CONFIG_PATH"] = str(self.config_file)
 
     async def _post_json(self, url, body):
         return await self.client.request(
@@ -250,7 +273,7 @@ class TestLoraEnableRoute(LoraAPITestCase):
         )
         self.assertEqual(resp.status, 400)
         self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
-        self.save_mock.assert_not_called()
+        self.assertFalse(self.config_file.exists())
 
     async def test_enable_persists_and_loads_trigger_cache(self):
         lm = _make_lora_manager(self.custom_nodes)
@@ -285,7 +308,15 @@ class TestLoraEnableRoute(LoraAPITestCase):
             os.path.normcase(os.path.realpath(str(lm))),
         )
         self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, SECRET_KEY)
-        self.save_mock.assert_called_once_with()
+        saved = self._saved()["integrations"]["lora_manager"]
+        self.assertEqual(saved["civitai_api_key"], SECRET_KEY)
+        self.assertEqual(saved["path"], IntegrationConfig.LORA_MANAGER_PATH)
+        self.assertIs(saved["enabled"], True)
+        self.assertIs(saved["trigger_words_enabled"], True)
+        self.assertEqual(
+            (data["persisted"], data["runtime_applied"], data["cache_loaded"]),
+            (True, True, True),
+        )
         self.assertTrue(get_trigger_cache().is_loaded)
         self.assertEqual(get_trigger_cache().get_trigger_words("neon"), ["glow"])
 
@@ -319,7 +350,7 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.assertFalse(json.loads(body)["success"])
         self.assertNotIn(str(self.tmp_root), body)
         self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
-        self.save_mock.assert_not_called()
+        self.assertFalse(self.config_file.exists())
 
     async def test_enable_with_custom_node_lacking_lora_in_its_name_is_400(self):
         lm = _make_lora_manager(self.custom_nodes).parent / "ComfyUI-Other"
@@ -344,7 +375,6 @@ class TestLoraEnableRoute(LoraAPITestCase):
 
     async def test_enable_writes_the_configured_config_file(self):
         config_file = self.tmp_root / "cfg" / "config.json"
-        self.save_mock.side_effect = self._real_save
 
         with patch.dict(os.environ, {"PROMPT_MANAGER_CONFIG_PATH": str(config_file)}):
             resp = await self._post_json(
@@ -353,7 +383,6 @@ class TestLoraEnableRoute(LoraAPITestCase):
             )
 
         self.assertEqual(resp.status, 200)
-        self.save_mock.assert_called_once_with()
         self.assertTrue(config_file.is_file())
         saved = json.loads(config_file.read_text())["integrations"]["lora_manager"]
         self.assertFalse(saved["enabled"])
@@ -414,9 +443,212 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.assertEqual(resp.status, 400)
 
     async def test_persist_failure_is_500(self):
-        self.save_mock.side_effect = OSError("read-only")
-        resp = await self._post_json("/prompt_manager/lora/enable", {"enabled": False})
+        self._make_unwritable()
+        with self.assertLogs("prompt_manager.api", level="ERROR"):
+            resp = await self._post_json(
+                "/prompt_manager/lora/enable", {"enabled": False}
+            )
         self.assertEqual(resp.status, 500)
+        self.assertEqual((await resp.json())["code"], "config-write-failed")
+
+    async def test_enable_write_failure_reports_and_keeps_runtime(self):
+        # #220: a save that cannot be written publishes nothing and says so.
+        lm = _make_lora_manager(self.custom_nodes)
+        self.detect_mock.return_value = str(lm)
+        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+        self._make_unwritable()
+
+        with self.assertLogs("prompt_manager.api", level="ERROR"):
+            resp = await self._post_json(
+                "/prompt_manager/lora/enable",
+                {
+                    "enabled": True,
+                    "path": str(lm),
+                    "trigger_words_enabled": True,
+                    "clear_civitai_api_key": True,
+                },
+            )
+
+        text = await resp.text()
+        body = json.loads(text)
+        self.assertEqual(resp.status, 500)
+        self.assertEqual(body["code"], "config-write-failed")
+        self.assertEqual((body["persisted"], body["runtime_applied"]), (False, False))
+        self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.assertEqual(IntegrationConfig.LORA_MANAGER_PATH, "")
+        self.assertFalse(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, SECRET_KEY)
+        self.assertFalse(get_trigger_cache().is_loaded)
+        self.assertNotIn(SECRET_KEY, text)
+        self.assertNotIn(str(self.tmp_root), text)
+
+    async def test_enable_preserves_unknown_sections(self):
+        self.config_file.write_text(
+            json.dumps(
+                {
+                    "custom_section": {"keep": True},
+                    "web_ui": {"result_timeout": 11},
+                    "integrations": {
+                        "lora_manager": {"civitai_api_key": SECRET_KEY, "extra": 1},
+                        "other_tool": {"on": True},
+                    },
+                }
+            )
+        )
+        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "trigger_words_enabled": True},
+        )
+
+        self.assertEqual(resp.status, 200)
+        saved = self._saved()
+        self.assertEqual(saved["custom_section"], {"keep": True})
+        self.assertEqual(saved["web_ui"], {"result_timeout": 11})
+        self.assertEqual(saved["integrations"]["other_tool"], {"on": True})
+        lora = saved["integrations"]["lora_manager"]
+        self.assertEqual(lora["extra"], 1)
+        self.assertEqual(lora["civitai_api_key"], SECRET_KEY)
+        self.assertIs(lora["trigger_words_enabled"], True)
+        self.assertNotIn("database", saved)  # no runtime defaults written
+
+    async def test_enable_refuses_a_corrupt_config_file(self):
+        self.config_file.write_bytes(b"{not json")
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "trigger_words_enabled": True},
+        )
+        body = await resp.json()
+        self.assertEqual((resp.status, body["code"]), (409, "config-unreadable"))
+        self.assertEqual(self.config_file.read_bytes(), b"{not json")
+        self.assertFalse(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
+
+    async def test_enable_requires_boolean_flags_and_body_cap(self):
+        for body in (
+            {"enabled": "yes"},
+            {"enabled": False, "trigger_words_enabled": 1},
+            {"enabled": False, "clear_civitai_api_key": "true"},
+        ):
+            with self.subTest(body=body):
+                resp = await self._post_json("/prompt_manager/lora/enable", body)
+                self.assertEqual(resp.status, 400)
+        resp = await self._post_json("/prompt_manager/lora/enable", [True])
+        self.assertEqual(resp.status, 400)
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "civitai_api_key": "k" * (2 * 1024 * 1024)},
+        )
+        self.assertEqual(resp.status, 413)
+        self.assertFalse(self.config_file.exists())
+        self.assertFalse(IntegrationConfig.LORA_MANAGER_ENABLED)
+
+    async def test_blank_key_unchanged_and_explicit_clear(self):
+        self.config_file.write_text(
+            json.dumps({"integrations": {"lora_manager": {"civitai_api_key": "old"}}})
+        )
+        IntegrationConfig.CIVITAI_API_KEY = "old"
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable", {"enabled": False, "civitai_api_key": "  "}
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(
+            self._saved()["integrations"]["lora_manager"]["civitai_api_key"], "old"
+        )
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, "old")
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "clear_civitai_api_key": True},
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(
+            self._saved()["integrations"]["lora_manager"]["civitai_api_key"], ""
+        )
+        self.assertEqual(IntegrationConfig.CIVITAI_API_KEY, "")
+
+    async def test_cache_load_failure_reports_persisted_but_unloaded(self):
+        lm = _make_lora_manager(self.custom_nodes)
+        self.detect_mock.return_value = str(lm)
+
+        with (
+            patch.object(
+                type(get_trigger_cache()), "load", side_effect=OSError("unreadable")
+            ),
+            self.assertLogs("prompt_manager.api", level="WARNING"),
+        ):
+            resp = await self._post_json(
+                "/prompt_manager/lora/enable",
+                {"enabled": True, "path": str(lm), "trigger_words_enabled": True},
+            )
+
+        text = await resp.text()
+        body = json.loads(text)
+        self.assertEqual(resp.status, 200)
+        self.assertIs(body["success"], True)
+        self.assertEqual((body["persisted"], body["cache_loaded"]), (True, False))
+        self.assertTrue(IntegrationConfig.LORA_MANAGER_ENABLED)
+        self.assertIs(self._saved()["integrations"]["lora_manager"]["enabled"], True)
+        self.assertNotIn("unreadable", text)
+
+
+class TestConfigWritersShareOneStore(LoraAPITestCase):
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self._orig_timeout = PromptManagerConfig.RESULT_TIMEOUT
+
+    async def asyncTearDown(self):
+        PromptManagerConfig.RESULT_TIMEOUT = self._orig_timeout
+        await super().asyncTearDown()
+
+    async def test_settings_and_lora_saves_do_not_overwrite_each_other(self):
+        # #220: the LoRA save is sent while the settings save is inside its
+        # commit (lock held, file already read). The LoRA commit re-reads the
+        # file under the same lock, so both edits survive and nothing else
+        # is lost (before, the LoRA save rewrote the whole runtime config).
+        self.config_file.write_text(json.dumps({"custom_section": {"keep": True}}))
+        inside = threading.Event()
+        release = threading.Event()
+        real_mutation = admin_module._settings_mutation
+
+        def gated_mutation(updates, new_roots):
+            mutate = real_mutation(updates, new_roots)
+
+            def gated(config):
+                inside.set()
+                release.wait(10)
+                return mutate(config)
+
+            return gated
+
+        loop = asyncio.get_running_loop()
+        with patch.object(admin_module, "_settings_mutation", gated_mutation):
+            settings = asyncio.ensure_future(
+                self._post_json("/prompt_manager/settings", {"result_timeout": 13})
+            )
+            self.assertTrue(await loop.run_in_executor(None, inside.wait, 10))
+            lora = asyncio.ensure_future(
+                self._post_json(
+                    "/prompt_manager/lora/enable",
+                    {"enabled": False, "trigger_words_enabled": True},
+                )
+            )
+            await asyncio.sleep(0)  # let the LoRA request reach the lock
+            release.set()
+            settings_resp, lora_resp = await asyncio.gather(settings, lora)
+
+        self.assertEqual((settings_resp.status, lora_resp.status), (200, 200))
+        saved = self._saved()
+        self.assertEqual(saved["custom_section"], {"keep": True})
+        self.assertEqual(saved["web_ui"]["result_timeout"], 13)
+        self.assertIs(
+            saved["integrations"]["lora_manager"]["trigger_words_enabled"], True
+        )
+        settings_body = await settings_resp.json()
+        lora_body = await lora_resp.json()
+        self.assertNotEqual(settings_body["revision"], lora_body["revision"])
 
 
 class TestLoraScanRoute(LoraAPITestCase):
