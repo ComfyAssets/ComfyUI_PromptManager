@@ -33,7 +33,7 @@ from py.api import PromptManagerAPI
 from py.config import GalleryConfig
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
-from utils.media_capture import CaptureCapacity, CaptureStore
+from utils.media_capture import CaptureCapacity, CaptureError, CaptureStore
 from utils.prompt_tracker import PromptTracker
 
 try:  # guarded so a missing module fails assertions, not test loading
@@ -892,3 +892,26 @@ class TestRecordedSpelling(ReviewTestCase):
             self.assertEqual(self._review_revision(), revision + 1)
             with self.assertRaises(ValueError):
                 db.refresh_review_spelling(locator, os.path.join(root, "other.png"))
+
+
+class TestCaptureStoreShutdown(ReviewTestCase):
+    async def test_recording_after_close_creates_no_store(self):
+        """A monitor recording still in flight at shutdown leaks nothing (M2)."""
+        self._require_module()
+        self._roots()
+        path = self.output_dir / "two.png"
+        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+        self.api.close_annotation_captures()
+        self.assertIsNone(self.api._captures)
+        with patch("utils.media_capture.tempfile.mkdtemp") as mkdtemp:
+            with self.assertRaises(CaptureError):
+                self.api.record_review_file(str(path))
+            # The monitor logs the failure and keeps its link.
+            handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+            handler.review_recorder = self.api.record_review_file
+            handler._record_review(str(path))
+        mkdtemp.assert_not_called()
+        self.assertIsNone(self.api._captures)
+        self.assertIsNone(self.api._captures_unsubscribe)
+        self.assertEqual(self._items(), [])
+        self.api.close_annotation_captures()  # idempotent

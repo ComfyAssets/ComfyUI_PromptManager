@@ -264,8 +264,13 @@ class AnnotationRoutesMixin:
         a server that never opens the Tag dialog) owns no temp directory. A
         restore of the database dooms every capture (``invalidate_all``).
         Thread-safe: Needs review recording calls it off the event loop.
+        Raises ``CaptureError`` after ``close_annotation_captures``.
         """
         with _CAPTURE_STORE_LOCK:
+            if getattr(self, "_captures_closed", False):
+                # A recording still in flight at shutdown must not create a
+                # new temp directory after the cleanup removed the old one.
+                raise CaptureError("The capture store is closed")
             if self._captures is None:
                 self._captures = CaptureStore()
             if self._captures_unsubscribe is None:
@@ -280,11 +285,17 @@ class AnnotationRoutesMixin:
             store.invalidate_all()
 
     def close_annotation_captures(self) -> None:
-        """Remove every capture file and the owned directory. Idempotent."""
-        unsubscribe, self._captures_unsubscribe = self._captures_unsubscribe, None
+        """Remove every capture file and the owned directory. Idempotent.
+
+        Taken under the store lock, and final: ``_capture_store`` refuses to
+        create another store afterwards.
+        """
+        with _CAPTURE_STORE_LOCK:
+            self._captures_closed = True
+            unsubscribe, self._captures_unsubscribe = self._captures_unsubscribe, None
+            store, self._captures = self._captures, None
         if unsubscribe is not None:
             unsubscribe()
-        store, self._captures = self._captures, None
         if store is not None:
             store.close()
 

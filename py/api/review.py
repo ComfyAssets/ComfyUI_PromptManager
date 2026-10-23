@@ -149,6 +149,10 @@ def format_review_target(spelled_path, locator, real_roots, *, pathmod=os.path):
     return None
 
 
+class _StaleCursor(ValueError):
+    """A well-formed cursor this process cannot verify (e.g. after a restart)."""
+
+
 def _encode_cursor(epoch: str, revision: int, key: tuple) -> str:
     payload = json.dumps(
         {"v": 1, "e": epoch, "r": revision, "k": list(key)},
@@ -160,7 +164,12 @@ def _encode_cursor(epoch: str, revision: int, key: tuple) -> str:
 
 
 def _decode_cursor(token: str) -> tuple:
-    """``(epoch, revision, (created_at, id))`` of a cursor; ValueError if forged."""
+    """``(epoch, revision, (created_at, id))`` of a cursor.
+
+    ``ValueError`` when malformed; :class:`_StaleCursor` when well-formed but
+    signed by another secret (the per-process secret changes on every start,
+    so an open page's cursor is stale after a restart, not forged).
+    """
     try:
         if len(token) > MAX_CURSOR:
             raise ValueError()
@@ -168,9 +177,11 @@ def _decode_cursor(token: str) -> tuple:
             token + "=" * (-len(token) % 4), altchars=b"-_", validate=True
         )
         signature, payload = raw[:32], raw[32:]
+        if len(signature) != 32 or not payload:
+            raise ValueError()
         expected = hmac.new(_CURSOR_SECRET, payload, hashlib.sha256).digest()
         if not hmac.compare_digest(signature, expected):
-            raise ValueError()
+            raise _StaleCursor("This page of the queue is out of date")
         data = json.loads(payload)
         key = data["k"]
         if (
@@ -183,6 +194,8 @@ def _decode_cursor(token: str) -> tuple:
         ):
             raise ValueError()
         return data["e"], data["r"], tuple(key)
+    except _StaleCursor:
+        raise
     except (ValueError, KeyError, TypeError, UnicodeError, binascii.Error):
         raise ValueError("Invalid review cursor; reload the queue") from None
 
@@ -280,6 +293,8 @@ class ReviewRoutesMixin:
         if cursor:
             try:
                 bound = _decode_cursor(cursor)
+            except _StaleCursor:
+                return await self._stale_cursor()
             except ValueError as exc:
                 return bad_request(str(exc))
         try:
@@ -309,6 +324,17 @@ class ReviewRoutesMixin:
                 "next_cursor": next_cursor,
             },
             headers=_NO_STORE,
+        )
+
+    async def _stale_cursor(self) -> web.Response:
+        """409 ``review-conflict`` with the current total: reload the queue."""
+        try:
+            page = await self._run_in_executor(self.db.review_queue_page, limit=1)
+        except Exception:
+            self.logger.exception("Review queue read failed")
+            return _failed()
+        return _coded(
+            "review-conflict", total=page["total"], library_epoch=page["epoch"]
         )
 
     def _review_page(self, limit: int, after):

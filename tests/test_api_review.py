@@ -231,8 +231,19 @@ class TestQueueReads(ReviewRoutesTestCase):
         self.assertTrue(cursor)
         # Tampered: one character changed, or a cursor of another shape.
         broken = ("A" if cursor[5] != "A" else "B").join((cursor[:5], cursor[6:]))
+        for token in ("!!!", "QUJD", cursor[:40]):
+            status, data = await self._json("GET", f"{ITEMS_URL}?cursor={token}")
+            self.assertEqual(status, 400, (token, data))
+        # Well-formed but not this process's signature (tampered, or opened
+        # before a ComfyUI restart): a recoverable conflict (M3).
         status, data = await self._json("GET", f"{ITEMS_URL}?cursor={broken}")
-        self.assertEqual(status, 400, data)
+        self.assertEqual(
+            (status, data["code"], data["total"]), (409, "review-conflict", 3)
+        )
+        with patch.object(review_api, "_CURSOR_SECRET", b"\x01" * 32):
+            status, data = await self._json("GET", f"{ITEMS_URL}?cursor={cursor}")
+        self.assertEqual((status, data["code"]), (409, "review-conflict"), data)
+        self.assertEqual(data["library_epoch"], first["library_epoch"])
         # A decision moves the review index revision: the old cursor is stale.
         item, detail, observed = await self._open()
         status, data = await self._decide(

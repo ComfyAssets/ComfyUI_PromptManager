@@ -294,6 +294,8 @@ class PromptManagerAPI(
         # created on first use with their restore subscription.
         self._captures = None
         self._captures_unsubscribe = None
+        # Set by close_annotation_captures (shutdown): no store is recreated.
+        self._captures_closed = False
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
         self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
