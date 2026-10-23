@@ -1684,8 +1684,20 @@ mapped differences"):
   A video replaced while still starting (a source, but neither metadata nor an error yet)
   stays where it is, inert and `aria-hidden`, with the new preview inserted after it, and
   the session's revoke of its URL waits; once it reports metadata or an error (or after
-  15 s) it is released as above and only then is its URL revoked. Page leave and dispose
-  release it at once. Cause, found with native stacks of the hung WPE web process in the
+  15 s) it is released as above and only then is its URL revoked. For that moment (the
+  time to metadata, or at most 15 s for a video that never settles) the old video and the
+  new preview both show, the new one below it: a known, brief overlap. Stacking them in one
+  slot instead hung again, because it changes the video's own box: the old video
+  absolutely positioned in its own box hung 5 of 120 pages (8 of 120 with `opacity: 0`),
+  and a one-cell grid 4 of 120. Only `opacity: 0` on the video, left in the flow, did not
+  hang (0 of 120), and alone it would leave an empty hole above the new preview. A route
+  change within the workspace waits the same way: the shell renders the next route once a
+  video still starting on Inspect settles (`leaveGuard`; the latest route wins). Route
+  changes at `loadstart` + 0–7 ms hung 4–5 of 120 pages before and 0 of 120 after.
+  A real page leave cannot wait. With no page code releasing anything, navigating
+  away hung 8 of 120 pages and reload 22 of 120 (3 and 8 of 120 with the page's own
+  release), so that WebKit teardown stays a known limitation; dispose still releases at
+  once. Cause, found with native stacks of the hung WPE web process in the
   pinned image: WebKit (GStreamer) deadlocks when a video leaves the page or the viewport
   before its pipeline has started. The main thread changes the pipeline state and waits
   for the source's streaming thread, which is itself waiting on the main thread in a
@@ -1696,8 +1708,9 @@ mapped differences"):
   `loadedmetadata` hung 0 of 180. Specs: `replacing a video that just started loading
   never blocks the page`, and `a video replaced while still starting is reset once it
   settles`, which now runs on WebKit too (15 fresh pages, replaced at `loadstart` + 0–4
-  ms). The viewer's own video teardown was checked the same way (`closing the viewer on a
-  video that just started never blocks the page`, 15 fresh pages on WebKit) and needed no
+  ms), and `leaving for another route while a video starts waits for it to settle`. The
+  viewer's own video teardown was checked the same way (`closing the viewer on a video
+  that just started never blocks the page`, 15 fresh pages on WebKit) and needed no
   change.
 - **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
   concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose

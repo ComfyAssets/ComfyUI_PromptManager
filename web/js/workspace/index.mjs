@@ -132,9 +132,23 @@ function mountWorkspace() {
     refreshCounts(NAV_COUNT_ROUTES);
     let viewScope;
     let firstRender = true;
+    // D62: a page whose teardown must wait (Inspect, while a video is still starting) holds the next route until it
+    // settles; the latest route wins.
+    let leaveGuard = null, renderToken = 0;
     scope.cleanup(() => viewScope?.dispose());
 
     function render(route) {
+        const token = ++renderToken;
+        const hold = leaveGuard?.();
+        if (hold) {
+            hold.then(() => { if (token === renderToken && !scope.signal.aborted) renderNow(route); });
+            return;
+        }
+        renderNow(route);
+    }
+
+    function renderNow(route) {
+        leaveGuard = null;
         // A shared page dialog never stays open over the next route.
         closeWorkspaceDialog();
         viewScope?.dispose();
@@ -240,7 +254,7 @@ function mountWorkspace() {
         if (route.id === 'inspect') {
             // The concept's Inspect a file (app.js renderMetadata): a local file, read only in this browser.
             description.textContent = route.description;
-            mountInspect(main, { parentScope: view, api, sender: createPromptSender({ scope: view }) });
+            ({ leaveGuard } = mountInspect(main, { parentScope: view, api, sender: createPromptSender({ scope: view }) }));
             return;
         }
         if (isHandoff(route)) {
