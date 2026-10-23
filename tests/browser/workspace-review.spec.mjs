@@ -142,6 +142,13 @@ test('a limited item and an unavailable file can only be left unresolved', async
     const unavailable = cards(page).nth(1);
     await expect(unavailable.locator('.image-open')).toHaveAttribute('aria-disabled', 'true');
     await expect(unavailable.locator('.image-card-actions button').last()).toHaveAttribute('aria-disabled', 'true');
+    // F3: its empty media button keeps the concept's 1.33 media area, so the card lines up with its neighbours.
+    await expect(cards(page).first().locator('.image-open img')).toBeVisible();
+    const sizes = await cards(page).evaluateAll(nodes => nodes.map(node => {
+        const art = node.querySelector('.image-open').getBoundingClientRect();
+        return [Math.round(art.width), Math.round(art.height), Math.round(node.getBoundingClientRect().height)];
+    }));
+    expect(sizes[1]).toEqual(sizes[0]);
     await unavailable.getByRole('button', { name: 'Inspect unavailable.png', exact: true }).click();
     await expect(panel(page).locator('p.small')).toHaveText('unavailable.png');
     await expect(warning(page)).toHaveText('This file is not under a current image source, so it cannot be opened. You can leave it unresolved.');
@@ -380,6 +387,17 @@ test('a visit reads its queue once, and a change reads it once more', async ({ p
     // The page's first read and the change's re-read; the shell's count read at start, and the row follows the page.
     expect(reads.filter(search => search === '?limit=40')).toHaveLength(2);
     expect(reads.filter(search => search === '?limit=1')).toHaveLength(1);
+});
+
+test('a ready whose version cannot be read re-reads the queue once', async ({ page, request }) => {
+    // The stream's ready names no readable version (an older server, a proxy that rewrote it): the page reads again.
+    await seed(request, 1);
+    const reads = reviewReads(page);
+    await page.route(url => url.pathname === '/prompt_manager/review/events', route => route.fulfill({
+        status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' }, body: 'event: ready\ndata: not json\n\n' }));
+    await open(page);
+    await expect.poll(() => reads.filter(search => search === '?limit=40').length).toBeGreaterThanOrEqual(2);
+    await expect(cards(page)).toHaveCount(1);
 });
 
 test('a live re-read keeps the loaded depth and the scroll position', async ({ page, request }) => {

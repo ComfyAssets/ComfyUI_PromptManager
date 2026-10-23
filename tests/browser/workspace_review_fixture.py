@@ -18,6 +18,12 @@ after the plain ones in this order:
 - ``unavailable``: a file recorded under the ``temp`` directory while it was a
   gallery root; the root is then removed again, so no current root lists it.
 
+``concept: true`` (F3, the concept comparison) names and sizes the plain
+files as the concept's first three images (app.js ``images``) and gives
+their first sampler the concept's first prompt (``alpine``: its positive and
+its first negative, the one the concept's panel shows), so the panel's text
+wraps as the concept's does.
+
 ``POST /__test__/review/add {kind}`` adds one file while a page is open:
 ``monitor`` runs the monitor pipeline on a new ambiguous output (recorded),
 ``file`` only writes one (a metadata scan records it). ``GET
@@ -47,6 +53,17 @@ NEGATIVE = "Soft negative, blur"
 # The monitor's fallback: the most recent saved prompt.
 FALLBACK = "Misty forest path"
 SPECIAL = ("conflict", "limited", "unavailable")
+# The concept's first three images (concept app.js `images`) and first prompt.
+CONCEPT_IMAGES = (
+    ("alpine_00001.png", (1536, 1152)),
+    ("dunes_00001.png", (1024, 1536)),
+    ("forest_00001.png", (1280, 1280)),
+)
+CONCEPT_POSITIVE = (
+    "A remote alpine observatory at blue hour, warm light through glass, dramatic "
+    "mountain peaks, cinematic composition, atmospheric mist, fine detail"
+)
+CONCEPT_NEGATIVE = "blurry, low quality, low resolution"
 # More than one queue page (40), so Load more has a second page.
 MAX_ITEMS = 45
 _TABLES = (
@@ -68,12 +85,16 @@ _TABLES = (
 )
 
 
-def _graph(encoder_class: str = "CLIPTextEncode") -> dict:
+def _graph(
+    encoder_class: str = "CLIPTextEncode",
+    positives: tuple = POSITIVES,
+    negative: str = NEGATIVE,
+) -> dict:
     graph = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m"}},
-        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": NEGATIVE}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": negative}},
     }
-    for index, text in enumerate(POSITIVES):
+    for index, text in enumerate(positives):
         encoder, sampler = str(10 + 2 * index), str(11 + 2 * index)
         graph[encoder] = {"class_type": encoder_class, "inputs": {"text": text}}
         graph[sampler] = {
@@ -93,6 +114,7 @@ def _png(
     *,
     graph: dict | None = None,
     parameters: str | None = None,
+    size: tuple[int, int] = (96, 64),
 ) -> None:
     info = PngInfo()
     if parameters is not None:
@@ -100,7 +122,7 @@ def _png(
     else:
         info.add_text("prompt", json.dumps(graph or _graph()))
     path.parent.mkdir(parents=True, exist_ok=True)
-    with Image.new("RGB", (96, 64), colour) as image:
+    with Image.new("RGB", size, colour) as image:
         image.save(path, pnginfo=info)
 
 
@@ -165,6 +187,7 @@ def seed_review(
     items: int,
     special: tuple = (),
     monitor: _Monitor | None = None,
+    concept: bool = False,
 ) -> dict:
     """Replace this server's disposable rows and files with ``items`` queued files."""
     with api.db.model.get_connection() as conn:
@@ -179,7 +202,15 @@ def seed_review(
     files = []
     for number in range(items):
         relative = f"review/review_{number:04}.png"
-        _png(output / relative, (40 + number * 4, 90, 140))
+        options = {}
+        if concept:
+            name, size = CONCEPT_IMAGES[number % len(CONCEPT_IMAGES)]
+            relative = f"review/{name}" if number < len(CONCEPT_IMAGES) else relative
+            graph = _graph(
+                positives=(CONCEPT_POSITIVE, POSITIVES[1]), negative=CONCEPT_NEGATIVE
+            )
+            options = {"graph": graph, "size": size}
+        _png(output / relative, (40 + number * 4, 90, 140), **options)
         _stamp(output / relative, 60 + number)
         _record(api, output / relative, "recorded")
         files.append({"path": relative, "filename": Path(relative).name})
@@ -267,7 +298,7 @@ def register_review_commands(
         if (
             request.query
             or not isinstance(data, dict)
-            or set(data) - {"items", *SPECIAL}
+            or set(data) - {"items", "concept", *SPECIAL}
         ):
             raise web.HTTPBadRequest()
         items = data.get("items", 3)
@@ -275,11 +306,20 @@ def register_review_commands(
             raise web.HTTPBadRequest()
         if not 0 <= items <= MAX_ITEMS:
             raise web.HTTPBadRequest()
-        if any(not isinstance(data.get(kind, False), bool) for kind in SPECIAL):
+        if any(
+            not isinstance(data.get(kind, False), bool)
+            for kind in (*SPECIAL, "concept")
+        ):
             raise web.HTTPBadRequest()
         special = tuple(kind for kind in SPECIAL if data.get(kind))
         manifest = await api._run_in_executor(
-            seed_review, api, root, items, special, monitor()
+            seed_review,
+            api,
+            root,
+            items,
+            special,
+            monitor(),
+            data.get("concept", False),
         )
         return web.json_response({"success": True, **manifest})
 

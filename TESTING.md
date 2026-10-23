@@ -1629,7 +1629,13 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   queue" chip and "sample" wording are prototype copy (D29). When a re-read (below)
   finds the open item gone, the next one opens with "<file> was decided elsewhere, so
   the next image is open."; a failed re-read keeps the queue and says "The review queue
-  could not be read again. Reload the page to see the latest images."
+  could not be read again. Reload the page to see the latest images." A queue card's
+  title is its file name and its line the extension only (an undecided item names no
+  prompt, and D11 omits the size and seed a queue item does not carry); its image's alt
+  is the file name; the panel's Copy and Send buttons carry no prompt title in their
+  names; the Tag image dialog opened from the queue heads with the file name. An
+  unavailable file's empty media button keeps the concept's 1.33 media area, so its
+  card lines up with the others.
 
 **Live queue (F2).** An open Needs review page holds one server-sent event stream,
 `GET /prompt_manager/review/events` (`py/api/review_events.py`): `event: ready` when it
@@ -1664,15 +1670,72 @@ Pinned by `tests/test_api_review_events.py`, `tests/js/workspace-review-state.te
 queue once …", "a live re-read keeps the loaded depth and the scroll position").
 Leaving the page mid-decision releases that decision's capture (the server may never see
 the request).
+**Concept comparison (F3).** `tests/browser/review-concept.spec.mjs` measures the whole
+page (`reviewInventory` in `tests/browser/tagging-canonical-comparison.mjs`: every shown
+box below `main` with its place, fonts, edges and layout, a leaf's text, a button's name,
+a select's options) in the concept at `#review` and in production on the fixture's
+concept-shaped queue (`POST /__test__/review/reset {items: 3, concept: true}`: the
+concept's first three image names and sizes, and the concept's first prompt on the open
+item), and `mapConceptReview` applies only: D29 (no "Sample review queue" chip, no
+"sample" in the panel heading and Apply), D119 (above), D3 (the grid's
+`position: relative`), production's hooks and accessible names (`review-queue`,
+`review-panel`, the list roles, the region names) and sample data (the candidate options
+except Leave unresolved; widths and heights that follow from the changed copy, moved by
+exactly that much). It then matches at 1600×1100 and 390×844 in both themes on all four
+projects; the gallery layout follows the concept at 1600, 1200, 900 and 390px (310px,
+275px with a 15px gap, 280px, one column); the SAVED VIEWS rows match with Needs review
+after Favorites; the queue's Tag image dialog matches the concept's needs-review dialog
+(`needs-review-tagging.png`) under the C4 mapping; and the comparison is shown to notice
+a dropped notice border and reordered actions. The paired captures (populated queue in
+both themes and widths, conflict, limited item, unavailable file, empty queue) are test
+artifacts; no screenshot baseline is added. The comparison found one gap, the collapsed
+media area of an unavailable file's card, fixed above (`workspace-review.spec.mjs` "a
+limited item and an unavailable file …" pins it).
+
 - **D3** and **D20** apply to the queue grid (its cards stay in the grid's flow; it is
   not virtualized) and to the panel's prompt blocks (their mount point is transparent).
 
-Tests: `tests/js/workspace-review-state.test.js` (controller),
+Tests: `tests/browser/review-concept.spec.mjs` (concept comparison),
+`tests/js/workspace-review-state.test.js` (controller),
 `tests/js/workspace-state.test.js` (route and count),
 `tests/browser/workspace-review.spec.mjs` (queue, count, apply, leave, Tag, empty
 queue, Load more, Activity's Review metadata; items recorded by the real recorder in
 `tests/browser/workspace_review_fixture.py`), and the SAVED VIEWS rows in
 `shell-concept.spec.mjs` and `workspace-saved-views.spec.mjs`.
+
+### Native image tagging and Needs review (#249 PRs A–F)
+
+One place for the whole image-tagging slice; the details live in the sections named.
+
+- **Routes.** Tagging: `POST /prompt_manager/image-annotations/observe`, `GET`/`DELETE
+  /prompt_manager/image-annotations/capture/<token>`, `POST
+  /prompt_manager/image-annotations/suggest`, `PUT /prompt_manager/image-annotations/tags`
+  ("Tag image dialog and recorded deviations"). Needs review: `GET
+  /prompt_manager/review/items?limit=1..40&cursor=` (answers `library_epoch`,
+  `review_revision`, `total`), `GET /prompt_manager/review/items/<id>`, `POST
+  /prompt_manager/review/items/<id>/decision` and the change stream `GET
+  /prompt_manager/review/events` ("Needs review decisions and queue reads", "Needs review
+  page and recorded deviations"). Every legacy route keeps its payload; the only legacy
+  change is `409 model-busy` from the legacy Auto-tag routes while another model
+  operation holds the shared gate.
+- **S1 (fingerprint-current reads, ruled 2026-10-22).** The Images Tags filter, search and
+  the inspector/viewer chips use a byte record only while the file's `(st_size,
+  st_mtime_ns)` equals its verified fingerprint; writes hash the bytes. Residual risk
+  under "Image annotations schema".
+- **Capture limits.** 256 MiB per file, 8 completed captures, 512 MiB reserved, 2
+  capture/verify workers, 900 s idle, 1800 s hard; the browser fixtures release every
+  capture on reset, and leaving the Needs review page mid-decision releases its capture.
+- **The record-changing job.** Bulk Add tags and Auto-tag selected run as the
+  `image-tags` Activity job (PR D); like the metadata scan it is a record-changing job, so
+  a start while another runs is refused (`busy`). Needs review items come from that scan
+  and from the live monitor, and a decision changes links only when compatible
+  (`association-conflict` otherwise, with zero writes).
+- **No downloads.** No automated test downloads or loads a model: the browser server
+  injects `TestModel` (its `download_model` raises), native routes and jobs never
+  download, and every tagging spec asserts no `/autotag/download/` request.
+- **Restart.** PRs A, B, D and E and PR F (the review change stream, the queue version)
+  change Python: the maintainer restarts ComfyUI once after merging. HTML, CSS and JS
+  changes need only a browser refresh.
 
 ## Workspace data fields for the concept pages (#249)
 

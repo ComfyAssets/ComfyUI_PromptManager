@@ -75,7 +75,7 @@ export function readyVersion(event) {
  * time the pending total the page shows changes (the shell's Needs review count); `controller` and `connect` (the
  * change stream's EventSource) are injectable for tests.
  */
-export function mountReview(main, { api, scope, onDecision = () => {}, onTotal = () => {},
+export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     connect = openEvents, controller = createReviewController({ api }) }) {
     scope.cleanup(() => controller.dispose());
     const heading = pageHeading(main);
@@ -264,7 +264,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal =
     const reportTotal = state => {
         if (state.status !== 'ready' || state.phase === 'done' || state.total === shownTotal) return;
         shownTotal = state.total;
-        onTotal(state.total);
+        onTotal?.(state.total);
     };
     scope.cleanup(controller.subscribe(render));
     scope.cleanup(controller.subscribe(reportTotal));

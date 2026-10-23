@@ -383,6 +383,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 /* #249 D20: the prompt blocks' mount point is transparent, so the chosen path's sections sit in the panel as the
    concept's do. */
 .review-panel > .prompt-inspector { display: contents; /* D20 */ }
-/* D119: a file that cannot be served (no current root) has an inert, empty media button. */
-.review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; }
+/* D119: a file that cannot be served (no current root) has an inert, empty media button that keeps the concept's
+   1.33 media area (app.js `.image-open img`), so its card lines up with the queue's other cards. */
+.review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; aspect-ratio: 1.33; /* D119 */ }
 .review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; }
