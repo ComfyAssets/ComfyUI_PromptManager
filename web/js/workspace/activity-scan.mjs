@@ -81,11 +81,12 @@ export function busyToast(running) {
 
 /**
  * Start the scan job over `files` ('new': new and unresolved files, or 'all') and open its view; a refused or failed
- * start says why and stays on the page.
+ * start says why and stays on the page. `roots` (System › Sources, S4) limits it to those effective source indexes.
  */
-export async function startMetadataScan({ store, scope, files = 'new', notify = showWorkspaceToast, navigate = navigateTo }) {
+export async function startMetadataScan({ store, scope, files = 'new', roots = null, notify = showWorkspaceToast,
+    navigate = navigateTo }) {
     try {
-        const result = await store.start('scan', { scope: files });
+        const result = await store.start('scan', roots ? { scope: files, roots } : { scope: files });
         if (scope.signal.aborted) return;
         if (result.busy !== undefined) {
             notify(busyToast(result.busy));
@@ -97,9 +98,12 @@ export async function startMetadataScan({ store, scope, files = 'new', notify = 
     }
 }
 
-/** Open "Review metadata scan" for `sources` output folders. */
-export function openMetadataScan({ scope, store, sources, trigger = null }) {
+/**
+ * Open "Review metadata scan" for `sources` output folders; with `roots` (one source's index, System › Sources) the
+ * scan reads only those.
+ */
+export function openMetadataScan({ scope, store, sources, roots = null, trigger = null }) {
     openScanReviewDialog({ scope, sources, trigger,
         onBackup: () => downloadDatabaseBackup(),
-        onStart: ({ scope: files }) => startMetadataScan({ store, scope, files }) });
+        onStart: ({ scope: files }) => startMetadataScan({ store, scope, files, roots }) });
 }
