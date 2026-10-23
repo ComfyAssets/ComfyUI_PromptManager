@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import contextlib
 import os
 import sqlite3
 import unittest
@@ -774,3 +775,120 @@ class TestMonitorRecording(ReviewTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FoldingPath:
+    """``os.path`` of a case-folding filesystem (Windows, macOS APFS)."""
+
+    def __getattr__(self, name):
+        return getattr(os.path, name)
+
+    @staticmethod
+    def normcase(value):
+        return os.path.normcase(value).lower()
+
+
+class _FoldingOs:
+    path = _FoldingPath()
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+def _case_folding():
+    """Fold case where locators are formed: recording, the store, the database."""
+    import database.review as review_module
+    import utils.media_capture as capture_module
+
+    stack = contextlib.ExitStack()
+    for module in (review_module, capture_module, review_capture):
+        stack.enter_context(patch.object(module, "os", _FoldingOs()))
+    return stack
+
+
+class TestRecordedSpelling(ReviewTestCase):
+    """A case-only rename refreshes the recorded spelling (I5)."""
+
+    def _spelled(self):
+        conn = self.api.db.model.get_connection()
+        return [
+            row[0]
+            for row in conn.execute("SELECT spelled_path FROM media_review_items")
+        ]
+
+    async def test_case_only_rename_refreshes_the_spelling_on_the_skip_path(self):
+        self._require_module()
+        self._roots()
+        upper = self.output_dir / "Two.PNG"
+        write_png(upper, prompt=ambiguous_graph("cat", "dog"))
+        with _case_folding():
+            self.assertEqual(self.api.record_review_file(str(upper)), "recorded")
+            (before,) = self._items()
+            revision = self._review_revision()
+            lower = self.output_dir / "two.png"
+            os.rename(upper, lower)  # keeps size and mtime_ns
+            self.assertEqual(self.api.record_review_file(str(lower)), "duplicate")
+            (after,) = self._items()
+            self.assertEqual(self._spelled(), [str(lower)])
+            self.assertEqual(self._review_revision(), revision + 1)
+            # The item itself is unchanged: an open decision stays valid.
+            self.assertEqual(
+                {k: v for k, v in after.items() if k != "spelled_path"},
+                {k: v for k, v in before.items() if k != "spelled_path"},
+            )
+            from py.api.review import format_review_target
+
+            real_root = os.path.realpath(str(self.output_dir))
+            self.assertEqual(
+                format_review_target(
+                    after["spelled_path"],
+                    after["locator"],
+                    [(0, real_root)],
+                    pathmod=_FoldingPath(),
+                ),
+                (0, "two.png"),
+            )
+            # The new spelling opens; the recorded one would be refused.
+            capture = self.api._captures.capture(
+                self.output_dir, "two.png", epoch="e", scope="s"
+            )
+            self.assertEqual(capture.locator, after["locator"])
+            self.api._captures.release(capture.token)
+            # Seeing the same spelling again writes nothing.
+            self.assertEqual(self.api.record_review_file(str(lower)), "duplicate")
+            self.assertEqual(self._review_revision(), revision + 1)
+
+    async def test_duplicate_insert_refreshes_the_spelling(self):
+        self._require_module()
+        db = self.api.db
+        root = os.path.realpath(str(self.output_dir))
+        upper, lower = os.path.join(root, "Two.PNG"), os.path.join(root, "two.png")
+        facts = dict(
+            sha256="a" * 64,
+            size=10,
+            mtime_ns=1,
+            resolver_version=1,
+            evidence={"reason": "", "candidates": []},
+            candidate_count=0,
+            limited=True,
+        )
+        with _case_folding():
+            locator = _FoldingPath.normcase(upper)
+            epoch = db.get_execution_epoch()
+            self.assertTrue(
+                db.record_review_item(
+                    locator=locator, spelled_path=upper, epoch=epoch, **facts
+                )
+            )
+            revision = self._review_revision()
+            self.assertFalse(
+                db.record_review_item(
+                    locator=locator, spelled_path=lower, epoch=epoch, **facts
+                )
+            )
+            self.assertEqual(self._spelled(), [lower])
+            self.assertEqual(self._review_revision(), revision + 1)
+            self.assertFalse(db.refresh_review_spelling(locator, lower))
+            self.assertEqual(self._review_revision(), revision + 1)
+            with self.assertRaises(ValueError):
+                db.refresh_review_spelling(locator, os.path.join(root, "other.png"))

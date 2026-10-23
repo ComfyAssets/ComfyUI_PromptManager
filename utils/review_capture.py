@@ -113,17 +113,22 @@ def _queued_spelling(db, root, relative: str) -> str | None:
     with the listed relative path), so it folds to the capture's locator. A
     file whose size and ``mtime_ns`` equal the verified fingerprint of bytes
     an item already cites is not copied or hashed again (maintainer ruling:
-    the rescan stays cheap and the file stays in the default scope). A stat
-    failure leaves the decision to the capture.
+    the rescan stays cheap and the file stays in the default scope); its
+    items take the current spelling. A stat failure leaves the decision to
+    the capture.
     """
     spelled = os.path.join(os.path.realpath(os.fspath(root)), *relative.split("/"))
     try:
         facts = os.lstat(spelled)
     except OSError:
         return spelled
+    locator = os.path.normcase(spelled)
     if db.review_fingerprint_queued(
-        os.path.normcase(spelled), facts.st_size, facts.st_mtime_ns, RESOLVER_VERSION
+        locator, facts.st_size, facts.st_mtime_ns, RESOLVER_VERSION
     ):
+        # Not copied again, but a case-only rename keeps the stat: record
+        # the current spelling so the item's target still opens.
+        db.refresh_review_spelling(locator, spelled)
         return None
     return spelled
 

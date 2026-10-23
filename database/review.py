@@ -50,6 +50,13 @@ _BUMP_REVIEW_INDEX = (
     f"UPDATE {METADATA_TABLE} SET "  # nosec B608
     "review_index_revision=review_index_revision+1 WHERE singleton_id=1"
 )
+# A later spelling of the same locator (a case-only rename on a case-folding
+# filesystem) replaces the recorded one, so targets keep formatting.
+_REFRESH_SPELLING = (
+    f"UPDATE {ITEMS_TABLE} SET spelled_path=? "  # nosec B608
+    f"WHERE spelled_path<>? AND byte_id IN (SELECT b.id FROM {BYTES_TABLE} b "
+    f"JOIN {FILES_TABLE} f ON f.id=b.file_id WHERE f.locator=?)"
+)
 _REVIEW_INDEX = (
     f"SELECT review_index_revision FROM {METADATA_TABLE} "  # nosec B608
     "WHERE singleton_id=1"
@@ -276,9 +283,27 @@ class ReviewOperations:
                 ),
             )
             inserted = cursor.rowcount > 0
-            if inserted:
+            refreshed = _refresh_spelling(conn, locator, spelled_path)
+            if inserted or refreshed:
                 conn.execute(_BUMP_REVIEW_INDEX)
             return inserted
+
+    def refresh_review_spelling(self, locator: str, spelled_path: str) -> bool:
+        """Record ``spelled_path`` as the spelling of every item at ``locator``.
+
+        The rescan's skip calls it for a file it does not copy again: a
+        case-only rename keeps size and ``mtime_ns``, and a target formatted
+        from the old spelling would be refused. True when a spelling changed
+        (the review index revision moves; item revisions do not, so an open
+        decision stays valid).
+        """
+        _validate_locator(locator)
+        _validate_spelling(spelled_path, locator)
+        with self._pair_transaction() as conn:
+            refreshed = _refresh_spelling(conn, locator, spelled_path)
+            if refreshed:
+                conn.execute(_BUMP_REVIEW_INDEX)
+            return refreshed
 
     def review_index_revision(self) -> int:
         """The queue's revision (moved by every queue change)."""
@@ -386,6 +411,10 @@ class ReviewOperations:
             text = hashes[prompt_hash]
             found[text] = found.get(text, ()) + (title,)
         return found
+
+
+def _refresh_spelling(conn: sqlite3.Connection, locator: str, spelled: str) -> bool:
+    return conn.execute(_REFRESH_SPELLING, (spelled, spelled, locator)).rowcount > 0
 
 
 def _queue_row(row, columns) -> dict:
