@@ -28,16 +28,23 @@ Recording changes records, so it follows the registry's ``records``
 admission (#289). The scan records under its own ``records`` job. The
 monitor's pass lasts one file and is not a job: it is refused while a
 ``records`` or ``guarded`` job runs (``deferred``), and the next scan reads
-the file again.
+the file again. Thumbnail work (the job and the gallery's generate and clear
+holds, kind ``thumbnails``) is ``guarded`` but only writes and removes preview
+files under ``thumbnails/`` and never touches the database, so it does not
+defer the recording (#249 S5 M7): a long rebuild no longer holds Needs review
+back for its whole run.
 """
 
 import os
 from pathlib import Path
 
 from .admin import SCAN_LOG_PREFIXES, _plural, _scan_location, _scan_roots
+from .jobs import THUMBNAILS_JOB_KIND
 
 # The kind the monitor's recording checks admission under (never registered).
 REVIEW_RECORDING_KIND = "review_recording"
+# Guarded kinds that change no records, so the recording may run beside them.
+PREVIEW_ONLY_KINDS = (THUMBNAILS_JOB_KIND,)
 # record_ambiguous_file outcomes that leave the file in the pending queue.
 QUEUED_OUTCOMES = ("recorded", "limited", "duplicate")
 NEW_OUTCOMES = ("recorded", "limited")
@@ -185,11 +192,14 @@ class ReviewRecordingMixin:
         links it); any other file is recorded when it is ambiguous with a
         choice, and is ``untraced`` (its pending items without a choice
         removed) when it is ambiguous without one. While a
-        job runs that a ``records`` job may not run beside, nothing is written
-        and the answer is ``deferred``. Errors propagate: the monitor logs
+        job runs that a ``records`` job may not run beside, other than
+        thumbnail work (``PREVIEW_ONLY_KINDS``), nothing is written and the
+        answer is ``deferred``. Errors propagate: the monitor logs
         them and keeps its link.
         """
-        busy = self._jobs.blocker(REVIEW_RECORDING_KIND, admission="records")
+        busy = self._jobs.blocker(
+            REVIEW_RECORDING_KIND, admission="records", compatible=PREVIEW_ONLY_KINDS
+        )
         if busy is not None:
             self.logger.info(
                 f"Needs review was not updated for "

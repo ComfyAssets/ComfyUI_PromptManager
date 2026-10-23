@@ -19,7 +19,9 @@ old preview; originals are only read.
 
 The legacy gallery stream ``POST /images/generate-thumbnails/progress``
 starts this job (its quality preset still sizes the previews) or attaches to
-the running one, and streams the job's legacy ``status``/``start``/
+the running one. Its first frame, ``job {id, started}``, names that job and
+whether this stream started it (the gallery cancels by that id, and only a
+job it started); then come the job's legacy ``status``/``start``/
 ``progress``/``file_error``/``complete`` frames. A client that goes away no
 longer stops the work: the job outlives the request, as a scan does.
 """
@@ -65,6 +67,8 @@ _OPTIONS_ERROR = (
     f"to {MAX_THUMBNAIL_EDGE}"
 )
 CANCELLED_ERROR = "Thumbnail generation was cancelled"
+CANCELLED_BEFORE_WRITING = "Cancelled before any preview was written"
+NOTHING_TO_PREVIEW = "No images or videos to preview"
 _MODE_LOG = {"missing": "missing previews", "rebuild": "every preview"}
 # Outcome rows: what happened to each file's preview.
 _DETAILS = {
@@ -137,6 +141,20 @@ def _invalid(message):
 def _frame(event, data):
     """A legacy stream frame as the job publishes it."""
     return {"event": event, "data": data}
+
+
+def _finished_line(plan, stats):
+    """A finished job's status line: what it wrote, or that it had nothing to do."""
+    if not plan["targets"]:
+        if plan["skipped"]:
+            return f"No previews to generate · {plan['skipped']:,} already up to date"
+        return NOTHING_TO_PREVIEW
+    parts = [f"{_plural(stats['generated'], 'preview')} written"]
+    if stats["errors"]:
+        parts.append(_plural(len(stats["errors"]), "error"))
+    if plan["remaining"]:
+        parts.append(f"{plan['remaining']:,} more on the next run")
+    return " · ".join(parts)
 
 
 class ThumbnailJobsMixin:
@@ -230,7 +248,11 @@ class ThumbnailJobsMixin:
         job.finish(state)
 
     async def _thumbnail_job_body(self, job, options):
-        """Plan, then generate in worker batches; returns the final state."""
+        """Plan, then generate in worker batches; returns the final state.
+
+        Every exit sets the job's final status line (I3): what was written,
+        that there was nothing to do, or what a cancel kept.
+        """
         output_dirs = await self._run_in_executor(self._get_all_output_dirs)
         if not output_dirs:
             message = "ComfyUI output directory not found"
@@ -252,20 +274,22 @@ class ThumbnailJobsMixin:
             )
         )
         plan = await self._run_in_executor(
-            self._plan_gallery_thumbnails, output_dirs, rebuild=options.rebuild
+            self._plan_gallery_thumbnails,
+            output_dirs,
+            rebuild=options.rebuild,
+            stop=lambda: job.cancelled,
         )
+        if job.cancelled:  # M2: stopped during the walk, before any start frame
+            return self._end_cancelled(job, 0, CANCELLED_BEFORE_WRITING)
         roots = _scan_roots(output_dirs)
         self._record_fresh(job, plan, roots)
         stats, start = await self._generate_thumbnail_targets(job, options, plan, roots)
         self.invalidate_gallery_cache()
         generated = _plural(stats["generated"], "preview")
-        errors = _plural(len(stats["errors"]), "error")
         if job.cancelled:
-            job.log_line(f"Thumbnails cancelled · {generated} written")
-            job.publish(
-                _frame("error", {"error": CANCELLED_ERROR, "message": CANCELLED_ERROR})
+            return self._end_cancelled(
+                job, stats["generated"], f"Cancelled · {generated} written"
             )
-            return "cancelled"
         payload = _thumbnail_complete_payload(
             len(plan["targets"]) + plan["skipped"] + plan["remaining"],
             stats,
@@ -273,15 +297,26 @@ class ThumbnailJobsMixin:
             remaining=plan["remaining"],
             processed=len(plan["targets"]),
         )
-        job.update(progress=100)
+        job.update(progress=100, status_line=_finished_line(plan, stats))
         if plan["remaining"]:
             job.log_line(
                 f"{plan['remaining']:,} more previews are left for the next run"
             )
+        errors = _plural(len(stats["errors"]), "error")
         job.log_line(f"Thumbnails finished · {generated} written · {errors}")
         self.logger.info(payload["message"])
         job.publish(_frame("complete", payload))
         return "finished"
+
+    @staticmethod
+    def _end_cancelled(job, generated, status_line):
+        """Close a cancelled job: its status line, log line and error frame."""
+        job.update(status_line=status_line)
+        job.log_line(f"Thumbnails cancelled · {_plural(generated, 'preview')} written")
+        job.publish(
+            _frame("error", {"error": CANCELLED_ERROR, "message": CANCELLED_ERROR})
+        )
+        return "cancelled"
 
     def _record_fresh(self, job, plan, roots):
         """List the already fresh previews under Skipped (no log line each)."""
@@ -310,7 +345,9 @@ class ThumbnailJobsMixin:
         )
         if plan["skipped"]:
             message += f" ({plan['skipped']} already have thumbnails)"
-        job.update(total=total, status_line=_scan_status_line(0, total, 0, 0))
+        job.update(total=total)
+        if total:  # never "Processing file 0 of 0" (I3)
+            job.update(status_line=_scan_status_line(0, total, 0, 0))
         job.publish(
             _frame(
                 "start",
@@ -409,40 +446,49 @@ class ThumbnailJobsMixin:
                 "Connection": "keep-alive",
             },
         )
-        running = self._jobs.active(THUMBNAILS_JOB_KIND)
-        job = running if running is not None and running.cancellable else None
-        busy = None
-        if job is None:
-            busy = self._jobs.blocker(THUMBNAILS_JOB_KIND, admission="guarded")
         await response.prepare(request)
-        if busy is None and job is None:
-            # The gallery's preset sizes the previews; medium encodes them as
-            # the gallery always did.
-            options = ThumbnailOptions("missing", thumbnail_size[0], "medium")
-            try:
-                job = self._start_thumbnail_job(options)
-            except JobBusy as refused:
-                busy = refused.running
+        # M3: read the registry after the last await, so a job that started
+        # while the headers went out is attached to, not refused.
+        job, started, busy = self._legacy_stream_job(thumbnail_size)
         if busy is not None:
             message = f"{busy.title} already running"
             await self._emit_sse(
                 response, "error", {"error": message, "message": message}
             )
             return response
-        # No await between the start and the first read: the stream subscribes
-        # before the job's runner publishes its first frame.
-        events = job.events()
+        # No await between the start and the subscription: the lead frame is
+        # sent after it, so the stream misses none of the runner's frames.
+        events = job.events(lead=_frame("job", {"id": job.id, "started": started}))
         try:
             async for payload in events:
                 frame = (
                     f"event: {payload['event']}\ndata: {json.dumps(payload['data'])}"
                 )
                 await response.write(f"{frame}\n\n".encode("utf-8"))
-        except Exception as exc:  # the client went away; the job goes on
+        except Exception as exc:  # a write failed: the client went away
             self.logger.info(
                 f"Thumbnail progress client disconnected ({exc}); "
                 "the thumbnails continue in the background"
             )
         finally:
+            # Also when aiohttp cancels the handler on disconnect: the job is
+            # its own task and goes on.
             await events.aclose()
         return response
+
+    def _legacy_stream_job(self, thumbnail_size):
+        """``(job, started, busy)`` for the legacy stream, synchronously.
+
+        Attaches to the running cancellable thumbnail job, or starts one with
+        the gallery's preset as the size (missing previews, medium encoding,
+        as the gallery always wrote), or names the job in the way.
+        """
+        running = self._jobs.active(THUMBNAILS_JOB_KIND)
+        if running is not None and running.cancellable:
+            return running, False, None
+        busy = self._jobs.blocker(THUMBNAILS_JOB_KIND, admission="guarded")
+        if busy is not None:
+            return None, False, busy
+        # blocker() said free and nothing awaited since, so the start is admitted.
+        options = ThumbnailOptions("missing", thumbnail_size[0], "medium")
+        return self._start_thumbnail_job(options), True, None

@@ -292,18 +292,24 @@ class Job:
         for queue in list(self._subscribers):
             queue.put_nowait(None)
 
-    async def events(self):
+    async def events(self, lead=None):
         """Yield the latest event, then each later one, until the job finishes.
 
+        ``lead``, when given, is yielded first, after the subscription is in
+        place, so nothing published while the consumer sends it is missed.
         Consume it under ``contextlib.aclosing`` so a consumer that stops early
         (a closed socket) drops its queue at once instead of at garbage collection.
         """
         queue = asyncio.Queue()
         self._subscribers.add(queue)
+        # As of the subscription: a later event or the end reaches the queue.
+        snapshot, ended = self.last_event, self.finished
         try:
-            if self.last_event is not None:
-                yield self.last_event
-            if self.finished:
+            if lead is not None:
+                yield lead
+            if snapshot is not None:
+                yield snapshot
+            if ended:
                 return
             while True:
                 payload = await queue.get()
@@ -454,11 +460,14 @@ class JobRegistry:
         self._jobs[job.id] = job
         return job
 
-    def blocker(self, kind, *, admission=None, record_changing=None):
+    def blocker(self, kind, *, admission=None, record_changing=None, compatible=()):
         """The running job a new ``kind`` job would be refused for, or None.
 
         The same kind refuses first; then the oldest running job whose class
-        the new job's admission class may not run beside.
+        the new job's admission class may not run beside. Running jobs of a
+        kind in ``compatible`` never refuse it: the caller knows that work
+        cannot conflict with its own (the monitor's Needs review recording
+        beside thumbnail work, which writes previews and no records).
         """
         same_kind = self.active(kind)
         if same_kind is not None:
@@ -468,7 +477,7 @@ class JobRegistry:
         running = [job for job in tuple(self._jobs.values()) if job.running]
         running.sort(key=lambda job: job._started_seq)
         for job in running:
-            if job.admission in refused:
+            if job.admission in refused and job.kind not in compatible:
                 return job
         return None
 

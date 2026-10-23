@@ -282,6 +282,27 @@ THUMBNAIL_ENCODINGS = {
     "high": {"quality": 95, "optimize": True},
 }
 DEFAULT_THUMBNAIL_ENCODING = THUMBNAIL_ENCODINGS["medium"]
+# ffmpeg's JPEG scale (-q:v, 2 best to 31 worst) for each encoding's quality.
+_FFMPEG_QSCALE = {95: 2, 85: 4, 70: 8}
+
+# A preview that could not be replaced (#249 S5 M6). Windows refuses to rename
+# over a file another process has open (WinError 5 or 32), such as a preview
+# the gallery is serving; the old preview stays and the file counts as an error.
+PREVIEW_IN_USE = "Preview in use by another program; the old one was kept"
+PREVIEW_NOT_WRITABLE = "Permission denied writing the preview"
+_WINDOWS_LOCKED = (5, 32)  # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
+
+
+def _preview_write_error(exc):
+    """The readable error for a PermissionError while writing a preview."""
+    if getattr(exc, "winerror", None) in _WINDOWS_LOCKED:
+        return PREVIEW_IN_USE
+    return PREVIEW_NOT_WRITABLE
+
+
+def _ffmpeg_qscale(encoding):
+    """ffmpeg's ``-q:v`` for a THUMBNAIL_ENCODINGS entry."""
+    return str(_FFMPEG_QSCALE.get(encoding["quality"], 4))
 
 
 def _write_image_thumbnail(src, dst, thumbnail_size, encoding=None):
@@ -1840,12 +1861,13 @@ class ImageRoutesMixin:
         return payload
 
     def _plan_gallery_thumbnails(
-        self, output_dirs: list[Path], rebuild: bool = False
+        self, output_dirs: list[Path], rebuild: bool = False, stop=None
     ) -> dict:
         """Plan every gallery root with one shared per-run generation cap.
 
         See ``_plan_thumbnails``; ``fresh_files`` keeps at most
-        MAX_FRESH_LISTED files across the roots.
+        MAX_FRESH_LISTED files across the roots. ``stop()`` true ends the walk
+        at the next file (a cancelled job); the partial plan is returned.
         """
         combined = {
             "targets": [],
@@ -1855,8 +1877,12 @@ class ImageRoutesMixin:
             "fresh_files": [],
         }
         for root in output_dirs:
+            if stop is not None and stop():
+                break
             root = Path(root)
-            plan = self._plan_thumbnails(root, root / "thumbnails", rebuild=rebuild)
+            plan = self._plan_thumbnails(
+                root, root / "thumbnails", rebuild=rebuild, stop=stop
+            )
             available = max(0, MAX_THUMBNAIL_FILES - len(combined["targets"]))
             combined["targets"].extend(plan["targets"][:available])
             combined["skipped"] += plan["skipped"]
@@ -1895,7 +1921,7 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(exc)}, status=500
             )
 
-    def _plan_thumbnails(self, output_path, thumbnails_dir, rebuild=False):
+    def _plan_thumbnails(self, output_path, thumbnails_dir, rebuild=False, stop=None):
         """Decide which media files need a thumbnail (blocking walk).
 
         Returns ``{"targets": [(src, dst, is_video)], "skipped": n,
@@ -1907,7 +1933,8 @@ class ImageRoutesMixin:
         ``rebuild`` every file is a target (nothing is skipped). The walk is
         bounded like the gallery listing (MAX_SCAN_DEPTH, MAX_GALLERY_FILES,
         no symlinks) and at most MAX_THUMBNAIL_FILES targets are queued per
-        run; ``remaining`` counts the targets beyond that cap.
+        run; ``remaining`` counts the targets beyond that cap. ``stop()`` true
+        ends the walk before the next file.
         """
         output_path = Path(output_path)
         targets = []
@@ -1916,6 +1943,8 @@ class ImageRoutesMixin:
         fresh = 0
         fresh_files = []
         for src in _iter_media_files(output_path, MAX_GALLERY_FILES):
+            if stop is not None and stop():
+                break
             suffix = src.suffix.lower()
             is_video = suffix in VIDEO_EXTENSIONS
             rel_no_ext = src.relative_to(output_path).with_suffix("")
@@ -2007,6 +2036,10 @@ class ImageRoutesMixin:
             return {**result, "action": "generated"}
         except UnidentifiedImageError:
             return {**result, "action": "error", "error": "Not a valid image file"}
+        except PermissionError as e:
+            message = _preview_write_error(e)
+            self.logger.warning(f"Thumbnail failed for {src.name}: {message}")
+            return {**result, "action": "error", "error": message}
         except Exception as e:
             self.logger.warning(f"Thumbnail failed for {src.name}", exc_info=True)
             return {**result, "action": "error", "error": _safe_error(e)}
@@ -2031,10 +2064,13 @@ class ImageRoutesMixin:
     ):
         """Generate thumbnail from video file. Returns True if successful.
 
-        ``encoding`` is one of THUMBNAIL_ENCODINGS (medium when None). With
-        ``keep_existing`` an existing preview is kept, and the run fails,
-        when no frame could be decoded, rather than replaced by the
-        placeholder.
+        ``encoding`` is one of THUMBNAIL_ENCODINGS (medium when None); it
+        encodes the OpenCV frame, ffmpeg's frame (as ``-q:v``) and the
+        placeholder alike. Both decoders fit the frame inside
+        ``thumbnail_size`` keeping its aspect ratio. With ``keep_existing`` an
+        existing preview is kept, and the run fails, when no frame could be
+        decoded, rather than replaced by the placeholder. A PermissionError
+        while replacing the preview propagates (``_generate_one`` names it).
         """
         encoding = encoding or DEFAULT_THUMBNAIL_ENCODING
         try:
@@ -2082,8 +2118,11 @@ class ImageRoutesMixin:
                     "00:00:01",
                     "-vframes",
                     "1",
-                    "-s",
-                    f"{thumbnail_size[0]}x{thumbnail_size[1]}",
+                    "-vf",
+                    f"scale={thumbnail_size[0]}:{thumbnail_size[1]}"
+                    ":force_original_aspect_ratio=decrease",
+                    "-q:v",
+                    _ffmpeg_qscale(encoding),
                     "-y",
                     str(tmp_path),
                 ]
@@ -2148,18 +2187,22 @@ class ImageRoutesMixin:
                 except (OSError, AttributeError):
                     pass
 
-                _atomic_save(img, thumbnail_path, "JPEG", quality=85)
+                _atomic_save(img, thumbnail_path, "JPEG", **encoding)
                 self.logger.debug(
                     f"Generated placeholder video thumbnail: {thumbnail_path}"
                 )
                 return True
 
+            except PermissionError:
+                raise
             except Exception as e:
                 self.logger.warning(
                     f"Failed to create placeholder thumbnail for {video_path}: {e}"
                 )
                 return False
 
+        except PermissionError:
+            raise
         except Exception as e:
             self.logger.error(
                 f"Video thumbnail generation failed for {video_path}: {e}"

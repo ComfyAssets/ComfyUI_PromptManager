@@ -2172,18 +2172,48 @@ cancellable at a file boundary (a file not yet started is left alone; written pr
 stay), outcome groups Generated / Skipped (already fresh, listed without a log line
 each) / Errors. `size` is the longest edge and `quality` the encoder (low: JPEG 70, no
 optimize; medium: 85, optimized, what the legacy routes always wrote; high: 95,
-optimized). `rebuild` writes fresh previews again, each through the same temp-file
+optimized). Video previews take the same choice: the OpenCV frame and the placeholder
+are saved with those JPEG settings, and the ffmpeg fallback (no OpenCV) maps them to
+`-q:v` 8 / 4 / 2 and fits the frame inside the edge keeping its aspect ratio (`-vf
+scale=E:E:force_original_aspect_ratio=decrease`, no longer a stretched square).
+`rebuild` writes fresh previews again, each through the same temp-file
 rename, so nothing is cleared first and a failed file keeps its old preview (a video
 whose frame cannot be decoded keeps its preview instead of getting the placeholder);
-originals are only read (`tests/test_thumbnail_jobs.py`).
+originals are only read (`tests/test_thumbnail_jobs.py`). Cancel is also checked per
+file during the planning walk: a job cancelled there stops the walk at the next file,
+publishes no `start` frame and ends "Cancelled before any preview was written". Every
+exit sets a final status line: "N previews written · M errors" (plus "· R more on the
+next run" past the cap), "No previews to generate · N already up to date" (or "No
+images or videos to preview"), "Cancelled · N previews written", or the failure; a job
+with nothing to do never reads "Processing file 0 of 0" (`test_every_exit_sets_a_truthful_final_status_line`,
+and "a finished thumbnail job with nothing to do says so" in `workspace-activity.spec.mjs`).
+Windows: replacing a preview another process holds open (the gallery serving it, an
+image viewer) fails with WinError 5 or 32; that file counts as an error reading
+"Preview in use by another program; the old one was kept" (never the raw "[WinError
+5]"), and its old preview stays. Any other PermissionError reads "Permission denied
+writing the preview" (`test_a_locked_preview_is_a_readable_coded_error`).
+Thumbnail work (the job and the gallery's generate and clear holds) is `guarded`, but it
+writes only preview files and no records, so the image monitor's Needs review
+recording runs beside it instead of being deferred for a whole rebuild
+(`PREVIEW_ONLY_KINDS` in `py/api/review_recording.py`, `blocker(..., compatible=)`;
+`test_a_running_thumbnail_job_does_not_defer_monitor_recording`). Other `guarded` and
+all `records` jobs still defer it.
 
 Deliberate change: the legacy gallery stream `POST /images/generate-thumbnails/progress`
 now starts this job (missing previews, its quality preset as the size, medium encoding)
 or attaches to the running one, and streams the job's unchanged `status`/`start`/
-`progress`/`file_error`/`complete` frames. A client that goes away no longer stops the
-work (`test_thumbnail_job_survives_client_disconnect`); the gallery's Cancel asks the
-server to cancel the running thumbnail job, and a job cancelled from Activity ends the
-stream with the error frame "Thumbnail generation was cancelled". The blocking
+`progress`/`file_error`/`complete` frames after a first `job {id, started}` frame that
+names the job and whether this stream started it. The stream reads the registry after
+its headers are sent, so a job that starts in that gap is attached to, not refused. A
+client that goes away no longer stops the work (`test_thumbnail_job_survives_client_disconnect`:
+one worker, 9 files in three batches; the stream sees its client go after the first
+batch and all 9 previews are written, where a stream that stops on disconnect leaves 1).
+The gallery's Cancel (its settings panel and the startup dialog) cancels by that id,
+and only a job its own stream started: a Cancel before the `job` frame keeps the stream
+open until it arrives, a double Cancel posts once, and a job another tab or System
+started keeps running while the gallery stops following it (`tests/js/gallery-thumbnails.test.js`).
+A job cancelled from Activity ends the stream with the error frame "Thumbnail
+generation was cancelled". The blocking
 `POST /images/generate-thumbnails` and the clear stay legacy holds.
 
 The workspace starts it from "Thumbnail maintenance" (`thumbnail-review.mjs`, the
@@ -2334,7 +2364,9 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   job". Every other kind (the health check, a kind this page does not know) gets the
   generic descriptor: title-based toasts and no tiles or Results, so it never shows the
   scan's zero tiles (S1 review M6, S2 review M3). A running job without a known total
-  has an indeterminate `<progress>` (no `value`) and a pill without a percentage. Only a
+  has an indeterminate `<progress>` (no `value`) and a pill without a percentage, whose
+  mini bar (`aria-hidden`; the pill's label carries the state) is marked `indeterminate`
+  and sweeps instead of showing an empty fill (a dimmed full bar under reduced motion). Only a
   running job the server can cancel shows Cancel. Tests:
   `tests/js/workspace-activity-kinds.test.js`, and in `workspace-activity.spec.mjs` "a
   thumbnail job shows Generated Skipped Errors, its pill verb and its toasts" and "a held
@@ -2734,7 +2766,7 @@ pass runs after its own link, best effort: a failure is logged and the link
 stays. Recording follows the registry's `records`
 admission (#289): the scan's recording runs under its own `records` job, and
 the monitor's (one file, not a job) is refused while a `records` or `guarded`
-job or hold runs. It then records nothing, logs that the file waits for the
+job or hold runs, except thumbnail work, which writes no records (S5 M7). It then records nothing, logs that the file waits for the
 next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
 again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
