@@ -45,6 +45,7 @@ try:
         parse_page_json,
     )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
+    from ...utils.review_capture import reviewable
 except ImportError:
     from database.operations import PromptDatabase
     from database.pair_ingestion import ingest_resolved_pair
@@ -55,6 +56,7 @@ except ImportError:
         parse_page_json,
     )
     from utils.prompt_pair_resolver import resolve_prompt_pair
+    from utils.review_capture import reviewable
 
 
 try:
@@ -210,6 +212,30 @@ def _time_left(done, total, batches, elapsed):
         return ""
     minutes = max(1, math.ceil(elapsed / done * (total - done) / 60))
     return f" · about {minutes} min left"
+
+
+def new_review_counts():
+    """The scan's Needs review tally: ``added`` new items, ``queued`` files
+    in the queue after this scan (new or already there), ``settled`` items
+    removed because their file is linked now, ``untraced`` items removed
+    because they offer nothing to choose, and ``errors``."""
+    return {"added": 0, "queued": 0, "settled": 0, "untraced": 0, "errors": 0}
+
+
+def _review_scope(review):
+    """The scan job's ``scope`` keys for its Needs review tally.
+
+    ``review_items`` is the number of this scan's files that are in the
+    pending queue after it: the review group's ambiguous files, less those a
+    capture could not read or a decision already settled.
+    """
+    return {
+        "review_items": review["queued"],
+        "review_added": review["added"],
+        "review_settled": review["settled"],
+        "review_untraced": review["untraced"],
+        "review_errors": review["errors"],
+    }
 
 
 def _scan_status_line(done, total, batches, elapsed):
@@ -1461,10 +1487,13 @@ class AdminRoutesMixin:
             known = set()
             if media_files and job.scope.get("files") != "all":
                 known = await self._known_scan_files(job, media_files)
+            review = new_review_counts()
+            job.scope.update(_review_scope(review))
             async for event in self._scan_batches(
-                media_files, counts, job, roots, known
+                media_files, counts, job, roots, known, review
             ):
                 yield event
+            self._log_review_items(job, review)
 
             self.logger.info(
                 f"Scan completed: processed={counts['processed']}, "
@@ -1501,12 +1530,16 @@ class AdminRoutesMixin:
         sizes = {str(media_file): _file_size(media_file) for media_file in media_files}
         return self.db.get_known_resolved_paths(sizes)
 
-    async def _scan_batches(self, media_files, counts, job, roots=(), known=()):
+    async def _scan_batches(
+        self, media_files, counts, job, roots=(), known=(), review=None
+    ):
         """Process ``media_files`` in executor batches, updating ``counts`` in place.
 
         Records each file's outcome in ``job`` and yields one progress event
         per batch. Files in ``known`` (path strings) are not read: they count
-        as processed and unchanged and are recorded as skipped.
+        as processed and unchanged and are recorded as skipped. ``review``
+        counts the Needs review items the batches record (``job.scope``
+        ``review_items`` / ``review_errors`` follow it after every batch).
         """
         total = len(media_files)
         started = time.monotonic()
@@ -1529,9 +1562,16 @@ class AdminRoutesMixin:
                     batch_results,
                     roots=roots,
                     outcomes=outcomes,
+                    review=review,
                 )
                 for key in counts:
                     counts[key] += batch_counts[key]
+            if review is not None:
+                # After the batch's links: a file linked now leaves the queue.
+                await self._run_in_executor(
+                    self._settle_scanned_reviews, batch, roots, review
+                )
+                job.scope.update(_review_scope(review))
             for group, row, log_line in outcomes:
                 job.record(group, row, log_line)
 
@@ -1581,12 +1621,20 @@ class AdminRoutesMixin:
 
         return map_parallel(extract, file_batch, PromptManagerConfig.WORKER_THREADS)
 
-    def _ingest_scan_batch_sync(self, batch_results, roots=(), outcomes=None):
+    def _ingest_scan_batch_sync(
+        self, batch_results, roots=(), outcomes=None, review=None
+    ):
         """Store the prompts found in a metadata batch (blocking DB work).
 
         Returns the legacy counts. When ``outcomes`` is a list, every processed
         file appends its ``(group, row, log_line)`` for the scan job, with the
-        path relative to its root in ``roots`` (see ``_scan_roots``).
+        path relative to its root in ``roots`` (see ``_scan_roots``). A file
+        whose final outcome is ambiguous and unlinked (the resolver found it
+        ambiguous and the fallback did not link it) is recorded for Needs
+        review (best effort, counted in ``review`` when given); one a saved
+        row already links is reported ``unchanged`` and never queued. An
+        ambiguous file with nothing to choose is reported ``unresolved`` and
+        its pending items without a choice leave the queue.
         """
         counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
 
@@ -1598,13 +1646,27 @@ class AdminRoutesMixin:
             if self._scan_job and self._scan_job.cancelled:
                 break
             counts["processed"] += 1
+            ambiguous, untraced = [], []
             try:
-                outcome = self._ingest_scanned_file(media_file, metadata, detailed=True)
+                outcome = self._ingest_scanned_file(
+                    media_file,
+                    metadata,
+                    detailed=True,
+                    ambiguous=ambiguous,
+                    untraced=untraced,
+                )
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
                 counts["failed"] += 1
                 note(media_file, "error")
                 continue
+            if ambiguous and outcome == "ambiguous":
+                if self._review_file_linked(media_file, roots):
+                    outcome = "unchanged"  # already linked: not a review case
+                else:
+                    self._record_scanned_review(media_file, roots, review)
+            elif untraced and outcome == "unresolved":
+                self._settle_untraced_reviews(untraced, roots, review)
             if outcome is None:
                 note(media_file, None)
                 continue
@@ -1638,13 +1700,21 @@ class AdminRoutesMixin:
             return None
         return positive.strip() or None
 
-    def _ingest_scanned_file(self, media_file, metadata, detailed=False):
+    def _ingest_scanned_file(
+        self, media_file, metadata, detailed=False, ambiguous=None, untraced=None
+    ):
         """Enrich exact pairs; retain legacy positive-only import for absent pairs.
 
         Returns the file's scan status, or None without prompt metadata. With
         ``detailed``, a stored or linked file returns a dict instead: its
         ``status``, the prompt's display ``title`` and, for a resolved pair,
-        the pair counts.
+        the pair counts. When the resolver finds the file ambiguous (whether
+        or not the browser parser then links it) and ``ambiguous`` is a list,
+        ``media_file`` is appended to it; only a file that then returns
+        ``"ambiguous"`` (nothing linked it) is a Needs review case. An
+        ambiguous result with nothing to choose (``reviewable`` is False: fewer
+        than two candidates carry a prompt) that nothing links returns
+        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``.
         """
         if not metadata:
             return None
@@ -1660,6 +1730,13 @@ class AdminRoutesMixin:
             return None
         _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
+        # Ambiguous without a choice: unresolved unless something links it.
+        unchoosable = resolution["state"] == "ambiguous" and not reviewable(resolution)
+        if unchoosable:
+            if untraced is not None:
+                untraced.append(media_file)
+        elif resolution["state"] == "ambiguous" and ambiguous is not None:
+            ambiguous.append(media_file)
         if resolution["state"] == "resolved":
             result = ingest_resolved_pair(
                 self.db, str(media_file), canonical, resolution
@@ -1679,9 +1756,9 @@ class AdminRoutesMixin:
             # Graphs without a recognized sampler keep the legacy extractor below.
             prompt_text = self._graph_prompt_text(metadata)
             if not prompt_text:
-                return resolution["state"]
+                return "unresolved" if unchoosable else resolution["state"]
         elif resolution["state"] == "ambiguous":
-            return "ambiguous"
+            return "unresolved" if unchoosable else "ambiguous"
         elif resolution["state"] == "unresolved" and not isinstance(
             canonical.get("parameters"), str
         ):

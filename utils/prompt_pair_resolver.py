@@ -39,6 +39,12 @@ from .pair_execution import ExecutionEvidenceError, read_pair_execution
 
 _LOGGER = logging.getLogger("prompt_manager.prompt_pair_resolver")
 
+# The ingestion resolver's version, recorded in pair-link provenance and on
+# Needs review items. Bump it when a change would resolve the same metadata
+# otherwise; a pending item stays applicable while its chosen candidate is
+# still offered by the captured bytes.
+RESOLVER_VERSION = 1
+
 
 @dataclass(frozen=True)
 class OutputAdapter:

@@ -176,6 +176,8 @@ _TABLES = (
     "execution_context_texts",
     "saved_views",
     "image_favorites",
+    "media_review_decisions",
+    "media_review_items",
     "media_image_tags",
     "media_annotation_bytes",
     "media_annotation_files",

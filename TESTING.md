@@ -2058,8 +2058,10 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   and active saved negatives and the indexed `generated_images` rows (Q2). "Database
   integrity" is "Not checked" until a check ran this session, then "N issues" (checks
   that found issues, even beside a check that could not run), "Passed" or "Incomplete".
-  "Ambiguous image links" reads "Not available yet." with its Review metadata action
-  `aria-disabled` (CSS under D93) until the Needs review queue reports a count (Q6).
+  The review row is "N ambiguous image links" (the Needs review queue's pending count,
+  `needs_review.pending`) with the concept's line; its Review metadata action is
+  `aria-disabled` (CSS under D93) until the Needs review page ships (#288). A count
+  that is not an integer reads "Ambiguous image links" / "Not available yet." (Q6).
   "Backup status" reads "No retained backup record." until verified backups exist (S8).
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
   missing thumbnails", "N missing thumbnails" (the pending count of
@@ -2462,6 +2464,162 @@ inspection's own stable stat (`tests/test_api_workspace_images.py`
 browser fixtures clear `media_image_tags`, `media_annotation_bytes` and
 `media_annotation_files` on reset and never the metadata row.
 
+Review queue schema (#249, `database/review_schema.py`,
+`tests/test_review_schema.py`): the group `media_review_metadata` (one row:
+schema version, `review_index_revision`), `media_review_items` (one ambiguous
+resolver result per `(byte_id, resolver_version, evidence_hash)`, citing an
+annotation byte record `ON DELETE RESTRICT`, with the file's recorded
+`spelled_path` (the locator is case-folded on Windows, a listing target is
+not), 0..16 candidates, `limited`,
+`state` pending/selected/unresolved and a revision) and `media_review_decisions`
+(one row per item decision revision; `selected` exactly when a
+`candidate_hash` is present; `pair_id`/`image_id` navigation is set to NULL,
+never cascaded, when the pair or image is deleted, through
+`idx_media_review_decisions_pair`/`_image`). Evidence is canonical JSON
+(`canonical_evidence`: one object, sorted keys, no whitespace, ASCII only, no
+NaN/infinity, at most 8 MiB) and `evidence_hash` is its SHA-256. The group is
+valid only beside a valid annotation group (a review group without annotation
+tables is refused, catalog only, before the annotation install), installs like
+the annotation group (optional in old backups, required once current under
+`require_library_state`, SAVEPOINT install validated before and after), and
+validation re-canonicalizes every evidence document in one streamed pass. A
+startup runs that pass once (`test_startup_validates_stored_evidence_once`; the
+install trusts the annotation group it has just validated, and the SQL row
+predicates check type and size only, because the streamed pass proves the
+rest): 2.5 s to open a database of 40,000 items with 4 KiB of evidence each,
+was 7.7 s with two passes. Restore and `verify_database_file` keep the full
+validation, annotation group included. The browser fixtures clear
+`media_review_decisions` and `media_review_items` before the annotation tables,
+never the metadata row.
+
+Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
+`tests/test_review.py`, `tests/test_review_outcome.py`,
+`tests/test_review_choosable.py`): a file is queued only when its final outcome
+is ambiguous and unlinked and there is something to choose. Only scans produce
+items; the monitor links new outputs and clears pending items it resolves
+(maintainer rulings, 2026-10-23). The output scan (Activity's
+Scan for metadata and the legacy `/scan`) hands `record_ambiguous_file` a file
+the ingestion resolver finds `ambiguous` only when the browser-parser fallback
+then links nothing (status `ambiguous`) and no saved row links the file
+already; an ambiguous file a saved row links is reported `unchanged` ("Already
+linked to its prompt"), not Needs review. A file the fallback links, an exact
+pair the ingester stores, and `conflict` and `unresolved` files are not
+queued. Neither is an ambiguous file with nothing to choose: fewer than two of
+its candidates are `resolved` with non-blank positive text (`reviewable`). With
+none the file could not be traced; with exactly one, the untraced branches may
+still have made the file, so that text is not certain either. Both report
+`unresolved` ("could not be traced"), are never linked, and their pending,
+undecided items whose own evidence offers no choice (a limited item counts as
+a choice when it holds at least two candidates) leave the queue on the next
+scan or monitor pass (`settle_untraced_review_items`). The maintainer's
+second live check found 39 items whose 11 candidates were all "unresolved". The queue heals itself: after each batch, the scan removes the pending
+items of every listed file (read or skipped as known) that a saved row now
+links, and the monitor does the same for each ambiguous output it links
+(`settle_linked_review_items`; the review index revision moves). Only an
+undecided item goes (`pending`, revision 0, no decision row): a decision is
+never deleted or changed, so no schema state was added. The monitor never
+queues an output it linked; an unlinked file passed to `record_review_file`
+follows the scan's rule (a file the fallback would link is `skipped`). The
+maintainer's live check of #284/#288 found the queue at 10,232 against a review
+group of 4,677: every fallback-linked ambiguous file had been queued. It captures
+the file (scope `needs-review`), reads its metadata again from the capture,
+resolves it with the default profile and stores only an ambiguous result,
+bound to the capture's byte record (created or refreshed like an observe) and
+fenced by the capture's storage epoch. Evidence is the resolver reason plus one
+`{sampler_id, state, reason, positive, negative, hash}` per selectable
+candidate (nested ambiguous stages flattened, duplicates dropped; each side
+`{text, storage_text, provenance}`; `hash` = SHA-256 of the canonical candidate
+without it). More than 16 candidates, or evidence over 8 MiB, is a `limited`
+item without candidates. Recording is idempotent per `(byte_id,
+resolver_version, evidence_hash)` and never touches an existing item or its
+decisions; changed bytes add a new pending item and keep the old one. The
+capture is released before the write; no model is loaded and no pixel is
+decoded. Scan statuses, counters, outcome rows and the legacy SSE events are
+unchanged apart from the already-linked and nothing-to-choose cases above; the job's `scope` gains
+`review_items` (this scan's files that are in the pending queue after it, new
+or already there: the review group's ambiguous rows, less files a capture could
+not read or a decision already settled), `review_added` (new items),
+`review_settled` (items removed because their file is linked now),
+`review_untraced` (items removed because they offer nothing to choose) and
+`review_errors`. The log ends with `? N images added to Needs review`,
+`? N images already in Needs review`, `= N images left Needs review · now
+linked`, `= N images left Needs review · nothing to choose` and `! N images could not be added to Needs review` (failures, e.g.
+capture capacity), each only when N > 0. Recording captures in the background: it never takes the store's
+last worker or capture slot, which stay free for an interactive Tag dialog or
+Apply, and waits up to 2 s for room before counting the file as not added
+(`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor's
+pass runs after its own link, best effort: a failure is logged and the link
+stays. Recording follows the registry's `records`
+admission (#289): the scan's recording runs under its own `records` job, and
+the monitor's (one file, not a job) is refused while a `records` or `guarded`
+job or hold runs. It then records nothing, logs that the file waits for the
+next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
+again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
+rescan does not copy or hash an ambiguous file whose current size and
+`mtime_ns` equal the verified fingerprint of bytes an item already cites (a
+stat compare); the file still stays in the default "new" scope, because it is
+not a known image. The skip and a duplicate insert record the current spelling
+of the locator on its items (`refresh_review_spelling`, the review index
+revision moves, item revisions do not), so a case-only rename on Windows or
+macOS keeps its item applicable. Residual risks of the skip, like S1's: an
+in-place rewrite that keeps both size and `mtime_ns` is never re-queued (Apply
+still re-hashes, so it cannot link those bytes), and a file that is deleted or
+moved leaves its pending item counted in `total` (its target then formats as
+`unavailable` or fails to open, and Leave unresolved clears it).
+
+Needs review decisions and queue reads (#249, `py/api/review.py`,
+`database/review.py`, `database/review_decisions.py`,
+`tests/test_api_review.py`): `GET /prompt_manager/review/items?limit=1..40&cursor=`
+answers `{success, library_epoch, total, items, next_cursor}` with pending items
+oldest first; `total` is the exact pending count. The cursor is an HMAC keyset
+on `(created_at, id)` bound to the storage epoch and `review_index_revision`: a
+malformed one is 400, a well-formed one this process cannot verify (tampered,
+or opened before a ComfyUI restart: the secret is per process) is 409
+`review-conflict` with the current `total`, one from before a restore is 409
+`storage-changed`, one from before any queue change (a decision, a new item, a
+refreshed spelling) is 409 `review-conflict`.
+Targets are formatted from `spelled_path` against the current roots (the
+roots' real paths are the only file access); a file under no current root is
+`unavailable` with a null target. Every read and decision lists the roots and
+resolves real paths on a worker thread, never on the event loop. `GET .../items/{id}` adds `candidates`
+(`hash`, `sampler_id`, `state` resolved/unresolved, `reason`, `label` "<positive
+title> / <negative title>" from the saved prompt's Library title else the
+first line, and the role texts), `dependency_fingerprint` (SHA-256 of the
+file's legacy rows under every spelling of the same physical file, positive
+hashes and pair links with their negative hashes, as the ingester reads them) and `sha256`; a detail over 8 MiB, or a
+limited item, has no candidates. `POST .../items/{id}/decision
+{expected_epoch, expected_revision, capture_token, sha256, dependency_fingerprint,
+choice}` with a candidate hash (Apply) requires a capture of the item's file
+whose bytes are the item's, re-hashes the current file (`file-changed`
+otherwise, also for a fresh capture of new bytes), re-reads the capture and
+requires that its bytes are still ambiguous and still offer the chosen
+candidate (`review-conflict` otherwise; a resolver change that rewords the
+reason or reorders candidates leaves the item applicable, and
+`RESOLVER_VERSION` in `utils/prompt_pair_resolver.py` is the one version
+ingestion provenance and review share), then in one `_pair_transaction`
+checks the epoch, the item revision and state (`review-conflict` with the
+current item for a repeat), the re-hashed digest, the dependency fingerprint
+and the public ingester's compatible-only rules through
+`_ingest_resolved_pair_in` (any refusal is 409 `association-conflict` with
+zero writes, explained inline; Apply never reparents a link). Physical
+identity: the roots are real paths while the monitor links under the
+directory it watches, so a symlinked or junctioned root, `subst` or a mapped
+drive spells the same file otherwise. Every legacy row whose spelling ends with
+the file's name (the link summaries' unindexed suffix lookup) is resolved by
+`normcase(realpath)` against the locator, else `samefile`; two rows of the
+file refuse the choice, one is enriched under the spelling it was linked
+with, and a same-name row the request did not classify is a changed
+association (`TestPhysicalIdentity`, symlinked root and a portable fake
+junction), and writes
+the link with `kind:"user-selection"` provenance (decision id, reviewed digest,
+candidate hash, resolver version, role provenance), the decision row, the
+item's new state and revision and `review_index_revision`. `"unresolved"`
+records the decision only and accepts `capture_token: null`. A successful
+decision releases its capture. No decision changes run or usage counts or
+calls an execution writer; a Tag save never changes a review item. Errors carry
+fixed sentences: `review-failed` / `decision-failed` 500s never echo exception
+text or paths.
+
 Capture store (#249, `utils/media_capture.py`, `tests/test_media_capture.py`):
 one explicit action captures one rooted media file into an owner-only
 `prompt-manager-captures-*` temp directory, streaming it in 1 MiB chunks while
@@ -2478,8 +2636,12 @@ directories are `CaptureDenied`; the locator is
 `normcase(join(realpath(root), relative))`, so a symlinked root shares the
 listing's identity. Fixed limits: 256 MiB per file (stat and stream), 8
 completed captures, 512 MiB reserved, 2 capture/verify workers, 900 s idle,
-1800 s hard; admission is nonblocking (`CaptureCapacity`) and lifetimes are
-tested with an injected clock. An acquired capture outlives expiry and release
+1800 s hard; interactive admission is nonblocking (`CaptureCapacity`), a
+`background=True` capture (Needs review recording) never takes the last worker
+or capture slot and waits up to `BACKGROUND_WAIT_SECONDS` (2 s) for room, and
+lifetimes are tested with an injected clock. The host's on_cleanup close is
+final: a recording still in flight gets a capture error instead of creating a
+new temp directory after it. An acquired capture outlives expiry and release
 until its last use ends. Header-only dimensions (4096 px per side,
 16,777,216 px) and video mark Generate unsupported; `verify` re-hashes the
 current file without a copy. Every handle closes before unlink (a patched

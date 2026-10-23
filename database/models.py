@@ -18,6 +18,11 @@ from typing import Optional, Set, Tuple
 from .library_schema import library_schema_error, migrate_library_state
 from .image_favorites import image_favorites_schema_error, migrate_image_favorites
 from .annotation_schema import annotation_schema_error, migrate_annotation_state
+from .review_schema import (
+    migrate_review_state,
+    review_schema_error,
+    review_without_annotations_error,
+)
 from .saved_views import migrate_saved_views, saved_views_schema_error
 from .execution_history_schema import (
     history_schema_error,
@@ -303,7 +308,14 @@ class PromptModel:
         migrate_library_state(conn)
         migrate_image_favorites(conn)
         migrate_saved_views(conn)
+        # A review group without its annotation group is refused before the
+        # annotation install could make it look valid (catalog only; the rows
+        # are validated once, in migrate_review_state).
+        review_error = review_without_annotations_error(conn)
+        if review_error:
+            raise sqlite3.DatabaseError(review_error)
         migrate_annotation_state(conn)
+        migrate_review_state(conn)
 
     def _migrate_prompt_pairs(self, conn: sqlite3.Connection) -> None:
         conn.execute("SAVEPOINT prompt_pair_schema")
@@ -1023,9 +1035,9 @@ class PromptModel:
         Args:
             path: File to inspect
             require_library_state: Also require the tables every current
-                database has (Library state, image favorites, saved views
-                and image annotations), as a migrated restore stage must;
-                old backups may lack them.
+                database has (Library state, image favorites, saved views,
+                image annotations and the review queue), as a migrated
+                restore stage must; old backups may lack them.
 
         Returns:
             (ok, reason): reason is "ok" when the file is acceptable, otherwise
@@ -1095,6 +1107,11 @@ class PromptModel:
             )
             if annotation_error:
                 return False, annotation_error
+            review_error = review_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if review_error:
+                return False, review_error
             return True, "ok"
         except sqlite3.Error as e:
             return False, f"Invalid SQLite database: {e}"

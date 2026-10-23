@@ -27,7 +27,7 @@ import os
 import queue
 import time
 import threading
-from typing import Optional, Dict, Any, Tuple
+from typing import Callable, Optional, Dict, Any, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -75,6 +75,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self.prompt_tracker = prompt_tracker
         self.metadata_extractor = ComfyUIMetadataExtractor()
         self.logger = get_logger("prompt_manager.image_monitor")
+        # The Needs review pass for ambiguous outputs (the API's
+        # ``record_review_file``, wired at start-up): a linked output is
+        # never queued and its pending items leave the queue. None: no pass.
+        self.review_recorder: Optional[Callable[[str], str]] = None
 
         # Read from GalleryConfig if available, otherwise use defaults
         try:
@@ -579,6 +583,29 @@ class ImageGenerationHandler(FileSystemEventHandler):
             )
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")
+            return
+        if resolution["state"] == "ambiguous":
+            self._record_review(image_path)
+
+    def _record_review(self, image_path: str) -> None:
+        """The Needs review pass for an ambiguous output, best effort.
+
+        The output is linked by now, so it is never queued; a pending item
+        an earlier scan left for its path leaves the queue. The link above
+        stays whatever happens here: a failure is logged, never raised.
+        """
+        recorder = getattr(self, "review_recorder", None)
+        if recorder is None:
+            return
+        try:
+            outcome = recorder(image_path)
+        except Exception:
+            self.logger.warning(
+                f"{os.path.basename(image_path)} could not be added to Needs review",
+                exc_info=True,
+            )
+            return
+        self.logger.debug(f"Needs review {outcome}: {os.path.basename(image_path)}")
 
 
 class ImageMonitor:
@@ -608,6 +635,16 @@ class ImageMonitor:
         self.handler = None
         self.monitored_directories = []
         self.logger = get_logger("prompt_manager.image_monitor")
+        self.review_recorder: Optional[Callable[[str], str]] = None
+
+    def set_review_recorder(self, recorder: Optional[Callable[[str], str]]) -> None:
+        """Record ambiguous outputs through ``recorder`` (None stops recording).
+
+        Applies to the running handler and to every handler started later.
+        """
+        self.review_recorder = recorder
+        if self.handler is not None:
+            self.handler.review_recorder = recorder
 
     def start_monitoring(self, output_directories: Optional[list] = None):
         """
@@ -665,6 +702,7 @@ class ImageMonitor:
         # Only a started observer becomes self.observer, so a failed start never
         # leaves the monitor stuck "already running" with nothing to stop.
         handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
+        handler.review_recorder = self.review_recorder
         observer = Observer()
         scheduled = []
         for output_dir in valid_directories:

@@ -1744,6 +1744,7 @@ class LibraryCounts(unittest.TestCase):
                 "negative_variants": 0,
                 "images": 0,
                 "rated_images": 0,
+                "review_pending": 0,
             },
         )
 

@@ -9,9 +9,10 @@
   kept.
 - ``GET /prompt_manager/system/overview`` is the System › Overview aggregate.
   Every value is real or null: there is no backup status until backups report
-  one, no health result until a check ran, and no Needs-review count until
-  the review queue exists. The missing-thumbnail count is not part of it:
-  the page reads ``/images/thumbnails/status``, which walks every source.
+  one and no health result until a check ran; ``needs_review.pending`` is the
+  Needs review queue's pending total. The missing-thumbnail count is not part
+  of it: the page reads ``/images/thumbnails/status``, which walks every
+  source.
 - ``GET /prompt_manager/system/statistics`` lists runs and ratings per
   category, with the legacy ``/stats`` totals and the Overview's count of
   rated images (images whose linked prompt is rated).
@@ -187,7 +188,7 @@ class SystemRoutesMixin:
                 },
                 "health": health_summary(self._current_health_report()),
                 "backup": None,  # no verified backup status exists yet (S8)
-                "needs_review": {"pending": None},  # no review queue yet (Q6)
+                "needs_review": {"pending": counts["review_pending"]},
                 "sources": {
                     "configured": len(GalleryConfig.MONITORING_DIRECTORIES),
                     "effective": len(output_dirs),

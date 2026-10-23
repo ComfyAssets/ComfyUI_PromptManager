@@ -160,3 +160,69 @@ class TestPairIngestion(unittest.TestCase):
         info = self.db.get_image_prompt_info(self.path)
         self.assertEqual(info["pair_context"]["positive_text"], "cat, lora_trigger")
         self.assertEqual(info["pair_context"]["text_source"], "execution")
+
+    def test_public_ingest_resolved_pair_contract_unchanged(self):
+        """The public ingester keeps its result shape and its own transaction;
+        the extracted ``_ingest_resolved_pair_in`` runs in the caller's."""
+        from database import pair_ingestion
+
+        self.assertTrue(
+            hasattr(pair_ingestion, "_ingest_resolved_pair_in"),
+            "_ingest_resolved_pair_in is not extracted",
+        )
+        for state in ("ambiguous", "unresolved", "conflict"):
+            self.assertEqual(
+                ingest_resolved_pair(self.db, self.path, {}, {"state": state}),
+                {"status": state, "pairs_added": 0, "links_added": 0},
+            )
+        first = ingest_resolved_pair(self.db, self.path, {}, resolved())
+        self.assertEqual(
+            set(first),
+            {"status", "pairs_added", "links_added", "pair_id", "image_id"},
+        )
+        self.assertEqual(first["status"], "added")
+        (link,) = self.db.get_image_prompt_pairs(first["image_id"])
+        self.assertEqual(
+            link["provenance"],
+            {
+                "resolver_version": 1,
+                "positive": resolved()["positive"],
+                "negative": resolved()["negative"],
+            },
+        )
+        conn = self.db.model.get_connection()
+        self.assertFalse(conn.in_transaction)
+        # Inside the caller's transaction, with the caller's provenance; an
+        # exception afterwards rolls the link back with the caller's writes.
+        provenance = {"kind": "user-selection", "resolver_version": 1}
+        with self.assertRaises(RuntimeError):
+            with self.db._pair_transaction() as held:
+                inner = pair_ingestion._ingest_resolved_pair_in(
+                    held,
+                    self.db,
+                    self.path + "2",
+                    {},
+                    resolved("dog"),
+                    provenance=provenance,
+                )
+                self.assertEqual(inner["status"], "added")
+                raise RuntimeError("caller failed")
+        self.assertIsNone(self.db.get_image_prompt_info(self.path + "2"))
+        with self.db._pair_transaction() as held:
+            inner = pair_ingestion._ingest_resolved_pair_in(
+                held,
+                self.db,
+                self.path + "2",
+                {},
+                resolved("dog"),
+                provenance=provenance,
+            )
+        (link,) = self.db.get_image_prompt_pairs(inner["image_id"])
+        self.assertEqual(link["provenance"], provenance)
+        with self.db._pair_transaction() as held:
+            conflict = pair_ingestion._ingest_resolved_pair_in(
+                held, self.db, self.path, {}, resolved("bird")
+            )
+        self.assertEqual(
+            conflict, {"status": "conflict", "pairs_added": 0, "links_added": 0}
+        )
