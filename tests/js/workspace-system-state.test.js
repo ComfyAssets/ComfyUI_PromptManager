@@ -192,6 +192,7 @@ test('status text per outcome', async () => {
         partial: 'Some changes were not saved. Review the highlighted settings.',
         tabOnly: 'Saved for this tab only; browser storage is unavailable.',
         conflict: 'Settings changed elsewhere. Reload this section to see them.',
+        restart: 'Restart ComfyUI to apply:',
     });
     const clean = { browser: 'clean', host: 'clean', runtime: 'clean' };
     assert.equal(statusText(clean), 'No unsaved changes.');
@@ -315,4 +316,51 @@ test('host read state says whether the server settings could be read', async () 
     fail = false;
     assert.equal(await drafts.reloadHost(), true);
     assert.equal(drafts.hostState(), 'loaded');
+});
+
+test('a host save names the settings that apply after a restart (D128)', async () => {
+    const { statusText, RESTART_LABELS } = await source;
+    assert.deepEqual(RESTART_LABELS, { monitoring_enabled: 'Watch for new outputs' });
+    const saved = { browser: 'clean', host: 'saved', runtime: 'clean' };
+    assert.equal(statusText({ ...saved, restart: ['monitoring_enabled'] }),
+        'Saved to the server configuration. Restart ComfyUI to apply: Watch for new outputs.');
+    // A field without a row label (the sources say "restart pending" per row) adds nothing.
+    assert.equal(statusText({ ...saved, restart: ['gallery_root_paths'] }), 'Saved to the server configuration.');
+    assert.equal(statusText({ ...saved, restart: [] }), 'Saved to the server configuration.');
+
+    const domains = adapters({ host: { monitoring_enabled: true } });
+    const drafts = await loaded(domains);
+    domains.outcome.host = () => ({ success: true, persisted: true, revision: 'sha256:two',
+        restart_required_fields: ['monitoring_enabled', 7] });
+    drafts.set('host', 'monitoring_enabled', false);
+    assert.deepEqual(await drafts.save(), { browser: 'clean', host: 'saved', runtime: 'clean', restart: ['monitoring_enabled'] });
+    assert.equal(drafts.statusText(), 'Saved to the server configuration. Restart ComfyUI to apply: Watch for new outputs.');
+    // The next edit is unsaved again.
+    drafts.set('host', 'monitoring_enabled', true);
+    assert.equal(drafts.statusText(), 'Unsaved changes.');
+});
+
+test('a host save refused for one source says the server reason and names it until the next edit', async () => {
+    const domains = adapters({ host: { gallery_root_paths: ['output', 'output/gone'] } });
+    const drafts = await loaded(domains);
+    const message = "output/gone can't be used: Gallery root does not exist. Remove it or reconnect it, then save.";
+    domains.outcome.host = () => { throw Object.assign(new Error(message), { code: 'invalid-source', source: 'output/gone' }); };
+    drafts.set('host', 'gallery_root_paths', ['output/gone']);
+    const outcome = await drafts.save();
+    assert.deepEqual(outcome, { browser: 'clean', host: 'failed', runtime: 'clean',
+        invalid: { source: 'output/gone', message } });
+    assert.equal(drafts.statusText(), message);
+    assert.equal(drafts.invalidSource(), 'output/gone');
+    assert.deepEqual([...drafts.failed('host')], ['gallery_root_paths']);
+    // Any other failure keeps the generic copy and names no source.
+    domains.outcome.host = () => { throw Object.assign(new Error('busy'), { code: 'busy' }); };
+    await drafts.save();
+    assert.equal(drafts.statusText(), 'Some changes were not saved. Review the highlighted settings.');
+    assert.equal(drafts.invalidSource(), null);
+    domains.outcome.host = () => { throw Object.assign(new Error(message), { code: 'invalid-source' }); };
+    await drafts.save();
+    assert.equal(drafts.invalidSource(), null);
+    drafts.set('host', 'gallery_root_paths', ['output']);
+    assert.equal(drafts.invalidSource(), null);
+    assert.equal(drafts.statusText(), 'Unsaved changes.');
 });

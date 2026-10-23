@@ -89,6 +89,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
    not save is highlighted, as its "Review the highlighted settings" status says. */
 .save-row button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* D92 */ }
 .setting-row [aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; /* D92 */ }
+/* D92: a source the last save was refused for (System › Sources) is highlighted the same way. */
+#source-list > .operation[aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; /* D92 */ }
 /* D93: an Overview row whose action is not available yet (the review queue, Q6) keeps its button, disabled. */
 .operation .row-actions button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* D93 */ }
 /* D97: Appearance's legacy display rows. "Show image details on cards" off keeps a card's Info and Tag at the end of

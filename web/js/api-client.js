@@ -40,6 +40,21 @@
                 Number.isSafeInteger(current.tag_revision) && current.tag_revision >= 0) {
                 this.current = { tags: current.tags.slice(), tag_revision: current.tag_revision };
             }
+            // A busy answer names the running job that holds the slot; an
+            // invalid-source answer names the source it refused. Only
+            // well-formed values are kept.
+            this.running = null;
+            const running = current && current.running;
+            if (this.code === "busy" && running && typeof running.id === "string" &&
+                /^[A-Za-z0-9_-]{1,64}$/.test(running.id) && typeof running.title === "string" &&
+                running.title.length > 0 && running.title.length <= 200) {
+                this.running = { id: running.id, title: running.title };
+            }
+            this.source = null;
+            if (this.code === "invalid-source" && current && typeof current.source === "string" &&
+                current.source.length > 0 && current.source.length <= 4096) {
+                this.source = current.source;
+            }
         }
     }
 

@@ -52,6 +52,7 @@ class AdminAPITestCase(AioHTTPTestCase):
         self.outside_dir = Path(self.tmpdir) / "outside"
         self.outside_dir.mkdir()
 
+        self.addAsyncCleanup(self._drain_and_remove)
         self.config_path = os.path.join(self.tmpdir, "config.json")
         self._orig_env = {
             key: os.environ.pop(key, None) for key in (CONFIG_PATH_ENV, EXTRA_ROOTS_ENV)
@@ -89,8 +90,26 @@ class AdminAPITestCase(AioHTTPTestCase):
             sys.modules.pop("folder_paths", None)
         else:
             sys.modules["folder_paths"] = self._orig_folder_paths
-        # A scan of an ambiguous file captures it for Needs review.
-        self.api.close_annotation_captures()
+
+    async def _drain_and_remove(self):
+        """The last cleanup: no job outlives the temporary database.
+
+        Registered first, so it runs after every cleanup a test added (which
+        may release its own gated jobs). A job still running then, such as a
+        scan a failed assertion never awaited, is cancelled and awaited
+        before the database and the tree are removed.
+        """
+        api = getattr(self, "api", None)
+        jobs = api._jobs.list() if api is not None else []
+        tasks = [
+            job.task for job in jobs if job.task is not None and not job.task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if api is not None:
+            # A scan of an ambiguous file captures it for Needs review.
+            api.close_annotation_captures()
         PromptModel.close_all_instances()  # restore may have swapped api.db
         assert_closed(self, self.tmpdir)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
