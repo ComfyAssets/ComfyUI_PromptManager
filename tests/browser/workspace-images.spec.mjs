@@ -907,6 +907,10 @@ test('browser Back closes the open Images dialog and leaves the next page usable
 
 test('count line shows images and positive prompts', async ({ page, request }) => {
     await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    // D17's "Today" is the newest file's day: the page's clock stands at that file's mtime, so the fixture's day and
+    // the page's agree on either side of midnight.
+    const { images } = await (await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();
+    await page.clock.setFixedTime(new Date(Math.max(...images.map(image => image.modified_time)) * 1000));
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
     await expect(caption(page).locator('#result-count')).toHaveText('2 of 2 images · 2 positive prompts');
