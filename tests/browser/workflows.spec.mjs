@@ -43,6 +43,37 @@ test('actual gallery form saves a prompt that the admin page can edit and reload
     expect((await saved.json()).prompt_id).not.toBe(Number(id));
 });
 
+// WebKit fails a fetch that a leaving page starts ("Fetch API cannot load … due to access control checks."), and
+// Playwright reports that console error as a page error. A save's follow-up reads must not start once the page hides:
+// here the statistics read after an in-place edit is held at the server while the page reloads.
+test('an in-place edit whose follow-up reads outlive the page starts no read while it leaves', async ({ page, request }) => {
+    await page.goto('/prompt_manager/admin');
+    const text = page.locator('.prompt-text').filter({ hasText: 'Cat portrait' });
+    const id = await text.getAttribute('data-id');
+    await expect(await request.post('/__test__/hold', { data: { path: '/prompt_manager/stats' } })).toBeOK();
+    await page.locator(`[data-action="edit"][data-prompt-id="${id}"]`).click();
+    const editor = page.locator(`.prompt-text[data-id="${id}"]`);
+    await editor.fill('Cat portrait at dusk');
+    await editor.press('Enter');
+    const held = async () => (await (await request.get('/__test__/hold')).json()).held['/prompt_manager/stats'];
+    await expect.poll(held).toBe(1);
+    await page.reload({ waitUntil: 'commit' });
+    await expect(await request.post('/__test__/release')).toBeOK();
+    await expect(page.locator('.prompt-text').filter({ hasText: 'Cat portrait at dusk' })).toBeVisible();
+});
+
+// A leave that never happens (a stopped navigation, or one answered with a download) must not leave the list dead.
+test('a page whose leave was called off reads its list again on the next input', async ({ page }) => {
+    await page.goto('/prompt_manager/admin');
+    await expect(page.locator('.prompt-text').first()).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new Event('beforeunload')));
+    await page.mouse.click(1, 1);
+    const reread = page.waitForResponse(response => new URL(response.url()).pathname === '/prompt_manager/recent');
+    await page.locator('#sortBy').selectOption('created_asc');
+    expect(new URL((await reread).url()).searchParams.get('sort')).toBe('created_asc');
+    await expect(page.locator('#resultsTitle')).toHaveText('Recent Prompts');
+});
+
 test('actual gallery review generates and persists tags for the selected root', async ({ page, request }) => {
     await page.goto('/prompt_manager/gallery');
     await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);
