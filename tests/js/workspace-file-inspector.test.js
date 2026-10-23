@@ -215,3 +215,151 @@ test('none and unavailable render no image chips', async () => {
         assert.deepEqual(inspectorTagChips(tagged({state, tags:[]}, {status:'none', tags:[], tags_scope:null}), {filterable:true}), []);
     }
 });
+
+// LI-4 (D117): "Copy settings summary" after the six facts of the full inspector consolidates the legacy metadata
+// page's COPY ALL (web/metadata.html copyAllData). The legacy template is read from that page itself and run on the
+// legacy parse, so the summary's text is the legacy page's, line for line, wherever the two agree on the values.
+const METADATA_PAGE = fs.readFileSync(new URL('../../web/metadata.html', import.meta.url), 'utf8');
+function legacyCopyAll(params) {
+    const template = METADATA_PAGE.match(/const allData = `([\s\S]*?)`;/)[1];
+    return new Function('currentWorkflowData', `return \`${template}\`;`)(params);
+}
+const legacyParams = record => ComfyMetadata.extractGenerationParams({prompt:record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null,
+    workflow:record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null});
+
+/**
+ * Each summary line against the legacy page's, allowing only the recorded differences (D117): a number keeps the
+ * inspector's (the server's) spelling ("8.0" where the legacy page wrote 8); a fact the legacy parse left "Unknown" may
+ * be known; and a negative the #249 ZeroOut guard zeroed reads "No negative prompt found" where the legacy parse read
+ * the positive's text through the zero-out.
+ */
+function assertLegacySummary(summary, legacy, record) {
+    const lines = summary.split('\n'), expected = legacy.split('\n');
+    assert.deepEqual(lines.map(line => line.split(':')[0]), expected.map(line => line.split(':')[0]), 'the legacy labels, in order');
+    lines.forEach((line, index) => {
+        if (line === expected[index]) return;
+        const [label, value] = [line.slice(0, line.indexOf(': ')), line.slice(line.indexOf(': ') + 2)];
+        const old = expected[index].slice(label.length + 2);
+        if (label === 'Negative Prompt' && record.prompts.negative?.source === 'zeroed-conditioning' && value === 'No negative prompt found') return;
+        if (old === 'Unknown' && !/Prompt$/.test(label)) return;
+        assert.ok(value.trim() !== '' && Number(value) === Number(old), `${label}: "${value}" differs from the legacy "${old}"`);
+    });
+}
+
+test('settings summary is the legacy COPY ALL text for a local file', async () => {
+    const {settingsSummary} = await load();
+    assert.equal(typeof settingsSummary, 'function', 'settingsSummary is exported');
+    const record = await localRecord(localPng('fox.png'));
+    assertLegacySummary(settingsSummary(record), legacyCopyAll(legacyParams(record)), record);
+    assert.equal(settingsSummary(record), ['Checkpoint: synthetic-v1.safetensors', 'Positive Prompt: a red fox in snow, detailed fur',
+        'Negative Prompt: blurry, lowres', 'Steps: 20', 'CFG Scale: 8.0', 'Sampler: euler', 'Seed: 7'].join('\n'));
+    // Every parity PNG read in this browser: the legacy page's text but for the recorded differences, and exactly the
+    // legacy text for most of them (f09 among them: the server is ambiguous, so the record shows the legacy fill).
+    const exact = [];
+    for (const name of fs.readdirSync(PARITY).filter(item => item.endsWith('.png')).sort()) {
+        const parity = await localRecord(new File([fs.readFileSync(new URL(name, PARITY))], name));
+        const summary = settingsSummary(parity), legacy = legacyCopyAll(legacyParams(parity));
+        assertLegacySummary(summary, legacy, parity);
+        if (summary === legacy) exact.push(name);
+    }
+    assert.ok(exact.includes('f09.png'));
+    assert.deepEqual(fs.readdirSync(PARITY).filter(item => item.endsWith('.png') && !exact.includes(item)).sort(), ['f01b.png', 'f17.png', 'f23.png']);
+});
+
+test('settings summary uses the legacy placeholders for what the record does not know', async () => {
+    const {settingsSummary} = await load();
+    const unknown = {...record(), prompts:{positive:{status:'unresolved'}, negative:{status:'ambiguous'}}, generation:{}};
+    assert.equal(settingsSummary(unknown), legacyCopyAll({}).replace('Positive Prompt: undefined', 'Positive Prompt: No prompt found')
+        .replace('Negative Prompt: undefined', 'Negative Prompt: No negative prompt found'));
+    assert.equal(settingsSummary(unknown), ['Checkpoint: Unknown', 'Positive Prompt: No prompt found', 'Negative Prompt: No negative prompt found',
+        'Steps: Unknown', 'CFG Scale: Unknown', 'Sampler: Unknown', 'Seed: Unknown'].join('\n'));
+    // A server answer is shown as the inspector shows it: known facts verbatim, every other state the legacy "Unknown".
+    const server = {...record(), prompts:{positive:{status:'resolved', text:'a\n猫'}, negative:{status:'resolved', text:''}}, generation:{
+        model:{status:'known', value:'m.safetensors'}, steps:{status:'not-recorded', value:null}, cfg:{status:'known', value:'6.50'},
+        sampler:{status:'ambiguous', value:null}, seed:{status:'known', value:'9007199254740993'}, scheduler:{status:'known', value:'karras'}}};
+    assert.equal(settingsSummary(server), ['Checkpoint: m.safetensors', 'Positive Prompt: a\n猫', 'Negative Prompt: No negative prompt found',
+        'Steps: Unknown', 'CFG Scale: 6.50', 'Sampler: Unknown', 'Seed: 9007199254740993'].join('\n'));
+});
+
+/** The full inspector with a toast node and `clipboard` as `navigator.clipboard`; returns the summary button. */
+function renderSummary(record, {variant = 'full', clipboard} = {}) {
+    const f = mountedDom(), scope = createScope(), fallbacks = [], toast = new f.Node('div');
+    f.doc.getElementById = id => id === 'workspace-toast' ? toast : null;
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', {configurable:true, value:clipboard === undefined ? {} : {clipboard}});
+    const view = mountFileInspector(f.container, {sender:{open() {}}, parentScope:scope, variant, copyFallback:(text, options) => fallbacks.push({text, ...options})});
+    view.setState({loading:false, error:false, record});
+    const button = f.walk(f.container, n => n.tagName === 'button' && n.textContent === 'Copy settings summary')[0] ?? null;
+    return {f, button, toast, fallbacks, scope, done() {
+        view.dispose(); scope.dispose(); f.restore();
+        if (previous) Object.defineProperty(globalThis, 'navigator', previous); else delete globalThis.navigator;
+    }};
+}
+
+test('Copy settings summary follows the facts in the full inspector only', async () => {
+    const full = renderSummary(record());
+    try {
+        assert.ok(full.button, 'the full inspector offers Copy settings summary');
+        const inner = full.button.parent, index = inner.children.indexOf(full.button);
+        assert.equal(inner.children[index - 1].tagName, 'dl', 'it follows the six facts');
+        assert.equal(inner.children[index + 1].tagName, 'details', 'File & provenance follows it');
+        // M7: the D117 wrap rule targets this button by its class, never any button of a details block.
+        assert.equal(full.button.className, 'settings-summary');
+    } finally { full.done(); }
+    const panel = renderSummary(record(), {variant:'panel'});
+    try { assert.equal(panel.button, null, 'the Images side panel keeps the concept footer'); } finally { panel.done(); }
+});
+
+test('Copy settings summary copies the summary and shows the shared toast', async () => {
+    const {settingsSummary} = await load(), copied = [];
+    const view = renderSummary(record(), {clipboard:{writeText:async text => {copied.push(text);}}});
+    try {
+        await view.button.listeners.get('click')[0].callback({target:view.button});
+        assert.deepEqual(copied, [settingsSummary(record())]);
+        assert.equal(view.toast.textContent, 'Settings summary copied.');
+        assert.equal(view.fallbacks.length, 0);
+    } finally { view.done(); }
+});
+
+test('Copy settings summary without a clipboard opens the select-to-copy fallback', async () => {
+    const {settingsSummary} = await load();
+    for (const clipboard of [undefined, {writeText:async () => {throw new Error('Denied');}}]) {
+        const view = renderSummary(record(), {clipboard});
+        try {
+            await view.button.listeners.get('click')[0].callback({target:view.button});
+            assert.equal(view.fallbacks.length, 1);
+            assert.equal(view.fallbacks[0].text, settingsSummary(record()));
+            assert.equal(view.fallbacks[0].title, 'Copy settings summary');
+            assert.equal(view.fallbacks[0].trigger, view.button);
+            assert.notEqual(view.toast.textContent, 'Settings summary copied.');
+        } finally { view.done(); }
+    }
+});
+
+test('the inspector is busy while a read is loading, then not', async () => {
+    const f = mountedDom(), scope = createScope();
+    const view = mountFileInspector(f.container, {sender:{open() {}}, parentScope:scope, variant:'full'});
+    try {
+        view.setState({loading:true, error:false, record:null});
+        assert.equal(f.container.getAttribute('aria-busy'), 'true');
+        assert.ok(f.walk(f.container, n => n.textContent === 'Loading file details…').length);
+        view.setState({loading:false, error:false, record:record()});
+        assert.equal(f.container.getAttribute('aria-busy'), null);
+        view.setState({loading:true, error:false, record:null});
+        view.setState({loading:false, error:true, record:null});
+        assert.equal(f.container.getAttribute('aria-busy'), null);
+        view.setState({loading:true, error:false, record:null});
+    } finally {
+        view.dispose();
+        assert.equal(f.container.getAttribute('aria-busy'), null, 'dispose clears the busy state');
+        scope.dispose(); f.restore();
+    }
+});
+
+test('the D117 wrap rule targets only the settings summary button', async () => {
+    const fs = await import('node:fs');
+    const css = fs.readFileSync(new URL('../../web/js/workspace/workspace.css', import.meta.url), 'utf8');
+    const rules = css.split('\n').filter(line => line.includes('D117'));
+    assert.deepEqual(rules.map(line => line.trim()), ['.ca-tools #viewer-details .settings-summary { white-space: normal; /* D117 */ }']);
+    assert.doesNotMatch(css, /#viewer-details > div > button/);
+});

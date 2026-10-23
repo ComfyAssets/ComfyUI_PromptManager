@@ -286,14 +286,17 @@ export function openImportDialog({ scope, onInspect, onRescan, onMetadataScan = 
     return { setRescanBusy };
 }
 
-/** "Copy prompt": the text in a readonly, pre-selected textarea for a manual copy. */
-export function openCopyFallback(text, { scope, trigger = null } = {}) {
+/**
+ * "Copy prompt": the text in a readonly, pre-selected textarea for a manual copy. `title` names another copy's dialog
+ * (D117 "Copy settings summary").
+ */
+export function openCopyFallback(text, { scope, trigger = null, title = 'Copy prompt' } = {}) {
     requireScope(scope);
     if (typeof text !== 'string') throw new TypeError('Copy text must be a string');
     const area = el('textarea');
     area.readOnly = true;
     area.value = text;
-    show('Copy prompt', [
+    show(title, [
         field('Select and copy this text', area, 'copy-text'),
         el('p', 'Automatic clipboard access requires a secure browser context.', 'small'),
     ], { scope, trigger, focusTarget: area });
