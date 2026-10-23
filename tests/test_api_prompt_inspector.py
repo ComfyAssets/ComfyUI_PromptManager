@@ -1680,6 +1680,33 @@ class TestPromptInspector(ImageAPITestCase):
                     )
                 self.assertNotIn("unhashable", json.dumps(result))
 
+    async def test_unhashable_graph_class_type_is_not_a_preview_output(self):
+        """A list or object ``class_type`` never names a preview output (#286).
+
+        With several samplers the inspector first drops stages that reach only
+        previews; looking such a ``class_type`` up among the preview classes
+        used to raise, and the route answered 500.
+        """
+        for kind in (["PreviewImage"], {"name": "PreviewImage"}):
+            with self.subTest(kind=type(kind).__name__):
+                source = graph()
+                source["9"] = {
+                    "class_type": "KSampler",
+                    "inputs": {"positive": ["8", 0], "negative": ["2", 0]},
+                }
+                source["8"] = {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {"text": "cat"},
+                }
+                source["10"] = {"class_type": kind, "inputs": {"images": ["9", 0]}}
+                png(self.output_dir / "image.png", prompt=json.dumps(source))
+                response, result = await self.inspect()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    result["resolution"]["reason"], "Multiple sampler branches"
+                )
+                self.assertEqual(result["resolution"]["state"], "ambiguous")
+
 
 class TestInspectorImageTags(ImageAPITestCase):
     """B3: the inspector envelope's ``image_tags`` facet (spec amendment S1)."""

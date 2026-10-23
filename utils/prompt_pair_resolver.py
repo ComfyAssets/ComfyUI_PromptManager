@@ -1237,10 +1237,13 @@ class _GraphResolver:
 
     def non_file_outputs(self) -> set:
         names = self.semantics.non_file_outputs
+        # Only a string names a class: a list or object is never looked up (#286).
         return {
             node_id
             for node_id, node in self.graph.items()
-            if isinstance(node, dict) and node.get("class_type") in names
+            if isinstance(node, dict)
+            and isinstance(node.get("class_type"), str)
+            and node["class_type"] in names
         }
 
     def producers_of(self, starts: list, previews: set) -> set:
