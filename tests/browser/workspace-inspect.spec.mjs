@@ -481,15 +481,13 @@ test('replacing a video that just started loading never blocks the page', async 
 });
 
 test('a video replaced while still starting is reset once it settles', async ({ context, browserName }) => {
-    // A WebKit (GStreamer) video released exactly at its `loadstart` sometimes blocks the page, with or without any
-    // reset and also with the code before the deferred reset (2 of 24 runs); tracked in TESTING.md (D62). WebKit's
-    // no-hang guard is `replacing a video that just started loading never blocks the page`.
-    test.skip(browserName === 'webkit', 'WebKit release at loadstart is a tracked follow-up (D62)');
-    test.setTimeout(120000);
-    // The video is replaced from its own `loadstart` (readyState HAVE_NOTHING). It leaves the page with no src before
-    // its URL is revoked, and is reset (load() with no src, which frees its decoder) only once it reports metadata or
-    // an error, so the page never blocks. Fresh pages share one browser process.
-    for (let attempt = 0; attempt < 5; attempt++) {
+    test.setTimeout(180000);
+    // The video is replaced from its own `loadstart` (readyState HAVE_NOTHING), or a few milliseconds after it. On
+    // WebKit (GStreamer) a video that left the page or the viewport before its pipeline had started deadlocked the
+    // page (TESTING.md D62), so it stays in place, inert and still playing its URL, with the new preview after it.
+    // Once it reports metadata or an error it is paused, loses its src, is reset (load() with no src, which frees its
+    // decoder) and leaves the page, and only then is its URL revoked. Fresh pages share one browser process.
+    for (let attempt = 0; attempt < 15; attempt++) {
         const page = await context.newPage();
         try {
             if (attempt === 0) await startCoverage(page, browserName);
@@ -510,10 +508,12 @@ test('a video replaced while still starting is reset once it settles', async ({ 
                     const video = slot.querySelector('video');
                     if (!video) return;
                     observer.disconnect();
-                    video.addEventListener('loadstart', () => {
+                    const replace = () => {
                         window.__starting = { node: video, url: video.getAttribute('src'), readyState: video.readyState };
                         input.files = window.__pngFiles; input.dispatchEvent(new Event('change', { bubbles: true }));
-                    }, { once: true });
+                        window.__starting.replaced = { connected: video.isConnected, src: video.hasAttribute('src'), inert: video.inert, resets: video.__resets ?? 0 };
+                    };
+                    video.addEventListener('loadstart', () => { if (window.__delay) setTimeout(replace, window.__delay); else replace(); }, { once: true });
                 }).observe(slot, { childList: true });
             });
             const png = parityPng('f02.png');
@@ -522,13 +522,17 @@ test('a video replaced while still starting is reset once it settles', async ({ 
                 transfer.items.add(new File([new Uint8Array(bytes)], 'f02.png', { type: 'image/png' }));
                 window.__pngFiles = transfer.files;
             }, [...png.buffer]);
+            await page.evaluate(delay => { window.__delay = delay; }, attempt % 5);
             await choose(page, localFixture('core-tags.webm', 'video/webm'));
             await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
             await expect(preview(page).locator('video')).toHaveCount(0);
-            // Released while starting, and never reset synchronously: the URL went once the node had no src.
-            expect(await page.evaluate(() => ({ readyState: window.__starting.readyState, revoked: window.__starting.revoked })))
-                .toEqual({ readyState: 0, revoked: { src: false, connected: false, resets: 0 } });
-            await expect.poll(() => page.evaluate(() => window.__starting.node.__resets ?? 0), { timeout: 15000 }).toBe(1);
+            // Replaced while starting (always so at `loadstart` itself): kept in place and untouched. A video that had
+            // settled is released at once. Either way it is reset once, and its URL goes last.
+            await expect.poll(() => page.evaluate(() => window.__starting.revoked ?? null)).toEqual({ src: false, connected: false, resets: 1 });
+            const { readyState, replaced } = await page.evaluate(() => ({ readyState: window.__starting.readyState, replaced: window.__starting.replaced }));
+            if (attempt % 5 === 0) expect(readyState).toBe(0);
+            expect(replaced).toEqual(readyState === 0 ? { connected: true, src: true, inert: true, resets: 0 } : { connected: false, src: false, inert: false, resets: 1 });
+            expect(await page.evaluate(() => window.__starting.node.__resets)).toBe(1);
             // The page still answers.
             await chooser(page).setInputFiles(parityPng('f02.png', 'after.png'), { timeout: 8000 });
             await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
