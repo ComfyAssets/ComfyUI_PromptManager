@@ -1635,7 +1635,18 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   is the file name; the panel's Copy and Send buttons carry no prompt title in their
   names; the Tag image dialog opened from the queue heads with the file name. An
   unavailable file's empty media button keeps the concept's 1.33 media area, so its
-  card lines up with the others.
+  card lines up with the others. A long file name in the panel's `p.small` wraps inside
+  the panel (`overflow-wrap: anywhere`), where the concept's short sample name never
+  overflows. A queue card shows the Images listing's thumbnail when the server knows one
+  (`thumbnail_url`, the same URL the Images page uses), else the original; a re-read
+  rebuilds a card whose media, target or availability changed (a root came or went), so
+  Open and Tag follow it. When an unanswered decision's item leaves the queue in a
+  re-read, the decision was recorded: the page finishes as a recorded decision does (its
+  toast, back to Images), not with "decided elsewhere".
+- **D-NEW-F2** (placeholder number; the concept has no live-update state): while the
+  change stream is down, the heading carries the quiet status line "Live updates are
+  paused: changes made elsewhere appear once the connection returns." (`p.small
+  .review-live`, `role="status"`); the stream's next `ready` hides it.
 
 **Live queue (F2).** An open Needs review page holds one server-sent event stream,
 `GET /prompt_manager/review/events` (`py/api/review_events.py`): `event: ready` when it
@@ -1651,25 +1662,44 @@ cannot be read, re-reads); a `ready` heard while the first read runs is compared
 read answers. The test server counts a stream as open only once it has sent `ready`, so a
 browser test that changes the queue after that count is a `change`, never part of the
 version. The page re-reads on every `change`, keeping the open item, its choice and an
-unanswered decision; re-reads asked for while one runs collapse into one more, and one
-waits while a decision is in flight. **Every re-read keeps the loaded depth (F3):** it
+unanswered decision; re-reads asked for while one runs collapse into one more. A change
+heard while a decision is in flight is owed: a refused or unanswered decision reads it
+once the panel is idle again (a recorded one leaves the page). Load more asked for during
+a re-read waits for it and continues after the queue it read; a re-read started during
+Load more takes that click over and reads one page deeper, and a failed re-read leaves
+Load more clickable. Apply fences on the epoch of the detail it decides: an observe under
+another storage releases its capture and reads the queue and the item again, and any
+re-read under another epoch reads the open item again. **Every re-read keeps the loaded depth (F3):** it
 reads page after page (40 each, the route's limit) until it holds as many items as Load
 more had shown, so the cards stay and the scroll position does not move; a restore met
 after the first page reads once more from the first page. The row's count follows the
 total the page shows (no count read per change). Nothing polls: a `: keepalive` comment
-every 25 s only lets the server drop a closed tab's subscription. Shutdown (`on_shutdown`)
-ends every stream and answers a later one 503; the browser's own EventSource reconnection
-then stops. A duplicate recording and a refused decision change nothing and send nothing.
-Residual: the stream is one HTTP/1.1 connection per open Needs review page (browsers allow
-six per origin), so it lives only while the page is open; a re-read of a deep queue costs
-one request per 40 items shown.
+every 25 s only lets the server drop a closed tab's subscription. The server sends the
+first change at once and collapses the notices of the next 0.4 s into one trailing
+`change` (`COALESCE_SECONDS`), so a busy scan costs an open page one re-read per 0.4 s at
+most. Shutdown (`on_shutdown`) ends every stream and answers a later one 503. A
+reconnect the browser gives up on (a 503, or a proxy's error while ComfyUI restarts) is
+opened again by the page after 3 s, doubling to 30 s, with D-NEW-F2's line shown while
+the stream is down; its `ready` re-syncs the queue. The stream lives only while the tab is
+visible: a hidden tab closes it and a visible one opens it again, and that `ready` reads
+only when the queue changed meanwhile. A duplicate recording and a refused decision change
+nothing and send nothing. Residual: each visible Needs review page holds one HTTP/1.1
+connection (browsers allow six per origin, shared with ComfyUI's editor), so several
+side-by-side visible windows on the page, during a metadata scan's job stream, can still
+queue the origin's other requests; a re-read of a deep queue costs one request per 40
+items shown.
 
 Pinned by `tests/test_api_review_events.py`, `tests/js/workspace-review-state.test.js`
 ("refresh …", "a refresh keeps the loaded depth …", "ready naming …") and
 `tests/browser/workspace-review.spec.mjs` ("an open page shows …", "a visit reads its
-queue once …", "a live re-read keeps the loaded depth and the scroll position").
+queue once …", "a live re-read keeps the loaded depth and the scroll position", "a stream
+the browser gives up on …", "a hidden tab closes its stream …", "a re-read refreshes a
+card …"); the controller's owed, Load more and epoch cases are "I1: …", "I2: …", "M3:
+…", "M5: …" and "M7: …" in `workspace-review-state.test.js`, and the coalescing is "a
+burst of changes …" in `test_api_review_events.py`.
 Leaving the page mid-decision releases that decision's capture (the server may never see
-the request).
+the request), and leaving during the observe releases the capture it then answers
+("leaving during the observe …").
 **Concept comparison (F3).** `tests/browser/review-concept.spec.mjs` measures the whole
 page (`reviewInventory` in `tests/browser/tagging-canonical-comparison.mjs`: every shown
 box below `main` with its place, fonts, edges and layout, a leaf's text, a button's name,

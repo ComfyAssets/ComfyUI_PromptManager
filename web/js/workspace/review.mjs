@@ -15,6 +15,12 @@
  *   F2): items a scan or the monitor added, and decisions made in other tabs. Each `ready` (the first one, and one
  *   after the browser reconnects a dropped stream) names the queue's version, and the page re-reads only when the
  *   queue it shows is older (F3: one read per visit). A re-read keeps the depth Load more had reached. Nothing polls.
+ * - The stream lives only while the tab is visible: a hidden tab closes it and a visible one opens it again, so
+ *   background tabs hold no connection (I4); the reopened stream's `ready` reads only when the queue changed meanwhile.
+ *   A stream the browser gave up on (a 503 or a proxy error on its reconnect) is opened again after 3 s, doubling to
+ *   30 s; while the stream is down the page says so in a quiet status line (D-NEW-F2, I3).
+ * - A re-read refreshes each card whose media, target or availability changed (M6). Cards show the Images listing's
+ *   thumbnail when the server knows one (M10).
  * - The SAVED VIEWS row's count follows the total the page shows (`onTotal`), so a change costs no count read.
  * - D119: the queue cards carry no selection checkbox and no star (this page has no selection bar, and the queue
  *   carries no favorite state); more than 40 items add the Images page's `.infinite-continuation` Load more after the
@@ -36,6 +42,11 @@ import { showWorkspaceToast } from './toast.mjs';
 import { imageKey } from './images-state.mjs';
 
 export const REVIEW_EVENTS_URL = '/prompt_manager/review/events';
+// I3: reopening a stream the browser closed for good waits this long, doubling up to the maximum.
+export const REOPEN_FIRST_MS = 3000;
+export const REOPEN_MAX_MS = 30000;
+// D-NEW-F2: the page's line while the change stream is down (the concept has no such state).
+export const NOT_LIVE = 'Live updates are paused: changes made elsewhere appear once the connection returns.';
 const openEvents = url => new EventSource(window.ApiClient.resolveUrl(url));
 
 function el(tag, text, className) {
@@ -57,8 +68,13 @@ const isDisabled = button => button.getAttribute('aria-disabled') === 'true';
 export function imageOf(item) {
     const target = item.target ?? {};
     return { filename: item.filename, root_index: target.root_index, root_scope: target.root_scope, path: target.path,
-        url: item.url, is_video: item.is_video === true, media_type: item.is_video ? 'video' : 'image' };
+        url: item.url, thumbnail_url: item.thumbnail_url ?? null, is_video: item.is_video === true,
+        media_type: item.is_video ? 'video' : 'image' };
 }
+
+/** True when a re-read changed what a card shows or can open (M6). */
+const cardChanged = (before, after) => before.url !== after.url || before.thumbnail_url !== after.thumbnail_url ||
+    before.unavailable !== after.unavailable || JSON.stringify(before.target) !== JSON.stringify(after.target);
 
 /** The queue version a `ready` event names, or null (the page then re-reads). */
 export function readyVersion(event) {
@@ -120,6 +136,11 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     panel.append(panelTitle, filename, tagRow, contextField, warning, blocks, actions);
     layout.append(grid, panel);
 
+    const live = el('p', NOT_LIVE, 'small review-live'); // D-NEW-F2: the change stream is down
+    live.setAttribute('role', 'status');
+    live.hidden = true;
+    heading.description.after(live);
+
     const continuation = el('div', undefined, 'infinite-continuation'); // D119: Load more past 40 items
     const moreText = el('p', '', 'small');
     const more = createButton('Load more images');
@@ -136,6 +157,17 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     const cards = new Map();
     let shownItems = null, shownSelected, shownOptions = null, shownPrompts, shownDetail;
 
+    function createCard(item) {
+        // D119: no selection checkbox and no star on a queue card.
+        const card = createImageCard(imageOf(item), { media: Boolean(item.url) });
+        card.dataset.reviewId = item.id;
+        card.item = item;
+        if (!item.url) setDisabled(card.querySelector('.image-open'), true);
+        if (!item.target) setDisabled(card.querySelector('.image-card-actions button:last-child'), true);
+        cards.set(item.id, card);
+        return card;
+    }
+
     function renderCards(state) {
         if (state.items !== shownItems) {
             shownItems = state.items;
@@ -143,15 +175,13 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
             for (const [id, card] of cards) if (!ids.has(id)) { card.remove(); cards.delete(id); }
             state.items.forEach((item, index) => {
                 let card = cards.get(item.id);
-                if (!card) {
-                    // D119: no selection checkbox and no star on a queue card.
-                    card = createImageCard(imageOf(item), { media: Boolean(item.url) });
-                    card.dataset.reviewId = item.id;
-                    card.item = item;
-                    if (!item.url) setDisabled(card.querySelector('.image-open'), true);
-                    if (!item.target) setDisabled(card.querySelector('.image-card-actions button:last-child'), true);
-                    cards.set(item.id, card);
-                }
+                if (card && cardChanged(card.item, item)) {
+                    // M6: a root came or went: the card's media, Open and Tag follow the re-read.
+                    const fresh = createCard(item);
+                    card.replaceWith(fresh);
+                    card = fresh;
+                } else if (card) card.item = item;
+                if (!card) card = createCard(item);
                 if (grid.children[index] !== card) grid.insertBefore(card, grid.children[index] ?? null);
             });
             shownSelected = undefined;
@@ -270,9 +300,48 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     scope.cleanup(controller.subscribe(reportTotal));
     render(controller.state);
     controller.load();
-    const events = connect(REVIEW_EVENTS_URL);
-    scope.cleanup(() => events.close());
-    events.addEventListener('ready', event => { if (!scope.signal.aborted) controller.sync(readyVersion(event)); });
-    events.addEventListener('change', () => { if (!scope.signal.aborted) controller.refresh(); });
+    connectEvents({ scope, connect, controller, live });
     return { controller };
+}
+
+/**
+ * The change stream while the page is mounted: open while the tab is visible (I4), reopened with a bounded backoff
+ * after the browser gives up on it (I3), with `live` shown while it is down.
+ */
+function connectEvents({ scope, connect, controller, live }) {
+    let events = null, timer = null, delay = REOPEN_FIRST_MS;
+    const setLive = up => { live.hidden = up; };
+    function close() {
+        clearTimeout(timer);
+        timer = null;
+        events?.close();
+        events = null;
+    }
+    function open() {
+        if (events || scope.signal.aborted || document.hidden) return;
+        const source = events = connect(REVIEW_EVENTS_URL);
+        source.addEventListener('ready', event => {
+            if (source !== events || scope.signal.aborted) return;
+            delay = REOPEN_FIRST_MS;
+            setLive(true);
+            controller.sync(readyVersion(event));
+        });
+        source.addEventListener('change', () => { if (source === events && !scope.signal.aborted) controller.refresh(); });
+        source.addEventListener('error', () => {
+            if (source !== events || scope.signal.aborted) return;
+            setLive(false);
+            // The browser retries a dropped connection itself; one it closed for good is reopened here.
+            if (source.readyState !== 2) return; // EventSource.CLOSED
+            events = null;
+            source.close();
+            timer = setTimeout(() => { timer = null; open(); }, delay);
+            delay = Math.min(delay * 2, REOPEN_MAX_MS);
+        });
+    }
+    scope.listen(document, 'visibilitychange', () => {
+        if (document.hidden) close();
+        else open();
+    });
+    scope.cleanup(close);
+    open();
 }

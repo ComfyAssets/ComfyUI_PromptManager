@@ -19,6 +19,11 @@
  * - `sync(version)` is the stream's `ready`: it re-reads only when the queue read last is older than the version the
  *   stream names (`{library_epoch, review_revision}`, the pair every list read answers), so a visit reads its queue
  *   once (F3). An unknown version re-reads.
+ * - A change heard while a decision is in flight is owed: it is read once the decision is refused or unanswered (a
+ *   recorded one leaves the page). Load more asked for during a re-read waits for it and continues from the queue it
+ *   read; a re-read started during Load more takes the click over and reads that page too.
+ * - Apply fences on the epoch of the detail it decides: an observe under another storage releases its capture and
+ *   reads the queue and the item again. An unanswered decision that a re-read shows landed finishes as recorded.
  */
 import { noun } from './plural.mjs';
 
@@ -45,6 +50,7 @@ export const COPY = Object.freeze({
     limited: 'This file has too many sampler paths to list. You can leave it unresolved.',
     unavailable: 'This file is not under a current image source, so it cannot be opened. You can leave it unresolved.',
     lost: 'The decision may not have been saved. Apply again to send the same decision once more.',
+    storageChanged: 'Prompt storage was restored; reload the review queue.',
     // D119 (F2): the open item left the queue in a re-read, and a failed re-read.
     decidedElsewhere: name => `${name} was decided elsewhere, so the next image is open.`,
     refreshFailed: 'The review queue could not be read again. Reload the page to see the latest images.',
@@ -114,6 +120,10 @@ export function createReviewController({ api }) {
     const lifetime = new AbortController();
     let listRead = null, detailRead = null, pending = null, disposed = false;
     let refreshing = null, refreshAgain = false;
+    // A change heard while a decision was in flight (I1); read when the phase is idle again.
+    let owedRefresh = false;
+    // Load more's own read, the one waiting for a re-read, and a click a re-read took over (I2).
+    let moreRead = null, moreTask = null, moreOwed = false, listing = null;
     // What the first read owes once it answers: nothing, a re-read ('always'), or a re-read unless it is this version.
     let afterLoad = null;
     // The version of the queue read last: {epoch, revision}.
@@ -176,15 +186,26 @@ export function createReviewController({ api }) {
      * Read the queue as deep as it is shown; `stale` re-reads the selected item's detail too (its revision or epoch
      * moved). `quiet` (a refresh) keeps the page as it is while reading and after a failed read.
      */
-    async function load({ keepWarning = false, stale = false, quiet = false } = {}) {
+    function load(options) {
+        const run = listing = loadQueue(options);
+        run.finally(() => { if (listing === run) listing = null; });
+        return run;
+    }
+
+    async function loadQueue({ keepWarning = false, stale = false, quiet = false } = {}) {
         listRead?.abort();
+        if (moreRead) { moreRead.abort(); moreRead = null; moreOwed = true; }
         const read = listRead = new AbortController();
         if (!quiet) set({ status: state.items.length ? state.status : 'loading', ...(keepWarning ? {} : { warning: '' }) });
         let readOk = false;
         try {
-            // One page, or as many as Load more had shown.
-            const queue = await readQueue(read, state.items.length > PAGE_LIMIT ? state.items.length : 0);
+            // One page, or as many as Load more had shown (and one page more for a click this read took over).
+            const depth = state.items.length + (moreOwed ? PAGE_LIMIT : 0);
+            const queue = await readQueue(read, depth > PAGE_LIMIT ? depth : 0);
             if (read !== listRead || disposed) return;
+            moreOwed = false;
+            // M3: another storage (a restore) makes the open item's detail stale too.
+            if (state.epoch !== null && queue.first.library_epoch !== state.epoch) stale = true;
             const items = Object.freeze(queue.items.map(entry => Object.freeze({ ...entry })));
             const left = state.items.find(entry => entry.id === state.selectedId);
             shown = Number.isSafeInteger(queue.first.review_revision)
@@ -195,15 +216,23 @@ export function createReviewController({ api }) {
             const keep = items.find(entry => entry.id === state.selectedId);
             // A re-read keeps the open item as it is (even a failed read of it, which has its own Retry).
             if (keep && !stale && (quiet || state.detail)) return;
-            if (quiet && left && !keep && items.length) {
+            if (quiet && left && !keep && pending?.id === left.id) {
+                // M5: the decision that got no answer was recorded (the server used its capture).
+                const choice = pending.body.choice;
+                pending = null;
+                set({ phase: 'done', warning: '', canRetry: false,
+                    toast: choice === UNRESOLVED ? COPY.leftUnresolved : COPY.applied });
+            } else if (quiet && left && !keep && items.length) {
                 set({ warning: COPY.decidedElsewhere(left.filename) });
                 await select(items[0].id, { keepWarning: true });
             } else if (items.length) await select((keep ?? items[0]).id, { keepWarning });
             else set({ selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null });
         } catch (error) {
             if (read !== listRead || disposed || isAbort(error)) return;
-            if (quiet && state.status === 'ready') set({ warning: COPY.refreshFailed });
-            else set({ status: 'error' });
+            // M7: a click this read took over can be made again.
+            moreOwed = false;
+            if (quiet && state.status === 'ready') set({ warning: COPY.refreshFailed, more: 'idle' });
+            else set({ status: 'error', more: 'idle' });
         } finally {
             // A change heard while the first read ran: that read may predate it, so read once more (unless the
             // stream's ready named a version this read already holds).
@@ -242,29 +271,45 @@ export function createReviewController({ api }) {
         refreshing = (async () => {
             do {
                 refreshAgain = false;
-                // A decision in flight finishes first: the page leaves when it is recorded.
-                if (state.phase === 'applying') return;
+                // A decision in flight finishes first: the page leaves when it is recorded, and a refused or
+                // unanswered one reads the owed change (I1).
+                if (state.phase === 'applying') { owedRefresh = true; return; }
                 await load({ keepWarning: true, quiet: true });
             } while (refreshAgain && !disposed);
         })().finally(() => { refreshing = null; });
         return refreshing;
     }
 
-    async function loadMore() {
-        if (!state.nextCursor || state.more === 'loading') return;
-        const read = listRead = new AbortController();
+    function loadMore() {
+        if (moreTask) return moreTask;
+        if (!state.nextCursor || state.more === 'loading') return Promise.resolve();
         set({ more: 'loading' });
+        moreTask = readMore().finally(() => { moreTask = null; });
+        return moreTask;
+    }
+
+    async function readMore() {
+        // I2: a re-read in flight finishes first; the next page continues after the queue it read.
+        while ((refreshing || listing) && !disposed) await (refreshing ?? listing);
+        if (disposed || !state.nextCursor || state.status !== 'ready') {
+            if (state.more === 'loading') set({ more: 'idle' });
+            return;
+        }
+        if (state.more !== 'loading') set({ more: 'loading' });
+        const read = moreRead = new AbortController();
         try {
             const query = new URLSearchParams({ limit: String(PAGE_LIMIT), cursor: state.nextCursor });
             const page = await api.get(`${REVIEW_URL}?${query}`, { signal: signalOf(read), cache: 'no-store' });
-            if (read !== listRead || disposed) return;
+            if (read !== moreRead || disposed) return;
+            moreRead = null;
             const known = new Set(state.items.map(entry => entry.id));
             const added = (page.items ?? []).filter(entry => !known.has(entry.id)).map(entry => Object.freeze({ ...entry }));
             set({ items: Object.freeze([...state.items, ...added]), total: page.total, nextCursor: page.next_cursor ?? null,
                 more: 'idle' });
         } catch (error) {
-            if (read !== listRead || disposed || isAbort(error)) return;
-            if (RELOAD.has(error?.code)) { await load({ stale: true }); return; }
+            if (read !== moreRead || disposed || isAbort(error)) return;
+            moreRead = null;
+            if (RELOAD.has(error?.code)) { set({ more: 'idle' }); await load({ stale: true }); return; }
             set({ more: 'error' });
         }
     }
@@ -298,6 +343,13 @@ export function createReviewController({ api }) {
         set({ choice: value, prompts: promptsOf(option) });
     }
 
+    /** The phase is idle again after a refused or unanswered decision: read a change heard meanwhile (I1). */
+    function idleAgain(reloading) {
+        const owed = owedRefresh;
+        owedRefresh = false;
+        if (owed && !reloading && !disposed) refresh();
+    }
+
     /** Send `body`; true once the decision is recorded. */
     async function send(body) {
         const id = state.selectedId;
@@ -316,11 +368,13 @@ export function createReviewController({ api }) {
             if (isLost(error)) {
                 pending = { id, body };
                 set({ phase: 'idle', warning: COPY.lost, canRetry: true });
+                idleAgain(false);
                 return false;
             }
             pending = null;
             release(body.capture_token);
             set({ phase: 'idle', warning: error?.message || COPY.failed });
+            idleAgain(RELOAD.has(error?.code));
             if (RELOAD.has(error?.code)) await load({ keepWarning: true, stale: true });
             return false;
         }
@@ -333,22 +387,32 @@ export function createReviewController({ api }) {
         if (pending?.id === state.selectedId && pending.body.choice === choice) return retry();
         dropPending();
         set({ phase: 'applying', warning: '', canRetry: false });
-        let capture = null, epoch = detail.library_epoch;
+        let capture = null;
         if (detail.target) {
+            let observed;
             try {
-                const observed = await api.post(OBSERVE_URL, { target: detail.target }, { signal: lifetime.signal });
-                capture = observed.capture;
-                epoch = observed.library_epoch;
+                // M4: not aborted on leave, so the capture it answers can be released.
+                observed = await api.post(OBSERVE_URL, { target: detail.target });
             } catch (error) {
                 if (disposed || isAbort(error)) return false;
                 set({ phase: 'idle', warning: error?.message || COPY.failed });
+                idleAgain(RELOAD.has(error?.code));
                 if (RELOAD.has(error?.code)) await load({ keepWarning: true, stale: true });
                 return false;
             }
+            capture = observed.capture;
             if (disposed) { release(capture?.token); return false; }
+            // M3: the file was observed under another storage than the detail was read from.
+            if (observed.library_epoch !== detail.library_epoch) {
+                release(capture?.token);
+                set({ phase: 'idle', warning: COPY.storageChanged });
+                idleAgain(true);
+                await load({ keepWarning: true, stale: true });
+                return false;
+            }
         }
         return send({
-            expected_epoch: epoch, expected_revision: detail.revision, capture_token: capture?.token ?? null,
+            expected_epoch: detail.library_epoch, expected_revision: detail.revision, capture_token: capture?.token ?? null,
             sha256: capture?.sha256 ?? detail.sha256, dependency_fingerprint: detail.dependency_fingerprint, choice,
         });
     }

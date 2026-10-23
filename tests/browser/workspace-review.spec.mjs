@@ -393,11 +393,115 @@ test('a ready whose version cannot be read re-reads the queue once', async ({ pa
     // The stream's ready names no readable version (an older server, a proxy that rewrote it): the page reads again.
     await seed(request, 1);
     const reads = reviewReads(page);
+    // M1: `retry` keeps the browser from reconnecting the ended stream during the test, so exactly one re-read follows.
     await page.route(url => url.pathname === '/prompt_manager/review/events', route => route.fulfill({
-        status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' }, body: 'event: ready\ndata: not json\n\n' }));
+        status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' },
+        body: 'retry: 3600000\nevent: ready\ndata: not json\n\n' }));
+    let reread = 0;
+    const second = page.waitForResponse(item => item.url().endsWith('/prompt_manager/review/items?limit=40') && ++reread === 2);
     await open(page);
-    await expect.poll(() => reads.filter(search => search === '?limit=40').length).toBeGreaterThanOrEqual(2);
+    await second;
     await expect(cards(page)).toHaveCount(1);
+    expect(reads.filter(search => search === '?limit=40')).toHaveLength(2);
+});
+
+const live = page => main(page).locator('.heading .review-live');
+const NOT_LIVE = 'Live updates are paused: changes made elsewhere appear once the connection returns.';
+
+test('a stream the browser gives up on is opened again, and the page says it is not live meanwhile', async ({ page, request }) => {
+    // I3: a 503 (shutdown, or a proxy while the backend restarts) fails an EventSource for good.
+    await seed(request, 1);
+    let attempts = 0;
+    await page.route(url => url.pathname === '/prompt_manager/review/events', route => {
+        attempts += 1;
+        if (attempts === 1) return route.fulfill({ status: 503, contentType: 'application/json', body: '{"success":false}' });
+        return route.fallback();
+    });
+    await open(page);
+    await expect(live(page)).toHaveText(NOT_LIVE);
+    await expect(live(page)).toBeVisible();
+    // The page opens the stream again (after 3 s) and is live once it sends ready.
+    await expect.poll(async () => (await streams(request)).streams, { timeout: 15000 }).toBe(1);
+    await expect(live(page)).toBeHidden();
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(cards(page)).toHaveCount(2);
+    expect(attempts).toBe(2);
+});
+
+/** Make the page hidden or visible as a tab switch does. */
+async function setVisible(page, visible) {
+    await page.evaluate(shown => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => !shown });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (shown ? 'visible' : 'hidden') });
+        document.dispatchEvent(new Event('visibilitychange'));
+    }, visible);
+}
+
+test('a hidden tab closes its stream and a visible one reads only what changed meanwhile', async ({ page, request }) => {
+    // I4: background tabs must not hold one of the origin's six connections.
+    await seed(request, 1);
+    const reads = reviewReads(page);
+    await open(page);
+    await expect.poll(async () => (await streams(request)).streams).toBe(1);
+    await setVisible(page, false);
+    // The server drops a closed stream at its next write: this monitor addition is one.
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect.poll(async () => (await streams(request)).streams).toBe(0);
+    await expect(cards(page)).toHaveCount(1);
+    expect(reads.filter(search => search === '?limit=40')).toHaveLength(1);
+    // Visible again: the reopened stream's ready names a newer version, so the page reads once.
+    const reread = page.waitForResponse(item => item.url().endsWith('/prompt_manager/review/items?limit=40'));
+    await setVisible(page, true);
+    await expect.poll(async () => (await streams(request)).streams).toBe(1);
+    await reread;
+    await expect(cards(page)).toHaveCount(2);
+    await expect(live(page)).toBeHidden();
+    expect(reads.filter(search => search === '?limit=40')).toHaveLength(2);
+});
+
+test('a re-read refreshes a card whose media or target changed', async ({ page, request }) => {
+    // M6 and M10: a root came or went between reads; the card follows, and a known thumbnail is its media.
+    await seed(request, 2);
+    let rewrite = false;
+    await page.route(url => url.pathname === '/prompt_manager/review/items' && url.search === '?limit=40', async route => {
+        if (!rewrite) return route.fallback();
+        const response = await route.fetch();
+        const body = await response.json();
+        body.items[0] = { ...body.items[0], thumbnail_url: `${body.items[0].url}&thumb=1` };
+        body.items[1] = { ...body.items[1], url: null, thumbnail_url: null, target: null, unavailable: true };
+        return route.fulfill({ response, json: body });
+    });
+    await open(page);
+    await expect.poll(async () => (await streams(request)).streams).toBe(1);
+    const second = cards(page).nth(1);
+    await expect(second.getByRole('button', { name: 'Open review_0001.png', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+    rewrite = true;
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(cards(page)).toHaveCount(3);
+    await expect(cards(page).first().locator('img')).toHaveAttribute('src', /&thumb=1$/);
+    await expect(second.getByRole('button', { name: 'Open review_0001.png', exact: true })).toHaveAttribute('aria-disabled', 'true');
+    await expect(second.locator('img')).toHaveCount(0);
+    await expect(second.locator('.image-card-actions button').last()).toHaveAttribute('aria-disabled', 'true');
+    await expect(cards(page).first()).toHaveClass(/selected/);
+});
+
+test('leaving during the observe releases the capture it answers', async ({ page, request }) => {
+    // M4: the server made the capture; the page left before the answer came.
+    await seed(request, 1);
+    await open(page);
+    let held;
+    const sent = new Promise(resolve => { held = resolve; });
+    await page.route(url => url.pathname === '/prompt_manager/image-annotations/observe', async route => {
+        const response = await route.fetch();
+        held(() => route.fulfill({ response }));
+    });
+    await apply(page).click();
+    const answer = await sent;
+    expect((await streams(request)).captures).toBe(1);
+    await page.evaluate(() => { window.location.hash = '#/tags'; });
+    await expect(main(page).getByRole('heading', { level: 1 })).toHaveText('Tags & categories');
+    await answer();
+    await expect.poll(async () => (await streams(request)).captures).toBe(0);
 });
 
 test('a live re-read keeps the loaded depth and the scroll position', async ({ page, request }) => {

@@ -606,3 +606,183 @@ test('a change heard during the first read still re-reads after a current ready'
     await settle();
     assert.equal(lists, 2);
 });
+
+// Final review round (I1, I2, M3–M5, M7).
+test('I1: a change heard during a refused Apply is re-read once the phase is idle again', async () => {
+    let queue = [item('one')], releaseDecision;
+    const { c, h } = await loaded({
+        [`GET ${ITEMS}`]: () => response(200, page(queue, { review_revision: queue.length })),
+        [`POST ${ITEMS}/one/decision`]: () => new Promise(resolve => {
+            releaseDecision = () => resolve(fail(409, 'association-conflict', 'conflict'));
+        }),
+    });
+    const applying = c.apply();
+    await settle();
+    assert.equal(c.state.phase, 'applying');
+    queue = [item('one'), item('two')]; // the monitor records an item while the decision is in flight
+    c.refresh();
+    await settle();
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 1, 'no read while the decision is in flight');
+    releaseDecision();
+    await applying;
+    await settle();
+    assert.equal(c.state.phase, 'idle');
+    assert.deepEqual(c.state.items.map(entry => entry.id), ['one', 'two']);
+    assert.equal(c.state.total, 2);
+    assert.equal(c.state.warning, 'conflict', 'the refusal stays the warning');
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 2, 'exactly one owed re-read');
+});
+
+test('I1: a change heard during an Apply whose observe is refused is re-read too', async () => {
+    let queue = [item('one')], releaseObserve;
+    const { c } = await loaded({
+        [`GET ${ITEMS}`]: () => response(200, page(queue)),
+        [`POST ${OBSERVE}`]: () => new Promise(resolve => {
+            releaseObserve = () => resolve(fail(409, 'capture-capacity', 'busy'));
+        }),
+    });
+    const applying = c.apply();
+    await settle();
+    queue = [item('one'), item('two')];
+    c.refresh();
+    releaseObserve();
+    await applying;
+    await settle();
+    assert.deepEqual(c.state.items.map(entry => entry.id), ['one', 'two']);
+});
+
+const forty = Array.from({ length: 41 }, (_, i) => item(`i${String(i).padStart(2, '0')}`));
+function deepRoutes(state) {
+    return {
+        [`GET ${ITEMS}`]: call => {
+            const cursor = new URL(call.url, 'http://x').searchParams.get('cursor');
+            if (cursor) {
+                if (state.moreGate) return state.moreGate.then(() => state.more ?? response(200, page([forty[40]], { total: 41 })));
+                return state.more ?? response(200, page([forty[40]], { total: 41 }));
+            }
+            const body = response(200, page(state.first, { total: state.first.length + 1, review_revision: state.revision ?? 1, next_cursor: 'cur' }));
+            return state.gate ? state.gate.then(() => state.fail ?? body) : body;
+        },
+        [`GET ${ITEMS}/i00`]: () => response(200, detailOf(forty[0])),
+    };
+}
+
+test('I2: Load more during a re-read waits for it and continues from the re-read queue', async () => {
+    const state = { first: forty.slice(0, 40) };
+    const { c } = await loaded(deepRoutes(state));
+    // Another tab decides i05; the re-read is slow and the user clicks Load more meanwhile.
+    let open;
+    state.first = forty.slice(0, 40).filter(entry => entry.id !== 'i05');
+    state.gate = new Promise(resolve => { open = resolve; });
+    const refreshing = c.refresh();
+    await settle();
+    const more = c.loadMore();
+    await settle();
+    assert.equal(c.state.more, 'loading', 'the click shows as loading while the re-read runs');
+    open();
+    await Promise.all([refreshing, more]);
+    await settle();
+    const ids = c.state.items.map(entry => entry.id);
+    assert.ok(!ids.includes('i05'), 'the re-read was applied');
+    assert.equal(ids.at(-1), 'i40', 'Load more appended the next page after the re-read');
+    assert.equal(c.state.more, 'idle');
+});
+
+test('I2: a re-read started during Load more takes over the click and reads one page deeper', async () => {
+    const state = { first: forty.slice(0, 40) };
+    const { c, h } = await loaded(deepRoutes(state));
+    let openMore;
+    state.moreGate = new Promise(resolve => { openMore = resolve; });
+    const more = c.loadMore();
+    await settle();
+    state.moreGate = null;
+    state.first = forty.slice(0, 40).filter(entry => entry.id !== 'i05');
+    await c.refresh();
+    openMore();
+    await more;
+    await settle();
+    const ids = c.state.items.map(entry => entry.id);
+    assert.ok(!ids.includes('i05'));
+    assert.equal(ids.at(-1), 'i40', 'the aborted Load more page is part of the re-read');
+    assert.equal(c.state.more, 'idle');
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 4, 'load, the aborted more, and the re-read of two pages');
+});
+
+test('M7: a failed re-read that took over Load more clears its loading state', async () => {
+    const state = { first: forty.slice(0, 40) };
+    const { c } = await loaded(deepRoutes(state));
+    state.moreGate = new Promise(() => {});
+    c.loadMore();
+    await settle();
+    assert.equal(c.state.more, 'loading');
+    state.moreGate = null;
+    state.gate = Promise.resolve();
+    state.fail = fail(500, 'review-failed');
+    await c.refresh();
+    await settle();
+    assert.equal(c.state.more, 'idle', 'Load more can be clicked again');
+    assert.equal(c.state.warning, COPY_REFRESH_FAILED);
+});
+const COPY_REFRESH_FAILED = 'The review queue could not be read again. Reload the page to see the latest images.';
+
+test('M3: Apply fences on the epoch of the detail it decides', async () => {
+    const OTHER = '22222222-2222-4222-8222-222222222222';
+    const { c, h } = await loaded({ [`POST ${OBSERVE}`]: () => response(200, { ...observed(), library_epoch: OTHER }) });
+    assert.equal(await c.apply(), false);
+    await settle();
+    assert.equal(h.of('POST', `${ITEMS}/one/decision`).length, 0, 'a restored storage sends no decision');
+    assert.deepEqual(h.of('DELETE', CAPTURE).map(call => call.url), [CAPTURE + 'capture-1']);
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 2, 'the queue is read again');
+    assert.equal(h.of('GET', `${ITEMS}/one`).length, 2, 'the open item is read again under the new storage');
+    assert.equal(c.state.phase, 'idle');
+});
+
+test('M3: the decision carries the detail epoch', async () => {
+    const { c, h } = await loaded();
+    assert.equal(await c.apply(), true);
+    assert.equal(h.of('POST', `${ITEMS}/one/decision`)[0].body.expected_epoch, EPOCH);
+});
+
+test('M3: a quiet re-read under another epoch reads the open item again', async () => {
+    const OTHER = '22222222-2222-4222-8222-222222222222';
+    let epoch = EPOCH;
+    const { c, h } = await loaded({
+        [`GET ${ITEMS}`]: () => response(200, page(QUEUE, { library_epoch: epoch })),
+        [`GET ${ITEMS}/one`]: () => response(200, detailOf(QUEUE[0], { library_epoch: epoch })),
+    });
+    epoch = OTHER;
+    await c.refresh();
+    await settle();
+    assert.equal(h.of('GET', `${ITEMS}/one`).length, 2);
+    assert.equal(c.state.detail.library_epoch, OTHER);
+});
+
+test('M4: leaving during the observe releases the capture it then answers', async () => {
+    let answer;
+    const { c, h } = await loaded({ [`POST ${OBSERVE}`]: () => new Promise(resolve => { answer = resolve; }) });
+    const applying = c.apply();
+    await settle();
+    c.dispose();
+    answer(response(200, observed('late')));
+    assert.equal(await applying, false);
+    await settle();
+    assert.deepEqual(h.of('DELETE', CAPTURE).map(call => call.url), [CAPTURE + 'late']);
+    assert.equal(h.of('POST', `${ITEMS}/one/decision`).length, 0);
+});
+
+test('M5: an unanswered decision that landed finishes as recorded, not as decided elsewhere', async () => {
+    let queue = QUEUE;
+    const { c, h } = await loaded({
+        [`GET ${ITEMS}`]: () => response(200, page(queue)),
+        [`POST ${ITEMS}/one/decision`]: () => Promise.reject(new TypeError('Failed to fetch')),
+    });
+    await c.apply();
+    assert.equal(c.state.canRetry, true);
+    queue = [QUEUE[1]]; // the server did record it: its change arrives
+    await c.refresh();
+    await settle();
+    assert.equal(c.state.phase, 'done');
+    assert.equal(c.state.toast, 'Association accepted.');
+    assert.doesNotMatch(c.state.warning, /decided elsewhere/);
+    assert.equal(h.of('DELETE', CAPTURE).length, 0, 'the server used the capture');
+});

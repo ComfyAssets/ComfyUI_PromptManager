@@ -386,4 +386,5 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 /* D119: a file that cannot be served (no current root) has an inert, empty media button that keeps the concept's
    1.33 media area (app.js `.image-open img`), so its card lines up with the queue's other cards. */
 .review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; aspect-ratio: 1.33; /* D119 */ }
-.review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; }
+/* D119: a long file name in the panel wraps inside the panel, where the concept's sample name never overflows. */
+.review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; /* D119 */ }
