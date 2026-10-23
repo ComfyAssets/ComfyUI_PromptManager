@@ -478,3 +478,19 @@ test('a refresh deferred behind a page load is dropped when the stream is dispos
     await new Promise(resolve=>setImmediate(resolve));
     assert.equal(requests.length,2,'no refresh runs after dispose');
 });
+
+test('defaults apply to a new visit but not to the current view or a saved view', async () => {
+    const { initialImagesView } = await source;
+    assert.equal(typeof initialImagesView, 'function', 'initialImagesView is exported');
+    const preferences = { workspaceLayout: 'masonry', workspaceDensity: 'compact' };
+    // A new visit starts from System › Appearance.
+    assert.deepEqual(initialImagesView({ preferences }), { layout: 'masonry', density: 'compact' });
+    // The current view (the last visit) keeps its own toolbar choices.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'list', density: 'large' }, preferences }), { layout: 'list', density: 'large' });
+    assert.deepEqual(initialImagesView({ prior: {}, preferences }), { layout: 'grid', density: 'comfortable' });
+    // A saved view opens as it always did.
+    assert.deepEqual(initialImagesView({ saved: { q: '' }, preferences }), { layout: 'grid', density: 'comfortable' });
+    // Without readable preferences nothing changes.
+    assert.deepEqual(initialImagesView({}), { layout: 'grid', density: 'comfortable' });
+    assert.deepEqual(initialImagesView({ preferences: {} }), { layout: 'grid', density: 'comfortable' });
+});

@@ -41,12 +41,11 @@ _HEALTH_STATUS_LINES = {
 _StoredReport = namedtuple("_StoredReport", "generation report")
 
 
-async def _settled(*reads):
-    """Every read's result once all of them ended; the first error raises.
+async def _gather_settled(*reads):
+    """Await every read, then raise the first failure.
 
-    ``asyncio.gather`` answers at the first error while the other executor
-    reads still run, so a route could answer (and its caller replace or
-    delete the database) with a sibling read still inside SQLite.
+    Unlike a plain gather, a failure never answers while the other executor
+    reads still run against the database.
     """
     results = await asyncio.gather(*reads, return_exceptions=True)
     for result in results:
@@ -169,7 +168,7 @@ class SystemRoutesMixin:
         from ..config import GalleryConfig
 
         try:
-            (output_dirs, auto_detected), counts = await _settled(
+            (output_dirs, auto_detected), counts = await _gather_settled(
                 self._run_in_executor(self._output_dirs_with_origin),
                 self._run_in_executor(self.db.library_counts),
             )
@@ -203,7 +202,7 @@ class SystemRoutesMixin:
 
     async def get_system_statistics(self, request):
         try:
-            by_category, totals, counts = await _settled(
+            by_category, totals, counts = await _gather_settled(
                 self._run_in_executor(self.db.usage_by_category),
                 self._run_in_executor(self.db.get_statistics),
                 self._run_in_executor(self.db.library_counts),

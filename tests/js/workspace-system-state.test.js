@@ -259,3 +259,60 @@ test('a failed read keeps the store usable and drafts survive a reload (Q10)', a
     assert.equal(failing.dirty(), false);
     assert.throws(() => createSystemDrafts({ ...domains, writeHost: null }), TypeError);
 });
+
+test('a rejected value drops its draft and is highlighted; a conflict elsewhere keeps the drafts', async () => {
+    const domains = adapters({ browser: { videoMute: true, videoLoop: true }, host: { result_timeout: 5 } });
+    const drafts = await loaded(domains);
+    assert.deepEqual(drafts.saved('browser'), { videoMute: true, videoLoop: true });
+    drafts.set('host', 'result_timeout', 12);
+    assert.equal(drafts.dirty('host'), true);
+    drafts.reject('host', 'result_timeout');
+    assert.equal(drafts.dirty('host'), false);
+    assert.deepEqual([...drafts.failed('host')], ['result_timeout']);
+    assert.equal(drafts.get('host', 'result_timeout'), 5);
+    // A valid value clears the highlight.
+    drafts.set('host', 'result_timeout', 7);
+    assert.deepEqual([...drafts.failed('host')], []);
+    drafts.discard();
+    drafts.set('browser', 'videoMute', false);
+    drafts.conflict('browser', []);
+    assert.equal(drafts.statusText(), 'Unsaved changes.');
+    drafts.conflict('browser', ['videoMute']);
+    assert.equal(drafts.statusText(), 'Settings changed elsewhere. Reload this section to see them.');
+    assert.deepEqual([...drafts.failed('browser')], ['videoMute']);
+    assert.equal(drafts.get('browser', 'videoMute'), false);
+    assert.throws(() => drafts.reject('nowhere', 'x'), TypeError);
+});
+
+test('a rejected value says why in the status until the next edit', async () => {
+    const drafts = await loaded(adapters({ host: { result_timeout: 5 } }));
+    drafts.reject('host', 'result_timeout');
+    assert.equal(drafts.statusText(), 'Some changes were not saved. Review the highlighted settings.');
+    drafts.set('host', 'result_timeout', 9);
+    assert.equal(drafts.statusText(), 'Unsaved changes.');
+});
+
+test('a browser write refused as changed elsewhere keeps the draft and reads the browser values again', async () => {
+    const domains = adapters({ browser: { workspaceDensity: 'comfortable' } });
+    const drafts = await loaded(domains);
+    drafts.set('browser', 'workspaceDensity', 'compact');
+    domains.outcome.browser = () => { throw Object.assign(new Error('changed'), { code: 'settings-changed' }); };
+    assert.deepEqual(await drafts.save(), { browser: 'conflict', host: 'clean', runtime: 'clean' });
+    assert.deepEqual(domains.calls.map(([name]) => name), ['writeBrowser', 'readBrowser']);
+    assert.equal(drafts.get('browser', 'workspaceDensity'), 'compact');
+    assert.deepEqual([...drafts.failed('browser')], ['workspaceDensity']);
+    assert.equal(drafts.statusText(), 'Settings changed elsewhere. Reload this section to see them.');
+});
+
+test('host read state says whether the server settings could be read', async () => {
+    const { createSystemDrafts } = await source;
+    const domains = adapters({ host: { result_timeout: 5 } });
+    let fail = true;
+    const drafts = createSystemDrafts({ ...domains, readHost: async () => { if (fail) throw new Error('offline'); return { values: {}, revision: 'r' }; } });
+    assert.equal(drafts.hostState(), 'pending');
+    assert.equal(await drafts.reloadHost(), false);
+    assert.equal(drafts.hostState(), 'failed');
+    fail = false;
+    assert.equal(await drafts.reloadHost(), true);
+    assert.equal(drafts.hostState(), 'loaded');
+});

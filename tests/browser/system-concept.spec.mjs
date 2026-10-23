@@ -409,3 +409,128 @@ for (const theme of THEMES) test(`statistics and health dialogs match the concep
     await page.evaluate(() => { document.querySelector('#modal-body caption').textContent = 'Runs per category'; });
     expect(diffInventory(expectedStatistics, await page.evaluate(measureDialog)).map(item => item.path)).toEqual(['tables.0.caption']);
 });
+
+/** Runs in the page: Appearance's surface, every row's text and control, and the concept's row geometry and tokens. */
+function measureAppearance(mainSelector) {
+    const layout = document.querySelector(`${mainSelector} .settings-layout`);
+    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
+    const name = node => [node.localName, ...[...node.classList].sort()].join('.');
+    const text = node => node?.textContent.trim() ?? null;
+    const surface = layout.querySelector(':scope > section.surface');
+    const control = row => {
+        const select = row.querySelector(':scope > select');
+        if (select) return { kind: 'select', id: select.id, options: [...select.options].map(option => option.textContent),
+            selected: select.selectedOptions[0]?.textContent ?? null };
+        const input = row.querySelector(':scope > input');
+        if (input) return { kind: `input.${input.type}`, id: input.id, value: input.value };
+        const toggle = row.querySelector(':scope > * input[type="checkbox"]');
+        if (toggle) return { kind: 'switch', id: toggle.id, wrapper: name(toggle.parentElement), checked: toggle.checked,
+            ...css(toggle.parentElement, 'width', 'height') };
+        const chip = row.querySelector(':scope > .chip');
+        return chip ? { kind: name(chip), text: text(chip), ...css(chip, 'color', 'backgroundColor', 'fontSize') } : null;
+    };
+    const rows = [...surface.querySelectorAll(':scope > .setting-row')];
+    const operations = [...surface.querySelectorAll(':scope > .operation')];
+    const firstRow = rows[0];
+    return {
+        layout: [...layout.children].map(name),
+        surface: { tree: [...surface.children].map(name), heading: text(surface.querySelector(':scope > h2')),
+            intro: text(surface.querySelector(':scope > p')),
+            ...css(surface, 'paddingTop', 'paddingLeft', 'backgroundColor', 'borderTopWidth', 'borderTopColor', 'borderTopLeftRadius') },
+        rows: rows.map(row => ({ tree: [...row.children].map(name), text: [...row.firstElementChild.children].map(node => [node.localName, text(node),
+            node.localName === 'label' ? node.htmlFor : null]), control: control(row) })),
+        operations: operations.map(row => ({ tree: [...row.children].map(name), title: text(row.querySelector('h3')),
+            description: text(row.querySelector('p')), action: text(row.querySelector('.row-actions > button')) })),
+        row: css(firstRow, 'display', 'alignItems', 'justifyContent', 'columnGap', 'paddingTop', 'paddingBottom', 'borderTopWidth',
+            'borderTopColor', 'marginTop'),
+        label: css(firstRow.querySelector('label'), 'fontSize', 'fontWeight', 'color'),
+        description: css(firstRow.querySelector('p'), 'fontSize', 'color', 'marginTop', 'maxWidth'),
+        select: css(firstRow.querySelector('select'), 'fontSize', 'minWidth', 'maxWidth', 'backgroundColor', 'color', 'borderTopColor'),
+        heading3: css(surface.querySelector('.setting-row h3'), 'fontSize', 'fontWeight', 'color'),
+        number: css(surface.querySelector('.setting-row input[type="number"]'), 'fontSize', 'minWidth', 'maxWidth', 'backgroundColor'),
+        pageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+}
+
+// D97: the rows Appearance adds for the legacy gallery settings, after the concept's own, as production renders them.
+const ADDED_APPEARANCE_ROWS = [
+    ['card-details', 'Show image details on cards', 'Show each card’s title and file details under the preview.', true],
+    ['viewer-details', 'Collapse viewer details by default', 'Open the image viewer with its details panel hidden.', false],
+];
+
+/** The concept's Appearance with the recorded deviations applied, given the server's real settings. */
+function mapAppearanceConcept(reference, settings) {
+    const toggleRow = reference.rows.find(row => row.control?.kind === 'switch');
+    const added = ADDED_APPEARANCE_ROWS.map(([id, label, description, checked]) => ({
+        tree: toggleRow.tree, text: [['label', label, id], ['p', description, null]],
+        control: { ...toggleRow.control, id, checked } }));
+    return {
+        ...reference,
+        // D97: two added toggles and the "Reset display defaults" operation close the surface.
+        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.setting-row', 'div.operation'] },
+        rows: [...reference.rows.map(row => row.control?.id === 'timeout'
+            // The node search timeout is the server's real `result_timeout`, not the concept's sample 30.
+            ? { ...row, control: { ...row.control, value: String(settings.result_timeout) } } : row), ...added],
+        operations: [{ tree: ['div', 'div.row-actions'], title: 'Reset display defaults',
+            description: 'Restore this browser’s display defaults, then save. Other settings are kept.', action: 'Reset' }],
+    };
+}
+
+async function conceptAppearance(page, theme) {
+    await openConcept(page, 'system', theme);
+    await page.locator('#main .section-nav').getByRole('button', { name: 'Appearance', exact: true }).click();
+    await expect(page.locator('#main .settings-layout > section.surface > h2')).toHaveText('Browsing & display');
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureAppearance, '#main');
+}
+
+async function productionAppearance(page, theme) {
+    await openProduction(page, 'system/appearance', theme);
+    await expect(page.locator('#workspace-main #timeout')).toBeEnabled();
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureAppearance, '#workspace-main');
+}
+
+for (const theme of THEMES) for (const [width, height] of SIZES) {
+    test(`appearance matches the concept ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width, height });
+        const { settings } = await serverJson(request, '/prompt_manager/settings');
+        const concept = await conceptAppearance(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`concept-appearance-${theme}-${width}.png`), fullPage: true });
+        const production = await productionAppearance(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`production-appearance-${theme}-${width}.png`), fullPage: true });
+        expect(diffInventory(mapAppearanceConcept(concept, settings), production)).toEqual([]);
+        expect(production.pageScroll).toBe(false);
+    });
+}
+
+test('appearance comparison detects mutations', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const { settings } = await serverJson(request, '/prompt_manager/settings');
+    const concept = await conceptAppearance(page, 'dark');
+    const expected = mapAppearanceConcept(concept, settings);
+    const production = await productionAppearance(page, 'dark');
+    expect(diffInventory(expected, production)).toEqual([]);
+    // Unmapped, the concept differs only where D97 and the real timeout are recorded.
+    expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
+        .filter((path, index, all) => all.indexOf(path) === index).sort())
+        .toEqual(['operations.0', 'operations.length', 'rows.11', 'rows.12', 'rows.13', 'rows.length', 'surface.tree'].sort());
+    const measure = () => page.evaluate(measureAppearance, '#workspace-main');
+    const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
+    // A removed row.
+    const undoRow = await mutate(page, { remove: ['#workspace-main .setting-row:nth-of-type(3)'] });
+    expect(await paths()).toEqual(expect.arrayContaining(['rows.length', 'surface.tree.length']));
+    await undoRow();
+    // A changed label and a changed option.
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="density"]').textContent = 'Thumbnail sizes'; });
+    expect(await paths()).toEqual(['rows.1.text.0.1']);
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="density"]').textContent = 'Thumbnail size'; });
+    await page.evaluate(() => { document.querySelector('#workspace-main #image-quality option').textContent = 'Medium'; });
+    expect(await paths()).toEqual(expect.arrayContaining(['rows.5.control.options.0']));
+    await page.evaluate(() => { document.querySelector('#workspace-main #image-quality option').textContent = 'Optimized'; });
+    // A swapped token.
+    const undoToken = await mutate(page, { css: '#workspace-main .settings-layout { --line: rgb(255, 0, 0); }' });
+    expect(await paths()).toEqual(expect.arrayContaining(['row.borderTopColor']));
+    await undoToken();
+    expect(diffInventory(expected, await measure())).toEqual([]);
+});
