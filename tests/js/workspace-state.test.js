@@ -23,8 +23,50 @@ test('tags is a native route titled Tags; only unbuilt routes hand off to legacy
         assert.equal(routeTitle(route), route.label);
     }
     assert.equal(routeTitle(resolveRoute('#/library/7')), 'Prompt library');
-    for (const id of ['images', 'library', 'tags', 'inspect', 'overview', 'activity']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
-    for (const id of ['system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), true, id);
+    // System is native from S2 (#249 System): its undelivered sections hand off per section (D94), not the route.
+    for (const id of ['images', 'library', 'tags', 'inspect', 'overview', 'activity', 'system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
+});
+
+test('system resolves its sections; #/overview stays the production hub', async () => {
+    const { resolveRoute, routeTitle, isHandoff, routes } = await source;
+    // `#/system` is the Overview section and keeps the sidebar's hash.
+    const system = resolveRoute('#/system');
+    assert.deepEqual([system.id, system.section, system.hash, routeTitle(system), isHandoff(system)],
+        ['system', 'overview', '#/system', 'System', false]);
+    for (const section of ['overview', 'appearance', 'sources', 'integrations', 'tagging', 'maintenance', 'backups', 'diagnostics']) {
+        const route = resolveRoute(`#/system/${section}`);
+        assert.deepEqual([route.id, route.section, route.hash], ['system', section, `#/system/${section}`]);
+    }
+    // An unknown child is the Overview section with a replaced hash.
+    for (const hash of ['#/system/general', '#/system/', '#/system/__proto__', '#/system/backups/1', '#/system/<b>']) {
+        const route = resolveRoute(hash);
+        assert.deepEqual([route.id, route.section, route.hash], ['system', 'overview', '#/system/overview'], hash);
+    }
+    // D28: the production hub is untouched.
+    const hub = resolveRoute('#/overview');
+    assert.deepEqual([hub.id, hub.section], ['overview', undefined]);
+    // Q12: Overview's System card opens the native System Overview, with no legacy href or action.
+    const card = routes.find(route => route.id === 'system');
+    assert.equal(card.href, '#/system/overview');
+    assert.equal(card.native, true);
+    assert.equal(card.action, 'Open System');
+});
+
+test('the router renders again when only the System section changes', async () => {
+    const { mountRouter } = await source;
+    const win = new EventTarget();
+    win.location = { hash: '#/system' };
+    const replacements = [];
+    win.history = { state: null, replaceState(state, unused, hash) { replacements.push(hash); win.location.hash = hash; } };
+    const seen = [];
+    const dispose = mountRouter(win, route => seen.push([route.id, route.section]));
+    for (const hash of ['#/system/appearance', '#/system/appearance', '#/system/bogus', '#/system/overview', '#/images']) {
+        win.location.hash = hash;
+        win.dispatchEvent(new Event('hashchange'));
+    }
+    assert.deepEqual(seen, [['system', 'overview'], ['system', 'appearance'], ['system', 'overview'], ['images', undefined]]);
+    assert.deepEqual(replacements, ['#/system/overview']);
+    dispose();
 });
 
 test('inspect is the native Inspect a file page with the concept description', async () => {

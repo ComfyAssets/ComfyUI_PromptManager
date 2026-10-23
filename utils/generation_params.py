@@ -28,6 +28,7 @@ __all__ = [
     "extract_generation_params",
     "extract_from_records",
     "parse_js_json",
+    "parse_page_json",
 ]
 
 PLACEHOLDERS = MappingProxyType(
@@ -949,6 +950,30 @@ def parse_js_json(text):
         return json.loads(
             text, parse_constant=_reject_constant, parse_int=_double_integer
         )
+    except (ValueError, RecursionError):
+        return None
+
+
+def _nan_as_null(name):
+    """The legacy pages' NaN cleaning; Infinity still throws in ``JSON.parse``."""
+    if name == "NaN":
+        return None
+    raise ValueError(f"{name} is not JSON")
+
+
+def parse_page_json(text):
+    """A metadata record as the legacy gallery and admin pages parsed it.
+
+    They replace ``NaN`` with ``null`` and then ``JSON.parse`` (ComfyUI writes
+    ``"is_changed": [NaN]`` for nodes that always re-run, PromptManager among
+    them). Only the NaN number reads as null here: the pages' regex also
+    rewrote the word inside strings, which changed prompt text. None where the
+    parse throws.
+    """
+    if not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text, parse_constant=_nan_as_null, parse_int=_double_integer)
     except (ValueError, RecursionError):
         return None
 

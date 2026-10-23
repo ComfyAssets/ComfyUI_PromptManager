@@ -336,6 +336,16 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
                 return { busy: store.running()[0] ?? null, message: error.message };
             }
         },
+        /**
+         * Follow a job another route started (its summary from that route's answer, e.g. the health check's
+         * `POST /system/health`): it is listed and its stream opened at once, with no read and no start toast.
+         */
+        track(raw) {
+            const job = parseJob(raw);
+            if (!job) throw new TypeError('Invalid job');
+            upsert(job);
+            return job;
+        },
         /** Ask a running job to stop at its next file boundary; false once it has ended. */
         async cancel(id) {
             const result = await api.post(`${JOBS_URL}/${encodeURIComponent(id)}/cancel`, {}, { signal: scope.signal });

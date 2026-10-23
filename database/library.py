@@ -628,3 +628,54 @@ class LibraryOperations:
                 "kind": "prompt-manager-library",
                 "positives": [owners[key] for key in order],
             }
+
+    def library_counts(self) -> dict:
+        """System › Overview counts from one snapshot, writing nothing.
+
+        ``positive_prompts`` and ``negative_variants`` are the unfiltered
+        Library's ``total`` and ``variant_total``: eligible parents and active
+        pairs (every pair's positive is eligible). ``images`` counts indexed
+        ``generated_images`` rows, not files on disk. An image has no rating
+        of its own (it shows its linked prompt's), so ``rated_images`` counts
+        the indexed images whose linked prompt is rated.
+        """
+        with self.library_snapshot() as (conn, _epoch, _ceiling):
+            row = conn.execute(
+                "SELECT (SELECT COUNT(*) FROM prompts p WHERE " + _ELIGIBLE + "),"
+                "(SELECT COUNT(*) FROM prompt_pairs WHERE archived=0),"
+                "(SELECT COUNT(*) FROM generated_images),"
+                "(SELECT COUNT(*) FROM generated_images gi JOIN prompts r "
+                "ON r.id=gi.prompt_id WHERE r.rating IS NOT NULL)"
+            ).fetchone()
+        return {
+            "positive_prompts": row[0],
+            "negative_variants": row[1],
+            "images": row[2],
+            "rated_images": row[3],
+        }
+
+    def usage_by_category(self) -> list[dict]:
+        """Runs and average rating of the Library's parents, per category.
+
+        Only eligible parents count, so a negative-only prompt's runs (which
+        repeat its pairs' runs) are never added twice. A blank category groups
+        with no category as ``None``. Unrated parents are left out of the
+        average, which is ``None`` when no parent is rated. Most runs first.
+        """
+        with self.library_snapshot() as (conn, _epoch, _ceiling):
+            rows = conn.execute(
+                "SELECT * FROM (SELECT NULLIF(TRIM(p.category),'') AS category,"
+                "COALESCE(SUM(p.run_count),0) AS runs,AVG(p.rating) AS rating "
+                "FROM prompts p WHERE " + _ELIGIBLE + " GROUP BY 1) "
+                "ORDER BY runs DESC,category IS NULL,category"
+            ).fetchall()
+        return [
+            {
+                "category": row["category"],
+                "runs": row["runs"],
+                "average_rating": (
+                    None if row["rating"] is None else round(row["rating"], 2)
+                ),
+            }
+            for row in rows
+        ]

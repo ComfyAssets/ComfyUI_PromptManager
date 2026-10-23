@@ -21,6 +21,7 @@ from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations, LIVE_HINT_CTES
 from .execution_outputs import ExecutionOutputOperations
 from .history_reads import HistoryReadOperations
+from .health import HealthOperations, iter_consistency_issues
 
 # Import logging system
 try:
@@ -345,6 +346,7 @@ class PromptDatabase(
     ImageFavoriteOperations,
     AnnotationOperations,
     SavedViewOperations,
+    HealthOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -2573,33 +2575,13 @@ class PromptDatabase(
             return cursor.rowcount
 
     def check_consistency(self) -> List[str]:
-        """Run consistency checks and return a list of issue descriptions."""
-        issues: List[str] = []
-        with self.model.get_connection() as conn:
-            # Check for orphaned prompt_tags entries
-            cursor = conn.execute("""
-                SELECT pt.prompt_id, pt.tag_id FROM prompt_tags pt
-                LEFT JOIN prompts p ON pt.prompt_id = p.id
-                WHERE p.id IS NULL
-            """)
-            for ref in cursor.fetchall():
-                issues.append(
-                    "prompt_tags entry references non-existent prompt "
-                    f"{ref['prompt_id']}"
-                )
+        """Run consistency checks and return a list of issue descriptions.
 
-            # Check for orphaned image entries
-            cursor = conn.execute("""
-                SELECT gi.id, gi.prompt_id FROM generated_images gi
-                LEFT JOIN prompts p ON gi.prompt_id = p.id
-                WHERE p.id IS NULL
-            """)
-            for ref in cursor.fetchall():
-                issues.append(
-                    f"Image {ref['id']} references non-existent prompt "
-                    f"{ref['prompt_id']}"
-                )
-        return issues
+        The same queries back the System health check's Consistency row
+        (database/health.py).
+        """
+        with self.model.get_connection() as conn:
+            return list(iter_consistency_issues(conn))
 
     def _image_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """
