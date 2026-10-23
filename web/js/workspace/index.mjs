@@ -1,7 +1,7 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
 import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts,
-    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS } from './state.mjs';
+    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages, onFavoriteChange } from './images.mjs';
 import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
@@ -15,6 +15,7 @@ import { createActivityStore } from './activity-store.mjs';
 import { mountActivityPage, mountActivityTopbar } from './activity.mjs';
 import { mountActivityJobView } from './activity-job-view.mjs';
 import { mountInspect } from './inspect.mjs';
+import { mountReview } from './review.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
 
@@ -85,13 +86,14 @@ function mountWorkspace() {
         }
     };
     // SAVED VIEWS (#249 D16): the concept's saved-nav rows (search icon, name, no count), loaded with the shell and
-    // re-read after every change. /* D49 */ no "PROPOSED" badge; /* D50 */ no "Needs review" row. The first row is
-    // the concept's Favorites (star icon, count), kept across every re-read so its count stays (D51).
-    const [favoritesLink] = navLinks([['favorites', 'star']]);
-    savedNav.replaceChildren(favoritesLink);
+    // re-read after every change. /* D49 */ no "PROPOSED" badge. The first rows are the concept's Favorites (star icon,
+    // count, D51) and Needs review (review icon, the exact pending count, ruling R5), kept across every re-read so
+    // their counts stay.
+    const [favoritesLink, reviewLink] = navLinks([['favorites', 'star'], ['review', 'review']]);
+    savedNav.replaceChildren(favoritesLink, reviewLink);
     const savedViews = createSavedViews(api, scope.signal);
     scope.cleanup(savedViews.subscribe(({ views }) => {
-        savedNav.replaceChildren(favoritesLink, ...views.map(view => {
+        savedNav.replaceChildren(favoritesLink, reviewLink, ...views.map(view => {
             const link = element('a');
             link.append(createWorkspaceIcon('search'), document.createTextNode(view.name));
             link.href = savedViewHash(view.id);
@@ -113,12 +115,20 @@ function mountWorkspace() {
             countRequests.set(id, request);
             // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
             loadNavCounts(api, request.signal, (_, count) => {
-                if (request.signal.aborted) return;
-                const link = sidebar.querySelector(`nav [data-route="${id}"]`);
-                link?.querySelector('.nav-count')?.remove();
-                if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+                if (!request.signal.aborted) showCount(id, count);
             }, [id]);
         }
+    }
+    function showCount(id, count) {
+        const link = sidebar.querySelector(`nav [data-route="${id}"]`);
+        link?.querySelector('.nav-count')?.remove();
+        if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+    }
+    /** A count a page has just read itself: it replaces the badge, and an older read in flight no longer lands. */
+    function setCount(id, count) {
+        countRequests.get(id)?.abort();
+        countRequests.delete(id);
+        showCount(id, count);
     }
     scope.cleanup(() => { for (const request of countRequests.values()) request.abort(); });
     // A confirmed Library or vocabulary write cannot change the Images count, so only Library and Tags are re-read.
@@ -131,6 +141,17 @@ function mountWorkspace() {
         favoriteCountTimer = setTimeout(() => refreshCounts(FAVORITE_WRITE_COUNTS), FAVORITE_COUNT_DELAY_MS);
     }));
     scope.cleanup(() => clearTimeout(favoriteCountTimer));
+    // A metadata scan that ends may have added items to Needs review: re-read its count once per ended scan.
+    const runningScans = new Set();
+    scope.cleanup(activity.subscribe(() => {
+        let ended = false;
+        for (const job of activity.jobs()) {
+            if (job.kind !== 'scan') continue;
+            if (job.state === 'running') runningScans.add(job.id);
+            else if (runningScans.delete(job.id)) ended = true;
+        }
+        if (ended) refreshCounts(REVIEW_WRITE_COUNTS);
+    }));
     refreshCounts(NAV_COUNT_ROUTES);
     let viewScope;
     let firstRender = true;
@@ -259,6 +280,13 @@ function mountWorkspace() {
             // D56: `#/activity/<id>` is that job's own view; `#/activity` lists the session's jobs.
             if (route.jobId) mountActivityJobView(main, { store: activity, scope: view, api, jobId: route.jobId });
             else mountActivityPage(main, { store: activity, scope: view });
+            return;
+        }
+        if (route.id === 'review') {
+            // Needs review (ruling R5): a recorded decision re-reads the row's count, and the open page's total is the
+            // count (F3: a change the page hears of costs no count read).
+            mountReview(main, { api, scope: view, onDecision: () => refreshCounts(REVIEW_WRITE_COUNTS),
+                onTotal: total => setCount('review', total) });
             return;
         }
         if (route.id === 'system') {

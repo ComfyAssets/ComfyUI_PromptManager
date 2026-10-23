@@ -671,6 +671,25 @@ def _iter_media_files(output_path, max_files):
             yield root_path / name
 
 
+def media_thumbnail_url(output_path, rel_path, root_index, *, root_scope=None):
+    """The Images listing's thumbnail URL for *rel_path* under *output_path*,
+    or None when no thumbnail exists (one blocking stat). The Needs review
+    queue cards use the same URL (#249 F, M10)."""
+    rel_path = Path(rel_path)
+    extension = rel_path.suffix.lower()
+    thumb_rel = (
+        f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb"
+        f"{'.jpg' if extension in VIDEO_EXTENSIONS else extension}"
+    )
+    thumbnail_url = thumbnail_url_for(thumb_rel, Path(output_path) / thumb_rel)
+    if thumbnail_url is None:
+        return None
+    thumbnail_url += f"&root={root_index}"
+    if root_scope is not None:
+        thumbnail_url += f"&root_scope={root_scope}"
+    return thumbnail_url
+
+
 def _output_image_entry(
     media_path, output_path, root_index, public_root=None, *, root_scope=None
 ):
@@ -686,19 +705,13 @@ def _output_image_entry(
     extension = media_path.suffix.lower()
     is_video = extension in VIDEO_EXTENSIONS
 
-    thumb_rel = (
-        f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb"
-        f"{'.jpg' if is_video else extension}"
+    thumbnail_url = media_thumbnail_url(
+        output_path, rel_path, root_index, root_scope=root_scope
     )
-    thumbnail_url = thumbnail_url_for(thumb_rel, output_path / thumb_rel)
-    if thumbnail_url is not None:
-        thumbnail_url += f"&root={root_index}"
     encoded_path = urllib.parse.quote(rel_path.as_posix(), safe="/")
     url = f"/prompt_manager/images/serve/{encoded_path}?root={root_index}"
     if root_scope is not None:
         url += f"&root_scope={root_scope}"
-        if thumbnail_url is not None:
-            thumbnail_url += f"&root_scope={root_scope}"
 
     entry = {
         "id": hashlib.sha1(

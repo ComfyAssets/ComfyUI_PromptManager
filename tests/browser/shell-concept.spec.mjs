@@ -68,12 +68,12 @@ function remainingFooter(footer,spans) {
 const OVERVIEW_GLYPH='M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6';
 
 /**
- * The concept's SAVED VIEWS rows (app.js a331–335) as production lists them: Favorites with its count (D51), then the
- * saved views. D50: no "Needs review" row until the tag-review slice (maintainer ruling 2026-10-21).
+ * The concept's SAVED VIEWS rows (app.js a331–335) as production lists them: Favorites with its count (D51), Needs
+ * review with the exact pending count (ruling R5), then the saved views. The concept's "3" is sample data: the concept
+ * fixture records no review items, so production's count reads "0".
  */
 function savedNav(nav) {
-    const rows=nav.rows.filter(row=>row.text!=='Needs review');
-    return {...nav,rows:rows.map((row,index)=>index===rows.length-1?{...row,gapAfter:null}:row)};
+    return {...nav,rows:nav.rows.map(row=>row.text==='Needs review'?{...row,count:{...row.count,text:'0'}}:row)};
 }
 
 /** Recorded shell deviations only (spec §8). Everything else in the concept inventory must equal production. */
@@ -243,8 +243,9 @@ for(const [width,height] of SIZES)test(`a saved view row matches the concept's $
     await openProduction(page,'images','dark');
     const actual=await save('Save','#workspace-main');
     expect(diffInventory(mapShellConcept(reference).chrome.navs,actual.chrome.navs)).toEqual([]);
+    const referenceRows=reference.chrome.navs.find(nav=>nav.id==='saved-nav').rows;
     expect(actual.chrome.navs.find(nav=>nav.id==='saved-nav').rows.map(row=>[row.text,row.count]))
-        .toEqual([['Favorites',reference.chrome.navs.find(nav=>nav.id==='saved-nav').rows[0].count],['Golden hour',null]]);
+        .toEqual([['Favorites',referenceRows[0].count],['Needs review',{...referenceRows[1].count,text:'0'}],['Golden hour',null]]);
 });
 
 test('the inventory reports a missing shell element by its path instead of failing',async({page})=>{

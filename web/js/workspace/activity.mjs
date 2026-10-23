@@ -11,6 +11,8 @@
  * - D54: each `.activity-item` is a real job. Its chip names the state (green "Completed", or blue "Running",
  *   "Cancelled", "Failed", "Ended"), its line says when and what, and a running job shows its `<progress>` and
  *   "Cancel job" (no "Simulate completion").
+ * - D87 (plan D64): an ended scan that recorded Needs review items carries the concept's **Review metadata**
+ *   (`go-review`, app.js a738) after its line, which opens `#/review`; its chip still names its state (D54).
  * - D89: an image tagging job's line names its images and, once ended, "N tagged · M errors".
  */
 import { createButton } from '../shared/toolkit/core.js';
@@ -24,6 +26,19 @@ export const ACTIVITY_DESCRIPTION = 'Scans, tagging, downloads and maintenance s
 export const EMPTY_ACTIVITY = 'No jobs have run since ComfyUI started. Scans and other long operations appear here.';
 export const LOAD_FAILED = 'Activity could not be read. It is tried again shortly.';
 export const CANCEL_FAILED_TOAST = 'The job could not be cancelled. Try again.';
+
+/** Whether an ended job recorded items for Needs review (a metadata scan's `scope.review_items`). */
+export function hasReviewItems(job) {
+    const count = job?.scope?.review_items;
+    return job?.state !== 'running' && Number.isSafeInteger(count) && count > 0;
+}
+
+/** The concept's **Review metadata** (D87): opens Needs review. */
+export function createReviewMetadataButton(scope) {
+    const button = createButton('Review metadata');
+    scope.listen(button, 'click', () => navigateTo('#/review'));
+    return button;
+}
 const CHIPS = Object.freeze({
     running: ['blue', 'Running'], finished: ['green', 'Completed'], cancelled: ['blue', 'Cancelled'],
     failed: ['blue', 'Failed'], lost: ['blue', 'Ended'],
@@ -129,6 +144,7 @@ function itemFor(job, scope) {
     const actions = element('div', undefined, 'row-actions');
     const cancel = createButton('Cancel job');
     actions.append(cancel);
+    const review = createReviewMetadataButton(scope); // D87
     item.append(heading, detail, progress, actions);
     scope.listen(cancel, 'click', async () => {
         if (cancel.getAttribute('aria-disabled') === 'true') return;
@@ -166,6 +182,8 @@ function itemFor(job, scope) {
             if (actions.contains(document.activeElement)) link.focus();
             actions.remove();
         }
+        if (hasReviewItems(next)) { if (!review.isConnected) detail.after(review); } // D87
+        else review.remove();
     };
     return item;
 }

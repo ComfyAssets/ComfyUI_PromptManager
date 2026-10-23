@@ -322,9 +322,7 @@ function overviewNodes(overview, { scope, navigate, openStatistics }) {
     const review = operationRow({ scope, title: ambiguousTitle(overview.needs_review),
         description: Number.isSafeInteger(overview.needs_review?.pending)
             ? 'Review metadata before assigning a positive / negative pair.' : NOT_AVAILABLE,
-        label: 'Review metadata', onClick: () => {} });
-    // D93: the row reads the queue's pending count; its action waits for the Needs review page (#288).
-    review.querySelector('button').setAttribute('aria-disabled', 'true');
+        label: 'Review metadata', onClick: () => navigate('#/review') });
     const [sourcesTitle, sourcesDescription] = sourcesCopy(overview.sources);
     const thumbnails = operationRow({ scope, title: THUMBNAILS_LOADING, description: 'Generate only missing previews when necessary.',
         label: 'Review thumbnails', onClick: go('sources') });

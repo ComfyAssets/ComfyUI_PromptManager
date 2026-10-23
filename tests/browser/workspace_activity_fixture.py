@@ -150,6 +150,12 @@ def register_activity_commands(app, routes, api):
             scope = {
                 "files": str(data.get("files", "new")),
                 "output_folders": count(data.get("output_folders"), 2),
+                # A real scan's count of its files in the Needs review queue.
+                **(
+                    {"review_items": count(data["review_items"])}
+                    if "review_items" in data
+                    else {}
+                ),
             }
             groups = SCAN_GROUP_NAMES
         try:

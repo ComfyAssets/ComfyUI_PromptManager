@@ -29,6 +29,7 @@ from .review import (
     dependent_images,
     same_name_rows,
 )
+from .review_changes import notify_review_change
 from .review_schema import DECISIONS_TABLE, ITEMS_TABLE, canonical_evidence
 
 DECISION_KIND = "user-selection"
@@ -119,7 +120,7 @@ class ReviewDecisionOperations:
             raise ValueError("A selected decision needs a candidate and a file")
         try:
             with self._pair_transaction() as conn:
-                return self._decide_in(
+                decided = self._decide_in(
                     conn,
                     item_id=item_id,
                     expected_epoch=expected_epoch,
@@ -135,6 +136,9 @@ class ReviewDecisionOperations:
                 )
         except _Rollback as rollback:
             raise rollback.error from None
+        # After the commit: open Needs review pages re-read their queue.
+        notify_review_change(self.model.db_path)
+        return decided
 
     def _decide_in(self, conn: sqlite3.Connection, **command) -> dict:
         epoch = self._library_epoch(conn, command["expected_epoch"])
