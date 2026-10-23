@@ -12,6 +12,7 @@ Callers verify the file first (the capture must be the item's bytes and the
 current file must still hash to them); nothing here reads the filesystem.
 """
 
+import os
 import sqlite3
 
 from .annotation_schema import BYTES_TABLE
@@ -25,6 +26,8 @@ from .review import (
     _PENDING_COUNT,
     _queue_row,
     dependency_fingerprint,
+    dependent_images,
+    same_name_rows,
 )
 from .review_schema import DECISIONS_TABLE, ITEMS_TABLE, canonical_evidence
 
@@ -65,6 +68,8 @@ class ReviewCommandError(LibraryCommandError):
         self.total = total
         self.fingerprint = fingerprint
         self.changed = changed
+        # The public view of ``item``, set by the API when it formats one.
+        self.view = None
 
 
 class _Rollback(Exception):
@@ -90,12 +95,18 @@ class ReviewDecisionOperations:
         image_path: str | None = None,
         metadata: dict | None = None,
         expected_fingerprint: str | None = None,
+        aliases: tuple = (),
+        known_rows: frozenset | None = None,
     ) -> dict:
         """Record the decision; return ``{item, total, pair}``.
 
         ``selected`` needs the evidence ``candidate`` (with its ``hash``), the
         ``image_path`` the scan and the monitor link under, the captured
         ``metadata`` and the ``expected_fingerprint`` the reviewer saw.
+        ``aliases`` are the other spellings legacy rows of the same physical
+        file use (a symlinked, junctioned or mapped root) and ``known_rows``
+        the ids of every same-name row the caller classified; a same-name row
+        it did not see is a changed association.
         Raises ``LibraryCommandError("storage-changed")`` after a restore and
         :class:`ReviewCommandError` for every refused decision, with zero
         writes either way.
@@ -119,6 +130,8 @@ class ReviewDecisionOperations:
                     image_path=image_path,
                     metadata=metadata or {},
                     expected_fingerprint=expected_fingerprint,
+                    aliases=tuple(aliases),
+                    known_rows=known_rows,
                 )
         except _Rollback as rollback:
             raise rollback.error from None
@@ -191,8 +204,14 @@ class ReviewDecisionOperations:
         from .pair_ingestion import _ingest_resolved_pair_in
 
         image_path = command["image_path"]
-        fingerprint = dependency_fingerprint(conn, image_path)
-        if fingerprint != command["expected_fingerprint"]:
+        aliases = command["aliases"]
+        fingerprint = dependency_fingerprint(conn, image_path, aliases)
+        known = command["known_rows"]
+        unseen = known is not None and any(
+            row_id not in known
+            for row_id, _path in same_name_rows(conn, os.path.basename(image_path))
+        )
+        if unseen or fingerprint != command["expected_fingerprint"]:
             raise _Rollback(
                 ReviewCommandError(
                     "association-conflict",
@@ -203,6 +222,22 @@ class ReviewDecisionOperations:
                     changed=True,
                 )
             )
+        rows = dependent_images(conn, (image_path, *aliases))
+        if len(rows) > 1:
+            # One file linked under several spellings: no single row to enrich.
+            raise _Rollback(
+                ReviewCommandError(
+                    "association-conflict",
+                    epoch,
+                    item=current,
+                    total=total,
+                    fingerprint=fingerprint,
+                )
+            )
+        if rows:
+            # Enrich the one row of this file under the spelling it was
+            # linked with, so the ingester's compatibility rules see it.
+            image_path = rows[0][1]
         candidate = command["candidate"]
         positive, negative = candidate["positive"], candidate["negative"]
         provenance = {

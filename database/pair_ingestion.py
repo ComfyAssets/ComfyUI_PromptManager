@@ -9,8 +9,10 @@ from .operations import _coerce_file_info
 
 try:
     from ..utils.hashing import generate_prompt_hash
+    from ..utils.prompt_pair_resolver import RESOLVER_VERSION
 except ImportError:
     from utils.hashing import generate_prompt_hash
+    from utils.prompt_pair_resolver import RESOLVER_VERSION
 
 
 def ingest_resolved_pair(
@@ -51,7 +53,7 @@ def _ingest_resolved_pair_in(
     normalized = normalize_image_path(image_path)
     if provenance is None:
         provenance = {
-            "resolver_version": 1,
+            "resolver_version": RESOLVER_VERSION,
             "positive": positive,
             "negative": negative,
         }

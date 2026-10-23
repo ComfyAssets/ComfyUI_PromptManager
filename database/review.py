@@ -117,7 +117,7 @@ _DETAIL = (
 )
 # The legacy rows and pair links the ingester's compatibility rules read.
 _DEPENDENT_IMAGES = (
-    "SELECT gi.id,p.hash FROM generated_images gi "
+    "SELECT gi.id,p.hash,gi.image_path FROM generated_images gi "
     "JOIN prompts p ON p.id=gi.prompt_id "
     "WHERE gi.file_path=? OR gi.image_path=? ORDER BY gi.id"
 )
@@ -126,6 +126,12 @@ _DEPENDENT_LINKS = (
     "JOIN prompt_pairs pp ON pp.id=ip.pair_id "
     "LEFT JOIN prompts n ON n.id=pp.negative_prompt_id "
     "WHERE ip.image_id=? ORDER BY ip.pair_id"
+)
+# Rows whose spelling ends with the file's name: the candidates for another
+# spelling of the same physical file (the link summaries' filename fallback).
+_SAME_NAME_ROWS = (
+    "SELECT id,image_path FROM generated_images "
+    "WHERE image_path LIKE ? ESCAPE '\\' ORDER BY id"
 )
 _TITLES = (
     "SELECT p.hash,s.title FROM prompts p "
@@ -159,18 +165,47 @@ def _validate_spelling(spelled_path: object, locator: str) -> None:
         raise ValueError("spelled_path must be the file's spelling of its locator")
 
 
-def dependency_fingerprint(conn: sqlite3.Connection, image_path: str) -> str:
+def dependent_images(conn: sqlite3.Connection, spellings) -> list:
+    """``(id, image_path, positive_hash)`` of every legacy row of the file.
+
+    ``spellings`` are the paths the file is linked under (the Apply path and
+    every alias of the same physical file); each is matched as the ingester
+    matches one path. Rows are distinct and ordered by id.
+    """
+    found = {}
+    for spelled in dict.fromkeys(spellings):
+        for row in conn.execute(
+            _DEPENDENT_IMAGES, (normalize_image_path(spelled), spelled)
+        ):
+            found[row[0]] = (row[0], row[2], row[1])
+    return [found[key] for key in sorted(found)]
+
+
+def same_name_rows(conn: sqlite3.Connection, name: str) -> list:
+    """``(id, image_path)`` of rows whose spelling may end with ``name``."""
+    # Imported here: operations composes this module's mixin.
+    from .operations import escape_like
+
+    return [
+        (row[0], row[1])
+        for row in conn.execute(_SAME_NAME_ROWS, (f"%{escape_like(name)}",))
+    ]
+
+
+def dependency_fingerprint(
+    conn: sqlite3.Connection, image_path: str, aliases=()
+) -> str:
     """SHA-256 of what Apply's compatibility depends on for ``image_path``.
 
-    The exact legacy rows of the file with their positive hashes, and each
-    row's pair links with the negative hash, read as the ingester reads them.
-    Unrelated prompt changes (tags, titles) do not move it.
+    The exact legacy rows of the file under ``image_path`` and every alias
+    spelling of it, with their positive hashes, and each row's pair links
+    with the negative hash, read as the ingester reads them. Unrelated prompt
+    changes (tags, titles) do not move it.
     """
-    images = conn.execute(
-        _DEPENDENT_IMAGES, (normalize_image_path(image_path), image_path)
-    ).fetchall()
     rows = []
-    for image_id, positive_hash in images:
+    for image_id, _spelled, positive_hash in dependent_images(
+        conn, (image_path, *aliases)
+    ):
         links = conn.execute(_DEPENDENT_LINKS, (image_id,)).fetchall()
         rows.append([image_id, positive_hash, [list(link) for link in links]])
     text = canonical_evidence({"v": 1, "images": rows})
@@ -328,9 +363,14 @@ class ReviewOperations:
             item["total"] = conn.execute(_PENDING_COUNT).fetchone()[0]
         return item
 
-    def review_dependency_fingerprint(self, image_path: str) -> str:
+    def review_dependency_fingerprint(self, image_path: str, aliases=()) -> str:
         with self._annotation_read() as conn:
-            return dependency_fingerprint(conn, image_path)
+            return dependency_fingerprint(conn, image_path, aliases)
+
+    def review_same_name_rows(self, name: str) -> list:
+        """``(id, image_path)`` of legacy rows that may spell a file ``name``."""
+        with self._annotation_read() as conn:
+            return same_name_rows(conn, name)
 
     def stored_prompt_titles(self, texts) -> dict:
         """Library titles of saved prompts by text (dedup hash), when set."""

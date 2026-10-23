@@ -31,18 +31,16 @@ try:
     from ..database.review_schema import MAX_CANDIDATES, canonical_evidence
     from .media_capture import CaptureCapacity, CaptureError
     from .prompt_inspector import MetadataReadError, read_inspection_file
-    from .prompt_pair_resolver import resolve_prompt_pair
+    from .prompt_pair_resolver import RESOLVER_VERSION, resolve_prompt_pair
 except ImportError:  # imported with the repo root on sys.path
     from database.library_commands import LibraryCommandError
     from database.review_schema import MAX_CANDIDATES, canonical_evidence
     from utils.media_capture import CaptureCapacity, CaptureError
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
-    from utils.prompt_pair_resolver import resolve_prompt_pair
+    from utils.prompt_pair_resolver import RESOLVER_VERSION, resolve_prompt_pair
 
 logger = logging.getLogger("prompt_manager.review_capture")
 
-# The ingestion resolver's provenance version (``database.pair_ingestion``).
-RESOLVER_VERSION = 1
 # Capture scope label: review captures are never handed to a client.
 REVIEW_SCOPE = "needs-review"
 # Nested ambiguous stages are flattened at most this deep.

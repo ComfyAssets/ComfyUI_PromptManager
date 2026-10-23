@@ -9,10 +9,12 @@ unresolved records the decision and links nothing. Responses never carry a
 server path.
 """
 
+import json
 import ntpath
 import os
 import posixpath
 import sqlite3
+from pathlib import Path
 from unittest.mock import patch
 
 try:
@@ -25,7 +27,10 @@ try:
 except ImportError:  # discovered with tests/ as the top-level directory
     from test_review import ReviewTestCase, ambiguous_graph, digest, write_png
 
-from database.review_schema import canonical_evidence
+from database.review_schema import canonical_evidence, evidence_digest
+from py.config import GalleryConfig
+from utils import review_capture as review_capture_module
+from utils.media_capture import CaptureChanged, FileFacts
 from utils.hashing import generate_prompt_hash
 
 try:  # guarded so a missing module fails assertions, not test loading
@@ -752,3 +757,302 @@ class TestDecisions(ReviewRoutesTestCase):
         )
         self.assertEqual(status, 200, data)
         self._no_paths()
+
+
+class TestPhysicalIdentity(ReviewRoutesTestCase):
+    """Apply sees a legacy row of the same file under any spelling (I1).
+
+    The roots are real paths, but the monitor links a file under the
+    directory it watches: a symlink, a Windows junction, ``subst`` or a
+    mapped drive reaches the same file under another spelling.
+    """
+
+    def _monitor_link(self, text, spelled):
+        prompt_id = self.api.db.save_prompt(
+            text, prompt_hash=generate_prompt_hash(text)
+        )
+        return self.api.db.link_image_to_prompt(prompt_id, str(spelled))
+
+    def _rows(self):
+        conn = self.api.db.model.get_connection()
+        return [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT gi.image_path, p.text FROM generated_images gi "
+                "JOIN prompts p ON p.id=gi.prompt_id ORDER BY gi.id"
+            )
+        ]
+
+    async def _conflict_then_compatible(self, alias_path):
+        image_id = self._monitor_link("cat", alias_path)
+        item, detail, observed = await self._open()
+        before = self._snapshot()
+        dog = self._candidate(detail, "dog")
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, dog["hash"])
+        )
+        self.assertEqual((status, data.get("code")), (409, "association-conflict"))
+        self.assertEqual(self._snapshot(), before)
+        cat = self._candidate(detail, "cat")
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, cat["hash"])
+        )
+        self.assertEqual(status, 200, data)
+        # The monitor's row is enriched; no second row for the same file.
+        self.assertEqual(data["pair"]["image_id"], image_id)
+        self.assertEqual(self._rows(), [(str(alias_path), "cat")])
+        self._no_paths()
+
+    def _symlinked_root(self):
+        alias = Path(self.tmpdir) / "alias-output"
+        try:
+            os.symlink(str(self.output_dir), str(alias), target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        return alias
+
+    async def test_symlinked_root_legacy_row_is_an_association_conflict(self):
+        self._require_routes()
+        path = self._ambiguous("two.png")
+        alias = self._symlinked_root()
+        self._record(path)
+        await self._conflict_then_compatible(alias / "two.png")
+
+    async def test_junction_or_mapped_drive_legacy_row_is_seen(self):
+        """A portable fake of a junction: its realpath is the real root."""
+        self._require_routes()
+        path = self._ambiguous("two.png")
+        self._record(path)
+        junction = os.path.join(self.tmpdir, "Junction")
+        real = os.path.realpath
+
+        def fake_realpath(value, *args, **kwargs):
+            text = os.fspath(value)
+            if os.path.normcase(text).startswith(os.path.normcase(junction)):
+                text = str(self.output_dir) + text[len(junction) :]
+            return real(text, *args, **kwargs)
+
+        with patch.object(review_api, "_realpath", side_effect=fake_realpath):
+            await self._conflict_then_compatible(os.path.join(junction, "two.png"))
+
+    async def test_two_rows_under_two_spellings_are_an_association_conflict(self):
+        self._require_routes()
+        path = self._ambiguous("two.png")
+        alias = self._symlinked_root()
+        self._monitor_link("cat", alias / "two.png")
+        self._monitor_link("cat", path)
+        self._record(path)
+        item, detail, observed = await self._open()
+        before = self._snapshot()
+        cat = self._candidate(detail, "cat")
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, cat["hash"])
+        )
+        self.assertEqual((status, data.get("code")), (409, "association-conflict"))
+        self.assertEqual(self._snapshot(), before)
+
+    async def test_same_name_in_another_folder_is_not_the_file(self):
+        self._require_routes()
+        path = self._ambiguous("two.png")
+        other = self.output_dir / "elsewhere" / "two.png"
+        other.parent.mkdir(parents=True)
+        write_png(other, prompt=ambiguous_graph("cat", "dog"), color=(9, 9, 9))
+        self._monitor_link("dog", other)
+        self._record(path)
+        item, detail, observed = await self._open()
+        cat = self._candidate(detail, "cat")
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, cat["hash"])
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(
+            sorted(self._rows()), sorted([(str(other), "dog"), (str(path), "cat")])
+        )
+
+    async def test_a_new_alias_row_after_the_check_is_a_changed_conflict(self):
+        self._require_routes()
+        path = self._ambiguous("two.png")
+        alias = self._symlinked_root()
+        self._record(path)
+        item, detail, observed = await self._open()
+        cat = self._candidate(detail, "cat")
+        # The monitor links the file under its alias after the reviewer opened it.
+        self._monitor_link("cat", alias / "two.png")
+        before = self._snapshot()
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, cat["hash"])
+        )
+        self.assertEqual((status, data.get("code")), (409, "association-conflict"))
+        self.assertNotEqual(
+            data["dependency_fingerprint"], detail["dependency_fingerprint"]
+        )
+        self.assertEqual(self._snapshot(), before)
+
+
+class TestApplyRefusals(ReviewRoutesTestCase):
+    """Every Apply refusal answers a code and writes nothing (I2, M1, M4)."""
+
+    async def _opened(self):
+        path = self._ambiguous("two.png")
+        self._record(path)
+        item, detail, observed = await self._open()
+        return path, item, detail, observed, self._candidate(detail, "cat")
+
+    async def _refused(self, item, body, status, code=None):
+        before = self._snapshot()
+        got, data = await self._decide(item["id"], body)
+        self.assertEqual(got, status, data)
+        if code is not None:
+            self.assertEqual(data["code"], code, data)
+        self.assertEqual(self._snapshot(), before)
+        self.assertEqual(self._decisions(), [])
+        return data
+
+    async def test_resolver_change_keeps_the_chosen_candidate_applicable(self):
+        self._require_routes()
+        _path, item, detail, observed, cat = await self._opened()
+        real = review_capture_module.resolve_prompt_pair
+
+        def reworded(metadata):
+            resolution = real(metadata)
+            return {
+                **resolution,
+                "reason": "a reworded reason from a newer resolver",
+                "candidates": list(reversed(resolution["candidates"])),
+            }
+
+        with (
+            patch.object(
+                review_capture_module, "resolve_prompt_pair", side_effect=reworded
+            ),
+            patch.object(review_capture_module, "RESOLVER_VERSION", 2),
+        ):
+            status, data = await self._decide(
+                item["id"], self._body(detail, observed, cat["hash"])
+            )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["item"]["state"], "selected")
+
+    async def test_chosen_candidate_no_longer_offered_is_a_review_conflict(self):
+        self._require_routes()
+        _path, item, detail, observed, cat = await self._opened()
+        real = review_capture_module.resolve_prompt_pair
+
+        def without_cat(metadata):
+            resolution = real(metadata)
+            kept = [
+                c
+                for c in resolution["candidates"]
+                if (c.get("positive") or {}).get("text") != "cat"
+            ]
+            return {**resolution, "candidates": kept * 2}
+
+        with patch.object(
+            review_capture_module, "resolve_prompt_pair", side_effect=without_cat
+        ):
+            await self._refused(
+                item,
+                self._body(detail, observed, cat["hash"]),
+                409,
+                "review-conflict",
+            )
+
+    async def test_decision_passes_the_verified_digest(self):
+        self._require_routes()
+        path, item, detail, observed, cat = await self._opened()
+        real = type(self.api.db).decide_review_item
+        seen = []
+
+        def spy(db, **kwargs):
+            seen.append(kwargs["sha256"])
+            return real(db, **kwargs)
+
+        with patch.object(type(self.api.db), "decide_review_item", spy):
+            status, data = await self._decide(
+                item["id"], self._body(detail, observed, cat["hash"])
+            )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(seen, [digest(path)])
+
+    async def test_expired_capture(self):
+        self._require_routes()
+        _path, item, detail, observed, cat = await self._opened()
+        self.api._captures.release(observed["capture"]["token"])
+        await self._refused(
+            item, self._body(detail, observed, cat["hash"]), 409, "capture-expired"
+        )
+
+    async def test_a_candidate_that_cannot_be_applied(self):
+        self._require_routes()
+        _path, item, detail, observed, cat = await self._opened()
+        conn = self.api.db.model.get_connection()
+        (text,) = conn.execute(
+            "SELECT evidence FROM media_review_items WHERE id=?", (item["id"],)
+        ).fetchone()
+        evidence = json.loads(text)
+        for candidate in evidence["candidates"]:
+            if candidate["hash"] == cat["hash"]:
+                candidate["state"] = "unresolved"
+        text = canonical_evidence(evidence)
+        with conn:
+            conn.execute(
+                "UPDATE media_review_items SET evidence=?, evidence_hash=? WHERE id=?",
+                (text, evidence_digest(text), item["id"]),
+            )
+        data = await self._refused(item, self._body(detail, observed, cat["hash"]), 400)
+        self.assertIn("cannot be applied", data["error"])
+
+    async def test_leave_unresolved_with_another_digest(self):
+        self._require_routes()
+        _path, item, detail, observed, _cat = await self._opened()
+        body = {
+            **self._body(detail, observed, "unresolved"),
+            "capture_token": None,
+            "sha256": "0" * 64,
+        }
+        data = await self._refused(item, body, 400)
+        self.assertIn("does not match the item", data["error"])
+
+    async def test_root_no_longer_configured_is_source_changed(self):
+        self._require_routes()
+        _path, item, detail, observed, cat = await self._opened()
+        # Another root takes index 0.
+        elsewhere = self.output_dir / "elsewhere"
+        elsewhere.mkdir()
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(elsewhere)]
+        await self._refused(
+            item, self._body(detail, observed, cat["hash"]), 409, "source-changed"
+        )
+
+    async def test_file_no_longer_under_its_root_is_source_changed(self):
+        self._require_routes()
+        _path, item, detail, observed, cat = await self._opened()
+        moved = os.path.join(self.tmpdir, "moved-root")
+        real = os.path.realpath
+
+        def other_root(value, *args, **kwargs):
+            if os.path.normcase(os.fspath(value)) == os.path.normcase(
+                str(self.output_dir)
+            ):
+                return moved
+            return real(value, *args, **kwargs)
+
+        with patch.object(review_api, "_realpath", side_effect=other_root):
+            await self._refused(
+                item, self._body(detail, observed, cat["hash"]), 409, "source-changed"
+            )
+
+    async def test_verify_failures(self):
+        self._require_routes()
+        _path, item, detail, observed, cat = await self._opened()
+        store = self.api._captures
+        body = self._body(detail, observed, cat["hash"])
+        with patch.object(store, "verify", side_effect=CaptureChanged("gone")):
+            await self._refused(item, body, 409, "file-changed")
+        other = FileFacts(item_locator := self._items()[0]["locator"], "1" * 64, 1, 1)
+        with patch.object(store, "verify", return_value=other):
+            await self._refused(item, body, 409, "file-changed")
+        foreign = FileFacts(item_locator + "x", detail["sha256"], 1, 1)
+        with patch.object(store, "verify", return_value=foreign):
+            data = await self._refused(item, body, 409, "capture-expired")
+        self.assertIn("another file", data["error"])

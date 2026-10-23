@@ -33,14 +33,12 @@ try:
     from ...database.library import display_title
     from ...database.library_commands import LibraryCommandError
     from ...database.review_decisions import ReviewCommandError
-    from ...database.review_schema import canonical_evidence, evidence_digest
     from ...utils.media_capture import CaptureError
     from ...utils.review_capture import captured_review, review_evidence
 except ImportError:
     from database.library import display_title
     from database.library_commands import LibraryCommandError
     from database.review_decisions import ReviewCommandError
-    from database.review_schema import canonical_evidence, evidence_digest
     from utils.media_capture import CaptureError
     from utils.review_capture import captured_review, review_evidence
 
@@ -63,6 +61,8 @@ _DECISION_FIELDS = frozenset(
     }
 )
 _CURSOR_SECRET = os.urandom(32)
+# The real path of a spelling; module-level so a test can fake a junction.
+_realpath = os.path.realpath
 _LIMIT = re.compile(r"[0-9]{1,3}")
 _NO_STORE = {"Cache-Control": "no-store"}
 
@@ -230,9 +230,12 @@ class ReviewRoutesMixin:
     # -- shared ----------------------------------------------------------------
 
     def _review_roots(self):
-        """``(roots, real_roots)``: the current gallery roots and their realpaths."""
+        """``(roots, real_roots)``: the current gallery roots and their realpaths.
+
+        Blocking (it lists the roots and resolves them): call it on a worker.
+        """
         roots = list(self._get_all_output_dirs())
-        return roots, [(i, os.path.realpath(str(root))) for i, root in enumerate(roots)]
+        return roots, [(i, _realpath(str(root))) for i, root in enumerate(roots)]
 
     def _review_view(self, row: dict, roots, real_roots) -> dict:
         """The public ReviewItem of one stored row (no path, no locator)."""
@@ -280,12 +283,9 @@ class ReviewRoutesMixin:
             except ValueError as exc:
                 return bad_request(str(exc))
         try:
-            page = await self._run_in_executor(
-                self.db.review_queue_page,
-                limit=limit,
-                after=bound[2] if bound else None,
+            page, views = await self._run_in_executor(
+                self._review_page, limit, bound[2] if bound else None
             )
-            roots, real_roots = self._review_roots()
         except Exception:
             self.logger.exception("Review queue read failed")
             return _failed()
@@ -305,32 +305,34 @@ class ReviewRoutesMixin:
                 "success": True,
                 "library_epoch": page["epoch"],
                 "total": page["total"],
-                "items": [self._review_view(row, roots, real_roots) for row in items],
+                "items": views,
                 "next_cursor": next_cursor,
             },
             headers=_NO_STORE,
         )
+
+    def _review_page(self, limit: int, after):
+        """Worker thread: one queue page and the public views of its items."""
+        page = self.db.review_queue_page(limit=limit, after=after)
+        roots, real_roots = self._review_roots()
+        return page, [
+            self._review_view(row, roots, real_roots) for row in page["items"]
+        ]
 
     # -- detail ----------------------------------------------------------------
 
     async def get_review_item(self, request: web.Request) -> web.Response:
         """GET one item with its candidates and dependency fingerprint."""
         try:
-            item = await self._run_in_executor(
-                self.db.review_item, request.match_info["item_id"]
+            read = await self._run_in_executor(
+                self._review_detail, request.match_info["item_id"]
             )
-            if item is None:
-                return _coded("review-missing")
-            roots, real_roots = self._review_roots()
-            view = self._review_view(item, roots, real_roots)
-            image_path = self._review_image_path(item, roots, view["target"])
-            fingerprint = await self._run_in_executor(
-                self.db.review_dependency_fingerprint, image_path
-            )
-            candidates = await self._run_in_executor(self._review_candidates, item)
         except Exception:
             self.logger.exception("Review item read failed")
             return _failed()
+        if read is None:
+            return _coded("review-missing")
+        item, view, fingerprint, candidates = read
         detail = {
             "success": True,
             "library_epoch": item["epoch"],
@@ -343,6 +345,18 @@ class ReviewRoutesMixin:
         if len(json.dumps(detail).encode("utf-8")) > MAX_DETAIL_BYTES:
             detail = {**detail, "candidates": [], "limited": True}
         return web.json_response(detail, headers=_NO_STORE)
+
+    def _review_detail(self, item_id: str):
+        """Worker thread: ``(item, view, fingerprint, candidates)`` or None."""
+        item = self.db.review_item(item_id)
+        if item is None:
+            return None
+        roots, real_roots = self._review_roots()
+        view = self._review_view(item, roots, real_roots)
+        image_path = self._review_image_path(item, roots, view["target"])
+        aliases, _known = physical_spellings(self.db, image_path, item["locator"])
+        fingerprint = self.db.review_dependency_fingerprint(image_path, aliases)
+        return item, view, fingerprint, self._review_candidates(item)
 
     def _review_candidates(self, item: dict) -> list:
         """The detail's candidates: role texts, a label and selectability."""
@@ -418,20 +432,19 @@ class ReviewRoutesMixin:
                 return bad_request("This sampler path cannot be applied")
             if guards["capture_token"] is None:
                 return bad_request("Apply needs a capture of the file")
-        roots = list(self._get_all_output_dirs())
         verified = None
         if guards["capture_token"] is not None:
             verified, error = await self._verified_review_capture(
-                item, guards, roots, need_metadata=candidate is not None
+                item, guards, need_metadata=candidate is not None
             )
             if error is not None:
                 return error
         elif guards["sha256"] != item["sha256"]:
             return bad_request("sha256 does not match the item")
-        return await self._record_decision(item, guards, candidate, verified, roots)
+        return await self._record_decision(item, guards, candidate, verified)
 
-    async def _verified_review_capture(self, item, guards, roots, *, need_metadata):
-        """``((capture, image_path, metadata), None)`` or ``(None, error)``.
+    async def _verified_review_capture(self, item, guards, *, need_metadata):
+        """``((capture, facts, image_path, metadata), None)`` or ``(None, error)``.
 
         The capture must be the item's file and bytes, under the expected
         epoch and a current root; the current file must re-hash to the same
@@ -451,52 +464,74 @@ class ReviewRoutesMixin:
         if guards["expected_epoch"] != capture.epoch:
             current = await self._run_in_executor(self.db.get_execution_epoch)
             return None, _coded("storage-changed", library_epoch=current)
-        root, error = self._scoped_root(capture.root_index, capture.scope)
-        if error is not None:
-            return None, error
-        found = format_review_target(
-            item["spelled_path"],
-            item["locator"],
-            [(capture.root_index, os.path.realpath(str(root)))],
-        )
-        if found is None:
-            return None, _coded("source-changed")
-        relative = found[1]
         try:
-            facts, captured = await self._run_in_executor(
-                _verify_and_read, store, capture, root, relative, need_metadata
+            root, error = await self._run_in_executor(
+                self._scoped_root, capture.root_index, capture.scope
+            )
+            if error is not None:
+                return None, error
+            read = await self._run_in_executor(
+                _verify_and_read, store, capture, item, root, need_metadata
             )
         except CaptureError as exc:
             return None, _capture_error(exc)
+        if read is None:
+            return None, _coded("source-changed")
+        relative, facts, captured = read
         if facts.locator != item["locator"]:
             return None, _coded("capture-expired", "other-file")
         if facts.sha256 != item["sha256"]:
             return None, _coded("file-changed")
         metadata = None
         if need_metadata:
-            if captured is None or not _same_evidence(captured[1], item):
+            if captured is None or not _candidate_still_offered(
+                captured[1], guards["choice"]
+            ):
                 return None, _coded("review-conflict", "evidence-changed")
             metadata = captured[0]
         image_path = os.path.join(str(root), *relative.split("/"))
-        return (capture, image_path, metadata), None
+        return (capture, facts, image_path, metadata), None
 
-    async def _record_decision(self, item, guards, candidate, verified, roots):
-        capture, image_path, metadata = verified or (None, None, None)
+    def _decide_sync(self, item, guards, candidate, verified):
+        """Worker thread: resolve the file's spellings, decide, build the view.
+
+        Returns ``(result, view)``; a refusal raises with ``exc.view`` set.
+        """
+        _capture, facts, image_path, metadata = verified or (None, None, None, None)
+        aliases, known = (), None
+        if candidate is not None:
+            aliases, known = physical_spellings(self.db, image_path, item["locator"])
         try:
-            result = await self._run_in_executor(
-                self.db.decide_review_item,
+            result = self.db.decide_review_item(
                 item_id=item["id"],
                 expected_epoch=guards["expected_epoch"],
                 expected_revision=guards["expected_revision"],
-                sha256=item["sha256"],
+                # The bytes the re-hash proved, or the body's for Leave unresolved.
+                sha256=facts.sha256 if facts is not None else guards["sha256"],
                 outcome="selected" if candidate is not None else UNRESOLVED,
                 candidate=candidate,
                 image_path=image_path,
                 metadata=metadata,
                 expected_fingerprint=guards["dependency_fingerprint"],
+                aliases=aliases,
+                known_rows=known,
             )
         except ReviewCommandError as exc:
-            return self._decision_refused(exc, roots)
+            if exc.item is not None:
+                roots, real_roots = self._review_roots()
+                exc.view = self._review_view(exc.item, roots, real_roots)
+            raise
+        roots, real_roots = self._review_roots()
+        return result, self._review_view(result["item"], roots, real_roots)
+
+    async def _record_decision(self, item, guards, candidate, verified):
+        capture = verified[0] if verified else None
+        try:
+            result, view = await self._run_in_executor(
+                self._decide_sync, item, guards, candidate, verified
+            )
+        except ReviewCommandError as exc:
+            return self._decision_refused(exc)
         except LibraryCommandError as exc:
             return _coded(exc.code, library_epoch=exc.epoch)
         except Exception:
@@ -505,24 +540,22 @@ class ReviewRoutesMixin:
         if capture is not None:
             # The decision used the capture; the page returns to Images.
             self._captures.release(capture.token)
-        real_roots = [(i, os.path.realpath(str(r))) for i, r in enumerate(roots)]
         body = {
             "success": True,
             "library_epoch": guards["expected_epoch"],
-            "item": self._review_view(result["item"], roots, real_roots),
+            "item": view,
             "total": result["total"],
         }
         if result["pair"] is not None:
             body["pair"] = result["pair"]
         return web.json_response(body, headers=_NO_STORE)
 
-    def _decision_refused(self, exc: ReviewCommandError, roots) -> web.Response:
+    def _decision_refused(self, exc: ReviewCommandError) -> web.Response:
         extra = {"library_epoch": exc.epoch}
         if exc.total is not None:
             extra["total"] = exc.total
-        if exc.item is not None:
-            real_roots = [(i, os.path.realpath(str(r))) for i, r in enumerate(roots)]
-            extra["item"] = self._review_view(exc.item, roots, real_roots)
+        if exc.view is not None:
+            extra["item"] = exc.view
         message = None
         if exc.fingerprint is not None:
             extra["dependency_fingerprint"] = exc.fingerprint
@@ -561,19 +594,70 @@ def _decision_guards(data: dict):
     return {**data}, None
 
 
-def _verify_and_read(store, capture, root, relative: str, need_metadata: bool):
-    """Worker thread: re-hash the current file, then read the capture."""
+def _verify_and_read(store, capture, item, root, need_metadata: bool):
+    """Worker thread: ``(relative, facts, captured)``, or None off the root.
+
+    Formats the item's target under the capture's root (resolving the root's
+    real path), re-hashes the current file, then reads the capture.
+    """
+    found = format_review_target(
+        item["spelled_path"],
+        item["locator"],
+        [(capture.root_index, _realpath(str(root)))],
+    )
+    if found is None:
+        return None
+    relative = found[1]
     facts = store.verify(root, relative)
     captured = captured_review(store, capture) if need_metadata else None
-    return facts, captured
+    return relative, facts, captured
 
 
-def _same_evidence(resolution: dict, item: dict) -> bool:
-    """True when the captured bytes still yield the item's exact evidence."""
+def _same_file(spelled: str, image_path: str, locator: str) -> bool:
+    """True when ``spelled`` reaches the physical file at ``locator``."""
+    try:
+        if os.path.normcase(_realpath(spelled)) == locator:
+            return True
+        return os.path.samefile(spelled, image_path)
+    except (OSError, ValueError):
+        return False
+
+
+def physical_spellings(db, image_path: str, locator: str):
+    """``(aliases, known_rows)`` for the legacy rows of one physical file.
+
+    The roots are real paths, while the monitor links a file under the
+    directory it watches, so a symlinked or junctioned root, a ``subst`` or a
+    mapped drive spells the same file otherwise. Every row whose spelling
+    ends with the file's name (the link summaries' fallback lookup) is a
+    candidate; ``aliases`` are the candidates that resolve to ``locator``
+    (``normcase(realpath)``, as the capture forms it) or are the same file,
+    and ``known_rows`` every candidate id, so a decision can refuse a
+    same-name row it did not classify. Blocking: call it on a worker.
+    """
+    rows = db.review_same_name_rows(os.path.basename(image_path))
+    aliases = tuple(
+        spelled
+        for _row_id, spelled in rows
+        if isinstance(spelled, str)
+        and spelled != image_path
+        and _same_file(spelled, image_path, locator)
+    )
+    return tuple(dict.fromkeys(aliases)), frozenset(row_id for row_id, _ in rows)
+
+
+def _candidate_still_offered(resolution: dict, choice: str) -> bool:
+    """True when the captured bytes still offer the chosen candidate.
+
+    Only what the decision depends on is re-checked: the bytes are still
+    ``ambiguous`` and the chosen candidate (its hash covers its sampler,
+    sides and provenance) is still among their candidates. A resolver change
+    that rewords the top-level reason or reorders candidates leaves a
+    pending item applicable.
+    """
     if not isinstance(resolution, dict) or resolution.get("state") != "ambiguous":
         return False
-    evidence, _count, _limited = review_evidence(resolution)
-    try:
-        return evidence_digest(canonical_evidence(evidence)) == item["evidence_hash"]
-    except ValueError:
+    evidence, _count, limited = review_evidence(resolution)
+    if limited:
         return False
+    return any(c.get("hash") == choice for c in evidence.get("candidates", ()))
