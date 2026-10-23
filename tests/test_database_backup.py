@@ -24,6 +24,9 @@ from database.operations import PromptDatabase
 from tests.open_handles import assert_closed
 from utils.hashing import generate_prompt_hash
 
+# A bound on thread hand-offs that only a hung test reaches (never a pacing timer).
+THREAD_WAIT_SECONDS = 120
+
 
 def _count_prompts(path):
     """Row count read through a brand-new connection (closed before return)."""
@@ -350,7 +353,13 @@ class TestRestoreFromFile(BackupTestCase):
         def worker():
             self.db.search_prompts(text="old")  # opens this thread's connection
             ready.set()
-            proceed.wait(5)
+            # Wait for the restore itself, not for a timer: a stalled Windows
+            # runner once took longer than 5 s to restore, and the worker then
+            # read the old database before the restore had run.
+            if not proceed.wait(THREAD_WAIT_SECONDS):
+                results["error"] = "the restore did not finish"
+                self.db.close()
+                return
             try:
                 results["texts"] = [p["text"] for p in self.db.search_prompts()]
             except Exception as exc:  # noqa: BLE001 - reported through results
@@ -360,12 +369,15 @@ class TestRestoreFromFile(BackupTestCase):
 
         thread = threading.Thread(target=worker)
         thread.start()
-        ready.wait(5)
+        self.assertTrue(ready.wait(THREAD_WAIT_SECONDS))
 
-        self.db.model.restore_from_file(src)
-        proceed.set()
-        thread.join(5)
+        try:
+            self.db.model.restore_from_file(src)
+        finally:
+            proceed.set()
+            thread.join(THREAD_WAIT_SECONDS)
 
+        self.assertFalse(thread.is_alive())
         self.assertNotIn("error", results)
         self.assertEqual(results["texts"], ["restored"])
         self.assertEqual([p["text"] for p in self.db.search_prompts()], ["restored"])
