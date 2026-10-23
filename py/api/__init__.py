@@ -32,6 +32,7 @@ from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
+from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .jobs import JobRegistry
@@ -261,6 +262,7 @@ class PromptManagerAPI(
     PromptRoutesMixin,
     ImageRoutesMixin,
     AdminRoutesMixin,
+    SettingsRoutesMixin,
     JobRoutesMixin,
     ImageTagJobsMixin,
     LoggingRoutesMixin,
@@ -361,6 +363,24 @@ class PromptManagerAPI(
         """409 envelope for a long job that is already running."""
         return _json_error(f"{label} already running", 409)
 
+    async def _run_held(self, kind, title, admission, operation):
+        """Run a legacy-page operation under a registry hold (D80).
+
+        While ``operation()`` runs, the registry lists it as a running,
+        non-cancellable job, so workspace jobs its admission class conflicts
+        with are refused, naming it. When the registry refuses the hold, the
+        legacy 409 envelope names the running job and nothing is done. A
+        response of 400 or above ends the hold ``failed``.
+        """
+        busy = self._jobs.blocker(kind, admission=admission)
+        if busy is not None:
+            return self._long_job_busy_response(busy.title)
+        async with self._jobs.hold(kind, title, admission=admission) as job:
+            response = await operation()
+            if getattr(response, "status", 200) >= 400:
+                job.finish("failed")
+            return response
+
     async def _run_in_executor(self, func, *args, **kwargs):
         """Run a blocking function in the default thread pool executor.
 
@@ -456,6 +476,7 @@ class PromptManagerAPI(
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
         self._register_admin_routes(routes)
+        self._register_settings_routes(routes)
         self._register_job_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)

@@ -1627,19 +1627,27 @@ mapped differences"):
   `image/png,image/jpeg,image/webp` plus `video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.wmv`. A
   video previews in the same `#local-preview` slot as `video.local-file-preview` with
   native `controls`, `playsInline`, `preload="metadata"` and `muted`, never autoplays
-  inline, and is paused, has its `src` removed and is removed from the page on replacement
-  or dispose, before its URL is revoked. Each preview owns its listeners, so the page never
-  pins a released node. A settled video (metadata read, or failed) is then reset with
-  `load()` at once; one still starting is reset only once it reports metadata or an error,
-  because WebKit (GStreamer) blocked the page when such a pipeline was reset (`replacing a
-  video that just started loading never blocks the page`, `a video replaced while still
-  starting is reset once it settles`). A WebKit load cut off by the revoked URL usually
-  stalls and never settles; a fallback then only drops the waiting listeners. The viewer's
-  own video teardown was checked the same way (`closing the viewer on a video that just
-  started never blocks the page`, 15 fresh pages on WebKit) and needed no change.
-  Follow-up: on WebKit, a video released exactly at its `loadstart` sometimes blocks the
-  page, with or without any reset and also before the deferred reset (2 of 24 runs in the
-  pinned image), so the `loadstart` spec is skipped on WebKit until that is investigated.
+  inline. On replacement or dispose it is paused, has its `src` removed, is reset with
+  `load()` (which frees its decoder) and is removed from the page, before its URL is
+  revoked. Each preview owns its listeners, so the page never pins a released node.
+  A video replaced while still starting (a source, but neither metadata nor an error yet)
+  stays where it is, inert and `aria-hidden`, with the new preview inserted after it, and
+  the session's revoke of its URL waits; once it reports metadata or an error (or after
+  15 s) it is released as above and only then is its URL revoked. Page leave and dispose
+  release it at once. Cause, found with native stacks of the hung WPE web process in the
+  pinned image: WebKit (GStreamer) deadlocks when a video leaves the page or the viewport
+  before its pipeline has started. The main thread changes the pipeline state and waits
+  for the source's streaming thread, which is itself waiting on the main thread in a
+  synchronous bus handler. Removing the video, hiding it, or only pushing it below the
+  fold with a taller preview inserted before it all hung (7 to 21 of 120 fresh pages each,
+  replaced at `loadstart` + 0–7 ms), and none of the earlier steps (`pause()`, removing
+  `src`, `load()`, revoking the URL) was the cause on its own; pushing it out after
+  `loadedmetadata` hung 0 of 180. Specs: `replacing a video that just started loading
+  never blocks the page`, and `a video replaced while still starting is reset once it
+  settles`, which now runs on WebKit too (15 fresh pages, replaced at `loadstart` + 0–4
+  ms). The viewer's own video teardown was checked the same way (`closing the viewer on a
+  video that just started never blocks the page`, 15 fresh pages on WebKit) and needed no
+  change.
 - **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
   concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose
   one image or video file.", "This file type cannot be previewed or inspected here.
