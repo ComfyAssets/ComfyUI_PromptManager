@@ -178,12 +178,21 @@ class TestQueueReads(ReviewRoutesTestCase):
                 "unavailable",
                 "candidate_count",
                 "limited",
+                "url",
+                "is_video",
             },
         )
         self.assertEqual(
             (item["state"], item["revision"], item["filename"]),
             ("pending", 0, "f0.png"),
         )
+        # The card's media URL, formatted like the Images listing's (no stat).
+        scope = item["target"]["root_scope"]
+        self.assertEqual(
+            item["url"],
+            f"/prompt_manager/images/serve/f0.png?root=0&root_scope={scope}",
+        )
+        self.assertIs(item["is_video"], False)
         self.assertEqual(item["candidate_count"], 2)
         self.assertIs(item["unavailable"], False)
         self.assertEqual(item["target"]["path"], "f0.png")
@@ -364,6 +373,7 @@ class TestQueueReads(ReviewRoutesTestCase):
             (item["unavailable"], item["target"], item["filename"]),
             (True, None, "two.png"),
         )
+        self.assertEqual((item["url"], item["is_video"]), (None, False))
         detail = await self._detail(item["id"])
         self.assertIs(detail["unavailable"], True)
         self._no_paths()

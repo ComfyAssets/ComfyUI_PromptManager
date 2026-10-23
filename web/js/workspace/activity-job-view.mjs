@@ -3,7 +3,8 @@
  * concept's classes.
  *
  * - Header: the page heading names the job; its line is the Activity item's (D54), and its actions are Download report
- *   (the job's JSON report, D59) and, while the job runs, "Cancel scan" (danger).
+ *   (the job's JSON report, D59) and, while the job runs, "Cancel scan" (danger). D87: an ended scan that recorded
+ *   Needs review items adds the concept's **Review metadata** after Download report.
  * - Progress (`section.surface`): `<progress>`, the server's "Processing file N of M · about X min left", and the
  *   outcome counters as `dl.stat-row` tiles: Added to Library (green), Already known, Needs review (warning), No usable
  *   metadata, Errors (red).
@@ -20,7 +21,7 @@ import { pageHeading } from './heading.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
 import { parseJob, JOBS_URL, LOST_DETAIL } from './activity-store.mjs';
-import { jobDetail, CANCEL_FAILED_TOAST } from './activity.mjs';
+import { jobDetail, CANCEL_FAILED_TOAST, createReviewMetadataButton, hasReviewItems } from './activity.mjs';
 import { downloadJobReport } from './activity-scan.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { createInspectionController } from './inspection-state.mjs';
@@ -124,6 +125,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const parts = pageHeading(main);
     const download = createButton('Download report');
     const cancel = createButton('Cancel scan', 'danger');
+    const review = createReviewMetadataButton(scope); // D87
 
     const progressPart = section('Progress', 'job-progress-title');
     const status = element('span', '', 'small');
@@ -275,6 +277,8 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         const lost = job.state === 'lost';
         if (lost && document.activeElement === download) parts.h1.focus();
         download.disabled = lost;
+        if (hasReviewItems(job)) { if (!review.isConnected) download.after(review); } // D87
+        else review.remove();
         if (job.state === 'running') {
             if (!cancel.isConnected) parts.actions.append(cancel);
         } else if (cancel.isConnected) {

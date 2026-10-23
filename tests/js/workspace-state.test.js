@@ -4,7 +4,7 @@ const source = import('../../web/js/workspace/state.mjs');
 
 test('workspace routes resolve only supported deep links', async () => {
     const { resolveRoute } = await source;
-    for (const route of ['overview', 'images', 'library', 'tags', 'inspect', 'system', 'activity']) {
+    for (const route of ['overview', 'images', 'library', 'tags', 'inspect', 'system', 'activity', 'review']) {
         assert.equal(resolveRoute(`#/${route}`).id, route);
     }
     for (const hash of ['', '#', '#/unknown', '#/images/other', '#/<script>', '#/activity/abc', `#/activity/${'A'.repeat(32)}`]) {
@@ -23,7 +23,7 @@ test('tags is a native route titled Tags; only unbuilt routes hand off to legacy
         assert.equal(routeTitle(route), route.label);
     }
     assert.equal(routeTitle(resolveRoute('#/library/7')), 'Prompt library');
-    for (const id of ['images', 'library', 'tags', 'inspect', 'overview', 'activity']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
+    for (const id of ['images', 'library', 'tags', 'inspect', 'overview', 'activity', 'review']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
     for (const id of ['system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), true, id);
 });
 
@@ -115,9 +115,10 @@ test('positive library deep links preserve the selected identity without duplica
 
 test('nav counts reject negative, non-integer and missing totals', async () => {
     const { summarizeNavCounts } = await source;
-    const counts = summarizeNavCounts({images: {total: 24}, favorites: {total: 3}, library: {total: 0}, tags: {total: 7}});
+    const counts = summarizeNavCounts({images: {total: 24}, favorites: {total: 3}, library: {total: 0}, tags: {total: 7},
+        review: {total: 3}});
     assert.ok(counts instanceof Map);
-    assert.deepEqual([...counts], [['images', 24], ['favorites', 3], ['library', 0], ['tags', 7]]);
+    assert.deepEqual([...counts], [['images', 24], ['favorites', 3], ['library', 0], ['tags', 7], ['review', 3]]);
     assert.equal(counts.has('inspect'), false, 'Inspect a file has no count');
     for (const invalid of [undefined, null, {}, {total: -1}, {total: 1.5}, {total: '3'}, {total: NaN},
         {total: Infinity}, {total: Number.MAX_SAFE_INTEGER + 1}, {total: null}, [], 'x']) {
@@ -127,7 +128,8 @@ test('nav counts reject negative, non-integer and missing totals', async () => {
         assert.equal(result.get('library'), 2);
         assert.equal(result.get('tags'), null);
     }
-    assert.deepEqual([...summarizeNavCounts()], [['images', null], ['favorites', null], ['library', null], ['tags', null]]);
+    assert.deepEqual([...summarizeNavCounts()], [['images', null], ['favorites', null], ['library', null], ['tags', null],
+        ['review', null]]);
 });
 
 test('nav counts settle independently so a slow images read never delays the others', async () => {
@@ -143,14 +145,14 @@ test('nav counts settle independently so a slow images read never delays the oth
     const settled = [];
     const done = loadNavCounts(api, new AbortController().signal, (id, count) => settled.push([id, count]));
     await new Promise(resolve => setTimeout(resolve, 0));
-    assert.deepEqual(settled.sort(), [['favorites', 2], ['library', 3], ['tags', null]]);
+    assert.deepEqual(settled.sort(), [['favorites', 2], ['library', 3], ['review', null], ['tags', null]]);
     releaseImages({success: true, total: 40});
     const counts = await done;
     assert.deepEqual(settled.at(-1), ['images', 40]);
-    assert.deepEqual([...counts], [['images', 40], ['favorites', 2], ['library', 3], ['tags', null]]);
+    assert.deepEqual([...counts], [['images', 40], ['favorites', 2], ['library', 3], ['tags', null], ['review', null]]);
 });
 
-test('nav counts issue four bounded requests and drop only the failed count', async () => {
+test('nav counts issue five bounded requests and drop only the failed count', async () => {
     const { loadNavCounts } = await source;
     const calls = [];
     const signal = new AbortController().signal;
@@ -158,13 +160,15 @@ test('nav counts issue four bounded requests and drop only the failed count', as
         calls.push([url, options.signal]);
         if (url.startsWith('/prompt_manager/library')) throw new Error('Unavailable');
         if (url.startsWith('/prompt_manager/vocabulary/tags')) return {success: true, total: 5};
+        if (url.startsWith('/prompt_manager/review/items')) return {success: true, total: 2};
         return {success: true, total: 12};
     }};
     const counts = await loadNavCounts(api, signal);
-    assert.deepEqual([...counts], [['images', 12], ['favorites', 12], ['library', null], ['tags', 5]]);
+    assert.deepEqual([...counts], [['images', 12], ['favorites', 12], ['library', null], ['tags', 5], ['review', 2]]);
     const urls = calls.map(([url]) => new URL(url, 'http://host'));
     assert.deepEqual(urls.map(url => url.pathname),
-        ['/prompt_manager/images/output', '/prompt_manager/images/output', '/prompt_manager/library', '/prompt_manager/vocabulary/tags']);
+        ['/prompt_manager/images/output', '/prompt_manager/images/output', '/prompt_manager/library', '/prompt_manager/vocabulary/tags',
+            '/prompt_manager/review/items']);
     for (const url of urls) assert.equal(url.searchParams.get('limit'), '1');
     assert.equal(urls[0].searchParams.get('mode'), 'workspace');
     assert.equal(urls[0].searchParams.has('favorites'), false);
@@ -245,4 +249,23 @@ test('saved-view links resolve to their id and re-render only when the id change
     win.location.hash='#/images';win.dispatchEvent(new Event('hashchange'));
     assert.deepEqual(seen,[['saved',3],['saved',4],['images',undefined]]);
     dispose();
+});
+
+test('Needs review is a native SAVED VIEWS route titled Review, with its own count', async () => {
+    const { resolveRoute, isHandoff, routeTitle, routes, loadNavCounts, REVIEW_WRITE_COUNTS, NAV_COUNT_ROUTES } = await source;
+    const route = resolveRoute('#/review');
+    assert.equal(route.id, 'review');
+    assert.equal(route.label, 'Needs review');
+    assert.equal(routeTitle(route), 'Review');
+    assert.equal(isHandoff(route), false);
+    // No href: Overview lists no legacy card for it.
+    assert.equal(routes.find(item => item.id === 'review').href, undefined);
+    assert.ok(NAV_COUNT_ROUTES.includes('review'));
+    assert.deepEqual([...REVIEW_WRITE_COUNTS], ['review']);
+    assert.ok(Object.isFrozen(REVIEW_WRITE_COUNTS));
+    const calls = [];
+    const api = {get: async url => { calls.push(url); return {success: true, total: 4}; }};
+    const counts = await loadNavCounts(api, new AbortController().signal, () => {}, REVIEW_WRITE_COUNTS);
+    assert.deepEqual(calls, ['/prompt_manager/review/items?limit=1']);
+    assert.deepEqual([...counts], [['review', 4]]);
 });

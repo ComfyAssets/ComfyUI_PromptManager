@@ -116,6 +116,8 @@ export async function openProduction(page,route,theme,motion='no-preference') {
     await expect(page.locator('#primary-nav .nav-count')).toHaveCount(3);
     // SAVED VIEWS' Favorites count (D51), the concept's starred images in the concept fixture.
     await expect(page.locator('#saved-nav a[data-route="favorites"] .nav-count')).toHaveCount(1);
+    // SAVED VIEWS' Needs review count (ruling R5): the exact pending count.
+    await expect(page.locator('#saved-nav a[data-route="review"] .nav-count')).toHaveCount(1);
 }
 
 /** Computed outline of the focused element, after keyboard focus so `:focus-visible` applies. */

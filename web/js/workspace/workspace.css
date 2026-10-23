@@ -376,3 +376,13 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
     /* D83: the chip's × keeps the concept's 40px coarse target. */
     .ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 40px; min-inline-size: 40px; }
 }
+
+/* Needs review (#249 PR F): the concept's Metadata review page (app.js a749–760) in its own classes. */
+/* #249 D3: the review queue is not virtualized, so its cards stay in the concept grid's flow. */
+.image-grid.review-queue > .media-card { position: static; /* D3 */ }
+/* #249 D20: the prompt blocks' mount point is transparent, so the chosen path's sections sit in the panel as the
+   concept's do. */
+.review-panel > .prompt-inspector { display: contents; /* D20 */ }
+/* D-NEW-F1: a file that cannot be served (no current root) has an inert, empty media button. */
+.review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; }
+.review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; }

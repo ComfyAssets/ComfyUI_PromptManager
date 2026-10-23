@@ -36,6 +36,7 @@ from tests.browser.workspace_library_editor_fixture import (
 )
 from tests.browser.workspace_vocabulary_fixture import register_vocabulary_commands
 from tests.browser.workspace_tagging_fixture import register_tagging_commands
+from tests.browser.workspace_review_fixture import register_review_commands
 
 CANONICAL_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_ASSETS = {
@@ -193,6 +194,7 @@ def create_app(root: Path) -> web.Application:
     library_editor_commands = register_library_editor_commands(routes, api, root)
     register_vocabulary_commands(routes, api, root)
     register_tagging_commands(routes, api, root, model)
+    register_review_commands(routes, api, root)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
 

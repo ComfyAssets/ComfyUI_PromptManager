@@ -174,10 +174,10 @@
     "statements": 98
   },
   "workspace/activity.mjs": {
-    "lines": 95,
-    "branches": 87,
+    "lines": 96,
+    "branches": 88,
     "functions": 98,
-    "statements": 95
+    "statements": 96
   },
   "workspace/file-inspector.mjs": {
     "lines": 96,
@@ -210,6 +210,12 @@
     "statements": 97
   },
   "workspace/icons.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/image-card.mjs": {
     "lines": 98,
     "branches": 98,
     "functions": 98,
@@ -382,6 +388,18 @@
     "branches": 83,
     "functions": 80,
     "statements": 95
+  },
+  "workspace/review-state.mjs": {
+    "lines": 94,
+    "branches": 77,
+    "functions": 98,
+    "statements": 94
+  },
+  "workspace/review.mjs": {
+    "lines": 96,
+    "branches": 84,
+    "functions": 90,
+    "statements": 96
   },
   "workspace/saved-views.mjs": {
     "lines": 98,

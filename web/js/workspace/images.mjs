@@ -1,5 +1,6 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, cardTitle, cardSubtitle, mediaRatio } from './images-state.mjs';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements } from './images-state.mjs';
+import { createImageCard } from './image-card.mjs';
 import { layoutImages, visibleImages, gridMetrics, stacksCardInfo } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
@@ -15,7 +16,7 @@ import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
-import { createTagButton, onImageTagsSaved } from './image-tagging.mjs';
+import { onImageTagsSaved } from './image-tagging.mjs';
 import { followImageTagSaves, openCardTagging } from './images-tagging.mjs';
 import { favoriteBusy, paintStar, receiveFavorites, setFavoriteVisitTarget, toggleFavorite } from './images-favorites.mjs';
 export { onFavoriteChange } from './images-favorites.mjs';
@@ -108,7 +109,6 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     parentScope.signal.addEventListener('abort', dispose, {once:true});
     scope.cleanup(() => parentScope.signal.removeEventListener('abort', dispose));
     if (parentScope.signal.aborted) { scope.dispose(); return {dispose}; }
-    const { resolveUrl } = window.ApiClient;
     const sender = createPromptSender({scope});
     let detailInspector;
     const inspection = createInspectionController({api});
@@ -265,20 +265,6 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }});
     scope.cleanup(() => mediaViewer.dispose());
 
-    function mediaElement(image, lazy = false) {
-        const video = image.is_video && !image.thumbnail_url;
-        const node = el(video ? 'video' : 'img');
-        node.src = resolveUrl(image.thumbnail_url || image.url);
-        if (video) { node.muted = true; node.playsInline = true; node.preload = 'metadata'; }
-        else {
-            // The concept card image: alt is the card title, with the listing's intrinsic size when known.
-            node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';
-            if ([image.width, image.height].every(value => Number.isFinite(value) && value > 0)) {
-                node.width = image.width; node.height = image.height;
-            }
-        }
-        return node;
-    }
     function releaseVideo(video) {
         video.pause(); video.removeAttribute('src'); video.load();
     }
@@ -300,44 +286,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!image) return;
         mediaViewer.open({items:state.items,selectedKey:imageKey(image),trigger:document.activeElement});
     }
-    /** The concept media card (app.js mediaCard): the image opens the viewer, Info inspects (D7–D11, D19). */
+    /** The concept media card (image-card.mjs): the image opens the viewer, Info inspects (D7–D11, D19). */
     function cardFor(image) {
         const key = imageKey(image);
-        const card = el('article', undefined, 'media-card');
-        card.dataset.imageKey = key; card.setAttribute('role', 'listitem');
-        card.style.setProperty('--media-ratio', mediaRatio(image));
-        const art = el('div', undefined, 'media-art');
-        const open = createButton('', 'image-open');
-        open.setAttribute('aria-label', `Open ${image.filename}`);
-        open.append(mediaElement(image, true));
-        // D8: the selection checkbox (Images only: Library-embedded media has no selection bar), then D7: the star,
-        // wherever the listing reports favorites (Images and Library-embedded media).
-        const overlays = el('div', undefined, 'image-overlays');
-        if (bar) {
-            const label = el('label'), box = el('input');
-            box.type = 'checkbox'; box.checked = bar.isChecked(key);
-            box.setAttribute('aria-label', `Select ${image.filename}`);
-            label.append(box);
-            overlays.append(label);
-        }
-        if (typeof image.favorite === 'boolean') {
-            const star = createButton('', 'star-button');
-            star.setAttribute('aria-label', `Favorite ${image.filename}`);
-            paintStar(star, image.favorite, favoriteBusy(key));
-            overlays.append(star);
-        }
-        art.append(open, overlays);
-        const info = el('div', undefined, 'media-info');
-        const text = el('div');
-        const title = el('h3', cardTitle(image)); title.title = image.path;
-        text.append(title, el('p', cardSubtitle(image)));
-        const actions = el('div', undefined, 'image-card-actions');
-        const inspectButton = createButton('', 'icon-btn');
-        inspectButton.append(createWorkspaceIcon('info'));
-        inspectButton.setAttribute('aria-label', `Inspect ${image.filename}`);
-        actions.append(inspectButton, createTagButton(image));
-        info.append(text, actions);
-        card.append(art, info);
+        const card = createImageCard(image, {checked:bar ? bar.isChecked(key) : null, favoriteBusy:favoriteBusy(key)});
         markSelected(card, key === selection);
         return card;
     }

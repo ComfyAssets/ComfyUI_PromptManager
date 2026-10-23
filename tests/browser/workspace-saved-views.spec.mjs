@@ -372,7 +372,7 @@ test('Favorites is the first SAVED VIEWS row, with a real count that follows eve
     expect(await favoritesRow(page).evaluate(link => [...link.childNodes].map(node => node.nodeType === Node.TEXT_NODE
         ? `text:${node.textContent}` : `${node.localName}.${node.getAttribute('class')}`)))
         .toEqual(['svg.icon', 'text:Favorites', 'span.nav-count']);
-    expect(await savedNav(page).locator('a').evaluateAll(links => links.map(link => link.dataset.route))).toEqual(['favorites']);
+    expect(await savedNav(page).locator('a').evaluateAll(links => links.map(link => link.dataset.route))).toEqual(['favorites', 'review']);
 
     await star(page, '1:shared/same.png');
     await expect(toast(page)).toHaveText('Added to favorites.');

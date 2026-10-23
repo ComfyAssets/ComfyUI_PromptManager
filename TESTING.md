@@ -549,8 +549,9 @@ Recorded shell deviations:
   `a saved view row matches the concept's` saves one view in both documents and
   compares the rows; `tests/browser/workspace-saved-views.spec.mjs` covers saving,
   reopening, the defaults that replace rejected values, and failed reads and saves.
-- **D50**: no "Needs review" row in SAVED VIEWS until the tag-review slice (maintainer
-  ruling, 2026-10-21). The comparison maps only that row out.
+- **D50** (retired by #249 PR F, ruling R5): SAVED VIEWS now lists the concept's
+  "Needs review" row after Favorites, with its count; the comparison maps nothing out
+  for it (only the concept's sample count "3" reads as the fixture's "0").
 - **D51** (maintainer ruling, 2026-10-21, beyond the concept): SAVED VIEWS starts with
   the concept's Favorites row (star icon, name, count). Its count is the Favorites
   listing's own `limit=1` total (`/images/output?mode=workspace&favorites=1`), follows
@@ -1585,6 +1586,57 @@ npm run --prefix tools/vendor test:workflows -- inspect-concept.spec.mjs workspa
 npm run --prefix tools/vendor test:comfyui -- inspect-sender.spec.mjs
 ```
 
+### Needs review page and recorded deviations (#249 PR F)
+
+`#/review` is the concept's Metadata review page (app.js `renderReview` a749–760) over
+the review routes (`web/js/workspace/review.mjs`, `review-state.mjs`): breadcrumb and
+document title "Review" (the concept's), heading "Metadata review" with its line and
+**Open activity** (`#/activity`), the `.notice` "N images need a decision" with the
+concept's sentence, then `.gallery-layout`: the queue's concept media cards
+(`image-card.mjs`, shared with Images; the image opens the shared viewer, Info selects
+the item, Tag opens the shared Tag image dialog with the review scope note) and
+`section.surface` "Resolve the association" (filename, Tag image, Sampler context,
+the chosen path's prompt blocks, Leave for later and primary Apply association). The
+first item is selected on load, as the concept's first image is. Sampler context lists
+"Sampler <id> · <positive> / <negative>" per candidate (the server's label), disables
+unusable ones, preselects the first workable one and ends with "Leave unresolved"
+(rulings R2/R3); "Leave unresolved" shows the ambiguous status in both blocks. Apply
+takes a fresh capture (`observe`) and posts the decision; Leave unresolved on a file
+under no current root posts without a capture. Both actions return to Images (R7); a
+recorded decision re-reads the row's count, as does every metadata scan that ends. A
+refused decision keeps the selection and shows the server's sentence (the
+association conflict's explanation included) as `p.warning-note` in the panel; a
+restored storage or a changed queue reads the queue again; a request with no answer
+keeps its capture and body, and the next Apply of the same choice resends it once.
+The SAVED VIEWS row "Needs review" (review icon) follows Favorites with the exact
+pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
+
+- **D86** (plan D63, ruling R6): an empty queue shows only the notice, "No images need a
+  decision" and "Ambiguous images are added when a metadata scan or a new generation
+  finds more than one sampler path."
+- **D87** (plan D64): an ended metadata scan whose `scope.review_items` is above 0
+  carries the concept's **Review metadata** (app.js a738 `go-review`): in its Activity
+  item after the item's line, and in its job view's heading after Download report. The
+  item's chip still names its state (D54), where the concept's says "Needs attention".
+- **D-NEW-F1** (number to be assigned): the queue cards have no selection checkbox and
+  no star (the page has no selection bar and the queue carries no favorite state); a
+  file under no current root has an empty, `aria-disabled` image button and Tag; more
+  than 40 items add the Images page's `.infinite-continuation` ("40 of 45 images",
+  Load more images) after the layout; loading and a failed read are the page's status
+  line (with Retry); a limited or unavailable file and the decision states are text in
+  the panel's `p.warning-note`; the toasts "Association accepted." and "Left
+  unresolved." replace the concept's prototype toast. The concept's "Sample review
+  queue" chip and "sample" wording are prototype copy (D29).
+- **D3** and **D20** apply to the queue grid (its cards stay in the grid's flow; it is
+  not virtualized) and to the panel's prompt blocks (their mount point is transparent).
+
+Tests: `tests/js/workspace-review-state.test.js` (controller),
+`tests/js/workspace-state.test.js` (route and count),
+`tests/browser/workspace-review.spec.mjs` (queue, count, apply, leave, Tag, empty
+queue, Load more, Activity's Review metadata; items recorded by the real recorder in
+`tests/browser/workspace_review_fixture.py`), and the SAVED VIEWS rows in
+`shell-concept.spec.mjs` and `workspace-saved-views.spec.mjs`.
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no
@@ -1813,7 +1865,9 @@ Needs review decisions and queue reads (#249, `py/api/review.py`,
 `database/review.py`, `database/review_decisions.py`,
 `tests/test_api_review.py`): `GET /prompt_manager/review/items?limit=1..40&cursor=`
 answers `{success, library_epoch, total, items, next_cursor}` with pending items
-oldest first; `total` is the exact pending count. The cursor is an HMAC keyset
+oldest first (each item adds the card's `url`, the Images listing's
+`/prompt_manager/images/serve/<path>?root=<i>&root_scope=<scope>` formatted without a
+stat, null when the file is under no current root, and `is_video` from its extension); `total` is the exact pending count. The cursor is an HMAC keyset
 on `(created_at, id)` bound to the storage epoch only (ruling M3, so "load more"
 keeps working while the monitor adds an item per generation): a malformed one
 is 400, a well-formed one this process cannot verify (tampered, or opened

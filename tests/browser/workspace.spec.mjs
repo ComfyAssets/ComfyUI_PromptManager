@@ -21,6 +21,8 @@ const routes = [
     ['system', 'System', '/prompt_manager/admin'],
     // #249 D51: SAVED VIEWS' Favorites, Images filtered to favorites.
     ['favorites', 'Favorites', null],
+    // #249 PR F (ruling R5): SAVED VIEWS' Needs review, the concept's Metadata review page (its own heading).
+    ['review', 'Needs review', null, 'Metadata review'],
     // #249 Activity-1: the concept's Activity page in the tools-and-system group.
     ['activity', 'Activity', null],
 ];
@@ -76,10 +78,10 @@ test('workspace starts with real persisted statistics without mutating data', as
 });
 
 test('all shell destinations deep-link, reload and expose working existing applications', async ({ page, request }) => {
-    for (const [route, label, legacy] of routes) {
+    for (const [route, label, legacy, title = label] of routes) {
         await page.goto(`${workspace}#/${route}`);
         const main = page.locator('#workspace-main');
-        await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
+        await expect(main.getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible();
         await expect(sidebarLink(page, label)).toHaveAttribute('aria-current', 'page');
         if (route === 'tags' || route === 'inspect') await expect(main.locator('.handoff')).toHaveCount(0);
         if (route === 'inspect') await expect(main.locator('#local-file')).toBeAttached();
@@ -88,7 +90,7 @@ test('all shell destinations deep-link, reload and expose working existing appli
             await expect(await request.get(legacy.split('#')[0])).toBeOK();
         }
         await page.reload();
-        await expect(main.getByRole('heading', { level: 1, name: label, exact: true })).toBeVisible();
+        await expect(main.getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible();
     }
     // D29 and #249 E3: the legacy gallery and Library are reached from Overview's tool cards, not from their pages.
     await page.goto(`${workspace}#/overview`);
@@ -308,9 +310,9 @@ test('overview reports loading, offers retry after failure and renders real empt
 test('small screens keep navigation and the theme accessible without horizontal page overflow', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto(`${workspace}#/overview`);
-    for (const [, label] of routes) {
+    for (const [, label, , title = label] of routes) {
         await sidebarLink(page, label).click();
-        await expect(page.locator('#workspace-main h1')).toHaveText(label);
+        await expect(page.locator('#workspace-main h1')).toHaveText(title);
     }
     await expect(page.getByRole('combobox', { name: 'Theme', exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

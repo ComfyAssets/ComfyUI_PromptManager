@@ -24,10 +24,12 @@ import hmac
 import json
 import os
 import re
+import urllib.parse
 
 from aiohttp import web
 
 from .annotations import _HEX64, _TOKEN, _UUID, _capture_error, _error
+from .inspection_service import VIDEO_EXTENSIONS
 from .prompts import bad_request
 
 try:
@@ -253,7 +255,7 @@ class ReviewRoutesMixin:
     def _review_view(self, row: dict, roots, real_roots) -> dict:
         """The public ReviewItem of one stored row (no path, no locator)."""
         found = format_review_target(row["spelled_path"], row["locator"], real_roots)
-        target = None
+        target = url = None
         if found is not None:
             index, relative = found
             target = {
@@ -261,16 +263,25 @@ class ReviewRoutesMixin:
                 "root_scope": self._gallery_root_scope(roots[index], index),
                 "path": relative,
             }
+            # The Images listing's media URL for the same file (formatting only).
+            url = (
+                "/prompt_manager/images/serve/"
+                f"{urllib.parse.quote(relative, safe='/')}?root={index}"
+                f"&root_scope={target['root_scope']}"
+            )
+        filename = os.path.basename(row["spelled_path"])
         return {
             "id": row["id"],
             "state": row["state"],
             "revision": row["revision"],
             "created_at": row["created_at"],
-            "filename": os.path.basename(row["spelled_path"]),
+            "filename": filename,
             "target": target,
             "unavailable": target is None,
             "candidate_count": row["candidate_count"],
             "limited": row["limited"],
+            "url": url,
+            "is_video": os.path.splitext(filename)[1].lower() in VIDEO_EXTENSIONS,
         }
 
     @staticmethod
