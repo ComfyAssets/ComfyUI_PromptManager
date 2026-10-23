@@ -330,6 +330,43 @@ class ReviewSchemaTests(unittest.TestCase):
                 conn.execute(f"DELETE FROM {ITEMS}")
             self.assertEqual(table_rows(conn, TABLES), snapshot)
 
+    def test_startup_validates_stored_evidence_once(self):
+        """A reopen streams the evidence once and the annotation group twice
+        (its own install), never again for the review group (I3)."""
+        self.require_module()
+        import database.annotation_schema as annotation_module
+        import database.review_schema as review_module
+
+        model = self.model()
+        with model.get_connection() as conn:
+            insert_group_rows(conn)
+        model.close_all()
+        for _ in range(2):
+            PromptModel.reset_schema_cache()
+            with (
+                patch.object(
+                    review_module,
+                    "_evidence_error",
+                    wraps=review_module._evidence_error,
+                ) as evidence,
+                patch.object(
+                    review_module,
+                    "annotation_schema_error",
+                    wraps=review_module.annotation_schema_error,
+                ) as nested,
+                patch.object(
+                    annotation_module,
+                    "_value_error",
+                    wraps=annotation_module._value_error,
+                ) as annotation_rows,
+            ):
+                model = self.model()
+                model.get_connection()
+            self.assertEqual(evidence.call_count, 1)
+            self.assertEqual(nested.call_count, 0)
+            self.assertEqual(annotation_rows.call_count, 2)
+            model.close_all()
+
     def test_old_database_without_group_migrates_without_touching_legacy_rows(self):
         self.require_module()
         for label, dropped in (

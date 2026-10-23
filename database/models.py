@@ -18,7 +18,11 @@ from typing import Optional, Set, Tuple
 from .library_schema import library_schema_error, migrate_library_state
 from .image_favorites import image_favorites_schema_error, migrate_image_favorites
 from .annotation_schema import annotation_schema_error, migrate_annotation_state
-from .review_schema import migrate_review_state, review_schema_error
+from .review_schema import (
+    migrate_review_state,
+    review_schema_error,
+    review_without_annotations_error,
+)
 from .saved_views import migrate_saved_views, saved_views_schema_error
 from .execution_history_schema import (
     history_schema_error,
@@ -305,8 +309,9 @@ class PromptModel:
         migrate_image_favorites(conn)
         migrate_saved_views(conn)
         # A review group without its annotation group is refused before the
-        # annotation install could make it look valid.
-        review_error = review_schema_error(conn)
+        # annotation install could make it look valid (catalog only; the rows
+        # are validated once, in migrate_review_state).
+        review_error = review_without_annotations_error(conn)
         if review_error:
             raise sqlite3.DatabaseError(review_error)
         migrate_annotation_state(conn)

@@ -33,7 +33,10 @@ import re
 import sqlite3
 from typing import Any, Optional
 
-from .annotation_schema import BYTES_TABLE, annotation_schema_error
+from .annotation_schema import BYTES_TABLE
+from .annotation_schema import TABLES as ANNOTATION_TABLES
+from .annotation_schema import _catalog as _annotation_catalog
+from .annotation_schema import annotation_schema_error
 
 SCHEMA_VERSION = 1
 METADATA_TABLE = "media_review_metadata"
@@ -159,6 +162,13 @@ def _reject_constant(name: str) -> Any:
     raise _NonCanonical(f"JSON constant {name} is not allowed")
 
 
+# Built once: validation re-encodes every stored document at startup.
+_ENCODER = json.JSONEncoder(
+    sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+)
+_DECODER = json.JSONDecoder(parse_constant=_reject_constant)
+
+
 def canonical_evidence(value: Any) -> str:
     """Serialize one evidence object canonically; ``ValueError`` when invalid.
 
@@ -168,13 +178,7 @@ def canonical_evidence(value: Any) -> str:
     if not isinstance(value, dict):
         raise ValueError("Review evidence must be a JSON object")
     try:
-        text = json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        )
+        text = _ENCODER.encode(value)
     except (TypeError, RecursionError) as error:
         raise ValueError(f"Review evidence is not serializable: {error}") from None
     if len(text) > MAX_EVIDENCE_BYTES:
@@ -191,7 +195,7 @@ def _is_canonical(text: Any) -> bool:
     if not isinstance(text, str):
         return False
     try:
-        value = json.loads(text, parse_constant=_reject_constant)
+        value = _DECODER.decode(text)
         return canonical_evidence(value) == text
     except (ValueError, RecursionError):
         return False
@@ -228,12 +232,12 @@ def _hex64(column: str) -> str:
 
 
 def _evidence(column: str) -> str:
-    # Printable ASCII only is a cheap necessary condition for canonical text;
-    # the streamed pass below proves the rest.
+    # Type and size only: the streamed pass below proves the text canonical
+    # (which implies printable ASCII), so a pattern scan here would read every
+    # document a second time.
     return (
         f"typeof({column}) = 'text' "
-        f"AND length(CAST({column} AS BLOB)) BETWEEN 2 AND {MAX_EVIDENCE_BYTES} "
-        f"AND CAST({column} AS BLOB) NOT GLOB '*[^ -~]*'"
+        f"AND length(CAST({column} AS BLOB)) BETWEEN 2 AND {MAX_EVIDENCE_BYTES}"
     )
 
 
@@ -356,25 +360,55 @@ def _value_error(conn: sqlite3.Connection) -> Optional[str]:
     return _evidence_error(conn)
 
 
+def review_without_annotations_error(conn: sqlite3.Connection) -> Optional[str]:
+    """Catalog only: a review group present without its annotation tables.
+
+    Startup asks this before the annotation group installs, which would make
+    a review group copied without it look valid. It reads no rows; the full
+    validation runs once in :func:`migrate_review_state`.
+    """
+    if not _catalog(conn):
+        return None
+    present = {
+        name for kind, name, _sql in _annotation_catalog(conn) if kind == "table"
+    }
+    if present != set(ANNOTATION_TABLES):
+        return (
+            "Review queue schema requires a valid image annotation schema: "
+            "Missing image annotation schema"
+        )
+    return None
+
+
 def review_schema_error(
-    conn: sqlite3.Connection, *, allow_missing: bool = True
+    conn: sqlite3.Connection,
+    *,
+    allow_missing: bool = True,
+    annotations_valid: bool = False,
 ) -> Optional[str]:
     """Reject partial or unsupported review schemas and invalid rows.
 
     Reads only: nothing is ever repaired. A database without any of the
     group's objects is acceptable for backups that predate it unless
     ``allow_missing`` is false. A present group requires a present, valid
-    image annotation group.
+    image annotation group; ``annotations_valid`` says the caller has just
+    validated it (startup's annotation install), so only its presence is
+    checked again.
     """
     objects = _catalog(conn)
     if not objects:
         return None if allow_missing else "Missing review queue schema"
-    annotation_error = annotation_schema_error(conn, allow_missing=False)
+    if annotations_valid:
+        annotation_error = review_without_annotations_error(conn)
+    else:
+        annotation_error = annotation_schema_error(conn, allow_missing=False)
+        if annotation_error:
+            annotation_error = (
+                "Review queue schema requires a valid image annotation schema: "
+                + annotation_error
+            )
     if annotation_error:
-        return (
-            "Review queue schema requires a valid image annotation schema: "
-            + annotation_error
-        )
+        return annotation_error
     present = {name for kind, name, _sql in objects if kind == "table"}
     if present != set(TABLES):
         return "Incomplete review queue schema"
@@ -387,13 +421,14 @@ def review_schema_error(
 def migrate_review_state(conn: sqlite3.Connection) -> None:
     """Install the group atomically; validate before and after creating it.
 
-    Runs after ``migrate_annotation_state``: the group is only valid beside
-    the annotation group it cites.
+    Runs after ``migrate_annotation_state`` (which has just validated the
+    annotation group): the group is only valid beside the annotation group it
+    cites. A present group is validated once, evidence included.
     """
     conn.execute("SAVEPOINT media_review_schema")
     try:
         installed = bool(_catalog(conn))
-        error = review_schema_error(conn)
+        error = review_schema_error(conn, annotations_valid=True)
         if error:
             raise sqlite3.DatabaseError(error)
         if installed:
@@ -410,7 +445,7 @@ def migrate_review_state(conn: sqlite3.Connection) -> None:
             "(singleton_id, schema_version, review_index_revision) VALUES (1, ?, 0)",
             (SCHEMA_VERSION,),
         )
-        error = review_schema_error(conn, allow_missing=False)
+        error = review_schema_error(conn, allow_missing=False, annotations_valid=True)
         if error:
             raise sqlite3.DatabaseError(error)
         conn.execute("RELEASE media_review_schema")
