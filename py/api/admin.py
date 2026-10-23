@@ -26,6 +26,12 @@ from .jobs import (
     JobBusy,
 )
 
+from ..config_store import (
+    ConfigUnreadable,
+    RevisionConflict,
+    get_config_store,
+)
+
 try:
     from ...utils.parallel import map_parallel
     from ...utils.validators import validate_result_timeout, validate_worker_threads
@@ -131,6 +137,45 @@ def _collect_media_files(output_dirs, extensions):
 def _thumbnail_rel_path(rel_path, thumbnail_ext):
     """Relative path of the thumbnail the gallery would generate for ``rel_path``."""
     return f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb{thumbnail_ext}"
+
+
+# Settings owned by POST /settings: config attribute -> (section, key).
+_SETTINGS_FILE_KEYS = {
+    "RESULT_TIMEOUT": ("web_ui", "result_timeout"),
+    "WEBUI_DISPLAY_MODE": ("web_ui", "webui_display_mode"),
+    "INFINITE_SCROLL": ("web_ui", "infinite_scroll"),
+    "WORKER_THREADS": ("performance", "worker_threads"),
+}
+
+
+def _section(config, name):
+    """``config[name]`` as a fresh dict (a non-object section starts empty)."""
+    value = config.get(name)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _settings_mutation(updates, new_roots):
+    """The config commit for a settings save: only the submitted keys change.
+
+    Every other section and key (integrations and the CivitAI key, database,
+    unknown sections) is kept as it is on disk.
+    """
+
+    def mutate(config):
+        for name, value in updates.items():
+            section, key = _SETTINGS_FILE_KEYS[name]
+            merged = _section(config, section)
+            merged[key] = value
+            config[section] = merged
+        if new_roots is not None:
+            gallery = _section(config, "gallery")
+            monitoring = _section(gallery, "monitoring")
+            monitoring["directories"] = list(new_roots)
+            gallery["monitoring"] = monitoring
+            config["gallery"] = gallery
+        return config
+
+    return mutate
 
 
 async def _read_json(request):
@@ -890,9 +935,11 @@ class AdminRoutesMixin:
             root_paths = [
                 self._public_path(d) for d in GalleryConfig.MONITORING_DIRECTORIES
             ]
+            revision = await self._run_in_executor(self._config_revision)
             return web.json_response(
                 {
                     "success": True,
+                    **revision,
                     "settings": {
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
@@ -924,14 +971,25 @@ class AdminRoutesMixin:
         return list(GalleryConfig.MONITORING_DIRECTORIES)
 
     async def save_settings(self, request):
-        """Save settings: the whole payload is validated before anything changes."""
-        try:
-            from ..config import PromptManagerConfig
+        """Save settings: validate, commit to config.json, then publish (#220).
 
+        Nothing changes at runtime until config.json holds the new values, so
+        a save that cannot be written reports ``persisted: false`` and leaves
+        the running settings as they were. ``expected_revision`` (the
+        ``revision`` from GET) refuses to overwrite a file changed meanwhile;
+        without it the payload merges into what is on disk (legacy page).
+        """
+        try:
             data, error_response = await _read_json(request)
             if error_response is not None:
                 return error_response
 
+            expected_revision = data.get("expected_revision")
+            if expected_revision is not None and not isinstance(expected_revision, str):
+                return web.json_response(
+                    {"success": False, "error": "expected_revision must be a string"},
+                    status=400,
+                )
             try:
                 updates = self._validate_settings(data)
             except ValueError as ve:
@@ -943,19 +1001,20 @@ class AdminRoutesMixin:
             if error:
                 return web.json_response({"success": False, "error": error}, status=400)
 
-            for name, value in updates.items():
-                setattr(PromptManagerConfig, name, value)
-            restart_required = False
-            if new_roots is not None:
-                restart_required = self._apply_gallery_roots(new_roots)
-
-            self._persist_settings()
+            try:
+                _saved, revision = await self._run_in_executor(
+                    get_config_store().commit,
+                    _settings_mutation(updates, new_roots),
+                    expected_revision=expected_revision,
+                )
+            except (ConfigUnreadable, RevisionConflict, OSError) as exc:
+                return self._config_commit_failure(exc)
 
             return web.json_response(
                 {
                     "success": True,
                     "message": "Settings saved successfully",
-                    "restart_required": restart_required,
+                    **self._publish_settings(updates, new_roots, revision),
                 }
             )
         except Exception as e:
@@ -964,6 +1023,82 @@ class AdminRoutesMixin:
                 {"success": False, "error": "Failed to save settings"},
                 status=500,
             )
+
+    def _publish_settings(self, updates, new_roots, revision):
+        """Install committed settings at runtime; the ConfigCommit fields.
+
+        The values are already durable. A publication that fails is reported
+        as ``runtime_applied: false`` with the fields that need a restart;
+        nothing is retried or rolled back.
+        """
+        from ..config import PromptManagerConfig
+
+        for name, value in updates.items():
+            setattr(PromptManagerConfig, name, value)
+        restart_fields = []
+        runtime_applied = True
+        if new_roots is not None:
+            try:
+                if self._apply_gallery_roots(new_roots):
+                    restart_fields.append("gallery_root_paths")
+            except Exception as e:
+                self.logger.error(
+                    f"Saved gallery roots could not be applied: {e}", exc_info=True
+                )
+                runtime_applied = False
+                restart_fields.append("gallery_root_paths")
+        return {
+            "restart_required": bool(restart_fields),
+            "persisted": True,
+            "revision": revision,
+            "runtime_applied": runtime_applied,
+            "restart_required_fields": restart_fields,
+        }
+
+    def _config_commit_failure(self, exc):
+        """The response for a config commit that wrote nothing."""
+        not_saved = {"success": False, "persisted": False, "runtime_applied": False}
+        if isinstance(exc, ConfigUnreadable):
+            self.logger.warning(f"Settings not saved: {exc}")
+            return web.json_response(
+                {
+                    **not_saved,
+                    "code": "config-unreadable",
+                    "error": (
+                        "config.json cannot be read, so nothing was saved. "
+                        "Fix or remove the file, then save again."
+                    ),
+                },
+                status=409,
+            )
+        if isinstance(exc, RevisionConflict):
+            return web.json_response(
+                {
+                    **not_saved,
+                    "code": "settings-changed",
+                    "error": "Settings changed since they were loaded. Reload them.",
+                    "revision": exc.current,
+                },
+                status=409,
+            )
+        self.logger.error(f"Could not write config.json: {exc}")
+        return web.json_response(
+            {
+                **not_saved,
+                "code": "config-write-failed",
+                "error": "Settings could not be written to config.json.",
+            },
+            status=500,
+        )
+
+    @staticmethod
+    def _config_revision():
+        """``{"revision": ...}``, or a null revision with ``config_error``."""
+        try:
+            _data, revision = get_config_store().read()
+        except ConfigUnreadable:
+            return {"revision": None, "config_error": "config-unreadable"}
+        return {"revision": revision}
 
     @staticmethod
     def _validate_settings(data):
@@ -1040,49 +1175,6 @@ class AdminRoutesMixin:
         self._cached_output_dir = None
         self.reset_gallery_roots_cache()
         return True
-
-    def _persist_settings(self):
-        """Merge the user-editable settings into the configured config.json.
-
-        Only the keys this endpoint owns are rewritten; every other section
-        (integrations, database, performance, ...) and every other key in
-        ``web_ui``/``gallery`` is kept as it was. A config file that cannot
-        be parsed is replaced.
-        """
-        from ..config import GalleryConfig, PromptManagerConfig, write_private_json
-
-        config_file = PromptManagerConfig.get_config_path()
-        existing = self._read_config_file(config_file)
-        web_ui = dict(existing.get("web_ui") or {})
-        web_ui["result_timeout"] = PromptManagerConfig.RESULT_TIMEOUT
-        web_ui["webui_display_mode"] = PromptManagerConfig.WEBUI_DISPLAY_MODE
-        web_ui["infinite_scroll"] = PromptManagerConfig.INFINITE_SCROLL
-        gallery = dict(existing.get("gallery") or {})
-        monitoring = dict(gallery.get("monitoring") or {})
-        monitoring["directories"] = list(GalleryConfig.MONITORING_DIRECTORIES)
-        gallery["monitoring"] = monitoring
-        performance = dict(existing.get("performance") or {})
-        performance["worker_threads"] = PromptManagerConfig.WORKER_THREADS
-        config_data = {
-            **existing,
-            "web_ui": web_ui,
-            "gallery": gallery,
-            "performance": performance,
-        }
-        try:
-            write_private_json(config_file, config_data)
-            self.logger.info(f"Settings saved to {config_file}")
-        except OSError as save_err:
-            self.logger.warning(f"Could not save config file: {save_err}")
-
-    def _read_config_file(self, config_file):
-        """Current contents of config.json as a dict, or {} when unusable."""
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
 
     async def run_diagnostics(self, request):
         """Run comprehensive system diagnostics and health checks."""

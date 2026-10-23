@@ -5,6 +5,7 @@ database and a stub ``folder_paths`` module, so the tests run without ComfyUI.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -1059,14 +1060,29 @@ class TestSettingsMisc(AdminAPITestCase):
             saved["gallery"]["monitoring"]["directories"], [self._root(self.output_dir)]
         )
 
-    async def test_save_replaces_a_corrupt_config_file(self):
-        with open(self.config_path, "w") as f:
-            f.write("{not json")
+    async def test_save_refuses_a_corrupt_config_file(self):
+        # #220: a config.json that cannot be parsed is the user's file, never
+        # silently replaced; the save is refused and nothing is published.
+        Path(self.config_path).write_bytes(b"{not json")
+        before_timeout = PromptManagerConfig.RESULT_TIMEOUT
         resp = await self.client.request(
             "POST", "/prompt_manager/settings", json={"result_timeout": 4}
         )
-        self.assertEqual(resp.status, 200)
-        self.assertEqual(self._read_config()["web_ui"]["result_timeout"], 4)
+        body = await resp.json()
+        self.assertEqual((resp.status, body["code"]), (409, "config-unreadable"))
+        self.assertIs(body["success"], False)
+        self.assertIs(body["persisted"], False)
+        self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, before_timeout)
+        self.assertEqual(Path(self.config_path).read_bytes(), b"{not json")
+
+    async def test_get_settings_reports_an_unreadable_config(self):
+        Path(self.config_path).write_bytes(b"{not json")
+        resp = await self.client.request("GET", "/prompt_manager/settings")
+        body = await resp.json()
+        self.assertEqual(resp.status, 200)  # the legacy page still loads
+        self.assertIsNone(body["revision"])
+        self.assertEqual(body["config_error"], "config-unreadable")
+        self.assertIn("result_timeout", body["settings"])
 
     async def test_saved_config_file_is_private_to_the_user(self):
         import stat
@@ -1107,12 +1123,156 @@ class TestSettingsMisc(AdminAPITestCase):
         self.assertEqual(resp.status, 200)
         self.assertFalse(data["restart_required"])
 
-    async def test_unwritable_config_path_still_succeeds(self):
-        os.environ[CONFIG_PATH_ENV] = os.path.join(self.tmpdir, "missing", "c.json")
+    async def test_unwritable_config_path_reports_failure_without_runtime_change(self):
+        # #220: the parent is a file, so config.json cannot be written. The
+        # save reports the failure and publishes nothing.
+        blocker = Path(self.tmpdir) / "not-a-dir"
+        blocker.write_text("x")
+        os.environ[CONFIG_PATH_ENV] = str(blocker / "c.json")
+        GalleryConfig.MONITORING_DIRECTORIES = []
+        before_timeout = PromptManagerConfig.RESULT_TIMEOUT
+        with self.assertLogs("prompt_manager.api", level="ERROR"):
+            resp = await self.client.request(
+                "POST",
+                "/prompt_manager/settings",
+                json={
+                    "result_timeout": before_timeout + 1,
+                    "gallery_root_paths": [self._root(self.output_dir)],
+                },
+            )
+        body = await resp.json()
+        self.assertEqual(
+            (resp.status, body["code"], body["persisted"]),
+            (500, "config-write-failed", False),
+        )
+        self.assertIs(body["success"], False)
+        self.assertIs(body["runtime_applied"], False)
+        self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, before_timeout)
+        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [])
+        self.assertEqual(blocker.read_text(), "x")
+
+    async def test_save_reports_the_commit(self):
         resp = await self.client.request(
             "POST", "/prompt_manager/settings", json={"result_timeout": 3}
         )
+        body = await resp.json()
         self.assertEqual(resp.status, 200)
+        self.assertEqual(body["message"], "Settings saved successfully")
+        self.assertIs(body["persisted"], True)
+        self.assertIs(body["runtime_applied"], True)
+        self.assertIs(body["restart_required"], False)
+        self.assertEqual(body["restart_required_fields"], [])
+        digest = hashlib.sha256(Path(self.config_path).read_bytes()).hexdigest()
+        self.assertEqual(body["revision"], "sha256:" + digest)
+
+    async def test_changed_roots_name_the_restart_field(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"gallery_root_paths": [self._root(self.output_dir)]},
+        )
+        body = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertIs(body["restart_required"], True)
+        self.assertEqual(body["restart_required_fields"], ["gallery_root_paths"])
+
+    async def test_runtime_publication_failure_after_commit_is_reported(self):
+        # The values are durable; the response must not claim they are live.
+        self.api.reset_gallery_roots_cache = _raise
+        with self.assertLogs("prompt_manager.api", level="ERROR"):
+            resp = await self.client.request(
+                "POST",
+                "/prompt_manager/settings",
+                json={"gallery_root_paths": [self._root(self.output_dir)]},
+            )
+        body = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertIs(body["persisted"], True)
+        self.assertIs(body["runtime_applied"], False)
+        self.assertIs(body["restart_required"], True)
+        self.assertEqual(body["restart_required_fields"], ["gallery_root_paths"])
+        self.assertEqual(
+            self._read_config()["gallery"]["monitoring"]["directories"],
+            [self._root(self.output_dir)],
+        )
+
+    async def test_get_settings_reports_revision(self):
+        resp = await self.client.request("GET", "/prompt_manager/settings")
+        body = await resp.json()
+        self.assertEqual(body["revision"], "absent")
+        self.assertNotIn("config_error", body)
+
+        self._write_config({"web_ui": {"result_timeout": 2}})
+        body = await (
+            await self.client.request("GET", "/prompt_manager/settings")
+        ).json()
+        digest = hashlib.sha256(Path(self.config_path).read_bytes()).hexdigest()
+        self.assertEqual(body["revision"], "sha256:" + digest)
+
+    async def test_native_save_with_stale_revision_is_409(self):
+        self._write_config({"web_ui": {"result_timeout": 2}})
+        body = await (
+            await self.client.request("GET", "/prompt_manager/settings")
+        ).json()
+        seen = body["revision"]
+        self._write_config({"web_ui": {"result_timeout": 6}})  # another writer
+        before = Path(self.config_path).read_bytes()
+        before_timeout = PromptManagerConfig.RESULT_TIMEOUT
+
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"result_timeout": 9, "expected_revision": seen},
+        )
+        body = await resp.json()
+        self.assertEqual((resp.status, body["code"]), (409, "settings-changed"))
+        self.assertIs(body["persisted"], False)
+        digest = hashlib.sha256(before).hexdigest()
+        self.assertEqual(body["revision"], "sha256:" + digest)
+        self.assertEqual(Path(self.config_path).read_bytes(), before)
+        self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, before_timeout)
+
+    async def test_native_save_with_current_revision_commits(self):
+        body = await (
+            await self.client.request("GET", "/prompt_manager/settings")
+        ).json()
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"result_timeout": 9, "expected_revision": body["revision"]},
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._read_config()["web_ui"]["result_timeout"], 9)
+
+    async def test_expected_revision_must_be_a_string(self):
+        resp = await self.client.request(
+            "POST",
+            "/prompt_manager/settings",
+            json={"result_timeout": 9, "expected_revision": 5},
+        )
+        self.assertEqual(resp.status, 400)
+        self.assertFalse(os.path.exists(self.config_path))
+
+    async def test_legacy_partial_update_without_revision_still_merges(self):
+        self._write_config(
+            {
+                "integrations": {"lora_manager": {"civitai_api_key": "secret"}},
+                "web_ui": {"result_timeout": 1, "webui_display_mode": "popup"},
+                "custom_section": {"keep": True},
+            }
+        )
+        resp = await self.client.request(
+            "POST", "/prompt_manager/settings", json={"result_timeout": 8}
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn("secret", await resp.text())
+        saved = self._read_config()
+        self.assertEqual(
+            saved["integrations"]["lora_manager"]["civitai_api_key"], "secret"
+        )
+        self.assertEqual(saved["custom_section"], {"keep": True})
+        self.assertEqual(saved["web_ui"]["result_timeout"], 8)
+        self.assertEqual(saved["web_ui"]["webui_display_mode"], "popup")  # not sent
 
     async def test_save_unexpected_error_is_500(self):
         self.api._parse_gallery_roots = _raise
