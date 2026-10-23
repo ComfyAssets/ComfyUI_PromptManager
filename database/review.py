@@ -31,6 +31,7 @@ from .annotation_schema import (
 )
 from .annotations import _new_id, _validate_locator, _validate_target
 from .models import normalize_image_path, utc_now_iso
+from .review_changes import notify_review_change
 from .review_schema import (
     ITEMS_TABLE,
     MAX_CANDIDATES,
@@ -286,7 +287,9 @@ class ReviewOperations:
             refreshed = _refresh_spelling(conn, locator, spelled_path)
             if inserted or refreshed:
                 conn.execute(_BUMP_REVIEW_INDEX)
-            return inserted
+        if inserted or refreshed:
+            notify_review_change(self.model.db_path)
+        return inserted
 
     def refresh_review_spelling(self, locator: str, spelled_path: str) -> bool:
         """Record ``spelled_path`` as the spelling of every item at ``locator``.
@@ -303,7 +306,9 @@ class ReviewOperations:
             refreshed = _refresh_spelling(conn, locator, spelled_path)
             if refreshed:
                 conn.execute(_BUMP_REVIEW_INDEX)
-            return refreshed
+        if refreshed:
+            notify_review_change(self.model.db_path)
+        return refreshed
 
     def review_index_revision(self) -> int:
         """The queue's revision (moved by every queue change)."""

@@ -9,6 +9,7 @@ Split into domain-specific mixins for maintainability:
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 - ReviewRoutesMixin: the Needs review queue, item detail and decisions
 - ReviewRecordingMixin: Needs review recording for the scan and the monitor
+- ReviewEventsMixin: the Needs review change stream an open page re-reads on
 """
 
 import asyncio
@@ -31,6 +32,7 @@ from .vocabulary import VocabularyRoutesMixin
 from .annotations import AnnotationRoutesMixin
 from .review import ReviewRoutesMixin
 from .review_recording import ReviewRecordingMixin
+from .review_events import ReviewEventsMixin
 from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
@@ -260,6 +262,7 @@ class PromptManagerAPI(
     AnnotationRoutesMixin,
     ReviewRoutesMixin,
     ReviewRecordingMixin,
+    ReviewEventsMixin,
     SavedViewRoutesMixin,
     HistoryRoutesMixin,
     PromptRoutesMixin,
@@ -457,6 +460,7 @@ class PromptManagerAPI(
         self._register_vocabulary_routes(routes)
         self._register_annotation_routes(routes)
         self._register_review_routes(routes)
+        self._register_review_event_routes(routes)
         self._register_saved_view_routes(routes)
         self._register_history_routes(routes)
         self._register_prompt_routes(routes)

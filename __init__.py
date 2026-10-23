@@ -91,6 +91,9 @@ try:
     if host_app is not None and hasattr(host_app, "on_cleanup"):
         host_app.on_cleanup.append(api.cleanup_history_reads)
         host_app.on_cleanup.append(api.cleanup_annotation_captures)
+    if host_app is not None and hasattr(host_app, "on_shutdown"):
+        # Open Needs review change streams end before the server waits on them.
+        host_app.on_shutdown.append(api.close_review_events)
 
 except Exception as e:
     # Log to internal logging system without console spam

@@ -251,8 +251,9 @@ function mountWorkspace() {
             return;
         }
         if (route.id === 'review') {
-            // Needs review (ruling R5): a recorded decision re-reads the row's count.
-            mountReview(main, { api, scope: view, onDecision: () => refreshCounts(REVIEW_WRITE_COUNTS) });
+            // Needs review (ruling R5): a recorded decision, and a change the open page hears of, re-read the row's count.
+            mountReview(main, { api, scope: view, onDecision: () => refreshCounts(REVIEW_WRITE_COUNTS),
+                onQueueChange: () => refreshCounts(REVIEW_WRITE_COUNTS) });
             return;
         }
         if (route.id === 'inspect') {

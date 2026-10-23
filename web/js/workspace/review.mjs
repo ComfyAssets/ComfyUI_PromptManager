@@ -10,8 +10,11 @@
  *   association": filename, Tag image, Sampler context, the chosen path's prompt blocks and the actions Leave for later
  *   and Apply association. Both return to Images (ruling R7).
  * - States the concept lacks (loading, a failed read, a refused or unanswered decision, a limited or unavailable file)
- *   are text: `p.warning-note` in the panel, or the page's status line (D-NEW-F1).
- * - D-NEW-F1: the queue cards carry no selection checkbox and no star (this page has no selection bar, and the queue
+ *   are text: `p.warning-note` in the panel, or the page's status line (D119).
+ * - The open page re-reads its queue on each `change` of the review change stream (`/prompt_manager/review/events`,
+ *   F2): items a scan or the monitor added, and decisions made in other tabs. Each `ready` (the first one, and one
+ *   after the browser reconnects a dropped stream) re-reads too, since a change may have come before it. Nothing polls.
+ * - D119: the queue cards carry no selection checkbox and no star (this page has no selection bar, and the queue
  *   carries no favorite state); more than 40 items add the Images page's `.infinite-continuation` Load more after the
  *   layout; the toasts "Association accepted." and "Left unresolved." stand in for the concept's prototype toast.
  */
@@ -29,6 +32,9 @@ import { pageHeading } from './heading.mjs';
 import { navigateTo } from './state.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imageKey } from './images-state.mjs';
+
+export const REVIEW_EVENTS_URL = '/prompt_manager/review/events';
+const openEvents = url => new EventSource(window.ApiClient.resolveUrl(url));
 
 function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -53,10 +59,12 @@ export function imageOf(item) {
 }
 
 /**
- * Mount the page under the shell's heading. `onDecision()` runs after a recorded decision (the shell re-reads the
- * Needs review count); `controller` is injectable for tests.
+ * Mount the page under the shell's heading. `onDecision()` runs after a recorded decision and `onQueueChange()` after
+ * a change elsewhere (the shell re-reads the Needs review count); `controller` and `connect` (the change stream's
+ * EventSource) are injectable for tests.
  */
-export function mountReview(main, { api, scope, onDecision = () => {}, controller = createReviewController({ api }) }) {
+export function mountReview(main, { api, scope, onDecision = () => {}, onQueueChange = () => {},
+    connect = openEvents, controller = createReviewController({ api }) }) {
     scope.cleanup(() => controller.dispose());
     const heading = pageHeading(main);
     heading.h1.textContent = COPY.title;
@@ -90,7 +98,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, controlle
     tagRow.append(tagButton);
     const select = el('select');
     const contextField = field('Sampler context', select, 'review-context');
-    const warning = el('p', '', 'warning-note'); // D-NEW-F1: the states the concept lacks
+    const warning = el('p', '', 'warning-note'); // D119: the states the concept lacks
     warning.setAttribute('role', 'status');
     const blocks = el('div');
     const actions = el('div', undefined, 'dialog-actions');
@@ -100,7 +108,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, controlle
     panel.append(panelTitle, filename, tagRow, contextField, warning, blocks, actions);
     layout.append(grid, panel);
 
-    const continuation = el('div', undefined, 'infinite-continuation'); // D-NEW-F1: Load more past 40 items
+    const continuation = el('div', undefined, 'infinite-continuation'); // D119: Load more past 40 items
     const moreText = el('p', '', 'small');
     const more = createButton('Load more images');
     continuation.append(moreText, more);
@@ -124,7 +132,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, controlle
             state.items.forEach((item, index) => {
                 let card = cards.get(item.id);
                 if (!card) {
-                    // D-NEW-F1: no selection checkbox and no star on a queue card.
+                    // D119: no selection checkbox and no star on a queue card.
                     card = createImageCard(imageOf(item), { media: Boolean(item.url) });
                     card.dataset.reviewId = item.id;
                     card.item = item;
@@ -243,5 +251,14 @@ export function mountReview(main, { api, scope, onDecision = () => {}, controlle
     scope.cleanup(controller.subscribe(render));
     render(controller.state);
     controller.load();
+    const events = connect(REVIEW_EVENTS_URL);
+    scope.cleanup(() => events.close());
+    const changed = () => {
+        if (scope.signal.aborted) return;
+        controller.refresh();
+        onQueueChange();
+    };
+    events.addEventListener('ready', changed);
+    events.addEventListener('change', changed);
     return { controller };
 }

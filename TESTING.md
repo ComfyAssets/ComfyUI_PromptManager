@@ -1618,7 +1618,7 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   carries the concept's **Review metadata** (app.js a738 `go-review`): in its Activity
   item after the item's line, and in its job view's heading after Download report. The
   item's chip still names its state (D54), where the concept's says "Needs attention".
-- **D-NEW-F1** (number to be assigned): the queue cards have no selection checkbox and
+- **D119**: the queue cards have no selection checkbox and
   no star (the page has no selection bar and the queue carries no favorite state); a
   file under no current root has an empty, `aria-disabled` image button and Tag; more
   than 40 items add the Images page's `.infinite-continuation` ("40 of 45 images",
@@ -1626,7 +1626,31 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   line (with Retry); a limited or unavailable file and the decision states are text in
   the panel's `p.warning-note`; the toasts "Association accepted." and "Left
   unresolved." replace the concept's prototype toast. The concept's "Sample review
-  queue" chip and "sample" wording are prototype copy (D29).
+  queue" chip and "sample" wording are prototype copy (D29). When a re-read (below)
+  finds the open item gone, the next one opens with "<file> was decided elsewhere, so
+  the next image is open."; a failed re-read keeps the queue and says "The review queue
+  could not be read again. Reload the page to see the latest images."
+
+**Live queue (F2).** An open Needs review page holds one server-sent event stream,
+`GET /prompt_manager/review/events` (`py/api/review_events.py`): `event: ready` when it
+opens, then `event: change` after each committed queue change (an item the scan or the
+monitor recorded, a spelling refresh, a decision from any tab; `database/review_changes.py`
+notifies after the commit, from whichever thread wrote it) and after a restore. Events
+carry no data. The page re-reads its first page on every `ready` and `change`, keeping
+the open item, its choice and an unanswered decision; re-reads asked for while one runs
+collapse into one more, and one waits while a decision is in flight. The row's count is
+re-read with it. Nothing polls: a `: keepalive` comment every 25 s only lets the server
+drop a closed tab's subscription. Shutdown (`on_shutdown`) ends every stream and answers
+a later one 503; the browser's own EventSource reconnection then stops. A duplicate
+recording and a refused decision change nothing and send nothing. Residual: the stream
+is one HTTP/1.1 connection per open Needs review page (browsers allow six per origin), so
+it lives only while the page is open; the re-read replaces Load more's extra pages with
+the first 40.
+
+Pinned by `tests/test_api_review_events.py`, `tests/js/workspace-review-state.test.js`
+("refresh …") and `tests/browser/workspace-review.spec.mjs` ("an open page shows …").
+Leaving the page mid-decision releases that decision's capture (the server may never see
+the request).
 - **D3** and **D20** apply to the queue grid (its cards stay in the grid's flow; it is
   not virtualized) and to the panel's prompt blocks (their mount point is transparent).
 

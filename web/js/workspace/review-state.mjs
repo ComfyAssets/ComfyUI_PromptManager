@@ -11,6 +11,10 @@
  *   a restored storage or a changed queue reads the queue again. A request that got no answer keeps its capture and
  *   its exact body, and the next Apply of the same choice (`retry()`) resends that body once.
  * - Leave for later writes nothing. Tagging the image (the shared Tag dialog) never changes the item.
+ * - `refresh()` re-reads the first page quietly when the server says the queue changed (F2: the review change stream:
+ *   a scan or the monitor added items, another tab decided one). The open item, its choice and an unanswered decision
+ *   stay; when the open item has left the queue the next one opens with a note. Refreshes asked for while one runs
+ *   collapse into one more read.
  */
 import { noun } from './plural.mjs';
 
@@ -28,7 +32,7 @@ export const COPY = Object.freeze({
     empty: 'Ambiguous images are added when a metadata scan or a new generation finds more than one sampler path.',
     panelTitle: 'Resolve the association',
     leaveUnresolved: 'Leave unresolved',
-    // The states the concept lacks are text only (Global Constraints); D-NEW-F1.
+    // The states the concept lacks are text only (Global Constraints); D119.
     loading: 'Loading the review queue…',
     loadFailed: 'The review queue could not be read.',
     detailLoading: 'Loading sampler paths…',
@@ -37,6 +41,9 @@ export const COPY = Object.freeze({
     limited: 'This file has too many sampler paths to list. You can leave it unresolved.',
     unavailable: 'This file is not under a current image source, so it cannot be opened. You can leave it unresolved.',
     lost: 'The decision may not have been saved. Apply again to send the same decision once more.',
+    // D119 (F2): the open item left the queue in a re-read, and a failed re-read.
+    decidedElsewhere: name => `${name} was decided elsewhere, so the next image is open.`,
+    refreshFailed: 'The review queue could not be read again. Reload the page to see the latest images.',
     failed: 'The decision could not be saved. Try again.',
     applied: 'Association accepted.',
     leftUnresolved: 'Left unresolved.',
@@ -94,7 +101,7 @@ const initial = () => ({
 
 /**
  * @param {{api: {get: Function, post: Function, del: Function}}} options
- * @returns the controller: `state`, `subscribe(listener)`, `load()`, `loadMore()`, `select(id)`, `choose(value)`,
+ * @returns the controller: `state`, `subscribe(listener)`, `load()`, `refresh()`, `loadMore()`, `select(id)`, `choose(value)`,
  *   `apply()`, `retry()`, `leave()`, `dispose()`.
  */
 export function createReviewController({ api }) {
@@ -102,6 +109,7 @@ export function createReviewController({ api }) {
     const listeners = new Set();
     const lifetime = new AbortController();
     let listRead = null, detailRead = null, pending = null, disposed = false;
+    let refreshing = null, refreshAgain = false, refreshAfterLoad = false;
 
     function set(update) {
         if (disposed) return;
@@ -119,25 +127,65 @@ export function createReviewController({ api }) {
         pending = null;
     }
 
-    /** Read the first page; `stale` re-reads the selected item's detail too (its revision or epoch moved). */
-    async function load({ keepWarning = false, stale = false } = {}) {
+    /**
+     * Read the first page; `stale` re-reads the selected item's detail too (its revision or epoch moved). `quiet` (a
+     * refresh) keeps the page as it is while reading and after a failed read.
+     */
+    async function load({ keepWarning = false, stale = false, quiet = false } = {}) {
         listRead?.abort();
         const read = listRead = new AbortController();
-        set({ status: state.items.length ? state.status : 'loading', ...(keepWarning ? {} : { warning: '' }) });
+        if (!quiet) set({ status: state.items.length ? state.status : 'loading', ...(keepWarning ? {} : { warning: '' }) });
+        let readOk = false;
         try {
             const page = await api.get(`${REVIEW_URL}?limit=${PAGE_LIMIT}`, { signal: signalOf(read), cache: 'no-store' });
             if (read !== listRead || disposed) return;
             const items = Object.freeze((page.items ?? []).map(entry => Object.freeze({ ...entry })));
+            const left = state.items.find(entry => entry.id === state.selectedId);
             set({ status: 'ready', epoch: page.library_epoch, total: page.total, items, nextCursor: page.next_cursor ?? null,
                 more: 'idle' });
+            readOk = true;
             const keep = items.find(entry => entry.id === state.selectedId);
-            if (keep && state.detail && !stale) return;
-            if (items.length) await select((keep ?? items[0]).id, { keepWarning });
+            // A re-read keeps the open item as it is (even a failed read of it, which has its own Retry).
+            if (keep && !stale && (quiet || state.detail)) return;
+            if (quiet && left && !keep && items.length) {
+                set({ warning: COPY.decidedElsewhere(left.filename) });
+                await select(items[0].id, { keepWarning: true });
+            } else if (items.length) await select((keep ?? items[0]).id, { keepWarning });
             else set({ selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null });
         } catch (error) {
             if (read !== listRead || disposed || isAbort(error)) return;
-            set({ status: 'error' });
+            if (quiet && state.status === 'ready') set({ warning: COPY.refreshFailed });
+            else set({ status: 'error' });
+        } finally {
+            // A change heard while the first read ran: that read may predate it, so read once more.
+            if (readOk && refreshAfterLoad && !disposed) {
+                refreshAfterLoad = false;
+                refresh();
+            }
         }
+    }
+
+    /** Re-read the queue after a change elsewhere; calls made while one runs collapse into one more read. */
+    function refresh() {
+        if (disposed) return Promise.resolve();
+        // Before the queue has been read there is nothing to keep: the first read (or Retry) reads the latest.
+        if (state.status !== 'ready') {
+            if (state.status === 'loading') refreshAfterLoad = true;
+            return Promise.resolve();
+        }
+        if (refreshing) {
+            refreshAgain = true;
+            return refreshing;
+        }
+        refreshing = (async () => {
+            do {
+                refreshAgain = false;
+                // A decision in flight finishes first: the page leaves when it is recorded.
+                if (state.phase === 'applying') return;
+                await load({ keepWarning: true, quiet: true });
+            } while (refreshAgain && !disposed);
+        })().finally(() => { refreshing = null; });
+        return refreshing;
     }
 
     async function loadMore() {
@@ -200,7 +248,9 @@ export function createReviewController({ api }) {
                 toast: choice === UNRESOLVED ? COPY.leftUnresolved : COPY.applied });
             return true;
         } catch (error) {
-            if (disposed || isAbort(error)) return false;
+            // Leaving the page mid-request: the server may never see it, so the capture is released here (a release
+            // of a capture the server already used is a harmless 404).
+            if (disposed || isAbort(error)) { release(body.capture_token); return false; }
             if (isLost(error)) {
                 pending = { id, body };
                 set({ phase: 'idle', warning: COPY.lost, canRetry: true });
@@ -261,7 +311,7 @@ export function createReviewController({ api }) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        load: () => load(), loadMore, select: id => select(id), choose, apply, retry, leave,
+        load: () => load(), refresh, loadMore, select: id => select(id), choose, apply, retry, leave,
         dispose() {
             if (disposed) return;
             dropPending();

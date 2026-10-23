@@ -383,6 +383,6 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 /* #249 D20: the prompt blocks' mount point is transparent, so the chosen path's sections sit in the panel as the
    concept's do. */
 .review-panel > .prompt-inspector { display: contents; /* D20 */ }
-/* D-NEW-F1: a file that cannot be served (no current root) has an inert, empty media button. */
+/* D119: a file that cannot be served (no current root) has an inert, empty media button. */
 .review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; }
 .review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; }

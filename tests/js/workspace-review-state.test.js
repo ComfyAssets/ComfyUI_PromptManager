@@ -341,3 +341,126 @@ test('dispose releases a kept capture and stops reads', async () => {
     assert.equal(released[0].url, CAPTURE + 'capture-1');
     assert.equal(await c.retry(), false);
 });
+
+// F2: an open page re-reads its queue when the server says it changed (the review change stream).
+function refreshOf(c) {
+    assert.equal(typeof c.refresh, 'function', 'refresh is not implemented');
+    return c.refresh();
+}
+test('refresh re-reads the queue quietly and keeps the selection and choice', async () => {
+    let queue = QUEUE;
+    const { c, h } = await loaded({ [`GET ${ITEMS}`]: () => response(200, page(queue)) });
+    c.choose(HASH_B);
+    const statuses = [];
+    c.subscribe(state => statuses.push(state.status));
+    queue = [...QUEUE, item('three')];
+    await refreshOf(c);
+    await settle();
+    assert.deepEqual(c.state.items.map(entry => entry.id), ['one', 'two', 'three']);
+    assert.equal(c.state.total, 3);
+    assert.equal(c.state.selectedId, 'one');
+    assert.equal(c.state.choice, HASH_B);
+    assert.equal(c.state.warning, '');
+    assert.ok(statuses.every(status => status === 'ready'), `no loading state: ${statuses}`);
+    assert.equal(h.of('GET', `${ITEMS}/one`).length, 1, 'the open item is not read again');
+});
+
+test('refreshes asked for during a refresh collapse into one more read', async () => {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    let lists = 0;
+    const { c, h } = await loaded({ [`GET ${ITEMS}`]: async () => {
+        lists += 1;
+        if (lists === 2) await held;
+        return response(200, page(QUEUE));
+    } });
+    const first = refreshOf(c);
+    await settle();
+    refreshOf(c);
+    refreshOf(c);
+    release();
+    await first;
+    await settle();
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 3, 'the load, the refresh and one collapsed re-read');
+    assert.equal(c.state.status, 'ready');
+});
+
+test('a refresh after the open item was decided elsewhere opens the next one and says so', async () => {
+    let queue = QUEUE;
+    const { c, h } = await loaded({
+        [`GET ${ITEMS}`]: () => response(200, page(queue)),
+        [`GET ${ITEMS}/three`]: () => response(200, detailOf(item('three'))),
+    });
+    queue = [item('three')];
+    await refreshOf(c);
+    await settle();
+    assert.equal(c.state.selectedId, 'three');
+    assert.equal(c.state.detailStatus, 'ready');
+    assert.equal(c.state.warning, 'one.png was decided elsewhere, so the next image is open.');
+    assert.equal(h.of('GET', `${ITEMS}/three`).length, 1);
+});
+
+test('a refresh to an empty queue clears the selection', async () => {
+    let queue = QUEUE;
+    const { c } = await loaded({ [`GET ${ITEMS}`]: () => response(200, page(queue)) });
+    queue = [];
+    await refreshOf(c);
+    await settle();
+    assert.equal(c.state.total, 0);
+    assert.deepEqual(c.state.items, []);
+    assert.equal(c.state.selectedId, null);
+    assert.equal(c.state.status, 'ready');
+});
+
+test('a failed refresh keeps the queue and says so', async () => {
+    let lists = 0;
+    const { c } = await loaded({ [`GET ${ITEMS}`]: () => { lists += 1; return lists === 1 ? response(200, page(QUEUE)) : fail(500, 'review-failed'); } });
+    await refreshOf(c);
+    await settle();
+    assert.equal(c.state.status, 'ready');
+    assert.deepEqual(c.state.items.map(entry => entry.id), ['one', 'two']);
+    assert.equal(c.state.warning, 'The review queue could not be read again. Reload the page to see the latest images.');
+});
+
+test('dispose during a decision releases its capture', async () => {
+    const { c, h } = await loaded({ [`POST ${ITEMS}/one/decision`]: () => new Promise(() => {}) });
+    const applying = c.apply();
+    await settle();
+    assert.equal(c.state.phase, 'applying');
+    c.dispose();
+    assert.equal(await applying, false);
+    await settle();
+    assert.deepEqual(h.of('DELETE', CAPTURE).map(call => call.url), [CAPTURE + 'capture-1']);
+    await refreshOf(c);
+    assert.equal(h.of('GET', `${ITEMS}?`).length, 1, 'a disposed controller reads nothing');
+});
+
+test('a change heard during the first read re-reads once after it, and a failed first read stays an error', async () => {
+    const { createReviewController } = await load();
+    let release;
+    let lists = 0;
+    const h = harness(routes({ [`GET ${ITEMS}`]: async () => {
+        lists += 1;
+        if (lists === 1) await new Promise(resolve => { release = resolve; });
+        return response(200, page(QUEUE));
+    } }));
+    const c = createReviewController({ api: h.api });
+    const first = c.load();
+    await settle();
+    refreshOf(c);
+    assert.equal(lists, 1, 'the first read is not interrupted');
+    release();
+    await first;
+    await settle();
+    assert.equal(lists, 2, 'one re-read after the first read');
+    assert.equal(c.state.status, 'ready');
+
+    const failing = harness(routes({ [`GET ${ITEMS}`]: () => fail(500, 'review-failed') }));
+    const broken = createReviewController({ api: failing.api });
+    const reading = broken.load();
+    refreshOf(broken);
+    await reading;
+    await settle();
+    assert.equal(broken.state.status, 'error');
+    assert.equal(failing.of('GET', `${ITEMS}?`).length, 1, 'Retry is the way back, not a re-read');
+});
