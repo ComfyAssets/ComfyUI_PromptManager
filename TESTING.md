@@ -2368,6 +2368,11 @@ skip without ffmpeg). The remaining known divergences, checked against ffprobe 9
   Python's json limit is `malformed` locally and `limited` on that Python.
 - Decimal exponent limits assume CPython's C `_decimal`; on a `_pydecimal` interpreter
   the server would read the over-limit exponents the local projection refuses.
+- Follow-up (two CPython-JSON emulations, review M6): `local-video.mjs`
+  (`pythonJsonLoads`/`pythonFloatRepr`, numbers kept as lexemes) and `py-json.mjs`
+  (`pyJsonLoads`/`pyFloatRepr`, Python value kinds) both emulate `json.loads`; only the
+  depth cap is shared so far. A fix to one parser can miss the other, so the video
+  reader should move onto `py-json.mjs` in a later PR.
 
 Preserve raw logs, failed traces, paired PNGs, geometry, runtime versions and
 source hashes before later managed commands clear their output directories.
