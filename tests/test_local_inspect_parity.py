@@ -51,12 +51,17 @@ from utils.prompt_inspector import (
     read_inspection_file,
 )
 
+from utils.prompt_inspector import inspect_prompt_evidence
+from utils.prompt_pair_resolver import INSPECTION_PROFILE
+
 try:
     from tests import inspection_parity as parity
+    from tests import local_resolver_cases as resolver_cases
     from tests.open_handles import assert_closed
     from tests.test_utils_video_metadata import HAVE_FFMPEG, write_video
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
     import inspection_parity as parity
+    import local_resolver_cases as resolver_cases
     from open_handles import assert_closed
     from test_utils_video_metadata import HAVE_FFMPEG, write_video
 
@@ -1109,6 +1114,169 @@ class LocalProjectionParityTests(unittest.TestCase):
             {"reserialized-json", "original-text", "invalid", "limited"} <= seen
         )
         self.assertTrue({"parsed", "malformed", "limited"} <= seen)
+
+
+def _server_evidence(records):
+    return inspect_prompt_evidence(records, None, profile=INSPECTION_PROFILE)
+
+
+class LocalResolverParityTests(unittest.TestCase):
+    """``resolveLocalEvidence`` answers as ``inspect_prompt_evidence`` (PR L3 Task 8).
+
+    Python is the oracle: every expected value is the server's own answer on the
+    same record texts. Task 8 ports one sampler's tracing; a record set whose
+    graph has several sampler candidates or a detailer stage, or only A1111
+    ``parameters``, is a gap the port reports until Task 9, and exactly those
+    are gaps (``local_resolver_cases.single_chain`` decides from the server's
+    table).
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(assert_closed, self, temporary.name)
+        self.directory = Path(temporary.name)
+
+    def _compare(self, cases):
+        """Assert each record set equal or a recorded gap; return the server answers."""
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "records": records}
+                for name, records in cases.items()
+            ],
+        )
+        answers = {}
+        for name, records in cases.items():
+            with self.subTest(case=name):
+                local = observed[name]
+                self.assertEqual(
+                    local.get("gap", False),
+                    not resolver_cases.single_chain(records),
+                    "a gap is exactly a Task 9 path",
+                )
+                if local.get("gap"):
+                    continue
+                server = _server_evidence(records)
+                answers[name] = server
+                self.assertEqual(
+                    _canonical_bytes(local["evidence"]), _canonical_bytes(server)
+                )
+        return answers
+
+    def test_local_roles_match_execution_and_single_chain_vectors(self):
+        files = {}
+        for name in parity.COMMITTED:
+            files[name] = parity.fixture_path(name)
+        for name in parity.TEST_TIME:
+            path = parity.fixture_path(name, self.directory)
+            parity.write_png(path, parity.build(name))
+            files[name] = path
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "path": str(path)}
+                for name, path in files.items()
+            ],
+        )
+        vectors = {
+            vector["fixture"]: vector
+            for vector in json.loads(parity.VECTORS_PATH.read_text(encoding="utf-8"))
+            if vector["profile"] == "inspection"
+        }
+        compared = gaps = 0
+        for name, path in files.items():
+            with self.subTest(fixture=name):
+                local = observed[name]
+                try:
+                    records = read_inspection_file(path).metadata
+                except MetadataReadError:
+                    self.assertEqual(local, {"unreadable": True})
+                    continue
+                self.assertEqual(
+                    local.get("gap", False), not resolver_cases.single_chain(records)
+                )
+                if local.get("gap"):
+                    gaps += 1
+                    continue
+                server = _server_evidence(records)
+                self.assertEqual(
+                    _canonical_bytes(local["evidence"]), _canonical_bytes(server)
+                )
+                # The committed vector agrees with the server read here.
+                expect = vectors[name]["expect"]
+                self.assertEqual(server["resolution"]["state"], expect["state"])
+                self.assertEqual(
+                    server["resolution"]["reason_code"], expect["reason_code"]
+                )
+                compared += 1
+        # f01, f09 (several samplers) and f19 (multistage detailer) wait for Task 9.
+        self.assertGreaterEqual(compared, 20)
+        self.assertGreaterEqual(gaps, 1)
+
+    def test_local_roles_match_golden_record_sets(self):
+        answers = self._compare(resolver_cases.golden_cases())
+        codes = {answer["resolution"]["reason_code"] for answer in answers.values()}
+        self.assertTrue(
+            {
+                "malformed",
+                "unsupported-node",
+                "runtime-value",
+                "composite",
+                "work-limit",
+                "depth-limit",
+                "text-limit",
+                "graph-ceiling",
+                "no-sampler",
+                None,
+            }
+            <= codes
+        )
+        sources = {
+            side["source"]
+            for answer in answers.values()
+            for side in answer["prompts"].values()
+        }
+        self.assertTrue(
+            {"execution", "graph-inferred", "zeroed-conditioning"} <= sources
+        )
+
+    def test_committed_resolver_vectors_are_current(self):
+        """The Node unit test's committed answers are still the server's."""
+        committed = json.loads(resolver_cases.VECTORS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            committed,
+            json.loads(json.dumps(resolver_cases.committed_vectors())),
+            "regenerate with: python3 -m tests.local_resolver_cases --write",
+        )
+
+    def test_local_roles_match_at_every_work_bound(self):
+        answers = self._compare(resolver_cases.boundary_cases())
+        for name in ("visits", "depth", "scanned"):
+            self.assertEqual(answers[f"{name}-edge"]["resolution"]["state"], "resolved")
+            self.assertIn(
+                answers[f"{name}-over"]["resolution"]["reason_code"],
+                ("work-limit", "depth-limit"),
+            )
+        self.assertEqual(
+            answers["named-astral"]["resolution"]["node"]["class_type"],
+            "\U0001f600" * 64,
+        )
+
+    def test_local_roles_match_fuzzed_record_sets(self):
+        cases = {}
+        for seed in range(4):
+            cases.update(resolver_cases.fuzz_cases(seed, 150))
+        answers = self._compare(cases)
+        states = [answer["resolution"]["state"] for answer in answers.values()]
+        # Coherent graphs reach real results, not only early refusals.
+        self.assertGreater(states.count("resolved"), len(states) // 5)
+        self.assertGreater(states.count("ambiguous"), 0)
+        self.assertGreater(states.count("unresolved"), len(states) // 10)
+        self.assertGreaterEqual(
+            len({answer["resolution"]["reason_code"] for answer in answers.values()}),
+            5,
+        )
 
 
 if __name__ == "__main__":

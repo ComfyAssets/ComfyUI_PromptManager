@@ -14,6 +14,9 @@
 //         the carrier rule alone, as the server selects from ffprobe's tag map.
 //         A {records} entry (records null = an unreadable file) answers
 //         {classified: null, result: null, metadata} for the projection alone.
+// A {mode: 'resolve'} entry (PR L3) answers {evidence} or {gap: true}: resolveLocalEvidence of its
+// {path}'s local read, or of its {records} texts, with the repository semantics table
+// (gap: a path the port leaves to Task 9).
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -28,6 +31,18 @@ const web = path.join(here, '..', '..', '..', 'web', 'js', 'workspace');
 const { selectVideoCarrier } = await import(moduleUrl(path.join(web, 'local-video.mjs')));
 const { projectMetadata } = await import(moduleUrl(path.join(web, 'local-projection.mjs')));
 const { readLocalFile, toInspectionRead } = await import(moduleUrl(path.join(web, 'local-inspection.mjs')));
+const { resolveLocalEvidence, compileSemantics, LocalResolverGap } = await import(moduleUrl(path.join(web, 'local-resolver.mjs')));
+const semantics = compileSemantics(JSON.parse(fs.readFileSync(path.join(here, '..', '..', '..', 'web', 'js', 'inspection-semantics.json'), 'utf8')));
+
+/** The local evidence for one set of record texts, or {gap: true}. */
+function resolved(records) {
+    try {
+        return { evidence: resolveLocalEvidence(records, semantics) };
+    } catch (error) {
+        if (error instanceof LocalResolverGap) return { gap: true };
+        throw error;
+    }
+}
 
 const selectionRead = (selection) => selection.status === 'complete' ?
     { records: selection.records, record_formats: selection.record_formats, carrierText: selection.carrierText, limited: selection.limited } : null;
@@ -37,6 +52,13 @@ for await (const chunk of process.stdin) chunks.push(chunk);
 const output = {};
 for (const entry of JSON.parse(Buffer.concat(chunks).toString('utf8'))) {
     const { name } = entry;
+    if (entry.mode === 'resolve') {
+        if (entry.records !== undefined) { output[name] = resolved(entry.records); continue; }
+        const { classification, result } = await readLocalFile(await fs.openAsBlob(entry.path), { pngMetadata });
+        const read = classification === null ? null : toInspectionRead(classification, result).read;
+        output[name] = read === null ? { unreadable: true } : resolved(read.records);
+        continue;
+    }
     if (entry.records !== undefined) {
         const read = entry.records === null ? null : {
             records: entry.records,
