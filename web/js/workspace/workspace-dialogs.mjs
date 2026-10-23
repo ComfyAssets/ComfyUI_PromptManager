@@ -59,10 +59,10 @@ function createShell() {
     body.id = 'modal-body';
     header.append(title, close);
     dialog.append(header, body);
-    close.addEventListener('click', () => finish());
+    close.addEventListener('click', () => dismiss());
     dialog.addEventListener('cancel', event => {
         event.preventDefault();
-        finish();
+        dismiss();
     });
     // A browser may still close a modal on its own; that is a dismissal too. `close` arrives as a later task, so it
     // is ignored once this shell was reopened or replaced.
@@ -80,6 +80,12 @@ function finish() {
     if (shell?.dialog.open) shell.dialog.close();
     onClose?.();
     if (trigger?.isConnected) trigger.focus();
+}
+
+/** × or Escape: close, unless the open dialog's `canClose()` holds it (a save in flight). */
+function dismiss() {
+    if (session?.canClose && !session.canClose()) return;
+    finish();
 }
 
 const boundScopes = new WeakSet();
@@ -104,13 +110,13 @@ function bindScope(scope) {
     });
 }
 
-function show(heading, nodes, { scope, trigger, focusTarget, onClose = null }) {
+function show(heading, nodes, { scope, trigger, focusTarget, onClose = null, canClose = null }) {
     shell ??= createShell();
     if (!shell.dialog.isConnected) document.body.append(shell.dialog);
     bindScope(scope);
     // A swapped-out body is gone from the shell, so its owner releases it.
     const replaced = session?.onClose;
-    session = { scope, trigger: trigger ?? session?.trigger ?? null, onClose };
+    session = { scope, trigger: trigger ?? session?.trigger ?? null, onClose, canClose };
     replaced?.();
     shell.title.textContent = heading;
     shell.body.replaceChildren(...nodes);
@@ -301,10 +307,14 @@ export function openCopyFallback(text, { scope, trigger = null, title = 'Copy pr
  * The concept's `simpleInput`: one labelled `input#action-input` (starting at `value`), then Cancel and the primary
  * `action`. The action reports the trimmed value and closes; an empty value keeps the dialog open on its field, or
  * reports `fallback` when one is given (Save view's "Saved view", a1339). A positive `maxLength` limits the field.
+ * `validate(value)` may refuse a value with a message: the dialog then stays open with the typed text and the field
+ * reports the message (its native validity) until it is edited.
  */
-export function openInputDialog({ scope, title, label, action, value = '', maxLength, fallback, onApply, trigger = null }) {
+export function openInputDialog({ scope, title, label, action, value = '', maxLength, fallback, onApply, trigger = null,
+    validate = null }) {
     requireScope(scope);
     requireCallbacks({ onApply });
+    if (validate !== null) requireCallbacks({ validate });
     for (const [name, text] of Object.entries({ title, label, action })) {
         if (typeof text !== 'string' || !text) throw new TypeError(`The input dialog needs a ${name}`);
     }
@@ -317,9 +327,17 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
     const cancel = createButton('Cancel');
     const apply = createButton(action, 'ca-primary');
     cancel.addEventListener('click', () => finish());
+    input.addEventListener('input', () => input.setCustomValidity(''));
     apply.addEventListener('click', () => {
         const entered = input.value.trim() || fallback;
         if (!entered) { input.focus(); return; }
+        const problem = validate?.(entered);
+        if (problem) {
+            input.setCustomValidity(problem);
+            input.reportValidity();
+            input.focus();
+            return;
+        }
         finish();
         onApply(entered);
     });
@@ -330,14 +348,16 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
 
 /**
  * The concept's plain `dialog(title, body)` with page-built `nodes`. `onClose` runs once when the dialog closes or
- * another dialog replaces its body, so the page can dispose what it mounted there.
+ * another dialog replaces its body, so the page can dispose what it mounted there. While `canClose()` answers false,
+ * × and Escape leave the dialog open (the page, a route change or a replacing dialog still close it).
  */
-export function openContentDialog({ scope, title, nodes, onClose = null, trigger = null }) {
+export function openContentDialog({ scope, title, nodes, onClose = null, trigger = null, canClose = null }) {
     requireScope(scope);
     if (typeof title !== 'string' || !title) throw new TypeError('The dialog needs a title');
     if (!Array.isArray(nodes) || nodes.some(node => !node || typeof node !== 'object')) throw new TypeError('The dialog needs its nodes');
     if (onClose !== null && typeof onClose !== 'function') throw new TypeError('The dialog onClose must be a function');
-    show(title, nodes, { scope, trigger, onClose });
+    if (canClose !== null && typeof canClose !== 'function') throw new TypeError('The dialog canClose must be a function');
+    show(title, nodes, { scope, trigger, onClose, canClose });
 }
 
 export const SCAN_REVIEW_SENTENCE = 'Enrich positive / negative associations, reuse canonical text and report unchanged files. ' +

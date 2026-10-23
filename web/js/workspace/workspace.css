@@ -378,3 +378,9 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
     /* D83: the chip's × keeps the concept's 40px coarse target. */
     .ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 40px; min-inline-size: 40px; }
 }
+
+/* Auto-tag selected images (#249 PR D, D85/D90): the Tag image dialog's model panel, then How to apply, a radio group
+   in the concept's `.field` row whose radios keep their own size (the concept's `.field input` is a full-width text
+   field) beside their label, as the concept's own radio rows (s1160 `.compare-item label`). */
+.field[role="radiogroup"] > label { display: flex; align-items: center; gap: 8px; /* D90 */ }
+.field[role="radiogroup"] input[type="radio"] { width: auto; margin: 0; /* D90 */ }

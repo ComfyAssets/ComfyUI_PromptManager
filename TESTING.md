@@ -866,9 +866,10 @@ Recorded deviations on this page (spec §8):
 - **D7**: the star is a real persisted favorite with "Added to favorites." /
   "Removed from favorites." and a rollback toast on failure.
 - **D8**: every Images card has the concept's select checkbox before the star; the
-  `#bulkbar` shows "N selected" and only the real actions in the concept's order (Set
-  category, Export metadata, Clear). Add tags and Add to collection wait for image tags
-  and collections; "Remove links…" is dropped. The selection survives Load more and
+  `#bulkbar` shows "N selected" and only the real actions in the concept's order (Add
+  tags, then D85's Auto-tag selected, Set category, Export metadata, Clear). Add to
+  collection waits for collections; "Remove links…" is dropped. (Amended by #249 PR D:
+  Add tags ships, see "Bulk tagging from the selection bar".) The selection survives Load more and
   bounded re-mounting and is cleared whenever the collection is replaced (search,
   category, sort, Filters, source change, rescan, reload). A return to Images restores
   the saved collection unreplaced and keeps its selection; a full page reload starts
@@ -1205,6 +1206,142 @@ production-versus-concept difference of PR C and its record:
 | Auto-tag images `aria-disabled` without a selected image | D115 |
 | Retry leads the actions when the controller allows it | D116 (ruling T5) |
 | States the concept lacks (busy, conflict, changed storage or file, unconfirmed save, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
+
+### Bulk tagging from the selection bar (#249 PR D)
+
+The Images selection bar shows the concept's **Add tags** after the count, then
+**Auto-tag selected** (D85), before Set category. Both take the checked files when
+pressed, in listing order, as their reveal identity (`{root_index, root_scope, path}`);
+more than 500 toasts "Select at most 500 images." and opens nothing. The selection
+stays after every start, refusal and review. The job's start body is bounded so 500
+targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) fit:
+`500 × (1024 × 6 + 256) + 64 KiB`; a larger body answers 413
+(`tests/test_image_tag_jobs.py` "test_start_body_bounds").
+
+- **Add tags** opens the concept's `simpleInput` (app.js a1378–1383) as Set category
+  does: "Tag selected images", "Tags, separated by commas" (empty: the concept's
+  "cinematic, concept" is sample text), Cancel / Apply. The names are parsed as the Tag
+  image dialog's manual field parses them (trimmed, case-insensitive repeats dropped,
+  first spelling wins); a field that parses to no names keeps the dialog open with the
+  typed text and reports "Enter at least one tag." on the field (its native validity,
+  cleared on the next edit), and nothing is sent. Apply starts the
+  `image-tags` job (`POST /prompt_manager/jobs/image-tags`, `{mode: "add", targets,
+  tags}`) and toasts "Tagging started."; Activity shows its progress.
+- A refused start toasts why and changes nothing: another record-changing job (a scan)
+  gives "Another job is running: <title>." with a link to it (D57's toast), a held model
+  gives the server's `model-busy` sentence, any other coded refusal its own sentence,
+  and anything else "Tagging could not start. Try again." / "Auto-tagging could not
+  start. Try again.".
+- When a job this page started ends having tagged files, those files are read again
+  once: the selected file's inspection (its chips, D88) and, under a Tags filter or a
+  search, the loaded range, as after a Tag save.
+
+- **D85** (plan D62, ruling L1, beyond the concept): **Auto-tag selected** opens
+  "Auto-tag selected images" in the Tag image dialog's shell (`tagging-modal`) with
+  its model panel, headed "Auto-tag <N> image(s)" (the panel's "Auto-tag this image"
+  for N files), without the preview, the manual field, the suggestions or Generate.
+  Its fields show the server's defaults (`GET /prompt_manager/autotag/models`, the
+  D91 Suggestions count included) once that read lands; Start waits for it. A model
+  the status lists as not downloaded keeps Start `aria-disabled` and
+  `#tag-generation-status` says "<model> is not downloaded. Download it from the
+  legacy Auto-tag page." (the server's own sentence), so no job starts only to fail.
+  Start validates the fields as Generate does (native validity; nothing is sent).
+  The concept comparison (`images-concept.spec.mjs`) uses the concept page itself as
+  the oracle, with Add to collection and Remove links… removed and a copy of its Add
+  tags button reading "Auto-tag selected" inserted after it.
+- **D90** (plan D67, ruling T3-bulk): the dialog's **How to apply** radio group
+  (`.field[role=radiogroup]`, radios beside their labels): **Apply automatically**
+  (checked; primary "Start auto-tagging") starts the `image-tags` job
+  (`{mode: "auto", targets, model_type, options}`) and toasts "Auto-tagging started.";
+  **Review each image** (primary "Start review") walks the selection in the browser
+  (`images-tagging-review.mjs`). Each image opens the Tag image dialog titled "Tag
+  image · Image <i> of <M>" on the chosen model and options with Generate already
+  running; its actions are Stop reviewing, Skip and Approve and next (Approve and
+  finish on the last). Approve saves the manual field plus the remaining chips as Save
+  does, without its per-image toast, and opens the next image; Skip writes nothing and
+  advances; Stop reviewing, Escape and × end the session. While Approve's save is in
+  flight, Skip and Stop reviewing are `aria-disabled` and Escape and × do nothing, so the
+  closing count includes that save. When no suggestions are on screen (a model change
+  cleared them, or Generate was refused) the primary saves the manual field only and
+  reads "Save and next" ("Save and finish" on the last image). Each image is one gated
+  `suggest` call, so the session holds no model between images; a `model-busy` answer
+  stays on that image with its sentence in `#tag-generation-status` and D116's Retry
+  until the user retries or skips. Ending toasts "<n> of <M> images tagged." and
+  returns focus to Auto-tag selected.
+- **D91** extends to the bulk dialog: its Suggestions field is the job's and the
+  review's `suggestion_limit`.
+- **D118** (copy the concept has no line for; the concept's `bulk-apply` only toasts a
+  demo sentence): an Add tags field that parses to no names reports "Enter at least one
+  tag." on the field; a start refused for no coded reason toasts "Tagging could not start. Try
+  again." or "Auto-tagging could not start. Try again." (as D55's "The scan could not
+  start. Try again."); and the bulk dialog's model panel is headed "Auto-tag <N>
+  image(s)" where the Tag image dialog's reads "Auto-tag this image". Everything else
+  the selection bar's tagging shows is the concept's or the plan's (D85, D90, D91).
+- **D89** (plan D66, Activity for the `image-tags` job): the job's Activity item and its
+  view are the scan's (D54, D56, D57, D59) with the job kind's own counters, from one
+  per-kind table (`JOB_VIEWS` in `activity-store.mjs`; a kind without one keeps the
+  scan's tiles under "Job log" and "Cancel job"). The titles are the server's: "Add
+  tags to images" and "Auto-tag images".
+  - The pill's verb is "Tagging" ("Tagging · 41% · 8,240 / 19,622").
+  - The item line and the view's heading line read "Started HH:MM · N images · closing
+    this view does not cancel it" (the job's image count, grouped "en-US"), "Finished
+    HH:MM · N tagged · M errors", "Cancelled HH:MM at a file boundary · N tagged ·
+    completed work is kept" or "Stopped on an error at HH:MM · N tagged · M errors".
+  - The view's actions are Download report and, while running, "Cancel tagging"
+    (`.danger`); the progress bar is "<title> progress".
+  - Four `dl.stat-row` tiles in the mockup's tones: Tagged (`.added`, green),
+    Unchanged, Skipped (`.warn`, warning), Errors (`.bad`, red). They keep the
+    mockup's five-column row (two columns on a phone), so a tile is the scan's width
+    and the fifth cell stays empty.
+  - The outcome list reads Tagged, Errors, Skipped, Unchanged (what got tagged and what
+    went wrong first, as the scan's), and the view opens on the first with files.
+  - Rows under Tagged and Unchanged are D57's `button.file-row`s that open the file in
+    the viewer by its listing identity; Skipped and Errors rows are plain text.
+  - The log is "● Tagging log — raw detail, click to show".
+  - The row and log wording is the job's (D1), since neither the concept nor the
+    mockup has a line for it: "Added N tag(s)", "No new tags", and the skip reasons
+    "Video: manual tags only", "Too large to verify", "File changed", "File not found",
+    "Not a supported still image" and "The file could not be read now. Run the job again
+    for it." (the capture store stayed at capacity, for example with Tag dialogs open in
+    other tabs, after a short backoff of retries). Log prefixes are `+` tagged, `=`
+    unchanged, `-` skipped and `!` error.
+  - The progress line is the scan's: "Processing file N of M · about X min left", the
+    estimate (D56's `_time_left`) shown once two files are done, each file one batch.
+  - Download report saves `prompt-manager-image-tags-<YYYYMMDD-HHMM>.json`.
+  - The start toasts are "Tagging started." / "Auto-tagging started." (D85); the end
+    toasts follow the design's pattern with the job's counts, as the scan's: "<title>
+    finished · N tagged · M errors", "<title> cancelled · N tagged" or "<title> failed ·
+    N tagged · M errors".
+  - Tests: `tests/js/workspace-activity-store.test.js` ("image-tags jobs get their own
+    tiles outcomes and pill verb", "unknown kinds keep the generic view");
+    `tests/browser/workspace-activity.spec.mjs` ("an image tagging job shows Tagged
+    Unchanged Skipped Errors and opens tagged rows", "cancel tagging stops at a file
+    boundary", "the report download names the kind", on fake `image-tags` jobs from
+    `workspace_activity_fixture.py`); `tests/browser/activity-concept.spec.mjs` ("image
+    tagging job view follows the approved mockup", dark and light, with a mutation
+    check). The scan's view is unchanged.
+
+Browser tests (`tests/browser/workspace-tagging-bulk.spec.mjs`, on the tagging
+fixture): "selection bar shows Add tags then Auto-tag selected before Set category",
+"Add tags runs a job and the cards show the tags after it finishes", "Auto-tag
+selected with Apply automatically runs a job with the chosen model, thresholds and
+suggestion count", "a model that is not downloaded keeps Start disabled and says
+why", "Suggestions field prefills from the setting and caps chips at the entered
+count", "Review each image walks the selection one dialog at a time and only approved
+images gain tags", "Review holds Stop reviewing, Escape and × while a save is in
+flight, and names a manual-only save" and "a running scan makes the start report
+busy". Units:
+`tests/js/workspace-images-tagging-bulk.test.js`,
+`tests/js/workspace-images-tagging-review.test.js`.
+
+| Difference | Record |
+| --- | --- |
+| Add tags ships (Add to collection and Remove links… still omitted) | D8 (amended) |
+| Auto-tag selected and its dialog | D85 (ruling L1) |
+| How to apply and the Review each image session | D90 (ruling T3-bulk) |
+| Suggestions count in the bulk dialog | D91 |
+| Copy without a concept line: no tags, start fallbacks, the panel heading | D118 |
+| Activity item and job view for image tagging jobs | D89 (plan D66) |
 
 Native image tagging (#249 PR B routes, PR C UI): `POST
 /prompt_manager/image-annotations/observe` (capture one listed file, its saved set and

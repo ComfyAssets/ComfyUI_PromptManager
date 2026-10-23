@@ -198,13 +198,22 @@ def _plural(count, word):
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
 
 
+def _time_left(done, total, batches, elapsed):
+    """ " · about X min left" once enough batches ran, else "" (D56).
+
+    Shared by every Activity job that reports "Processing file N of M": the
+    scan counts its batches, the image tagging job each file.
+    """
+    if batches < MIN_BATCHES_FOR_ESTIMATE or done <= 0 or done >= total:
+        return ""
+    minutes = max(1, math.ceil(elapsed / done * (total - done) / 60))
+    return f" · about {minutes} min left"
+
+
 def _scan_status_line(done, total, batches, elapsed):
     """ "Processing file N of M", with an estimate once enough batches ran."""
     line = f"Processing file {done:,} of {total:,}"
-    if batches < MIN_BATCHES_FOR_ESTIMATE or done <= 0 or done >= total:
-        return line
-    minutes = max(1, math.ceil(elapsed / done * (total - done) / 60))
-    return f"{line} · about {minutes} min left"
+    return line + _time_left(done, total, batches, elapsed)
 
 
 def _file_size(path):
