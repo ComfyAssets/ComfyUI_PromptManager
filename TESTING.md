@@ -1814,12 +1814,15 @@ Needs review decisions and queue reads (#249, `py/api/review.py`,
 `tests/test_api_review.py`): `GET /prompt_manager/review/items?limit=1..40&cursor=`
 answers `{success, library_epoch, total, items, next_cursor}` with pending items
 oldest first; `total` is the exact pending count. The cursor is an HMAC keyset
-on `(created_at, id)` bound to the storage epoch and `review_index_revision`: a
-malformed one is 400, a well-formed one this process cannot verify (tampered,
-or opened before a ComfyUI restart: the secret is per process) is 409
-`review-conflict` with the current `total`, one from before a restore is 409
-`storage-changed`, one from before any queue change (a decision, a new item, a
-refreshed spelling) is 409 `review-conflict`.
+on `(created_at, id)` bound to the storage epoch only (ruling M3, so "load more"
+keeps working while the monitor adds an item per generation): a malformed one
+is 400, a well-formed one this process cannot verify (tampered, or opened
+before a ComfyUI restart: the secret is per process) is 409 `review-conflict`
+with the current `total`, and one from before a restore is 409
+`storage-changed`. A decision or a new item leaves an open cursor valid: a
+decided item drops out of later pages and new items (stamped `utc_now_iso()`,
+microseconds) append after it. Residual risk: an item recorded after a wall
+clock step backwards sorts before an open cursor and shows only on reload.
 Targets are formatted from `spelled_path` against the current roots (the
 roots' real paths are the only file access); a file under no current root is
 `unavailable` with a null target. Every read and decision lists the roots and

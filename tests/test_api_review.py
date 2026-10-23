@@ -1,12 +1,11 @@
 """Needs review decisions and queue reads (#249 E3).
 
 The queue lists pending items oldest first behind an HMAC cursor bound to the
-storage epoch and the review index revision; ``total`` is the exact pending
-count. A decision is explicit: Apply links the chosen sampler's pair only
-under the ingester's compatible rules and only for the current, re-hashed
-bytes of the reviewed file, in one transaction with its decision row; Leave
-unresolved records the decision and links nothing. Responses never carry a
-server path.
+storage epoch; ``total`` is the exact pending count. A decision is explicit:
+Apply links the chosen sampler's pair only under the ingester's compatible
+rules and only for the current, re-hashed bytes of the reviewed file, in one
+transaction with its decision row; Leave unresolved records the decision and
+links nothing. Responses never carry a server path.
 """
 
 import json
@@ -222,7 +221,7 @@ class TestQueueReads(ReviewRoutesTestCase):
         status, data = await self._json("GET", ITEMS_URL + "?cursor=" + "x" * 5000)
         self.assertEqual(status, 400)
 
-    async def test_cursor_invalidated_by_decision_and_restore(self):
+    async def test_cursor_survives_queue_changes_and_is_invalidated_by_restore(self):
         self._require_routes()
         for index in range(3):
             self._record(self._ambiguous(f"f{index}.png", color=(index, 0, 0)))
@@ -244,16 +243,43 @@ class TestQueueReads(ReviewRoutesTestCase):
             status, data = await self._json("GET", f"{ITEMS_URL}?cursor={cursor}")
         self.assertEqual((status, data["code"]), (409, "review-conflict"), data)
         self.assertEqual(data["library_epoch"], first["library_epoch"])
-        # A decision moves the review index revision: the old cursor is stale.
+        # The cursor is bound to the storage epoch only (M3): a decision and a
+        # new item (the monitor records one per generation) leave "load more"
+        # working, because the (created_at, id) keyset is stable under both.
         item, detail, observed = await self._open()
+        self.assertEqual(item["id"], first["items"][0]["id"])
         status, data = await self._decide(
             item["id"], {**self._body(detail, observed, "unresolved")}
         )
         self.assertEqual(status, 200, data)
+        self._record(self._ambiguous("late.png", color=(9, 9, 9)))
+        rows = self._items()
         status, data = await self._json("GET", f"{ITEMS_URL}?limit=1&cursor={cursor}")
-        self.assertEqual(status, 409, data)
-        self.assertEqual(data["code"], "review-conflict")
-        self.assertEqual(data["total"], 2)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["total"], 3)
+        self.assertEqual([i["filename"] for i in data["items"]], ["f1.png"])
+        seen = ["f1.png"]
+        while data["next_cursor"]:
+            data = await self._list(f"?limit=1&cursor={data['next_cursor']}")
+            seen.extend(i["filename"] for i in data["items"])
+        self.assertEqual(seen, ["f1.png", "f2.png", "late.png"])
+        self.assertEqual(len(rows), 4)
+        # A decision on an item after the cursor drops it from later pages.
+        second = await self._list("?limit=1")
+        self.assertEqual([i["filename"] for i in second["items"]], ["f1.png"])
+        conn = self.api.db.model.get_connection()
+        with conn:
+            conn.execute(
+                "UPDATE media_review_items SET state='selected', revision=1 "
+                "WHERE id=(SELECT i.id FROM media_review_items i "
+                "WHERE i.spelled_path LIKE ?)",
+                ("%f2.png",),
+            )
+        data = await self._list(f"?limit=1&cursor={second['next_cursor']}")
+        self.assertEqual(
+            ([i["filename"] for i in data["items"]], data["total"]),
+            (["late.png"], 2),
+        )
         fresh = (await self._list("?limit=1"))["next_cursor"]
         conn = self.api.db.model.get_connection()
         with conn:  # a restore replaces the storage epoch

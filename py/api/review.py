@@ -1,8 +1,9 @@
 """Needs review routes (#249 E3): the pending queue, item detail, decisions.
 
 ``GET /prompt_manager/review/items`` lists pending items oldest first behind
-an HMAC keyset cursor bound to the storage epoch and the review index
-revision (any decision, new item or restore makes an old cursor stale);
+an HMAC keyset cursor bound to the storage epoch only (a restore makes an
+old cursor stale; a decision or a new item does not, because the
+``(created_at, id)`` keyset stays ordered when items leave or are appended);
 ``total`` is the exact pending count. ``GET .../items/{id}`` adds the
 candidates and the dependency fingerprint. ``POST .../items/{id}/decision``
 records one explicit decision: Apply links the chosen sampler's pair only
@@ -153,9 +154,9 @@ class _StaleCursor(ValueError):
     """A well-formed cursor this process cannot verify (e.g. after a restart)."""
 
 
-def _encode_cursor(epoch: str, revision: int, key: tuple) -> str:
+def _encode_cursor(epoch: str, key: tuple) -> str:
     payload = json.dumps(
-        {"v": 1, "e": epoch, "r": revision, "k": list(key)},
+        {"v": 2, "e": epoch, "k": list(key)},
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode()
@@ -164,7 +165,7 @@ def _encode_cursor(epoch: str, revision: int, key: tuple) -> str:
 
 
 def _decode_cursor(token: str) -> tuple:
-    """``(epoch, revision, (created_at, id))`` of a cursor.
+    """``(epoch, (created_at, id))`` of a cursor.
 
     ``ValueError`` when malformed; :class:`_StaleCursor` when well-formed but
     signed by another secret (the per-process secret changes on every start,
@@ -185,15 +186,14 @@ def _decode_cursor(token: str) -> tuple:
         data = json.loads(payload)
         key = data["k"]
         if (
-            data["v"] != 1
+            data["v"] != 2
             or not isinstance(data["e"], str)
-            or type(data["r"]) is not int
             or not isinstance(key, list)
             or len(key) != 2
             or not all(isinstance(part, str) for part in key)
         ):
             raise ValueError()
-        return data["e"], data["r"], tuple(key)
+        return data["e"], tuple(key)
     except _StaleCursor:
         raise
     except (ValueError, KeyError, TypeError, UnicodeError, binascii.Error):
@@ -299,21 +299,19 @@ class ReviewRoutesMixin:
                 return bad_request(str(exc))
         try:
             page, views = await self._run_in_executor(
-                self._review_page, limit, bound[2] if bound else None
+                self._review_page, limit, bound[1] if bound else None
             )
         except Exception:
             self.logger.exception("Review queue read failed")
             return _failed()
         if bound is not None and bound[0] != page["epoch"]:
             return _coded("storage-changed", library_epoch=page["epoch"])
-        if bound is not None and bound[1] != page["revision"]:
-            return _coded("review-conflict", total=page["total"])
         items = page["items"]
         next_cursor = None
         if page["more"] and items:
             last = items[-1]
             next_cursor = _encode_cursor(
-                page["epoch"], page["revision"], (last["created_at"], last["id"])
+                page["epoch"], (last["created_at"], last["id"])
             )
         return web.json_response(
             {
