@@ -38,7 +38,7 @@ from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
 from py import config_store, lora_utils
 from py.config import IntegrationConfig, PromptManagerConfig
-from py.api import admin as admin_module
+from py.api import settings_routes as settings_module
 from py.api import lora_integration as lora_module
 from py.lora_utils import get_trigger_cache
 from utils.hashing import generate_prompt_hash
@@ -615,7 +615,7 @@ class TestConfigWritersShareOneStore(LoraAPITestCase):
         self.config_file.write_text(json.dumps({"custom_section": {"keep": True}}))
         inside = threading.Event()
         release = threading.Event()
-        real_mutation = admin_module._settings_mutation
+        real_mutation = settings_module._settings_mutation
 
         def gated_mutation(updates, new_roots):
             mutate = real_mutation(updates, new_roots)
@@ -642,7 +642,7 @@ class TestConfigWritersShareOneStore(LoraAPITestCase):
         probe = ProbeLock()
         loop = asyncio.get_running_loop()
         with (
-            patch.object(admin_module, "_settings_mutation", gated_mutation),
+            patch.object(settings_module, "_settings_mutation", gated_mutation),
             patch.object(
                 lora_module, "_lora_settings_mutation", recorded_lora_mutation
             ),

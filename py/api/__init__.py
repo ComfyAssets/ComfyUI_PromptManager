@@ -32,6 +32,7 @@ from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
+from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .jobs import JobRegistry
@@ -261,6 +262,7 @@ class PromptManagerAPI(
     PromptRoutesMixin,
     ImageRoutesMixin,
     AdminRoutesMixin,
+    SettingsRoutesMixin,
     JobRoutesMixin,
     ImageTagJobsMixin,
     LoggingRoutesMixin,
@@ -474,6 +476,7 @@ class PromptManagerAPI(
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)
         self._register_admin_routes(routes)
+        self._register_settings_routes(routes)
         self._register_job_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)

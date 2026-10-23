@@ -735,9 +735,9 @@ class TestSettingsReadMonitorThroughModule(AdminAPITestCase):
     def test_no_sys_modules_scan(self):
         import inspect
 
-        from py.api.admin import AdminRoutesMixin
+        from py.api.settings_routes import SettingsRoutesMixin
 
-        source = inspect.getsource(AdminRoutesMixin.get_settings)
+        source = inspect.getsource(SettingsRoutesMixin.get_settings)
         self.assertNotIn("sys.modules", source)
 
     async def test_reports_directories_of_running_monitor(self):
