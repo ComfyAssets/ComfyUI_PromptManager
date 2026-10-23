@@ -1,5 +1,5 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements } from './images-state.mjs';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, initialImagesView } from './images-state.mjs';
 import { createImageCard } from './image-card.mjs';
 import { layoutImages, visibleImages, gridMetrics, stacksCardInfo } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
@@ -16,6 +16,7 @@ import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
 import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
+import { displayPreferences } from './preferences.mjs';
 import { onImageTagsSaved } from './image-tagging.mjs';
 import { followImageTagSaves, openCardTagging } from './images-tagging.mjs';
 import { favoriteBusy, paintStar, receiveFavorites, setFavoriteVisitTarget, toggleFavorite } from './images-favorites.mjs';
@@ -111,7 +112,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     if (parentScope.signal.aborted) { scope.dispose(); return {dispose}; }
     const sender = createPromptSender({scope});
     let detailInspector;
-    const inspection = createInspectionController({api});
+    // System › Appearance: the display defaults this visit starts from (preferences.mjs); null without gallery-settings.js.
+    const preferences = displayPreferences();
+    const inspection = createInspectionController({api, autoLoad:preferences?.autoLoadMetadata !== false, cache:preferences?.cacheMetadata !== false});
     scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
@@ -119,9 +122,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const prior = embedded || saved || favorites ? null : lastVisit;
     // A stale visit keeps its filters, layout and size, and lists again instead of restoring (M6).
     const visit = prior?.stale ? null : prior;
-    let density = prior?.density || 'comfortable';
+    // The layout and size defaults are the Images page's: an embedded gallery (a prompt history's, its dialogs) has no
+    // toolbar to change them, so it keeps its fixed Grid/Comfortable. The metadata and card defaults apply everywhere.
+    const start = initialImagesView({prior, saved, preferences:embedded ? null : preferences});
+    let density = start.density;
     let metrics = {...INITIAL_METRICS};
-    let layout = prior?.layout || 'grid', selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
+    let layout = start.layout, selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
     let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
     // Discovered sources (each with its own folders) and every folder, for "Refine this view" and the scope chip.
     let roots = [], folders = [];
@@ -273,7 +279,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         selection = imageKey(image);
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
-            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onRefresh:refreshInspectionCollection});
+            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection});
         detailInspector.setState(inspection.state);
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);
@@ -289,7 +295,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     /** The concept media card (image-card.mjs): the image opens the viewer, Info inspects (D7–D11, D19). */
     function cardFor(image) {
         const key = imageKey(image);
-        const card = createImageCard(image, {checked:bar ? bar.isChecked(key) : null, favoriteBusy:favoriteBusy(key)});
+        const card = createImageCard(image, {checked:bar ? bar.isChecked(key) : null, favoriteBusy:favoriteBusy(key),
+            // D97: "Show image details on cards" off hides the title and file line; Info and Tag stay.
+            showInfo:preferences?.showImageInfo !== false});
         markSelected(card, key === selection);
         return card;
     }

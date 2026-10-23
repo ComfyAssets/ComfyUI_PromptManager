@@ -4,7 +4,8 @@
  * `aria-pressed`; a press navigates to its hash), then `.settings-layout` with the section's body and the Save row
  * (`span.small#settings-status` + "Save preferences"). D92: no "Sample configuration" chip, the status copy is
  * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
- * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview is native (system-overview.mjs).
+ * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview (system-overview.mjs) and
+ * Appearance (system-appearance.mjs) are native.
  *
  * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
@@ -14,6 +15,8 @@ import { SYSTEM_SECTIONS, navigateTo } from './state.mjs';
 import { createSystemDrafts, DRAFT_DOMAINS } from './system-state.mjs';
 import { sectionNav } from './system-controls.mjs';
 import { healthNotice, mountOverview } from './system-overview.mjs';
+import { mountAppearance } from './system-appearance.mjs';
+import { displayPreferences, readPreferences, reconcilePreferences, subscribePreferences, writePreferences } from './preferences.mjs';
 
 const SETTINGS_URL = '/prompt_manager/settings';
 const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existing administration' });
@@ -24,7 +27,6 @@ const GALLERY = Object.freeze({ href: '/prompt_manager/gallery', label: 'Open ex
  * settings, thumbnails, duplicates and cache tools.
  */
 export const SECTION_HANDOFFS = Object.freeze({
-    appearance: [GALLERY, ADMIN],
     sources: [ADMIN, GALLERY],
     integrations: [ADMIN],
     tagging: [ADMIN],
@@ -46,12 +48,23 @@ function el(tag, text, className) {
 /** A domain whose settings no delivered section edits yet: nothing can be drafted, and a write would say it failed. */
 const undelivered = async () => { throw new Error(NOT_DELIVERED); };
 
-/** The page session's drafts (Q10); the host domain reads and saves the server settings with their revision (#220). */
+/**
+ * The page session's drafts (Q10). The browser domain is this browser's display defaults (preferences.mjs): a write
+ * says whether storage kept it, so the status never claims "Saved in this browser." for a change only this tab holds.
+ * The host domain reads and saves the server settings with their revision (#220).
+ */
 export function systemDrafts(api) {
     drafts ??= createSystemDrafts({
-        readBrowser: () => ({}),
+        readBrowser: () => readPreferences().values,
         readRuntime: () => ({}),
-        writeBrowser: undelivered,
+        writeBrowser: changes => {
+            // Another page changed a drafted value since this tab read it, and no storage event told it yet: refuse,
+            // so the store keeps the draft, flags it and reads the values again; the next Save is an explicit choice.
+            const baseline = drafts.saved('browser');
+            const { conflicts } = reconcilePreferences({ baseline, drafts: changes, next: readPreferences().values });
+            if (conflicts.length) throw Object.assign(new Error('Settings changed elsewhere'), { code: 'settings-changed' });
+            return { persisted: writePreferences(changes, undefined, { baseline }).persisted };
+        },
         writeRuntime: undelivered,
         async readHost() {
             const result = await api.get(SETTINGS_URL, { cache: 'no-store' });
@@ -80,17 +93,19 @@ function handoff(section) {
 function markFailed(layout, store) {
     const failed = new Set(DRAFT_DOMAINS.flatMap(domain => [...store.failed(domain)]));
     for (const control of layout.querySelectorAll('[data-setting]')) {
-        if (failed.has(control.dataset.setting)) control.setAttribute('aria-invalid', 'true');
+        // A row's control names its stored key when that differs from the row id (Appearance's `data-key`).
+        if (failed.has(control.dataset.key ?? control.dataset.setting)) control.setAttribute('aria-invalid', 'true');
         else control.removeAttribute('aria-invalid');
     }
 }
 
 /**
- * The sections delivered so far: Overview (S2 Task 6), and Maintenance's notice with "Run health checks" above the
+ * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), and Maintenance's notice with "Run health checks" above the
  * hand-off to the maintenance tools that are not native yet (D123).
  */
 export const DELIVERED_SECTIONS = Object.freeze({
     overview: mountOverview,
+    appearance: mountAppearance,
     maintenance: (container, { api, activity, scope }) => [healthNotice({ api, activity, scope }), ...handoff('maintenance')],
 });
 
@@ -101,11 +116,25 @@ export const DELIVERED_SECTIONS = Object.freeze({
  * Activity store, which follows the jobs a section starts.
  *
  * The host values are read on mount (and by the store again after a conflict), so a save carries the current revision;
- * until a read returned one, a host save fails without a request (system-state.mjs).
+ * until a read returned one, a host save fails without a request (system-state.mjs). The browser values are read on
+ * mount and again whenever another page changes them (a `storage` event). Either way a value another page changed
+ * under one of this tab's drafts flags that draft (D92's conflict status), including a change made while System was
+ * not mounted (the drafts outlive it, Q10).
  */
 export function mountSystem(main, api, scope, { section, activity, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
     const store = systemDrafts(api);
     store.reloadHost();
+    // Another tab or the legacy gallery changed the display defaults: clean values follow it; a draft it overtook stays
+    // and is flagged (D92's conflict status). `next` is null when the values cannot be read (no gallery-settings.js).
+    const reconcile = next => {
+        const baseline = store.saved('browser');
+        // The first mount has read nothing yet, so nothing can have been overtaken.
+        const conflicts = next && Object.keys(baseline).length
+            ? reconcilePreferences({ baseline, drafts: store.changes('browser'), next }).conflicts : [];
+        store.load('browser').then(() => store.conflict('browser', conflicts), () => {});
+    };
+    reconcile(displayPreferences());
+    scope.cleanup(subscribePreferences(window, next => reconcile(next.values)));
     const nav = sectionNav({ label: 'System sections', sections: SYSTEM_SECTIONS, active: section, scope,
         onSelect: id => navigate(`#/system/${id}`) });
     const layout = el('div', undefined, 'settings-layout');

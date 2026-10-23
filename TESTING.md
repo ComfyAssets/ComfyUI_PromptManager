@@ -2016,8 +2016,36 @@ browser fields, then the host fields (`POST /prompt_manager/settings` with
 highlights their controls; `settings-changed` is a conflict and keeps the draft. System
 reads the host values on mount and again after a conflict; until a read returned a
 revision, a host save fails without a request, so it never sends a blind
-`expected_revision: null` (which S1 merges into the file on disk). No delivered section
-edits a setting yet, so Save stays disabled until Appearance (S3).
+`expected_revision: null` (which S1 merges into the file on disk). Save stays disabled
+until a section has an unsaved change.
+
+Appearance (`system-appearance.mjs`, S3) is the concept's "Browsing & display" surface
+on real values. Its browser rows are this browser's display defaults in the legacy
+gallery's own `gallerySettings` object (`web/js/workspace/preferences.mjs`, Q3): Default
+layout and Thumbnail size (`workspaceLayout` grid/list/masonry, `workspaceDensity`
+comfortable/large/compact, new keys), Load metadata on selection (`autoLoadMetadata`),
+Cache metadata in this browser (`cacheMetadata`), Image loading quality (`imageQuality`:
+Optimized→`medium`, Original→`high`, Fast→`low`; the thumbnail dialog's preselected quality
+once S5 lands), the three video rows (`videoAutoplay`, `videoMute`, `videoLoop`) and Show
+file paths (`showFilePaths`). A write re-reads the stored object and writes back only the
+changed keys, every other key (legacy paging, thumbnail state, unknown keys) as stored;
+the legacy gallery's Save also keeps the keys it does not edit, so the two pages stay in
+sync. The workspace never reads the legacy paging keys (`defaultLimit`, `gridColumns`,
+`infiniteScroll`; README continuous-browsing ruling). A browser that refuses storage
+(denied, or a full quota that leaves the stored bytes as they were) keeps the change for
+this tab only and the status says "Saved for this tab only; browser storage is
+unavailable.", never "Saved in this browser.". Another tab's change (a `storage` event)
+repaints the clean controls; a draft it overtook stays, highlighted, with the conflict
+status. Open from ComfyUI (New tab→`newtab`, Popup window→`popup`) and Node search
+auto-hide (seconds) (a whole number 0–300; anything else is highlighted and never sent)
+are the server's `webui_display_mode` and `result_timeout`, saved through
+`POST /prompt_manager/settings` with the revision. The consumers read the defaults on
+their next visit, never the current view: a new Images visit starts from the layout and
+size (the last visit keeps its own, a saved view opens at Grid and Comfortable as
+before); with metadata off a selection reads nothing until "Load metadata"; with the
+cache off selecting the shown file again re-reads it (on, the one current record is
+reused); paths off leaves out only the Path row of File & provenance; the viewer reads
+the video defaults.
 
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
@@ -2046,7 +2074,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D64 renumbered D92–D96; D121, D122 and D123 assigned):
+Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123 and D124 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2106,6 +2134,36 @@ Recorded deviations (plan D60–D64 renumbered D92–D96; D121, D122 and D123 as
   the rest of Maintenance, above its D94 hand-off, as the native place that runs the
   health check. A press shows "Checking…" (`aria-disabled`) and opens the report; a
   failed check toasts "The health check could not finish. Nothing was changed."
+- **D97** (Appearance): added rows for the legacy gallery settings the concept leaves
+  out, after its own rows: "Show image details on cards" (`showImageInfo`; off hides a
+  card's title and file line, Info and Tag stay at the end of the row), "Collapse viewer
+  details by default" (`sidebarCollapsedByDefault`; the viewer opens with
+  `#viewer-details` hidden and a "Show details"/"Hide details" toggle with
+  `aria-expanded`, the stage taking the whole width), and the operation "Reset display
+  defaults" ("Restore this browser’s display defaults, then save. Other settings are
+  kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
+  The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D124** (inspector): with "Load metadata on selection" off, the Images panel and
+  the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
+  button instead of reading the file. The concept has no such state, so no concept
+  comparison renders it: `metadata off shows an explicit load and loads once on request`
+  (workspace-system.spec) pins it instead.
+
+Appearance scope and states. The Default layout and Thumbnail size defaults start the
+Images page only (a new visit, not the current view or a saved view); the embedded
+galleries (a prompt history's Shared gallery and its All images / Repeat run dialogs)
+have no toolbar, so they keep Grid/Comfortable, while the metadata, cache and card
+defaults apply there too. A host row whose `/settings` read failed stays disabled with
+"Server settings could not be read."; a rejected timeout says "Some changes were not
+saved. Review the highlighted settings." A display default another page saved under one
+of this tab's drafts flags that draft with the conflict status, whether it arrived while
+System was mounted (a `storage` event) or while it was not (checked again on mount, and
+before a write); the draft is never written over the other page's value without that
+status first. A change kept for this tab only is stored by the next write storage accepts.
+
+Open question (saved-views follow-up, M8): a saved view stores no layout or size and
+always opens at Grid/Comfortable, even when the Default layout is Masonry. Should saved
+views store a layout, or follow the default?
 
 `tests/browser/system-concept.spec.mjs` compares the shell and Overview with the concept
 (dark and light, 1600×1100 and 390×844), mapping only the deviations above; unmapped,
@@ -2118,20 +2176,34 @@ source when there are several, replaces only the chips with the fixture's expect
 results, and asserts the full unmapped path list; it maps D96 and compares the
 Maintenance notice unchanged. `system comparison detects mutations` removes a row,
 renames a metric label, swaps the `--line` token, recolours a chip, renames a check,
-removes the totals table and renames a caption. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
-`{concept,production}-{statistics,health}-{dark,light}.png`) are test artifacts; there
+removes the totals table and renames a caption. `appearance matches the concept` maps
+only D97 and the real timeout (unmapped, exactly those paths differ), and `appearance
+comparison detects mutations` removes a row, renames a label and an option and swaps
+the `--line` token. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
+`{concept,production}-{statistics,health}-{dark,light}.png`,
+`{concept,production}-appearance-{dark,light}-{1600,390}.png`) are test artifacts; there
 are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real counts,
 the health check and metric 4, a failed check, the thumbnail row against the status
 endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
-route, a load failure with Retry and late answers after leaving. Its hooks are
+route, a load failure with Retry and late answers after leaving, and Appearance: new
+visits versus the current view and a saved view, the embedded gallery keeping Grid,
+metadata off and on request, the cache (counted up to a request barrier), hidden paths,
+the video defaults, the host fields with their revision, a stale one and a failed read,
+reload and a second tab, a second tab's save while System was closed, storage refused,
+the D97 rows and reset. Its hooks are
 `tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
 failures, an absent source, a deleted linked file, unthumbnailed files) on the
-concept-shaped fixture, with delays through the shared request holds.
+concept-shaped fixture, with delays through the shared request holds; reset also restores
+the server's host settings and its `config.json`, which must be the one inside the server's
+temp root (`tests/test_workspace_system_fixture.py`).
 
 ```sh
-python3 -m unittest tests.test_database_health tests.test_system_api tests.test_library -v
+python3 -m unittest tests.test_database_health tests.test_system_api tests.test_library \
+  tests.test_workspace_system_fixture -v
 node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-controls.test.js \
-  tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js
+  tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js \
+  tests/js/workspace-system-appearance.test.js tests/js/workspace-preferences.test.js \
+  tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js
 npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
@@ -2323,10 +2395,24 @@ validation, annotation group included. The browser fixtures clear
 never the metadata row.
 
 Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
-`tests/test_review.py`): the output scan (Activity's Scan for metadata and the
-legacy `/scan`) and the live monitor hand every file the ingestion resolver
-finds `ambiguous` to `record_ambiguous_file`, whether or not the browser parser
-then links it (`conflict` and `unresolved` files are not queued). It captures
+`tests/test_review.py`, `tests/test_review_outcome.py`): a file is queued only
+when its final outcome is ambiguous and unlinked. The output scan (Activity's
+Scan for metadata and the legacy `/scan`) hands `record_ambiguous_file` a file
+the ingestion resolver finds `ambiguous` only when the browser-parser fallback
+then links nothing (status `ambiguous`) and no saved row links the file
+already; an ambiguous file a saved row links is reported `unchanged` ("Already
+linked to its prompt"), not Needs review. A file the fallback links, an exact
+pair the ingester stores, and `conflict` and `unresolved` files are not
+queued. The queue heals itself: after each batch, the scan removes the pending
+items of every listed file (read or skipped as known) that a saved row now
+links, and the monitor does the same for each ambiguous output it links
+(`settle_linked_review_items`; the review index revision moves). Only an
+undecided item goes (`pending`, revision 0, no decision row): a decision is
+never deleted or changed, so no schema state was added. The monitor never
+queues an output it linked; an unlinked file passed to `record_review_file`
+follows the scan's rule (a file the fallback would link is `skipped`). The
+maintainer's live check of #284/#288 found the queue at 10,232 against a review
+group of 4,677: every fallback-linked ambiguous file had been queued. It captures
 the file (scope `needs-review`), reads its metadata again from the capture,
 resolves it with the default profile and stores only an ambiguous result,
 bound to the capture's byte record (created or refreshed like an observe) and
@@ -2340,14 +2426,20 @@ resolver_version, evidence_hash)` and never touches an existing item or its
 decisions; changed bytes add a new pending item and keep the old one. The
 capture is released before the write; no model is loaded and no pixel is
 decoded. Scan statuses, counters, outcome rows and the legacy SSE events are
-unchanged; the job's `scope` gains `review_items` (new items) and
-`review_errors`, and the log ends with `? N images added to Needs review` (and
-`! N images could not be added to Needs review` on failures, e.g. capture
-capacity). Recording captures in the background: it never takes the store's
+unchanged apart from the already-linked case above; the job's `scope` gains
+`review_items` (this scan's files that are in the pending queue after it, new
+or already there: the review group's ambiguous rows, less files a capture could
+not read or a decision already settled), `review_added` (new items),
+`review_settled` (items removed because their file is linked now) and
+`review_errors`. The log ends with `? N images added to Needs review`,
+`? N images already in Needs review`, `= N images left Needs review · now
+linked` and `! N images could not be added to Needs review` (failures, e.g.
+capture capacity), each only when N > 0. Recording captures in the background: it never takes the store's
 last worker or capture slot, which stay free for an interactive Tag dialog or
 Apply, and waits up to 2 s for room before counting the file as not added
-(`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor records after its fallback link, best effort: a failure
-is logged and the link stays. Recording follows the registry's `records`
+(`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor's
+pass runs after its own link, best effort: a failure is logged and the link
+stays. Recording follows the registry's `records`
 admission (#289): the scan's recording runs under its own `records` job, and
 the monitor's (one file, not a job) is refused while a `records` or `guarded`
 job or hold runs. It then records nothing, logs that the file waits for the

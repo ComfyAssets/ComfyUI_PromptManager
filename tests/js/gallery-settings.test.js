@@ -61,3 +61,50 @@ test("infinite scrolling is off by default and must be a boolean", () => {
     assert.equal(normalizeGallerySettings({ infiniteScroll: true }).infiniteScroll, true);
     assert.equal(normalizeGallerySettings({ infiniteScroll: "yes" }).infiniteScroll, false);
 });
+
+test("the workspace keys have their own defaults and validation", () => {
+    const { WORKSPACE_LAYOUTS, WORKSPACE_DENSITIES } = require("../../web/js/gallery-settings.js");
+    assert.equal(DEFAULT_SETTINGS.workspaceLayout, "grid");
+    assert.equal(DEFAULT_SETTINGS.workspaceDensity, "comfortable");
+    assert.deepEqual(WORKSPACE_LAYOUTS, ["grid", "list", "masonry"]);
+    assert.deepEqual(WORKSPACE_DENSITIES, ["comfortable", "large", "compact"]);
+    assert.equal(normalizeGallerySettings({ workspaceLayout: "masonry" }).workspaceLayout, "masonry");
+    assert.equal(normalizeGallerySettings({ workspaceLayout: "mosaic" }).workspaceLayout, "grid");
+    assert.equal(normalizeGallerySettings({ workspaceDensity: "large" }).workspaceDensity, "large");
+    assert.equal(normalizeGallerySettings({ workspaceDensity: 3 }).workspaceDensity, "comfortable");
+    // The legacy gallery's own view mode is separate: it has no masonry.
+    assert.equal(normalizeGallerySettings({ defaultViewMode: "masonry" }).defaultViewMode, "grid");
+});
+
+test("a legacy gallery Save keeps the workspace keys and every other stored key", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const vm = require("node:vm");
+    const settings = require("../../web/js/gallery-settings.js");
+    const storage = new Map([["gallerySettings", JSON.stringify({ workspaceLayout: "masonry", workspaceDensity: "compact", someOtherTool: 1 })]]);
+    const controls = {
+        lazyLoadingToggle: { checked: true }, imageQualitySelect: { value: "high" }, defaultViewModeSelect: { value: "list" },
+        defaultLimitSelect: { value: "200" }, gridColumnsSelect: { value: "6" }, showImageInfoToggle: { checked: false },
+        autoLoadMetadataToggle: { checked: true }, cacheMetadataToggle: { checked: true }, showFilePathsToggle: { checked: false },
+        sidebarCollapsedByDefaultToggle: { checked: true }, infiniteScrollToggle: { checked: false }, debugModeToggle: { checked: false },
+        apiTimeoutInput: { value: "30" }, checkThumbnailsAtStartup: { checked: true }, videoAutoplayToggle: { checked: true },
+        videoMuteToggle: { checked: false }, videoLoopToggle: { checked: true },
+    };
+    const context = vm.createContext({
+        document: { addEventListener() {}, getElementById: id => controls[id] },
+        window: {}, console: { debug() {}, warn() {}, error() {} }, GallerySettings: settings,
+        localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    });
+    const file = path.join(__dirname, "../../web/js/gallery.js");
+    const Manager = vm.runInContext(`${fs.readFileSync(file, "utf8")}\nGalleryManager;`, context, { filename: file });
+    const manager = Object.create(Manager.prototype);
+    Object.assign(manager, { showNotification() {}, hideSettings() {}, applySettings() {} });
+    manager.saveSettings();
+    const saved = JSON.parse(storage.get("gallerySettings"));
+    assert.equal(saved.workspaceLayout, "masonry");
+    assert.equal(saved.workspaceDensity, "compact");
+    assert.equal(saved.someOtherTool, 1);
+    assert.equal(saved.defaultViewMode, "list");
+    assert.equal(saved.showImageInfo, false);
+    assert.equal(saved.videoMute, false);
+});

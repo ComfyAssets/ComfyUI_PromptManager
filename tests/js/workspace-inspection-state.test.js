@@ -825,3 +825,73 @@ test('refresh re-reads the selected file and keeps the shown record until the ne
     assert.equal(controller.state.record.identity.path, 'folder/b.png');
     controller.dispose(); assert.equal(await controller.refresh(), undefined);
 });
+
+test('metadata off shows an explicit load and loads once on request', async () => {
+    const { api, requests } = pendingApi(), updates = [];
+    const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts, autoLoad: false });
+    controller.subscribe(state => updates.push(state));
+    // Selecting reads nothing: the state says the metadata waits for a request.
+    assert.equal(controller.select(image()), undefined);
+    assert.equal(requests.length, 0);
+    assert.equal(controller.state.deferred, true);
+    assert.equal(controller.state.loading, false);
+    assert.equal(controller.state.record, null);
+    // Selecting the same file again still reads nothing.
+    controller.select({ ...image() });
+    assert.equal(requests.length, 0);
+    const load = controller.load();
+    assert.equal(requests.length, 1);
+    assert.equal(controller.state.loading, true);
+    assert.equal(controller.state.deferred, false);
+    // A second press while it reads, and the same file selected again once it loaded, read nothing more.
+    controller.load();
+    assert.equal(requests.length, 1);
+    requests[0].resolve(envelope()); await load;
+    assert.equal(controller.state.record.generation.seed.value, '9007199254740993');
+    controller.load(); controller.select(image());
+    assert.equal(requests.length, 1);
+    // Another file waits for its own request again.
+    controller.select({ ...image(), path: 'folder/b.png', filename: 'b.png', url: image().url.replace('a%20%23%25', 'b') });
+    assert.equal(controller.state.deferred, true);
+    assert.equal(requests.length, 1);
+    // The default controller loads on selection, as before.
+    const eager = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts });
+    eager.select(image());
+    assert.equal(requests.length, 2);
+    assert.equal(eager.state.deferred, false);
+    eager.dispose(); controller.dispose();
+    assert.equal(controller.load(), undefined);
+});
+
+test('cache off rereads the current selection; on reuses the one current record', async () => {
+    for (const cache of [true, false]) {
+        const { api, requests } = pendingApi();
+        const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts, cache });
+        const first = controller.select(image());
+        // A read in flight is shared either way.
+        controller.select(image());
+        assert.equal(requests.length, 1);
+        requests[0].resolve(envelope()); await first;
+        const again = controller.select(image());
+        assert.equal(requests.length, cache ? 1 : 2, `cache ${cache}`);
+        if (!cache) { requests[1].resolve(envelope()); await again; assert.equal(controller.state.record.identity.path, 'folder/a #%.png'); }
+        controller.dispose();
+    }
+});
+
+test('cache off never rereads a selection whose source changed, and refresh never loads a deferred one', async () => {
+    const { api, requests } = pendingApi();
+    const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts, cache: false });
+    const first = controller.select(image());
+    requests[0].reject(new ApiError(409, refreshMessage, 'source-changed')); await first;
+    assert.equal(controller.state.refreshRequired, true);
+    controller.select(image());
+    assert.equal(requests.length, 1);
+    controller.dispose();
+    const deferred = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts, autoLoad: false });
+    deferred.select(image());
+    assert.equal(deferred.refresh(), undefined);
+    assert.equal(requests.length, 1);
+    assert.equal(deferred.state.deferred, true);
+    deferred.dispose();
+});

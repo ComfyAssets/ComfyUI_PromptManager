@@ -36,10 +36,10 @@ export function cardMedia(image, lazy = false) {
 
 /**
  * One card for `image`. `checked` (a boolean) adds the D8 selection checkbox, `favoriteBusy` paints a pending star
- * (D7, shown wherever the image reports `favorite`), and `media: false` leaves the open button empty for a file that
- * cannot be served.
+ * (D7, shown wherever the image reports `favorite`), `media: false` leaves the open button empty for a file that
+ * cannot be served, and `showInfo: false` hides the title and file line (D97).
  */
-export function createImageCard(image, { checked = null, favoriteBusy = false, media = true } = {}) {
+export function createImageCard(image, { checked = null, favoriteBusy = false, media = true, showInfo = true } = {}) {
     const card = el('article', undefined, 'media-card');
     card.dataset.imageKey = imageKey(image); card.setAttribute('role', 'listitem');
     card.style.setProperty('--media-ratio', mediaRatio(image));
@@ -68,6 +68,8 @@ export function createImageCard(image, { checked = null, favoriteBusy = false, m
     const text = el('div');
     const title = el('h3', cardTitle(image)); if (image.path) title.title = image.path;
     text.append(title, el('p', cardSubtitle(image)));
+    // D97: `showInfo` false (System › Appearance) hides the title and file line; Info and Tag stay.
+    if (!showInfo) text.hidden = true;
     const actions = el('div', undefined, 'image-card-actions');
     const inspectButton = createButton('', 'icon-btn');
     inspectButton.append(createWorkspaceIcon('info'));

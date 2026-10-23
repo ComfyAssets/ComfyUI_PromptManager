@@ -68,9 +68,22 @@ class ReviewRoutesTestCase(ReviewTestCase):
 
     def _record(self, path):
         self._roots()
-        outcome = self.api.record_review_file(str(path))
+        outcome = self._record_raw(path)
         self.assertIn(outcome, ("recorded", "limited"), outcome)
         return outcome
+
+    def _record_raw(self, path):
+        """Record ``path`` as the producers' recorder does, without their rule.
+
+        These tests are about decisions on an item; whether the scan or the
+        monitor would queue the file (``tests/test_review_outcome.py``) is
+        not their subject, and an item can outlive the moment its file gets
+        linked (until the next scan or monitor pass settles it).
+        """
+        from py.api.admin import _scan_roots
+
+        roots = _scan_roots(self.api._get_all_output_dirs())
+        return self.api._record_review_sync(Path(str(path)), roots)
 
     async def _json(self, method, url, **kwargs):
         resp = await self.client.request(method, url, **kwargs)
@@ -314,7 +327,7 @@ class TestQueueReads(ReviewRoutesTestCase):
                 "Steps: 20, Sampler: Euler"
             ),
         )
-        self.assertEqual(self.api.record_review_file(str(limited)), "limited")
+        self.assertEqual(self._record_raw(str(limited)), "limited")
         self._record(self._ambiguous("two.png"))
         items = (await self._list())["items"]
         self.assertEqual([i["limited"] for i in items], [True, False])
@@ -1182,7 +1195,7 @@ class TestInteractiveCapacity(ReviewRoutesTestCase):
             return original(store_, stream, size)
 
         def record():
-            outcome["value"] = self.api.record_review_file(str(busy))
+            outcome["value"] = self._record_raw(str(busy))
 
         recorder = threading.Thread(target=record)
         with patch.object(CaptureStore, "_read", blocking):
@@ -1193,7 +1206,7 @@ class TestInteractiveCapacity(ReviewRoutesTestCase):
                 # Another background recording finds no worker it may use...
                 with patch("utils.media_capture.BACKGROUND_WAIT_SECONDS", 0.01):
                     with self.assertRaises(CaptureCapacity):
-                        self.api.record_review_file(str(busy))
+                        self._record_raw(str(busy))
                 # ...while the interactive observe still gets the last one.
                 observed = await self._observe(item["target"])
                 self.assertEqual(

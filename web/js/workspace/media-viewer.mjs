@@ -2,14 +2,14 @@ import {createScope, createButton} from '../shared/toolkit/core.js';
 import {createViewerSession} from './viewer-state.mjs';
 import {rootedFileAdapter} from './inspection-state.mjs';
 import {mountFileInspector} from './file-inspector.mjs';
+import {displayPreferences, readPreferences} from './preferences.mjs';
 
 let viewerId = 0;
 // Upper bound on waiting for a closed Viewer's in-flight image view before destroying it.
 const PENDING_VIEW_DESTROY_MS = 10000;
+/** The video defaults, read through the shared display defaults (preferences.mjs, #249 System S3). */
 export function readViewerPreferences(getStorage = () => window.localStorage, normalize = globalThis.GallerySettings.normalizeGallerySettings) {
-    let stored;
-    try { stored = JSON.parse(getStorage().getItem('gallerySettings')); } catch { stored = null; }
-    const {videoAutoplay,videoMute,videoLoop} = normalize(stored);
+    const {videoAutoplay,videoMute,videoLoop} = readPreferences(getStorage,normalize).values;
     return {videoAutoplay,videoMute,videoLoop};
 }
 function element(tag, className, text) {
@@ -74,15 +74,31 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         local.listen(download,'click',event => {session.stop();if (download.getAttribute('aria-disabled') === 'true') event.preventDefault();});
         controls.append(download);
         const next = button('Next media','Next →',() => session.navigate(1));
+        // D97: "Collapse viewer details by default" opens the viewer with its details hidden behind one toggle.
+        const collapsed = displayPreferences()?.sidebarCollapsedByDefault === true;
+        let detailsToggle = null;
+        if (collapsed) {
+            detailsToggle = createButton('Show details');detailsToggle.setAttribute('aria-expanded','false');
+            detailsToggle.setAttribute('aria-controls','viewer-details');controls.append(detailsToggle);
+        }
         const position = element('p','media-position muted');position.id = `media-viewer-position-${++viewerId}`;
         position.setAttribute('role','status');
         const reason = element('p','media-reason muted');reason.id = `media-viewer-reason-${viewerId}`;
         const slideshowReason = element('p','media-slideshow-reason muted');slideshowReason.id = `media-viewer-slideshow-${viewerId}`;
         controls.append(position,reason,slideshowReason);left.append(stage,controls);
         const details = element('aside');details.id = 'viewer-details';details.setAttribute('aria-label','Image metadata');
+        if (detailsToggle) {
+            details.hidden = true;
+            local.listen(detailsToggle,'click',() => {
+                details.hidden = !details.hidden;
+                detailsToggle.textContent = details.hidden ? 'Show details' : 'Hide details';
+                detailsToggle.setAttribute('aria-expanded',String(!details.hidden));
+            });
+        }
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
         const inspector = mountFileInspector(details,{api,sender:localSender,parentScope:local,variant:'full',onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
+            onLoad:() => inspectionController.load?.(),
             onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined});
         function closeViewer(restore = true) {
             if (closed) return;

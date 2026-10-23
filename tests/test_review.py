@@ -72,6 +72,29 @@ def ambiguous_graph(*positives):
     return graph
 
 
+def unlinkable_graph(*positives):
+    """Ambiguous, and the scan's browser-parser fallback links nothing.
+
+    Only such a file is queued (an ambiguous file the fallback links is not).
+    The parser reads the first sampler (node 3), whose positive input points
+    at a node missing from the graph; the resolver offers the other samplers
+    as candidates beside that unresolved one.
+    """
+    graph = ambiguous_graph(*positives)
+    graph["3"] = {
+        "class_type": "KSampler",
+        "inputs": {"model": ["1", 0], "positive": ["99", 0], "negative": ["2", 0]},
+    }
+    return graph
+
+
+def resolved_texts(evidence):
+    """The positive texts of the candidates that resolved, sorted."""
+    return sorted(
+        c["positive"]["text"] for c in evidence["candidates"] if c["positive"]
+    )
+
+
 def resolved_graph(text="a red square"):
     return ambiguous_graph(text)
 
@@ -155,7 +178,9 @@ class TestScanRecording(ReviewTestCase):
         self._roots()
         ambiguous = self.output_dir / "sub" / "two.png"
         ambiguous.parent.mkdir()
-        write_png(ambiguous, prompt=ambiguous_graph("cat", "dog"))
+        write_png(ambiguous, prompt=unlinkable_graph("cat", "dog"))
+        # Ambiguous too, but the browser-parser fallback links it: not queued.
+        write_png(self.output_dir / "linked.png", prompt=ambiguous_graph("a", "b"))
         write_png(self.output_dir / "resolved.png", prompt=resolved_graph())
         write_png(self.output_dir / "plain.png")
         write_png(
@@ -178,20 +203,19 @@ class TestScanRecording(ReviewTestCase):
             (item["state"], item["revision"], item["limited"]), ("pending", 0, 0)
         )
         self.assertEqual(item["resolver_version"], 1)
-        self.assertEqual(item["candidate_count"], 2)
+        self.assertEqual(item["candidate_count"], 3)
         self.assertEqual(item["evidence_hash"], evidence_digest(item["evidence"]))
         evidence = json.loads(item["evidence"])
         self.assertEqual(canonical_evidence(evidence), item["evidence"])
         self.assertEqual(evidence["resolver_version"], 1)
-        self.assertEqual(
-            sorted(c["positive"]["text"] for c in evidence["candidates"]),
-            ["cat", "dog"],
-        )
+        self.assertEqual(resolved_texts(evidence), ["cat", "dog"])
         for candidate in evidence["candidates"]:
             self.assertEqual(
                 set(candidate),
                 {"hash", "sampler_id", "state", "reason", "positive", "negative"},
             )
+            if candidate["positive"] is None:  # the parser's unresolved sampler
+                continue
             self.assertEqual(
                 set(candidate["positive"]), {"text", "storage_text", "provenance"}
             )
@@ -210,7 +234,7 @@ class TestScanRecording(ReviewTestCase):
     async def test_scan_statuses_counters_and_outcome_rows_unchanged(self):
         self._require_module()
         self._roots()
-        write_png(self.output_dir / "two.png", prompt=ambiguous_graph("cat", "dog"))
+        write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         write_png(self.output_dir / "one.png", prompt=resolved_graph())
         write_png(
             self.output_dir / "delims.png",
@@ -243,8 +267,8 @@ class TestScanRecording(ReviewTestCase):
         with self.assertLogs("prompt_manager.api", logging.WARNING) as logs:
             without = run(other, broken)
         self.assertEqual(recorded, without)
-        self.assertEqual(recorded[0]["ambiguous"], 1)
-        self.assertEqual(recorded[0]["added"], 2)
+        self.assertEqual(recorded[0]["ambiguous"], 2)
+        self.assertEqual(recorded[0]["added"], 1)
         self.assertTrue(any("Needs review" in line for line in logs.output))
         self.assertEqual(len(self._items()), 2)
         other.close_annotation_captures()
@@ -258,7 +282,7 @@ class TestScanRecording(ReviewTestCase):
     async def test_new_scope_rereads_ambiguous_files_and_stays_idempotent(self):
         self._require_module()
         self._roots()
-        write_png(self.output_dir / "two.png", prompt=ambiguous_graph("cat", "dog"))
+        write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         write_png(self.output_dir / "one.png", prompt=resolved_graph())
         first = await self._scan("new")
         revision = self._review_revision()
@@ -274,8 +298,11 @@ class TestScanRecording(ReviewTestCase):
 
         self.assertEqual(reads, ["two.png"])
         self.assertEqual(first["scope"]["review_items"], 1)
-        self.assertEqual(second["scope"]["review_items"], 0)
+        # Still in the queue (review_items), but nothing new was added.
+        self.assertEqual(second["scope"]["review_items"], 1)
+        self.assertEqual(second["scope"]["review_added"], 0)
         self.assertNotIn("added to Needs review", "\n".join(second["log"]))
+        self.assertIn("? 1 image already in Needs review", "\n".join(second["log"]))
         self.assertEqual(len(self._items()), 1)
         self.assertEqual(self._review_revision(), revision)
         self.assertEqual(self._capture_files(), [])
@@ -287,7 +314,7 @@ class TestScanRecording(ReviewTestCase):
         self._require_module()
         self._roots()
         path = self.output_dir / "two.png"
-        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
         await self._scan("new")
         captures = []
         original = CaptureStore.capture
@@ -308,7 +335,8 @@ class TestScanRecording(ReviewTestCase):
             second = await self._scan("new")
             self.assertEqual(captures, [])
             self.assertEqual(reads, ["two.png"])
-            self.assertEqual(second["scope"]["review_items"], 0)
+            self.assertEqual(second["scope"]["review_added"], 0)
+            self.assertEqual(second["scope"]["review_items"], 1)
             # A touched file (same bytes, new mtime) is captured again: a
             # duplicate of its item, whose fingerprint is refreshed.
             stat = path.stat()
@@ -323,7 +351,7 @@ class TestScanRecording(ReviewTestCase):
     async def test_repeat_scan_keeps_decisions(self):
         self._require_module()
         self._roots()
-        write_png(self.output_dir / "two.png", prompt=ambiguous_graph("cat", "dog"))
+        write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         await self._scan("all")
         item = self._items()[0]
         candidate = json.loads(item["evidence"])["candidates"][0]["hash"]
@@ -362,10 +390,10 @@ class TestScanRecording(ReviewTestCase):
         self._require_module()
         self._roots()
         path = self.output_dir / "two.png"
-        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
         await self._scan()
         old = self._items()[0]
-        write_png(path, prompt=ambiguous_graph("cat", "dog"), color=(0, 0, 255))
+        write_png(path, prompt=unlinkable_graph("cat", "dog"), color=(0, 0, 255))
         self.assertNotEqual(digest(path), old["sha256"])
 
         job = await self._scan()
@@ -387,7 +415,7 @@ class TestScanRecording(ReviewTestCase):
             parameters=DELIMITERS,
         )
         many = [f"prompt {n}" for n in range(17)]
-        write_png(self.output_dir / "many.png", prompt=ambiguous_graph(*many))
+        write_png(self.output_dir / "many.png", prompt=unlinkable_graph(*many))
 
         job = await self._scan()
 
@@ -399,14 +427,16 @@ class TestScanRecording(ReviewTestCase):
             self.assertEqual(evidence["candidates"], [])
             self.assertIs(evidence["limited"], True)
         self.assertEqual(
-            json.loads(items["many.png"]["evidence"])["candidate_total"], 17
+            # 17 samplers and the parser's unresolved one.
+            json.loads(items["many.png"]["evidence"])["candidate_total"],
+            18,
         )
         self.assertEqual(job["scope"]["review_items"], 2)
 
     async def test_capacity_errors_are_logged_and_counted_not_fatal(self):
         self._require_module()
         self._roots()
-        write_png(self.output_dir / "two.png", prompt=ambiguous_graph("cat", "dog"))
+        write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
 
         def full(*args, **kwargs):
             raise CaptureCapacity("Too many captures are in progress")
@@ -415,8 +445,8 @@ class TestScanRecording(ReviewTestCase):
             job = await self._scan()
 
         self.assertEqual(job["state"], "finished")
-        # The browser parser links this ambiguous file: Activity counts it Added.
-        self.assertEqual(job["counters"]["added"], 1)
+        # Nothing links this ambiguous file: Activity counts it under review.
+        self.assertEqual(job["counters"]["review"], 1)
         self.assertEqual(job["scope"]["review_items"], 0)
         self.assertEqual(job["scope"]["review_errors"], 1)
         self.assertIn(
@@ -427,7 +457,7 @@ class TestScanRecording(ReviewTestCase):
     async def test_legacy_scan_events_are_unchanged(self):
         self._require_module()
         self._roots()
-        write_png(self.output_dir / "two.png", prompt=ambiguous_graph("cat", "dog"))
+        write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         resp = await self.client.request("POST", "/prompt_manager/scan")
         payloads = _sse_payloads(await resp.text())
         final = payloads[-1]
@@ -755,15 +785,17 @@ class TestMonitorRecording(ReviewTestCase):
         ).fetchone()
         return row[0] if row else None
 
-    async def test_monitor_keeps_fallback_link_and_records_item_best_effort(self):
+    async def test_monitor_keeps_its_link_and_never_queues_the_linked_file(self):
+        """The monitor's pass is best effort (a failure is logged, the link
+        stays); a file the monitor linked is never queued."""
         self._require_module()
         self._roots()
         path = self.output_dir / "two.png"
-        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
         prompt_id = self.api.db.save_prompt(
             text="latest", prompt_hash=generate_prompt_hash("latest")
         )
-        metadata = {"prompt": ambiguous_graph("cat", "dog")}
+        metadata = {"prompt": unlinkable_graph("cat", "dog")}
         context = {"id": prompt_id, "text": "latest", "fallback": True}
 
         handler = self._handler()
@@ -779,13 +811,18 @@ class TestMonitorRecording(ReviewTestCase):
         self.assertEqual(self._items(), [])
 
         other = self.output_dir / "three.png"
-        write_png(other, prompt=ambiguous_graph("cat", "dog"))
-        handler.review_recorder = self.api.record_review_file
+        write_png(other, prompt=unlinkable_graph("cat", "dog"))
+        calls = []
+
+        def recorder(image_path):
+            calls.append(self.api.record_review_file(image_path))
+            return calls[-1]
+
+        handler.review_recorder = recorder
         handler.link_image_to_prompt(str(other), context, metadata)
         self.assertEqual(self._linked_prompt(other), prompt_id)
-        items = self._items()
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["sha256"], digest(other))
+        self.assertEqual(calls, ["linked"])
+        self.assertEqual(self._items(), [])
         self.assertEqual(self._capture_files(), [])
 
     async def test_monitor_skips_resolved_and_files_outside_the_roots(self):
@@ -822,7 +859,7 @@ class TestMonitorRecording(ReviewTestCase):
 
         self._roots()
         path = self.output_dir / "held.png"
-        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
 
         for kind, admission in (
             (RESTORE_JOB_KIND, "records"),
@@ -912,7 +949,7 @@ class TestRecordedSpelling(ReviewTestCase):
         self._require_module()
         self._roots()
         upper = self.output_dir / "Two.PNG"
-        write_png(upper, prompt=ambiguous_graph("cat", "dog"))
+        write_png(upper, prompt=unlinkable_graph("cat", "dog"))
         with _case_folding():
             self.assertEqual(self.api.record_review_file(str(upper)), "recorded")
             (before,) = self._items()
@@ -992,7 +1029,7 @@ class TestCaptureStoreShutdown(ReviewTestCase):
         self._require_module()
         self._roots()
         path = self.output_dir / "two.png"
-        write_png(path, prompt=ambiguous_graph("cat", "dog"))
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
         await self.api.cleanup_annotation_captures(None)  # the shutdown hook
         self.assertIsNone(self.api._captures)
         with patch("utils.media_capture.tempfile.mkdtemp") as mkdtemp:

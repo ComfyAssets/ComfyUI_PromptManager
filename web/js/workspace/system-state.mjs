@@ -15,8 +15,9 @@
  * the page session (Q10a): a section left and opened again shows them, and a reload of its values keeps them.
  *
  * Adapters: `readBrowser()` and `readRuntime()` return the values; `readHost()` returns `{values, revision}`.
- * `writeBrowser(changes)` returns `{persisted}` (false: kept for this tab only), `writeHost(changes,
- * {expected_revision})` the settings response (`{success, persisted, revision}`), `writeRuntime(changes)` anything;
+ * `writeBrowser(changes)` returns `{persisted}` (false: kept for this tab only) and throws an error with `code:
+ * 'settings-changed'` when another page changed a drafted value (a conflict: the browser values are read again),
+ * `writeHost(changes, {expected_revision})` the settings response (`{success, persisted, revision}`), `writeRuntime(changes)` anything;
  * a write that throws failed.
  */
 export { SYSTEM_SECTIONS, isSystemSection } from './state.mjs';
@@ -64,6 +65,7 @@ export function createSystemDrafts(adapters) {
     const failedKeys = { browser: new Set(), host: new Set(), runtime: new Set() };
     const listeners = new Set();
     let revision = null;
+    let hostRead = 'pending';
     let outcome = null;
     let saving = null;
 
@@ -78,6 +80,7 @@ export function createSystemDrafts(adapters) {
             const read = await adapters.readHost();
             values = read?.values ?? {};
             revision = read?.revision ?? null;
+            hostRead = 'loaded';
         } else {
             values = await (domain === 'browser' ? adapters.readBrowser() : adapters.readRuntime());
         }
@@ -159,8 +162,11 @@ export function createSystemDrafts(adapters) {
         }
     }
 
-    /** Read the host values again; a failed read leaves host saves refused until one succeeds. */
-    const reloadHost = () => load('host').then(() => true, () => false);
+    /**
+     * Read the host values again; a failed read leaves host saves refused until one succeeds, and `hostState()` says
+     * so (System S3: the host rows show that the server settings could not be read).
+     */
+    const reloadHost = () => load('host').then(() => true, () => { hostRead = 'failed'; notify(); return false; });
 
     /** Save the dirty domains in order; a Save pressed while one runs joins it. */
     function save() {
@@ -170,6 +176,7 @@ export function createSystemDrafts(adapters) {
             for (const domain of DRAFT_DOMAINS) result[domain] = await saveDomain(domain);
             // Settings changed elsewhere: read them (and their revision), keeping the drafts (Q10).
             if (result.host === 'conflict') await reloadHost();
+            if (result.browser === 'conflict') await load('browser').catch(() => {});
             return result;
         })().then(result => {
             saving = null;
@@ -180,9 +187,39 @@ export function createSystemDrafts(adapters) {
         return saving;
     }
 
+    /**
+     * A value the control could not take (System S3: a timeout outside 0–300): no draft, the control is highlighted and
+     * the status says a change was not saved.
+     */
+    function reject(domain, key) {
+        requireDomain(domain);
+        drafts[domain].delete(key);
+        failedKeys[domain].add(key);
+        outcome = { [domain]: 'failed' };
+        notify();
+    }
+
+    /**
+     * Another page changed saved values this tab has drafts for (a browser `storage` event, System S3): the drafts stay
+     * and are highlighted, and the status says the settings changed elsewhere.
+     */
+    function conflict(domain, keys) {
+        requireDomain(domain);
+        if (!keys.length) return;
+        for (const key of keys) failedKeys[domain].add(key);
+        outcome = { [domain]: 'conflict' };
+        notify();
+    }
+
     return {
         load,
         reloadHost,
+        /** Whether the host values were read: `pending`, `loaded`, or `failed` (the last read failed). */
+        hostState: () => hostRead,
+        reject,
+        conflict,
+        /** The saved values of a domain (its last read or save), not the drafts. */
+        saved: domain => { requireDomain(domain); return { ...baseline[domain] }; },
         get,
         set,
         dirty,

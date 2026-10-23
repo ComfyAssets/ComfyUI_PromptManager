@@ -1768,7 +1768,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             saveSettings() {
+                // The workspace shares this object (its layout and density, #249 System S3), so a Save starts from what is
+                // stored and keeps every key this dialog does not edit.
                 const settings = {
+                    ...this.getSettings(),
                     lazyLoading: document.getElementById('lazyLoadingToggle').checked,
                     imageQuality: document.getElementById('imageQualitySelect').value,
                     defaultViewMode: document.getElementById('defaultViewModeSelect').value,
@@ -1782,8 +1785,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     infiniteScroll: document.getElementById('infiniteScrollToggle').checked,
                     debugMode: document.getElementById('debugModeToggle').checked,
                     apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
-                    thumbnailsGenerated: this.getSettings().thumbnailsGenerated, // Preserve this
-                    thumbnailPromptDismissed: this.getSettings().thumbnailPromptDismissed,
                     checkThumbnailsAtStartup: document.getElementById('checkThumbnailsAtStartup').checked,
                     // Video settings
                     videoAutoplay: document.getElementById('videoAutoplayToggle').checked,

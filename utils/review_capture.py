@@ -53,15 +53,17 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
     Returns ``recorded`` (new item with candidates), ``limited`` (new item
     without candidates), ``duplicate`` (these bytes already carry this
     evidence, or the file's current stat is the verified fingerprint of
-    bytes an item cites, so it is not even copied) or ``skipped`` (the file
+    bytes an item cites, so it is not even copied, and that item is still
+    pending), ``decided`` (as ``duplicate``, but the item carries a decision,
+    so the file is not in the queue) or ``skipped`` (the file
     changed, vanished, is not ambiguous in its captured bytes, or storage was
     restored meanwhile).
     ``CaptureCapacity`` and database errors propagate to the caller, which
     logs and counts them.
     """
-    spelled_path = _queued_spelling(db, root, relative)
-    if spelled_path is None:
-        return "duplicate"
+    spelled_path, queued = _queued_spelling(db, root, relative)
+    if queued is not None:
+        return _already_queued(db, *queued)
     epoch = db.get_execution_epoch()
     try:
         # Background: the last worker stays free for an interactive request.
@@ -102,12 +104,22 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
     except LibraryCommandError:
         return "skipped"
     if not inserted:
-        return "duplicate"
+        return _already_queued(db, capture.locator, capture.size, capture.mtime_ns)
     return "limited" if limited else "recorded"
 
 
-def _queued_spelling(db, root, relative: str) -> str | None:
-    """The file's spelling, or None when its current stat is already queued.
+def _already_queued(db, locator: str, size: int, mtime_ns: int) -> str:
+    """``duplicate`` while the existing item is pending, else ``decided``."""
+    if db.review_pending_at(locator, size, mtime_ns, RESOLVER_VERSION):
+        return "duplicate"
+    return "decided"
+
+
+def _queued_spelling(db, root, relative: str) -> tuple[str, tuple | None]:
+    """The file's spelling, and ``(locator, size, mtime_ns)`` when queued.
+
+    The second value is None unless the file's current stat is already
+    queued.
 
     The spelling is the capture's own candidate path (the real root joined
     with the listed relative path), so it folds to the capture's locator. A
@@ -121,7 +133,7 @@ def _queued_spelling(db, root, relative: str) -> str | None:
     try:
         facts = os.lstat(spelled)
     except OSError:
-        return spelled
+        return spelled, None
     locator = os.path.normcase(spelled)
     if db.review_fingerprint_queued(
         locator, facts.st_size, facts.st_mtime_ns, RESOLVER_VERSION
@@ -129,8 +141,8 @@ def _queued_spelling(db, root, relative: str) -> str | None:
         # Not copied again, but a case-only rename keeps the stat: record
         # the current spelling so the item's target still opens.
         db.refresh_review_spelling(locator, spelled)
-        return None
-    return spelled
+        return spelled, (locator, facts.st_size, facts.st_mtime_ns)
+    return spelled, None
 
 
 def captured_review(store, capture) -> tuple[dict, dict] | None:

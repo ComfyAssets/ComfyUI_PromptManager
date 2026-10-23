@@ -33,6 +33,7 @@ from .annotations import _new_id, _validate_locator, _validate_target
 from .models import normalize_image_path, utc_now_iso
 from .review_changes import notify_review_change
 from .review_schema import (
+    DECISIONS_TABLE,
     ITEMS_TABLE,
     MAX_CANDIDATES,
     MAX_SPELLED_PATH_BYTES,
@@ -80,6 +81,26 @@ _QUEUED = (
     f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
     "WHERE f.locator=? AND b.size=? AND b.mtime_ns=? AND i.resolver_version=? "
     "LIMIT 1"
+)
+_PENDING_AT = (
+    f"SELECT 1 FROM {FILES_TABLE} f "  # nosec B608
+    f"JOIN {BYTES_TABLE} b ON b.file_id=f.id "
+    f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
+    "WHERE f.locator=? AND b.size=? AND b.mtime_ns=? AND i.resolver_version=? "
+    "AND i.state='pending' LIMIT 1"
+)
+# Pending items of one file: the candidates a link settles.
+_PENDING_OF_LOCATOR = (
+    f"SELECT i.id FROM {FILES_TABLE} f "  # nosec B608
+    f"JOIN {BYTES_TABLE} b ON b.file_id=f.id "
+    f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
+    "WHERE f.locator=? AND i.state='pending'"
+)
+# Only an undecided item goes: a decision row (RESTRICT) is never deleted.
+_SETTLE_ITEM = (
+    f"DELETE FROM {ITEMS_TABLE} WHERE id=? AND state='pending' "  # nosec B608
+    f"AND revision=0 AND NOT EXISTS (SELECT 1 FROM {DECISIONS_TABLE} d "
+    f"WHERE d.item_id={ITEMS_TABLE}.id)"
 )
 _EPOCH = "SELECT storage_epoch FROM execution_history_metadata WHERE singleton_id=1"
 _PENDING_COUNT = (
@@ -359,6 +380,60 @@ class ReviewOperations:
             .fetchone()
         )
         return row is not None
+
+    def review_pending_at(
+        self, locator: str, size: int, mtime_ns: int, resolver_version: int
+    ) -> bool:
+        """True when a *pending* item cites bytes verified at this exact stat.
+
+        ``review_fingerprint_queued`` also matches decided items; a file whose
+        only item is decided is not in the queue.
+        """
+        row = (
+            self.model.get_connection()
+            .execute(_PENDING_AT, (locator, size, mtime_ns, resolver_version))
+            .fetchone()
+        )
+        return row is not None
+
+    def review_file_linked(self, spellings) -> bool:
+        """True when a saved row links the file under any of ``spellings``."""
+        with self._annotation_read() as conn:
+            return bool(dependent_images(conn, spellings))
+
+    def settle_linked_review_items(self, files) -> int:
+        """Remove the pending, undecided items of files that are now linked.
+
+        ``files`` holds ``(locator, spellings)`` per file. An item leaves the
+        queue only when it is still ``pending`` at revision 0 with no decision
+        row and a saved row links its file under one of ``spellings``; a
+        decided item is never touched. Files without a pending item cost one
+        indexed read and open no write transaction. Returns how many items
+        were removed (the review index revision moves when any was).
+        """
+        files = [(locator, tuple(spellings)) for locator, spellings in files]
+        for locator, _spellings in files:
+            _validate_locator(locator)
+        conn = self.model.get_connection()
+        candidates = [
+            (locator, spellings)
+            for locator, spellings in files
+            if conn.execute(_PENDING_OF_LOCATOR, (locator,)).fetchone() is not None
+        ]
+        if not candidates:
+            return 0
+        removed = 0
+        with self._pair_transaction() as conn:
+            for locator, spellings in candidates:
+                if not dependent_images(conn, spellings):
+                    continue
+                for (item_id,) in conn.execute(
+                    _PENDING_OF_LOCATOR, (locator,)
+                ).fetchall():
+                    removed += conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
+            if removed:
+                conn.execute(_BUMP_REVIEW_INDEX)
+        return removed
 
     def review_queue_page(self, *, limit: int, after: tuple | None = None) -> dict:
         """One page of pending items, oldest first, from one snapshot.
