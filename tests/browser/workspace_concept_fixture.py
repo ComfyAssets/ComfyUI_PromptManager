@@ -11,6 +11,7 @@ the same sidebar counts (24 images, 6 prompts, 15 tags). Nothing is mocked.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime
 import json
 import math
 import os
@@ -157,6 +158,8 @@ CONCEPT_MODEL = "illustrative-model.safetensors"
 MAX_EXTRA_IMAGES = 120
 # Unlinked, seedless images (D11 "W × H · PNG") newer than the concept's, for D3 checks.
 MAX_SEEDLESS_IMAGES = 2
+# A test's chosen "now" (epoch seconds) stays before the year 3000.
+MAX_EPOCH_SECONDS = 32_503_680_000
 SEEDLESS_SIZE = (1536, 1152)
 # The same 4:3 shape with a short "96 × 72 · PNG" subtitle that stays on one line at
 # 390px beside the card's Info and Tag (the D3 footer check).
@@ -342,6 +345,17 @@ def _bounded(name: str, value: int, maximum: int) -> None:
         raise ValueError(f"{name} is out of range")
 
 
+def _instant(now: float | None) -> float:
+    """The fixture's one "now": ``now`` itself, or the wall clock when omitted."""
+    if now is None:
+        return time.time()
+    if isinstance(now, bool) or not isinstance(now, (int, float)):
+        raise TypeError("now must be a number of epoch seconds")
+    if not 0 < now < MAX_EPOCH_SECONDS:
+        raise ValueError("now is out of range")
+    return float(now)
+
+
 def seed_workspace_concept(
     api: PromptManagerAPI,
     root: Path,
@@ -349,8 +363,15 @@ def seed_workspace_concept(
     extra_images: int = 0,
     seedless_images: int = 0,
     short_seedless: bool = False,
+    now: float | None = None,
 ) -> dict:
     """Replace this server's disposable rows and files with the concept's data.
+
+    Every relative time the fixture writes (the prompts' last use, the files'
+    mtimes, the runs' observation times) is taken from one instant, ``now``
+    (epoch seconds, the wall clock when omitted), returned as ``manifest["now"]``.
+    A browser whose clock is fixed at that instant reads the concept's "Used
+    today" and caption day however close to midnight the run starts.
 
     ``extra_images`` continues the concept's rounds (same prompts, dimensions and
     seed rule) after its 24 images, for bounded-rendering and Load more checks.
@@ -361,6 +382,10 @@ def seed_workspace_concept(
         raise TypeError("short_seedless must be a boolean")
     _bounded("extra_images", extra_images, MAX_EXTRA_IMAGES)
     _bounded("seedless_images", seedless_images, MAX_SEEDLESS_IMAGES)
+    now = _instant(now)
+    used_at = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat(
+        timespec="microseconds"
+    )
     _clear(api, root)
     db = api.db
     epoch = db.get_execution_epoch()
@@ -385,8 +410,15 @@ def seed_workspace_concept(
         db.update_prompt_pair_metadata(pair_ids[0], title=first_name)
         for name, text in prompt.negatives[1:]:
             pair_ids.append(db.save_prompt_pair(prompt.positive, text, title=name))
-        # Real queue-hook counting (D23): four runs, the last one now.
+        # Real queue-hook counting (D23): four runs, the last one now, at the
+        # fixture's own instant rather than the database's later wall clock.
         db.record_prompt_use(positive_id, times=CONCEPT_RUN_COUNT)
+        with db.model.get_connection() as conn:
+            conn.execute(
+                "UPDATE prompts SET last_used_at = ? WHERE id = ?",
+                (used_at, positive_id),
+            )
+            conn.commit()
         prompts.insert(
             0, {"id": prompt.id, "positive_id": positive_id, "pair_ids": pair_ids}
         )
@@ -400,7 +432,6 @@ def seed_workspace_concept(
     favorite_root = _favorite_root_key(list(api._get_all_output_dirs())[0])
     total = len(CONCEPT_PROMPTS) * CONCEPT_IMAGE_ROUNDS + extra_images
     rounds = math.ceil(total / len(CONCEPT_PROMPTS))
-    now = time.time()
     images, runs = [], []
     slots = [
         (round_index, prompt_index, prompt)
@@ -484,6 +515,8 @@ def seed_workspace_concept(
     api.invalidate_gallery_cache()
     return {
         "epoch": epoch,
+        # The fixture's "now" (epoch seconds), for the browser's fixed clock.
+        "now": now,
         # The newest file's mtime (epoch seconds), for the D17 caption date.
         "newest_modified": now - 10 if seedless_images else now - 60,
         "seedless": seedless,

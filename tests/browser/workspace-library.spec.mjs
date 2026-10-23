@@ -610,7 +610,9 @@ test('card matches the concept and never wraps the category mid-word',async({pag
     await expect(await request.post('/prompt_manager/bulk/category',{data:{prompt_ids:[dual.id],category:''}})).toBeOK();
     // A long saved title fills the title row, so only the chip's own min-content keeps "Uncategorized" and "asian" whole.
     const wide='A remarkably long saved positive prompt title that fills the whole card title row';
-    await patchShelf(page,item=>item.id===cat.id?{run_count:4,last_used_at:new Date().toISOString(),rating:5}:item.id===dual.id||item.id===dog.id?{title:wide,run_count:1,last_used_at:null,rating:null}:{});
+    // One "now" for the patched last use and the page's clock, so it reads "Used today" on either side of midnight.
+    const usedAt=new Date();await page.clock.setFixedTime(usedAt);
+    await patchShelf(page,item=>item.id===cat.id?{run_count:4,last_used_at:usedAt.toISOString(),rating:5}:item.id===dual.id||item.id===dog.id?{title:wide,run_count:1,last_used_at:null,rating:null}:{});
     for(const [width,height] of [[1600,1100],[390,844]]) {
         await page.setViewportSize({width,height});await page.goto(route);await expect(cards(page)).toHaveCount(3);
         const card=page.locator(`article[data-prompt-id="${cat.id}"]`);
