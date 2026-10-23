@@ -1756,12 +1756,7 @@ def _resolve(
         )
     overwritten = frozenset()
     if semantics is not None and "prompt" in metadata:
-        try:
-            overwritten = _overwritten_prompt_nodes(
-                metadata.get("workflow"), normalized
-            )
-        except _Unresolved as error:
-            return _result("unresolved", reason=str(error), reason_code=error.code)
+        overwritten = _overwritten_prompt_nodes(metadata.get("workflow"), normalized)
     resolver = _GraphResolver(
         normalized,
         adapters or {},
@@ -1872,8 +1867,9 @@ def _prompt_manager_widgets(workflow: Any) -> Dict[str, str]:
 
     Nodes inside a subgraph run as ``"<instance>:<inner>"`` API IDs (nested
     instances chain their IDs); a definition without an instance runs nothing.
-    The walk is bounded in depth and in nodes visited. A node ``type`` that is
-    a list or an object makes the workflow malformed (``_Unresolved``).
+    The walk is bounded in depth and in nodes visited. A node whose ``type`` is
+    a list or an object is skipped: it is neither a subgraph instance nor a
+    PromptManager node (#286).
     """
     nodes = workflow.get("nodes") if isinstance(workflow, dict) else None
     if not isinstance(nodes, list):
@@ -1895,7 +1891,7 @@ def _prompt_manager_widgets(workflow: Any) -> Dict[str, str]:
             api_id = f"{prefix}{node_id}"
             if isinstance(kind, (list, dict)):
                 # JSON's unhashable values are never a node type (#286).
-                raise _Unresolved(MALFORMED_EVIDENCE_REASON, "malformed")
+                continue
             if kind in subgraphs and depth < _MAX_SUBGRAPH_DEPTH:
                 stack.append((subgraphs[kind], api_id + ":", depth + 1))
                 continue

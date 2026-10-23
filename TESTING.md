@@ -399,10 +399,12 @@ reaches its own sampler is `malformed`; running out of budget is `work-limit` or
 `depth-limit`, never single stage. Each sampler's walk runs once per resolution;
 selector branch runs share it and other candidates are charged its visit cost.
 A UI workflow node whose `type` is a list or an object (read only for the overwritten
-PromptManager check) makes the evidence `malformed` ("Prompt evidence is malformed"),
-and a list or object `class_type` is never a preview output; before #286 both raised
-and the inspect route answered 500 (`test_unhashable_*` in
-`tests/test_api_prompt_inspector.py`).
+PromptManager check) is skipped like a non-object node, since it can be neither a
+subgraph instance nor a PromptManager node, so a prompt that resolves still resolves
+and the other nodes still feed the check; a list or object `class_type` is never a
+preview output. Before #286 both raised and the inspect route answered 500
+(`test_unhashable_*` in `tests/test_api_prompt_inspector.py`, the `workflow-type-*`
+golden cases on both sides).
 Text encoders: `single` encoders (the Qwen image encoders, `TextEncodeQwenImage21`
 slot 0 `prompt` and slot 1 `negative_prompt`, `KikoTextEncode`) read one string
 input unchanged. `parts-equal` encoders (CLIPTextEncodeSDXL, Flux, SD3) resolve when

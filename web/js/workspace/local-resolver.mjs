@@ -621,12 +621,6 @@ function noSampler(graph) {
     return result('unresolved', { reason, reasonCode: 'no-sampler' });
 }
 
-/** A workflow `type` that is a list or an object is malformed evidence on the server too (#286). */
-function hashable(value) {
-    if (isList(value) || isDict(value)) throw new Unresolved(MALFORMED_EVIDENCE_REASON, 'malformed');
-    return value;
-}
-
 /** `_prompt_manager_widgets`: API node ID to widget text for every PromptManager node that runs. */
 function promptManagerWidgets(workflow) {
     const nodes = isDict(workflow) ? pyGet(workflow, 'nodes') : null;
@@ -648,7 +642,9 @@ function promptManagerWidgets(workflow) {
             const kind = pyGet(node, 'type'), nodeId = pyGet(node, 'id');
             if (!(typeof nodeId === 'string' || isInt(nodeId))) continue;
             const apiId = `${prefix}${String(nodeId)}`;
-            if (typeof hashable(kind) === 'string' && subgraphs.has(kind) && depth < MAX_SUBGRAPH_DEPTH) {
+            // A list or object `type` is neither a subgraph instance nor a PromptManager node (#286).
+            if (isList(kind) || isDict(kind)) continue;
+            if (typeof kind === 'string' && subgraphs.has(kind) && depth < MAX_SUBGRAPH_DEPTH) {
                 stack.push([subgraphs.get(kind), `${apiId}:`, depth + 1]);
                 continue;
             }
@@ -692,10 +688,7 @@ function resolve(metadata, semantics) {
     if (semantics === null) return result('unresolved', { reason: SEMANTICS_UNAVAILABLE_REASON });
     let overwritten = new Set();
     if (metadata.has('prompt')) {
-        try { overwritten = overwrittenPromptNodes(pyGet(metadata, 'workflow'), graph); } catch (error) {
-            if (!(error instanceof Unresolved)) throw error;
-            return result('unresolved', { reason: error.message, reasonCode: error.code });
-        }
+        overwritten = overwrittenPromptNodes(pyGet(metadata, 'workflow'), graph);
     }
     const resolver = new GraphResolver(graph, metadata.has('prompt') ? metadata : null, semantics, overwritten);
     const samplerIds = finalStages(resolver, [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' &&

@@ -1643,11 +1643,13 @@ class TestPromptInspector(ImageAPITestCase):
                         str(path), False, report_ambiguity=True
                     )
 
-    async def test_unhashable_workflow_node_type_answers_malformed(self):
-        """A UI workflow node whose ``type`` is a list or dict is malformed (#286).
+    async def test_unhashable_workflow_node_type_is_skipped(self):
+        """A UI workflow node whose ``type`` is a list or dict is skipped (#286).
 
         The R1 check looks each node's ``type`` up among subgraph IDs; an
         unhashable ``type`` used to raise there and the route answered 500.
+        Such a node can be neither a subgraph instance nor a PromptManager
+        node, so the walk skips it and a prompt that resolves still resolves.
         """
         source = graph()
         source["1"]["class_type"] = "PromptManager"
@@ -1663,21 +1665,11 @@ class TestPromptInspector(ImageAPITestCase):
                 )
                 response, result = await self.inspect()
                 self.assertEqual(response.status, 200)
-                self.assertEqual(
-                    result["resolution"],
-                    {
-                        "state": "unresolved",
-                        "sampler_id": None,
-                        "reason": "Prompt evidence is malformed",
-                        "reason_code": "malformed",
-                        "node": None,
-                    },
-                )
-                for side in result["prompts"].values():
-                    self.assertEqual(side["status"], "unresolved")
-                    self.assertEqual(
-                        side["message"], "Prompt metadata in this file is malformed."
-                    )
+                self.assertEqual(result["resolution"]["state"], "resolved")
+                self.assertEqual(result["resolution"]["sampler_id"], "3")
+                self.assertEqual(result["prompts"]["positive"]["status"], "resolved")
+                self.assertEqual(result["prompts"]["positive"]["text"], "portrait")
+                self.assertEqual(result["prompts"]["negative"]["text"], "blurry")
                 self.assertNotIn("unhashable", json.dumps(result))
 
     async def test_unhashable_graph_class_type_is_not_a_preview_output(self):
