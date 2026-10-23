@@ -543,6 +543,54 @@ test('a video replaced while still starting is reset once it settles', async ({ 
     }
 });
 
+test('leaving for another route while a video starts waits for it to settle', async ({ context, browserName }) => {
+    test.setTimeout(180000);
+    // A WebKit (GStreamer) video detached before its pipeline had started deadlocked the page (TESTING.md D62); a
+    // route change detaches the whole page, so the shell renders the next route once the video reports metadata or an
+    // error. The route changes from the video's own `loadstart`, or a few milliseconds after it.
+    for (let attempt = 0; attempt < 15; attempt++) {
+        const page = await context.newPage();
+        try {
+            if (attempt === 0) await startCoverage(page, browserName);
+            await page.addInitScript(() => {
+                const load = HTMLMediaElement.prototype.load;
+                HTMLMediaElement.prototype.load = function () {
+                    if (!this.hasAttribute('src') && window.__starting?.node === this) window.__starting.reset = { readyState: this.readyState, failed: this.error !== null, connected: this.isConnected };
+                    return load.call(this);
+                };
+            });
+            await openInspect(page);
+            await page.evaluate(delay => {
+                const slot = document.querySelector('#local-preview');
+                new MutationObserver((records, observer) => {
+                    const video = slot.querySelector('video');
+                    if (!video) return;
+                    observer.disconnect();
+                    const leave = () => {
+                        window.__starting = { node: video, readyState: video.readyState };
+                        location.hash = '#/overview';
+                    };
+                    video.addEventListener('loadstart', () => { if (delay) setTimeout(leave, delay); else leave(); }, { once: true });
+                }).observe(slot, { childList: true });
+            }, attempt % 5);
+            await choose(page, localFixture('core-tags.webm', 'video/webm'));
+            await expect(main(page).getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible({ timeout: 8000 });
+            const { readyState, reset } = await page.evaluate(() => ({ readyState: window.__starting.readyState, reset: window.__starting.reset }));
+            if (attempt % 5 === 0) expect(readyState).toBe(0);
+            // The video was reset and left the page only once it had settled.
+            expect(reset.readyState >= 1 || reset.failed).toBe(true);
+            expect(reset.connected).toBe(true);
+            // The page still answers.
+            await page.locator('aside.sidebar nav').getByRole('link', { name: 'Inspect a file', exact: true }).click();
+            await chooser(page).setInputFiles(parityPng('f02.png'), { timeout: 8000 });
+            await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
+            if (attempt === 0) await saveCoverage(page, browserName);
+        } finally {
+            await page.close();
+        }
+    }
+});
+
 test('closing the viewer on a video that just started never blocks the page', async ({ context, browserName }) => {
     test.setTimeout(180000);
     // The viewer's video teardown resets its element; on WebKit a reset of a still-starting pipeline blocked the page.

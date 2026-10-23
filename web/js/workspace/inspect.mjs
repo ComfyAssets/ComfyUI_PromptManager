@@ -63,8 +63,10 @@ function releaseMedia(preview) {
 
 /**
  * Mounts the page into `main` below the heading the shell rendered. `sender` is the shared prompt sender; `api` is
- * only handed to the viewer (the local adapter never calls it). Returns `{dispose}`; the page also ends with
- * `parentScope`.
+ * only handed to the viewer (the local adapter never calls it). Returns `{dispose, leaveGuard}` (`{dispose}` when
+ * `parentScope` has already ended); the page also ends with `parentScope`. `leaveGuard()` is a promise while a video
+ * on the page is still starting (D62): the shell renders the next route once it settles, since detaching it then
+ * deadlocked WebKit.
  */
 export function mountInspect(main, { parentScope, api, sender }) {
     const scope = createScope();
@@ -107,10 +109,12 @@ export function mountInspect(main, { parentScope, api, sender }) {
         entry.waiting.abort(); clearTimeout(entry.timer);
         releaseMedia(entry.preview);
         if (entry.revoke) URL.revokeObjectURL(url);
+        entry.done();
     }
     function retire(preview, url) {
         const waiting = new AbortController();
         const entry = { preview, waiting, revoke: false, timer: setTimeout(() => finishRetiring(url), STARTING_VIDEO_MS) };
+        entry.finished = new Promise(resolve => { entry.done = resolve; });
         retiring.set(url, entry);
         preview.listeners.abort();
         preview.node.inert = true; preview.node.setAttribute('aria-hidden', 'true');
@@ -259,5 +263,22 @@ export function mountInspect(main, { parentScope, api, sender }) {
         if (open.getAttribute('aria-disabled') === 'true' || !entry || session.state.phase !== 'ready') return;
         viewer.open({ items: [entry], selectedKey: entry.key, trigger: open });
     });
-    return { dispose };
+    /** Settles when no video on the page is still starting; `null` when none is. */
+    function leaveGuard() {
+        if (scope.signal.aborted) return null;
+        const waits = [];
+        for (const entry of retiring.values()) waits.push(entry.finished);
+        if (media && isStarting(media.node)) {
+            const { node } = media;
+            waits.push(new Promise(resolve => {
+                const settled = new AbortController();
+                const done = () => { settled.abort(); clearTimeout(timer); resolve(); };
+                const timer = setTimeout(done, STARTING_VIDEO_MS);
+                for (const type of ['loadedmetadata', 'error']) node.addEventListener(type, done, { once: true, signal: settled.signal });
+                scope.signal.addEventListener('abort', done, { once: true, signal: settled.signal });
+            }));
+        }
+        return waits.length ? Promise.all(waits) : null;
+    }
+    return { dispose, leaveGuard };
 }
