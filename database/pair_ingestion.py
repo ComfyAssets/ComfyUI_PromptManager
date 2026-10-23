@@ -1,6 +1,5 @@
 """Atomic metadata enrichment for a single known generation context."""
 
-import json
 import os
 from typing import Any, Dict
 
@@ -9,8 +8,10 @@ from .operations import _coerce_file_info
 
 try:
     from ..utils.hashing import generate_prompt_hash
+    from ..utils.json_strict import dumps_strict
 except ImportError:
     from utils.hashing import generate_prompt_hash
+    from utils.json_strict import dumps_strict
 
 
 def ingest_resolved_pair(
@@ -24,9 +25,7 @@ def ingest_resolved_pair(
     negative_text = negative.get("storage_text", negative["text"])
     normalized = normalize_image_path(image_path)
     provenance = {"resolver_version": 1, "positive": positive, "negative": negative}
-    encoded = json.dumps(
-        provenance, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
+    encoded = dumps_strict(provenance, sort_keys=True, separators=(",", ":"))
     with db._pair_transaction() as conn:
         images = conn.execute(
             "SELECT gi.*,p.hash AS positive_hash FROM generated_images gi "
@@ -67,8 +66,9 @@ def ingest_resolved_pair(
         ).fetchone()
         pairs_added = int(prior_pair is None)
         file_size, width, height, image_format = _coerce_file_info(metadata)
+        # ComfyUI's NaN/Infinity are stored as null: the snapshot is strict JSON.
         snapshots = {
-            column: json.dumps(metadata[key], sort_keys=True, allow_nan=False)
+            column: dumps_strict(metadata[key], sort_keys=True)
             for column, key in (
                 ("workflow_data", "workflow"),
                 ("prompt_metadata", "prompt"),

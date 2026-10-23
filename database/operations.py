@@ -4,6 +4,7 @@ Database operations for KikoTextEncode prompt storage and retrieval.
 
 import sqlite3
 import json
+import math
 import datetime
 import os
 from typing import Optional, List, Dict, Any, Set, Tuple
@@ -26,6 +27,7 @@ from .health import HealthOperations, iter_consistency_issues
 try:
     from ..utils.logging_config import get_logger
     from ..utils.hashing import generate_prompt_hash
+    from ..utils.json_strict import dumps_strict
 except ImportError:
     import sys
 
@@ -33,6 +35,7 @@ except ImportError:
     sys.path.insert(0, current_dir)
     from utils.logging_config import get_logger
     from utils.hashing import generate_prompt_hash
+    from utils.json_strict import dumps_strict
 
 
 # Subquery to fetch tags from junction table, embedded in SELECT statements
@@ -1697,9 +1700,9 @@ class PromptDatabase(
                         width,
                         height,
                         image_format,
-                        json.dumps(metadata.get("workflow", {})),
-                        json.dumps(metadata.get("prompt", {})),
-                        json.dumps(metadata.get("parameters", {})),
+                        dumps_strict(metadata.get("workflow", {})),
+                        dumps_strict(metadata.get("prompt", {})),
+                        dumps_strict(metadata.get("parameters", {})),
                     ),
                 )
                 conn.commit()
@@ -1904,13 +1907,13 @@ class PromptDatabase(
             obj: The object to clean (dict, list, or scalar)
 
         Returns:
-            Cleaned object with NaN values replaced by None
+            Cleaned object with NaN and Infinity values replaced by None
         """
         if isinstance(obj, dict):
             return {key: self._clean_nan_values(value) for key, value in obj.items()}
         elif isinstance(obj, list):
             return [self._clean_nan_values(item) for item in obj]
-        elif isinstance(obj, float) and str(obj) == "nan":
+        elif isinstance(obj, float) and not math.isfinite(obj):
             return None
         else:
             return obj
