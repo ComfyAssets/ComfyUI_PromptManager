@@ -284,14 +284,16 @@ class AnnotationRoutesMixin:
         if store is not None:
             store.invalidate_all()
 
-    def close_annotation_captures(self) -> None:
+    def close_annotation_captures(self, *, final: bool = False) -> None:
         """Remove every capture file and the owned directory. Idempotent.
 
-        Taken under the store lock, and final: ``_capture_store`` refuses to
-        create another store afterwards.
+        Taken under the store lock. ``final`` (the shutdown cleanup) also makes
+        ``_capture_store`` refuse to create another store, so a recording
+        still in flight cannot leak a new temp directory after it.
         """
         with _CAPTURE_STORE_LOCK:
-            self._captures_closed = True
+            if final:
+                self._captures_closed = True
             unsubscribe, self._captures_unsubscribe = self._captures_unsubscribe, None
             store, self._captures = self._captures, None
         if unsubscribe is not None:
@@ -300,7 +302,7 @@ class AnnotationRoutesMixin:
             store.close()
 
     async def cleanup_annotation_captures(self, app: web.Application) -> None:
-        self.close_annotation_captures()
+        self.close_annotation_captures(final=True)
 
     # -- shared request steps --------------------------------------------------
 
@@ -346,7 +348,10 @@ class AnnotationRoutesMixin:
         root, error = self._scoped_root(index, scope)
         if error is not None:
             return error
-        store = self._capture_store()
+        try:
+            store = self._capture_store()
+        except CaptureError as exc:  # the server is shutting down
+            return _capture_error(exc)
         try:
             epoch = await self._run_in_executor(self.db.get_execution_epoch)
             capture = await _settled(

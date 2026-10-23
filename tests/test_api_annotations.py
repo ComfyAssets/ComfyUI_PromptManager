@@ -1045,7 +1045,15 @@ class TestFailures(AnnotationAPITestCase):
         await self.api.cleanup_annotation_captures(None)
         self.assertFalse(os.path.exists(directory))
         self.assertNotIn(identity, observers._restore_observers)
-        # A later observation starts a fresh store.
+        # The shutdown cleanup is final: a later observation (or a monitor
+        # recording still in flight) creates no new store or directory.
+        status, body = await self.observe({"target": self.target("sub/a.png")})
+        self.assertEqual((status, body["code"]), (500, "capture-error"), body)
+        self.assertIsNone(self.api._captures)
+        self.assertNotIn(identity, observers._restore_observers)
+        # An explicit, non-final close still lets a later observation start
+        # a fresh store (the tests' own store swaps rely on it).
+        self.api._captures_closed = False
         await self.observe_ok()
         self.assertNotEqual(self.api._captures.directory, directory)
 

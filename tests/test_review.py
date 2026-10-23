@@ -901,7 +901,7 @@ class TestCaptureStoreShutdown(ReviewTestCase):
         self._roots()
         path = self.output_dir / "two.png"
         write_png(path, prompt=ambiguous_graph("cat", "dog"))
-        self.api.close_annotation_captures()
+        await self.api.cleanup_annotation_captures(None)  # the shutdown hook
         self.assertIsNone(self.api._captures)
         with patch("utils.media_capture.tempfile.mkdtemp") as mkdtemp:
             with self.assertRaises(CaptureError):
