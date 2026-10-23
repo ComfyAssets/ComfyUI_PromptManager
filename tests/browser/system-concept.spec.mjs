@@ -533,3 +533,246 @@ test('appearance comparison detects mutations', async ({ page, request }) => {
     await undoToken();
     expect(diffInventory(expected, await measure())).toEqual([]);
 });
+
+/**
+ * Runs in the page: Sources & scans (app.js 679–681): the optional notice, then the "Image sources" surface with its
+ * panel heading, the source list, the two setting rows and the operations, with the concept's geometry and tokens.
+ */
+function measureSources(mainSelector) {
+    const layout = document.querySelector(`${mainSelector} .settings-layout`);
+    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
+    const name = node => [node.localName, ...[...node.classList].sort()].join('.');
+    const text = node => node?.textContent.trim() ?? null;
+    const button = node => ({ text: text(node), className: node.className,
+        ...css(node, 'backgroundColor', 'color', 'fontSize', 'paddingTop', 'paddingLeft', 'borderTopColor') });
+    const operation = row => ({ tree: [...row.children].map(name), title: text(row.querySelector('h3')),
+        description: text(row.querySelector('p')), actions: [...row.querySelectorAll('.row-actions > button')].map(button) });
+    const notice = layout.querySelector(':scope > .notice');
+    const surface = layout.querySelector(':scope > section.surface');
+    const heading = surface.querySelector(':scope > .panel-heading');
+    const list = surface.querySelector(':scope > #source-list');
+    const control = row => {
+        const toggle = row.querySelector(':scope > * input[type="checkbox"]');
+        if (toggle) return { kind: 'switch', id: toggle.id, wrapper: name(toggle.parentElement), checked: toggle.checked,
+            ...css(toggle.parentElement, 'width', 'height') };
+        const input = row.querySelector(':scope > input');
+        return { kind: `input.${input.type}`, id: input.id, min: input.min, max: input.max, value: input.value,
+            ...css(input, 'width', 'accentColor') };
+    };
+    const rows = [...surface.querySelectorAll(':scope > .setting-row')];
+    return {
+        layout: [...layout.children].map(name),
+        notice: notice && { tree: [...notice.children].map(name),
+            text: [...notice.querySelectorAll(':scope > div > *')].map(node => [node.localName, text(node)]),
+            actions: [...notice.querySelectorAll(':scope > .row-actions > button')].map(button),
+            ...css(notice, 'display', 'alignItems', 'columnGap', 'borderTopColor', 'backgroundColor', 'paddingTop', 'marginBottom') },
+        surface: { tree: [...surface.children].map(name), intro: text(surface.querySelector(':scope > p')),
+            ...css(surface, 'paddingTop', 'paddingLeft', 'backgroundColor', 'borderTopColor', 'borderTopLeftRadius') },
+        heading: { tree: [...heading.children].map(name), title: text(heading.querySelector('h2')),
+            action: button(heading.querySelector('button')), ...css(heading, 'display', 'alignItems', 'justifyContent', 'marginBottom'),
+            h2: css(heading.querySelector('h2'), 'fontSize', 'fontWeight', 'color') },
+        sources: [...list.children].map(operation),
+        rows: rows.map(row => ({ tree: [...row.children].map(name), text: [...row.firstElementChild.children].map(node => [node.localName, text(node),
+            node.localName === 'label' ? node.htmlFor : null]), control: control(row) })),
+        operations: [...surface.querySelectorAll(':scope > .operation')].map(operation),
+        operation: css(list.querySelector('.operation'), 'display', 'alignItems', 'justifyContent', 'columnGap', 'paddingTop',
+            'paddingBottom', 'borderTopWidth', 'borderTopColor'),
+        h3: css(list.querySelector('.operation h3'), 'fontSize', 'fontWeight', 'color'),
+        p: css(list.querySelector('.operation p'), 'fontSize', 'color', 'marginTop'),
+        row: css(rows[0], 'display', 'alignItems', 'justifyContent', 'columnGap', 'paddingTop', 'paddingBottom', 'borderTopColor'),
+        pageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+}
+
+// D128: "watching until restart" after monitoring was switched off while the observer still runs.
+const WATCH_TEXT = { watching: 'watching', stopping: 'watching until restart', manual: 'manual scan', restart_pending: 'restart pending' };
+const WATCHED = new Set(['watching', 'stopping']);
+// D98: the operation Sources adds after the concept's own, as production renders it.
+const REFRESH_FILES = { title: 'Refresh files', description: 'Read every source again to find files added or removed outside ComfyUI.',
+    label: 'Refresh' };
+
+/** The concept's Sources with the recorded deviations applied, given the server's real settings and sources. */
+function mapSourcesConcept(reference, { settings, sources }) {
+    const [sample] = reference.sources;
+    const scan = sample.actions[0];
+    return {
+        ...reference,
+        // The real sources replace the two samples (without the "sample path" note). D98: each configured one has Remove,
+        // a plain button after its scan.
+        sources: sources.effective.map(source => ({ ...sample, title: source.label,
+            description: `${source.path} · ${WATCH_TEXT[source.watch]}`,
+            actions: [{ ...scan, text: WATCHED.has(source.watch) ? 'Scan changes' : 'Scan folder' }, { ...scan, text: 'Remove' }] })),
+        rows: reference.rows.map(row => {
+            if (row.control.id === 'monitoring') return { ...row, control: { ...row.control, checked: settings.monitoring_enabled } };
+            // D113: the range ends at the server's core count (the concept's fixed 16) and shows the real worker count.
+            return { ...row, control: { ...row.control, max: String(settings.cpu_count), value: String(settings.worker_threads) } };
+        }),
+        // D98: "Refresh files" closes the surface.
+        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.operation'] },
+        operations: [...reference.operations, { ...reference.operations[0], title: REFRESH_FILES.title,
+            description: REFRESH_FILES.description, actions: [{ ...reference.operations[0].actions[0], text: REFRESH_FILES.label }] }],
+    };
+}
+
+async function conceptSources(page, theme, { notice }) {
+    await openConcept(page, 'system', theme);
+    await page.locator('#main .section-nav').getByRole('button', { name: 'Sources & scans', exact: true }).click();
+    await expect(page.locator('#main .panel-heading > h2')).toHaveText('Image sources');
+    if (!notice) await page.locator('#main .notice').getByRole('button', { name: 'Later', exact: true }).click();
+    await expect(page.locator('#main .settings-layout > .notice')).toHaveCount(notice ? 1 : 0);
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureSources, '#main');
+}
+
+async function productionSources(page, theme, { notice }) {
+    // about:blank has no storage; the workspace page reads the dismissal.
+    if (!notice) await page.addInitScript(() => { if (location.protocol.startsWith('http')) localStorage.setItem('pm_update_notice_dismissed', '3.2.0'); });
+    await openProduction(page, 'system/sources', theme);
+    await expect(page.locator('#workspace-main #source-list .operation')).toHaveCount(2);
+    await expect(page.locator('#workspace-main #workers')).toBeEnabled();
+    await expect(page.locator('#workspace-main .settings-layout > .notice')).toHaveCount(notice ? 1 : 0);
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureSources, '#workspace-main');
+}
+
+/** The fixture's sources as the concept shows its samples: the first one watched, the second not. */
+async function watchedSources(request) {
+    await expect(await request.post('/__test__/system/monitor', { data: { watching: ['output'] } })).toBeOK();
+    return serverJson(request, '/prompt_manager/settings');
+}
+
+for (const theme of THEMES) for (const [width, height] of SIZES) for (const notice of [true, false]) {
+    const variant = notice ? 'with' : 'without';
+    test(`sources matches the concept ${variant} the notice ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width, height });
+        const server = await watchedSources(request);
+        const concept = await conceptSources(page, theme, { notice });
+        await page.screenshot({ path: testInfo.outputPath(`concept-sources-${variant}-notice-${theme}-${width}.png`), fullPage: true });
+        const production = await productionSources(page, theme, { notice });
+        await page.screenshot({ path: testInfo.outputPath(`production-sources-${variant}-notice-${theme}-${width}.png`), fullPage: true });
+        expect(diffInventory(mapSourcesConcept(concept, server), production)).toEqual([]);
+        expect(production.pageScroll).toBe(false);
+    });
+}
+
+test('sources comparison detects mutations', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const server = await watchedSources(request);
+    const concept = await conceptSources(page, 'dark', { notice: true });
+    const expected = mapSourcesConcept(concept, server);
+    const production = await productionSources(page, 'dark', { notice: true });
+    expect(diffInventory(expected, production)).toEqual([]);
+    // Unmapped, the concept differs only in the real sources, the D98 operation and the D113 range.
+    expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
+        .filter((path, index, all) => all.indexOf(path) === index).sort())
+        .toEqual(['operations.2', 'operations.length', 'rows.1', 'sources.0', 'sources.1', 'surface.tree'].sort());
+    const measure = () => page.evaluate(measureSources, '#workspace-main');
+    const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
+    // A removed notice and a removed source row.
+    const undoNotice = await mutate(page, { remove: ['#workspace-main .settings-layout > .notice'] });
+    expect(await paths()).toEqual(expect.arrayContaining(['layout.length', 'notice.tree.length']));
+    await undoNotice();
+    const undoRow = await mutate(page, { remove: ['#workspace-main #source-list > .operation:nth-child(2)'] });
+    expect(await paths()).toEqual(expect.arrayContaining(['sources.length']));
+    await undoRow();
+    // A changed label and a changed button.
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="monitoring"]').textContent = 'Watch for outputs'; });
+    expect(await paths()).toEqual(['rows.0.text.0.1']);
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="monitoring"]').textContent = 'Watch for new outputs'; });
+    await page.evaluate(() => { document.querySelector('#workspace-main .panel-heading button').textContent = 'Add source'; });
+    expect(await paths()).toEqual(['heading.action.text']);
+    await page.evaluate(() => { document.querySelector('#workspace-main .panel-heading button').textContent = '+ Add source'; });
+    // A swapped token.
+    const undoToken = await mutate(page, { css: '#workspace-main .settings-layout { --line: rgb(255, 0, 0); }' });
+    expect(await paths()).toEqual(expect.arrayContaining(['operation.borderTopColor']));
+    await undoToken();
+    expect(diffInventory(expected, await measure())).toEqual([]);
+});
+
+/**
+ * Runs in the page: the open "Add image source" dialog (the concept's `simpleInput`, app.js 1138 and 1497): its title,
+ * the body's tree, the field's label and input, and the actions, with the concept's geometry and tokens.
+ */
+function measureAddSource() {
+    const dialog = document.querySelector('dialog#modal[open]');
+    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
+    const name = node => [node.localName, ...[...node.classList].sort()].join('.');
+    const text = node => node?.textContent.trim() ?? null;
+    const body = dialog.querySelector('#modal-body');
+    const field = body.querySelector(':scope > .field');
+    const label = field?.querySelector(':scope > label');
+    const input = field?.querySelector(':scope > input');
+    const actions = body.querySelector(':scope > .dialog-actions');
+    const rect = dialog.getBoundingClientRect();
+    return {
+        title: text(dialog.querySelector('#modal-title')),
+        tree: [...body.children].map(name),
+        field: field && { tree: [...field.children].map(name), ...css(field, 'display', 'flexDirection', 'rowGap', 'marginBottom') },
+        label: label && { text: text(label), for: label.htmlFor, ...css(label, 'fontSize', 'fontWeight', 'color') },
+        input: input && { id: input.id, type: input.type, value: input.value,
+            ...css(input, 'height', 'paddingLeft', 'fontSize', 'color', 'backgroundColor', 'borderTopColor', 'borderTopLeftRadius') },
+        actions: { tree: [...actions.children].map(name), ...css(actions, 'display', 'justifyContent', 'columnGap', 'marginTop'),
+            buttons: [...actions.children].map(button => ({ text: text(button), className: button.className,
+                ...css(button, 'backgroundColor', 'color', 'fontSize', 'paddingTop', 'paddingLeft', 'borderTopColor') })) },
+        width: Math.round(rect.width),
+    };
+}
+
+/** D127: the field is "Folder path", starts empty (no sample folder) and its action is "Add". */
+function mapAddSourceConcept(reference) {
+    const [cancel, apply] = reference.actions.buttons;
+    return { ...reference, label: { ...reference.label, text: 'Folder path' }, input: { ...reference.input, value: '' },
+        actions: { ...reference.actions, buttons: [cancel, { ...apply, text: 'Add' }] } };
+}
+
+async function conceptAddSource(page, theme) {
+    await conceptSources(page, theme, { notice: false });
+    await page.locator('#main .panel-heading').getByRole('button', { name: '+ Add source', exact: true }).click();
+    await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Add image source');
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureAddSource);
+}
+
+async function productionAddSource(page, theme) {
+    await productionSources(page, theme, { notice: false });
+    await page.locator('#workspace-main .panel-heading').getByRole('button', { name: '+ Add source', exact: true }).click();
+    await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Add image source');
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureAddSource);
+}
+
+for (const theme of THEMES) for (const [width, height] of SIZES) {
+    test(`add source dialog matches the concept ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width, height });
+        await watchedSources(request);
+        const concept = await conceptAddSource(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`concept-add-source-${theme}-${width}.png`) });
+        const production = await productionAddSource(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`production-add-source-${theme}-${width}.png`) });
+        expect(diffInventory(mapAddSourceConcept(concept), production)).toEqual([]);
+    });
+}
+
+test('add source comparison detects mutations', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await watchedSources(request);
+    const concept = await conceptAddSource(page, 'dark');
+    const expected = mapAddSourceConcept(concept);
+    const production = await productionAddSource(page, 'dark');
+    expect(diffInventory(expected, production)).toEqual([]);
+    // Unmapped, the concept differs only where D127 is recorded.
+    expect(diffInventory(concept, production).map(item => item.path).sort())
+        .toEqual(['actions.buttons.1.text', 'input.value', 'label.text']);
+    const paths = async () => diffInventory(expected, await page.evaluate(measureAddSource)).map(item => item.path);
+    // A changed label, a swapped action order and a changed style.
+    await page.evaluate(() => { document.querySelector('dialog#modal[open] label[for="action-input"]').textContent = 'Folder'; });
+    expect(await paths()).toEqual(['label.text']);
+    await page.evaluate(() => { document.querySelector('dialog#modal[open] label[for="action-input"]').textContent = 'Folder path'; });
+    await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
+    expect(await paths()).toEqual(expect.arrayContaining(['actions.buttons.0.text', 'actions.buttons.1.text']));
+    await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
+    const undoStyle = await mutate(page, { css: 'dialog#modal #action-input { border-color: rgb(255, 0, 0); } dialog#modal .dialog-actions { gap: 31px; }' });
+    expect(await paths()).toEqual(expect.arrayContaining(['input.borderTopColor', 'actions.columnGap']));
+    await undoStyle();
+    expect(diffInventory(expected, await page.evaluate(measureAddSource))).toEqual([]);
+});

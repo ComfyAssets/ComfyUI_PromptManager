@@ -4,8 +4,8 @@
  * `aria-pressed`; a press navigates to its hash), then `.settings-layout` with the section's body and the Save row
  * (`span.small#settings-status` + "Save preferences"). D92: no "Sample configuration" chip, the status copy is
  * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
- * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview (system-overview.mjs) and
- * Appearance (system-appearance.mjs) are native.
+ * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview (system-overview.mjs),
+ * Appearance (system-appearance.mjs) and Sources & scans (system-sources.mjs) are native.
  *
  * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
@@ -16,6 +16,9 @@ import { createSystemDrafts, DRAFT_DOMAINS } from './system-state.mjs';
 import { sectionNav } from './system-controls.mjs';
 import { healthNotice, mountOverview } from './system-overview.mjs';
 import { mountAppearance } from './system-appearance.mjs';
+import { mountSources } from './system-sources.mjs';
+import { busyToast } from './activity-scan.mjs';
+import { showWorkspaceToast } from './toast.mjs';
 import { displayPreferences, readPreferences, reconcilePreferences, subscribePreferences, writePreferences } from './preferences.mjs';
 
 const SETTINGS_URL = '/prompt_manager/settings';
@@ -27,7 +30,6 @@ const GALLERY = Object.freeze({ href: '/prompt_manager/gallery', label: 'Open ex
  * settings, thumbnails, duplicates and cache tools.
  */
 export const SECTION_HANDOFFS = Object.freeze({
-    sources: [ADMIN, GALLERY],
     integrations: [ADMIN],
     tagging: [ADMIN],
     maintenance: [ADMIN, GALLERY],
@@ -37,6 +39,15 @@ export const SECTION_HANDOFFS = Object.freeze({
 export const NOT_DELIVERED = 'This setting is not available here yet.';
 
 let drafts = null;
+// The Activity store of the System page shown last: a refused host save that does not name its job reads the list.
+let jobs = null;
+
+/** The running job a 409 `busy` named, else the first running one from a fresh list read (the load never throws). */
+async function runningJob(error) {
+    if (error?.running) return error.running;
+    await jobs.load();
+    return jobs.running()[0];
+}
 
 function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -71,7 +82,15 @@ export function systemDrafts(api) {
             // The store reads a missing value as none and a missing revision as unreadable (no host save).
             return { values: result.settings, revision: result.revision };
         },
-        writeHost: (changes, { expected_revision }) => api.post(SETTINGS_URL, { ...changes, expected_revision }),
+        async writeHost(changes, { expected_revision }) {
+            try {
+                return await api.post(SETTINGS_URL, { ...changes, expected_revision });
+            } catch (error) {
+                // A sources change waits for a running record-changing job (S4): name it, as a refused start does (D57).
+                if (error?.code === 'busy') showWorkspaceToast(busyToast(await runningJob(error)));
+                throw error;
+            }
+        },
     });
     return drafts;
 }
@@ -100,12 +119,13 @@ function markFailed(layout, store) {
 }
 
 /**
- * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), and Maintenance's notice with "Run health checks" above the
+ * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), Sources & scans (S4 Task 11), and Maintenance's notice with "Run health checks" above the
  * hand-off to the maintenance tools that are not native yet (D123).
  */
 export const DELIVERED_SECTIONS = Object.freeze({
     overview: mountOverview,
     appearance: mountAppearance,
+    sources: mountSources,
     maintenance: (container, { api, activity, scope }) => [healthNotice({ api, activity, scope }), ...handoff('maintenance')],
 });
 
@@ -123,6 +143,7 @@ export const DELIVERED_SECTIONS = Object.freeze({
  */
 export function mountSystem(main, api, scope, { section, activity, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
     const store = systemDrafts(api);
+    jobs = activity;
     store.reloadHost();
     // Another tab or the legacy gallery changed the display defaults: clean values follow it; a draft it overtook stays
     // and is flagged (D92's conflict status). `next` is null when the values cannot be read (no gallery-settings.js).

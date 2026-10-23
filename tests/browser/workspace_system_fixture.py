@@ -11,11 +11,18 @@ read. These per-server hooks only change what a System test needs on top:
   requests for ``path`` (a ``/prompt_manager/system/`` route) with the routes'
   500 error envelope;
 - ``POST /__test__/system/missing-source`` configures one more source that
-  does not exist (an unmounted drive);
+  does not exist (an unmounted drive); with ``{"inside": true}`` it is an
+  existing folder inside the output folder (``output/unplugged``), which
+  ``POST /__test__/system/unplug`` then removes (a drive unplugged while the
+  page shows it);
 - ``POST /__test__/system/missing-file`` deletes the newest linked image's
   file from disk, leaving its database row (a missing-file link);
 - ``POST /__test__/system/unthumbnailed`` ``{count}`` writes ``count`` plain
-  PNGs with no thumbnail into the output folder.
+  PNGs with no thumbnail into the output folder;
+- ``POST /__test__/system/monitor`` ``{watching, alive}`` stands in a fake
+  image monitor whose observer is ``alive`` (default true) and schedules the
+  named folders of this server's root (``["output"]``), so Sources reads
+  watching, manual scan and restart pending states (S4).
 
 Delays use the shared request holds (``request_hold.py``).
 """
@@ -45,13 +52,17 @@ def register_system_commands(app, routes, api, root: Path):
             f"PROMPT_MANAGER_CONFIG_PATH must be {config_path}, not {configured_path!r}"
         )
     from py.config import GalleryConfig, PromptManagerConfig
+    from utils import image_monitor
 
     configured = list(GalleryConfig.MONITORING_DIRECTORIES)
     config_bytes = config_path.read_bytes() if config_path.exists() else None
     host_values = (
         PromptManagerConfig.RESULT_TIMEOUT,
         PromptManagerConfig.WEBUI_DISPLAY_MODE,
+        PromptManagerConfig.WORKER_THREADS,
+        GalleryConfig.MONITORING_ENABLED,
     )
+    monitor = getattr(image_monitor, "_monitor_instance", None)
     failures: dict[str, int] = {}
 
     @web.middleware
@@ -66,13 +77,21 @@ def register_system_commands(app, routes, api, root: Path):
 
     app.middlewares.append(inject_failures)
 
+    unplugged = root / "output" / "unplugged"
+
     def reset():
         failures.clear()
+        if unplugged.is_dir():
+            unplugged.rmdir()
         GalleryConfig.MONITORING_DIRECTORIES = list(configured)
         api._health_report = None
-        PromptManagerConfig.RESULT_TIMEOUT, PromptManagerConfig.WEBUI_DISPLAY_MODE = (
-            host_values
-        )
+        (
+            PromptManagerConfig.RESULT_TIMEOUT,
+            PromptManagerConfig.WEBUI_DISPLAY_MODE,
+            PromptManagerConfig.WORKER_THREADS,
+            GalleryConfig.MONITORING_ENABLED,
+        ) = host_values
+        image_monitor._monitor_instance = monitor
         if config_bytes is None:
             config_path.unlink(missing_ok=True)
         else:
@@ -103,13 +122,25 @@ def register_system_commands(app, routes, api, root: Path):
 
     @routes.post("/__test__/system/missing-source")
     async def missing_source(request):
-        absent = str(root / "unmounted-drive")
-        if os.path.exists(absent):
-            raise web.HTTPConflict()
+        data = await request.json() if request.can_read_body else {}
+        if data.get("inside") is True:
+            unplugged.mkdir(exist_ok=True)
+            absent = str(unplugged)
+        else:
+            absent = str(root / "unmounted-drive")
+            if os.path.exists(absent):
+                raise web.HTTPConflict()
         GalleryConfig.MONITORING_DIRECTORIES = [*configured, absent]
         return web.json_response(
             {"success": True, "configured": len(GalleryConfig.MONITORING_DIRECTORIES)}
         )
+
+    @routes.post("/__test__/system/unplug")
+    async def unplug(request):
+        if not unplugged.is_dir():
+            raise web.HTTPConflict()
+        unplugged.rmdir()
+        return web.json_response({"success": True})
 
     @routes.post("/__test__/system/missing-file")
     async def missing_file(request):
@@ -141,4 +172,35 @@ def register_system_commands(app, routes, api, root: Path):
         api.invalidate_gallery_cache()
         return web.json_response({"success": True})
 
+    @routes.post("/__test__/system/monitor")
+    async def fake_monitor(request):
+        data = await request.json()
+        watching, alive = data.get("watching", []), data.get("alive", True)
+        if (
+            not isinstance(watching, list)
+            or not all(name in ("output", "input") for name in watching)
+            or not isinstance(alive, bool)
+        ):
+            raise web.HTTPBadRequest()
+        image_monitor._monitor_instance = _FakeMonitor(
+            [str(root / name) for name in watching], alive
+        )
+        return web.json_response({"success": True})
+
     return reset
+
+
+class _FakeMonitor:
+    """The image monitor's status surface (``get_status``) with no observer thread."""
+
+    def __init__(self, directories, alive):
+        self.monitored_directories = directories
+        self._alive = alive
+
+    def get_status(self):
+        return {
+            "running": True,
+            "monitored_directories": list(self.monitored_directories),
+            "handler_active": True,
+            "observer_alive": self._alive,
+        }

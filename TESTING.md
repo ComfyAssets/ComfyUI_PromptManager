@@ -1929,6 +1929,56 @@ cache off selecting the shown file again re-reads it (on, the one current record
 reused); paths off leaves out only the Path row of File & provenance; the viewer reads
 the video defaults.
 
+Sources & scans (`system-sources.mjs`, S4) is the concept's "sources" body on the
+server's sources. `GET /prompt_manager/settings` reports them (public paths only):
+`sources.configured` (each `gallery_root_paths` entry with `valid`, `code` and the
+server's `reason`), `sources.effective` (what is scanned and served, with its
+`root_index` and `watch`: `watching` only when the image monitor's observer is alive,
+scheduled that folder and monitoring is on, `stopping` when it still watches it but
+monitoring was switched off, `manual` when monitoring is off or no monitor runs, else
+`restart_pending`), `sources.auto_detected`, `monitor` and `settings.monitoring_enabled`.
+`POST /prompt_manager/settings/validate-source {path}` checks one folder and writes
+nothing. Every caller (validate-source, the settings save, config.json at load) refuses
+a source through the same checks (`sources.source_problem`): its form first, then
+containment decided as text (`normcase(normpath)` against the allowed folders' own
+spellings), before anything resolves, stats or opens the path, so a UNC share, the
+`\\?\` and `\\.\` namespaces, a device or any folder outside the allowed ones never
+reaches the filesystem or the network (no SMB request, no existence or timing oracle).
+Only then is the path resolved and contained again, which catches a symlink out. The
+filesystem root and the home directory answer `outside-allowed` with the same reason as
+any outside path. ComfyUI folders outside its base directory (`--output-directory`)
+are path anchors too, so their sources keep a relative public path
+(`renders/portraits`) that round-trips and never collides by folder name. A save whose
+list holds a source the server cannot use is a 400 `invalid-source` naming its public
+path (`source`, as text: a refused path is never resolved to name it), its `index` and
+`reason`, and saves nothing. A save that changes the sources (compared as folders, not
+spellings) holds the registry as `records` ("Source change"), so it is refused with
+409 `busy` while a scan runs. `POST /prompt_manager/jobs/scan {scope, roots, paths}`
+scans only the given effective `root_index`es (strict ints, at most 64), each with the
+public path the page read for it; an index past the list or one that now names another
+folder is 409 `sources-changed` and starts nothing (the page toasts the server's
+reason and reads the sources again); the legacy `/scan` is unchanged. The section
+lists one row per source ("<path> · watching | watching until restart | manual scan |
+restart pending" with "Scan changes" for a watched source, else "Scan folder"), which
+opens the shared "Review metadata scan" for that one source ("1 output folder") and
+starts the session job over it; the job opens in Activity, and the toast only says it
+started. Enrich
+existing metadata and the notice's Review scan review every source. The notice shows
+until this browser dismissed the 3.2.0 update notice (`pm_update_notice_dismissed`,
+the legacy admin page's key); Later dismisses it without scanning, and Review scan
+dismisses it as the legacy Scan does. "+ Add source" asks validate-source, then adds
+the folder to the host draft of `gallery_root_paths`; Remove takes one out; "Watch for
+new outputs" (`monitoring_enabled`) and Worker threads (`worker_threads`) are host
+drafts too, and Save writes them with the revision. A save the server refuses because a
+scan runs toasts "Another job is running: <title>." with a link to that job (D57) and
+keeps the drafts; a save refused for one source says the server's message as the status
+and marks that row. After a save the source list is read again; a monitoring change
+waits for a restart (the running observer keeps watching until then, and the status
+says "Restart ComfyUI to apply: Watch for new outputs."). Thumbnail generation's
+Review options opens the legacy gallery in a new tab (D94) until its review dialog (S5).
+A list that cannot be read shows "Sources could not be loaded. Your saved data has not
+changed." and Retry, never an empty list.
+
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
 paints nothing. Until it answers, the section shows "Loading the overview…"; a failure
@@ -1956,7 +2006,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123, D124, D125 and D126 assigned):
+Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121–D128 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2023,6 +2073,47 @@ Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123, D124
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D98** (Sources): each configured source's row has a plain Remove after its scan
+  button; nothing changes until Save. A source added this session reads "<path> · not
+  saved yet" with Remove only until Save; a configured source the server cannot use
+  reads "<path> · <server reason>" with Remove only. A line under the list says when the
+  list is not the whole story: "No source is configured. After saving, ComfyUI’s output
+  folder is used." (the last one removed), "No source is configured; ComfyUI’s output
+  folder is used." and "No configured source is available; ComfyUI’s output folder is
+  used." (auto-detected rows, listed without Remove). "restart pending" is the third
+  watch state. The operation "Refresh files" ("Read every source again to find files
+  added or removed outside ComfyUI.", button "Refresh") closes the surface: it calls the
+  legacy gallery's `/gallery/rescan` and toasts "Files refreshed. N files in M output
+  folders." or "Files could not be refreshed. Try again.". The concept's "sample path"
+  note is prototype copy and is dropped.
+- **D113** (Sources): the Worker threads range ends at the server's `cpu_count` (the
+  concept's fixed `max=16`) and shows the server's real `worker_threads` (the concept's
+  sample 4).
+- **D127** (Sources): the concept's `add-source` `simpleInput` with production
+  copy: the field is "Folder path" (the concept's "(sample only)" dropped), it starts
+  empty (not the demo "/images/new-collection"), and the action is "Add" (not "Apply in
+  prototype"); Enter in the field adds too. `add source dialog matches the concept`
+  (system-concept.spec) compares the open dialog with these three mapped, and `add
+  source comparison detects mutations` proves the mapping is the only difference. A
+  folder the server refuses keeps the dialog open with the field
+  `aria-invalid` and the server's reason in a `p.small[role=alert]` above the actions;
+  a folder the server names as one already listed says "This folder is already a
+  source.", and a check that cannot finish says "The folder could not be checked. Try
+  again."; neither adds anything.
+  The concept dialog does no check, so `invalid source shows the server reason`
+  (workspace-system-sources.spec) pins it.
+- **D128** (Sources): states the concept's sample rows never show. A source the
+  running monitor still watches after "Watch for new outputs" was saved off reads
+  "<path> · watching until restart" (still "Scan changes"), and the save's status adds
+  "Restart ComfyUI to apply: Watch for new outputs." from `restart_required_fields`. A
+  configured source the effective list holds under another spelling reads "<path> ·
+  same folder as another source" with only Remove. A save refused for one source
+  (`invalid-source`) marks that row (`aria-invalid`, outlined like a D92 setting) and
+  the status is the server's "<path> can't be used: <reason>. Remove it or reconnect it,
+  then save." ("Remove it, then save." when reconnecting cannot help). Pinned by
+  `Watch for new outputs saves monitoring_enabled; a restart applies it` and `a save
+  refused for one unusable source names it and marks its row`
+  (workspace-system-sources.spec) and the system-state and system-sources node tests.
 - **D124** (inspector): with "Load metadata on selection" off, the Images panel and
   the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
   button instead of reading the file. The concept has no such state, so no concept
@@ -2074,9 +2165,16 @@ renames a metric label, swaps the `--line` token, recolours a chip, renames a ch
 removes the totals table and renames a caption. `appearance matches the concept` maps
 only D97 and the real timeout (unmapped, exactly those paths differ), and `appearance
 comparison detects mutations` removes a row, renames a label and an option and swaps
-the `--line` token. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
+the `--line` token. `sources matches the concept with|without the notice` (both
+themes and sizes; the fixture's monitor watches the first source, as the concept's
+first sample is watched, and the concept's Later removes its notice) maps the real
+sources for the two samples, D98's Remove and Refresh files, and D113; unmapped,
+exactly those paths differ. `sources comparison detects mutations` removes the notice
+and a source row, renames a label and the Add source button and swaps the `--line`
+token. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
 `{concept,production}-{statistics,health}-{dark,light}.png`,
-`{concept,production}-appearance-{dark,light}-{1600,390}.png`) are test artifacts; there
+`{concept,production}-appearance-{dark,light}-{1600,390}.png`,
+`{concept,production}-sources-{with,without}-notice-{dark,light}-{1600,390}.png`) are test artifacts; there
 are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real counts,
 the health check and metric 4, a failed check, the thumbnail row against the status
 endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
@@ -2085,9 +2183,14 @@ visits versus the current view and a saved view, the embedded gallery keeping Gr
 metadata off and on request, the cache (counted up to a request barrier), hidden paths,
 the video defaults, the host fields with their revision, a stale one and a failed read,
 reload and a second tab, a second tab's save while System was closed, storage refused,
-the D97 rows and reset. Its hooks are
+the D97 rows and reset. `tests/browser/workspace-system-sources.spec.mjs` covers the
+notice's Later and Review scan, a scoped scan from one source into Activity, Add source
+with its server check and Save, a refused folder, Remove down to auto-detect, an absent
+configured source, the three watch states, the monitoring and worker rows, Refresh
+files, the thumbnail hand-off, a save refused by a running scan and a failed read. Its hooks are
 `tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
-failures, an absent source, a deleted linked file, unthumbnailed files) on the
+failures, an absent source, a deleted linked file, unthumbnailed files, a fake image
+monitor) on the
 concept-shaped fixture, with delays through the shared request holds; reset also restores
 the server's host settings and its `config.json`, which must be the one inside the server's
 temp root (`tests/test_workspace_system_fixture.py`).
@@ -2098,8 +2201,11 @@ python3 -m unittest tests.test_database_health tests.test_system_api tests.test_
 node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-controls.test.js \
   tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js \
   tests/js/workspace-system-appearance.test.js tests/js/workspace-preferences.test.js \
-  tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js
+  tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js \
+  tests/js/workspace-system-sources.test.js
+python3 -m unittest tests.test_settings_sources tests.test_scan_scope -v
 npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
+  workspace-system-sources.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
 

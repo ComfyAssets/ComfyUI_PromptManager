@@ -17,6 +17,8 @@ export const REPORT_DONE = 'Job report downloaded.';
 export const REPORT_FAILED = 'The report could not be downloaded. Try again.';
 const JOBS_REPORT_BASE = '/prompt_manager/jobs';
 export const START_FAILED = 'The scan could not start. Try again.';
+// A per-source scan whose sources changed since they were read (S4): the server's 409 says so.
+const SOURCES_CHANGED_CODE = 'sources-changed';
 const FALLBACK_NAME = 'prompts_backup.db';
 const REPORT_FALLBACK_NAME = 'prompt-manager-report.json';
 
@@ -81,25 +83,37 @@ export function busyToast(running) {
 
 /**
  * Start the scan job over `files` ('new': new and unresolved files, or 'all') and open its view; a refused or failed
- * start says why and stays on the page.
+ * start says why and stays on the page. `roots` (System › Sources, S4) limits it to those effective source indexes, and
+ * `paths` names the public path read for each: when the sources changed since (409 `sources-changed`) nothing starts,
+ * the toast says the server's reason and `onStale` (which every caller with `roots` passes) reads them again.
  */
-export async function startMetadataScan({ store, scope, files = 'new', notify = showWorkspaceToast, navigate = navigateTo }) {
+export async function startMetadataScan({ store, scope, files = 'new', roots = null, paths = null, onStale,
+    notify = showWorkspaceToast, navigate = navigateTo }) {
     try {
-        const result = await store.start('scan', { scope: files });
+        const result = await store.start('scan', roots ? { scope: files, roots, paths } : { scope: files });
         if (scope.signal.aborted) return;
         if (result.busy !== undefined) {
             notify(busyToast(result.busy));
             return;
         }
         navigate(`#/activity/${result.job.id}`);
-    } catch {
-        if (!scope.signal.aborted) notify(START_FAILED);
+    } catch (error) {
+        if (scope.signal.aborted) return;
+        if (error?.code === SOURCES_CHANGED_CODE) {
+            notify(error.message);
+            onStale();
+            return;
+        }
+        notify(START_FAILED);
     }
 }
 
-/** Open "Review metadata scan" for `sources` output folders. */
-export function openMetadataScan({ scope, store, sources, trigger = null }) {
+/**
+ * Open "Review metadata scan" for `sources` output folders; with `roots` and `paths` (one source's index and public
+ * path, System › Sources) the scan reads only those, and `onStale` runs when they changed since they were read.
+ */
+export function openMetadataScan({ scope, store, sources, roots = null, paths = null, onStale, trigger = null }) {
     openScanReviewDialog({ scope, sources, trigger,
         onBackup: () => downloadDatabaseBackup(),
-        onStart: ({ scope: files }) => startMetadataScan({ store, scope, files }) });
+        onStart: ({ scope: files }) => startMetadataScan({ store, scope, files, roots, paths, onStale }) });
 }
