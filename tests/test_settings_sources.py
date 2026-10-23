@@ -604,14 +604,16 @@ class TestValidateSource(SourcesTestCase):
         windows = functools.partial(sources.source_form_error, windows=True)
         with (
             patch.object(sources, "source_form_error", windows),
-            no_filesystem_access_for("C:", self),
+            # The probes hold a token no trusted directory does (on Windows the
+            # temporary ComfyUI tree itself sits on C:).
+            no_filesystem_access_for("PMProbe", self),
         ):
             for path in (
-                "\\\\?\\C:\\ComfyUI\\output",
-                "\\\\.\\pipe\\x",
-                "C:\\ComfyUI\\output\\CON",
-                "C:\\ComfyUI\\output\\a:stream",
-                "C:ComfyUI",
+                "\\\\?\\C:\\PMProbe\\output",
+                "\\\\.\\pipe\\PMProbe",
+                "C:\\PMProbe\\output\\CON",
+                "C:\\PMProbe\\output\\a:stream",
+                "C:PMProbe",
             ):
                 with self.subTest(path=path):
                     _roots, error = self.api._parse_gallery_roots(
