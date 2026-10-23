@@ -1643,6 +1643,62 @@ class TestPromptInspector(ImageAPITestCase):
                         str(path), False, report_ambiguity=True
                     )
 
+    async def test_unhashable_workflow_node_type_is_skipped(self):
+        """A UI workflow node whose ``type`` is a list or dict is skipped (#286).
+
+        The R1 check looks each node's ``type`` up among subgraph IDs; an
+        unhashable ``type`` used to raise there and the route answered 500.
+        Such a node can be neither a subgraph instance nor a PromptManager
+        node, so the walk skips it and a prompt that resolves still resolves.
+        """
+        source = graph()
+        source["1"]["class_type"] = "PromptManager"
+        for kind in (["PromptManager"], {"name": "PromptManager"}):
+            with self.subTest(kind=type(kind).__name__):
+                workflow = json.dumps(
+                    {"nodes": [{"id": 1, "type": kind, "widgets_values": ["x"]}]}
+                )
+                png(
+                    self.output_dir / "image.png",
+                    prompt=json.dumps(source),
+                    workflow=workflow,
+                )
+                response, result = await self.inspect()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(result["resolution"]["state"], "resolved")
+                self.assertEqual(result["resolution"]["sampler_id"], "3")
+                self.assertEqual(result["prompts"]["positive"]["status"], "resolved")
+                self.assertEqual(result["prompts"]["positive"]["text"], "portrait")
+                self.assertEqual(result["prompts"]["negative"]["text"], "blurry")
+                self.assertNotIn("unhashable", json.dumps(result))
+
+    async def test_unhashable_graph_class_type_is_not_a_preview_output(self):
+        """A list or object ``class_type`` never names a preview output (#286).
+
+        With several samplers the inspector first drops stages that reach only
+        previews; looking such a ``class_type`` up among the preview classes
+        used to raise, and the route answered 500.
+        """
+        for kind in (["PreviewImage"], {"name": "PreviewImage"}):
+            with self.subTest(kind=type(kind).__name__):
+                source = graph()
+                source["9"] = {
+                    "class_type": "KSampler",
+                    "inputs": {"positive": ["8", 0], "negative": ["2", 0]},
+                }
+                source["8"] = {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {"text": "cat"},
+                }
+                source["10"] = {"class_type": kind, "inputs": {"images": ["9", 0]}}
+                png(self.output_dir / "image.png", prompt=json.dumps(source))
+                response, result = await self.inspect()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    result["resolution"]["reason"], "Multiple sampler branches"
+                )
+                self.assertEqual(result["resolution"]["state"], "ambiguous")
+
 
 class TestInspectorImageTags(ImageAPITestCase):
     """B3: the inspector envelope's ``image_tags`` facet (spec amendment S1)."""

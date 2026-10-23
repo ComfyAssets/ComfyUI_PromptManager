@@ -2,6 +2,13 @@ import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage
 import { test, expect } from './fixtures.mjs';
 import { seedConcept, openConcept, openProduction } from './concept-inventory.mjs';
 
+// The Activity store's periodic list read (activity-store.mjs POLL_MS) and the detail view's read throttle
+// (activity-job-view.mjs DETAIL_INTERVAL_MS).
+const POLL_MS = 15_000;
+const DETAIL_INTERVAL_MS = 1_000;
+// A request is reported to the test a little after the browser sends it; that delay is not a shorter wait.
+const REPORT_SLACK_MS = 100;
+
 // Activity (#249 Activity-1): the concept's Activity page (app.js renderActivity 732–738), its top-bar button
 // (index.html 51–52) and sidebar row (app.js ~341), with the recorded D52 (counts of running jobs), D53 (the progress
 // pill) and D54 (real job items). Fake jobs come from tests/browser/workspace_activity_fixture.py.
@@ -278,6 +285,8 @@ test('reload during a scan reattaches to the running job', async ({ page, reques
 });
 
 test('lost server clears the pill and marks jobs ended', async ({ page, request }) => {
+    // A poll interval after the restart, then failed re-reads backing off for 1 + 2 + 4 s.
+    test.setTimeout(90_000);
     await page.setViewportSize({ width: 1600, height: 1100 });
     const job = await startJob(request);
     await step(request, job.id, { processed: 4000 });
@@ -294,9 +303,12 @@ test('lost server clears the pill and marks jobs ended', async ({ page, request 
     await expect(items(page).first().locator('p')).toHaveText(LOST);
     await expect(items(page).first().locator('progress, .row-actions')).toHaveCount(0);
     await expect(navRow(page).locator('.nav-count')).toHaveCount(0);
-    // One re-read found the restart; there is no retry storm and no finish toast for a job that only vanished.
-    await page.waitForTimeout(2500);
-    expect(reads.length).toBeLessThanOrEqual(2);
+    // One re-read found the restart; there is no retry storm and no finish toast for a job that only vanished. The
+    // read after it is the periodic one, a whole poll interval later: any extra read lands in that gap and fails it.
+    const found = reads.length;
+    expect(found, 'reads that found the restart').toBeGreaterThanOrEqual(1);
+    await expect.poll(() => reads.length, { timeout: POLL_MS + 10_000 }).toBeGreaterThan(found);
+    expect(reads[found] - reads[found - 1], 'the next read waits for the poll').toBeGreaterThanOrEqual(POLL_MS - REPORT_SLACK_MS);
     await expect(toast(page)).toHaveText('');
 
     // A server that cannot be read at all also ends the running job, then is read again with a growing backoff.
@@ -308,9 +320,12 @@ test('lost server clears the pill and marks jobs ended', async ({ page, request 
     await expect(await request.post('/__test__/jobs/restart')).toBeOK();
     await expect(pill(page)).toBeHidden();
     await expect(items(page).filter({ hasText: LOST })).toHaveCount(1);
-    await page.waitForTimeout(3500);
-    // 1 s, then 2 s: at most two re-reads in 3.5 s.
-    expect(failed.length).toBeLessThanOrEqual(2);
+    // 1 s, then 2 s, then 4 s: each failed re-read waits twice as long as the one before. The gaps between the
+    // reads themselves are the evidence, so a slow runner noticing the ended job late cannot add a read to a window.
+    await expect.poll(() => failed.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(3);
+    const gaps = failed.slice(1, 3).map((at, index) => at - failed[index]);
+    expect(gaps[0]).toBeGreaterThanOrEqual(2000 - REPORT_SLACK_MS);
+    expect(gaps[1]).toBeGreaterThanOrEqual(4000 - REPORT_SLACK_MS);
     await page.unroute('**/prompt_manager/jobs**');
     expect(second.id).not.toBe(job.id);
 });
@@ -607,6 +622,8 @@ test('filter narrows the selected outcome', async ({ page, request }) => {
 
 test('job view renders 200-row cap note', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
+    // The page's timers are Playwright's, running at real speed, so the M12 check below can run a read throttle out.
+    await page.clock.install();
     const job = await startJob(request);
     await step(request, job.id, { processed: 260, bulk: { group: 'added', count: 250 }, records: [
         ...Array.from({ length: 10 }, (_, index) => ({ group: 'no_metadata', path: `misc/plain_${index}.png`, detail: 'No prompt metadata in the file' })),
@@ -646,11 +663,15 @@ test('job view renders 200-row cap note', async ({ page, request }) => {
     page.on('request', item => { if (new URL(item.url()).pathname === `/prompt_manager/jobs/${job.id}`) reads.push(Date.now()); });
     await step(request, job.id, { processed: 300, bulk: { group: 'added', count: 40 } });
     await expect(tiles(page).first().locator('dd')).toHaveText('290');
-    await page.waitForTimeout(1500);
+    // Every read the counter update could have scheduled is due within one throttle interval: run it out, so any such
+    // read is sent before the log opens. Requests reach the test in the order they were sent, so once the log's read
+    // has answered, a read sent before it would already be listed.
+    await page.clock.runFor(DETAIL_INTERVAL_MS);
     expect(reads).toEqual([]);
     await scanLog(page).locator('summary').click();
     await expect.poll(() => reads.length).toBe(1);
     await expect(scanLog(page).locator('pre')).toContainText('bulk/file_00039.png');
+    expect(reads, 'only the log\'s own read').toHaveLength(1);
 });
 
 test('cancel scan ends cancelled with partial counts', async ({ page, request }) => {
@@ -678,16 +699,44 @@ test('cancel scan ends cancelled with partial counts', async ({ page, request })
     await expect(heading(page).getByRole('button', { name: 'Cancel scan', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
 });
 
+// Truth rule: a held legacy-page job (a restore from the admin page) cannot be cancelled, so neither the Activity
+// list nor the job's view offers Cancel; the cancellable scan beside it keeps its own (review I3).
+test('a held legacy job shows no Cancel in the list or its view', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const response = await request.post('/__test__/jobs/hold', { data: { kind: 'restore', title: 'Database restore (admin page)' } });
+    await expect(response).toBeOK();
+    const held = (await response.json()).job;
+    expect(held.cancellable).toBe(false);
+    await page.goto(`${workspace}#/activity`);
+    const item = items(page).filter({ has: page.getByRole('link', { name: /Database restore \(admin page\)$/ }) });
+    await expect(item.locator('.chip')).toHaveText('Running');
+    await expect(item.locator('progress')).toHaveCount(1);
+    await expect(main(page).getByRole('button', { name: 'Cancel job', exact: true })).toHaveCount(0);
+
+    await item.getByRole('link').click();
+    await expect(heading(page).locator('h1')).toHaveText('Database restore (admin page)');
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
+    await expect(heading(page).getByRole('button', { name: /^Cancel/ })).toHaveCount(0);
+
+    // When the hold ends the view shows the end, still without a Cancel.
+    await finish(request, held.id);
+    await expect(heading(page).locator('p.muted')).toHaveText(/^Finished/);
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
+});
+
 test('busy start names the running job', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
+    // The page's timers are Playwright's, so the toast's lifetime below is run out rather than waited for.
+    await page.clock.install();
     const running = await startJob(request, { title: 'Database maintenance', kind: 'maintenance' });
     await startFromImport(page);
     await expect(toast(page)).toHaveText('Another job is running: Database maintenance.');
     await expect(toast(page).getByRole('link', { name: 'Database maintenance', exact: true })).toHaveAttribute('href', `#/activity/${running.id}`);
     await expect(page).toHaveURL(/#\/images$/);
     expect((await listed(request)).map(item => item.id)).toEqual([running.id]);
-    // Review M14: a toast with a link outlasts the plain 6.5 s, so the link stays reachable.
-    await page.waitForTimeout(7000);
+    // Review M14: a toast with a link outlasts the plain 6.5 s, so the link stays reachable. Running the page's timers
+    // 7 s on fires a 6.5 s clear for certain, however slowly this runner reached this line.
+    await page.clock.runFor(7000);
     await expect(toast(page).getByRole('link', { name: 'Database maintenance', exact: true })).toBeVisible();
     await toast(page).getByRole('link', { name: 'Database maintenance', exact: true }).click();
     await expect(heading(page).locator('h1')).toHaveText('Database maintenance');

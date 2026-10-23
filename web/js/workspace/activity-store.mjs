@@ -103,6 +103,8 @@ export function parseJob(raw) {
         scope: plainObject(raw.scope) ? { ...raw.scope } : {},
         listed,
         log_length: count(raw.log_length),
+        // A held legacy-page job cannot be cancelled; an older server sends no key (cancellable then).
+        cancellable: raw.cancellable !== false,
     };
 }
 

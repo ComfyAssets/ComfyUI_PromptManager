@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy,reflow} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConceptAt,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy,reflow} from './concept-inventory.mjs';
 
 // Task E3 of #249: the production Prompt library shelf against the immutable concept (app.js renderLibrary a572–586,
 // style.css s648–708), on the concept-shaped real fixture (the concept's six prompts with their negatives, categories,
@@ -37,7 +37,8 @@ export function mapLibraryConcept(reference) {
         // D43: tag chips come in the store's alphabetical order; the row flows again from the concept's own chips.
         tags:sortedTags(card.tags),
         // D23: the stars are aria-hidden, with a visually hidden "Rated N out of 5" spoken in their place. The fixture's
-        // run_count (4) and last_used_at (now) give the concept's own "4 runs" and "Used today". The two-line clamp is
+        // run_count (4) and last_used_at (its own "now", where the page's clock stands) give the concept's own "4 runs"
+        // and "Used today". The two-line clamp is
         // applied below through `clampedCards`, measured on the concept with `CLAMP_CSS` (its samples wrap at 390px).
         footer:{...card.footer,facts:{...card.footer.facts,spoken:card.footer.facts.spoken.replace(/^(★+)/,stars=>`Rated ${stars.length} out of 5`)}}}));
     return {...reference,library:{...library,toolbar,
@@ -238,7 +239,8 @@ async function openHost(context) {
 }
 
 test.beforeEach(async({page,request},testInfo)=>{
-    testInfo.manifest=await seedConcept(request);
+    // The page's clock stands at the fixture's own "now", so its last use reads "Used today" on either side of midnight.
+    testInfo.manifest=await seedConceptAt(page,request);
     // Both documents copy through the clipboard; the stub records what they wrote.
     await page.addInitScript(()=>{window.copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copied.push(text);}}});});
 });
@@ -319,6 +321,27 @@ for(const theme of THEMES)test(`library grid and cards match the concept 1800x11
     const actual=await inventoryOf(page,'#workspace-main');
     await captureCanonicalState(page,testInfo,`production-library-1800-${theme}`);
     expect(reference.library.grid.columns,'concept columns').toBe(3);
+    expect(compare(reference,actual,{sections:['library'],library:['grid','cards','trailing']})).toEqual([]);
+});
+
+// PR #284's CI run: the fixture recorded the last use at 23:59:5x UTC and the shelf rendered at 00:00:05, so production
+// read "Used yesterday" against the concept's "Used today". Here the browser's wall clock starts at 23:59:58 UTC, the
+// fixture records its use at that instant, and midnight passes before either document opens.
+const BEFORE_MIDNIGHT=Date.UTC(2026,9,22,23,59,58);
+const PAST_MIDNIGHT_MS=5_000;
+test('a run that crosses midnight still reads the concept fixture\'s day',async({page,request})=>{
+    await page.setViewportSize({width:1800,height:1100});
+    await page.clock.install({time:BEFORE_MIDNIGHT});
+    const manifest=await seedConceptAt(page,request,{now:BEFORE_MIDNIGHT/1000});
+    expect(manifest.now*1000,'the fixture\'s now').toBe(BEFORE_MIDNIGHT);
+    const used=(await (await request.get('/prompt_manager/library')).json()).items.map(item=>Date.parse(item.last_used_at));
+    expect(used,'every last use at the fixture\'s now').toEqual(Array(CONCEPT_PROMPTS).fill(BEFORE_MIDNIGHT));
+    await page.clock.fastForward(PAST_MIDNIGHT_MS);
+    await openConceptLibrary(page,'dark','no-preference');
+    const reference=await conceptInventory(page);
+    await openProductionLibrary(page,'dark','no-preference');
+    const actual=await inventoryOf(page,'#workspace-main');
+    expect(actual.library.cards.map(card=>card.footer.facts.text.replace(/^★+ · /,''))).toEqual(Array(CONCEPT_PROMPTS).fill('Used today'));
     expect(compare(reference,actual,{sections:['library'],library:['grid','cards','trailing']})).toEqual([]);
 });
 

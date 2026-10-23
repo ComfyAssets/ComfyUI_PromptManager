@@ -182,7 +182,12 @@ class TestJobRegistry(unittest.IsolatedAsyncioTestCase):
                 "scope",
                 "listed",
                 "log_length",
+                "cancellable",
+                "admission",
             },
+        )
+        self.assertEqual(
+            (summary["cancellable"], summary["admission"]), (True, "records")
         )
         self.assertEqual(summary["scope"], {"files": "new", "output_folders": 2})
         # What the detail would list, so a view reads it only when that changed.

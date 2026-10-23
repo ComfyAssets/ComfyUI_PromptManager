@@ -207,6 +207,40 @@ test('chooser opens the shared full inspector without a second read', async ({ p
     expect(await page.evaluate(() => window.__slices)).toBe(0);
 });
 
+// PR L3 Task 10: local roles are the server inspector's (local-resolver.mjs), so for every parity PNG the rail shows the
+// prompts, their status lines and the facts Images shows for the same bytes in the output folder.
+const PARITY_PNGS = ['f01b', 'f02', 'f03', 'f06a', 'f06b', 'f06c', 'f06d', 'f06e', 'f07a', 'f07b', 'f08', 'f09', 'f10', 'f11', 'f12',
+    'f14', 'f15', 'f16', 'f17', 'f19', 'f20', 'f21', 'f22', 'f23', 'f24'];
+const roleSections = locator => locator.evaluate(node => [...node.querySelectorAll('.prompt-section')].map(item => item.textContent));
+
+test('chooser shows the Images roles and resolution for every parity PNG', async ({ page, request }) => {
+    test.slow();
+    for (const name of PARITY_PNGS) {
+        await expect(await request.post('/__test__/add-local-inspect-file', { data: { name: `${name}.png` } })).toBeOK();
+    }
+    const served = {};
+    await page.goto(`${workspace}#/images`);
+    for (const name of PARITY_PNGS) {
+        await page.locator(`article[data-image-key="0:local-inspect/${name}.png"] .image-open`).click();
+        await expect(viewer(page).locator('#viewer-title')).toHaveText(`${name}.png`);
+        await expect(rail(page).locator('.panel-heading')).toBeVisible();
+        await expect(rail(page).locator('.prompt-section')).not.toHaveCount(0);
+        served[name] = { content: await railContent(rail(page)), roles: await roleSections(rail(page)) };
+        await page.keyboard.press('Escape');
+        await expect(viewer(page)).toHaveCount(0);
+    }
+    await openInspect(page);
+    for (const name of PARITY_PNGS) {
+        await choose(page, parityPng(`${name}.png`));
+        await openViewer(page);
+        await expect(viewer(page).locator('#viewer-title')).toHaveText(`${name}.png`);
+        await expect(rail(page).locator('.prompt-section')).not.toHaveCount(0);
+        expect({ content: await railContent(rail(page)), roles: await roleSections(rail(page)) }, name).toEqual(served[name]);
+        await page.keyboard.press('Escape');
+        await expect(viewer(page)).toHaveCount(0);
+    }
+});
+
 test('Import → Inspect a local image lands here', async ({ page }) => {
     await page.goto(`${workspace}#/images`);
     await page.getByRole('button', { name: 'Import', exact: true }).click();
@@ -704,13 +738,19 @@ test('local roles send exactly', async ({ page, context }) => {
 
 test('local inspection makes no content request or storage write', async ({ page }) => {
     await instrument(page);
-    await openInspect(page);
-    // The shell's own reads (counts, Activity) settle before the baseline.
-    await expect(page.locator('aside.sidebar nav [data-route="images"] .nav-count')).toBeAttached();
-    const baseline = (await urls(page)).writes.length;
     const requests = [];
     page.on('request', request => requests.push({ url: request.url(), method: request.method(), body: request.postData() }));
     page.on('websocket', socket => requests.push({ url: socket.url(), method: 'WS', body: null }));
+    const table = /\/prompt_manager\/js\/inspection-semantics\.json$/;
+    const tableRead = page.waitForResponse(response => table.test(response.url()));
+    await openInspect(page);
+    // The one static file Inspect reads, its node table, is fetched as the page mounts: before any selection.
+    expect((await tableRead).ok()).toBe(true);
+    // The shell's own reads (counts, Activity) settle before the baseline.
+    await expect(page.locator('aside.sidebar nav [data-route="images"] .nav-count')).toBeAttached();
+    const baseline = (await urls(page)).writes.length;
+    const before = requests.length;
+    expect(requests.filter(entry => table.test(entry.url))).toHaveLength(1);
     for (const file of [sendablePng('private-name.png'), localFixture('core-tags.webm', 'video/webm', 'private-clip.webm')]) {
         await choose(page, file);
         await openViewer(page);
@@ -718,7 +758,8 @@ test('local inspection makes no content request or storage write', async ({ page
         await page.keyboard.press('Escape');
         await expect(viewer(page)).toHaveCount(0);
     }
-    const network = requests.filter(entry => !entry.url.startsWith('blob:') && !entry.url.startsWith('data:'));
+    const network = requests.slice(before).filter(entry => !entry.url.startsWith('blob:') && !entry.url.startsWith('data:'));
+    expect(requests.filter(entry => table.test(entry.url)), 'the table is read once per page').toHaveLength(1);
     expect(network.filter(entry => /private|lighthouse|fox/.test(`${entry.url} ${entry.body ?? ''}`))).toEqual([]);
     expect(network.filter(entry => entry.method !== 'GET')).toEqual([]);
     expect(network.filter(entry => !/\/prompt_manager\/(activity|images\/output|library|vocabulary)/.test(entry.url))).toEqual([]);
@@ -736,4 +777,81 @@ test('touch layout at 390 has no horizontal overflow at 200% zoom', async ({ pag
         const area = await page.locator('.file-drop').evaluate(node => node.getBoundingClientRect().right <= document.documentElement.clientWidth + 0.5);
         expect(area).toBe(true);
     }
+});
+
+// LI-4 (D117): "Copy settings summary" after the six facts is the legacy metadata page's COPY ALL, in the shared full
+// inspector, so a file served in Images and the same bytes chosen here copy the same summary of what the rail shows.
+/** Records clipboard writes in the page, or (`clipboard: false`) leaves the page without a clipboard. */
+async function stubClipboard(page, { clipboard = true } = {}) {
+    await page.addInitScript(available => {
+        window.__copied = [];
+        Object.defineProperty(navigator, 'clipboard', { configurable: true,
+            value: available ? { writeText: async text => { window.__copied.push(text); } } : undefined });
+    }, clipboard);
+}
+/** The summary the rail's own prompts and facts make, in the legacy COPY ALL lines and placeholders. */
+const expectedSummary = locator => locator.evaluate(node => {
+    const facts = Object.fromEntries([...node.querySelectorAll(':scope .meta-grid:not(details .meta-grid) > div')]
+        .map(item => [item.querySelector('dt').textContent, item.querySelector('dd').textContent]));
+    // A confirmed prompt has its Copy action; an explicitly empty one takes the legacy placeholder too.
+    const prompt = role => {
+        const text = node.querySelector(`.prompt-section.${role} [data-copy-role]`) ? node.querySelector(`.prompt-section.${role} p.prompt-text`).textContent : null;
+        return text === `No ${role} prompt (explicitly empty)` ? null : text;
+    };
+    return [`Checkpoint: ${facts.Model}`, `Positive Prompt: ${prompt('positive') ?? 'No prompt found'}`,
+        `Negative Prompt: ${prompt('negative') ?? 'No negative prompt found'}`, `Steps: ${facts.Steps}`, `CFG Scale: ${facts.CFG}`,
+        `Sampler: ${facts.Sampler}`, `Seed: ${facts.Seed}`].join('\n');
+});
+async function copySummary(page) {
+    const button = rail(page).getByRole('button', { name: 'Copy settings summary', exact: true });
+    // It follows the six facts, before "File & provenance".
+    expect(await button.evaluate(node => [node.previousElementSibling?.localName, node.nextElementSibling?.localName])).toEqual(['dl', 'details']);
+    await button.click();
+}
+
+test('Copy settings summary copies the same legacy summary in Images and Inspect', async ({ page, request }) => {
+    await stubClipboard(page);
+    await expect(await request.post('/__test__/add-local-inspect-file', { data: { name: 'f02.png' } })).toBeOK();
+    await page.goto(`${workspace}#/images`);
+    await page.locator('article[data-image-key="0:local-inspect/f02.png"] .image-open').click();
+    await expect(rail(page).locator('.prompt-section.positive p.prompt-text')).toBeVisible();
+    const served = await expectedSummary(rail(page));
+    expect(served).toMatch(/^Checkpoint: .+\nPositive Prompt: [\s\S]+\nNegative Prompt: [\s\S]+\nSteps: .+\nCFG Scale: .+\nSampler: .+\nSeed: .+$/);
+    expect(served).not.toContain('Unknown');
+    await copySummary(page);
+    await expect(page.locator('#workspace-toast')).toHaveText('Settings summary copied.');
+    expect(await page.evaluate(() => window.__copied)).toEqual([served]);
+    await page.keyboard.press('Escape');
+    await expect(viewer(page)).toHaveCount(0);
+
+    await openInspect(page);
+    await choose(page, parityPng('f02.png'));
+    await openViewer(page);
+    expect(await expectedSummary(rail(page))).toBe(served);
+    await copySummary(page);
+    await expect.poll(() => page.evaluate(() => window.__copied)).toEqual([served, served]);
+    // The panel variant (the Images side panel) keeps the concept's footer: no summary action there.
+    await page.keyboard.press('Escape');
+    await page.goto(`${workspace}#/images`);
+    await expect(page.locator('#image-inspector .panel-heading')).toBeVisible();
+    await expect(page.locator('#image-inspector').getByRole('button', { name: 'Copy settings summary', exact: true })).toHaveCount(0);
+});
+
+test('Copy settings summary without a clipboard opens the select-to-copy dialog', async ({ page }) => {
+    await stubClipboard(page, { clipboard: false });
+    await openInspect(page);
+    await choose(page, sendablePng());
+    await openViewer(page);
+    const summary = await expectedSummary(rail(page));
+    expect(summary).toContain(`Positive Prompt: ${POSITIVE_LINES}`);
+    await copySummary(page);
+    const fallback = page.getByRole('dialog', { name: 'Copy settings summary', exact: true });
+    await expect(fallback).toBeVisible();
+    await expect(fallback.getByRole('textbox', { name: 'Select and copy this text', exact: true })).toHaveValue(summary);
+    await expect(fallback.getByRole('textbox', { name: 'Select and copy this text', exact: true })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(fallback).toHaveCount(0);
+    // Escape closes only the copy dialog; focus returns to the action in the still-open viewer.
+    await expect(viewer(page)).toBeVisible();
+    await expect(rail(page).getByRole('button', { name: 'Copy settings summary', exact: true })).toBeFocused();
 });

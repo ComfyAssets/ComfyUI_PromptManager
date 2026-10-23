@@ -22,16 +22,17 @@ from .jobs import (
     SCAN_GROUP_NAMES,
     SCAN_GROUPS,
     SCAN_SCOPES,
+    DUPLICATE_CLEANUP_JOB_KIND,
+    MAINTENANCE_JOB_KIND,
+    RESTORE_JOB_KIND,
     Job,
     JobBusy,
 )
 
 try:
     from ...utils.parallel import map_parallel
-    from ...utils.validators import validate_result_timeout, validate_worker_threads
 except ImportError:
     from utils.parallel import map_parallel
-    from utils.validators import validate_result_timeout, validate_worker_threads
 
 try:
     from ...database.operations import PromptDatabase
@@ -502,14 +503,6 @@ class AdminRoutesMixin:
         async def get_stats_route(request):
             return await self.get_statistics(request)
 
-        @routes.get("/prompt_manager/settings")
-        async def get_settings_route(request):
-            return await self.get_settings(request)
-
-        @routes.post("/prompt_manager/settings")
-        async def save_settings_route(request):
-            return await self.save_settings(request)
-
         @routes.get("/prompt_manager/backup")
         async def backup_database_route(request):
             return await self.backup_database(request)
@@ -651,7 +644,15 @@ class AdminRoutesMixin:
             job.finish()
 
     async def cleanup_duplicates_endpoint(self, request):
-        """Cleanup duplicate prompts endpoint."""
+        """Cleanup duplicate prompts endpoint (holds the registry: records)."""
+        return await self._run_held(
+            MAINTENANCE_JOB_KIND,
+            "Prompt cleanup (admin page)",
+            "records",
+            self._cleanup_duplicates,
+        )
+
+    async def _cleanup_duplicates(self):
         try:
             removed_count = await self._run_in_executor(self.db.cleanup_duplicates)
 
@@ -766,26 +767,39 @@ class AdminRoutesMixin:
         return hash_sha256.hexdigest()
 
     async def delete_duplicate_images_endpoint(self, request):
-        """Delete duplicate image files from disk (single flight with the scan)."""
-        job = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
-        if job is None:
+        """Delete duplicate image files from disk.
+
+        Single flight with the duplicate scan, and a records hold on the
+        registry, so no scan, restore or tagging job runs meanwhile. A body
+        without paths is refused before the hold (it is no job).
+        """
+        data, error_response = await _read_json(request)
+        if error_response is not None:
+            return error_response
+        image_paths = data.get("image_paths", [])
+        if not image_paths or not isinstance(image_paths, list):
+            return web.json_response(
+                {"success": False, "error": "No image paths provided"},
+                status=400,
+            )
+        guard = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
+        if guard is None:
             return self._long_job_busy_response("Duplicate scan or delete")
-        async with job:
-            return await self._delete_duplicate_images(request)
 
-    async def _delete_duplicate_images(self, request):
+        async def delete():
+            # No await since the check above: the lock is still free.
+            async with guard:
+                return await self._delete_duplicate_images(image_paths)
+
+        return await self._run_held(
+            DUPLICATE_CLEANUP_JOB_KIND,
+            "Duplicate image delete (gallery page)",
+            "records",
+            delete,
+        )
+
+    async def _delete_duplicate_images(self, image_paths):
         try:
-            data, error_response = await _read_json(request)
-            if error_response is not None:
-                return error_response
-            image_paths = data.get("image_paths", [])
-
-            if not image_paths or not isinstance(image_paths, list):
-                return web.json_response(
-                    {"success": False, "error": "No image paths provided"},
-                    status=400,
-                )
-
             output_dir = await self._run_in_executor(self._find_comfyui_output_dir)
             result = await self._run_in_executor(
                 self._delete_duplicate_images_sync, image_paths, output_dir
@@ -882,208 +896,6 @@ class AdminRoutesMixin:
                 status=500,
             )
 
-    async def get_settings(self, request):
-        """Get current settings."""
-        try:
-            from ..config import PromptManagerConfig, GalleryConfig
-
-            root_paths = [
-                self._public_path(d) for d in GalleryConfig.MONITORING_DIRECTORIES
-            ]
-            return web.json_response(
-                {
-                    "success": True,
-                    "settings": {
-                        "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
-                        "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
-                        "infinite_scroll": PromptManagerConfig.INFINITE_SCROLL,
-                        "worker_threads": PromptManagerConfig.WORKER_THREADS,
-                        "cpu_count": PromptManagerConfig.max_worker_threads(),
-                        "gallery_root_paths": root_paths,
-                        "gallery_root_path": root_paths[0] if root_paths else "",
-                        "monitored_directories": [
-                            self._public_path(d) for d in self._monitored_directories()
-                        ],
-                    },
-                }
-            )
-        except Exception as e:
-            self.logger.error(f"Get settings error: {e}", exc_info=True)
-            return web.json_response(
-                {"success": False, "error": "Failed to get settings"},
-                status=500,
-            )
-
-    def _monitored_directories(self):
-        """Directories the running image monitor watches, else the configured roots."""
-        from ..config import GalleryConfig
-
-        monitor = _current_image_monitor()
-        if monitor is not None:
-            return list(getattr(monitor, "monitored_directories", []))
-        return list(GalleryConfig.MONITORING_DIRECTORIES)
-
-    async def save_settings(self, request):
-        """Save settings: the whole payload is validated before anything changes."""
-        try:
-            from ..config import PromptManagerConfig
-
-            data, error_response = await _read_json(request)
-            if error_response is not None:
-                return error_response
-
-            try:
-                updates = self._validate_settings(data)
-            except ValueError as ve:
-                return web.json_response(
-                    {"success": False, "error": str(ve)}, status=400
-                )
-
-            new_roots, error = self._parse_gallery_roots(data)
-            if error:
-                return web.json_response({"success": False, "error": error}, status=400)
-
-            for name, value in updates.items():
-                setattr(PromptManagerConfig, name, value)
-            restart_required = False
-            if new_roots is not None:
-                restart_required = self._apply_gallery_roots(new_roots)
-
-            self._persist_settings()
-
-            return web.json_response(
-                {
-                    "success": True,
-                    "message": "Settings saved successfully",
-                    "restart_required": restart_required,
-                }
-            )
-        except Exception as e:
-            self.logger.error(f"Save settings error: {e}", exc_info=True)
-            return web.json_response(
-                {"success": False, "error": "Failed to save settings"},
-                status=500,
-            )
-
-    @staticmethod
-    def _validate_settings(data):
-        """Scalar settings of a payload as ``{CONFIG_ATTR: value}``.
-
-        Raises ValueError with a user-facing message on the first bad value;
-        nothing is applied until every value passed.
-        """
-        from ..config import PromptManagerConfig
-
-        updates = {}
-        if "result_timeout" in data:
-            updates["RESULT_TIMEOUT"] = validate_result_timeout(data["result_timeout"])
-        if "webui_display_mode" in data:
-            mode = data["webui_display_mode"]
-            if mode not in ("popup", "newtab"):
-                raise ValueError("webui_display_mode must be 'popup' or 'newtab'")
-            updates["WEBUI_DISPLAY_MODE"] = mode
-        if "infinite_scroll" in data:
-            if not isinstance(data["infinite_scroll"], bool):
-                raise ValueError("infinite_scroll must be true or false")
-            updates["INFINITE_SCROLL"] = data["infinite_scroll"]
-        if "worker_threads" in data:
-            updates["WORKER_THREADS"] = validate_worker_threads(
-                data["worker_threads"], PromptManagerConfig.max_worker_threads()
-            )
-        return updates
-
-    def _parse_gallery_roots(self, data):
-        """Extract and validate gallery roots from a settings payload.
-
-        Accepts ``gallery_root_paths`` (list, preferred) or the legacy single
-        ``gallery_root_path`` string. Blank entries are dropped.
-
-        Returns:
-            (roots, error): ``roots`` is the validated list, or ``None`` when
-            the payload carries no gallery root key; ``error`` is a message
-            when validation failed (and ``roots`` is then ``None``).
-        """
-        if "gallery_root_paths" in data:
-            raw = data["gallery_root_paths"]
-            if not isinstance(raw, list):
-                return None, "gallery_root_paths must be a list"
-        elif "gallery_root_path" in data:
-            raw = [data["gallery_root_path"]]
-        else:
-            return None, None
-
-        from ..config import GalleryConfig
-
-        roots = []
-        for entry in raw:
-            if not isinstance(entry, str):
-                return None, "Gallery root paths must be strings"
-            entry = entry.strip()
-            if not entry:
-                continue
-            ok, reason = GalleryConfig.validate_gallery_root(entry)
-            if not ok:
-                return (
-                    None,
-                    f"Invalid gallery root '{os.path.basename(entry)}': {reason}",
-                )
-            roots.append(GalleryConfig.resolve_gallery_root(entry))
-        return roots, None
-
-    def _apply_gallery_roots(self, roots):
-        """Install validated gallery roots; returns True when they changed."""
-        from ..config import GalleryConfig
-
-        if roots == list(GalleryConfig.MONITORING_DIRECTORIES):
-            return False
-        GalleryConfig.MONITORING_DIRECTORIES = roots
-        self._cached_output_dir = None
-        self.reset_gallery_roots_cache()
-        return True
-
-    def _persist_settings(self):
-        """Merge the user-editable settings into the configured config.json.
-
-        Only the keys this endpoint owns are rewritten; every other section
-        (integrations, database, performance, ...) and every other key in
-        ``web_ui``/``gallery`` is kept as it was. A config file that cannot
-        be parsed is replaced.
-        """
-        from ..config import GalleryConfig, PromptManagerConfig, write_private_json
-
-        config_file = PromptManagerConfig.get_config_path()
-        existing = self._read_config_file(config_file)
-        web_ui = dict(existing.get("web_ui") or {})
-        web_ui["result_timeout"] = PromptManagerConfig.RESULT_TIMEOUT
-        web_ui["webui_display_mode"] = PromptManagerConfig.WEBUI_DISPLAY_MODE
-        web_ui["infinite_scroll"] = PromptManagerConfig.INFINITE_SCROLL
-        gallery = dict(existing.get("gallery") or {})
-        monitoring = dict(gallery.get("monitoring") or {})
-        monitoring["directories"] = list(GalleryConfig.MONITORING_DIRECTORIES)
-        gallery["monitoring"] = monitoring
-        performance = dict(existing.get("performance") or {})
-        performance["worker_threads"] = PromptManagerConfig.WORKER_THREADS
-        config_data = {
-            **existing,
-            "web_ui": web_ui,
-            "gallery": gallery,
-            "performance": performance,
-        }
-        try:
-            write_private_json(config_file, config_data)
-            self.logger.info(f"Settings saved to {config_file}")
-        except OSError as save_err:
-            self.logger.warning(f"Could not save config file: {save_err}")
-
-    def _read_config_file(self, config_file):
-        """Current contents of config.json as a dict, or {} when unusable."""
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
-
     async def run_diagnostics(self, request):
         """Run comprehensive system diagnostics and health checks."""
         try:
@@ -1176,6 +988,11 @@ class AdminRoutesMixin:
         "vacuum",
         "cleanup_orphaned_images",
     )
+    # Operations that only read; a run of only these holds the registry as
+    # "read", every other run as "records".
+    READ_ONLY_MAINTENANCE_OPERATIONS = frozenset(
+        {"check_hash_duplicates", "statistics", "check_consistency"}
+    )
 
     async def run_maintenance(self, request):
         """Perform database maintenance operations and report each outcome."""
@@ -1188,7 +1005,27 @@ class AdminRoutesMixin:
             operations = data.get(
                 "operations", list(self.DEFAULT_MAINTENANCE_OPERATIONS)
             )
+        except Exception as e:
+            self.logger.error(f"Maintenance error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": "Maintenance failed"}, status=500
+            )
+        writes = not (
+            isinstance(operations, list)
+            and all(
+                isinstance(name, str) and name in self.READ_ONLY_MAINTENANCE_OPERATIONS
+                for name in operations
+            )
+        )
+        return await self._run_held(
+            MAINTENANCE_JOB_KIND,
+            "Maintenance (admin page)",
+            "records" if writes else "read",
+            lambda: self._run_maintenance(operations),
+        )
 
+    async def _run_maintenance(self, operations):
+        try:
             results = await self._run_in_executor(
                 self._run_maintenance_operations, operations
             )
@@ -1342,8 +1179,18 @@ class AdminRoutesMixin:
 
         The upload is streamed to a temp file (capped at restore_max_bytes),
         verified with PromptModel.verify_database_file and only then copied
-        over the live database, which is backed up first.
+        over the live database, which is backed up first. The whole request
+        holds the registry (records): it is refused while a scan or another
+        record-changing job runs, and those are refused while it runs.
         """
+        return await self._run_held(
+            RESTORE_JOB_KIND,
+            "Database restore (admin page)",
+            "records",
+            lambda: self._restore_database(request),
+        )
+
+    async def _restore_database(self, request):
         max_bytes = getattr(self, "restore_max_bytes", 100 * 1024 * 1024)
         temp_path = None
         try:

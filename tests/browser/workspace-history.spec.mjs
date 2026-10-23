@@ -494,6 +494,23 @@ test('the inline current file names its prompts apart from the frozen run fields
     expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(before);
 });
 
+// LI-4 (D117): the recorded history's current-file viewer is the shared full inspector, so it copies the legacy summary.
+test('the current file viewer copies its settings summary',async({page})=>{
+    await page.addInitScript(()=>{window.__copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.__copied.push(text);}}});});
+    await page.route(url=>url.pathname.endsWith('/inspection'),async route=>{const response=await route.fetch();const body=await response.json();
+        body.prompts={positive:{status:'resolved',text:'current file positive',source:'graph-inferred'},negative:{status:'resolved',text:'current file negative',source:'graph-inferred'}};
+        await route.fulfill({response,json:body});});
+    await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+    const details=page.locator('dialog#viewer-dialog #viewer-details');await expect(details.locator('.panel-heading')).toBeVisible();
+    const facts=await details.locator(':scope > div > dl.meta-grid dd').allTextContents();
+    await details.getByRole('button',{name:'Copy settings summary',exact:true}).click();
+    await expect(page.locator('#workspace-toast')).toHaveText('Settings summary copied.');
+    const [seed,steps,cfg,sampler,,model]=facts;
+    expect(await page.evaluate(()=>window.__copied)).toEqual([[`Checkpoint: ${model}`,'Positive Prompt: current file positive','Negative Prompt: current file negative',
+        `Steps: ${steps}`,`CFG Scale: ${cfg}`,`Sampler: ${sampler}`,`Seed: ${seed}`].join('\n').replace(/: (Not recorded|Unresolved|Ambiguous|Unavailable within inspection limits)(?=\n|$)/g,': Unknown')]);
+});
+
 test('the recorded run dialog with a resolved current file has no duplicate button or region names',async({page})=>{
     await page.route(url=>url.pathname.endsWith('/inspection'),async route=>{const response=await route.fetch();const body=await response.json();
         body.prompts={positive:{status:'resolved',text:'current file positive',source:'graph-inferred'},negative:{status:'resolved',text:'current file negative',source:'graph-inferred'}};
