@@ -483,19 +483,20 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.assertNotIn(str(self.tmp_root), text)
 
     async def test_enable_preserves_unknown_sections(self):
+        stored = "stored-value"  # a plain marker: what is on disk must stay
         self.config_file.write_text(
             json.dumps(
                 {
                     "custom_section": {"keep": True},
                     "web_ui": {"result_timeout": 11},
                     "integrations": {
-                        "lora_manager": {"civitai_api_key": SECRET_KEY, "extra": 1},
+                        "lora_manager": {"civitai_api_key": stored, "extra": 1},
                         "other_tool": {"on": True},
                     },
                 }
             )
         )
-        IntegrationConfig.CIVITAI_API_KEY = SECRET_KEY
+        IntegrationConfig.CIVITAI_API_KEY = stored
 
         resp = await self._post_json(
             "/prompt_manager/lora/enable",
@@ -509,7 +510,7 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.assertEqual(saved["integrations"]["other_tool"], {"on": True})
         lora = saved["integrations"]["lora_manager"]
         self.assertEqual(lora["extra"], 1)
-        self.assertEqual(lora["civitai_api_key"], SECRET_KEY)
+        self.assertEqual(lora["civitai_api_key"], stored)
         self.assertIs(lora["trigger_words_enabled"], True)
         self.assertNotIn("database", saved)  # no runtime defaults written
 
