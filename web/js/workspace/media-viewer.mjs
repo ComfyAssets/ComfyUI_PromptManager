@@ -176,10 +176,12 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 const observer = new ResizeObserver(scheduleFit);observer.observe(stage);
                 viewer = instance;mediaLocal.cleanup(() => {
                     observer.disconnect();cancelAnimationFrame(fitFrame);
-                    // Inline Viewer.js keeps viewing a still-loading image after destroy(), and that view
-                    // rebuilds its list from images that still have a src; keep both until the view
-                    // settles, fails or times out.
-                    if (viewSettled) { release(); return; }
+                    // Before Viewer.js has built (its image still loading), destroy() cancels the pending build;
+                    // deferring it would let the late load build into the image the stage has just dropped.
+                    // Once built, inline Viewer.js keeps viewing a still-loading image after destroy(), and that
+                    // view rebuilds its list from images that still have a src; keep both until the view settles,
+                    // fails or times out.
+                    if (viewSettled || !instance.ready) { release(); return; }
                     node.addEventListener('error',release,{once:true});
                     fallback = setTimeout(release,PENDING_VIEW_DESTROY_MS);
                 });

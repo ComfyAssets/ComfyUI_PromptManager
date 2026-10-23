@@ -463,6 +463,26 @@ test('collection viewer ignores delayed media callbacks and keeps inspection ret
     await page.evaluate(()=>{location.hash='/overview';});await expect(page.locator('.viewer-container,#viewer-dialog')).toHaveCount(0);
 });
 
+test('collection viewer leaving an image Viewer.js has not built yet releases it at once',async({page})=>{
+    await page.goto(workspace);await expect(cards(page)).toHaveCount(2);
+    let release,held;const waiting=new Promise(resolve=>{held=resolve;});const pending=new Promise(resolve=>{release=resolve;});
+    await page.route('**/images/serve/shared/same.png?*',async route=>{
+        const url=new URL(route.request().url());
+        if(url.searchParams.get('root')==='0'&&url.searchParams.has('_pm_viewer')) {held();await pending;}
+        await route.continue().catch(()=>{});
+    });
+    await cards(page).first().getByRole('button',{name:'Open same.png',exact:true}).click();await waiting;
+    const preview=page.locator('dialog#viewer-dialog');
+    await page.evaluate(()=>{window.unbuiltImage=document.querySelector('#viewer-stage > img');});
+    await preview.getByRole('button',{name:'Next media',exact:true}).click();
+    await expect(preview.getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
+    // The left image is off the stage. Viewer.js has not built it, so the viewer is destroyed and the src released at
+    // once: its late load must never build Viewer.js into an image without a parent (getComputedStyle(null)).
+    release();
+    await expect.poll(()=>page.evaluate(()=>[window.unbuiltImage.isConnected,window.unbuiltImage.hasAttribute('src'),!!window.unbuiltImage.viewer])).toEqual([false,false,false]);
+    await page.evaluate(()=>{location.hash='/overview';});await expect(page.locator('.viewer-container,#viewer-dialog')).toHaveCount(0);
+});
+
 test('collection viewer describes video transforms and releases native playback on navigation',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{include_video:true}})).toBeOK();await page.goto(workspace);
     await page.locator('article[data-image-key="0:clip.webm"] .image-open').click();

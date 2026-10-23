@@ -124,12 +124,36 @@ test('real inspection navigation preserves slideshow across two advances and def
     } finally {view.dispose();controller.dispose();parentScope.dispose();globalThis.setTimeout=oldSetTimeout;globalThis.clearTimeout=oldClearTimeout;f.restore();}
 });
 
+test('an inline Viewer not yet built is destroyed and its image released at once', async () => {
+    const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
+    const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d')];
+    const instances = [];
+    // Viewer.js builds an inline viewer only once its image loads; until then `ready` is false and destroy() cancels it.
+    f.win.Viewer = class { constructor(node,options) { this.node = node; this.options = options; this.destroyed = 0; this.ready = false; this.viewed = false; instances.push(this); }
+        destroy() { this.destroyed++; } resize() {} };
+    const globals = {ResizeObserver:globalThis.ResizeObserver, requestAnimationFrame:globalThis.requestAnimationFrame, cancelAnimationFrame:globalThis.cancelAnimationFrame};
+    Object.assign(globalThis, {ResizeObserver:class { observe() {} disconnect() {} }, requestAnimationFrame:() => 1, cancelAnimationFrame() {}});
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
+    try {
+        view.open({items,selectedKey:'c'.repeat(64)});
+        const [loading] = instances, image = loading.node, removed = [];
+        image.removeAttribute = key => removed.push(key);
+        // Next drops the still-loading image from the stage; a deferred destroy would let its late load build there.
+        f.walk(f.container,n => n.attributes['aria-label'] === 'Next media')[0].fire('click');
+        assert.equal(instances.length, 2, 'Next builds the next image');
+        assert.equal(loading.destroyed, 1, 'an unbuilt viewer is destroyed at once');
+        assert.deepEqual(removed, ['src'], 'and its image is released at once');
+        loading.options.viewed.call(loading);
+        assert.equal(loading.destroyed, 1, 'never destroyed twice');
+    } finally { view.dispose(); parentScope.dispose(); f.restore(); Object.assign(globalThis, globals); }
+});
+
 test('an inline Viewer still loading its image is destroyed only after it has viewed it', async () => {
     const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
     const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c')];
     const instances = [];
-    // Viewer.js's inline destroy() leaves an in-flight view running; its callback then needs a live instance.
-    f.win.Viewer = class { constructor(node,options) { this.node = node; this.options = options; this.destroyed = 0; this.viewed = false; instances.push(this); }
+    // A built (`ready`) inline Viewer.js's destroy() leaves an in-flight view running; its callback then needs a live instance.
+    f.win.Viewer = class { constructor(node,options) { this.node = node; this.options = options; this.destroyed = 0; this.ready = true; this.viewed = false; instances.push(this); }
         destroy() { this.destroyed++; } resize() {} };
     const globals = {ResizeObserver:globalThis.ResizeObserver, requestAnimationFrame:globalThis.requestAnimationFrame, cancelAnimationFrame:globalThis.cancelAnimationFrame};
     Object.assign(globalThis, {ResizeObserver:class { observe() {} disconnect() {} }, requestAnimationFrame:() => 1, cancelAnimationFrame() {}});
