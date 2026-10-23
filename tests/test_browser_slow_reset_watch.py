@@ -71,7 +71,7 @@ class TestResetWatch(unittest.TestCase):
         text = "\n".join(report)
         self.assertIn("POST /__test__/reset still running after", text)
         self.assertIn("database: 1 connections", text)
-        self.assertIn("[held-up]", text)
+        self.assertIn(f"thread 0x{worker.ident:016x} is held-up", text)
         self.assertIn("in blocked_here", text)
 
         watch.record_call("seed", 0.25, 1.5)

@@ -114,10 +114,16 @@ def thread_stacks() -> list[str]:
     Formatting sys._current_frames() showed a thread blocked in SQLite as idle
     (Python 3.14); faulthandler reports where each thread really is.
     """
+    # Before Python 3.14 faulthandler prints ids only; name each id here.
+    names = [
+        f"thread 0x{thread.ident:016x} is {thread.name}"
+        for thread in threading.enumerate()
+        if thread.ident is not None
+    ]
     with tempfile.TemporaryFile() as dump:
         faulthandler.dump_traceback(file=dump, all_threads=True)
         dump.seek(0)
-        return dump.read().decode("utf-8", "replace").splitlines()
+        return [*names, *dump.read().decode("utf-8", "replace").splitlines()]
 
 
 def executor_state(loop: asyncio.AbstractEventLoop) -> list[str]:
