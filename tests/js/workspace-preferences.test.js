@@ -177,3 +177,17 @@ test('legacy paging keys are never consumed by the workspace', () => {
     const defaults = module.preferenceDefaults();
     for (const key of module.WORKSPACE_PREFERENCE_KEYS) assert.equal(defaults[key], gallerySettings.DEFAULT_SETTINGS[key], key);
 });
+
+test('a later save flushes the changes kept for this tab only', () => {
+    module.resetTabPreferences();
+    const store = storage(JSON.stringify({ gridColumns: 4 }), { quota: true });
+    assert.equal(module.writePreferences({ workspaceLayout: 'list' }, () => store).persisted, false);
+    // Storage accepts writes again: saving another key stores the tab-only change with it, so "Saved" is true for both.
+    const working = storage(store.text);
+    assert.deepEqual(module.writePreferences({ videoLoop: false }, () => working), { persisted: true, conflicts: [] });
+    assert.deepEqual(JSON.parse(working.text), { gridColumns: 4, workspaceLayout: 'list', videoLoop: false });
+    // Nothing is overlaid any more: another page's later change reads through.
+    working.text = JSON.stringify({ ...JSON.parse(working.text), workspaceLayout: 'masonry' });
+    assert.equal(module.readPreferences(() => working).values.workspaceLayout, 'masonry');
+    module.resetTabPreferences();
+});

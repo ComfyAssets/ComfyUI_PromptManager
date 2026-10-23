@@ -35,6 +35,7 @@ function fakeDOM() {
                 this.children.push(child);
             }
         }
+        remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; }
         replaceChildren(...nodes) { this.children = []; this._text = ''; this.append(...nodes); }
         setAttribute(name, value) { this.attributes[name] = String(value); }
         getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; }
@@ -66,7 +67,7 @@ const BROWSER = { workspaceLayout: 'grid', workspaceDensity: 'comfortable', auto
     imageQuality: 'medium', videoAutoplay: false, videoMute: true, videoLoop: true, showFilePaths: true, showImageInfo: true,
     sidebarCollapsedByDefault: false };
 
-async function mounted({ host = { webui_display_mode: 'newtab', result_timeout: 5 }, browser = BROWSER } = {}) {
+async function mounted({ host = { webui_display_mode: 'newtab', result_timeout: 5 }, browser = BROWSER, hostFails = false } = {}) {
     const { mountAppearance } = await appearanceModule;
     const { createSystemDrafts } = await stateModule;
     const { createScope } = await coreModule;
@@ -74,14 +75,15 @@ async function mounted({ host = { webui_display_mode: 'newtab', result_timeout: 
     let hostValues = null;
     const drafts = createSystemDrafts({
         readBrowser: () => ({ ...browser }), readRuntime: () => ({}),
-        readHost: async () => ({ values: hostValues, revision: 'sha256:one' }),
+        readHost: async () => { if (hostFails) throw new Error('offline'); return { values: hostValues, revision: 'sha256:one' }; },
         writeBrowser: async () => ({ persisted: true }), writeHost: async () => ({ success: true, persisted: true }), writeRuntime: async () => ({}),
     });
     await drafts.load('browser');
     const scope = createScope();
     const [surface] = mountAppearance(null, { scope, drafts });
     const byId = id => dom.find(surface, node => node.dataset?.setting === id);
-    return { dom, drafts, scope, surface, byId, loadHost: async () => { hostValues = host; await drafts.load('host'); } };
+    return { dom, drafts, scope, surface, byId, loadHost: async () => { hostValues = host; await drafts.load('host'); },
+        fixHost: () => { hostFails = false; } };
 }
 
 test('the surface is the concept section with the concept rows in order, then the D97 rows', async () => {
@@ -165,4 +167,22 @@ test('reset restores defaults without touching other keys', async () => {
         assert.deepEqual(drafts.changes('host'), { result_timeout: 9 });
         assert.deepEqual([...DISPLAY_KEYS].sort(), Object.keys(BROWSER).sort());
     } finally { scope.dispose(); dom.restore(); }
+});
+
+test('host rows that could not be read stay disabled and say so; a later read clears it', async () => {
+    const { HOST_UNAVAILABLE } = await appearanceModule;
+    const { dom, drafts, scope, byId, surface, fixHost } = await mounted({ hostFails: true });
+    const notes = () => surface.children.slice(2).flatMap(row => row.children[0].children.slice(2).map(note => [row.children[0].children[0].textContent, note.className, note.textContent]));
+    try {
+        assert.deepEqual(notes(), []);
+        assert.equal(await drafts.reloadHost(), false);
+        assert.deepEqual(notes(), [['Open from ComfyUI', 'small', HOST_UNAVAILABLE], ['Node search auto-hide (seconds)', 'small', HOST_UNAVAILABLE]]);
+        assert.equal(byId('timeout').disabled, true);
+        // Repaints keep one line per row.
+        drafts.set('browser', 'videoMute', false);
+        assert.equal(notes().length, 2);
+        fixHost();
+        assert.equal(await drafts.reloadHost(), true);
+        assert.deepEqual(notes(), []);
+    } finally { scope.dispose(); assert.equal(dom.listenerCount(), 0); dom.restore(); }
 });

@@ -13,12 +13,15 @@
  *   (`showImageInfo`), "Collapse viewer details by default" (`sidebarCollapsedByDefault`) and the operation "Reset
  *   display defaults", which drafts the gallery's defaults for these browser rows and touches no other key.
  *
- * Controls follow the store: a value read later (the host settings, another tab's change) repaints them.
+ * Controls follow the store: a value read later (the host settings, another tab's change) repaints them. A host row
+ * whose value could not be read stays disabled and says so ("Server settings could not be read.").
  */
 import { settingRow, operationRow } from './system-controls.mjs';
 import { preferenceDefaults } from './preferences.mjs';
 
 export const RESULT_TIMEOUT_MAX = 300;
+/** A host row's line while the server settings could not be read (its control stays disabled). */
+export const HOST_UNAVAILABLE = 'Server settings could not be read.';
 const BOOLEAN = Object.freeze({ type: 'toggle' });
 
 /**
@@ -115,7 +118,7 @@ export function mountAppearance(container, { scope, drafts }) {
         surface.append(node);
         const input = controlOf(node, id);
         input.dataset.key = key;
-        controls.push({ input, control, domain, key });
+        controls.push({ input, control, domain, key, text: node.children[0], note: null });
     }
     surface.append(operationRow({ title: 'Reset display defaults',
         description: 'Restore this browser’s display defaults, then save. Other settings are kept.', label: 'Reset', scope,
@@ -123,7 +126,17 @@ export function mountAppearance(container, { scope, drafts }) {
             const defaults = preferenceDefaults();
             for (const key of DISPLAY_KEYS) drafts.set('browser', key, defaults[key]);
         } }));
-    const repaint = () => { for (const { input, control, domain, key } of controls) paint(input, control, drafts.get(domain, key)); };
+    const repaint = () => {
+        const unavailable = drafts.hostState?.() === 'failed';
+        for (const row of controls) {
+            const value = drafts.get(row.domain, row.key);
+            paint(row.input, row.control, value);
+            if (row.domain !== 'host') continue;
+            if (unavailable && value === undefined) {
+                if (!row.note) { row.note = el('p', HOST_UNAVAILABLE, 'small'); row.text.append(row.note); }
+            } else if (row.note) { row.note.remove(); row.note = null; }
+        }
+    };
     scope.cleanup(drafts.subscribe(repaint));
     repaint();
     return [surface];

@@ -11,7 +11,7 @@
  * - `writePreferences(dirty, getStorage, {baseline})` → `{persisted, conflicts}`: re-reads the stored object and writes
  *   back only the dirty keys, every other key byte-for-byte as stored. A write the browser refused (denied storage, a
  *   full quota) leaves the stored bytes as they were and keeps the change for this tab only, so every reader in this
- *   tab still sees it. `conflicts` lists the dirty keys another page changed since `baseline` was read; the explicit
+ *   tab still sees it; the next write storage accepts stores those changes too. `conflicts` lists the dirty keys another page changed since `baseline` was read; the explicit
  *   save still wins.
  * - `subscribePreferences(win, onChange, getStorage)` → unsubscribe: `onChange(readPreferences())` after another page
  *   changed the settings (a `storage` event).
@@ -82,12 +82,13 @@ export function writePreferences(dirty, getStorage = defaultStorage, { baseline 
     const current = pick(normalizer()(stored));
     const conflicts = baseline ? Object.keys(dirty).filter(key => Object.hasOwn(baseline, key) && current[key] !== baseline[key]) : [];
     try {
-        storage.setItem(PREFERENCES_KEY, JSON.stringify({ ...stored, ...dirty }));
+        // The changes this tab could not store before are stored with this one, so "Saved" is true for all of them.
+        storage.setItem(PREFERENCES_KEY, JSON.stringify({ ...stored, ...Object.fromEntries(tabOnly), ...dirty }));
     } catch {
         keep();
         return { persisted: false, conflicts };
     }
-    for (const key of Object.keys(dirty)) tabOnly.delete(key);
+    tabOnly.clear();
     return { persisted: true, conflicts };
 }
 

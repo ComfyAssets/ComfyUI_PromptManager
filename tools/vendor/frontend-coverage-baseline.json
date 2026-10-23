@@ -469,15 +469,15 @@
   },
   "workspace/system-state.mjs": {
     "lines": 98,
-    "branches": 93,
+    "branches": 94,
     "functions": 98,
     "statements": 98
   },
   "workspace/system.mjs": {
-    "lines": 96,
+    "lines": 98,
     "branches": 92,
-    "functions": 84,
-    "statements": 96
+    "functions": 85,
+    "statements": 98
   },
   "workspace/theme.mjs": {
     "lines": 98,

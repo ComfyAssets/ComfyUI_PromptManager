@@ -16,7 +16,7 @@ import { createSystemDrafts, DRAFT_DOMAINS } from './system-state.mjs';
 import { sectionNav } from './system-controls.mjs';
 import { healthNotice, mountOverview } from './system-overview.mjs';
 import { mountAppearance } from './system-appearance.mjs';
-import { readPreferences, reconcilePreferences, subscribePreferences, writePreferences } from './preferences.mjs';
+import { displayPreferences, readPreferences, reconcilePreferences, subscribePreferences, writePreferences } from './preferences.mjs';
 
 const SETTINGS_URL = '/prompt_manager/settings';
 const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existing administration' });
@@ -57,7 +57,14 @@ export function systemDrafts(api) {
     drafts ??= createSystemDrafts({
         readBrowser: () => readPreferences().values,
         readRuntime: () => ({}),
-        writeBrowser: changes => ({ persisted: writePreferences(changes).persisted }),
+        writeBrowser: changes => {
+            // Another page changed a drafted value since this tab read it, and no storage event told it yet: refuse,
+            // so the store keeps the draft, flags it and reads the values again; the next Save is an explicit choice.
+            const baseline = drafts.saved('browser');
+            const { conflicts } = reconcilePreferences({ baseline, drafts: changes, next: readPreferences().values });
+            if (conflicts.length) throw Object.assign(new Error('Settings changed elsewhere'), { code: 'settings-changed' });
+            return { persisted: writePreferences(changes, undefined, { baseline }).persisted };
+        },
         writeRuntime: undelivered,
         async readHost() {
             const result = await api.get(SETTINGS_URL, { cache: 'no-store' });
@@ -110,18 +117,24 @@ export const DELIVERED_SECTIONS = Object.freeze({
  *
  * The host values are read on mount (and by the store again after a conflict), so a save carries the current revision;
  * until a read returned one, a host save fails without a request (system-state.mjs). The browser values are read on
- * mount and again whenever another page changes them (a `storage` event).
+ * mount and again whenever another page changes them (a `storage` event). Either way a value another page changed
+ * under one of this tab's drafts flags that draft (D92's conflict status), including a change made while System was
+ * not mounted (the drafts outlive it, Q10).
  */
 export function mountSystem(main, api, scope, { section, activity, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
     const store = systemDrafts(api);
     store.reloadHost();
-    store.load('browser');
     // Another tab or the legacy gallery changed the display defaults: clean values follow it; a draft it overtook stays
-    // and is flagged (D92's conflict status).
-    scope.cleanup(subscribePreferences(window, next => {
-        const { conflicts } = reconcilePreferences({ baseline: store.saved('browser'), drafts: store.changes('browser'), next: next.values });
-        store.load('browser').then(() => store.conflict('browser', conflicts));
-    }));
+    // and is flagged (D92's conflict status). `next` is null when the values cannot be read (no gallery-settings.js).
+    const reconcile = next => {
+        const baseline = store.saved('browser');
+        // The first mount has read nothing yet, so nothing can have been overtaken.
+        const conflicts = next && Object.keys(baseline).length
+            ? reconcilePreferences({ baseline, drafts: store.changes('browser'), next }).conflicts : [];
+        store.load('browser').then(() => store.conflict('browser', conflicts), () => {});
+    };
+    reconcile(displayPreferences());
+    scope.cleanup(subscribePreferences(window, next => reconcile(next.values)));
     const nav = sectionNav({ label: 'System sections', sections: SYSTEM_SECTIONS, active: section, scope,
         onSelect: id => navigate(`#/system/${id}`) });
     const layout = el('div', undefined, 'settings-layout');

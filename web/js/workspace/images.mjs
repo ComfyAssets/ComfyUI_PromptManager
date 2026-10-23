@@ -122,7 +122,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const prior = embedded || saved || favorites ? null : lastVisit;
     // A stale visit keeps its filters, layout and size, and lists again instead of restoring (M6).
     const visit = prior?.stale ? null : prior;
-    const start = initialImagesView({prior, saved, preferences});
+    // The layout and size defaults are the Images page's: an embedded gallery (a prompt history's, its dialogs) has no
+    // toolbar to change them, so it keeps its fixed Grid/Comfortable. The metadata and card defaults apply everywhere.
+    const start = initialImagesView({prior, saved, preferences:embedded ? null : preferences});
     let density = start.density;
     let metrics = {...INITIAL_METRICS};
     let layout = start.layout, selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;

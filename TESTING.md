@@ -1892,7 +1892,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122 and D123 assigned):
+Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123 and D124 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -1959,9 +1959,27 @@ Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122 and D123 as
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
-- **D-NEW-S3-1** (inspector): with "Load metadata on selection" off, the Images panel and
+- **D124** (inspector): with "Load metadata on selection" off, the Images panel and
   the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
-  button instead of reading the file; the concept has no such state.
+  button instead of reading the file. The concept has no such state, so no concept
+  comparison renders it: `metadata off shows an explicit load and loads once on request`
+  (workspace-system.spec) pins it instead.
+
+Appearance scope and states. The Default layout and Thumbnail size defaults start the
+Images page only (a new visit, not the current view or a saved view); the embedded
+galleries (a prompt history's Shared gallery and its All images / Repeat run dialogs)
+have no toolbar, so they keep Grid/Comfortable, while the metadata, cache and card
+defaults apply there too. A host row whose `/settings` read failed stays disabled with
+"Server settings could not be read."; a rejected timeout says "Some changes were not
+saved. Review the highlighted settings." A display default another page saved under one
+of this tab's drafts flags that draft with the conflict status, whether it arrived while
+System was mounted (a `storage` event) or while it was not (checked again on mount, and
+before a write); the draft is never written over the other page's value without that
+status first. A change kept for this tab only is stored by the next write storage accepts.
+
+Open question (saved-views follow-up, M8): a saved view stores no layout or size and
+always opens at Grid/Comfortable, even when the Default layout is Masonry. Should saved
+views store a layout, or follow the default?
 
 `tests/browser/system-concept.spec.mjs` compares the shell and Overview with the concept
 (dark and light, 1600×1100 and 390×844), mapping only the deviations above; unmapped,
@@ -1984,18 +2002,24 @@ are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real 
 the health check and metric 4, a failed check, the thumbnail row against the status
 endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
 route, a load failure with Retry and late answers after leaving, and Appearance: new
-visits versus the current view and a saved view, metadata off and on request, the cache,
-hidden paths, the video defaults, the host fields with their revision and a stale one,
-reload and a second tab, storage refused, the D97 rows and reset. Its hooks are
+visits versus the current view and a saved view, the embedded gallery keeping Grid,
+metadata off and on request, the cache (counted up to a request barrier), hidden paths,
+the video defaults, the host fields with their revision, a stale one and a failed read,
+reload and a second tab, a second tab's save while System was closed, storage refused,
+the D97 rows and reset. Its hooks are
 `tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
 failures, an absent source, a deleted linked file, unthumbnailed files) on the
 concept-shaped fixture, with delays through the shared request holds; reset also restores
-the server's host settings and its `config.json`.
+the server's host settings and its `config.json`, which must be the one inside the server's
+temp root (`tests/test_workspace_system_fixture.py`).
 
 ```sh
-python3 -m unittest tests.test_database_health tests.test_system_api tests.test_library -v
+python3 -m unittest tests.test_database_health tests.test_system_api tests.test_library \
+  tests.test_workspace_system_fixture -v
 node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-controls.test.js \
-  tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js
+  tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js \
+  tests/js/workspace-system-appearance.test.js tests/js/workspace-preferences.test.js \
+  tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js
 npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```

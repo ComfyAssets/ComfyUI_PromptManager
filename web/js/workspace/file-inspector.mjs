@@ -197,7 +197,7 @@ function prefixedChip(prefix, text) {
  * `variant: 'full'` (the viewer's `#viewer-details`, imageDetails(i, true)) leaves out the cover and adds "File &
  * provenance" and "Workflow & raw metadata" with the downloads. `inline: true` means `panel`; neither means `full`.
  */
-/** D-NEW-S3-1: the inspector's line while "Load metadata on selection" is off. */
+/** D124: the inspector's line while "Load metadata on selection" is off. */
 export const DEFERRED_TEXT = 'Metadata loads when you ask for it.';
 
 export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback}) {
@@ -239,7 +239,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
     function render(state) {
         const inner = el('div', undefined, full ? undefined : 'detail-inner');
         if (state.loading || state.error) {container.append(inner); statusView(state, inner); return;}
-        // D-NEW-S3-1: "Load metadata on selection" is off, so the file's details wait for an explicit request.
+        // D124: "Load metadata on selection" is off, so the file's details wait for an explicit request.
         if (state.deferred) {
             container.append(inner);
             const status = el('p', DEFERRED_TEXT, 'small'); status.setAttribute('role', 'status'); inner.append(status);

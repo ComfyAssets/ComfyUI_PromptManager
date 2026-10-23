@@ -878,3 +878,20 @@ test('cache off rereads the current selection; on reuses the one current record'
         controller.dispose();
     }
 });
+
+test('cache off never rereads a selection whose source changed, and refresh never loads a deferred one', async () => {
+    const { api, requests } = pendingApi();
+    const controller = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts, cache: false });
+    const first = controller.select(image());
+    requests[0].reject(new ApiError(409, refreshMessage, 'source-changed')); await first;
+    assert.equal(controller.state.refreshRequired, true);
+    controller.select(image());
+    assert.equal(requests.length, 1);
+    controller.dispose();
+    const deferred = contract('createInspectionController')({ api, extractFacts: extractGenerationFacts, autoLoad: false });
+    deferred.select(image());
+    assert.equal(deferred.refresh(), undefined);
+    assert.equal(requests.length, 1);
+    assert.equal(deferred.state.deferred, true);
+    deferred.dispose();
+});

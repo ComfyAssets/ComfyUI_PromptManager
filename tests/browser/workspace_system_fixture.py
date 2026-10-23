@@ -31,12 +31,22 @@ MAX_UNTHUMBNAILED = 50
 
 
 def register_system_commands(app, routes, api, root: Path):
+    # System › Appearance saves the host fields to this server's config.json (S3);
+    # reset restores both. The file is this server's own, inside its temp root:
+    # reset rewrites or deletes it, so a server whose configuration points
+    # anywhere else (a real config.json) refuses to register these hooks.
+    config_path = root / "config.json"
+    configured_path = os.environ.get("PROMPT_MANAGER_CONFIG_PATH")
+    if (
+        configured_path is None
+        or Path(configured_path).resolve() != config_path.resolve()
+    ):
+        raise RuntimeError(
+            f"PROMPT_MANAGER_CONFIG_PATH must be {config_path}, not {configured_path!r}"
+        )
     from py.config import GalleryConfig, PromptManagerConfig
 
     configured = list(GalleryConfig.MONITORING_DIRECTORIES)
-    # System › Appearance saves the host fields to this server's config.json (S3);
-    # reset restores both.
-    config_path = Path(os.environ["PROMPT_MANAGER_CONFIG_PATH"])
     config_bytes = config_path.read_bytes() if config_path.exists() else None
     host_values = (
         PromptManagerConfig.RESULT_TIMEOUT,
@@ -66,7 +76,10 @@ def register_system_commands(app, routes, api, root: Path):
         if config_bytes is None:
             config_path.unlink(missing_ok=True)
         else:
-            config_path.write_bytes(config_bytes)
+            # Replace in one step, as the server writes it (Windows preflight).
+            staged = config_path.with_name(config_path.name + ".reset")
+            staged.write_bytes(config_bytes)
+            os.replace(staged, config_path)
 
     @routes.post("/__test__/system/reset")
     async def system_reset(request):

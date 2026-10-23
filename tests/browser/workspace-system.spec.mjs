@@ -11,7 +11,7 @@ const number = value => value.toLocaleString('en-US');
 
 test.beforeEach(async ({ page, request, browserName }) => {
     await startCoverage(page, browserName);
-    await seedConcept(request);
+    page.manifest = await seedConcept(request);
     await expect(await request.post('/__test__/system/reset')).toBeOK();
     await expect(await request.post('/__test__/jobs/restart')).toBeOK();
     page.systemErrors = [];
@@ -279,6 +279,14 @@ async function toggle(page, values) {
     for (const [id, checked] of Object.entries(values)) await page.locator(`#${id}`).setChecked(checked, { force: true });
 }
 
+/**
+ * A request barrier: one request issued and answered after everything the page has asked for so far, so a read the
+ * last action started has been seen (Playwright reports a page's requests in order).
+ */
+async function requestBarrier(page) {
+    expect(await page.evaluate(url => fetch(url, { cache: 'no-store' }).then(response => response.ok), SETTINGS_URL)).toBe(true);
+}
+
 async function openImages(page) {
     await page.goto(`${workspace}#/images`);
     await expect(imageCards(page).first()).toBeVisible();
@@ -324,6 +332,23 @@ test('defaults apply to a new visit but not to the current view or a saved view'
     }
 });
 
+test('the defaults reach the Images page only; embedded galleries keep their own presentation', async ({ page }) => {
+    await openAppearance(page);
+    await page.locator('#default-view').selectOption('list');
+    await page.locator('#density').selectOption('compact');
+    await saveAppearance(page, 'Saved in this browser.');
+    // The prompt history's shared gallery has no toolbar to change them, so it opens as it always did.
+    await page.goto(`${workspace}#/library/${page.manifest.prompts[0].positive_id}`);
+    await expect(imageCards(page).first()).toBeVisible();
+    await expect(page.locator('#workspace-main .image-grid')).toHaveAttribute('data-layout', 'grid');
+    await expect(page.locator('#workspace-main .image-grid')).toHaveAttribute('data-density', 'comfortable');
+    // The Images page starts from them.
+    await page.locator('#primary-nav a[data-route="images"]').click();
+    await expect(imageCards(page).first()).toBeVisible();
+    await expect(page.locator('.image-grid')).toHaveAttribute('data-layout', 'list');
+    await expect(page.locator('.image-grid')).toHaveAttribute('data-density', 'compact');
+});
+
 test('metadata off shows an explicit load and loads once on request', async ({ page }) => {
     await openAppearance(page);
     await toggle(page, { 'metadata-auto': false });
@@ -343,7 +368,7 @@ test('metadata off shows an explicit load and loads once on request', async ({ p
     // The same file again reads nothing more (the cache is on).
     await first.locator('.image-card-actions button').first().click();
     await expect(panel(page).locator('.panel-heading h2')).toBeVisible();
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await requestBarrier(page);
     expect(reads).toHaveLength(1);
     // The viewer's details use the same inspector: another file waits there too, and loads on request.
     await imageCards(page).nth(1).locator('.image-open').click();
@@ -358,7 +383,6 @@ test('metadata off shows an explicit load and loads once on request', async ({ p
 test('cache off rereads the current selection; on reuses the one current record', async ({ page }) => {
     const reads = [];
     page.on('request', item => { if (new URL(item.url()).pathname.startsWith(INSPECT_PATH)) reads.push(item.url()); });
-    const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     for (const cache of [true, false]) {
         if (!cache) {
             await openAppearance(page);
@@ -371,7 +395,7 @@ test('cache off rereads the current selection; on reuses the one current record'
         await info.click();
         await expect(panel(page).locator('.panel-heading h2')).toBeVisible();
         await expect.poll(() => reads.length).toBeGreaterThan(0);
-        await settle();
+        await requestBarrier(page);
         reads.length = 0;
         // Inspect the selected file twice more.
         for (const _ of [1, 2]) {
@@ -380,7 +404,7 @@ test('cache off rereads the current selection; on reuses the one current record'
             if (answered) await answered;
             await expect(panel(page).locator('.panel-heading h2')).toBeVisible();
         }
-        await settle();
+        await requestBarrier(page);
         expect(reads, `cache ${cache}`).toHaveLength(cache ? 0 : 2);
     }
 });
@@ -435,6 +459,7 @@ test('host fields round-trip through /settings with revision', async ({ page, re
         await page.locator('#timeout').fill(bad);
         await page.locator('#timeout').press('Tab');
         await expect(page.locator('#timeout')).toHaveAttribute('aria-invalid', 'true');
+        await expect(statusOf(page)).toHaveText('Some changes were not saved. Review the highlighted settings.');
         await expect(saveOf(page)).toHaveAttribute('aria-disabled', 'true');
     }
     await page.locator('#timeout').fill('0');
@@ -448,6 +473,21 @@ test('host fields round-trip through /settings with revision', async ({ page, re
     expect(after.revision).not.toBe(before.revision);
     // No browser key was written for a host field.
     expect(await storedSettings(page)).toBeNull();
+});
+
+test('server settings that cannot be read say so in their rows', async ({ page }) => {
+    await page.route(url => url.pathname === SETTINGS_URL, route => (route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ success: false, error: 'Injected failure' }) })
+        : route.continue()));
+    await page.goto(`${workspace}#/system/appearance`);
+    for (const id of ['open-mode', 'timeout']) {
+        const row = page.locator('#workspace-main .setting-row').filter({ has: page.locator(`#${id}`) });
+        await expect(row.locator('p.small')).toHaveText('Server settings could not be read.');
+        await expect(page.locator(`#${id}`)).toBeDisabled();
+    }
+    // The browser rows are this browser's, and work as before.
+    await expect(page.locator('#default-view')).toBeEnabled();
+    await expect(page.locator('#workspace-main .setting-row p.small')).toHaveCount(2);
 });
 
 test('stale revision shows the conflict status', async ({ page, request }) => {
@@ -493,6 +533,31 @@ test('reload keeps saved values; a new tab reads them', async ({ page, context }
     await saveAppearance(page, 'Saved in this browser.');
     await expect(other.locator('#image-quality')).toHaveValue('low');
     await other.close();
+});
+
+test('a change another tab saved while System was closed is a conflict on return, never saved over silently', async ({ page, context }) => {
+    await openAppearance(page);
+    await page.locator('#density').selectOption('compact');
+    await expect(statusOf(page)).toHaveText('Unsaved changes.');
+    // Leave System for Images: the draft stays for the page session, but System no longer listens.
+    await page.locator('#primary-nav a[data-route="images"]').click();
+    await expect(imageCards(page).first()).toBeVisible();
+    const other = await context.newPage();
+    await openAppearance(other);
+    await other.locator('#density').selectOption('large');
+    await saveAppearance(other, 'Saved in this browser.');
+    await other.close();
+    // Back in System: the draft is kept and flagged, and nothing was written over the other tab's value.
+    await page.evaluate(() => { location.hash = '#/system/appearance'; });
+    await expect(page.locator('#workspace-main .settings-layout > section.surface > h2')).toHaveText('Browsing & display');
+    await expect(statusOf(page)).toHaveText('Settings changed elsewhere. Reload this section to see them.');
+    await expect(page.locator('#density')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#density')).toHaveValue('compact');
+    expect((await storedSettings(page)).workspaceDensity).toBe('large');
+    // Saving after the conflict was shown is an explicit choice: it wins.
+    await saveAppearance(page, 'Saved in this browser.');
+    expect((await storedSettings(page)).workspaceDensity).toBe('compact');
+    await expect(page.locator('#density')).not.toHaveAttribute('aria-invalid');
 });
 
 test('a browser that refuses storage is saved for this tab only, never "Saved"', async ({ page }) => {

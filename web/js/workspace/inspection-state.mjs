@@ -350,7 +350,8 @@ const emptyState = () => ({ loading: false, error: false, deferred: false, recor
  * One selection's inspection. #249 System S3 (Appearance): `autoLoad: false` ("Load metadata on selection" off) makes a
  * selection publish `deferred` instead of reading, and `load()` reads it once on request; `cache: false` ("Cache
  * metadata in this browser" off) re-reads the selected file when it is selected again, where the default reuses the one
- * current record. A read in flight is shared either way.
+ * current record. A read in flight is shared either way, and a file whose source changed is never re-read by selecting
+ * it again (as `retry()` and `refresh()` refuse).
  */
 export function createInspectionController({ api, extractFacts, adapter = rootedFileAdapter, autoLoad = true, cache = true }) {
     let state = Object.freeze(emptyState()), current = null, pending = null, disposed = false;
@@ -375,7 +376,7 @@ export function createInspectionController({ api, extractFacts, adapter = rooted
             try {
                 adapter.validate(image);
                 const scope = adapter.scope(image), key = adapter.key(image), path = adapter.inspectionPath(image);
-                if (current?.key === key && current.scope === scope && current.path === path && (cache || state.loading || state.deferred)) return pending;
+                if (current?.key === key && current.scope === scope && current.path === path && (cache || state.loading || state.deferred || state.refreshRequired)) return pending;
                 selected = { key, scope, path };
             } catch {
                 // The loader publishes validation errors after invalidating the previous source.
@@ -396,7 +397,8 @@ export function createInspectionController({ api, extractFacts, adapter = rooted
         },
         /** Re-read the selected file keeping the shown record until the answer (a retry when none is shown). */
         refresh() {
-            if (disposed || !hasAttempt || state.refreshRequired) return;
+            // A deferred selection loads only through `load()` (the user's "Load metadata").
+            if (disposed || !hasAttempt || state.refreshRequired || state.deferred) return;
             return read(attempted, { quiet: Boolean(state.record) && !state.loading && !state.error });
         },
         clear() {
