@@ -521,7 +521,7 @@ test('copy fallback selects the text', async () => {
         assert.equal(note.className, 'small');
         assert.equal(note.textContent, 'Automatic clipboard access requires a secure browser context.');
         assert.throws(() => openCopyFallback(42, { scope }), TypeError);
-        // LI-4 (D-NEW-1): the settings summary names its own dialog; the select-to-copy body is the same.
+        // LI-4 (D117): the settings summary names its own dialog; the select-to-copy body is the same.
         openCopyFallback('Seed: 7', { scope, title: 'Copy settings summary' });
         assert.equal(byId(dom, 'modal-title').textContent, 'Copy settings summary');
         assert.equal(byId(dom, 'copy-text').value, 'Seed: 7');

@@ -6,12 +6,11 @@
 import { readVideoTags, selectVideoCarrier } from './local-video.mjs';
 import { projectMetadata, fitInspectionPayload, MAX_RESPONSE_BYTES } from './local-projection.mjs';
 import { projectInspectionPayload } from './inspection-state.mjs';
+import { resolveLocalEvidence, unreadableEvidence } from './local-resolver.mjs';
+import { loadInspectionSemantics } from './local-semantics.mjs';
 
 export const LOCAL_OBSERVATION = 'selected-local-file';
 export const LOCAL_SOURCE_LABEL = 'Selected local file';
-// Interim roles until PR L3 ports the inspection resolver: every role is open, and
-// the legacy fill in projectInspectionPayload shows what the legacy pages show.
-const LOCAL_RESOLUTION_REASON = 'Resolved in this browser from the workflow.';
 const LOCAL_LIBRARY = Object.freeze({ status: 'unavailable', scope: 'saved-library', tags: [], category_scope: null, tags_scope: null });
 const LOCAL_SCOPE = 'local';
 const PREFIX_BYTES = 32;
@@ -88,10 +87,16 @@ export function toInspectionRead(classification, result) {
 
 const dimension = value => Number.isSafeInteger(value) && value > 0 ? value : null;
 
-/** The `inspection_version: 1` wire for one local read, before the response budget. */
-export function buildLocalPayload({ read, file, classification }) {
+/**
+ * The `inspection_version: 1` wire for one local read, before the response budget. Its roles are the server
+ * inspector's for the same records (local-resolver.mjs with `semantics`, the compiled node table; null answers
+ * "unavailable" as the server does), so the legacy fill in projectInspectionPayload applies exactly where it does
+ * for Images.
+ */
+export function buildLocalPayload({ read, file, classification, semantics = null }) {
     const classified = classificationOf(classification);
     const inspection = toInspectionRead(classified, read);
+    const evidence = inspection.read === null ? unreadableEvidence() : resolveLocalEvidence(inspection.read.records, semantics);
     const filename = sanitizeLocalFilename(file?.name);
     const size = Number.isSafeInteger(file?.size) && file.size >= 0 ? file.size : null;
     const modified = typeof file?.lastModified === 'number' && Number.isFinite(file.lastModified) && file.lastModified >= 0 ? file.lastModified / 1000 : null;
@@ -101,8 +106,8 @@ export function buildLocalPayload({ read, file, classification }) {
             observation: LOCAL_OBSERVATION, source_label: LOCAL_SOURCE_LABEL, media_type: classified.media, extension: localExtension(filename),
             format: inspection.format, size, width: dimension(inspection.width), height: dimension(inspection.height), modified_time: modified,
         },
-        prompts: { positive: { status: 'unresolved' }, negative: { status: 'unresolved' } },
-        resolution: { state: 'unresolved', sampler_id: null, reason: LOCAL_RESOLUTION_REASON, reason_code: null, node: null },
+        prompts: evidence.prompts,
+        resolution: evidence.resolution,
         metadata: projectMetadata(inspection.read),
         library: { ...LOCAL_LIBRARY, tags: [] },
     };
@@ -176,7 +181,10 @@ export const localFileAdapter = Object.freeze({
             // MetadataReadError, an unreadable record. Abort and programming errors still reject.
             if (!(error instanceof DOMException) || error.name === 'AbortError' || signal?.aborted) throw error;
         }
-        return fitLocalPayload(buildLocalPayload({ read: result, file: { name: secret.filename, size: secret.file.size, lastModified: secret.file.lastModified }, classification: secret.classification }), MAX_RESPONSE_BYTES, { signal });
+        const semantics = await loadInspectionSemantics();
+        signal?.throwIfAborted();
+        const file = { name: secret.filename, size: secret.file.size, lastModified: secret.file.lastModified };
+        return fitLocalPayload(buildLocalPayload({ read: result, file, classification: secret.classification, semantics }), MAX_RESPONSE_BYTES, { signal });
     },
     toRecord(result, handle, extractFacts) {
         const secret = owned(handle);

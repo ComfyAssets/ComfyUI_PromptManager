@@ -45,9 +45,9 @@ function withCategoryScope(inventory) {
 }
 
 /**
- * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38 and D-NEW-1); everything else must
+ * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38 and D117); everything else must
  * equal production. `reference.viewerPlain` is the concept's own full details
- * with its tag chips made plain (D20), D-NEW-1's summary button added and, under a coarse pointer, D34's targets, all at
+ * with its tag chips made plain (D20), D117's summary button added and, under a coarse pointer, D34's targets, all at
  * runtime: the browser lays out what follows them, as the Images spec's removed toolbar items do.
  */
 export function mapInspectorConcept(reference,{viewport}) {
@@ -106,7 +106,7 @@ async function openProductionPanel(page,theme) {
 }
 
 /**
- * The concept's tag chips in the open viewer as plain `span.chip`s (D20), D34's coarse targets and D-NEW-1's "Copy
+ * The concept's tag chips in the open viewer as plain `span.chip`s (D20), D34's coarse targets and D117's "Copy
  * settings summary" after the six facts (LI-4), drawn as the concept's own plain button (its "Download sample JSON",
  * without its action); returns an undo.
  */
@@ -351,7 +351,7 @@ for(const [width,height] of SIZES)test(`image tags saved on the concept image ke
 
 // The comparison is only worth something if it notices a change (spec §7 mutation check): on the panel one CSS
 // mutation (the role label's letter spacing) and one DOM mutation (the footer removed); in the viewer (final review m5)
-// its pair actions removed, D38's Show in folder removed and D-NEW-1's summary removed; each applied after an exact match.
+// its pair actions removed, D38's Show in folder removed and D117's summary removed; each applied after an exact match.
 test('inspector comparison detects mutations',async({page})=>{
     test.setTimeout(120_000);
     const viewport={width:1600,height:1100};
@@ -375,7 +375,7 @@ test('inspector comparison detects mutations',async({page})=>{
     expect(()=>assertInspectorMatch(reference,withoutActions,viewport)).toThrow(/viewerDetails\.actions/);
     const withoutReveal=await viewerMutated({remove:['#viewer-details button[aria-label$=" in folder"]']});
     expect(()=>assertInspectorMatch(reference,withoutReveal,viewport)).toThrow(/fileControls/);
-    // D-NEW-1: the summary action after the facts is part of the mapped concept, so losing it is a difference.
+    // D117: the summary action after the facts is part of the mapped concept, so losing it is a difference.
     const withoutSummary=await viewerMutated({remove:['#viewer-details > div > button']});
     expect(()=>assertInspectorMatch(reference,withoutSummary,viewport)).toThrow(/viewerDetails\.structure\.inner/);
     assertInspectorMatch(reference,await viewerMutated(),viewport);

@@ -105,6 +105,9 @@ STATIC_MIME_TYPES = {
     ".html": "text/html",
 }
 _STATIC_SEPARATORS = re.compile(r"[\\/]+")
+# Served by exact request path beside the extension allow-list: the browser's
+# copy of the inspection node table (local Inspect resolves with it, #249).
+STATIC_EXACT_FILES = {("js", "inspection-semantics.json"): "application/json"}
 
 
 def _resolve_static_file(root, filepath):
@@ -475,15 +478,19 @@ class PromptManagerAPI(
     def _serve_static_file(self, subdir, filepath):
         """Serve ``web/<subdir>/<filepath>``; 403 outside it, 404 when missing."""
         root = os.path.join(_get_project_root(), "web", subdir)
-        file_path = _resolve_static_file(root, filepath)
-        if file_path is None:
-            return web.Response(text="Forbidden", status=403)
+        exact = STATIC_EXACT_FILES.get((subdir, filepath))
+        if exact is not None:
+            file_path, content_type = os.path.join(root, filepath), exact
+        else:
+            file_path = _resolve_static_file(root, filepath)
+            if file_path is None:
+                return web.Response(text="Forbidden", status=403)
+            content_type = STATIC_MIME_TYPES[os.path.splitext(file_path)[1].lower()]
         if not os.path.isfile(file_path):
             return web.Response(text="Not Found", status=404)
-        ext = os.path.splitext(file_path)[1].lower()
         with open(file_path, "rb") as f:
             content = f.read()
-        return web.Response(body=content, content_type=STATIC_MIME_TYPES[ext])
+        return web.Response(body=content, content_type=content_type)
 
     def _serve_html_page(self, filename, title, cache=True):
         """Serve ``web/<filename>``; 404 when missing, 500 when unreadable."""

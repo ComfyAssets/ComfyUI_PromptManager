@@ -27,13 +27,13 @@ const REVEAL_BUSY = 'The folder is already opening.';
 const REVEAL_FAILED = 'The folder could not be opened. Try again.';
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
 
-// D-NEW-1 (LI-4): the legacy metadata page's COPY ALL (web/metadata.html copyAllData), its lines and placeholders.
+// D117 (LI-4): the legacy metadata page's COPY ALL (web/metadata.html copyAllData), its lines and placeholders.
 const SUMMARY_LINES = [['Checkpoint', 'model'], ['Positive Prompt', 'positive'], ['Negative Prompt', 'negative'], ['Steps', 'steps'],
     ['CFG Scale', 'cfg'], ['Sampler', 'sampler'], ['Seed', 'seed']];
 const SUMMARY_MISSING = {positive:'No prompt found', negative:'No negative prompt found'};
 
 /**
- * The one-click settings summary (D-NEW-1): the legacy COPY ALL text for what this inspector shows. A confirmed prompt
+ * The one-click settings summary (D117): the legacy COPY ALL text for what this inspector shows. A confirmed prompt
  * and a known fact are copied verbatim; anything else, an explicitly empty prompt included, takes the legacy page's
  * placeholder, as its parse does (`hasValue` treats '' as absent).
  */
@@ -286,7 +286,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         if (!full && footer.childNodes.length) container.append(footer);
     }
     /**
-     * D-NEW-1 (LI-4): "Copy settings summary" after the six facts, the legacy COPY ALL. It copies as the concept's prompt
+     * D117 (LI-4): "Copy settings summary" after the six facts, the legacy COPY ALL. It copies as the concept's prompt
      * copy does: the shared toast, or the select-to-copy dialog where the clipboard is unavailable or refused.
      */
     function summaryButton(record) {

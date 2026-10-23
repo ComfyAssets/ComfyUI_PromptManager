@@ -20,6 +20,13 @@ const { extractGenerationFacts } = ComfyMetadata;
 // The page loads both as scripts; the legacy fill and the PNG reader find them on the global.
 globalThis.PngMetadata = PngMetadata;
 globalThis.ComfyMetadata = ComfyMetadata;
+// The page's API client and the node table it serves (local-semantics.mjs fetches it once).
+const SEMANTICS = fs.readFileSync(path.join(here, "..", "..", "web", "js", "inspection-semantics.json"), "utf8");
+globalThis.window = { ApiClient: { resolveUrl: (value) => value } };
+globalThis.fetch = async (url) => {
+    if (url !== "/prompt_manager/js/inspection-semantics.json") throw new Error(`unexpected request ${url}`);
+    return new Response(SEMANTICS, { status: 200 });
+};
 const m = await import("../../web/js/workspace/local-inspection.mjs").catch((error) => {
     if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
     return {};
@@ -66,8 +73,12 @@ test("a PNG File becomes the server-shaped wire with local provenance", async ()
         size: file.size, width: 640, height: 480, modified_time: 1_700_000_000.123 });
     assert.equal(wire.success, true);
     assert.equal(wire.inspection_version, 1);
-    assert.deepEqual(wire.prompts, { positive: { status: "unresolved" }, negative: { status: "unresolved" } });
-    assert.deepEqual(wire.resolution, { state: "unresolved", sampler_id: null, reason: "Resolved in this browser from the workflow.", reason_code: null, node: null });
+    // The roles the server's inspector resolves for the same records (local-resolver.mjs).
+    assert.deepEqual(wire.prompts, {
+        positive: { status: "resolved", text: "a red fox in snow, detailed fur", source: "graph-inferred" },
+        negative: { status: "resolved", text: "blurry, lowres", source: "graph-inferred" },
+    });
+    assert.deepEqual(wire.resolution, { state: "resolved", sampler_id: "3", reason: "", reason_code: null, node: null });
     assert.deepEqual(wire.library, { status: "unavailable", scope: "saved-library", tags: [], category_scope: null, tags_scope: null });
     assert.equal(wire.metadata.status, "available");
     assert.deepEqual(wire.metadata.raw, { prompt: PROMPT, workflow: WORKFLOW });
@@ -94,6 +105,33 @@ test("a PNG File becomes the server-shaped wire with local provenance", async ()
     const exported = JSON.parse(downloads.metadata.bodyText);
     assert.equal(exported.identity.kind, "local-file");
     assert.equal(exported.file.source_label, "Selected local file");
+});
+
+test("roles answer as the server's inspector: unreadable, unavailable table, ambiguous", async () => {
+    const png = { media: "image", kind: "png" };
+    const unreadable = m.buildLocalPayload({ read: null, file: { name: "a.png" }, classification: png });
+    assert.deepEqual(unreadable.resolution, { state: "unresolved", sampler_id: null, reason: "Media metadata could not be read", reason_code: null, node: null });
+    assert.equal(unreadable.prompts.positive.message, "Metadata in this file could not be read.");
+    const records = { prompt: PROMPT };
+    const read = { status: "complete", records, limited: [], width: 2, height: 3 };
+    // Without a table (it could not be fetched) the roles stay open, with the server's own line.
+    const missing = m.buildLocalPayload({ read, file: { name: "a.png" }, classification: png });
+    assert.equal(missing.resolution.reason, "Inspection node semantics are unavailable");
+    assert.equal(missing.prompts.positive.message, "The inspector's node table is unavailable.");
+    const semantics = await (await import("../../web/js/workspace/local-semantics.mjs")).loadInspectionSemantics();
+    const graph = JSON.parse(PROMPT);
+    graph["9"] = { ...graph["3"], inputs: { ...graph["3"].inputs, positive: ["8", 0] } };
+    graph["8"] = { class_type: "CLIPTextEncode", inputs: { text: "a cat", clip: ["4", 1] } };
+    const several = m.buildLocalPayload({ read: { ...read, records: { prompt: JSON.stringify(graph) } }, file: { name: "a.png" }, classification: png, semantics });
+    assert.equal(several.resolution.reason, "Multiple sampler branches");
+    assert.deepEqual(several.prompts.positive, { status: "ambiguous", text: null, source: null });
+    // The legacy fill then applies exactly as it does to the server's answer for the same bytes in Images.
+    const handle = await handleFor(pngFile("grid.png", [tEXt("prompt", JSON.stringify(graph))]));
+    const local = m.localFileAdapter.toRecord(several, handle, extractGenerationFacts);
+    const asServed = { ...several, file: { ...several.file, observation: "current-file", source_label: "output" } };
+    const served = projectInspectionPayload(asServed, { kind: "rooted-file", key: "0:grid.png", root_index: 0, path: "grid.png", root_scope: null }, null, extractGenerationFacts);
+    assert.deepEqual(local.prompts, served.prompts);
+    assert.deepEqual(local.generation, served.generation);
 });
 
 test("file facts follow the server: extension like Path.suffix, null when unknown", async () => {

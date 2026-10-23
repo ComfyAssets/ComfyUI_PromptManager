@@ -398,6 +398,11 @@ naming it, here and in a detailer's image ancestry; a latent that is not a link 
 reaches its own sampler is `malformed`; running out of budget is `work-limit` or
 `depth-limit`, never single stage. Each sampler's walk runs once per resolution;
 selector branch runs share it and other candidates are charged its visit cost.
+A UI workflow node whose `type` is a list or an object (read only for the overwritten
+PromptManager check) makes the evidence `malformed` ("Prompt evidence is malformed"),
+and a list or object `class_type` is never a preview output; before #286 both raised
+and the inspect route answered 500 (`test_unhashable_*` in
+`tests/test_api_prompt_inspector.py`).
 Text encoders: `single` encoders (the Qwen image encoders, `TextEncodeQwenImage21`
 slot 0 `prompt` and slot 1 `negative_prompt`, `KikoTextEncode`) read one string
 input unchanged. `parts-equal` encoders (CLIPTextEncodeSDXL, Flux, SD3) resolve when
@@ -1446,6 +1451,28 @@ the shared viewer with the full inspector on a record read entirely in this brow
 readers `png-metadata.js`, `local-video.mjs`, `local-projection.mjs`). Nothing is
 uploaded, imported or stored. Only HTML and JS change, so no ComfyUI restart is needed.
 
+Local roles (#249 PR L3, decision LI-1): the prompts and resolution of a local record are
+the server inspector's for the same records. `web/js/workspace/local-resolver.mjs` (with
+`local-resolver-support.mjs`, `local-resolver-stages.mjs`, `local-parameters.mjs` and
+`py-json.mjs`) ports `inspect_prompt_evidence` with `INSPECTION_PROFILE`: execution
+evidence, graph tracing, every bound, several sampler candidates with the
+identical-branch rule (#270), preview-only stages, detailer stages (multistage) and A1111
+`parameters`. It reads the server's own node table, `web/js/inspection-semantics.json`,
+which the page fetches once through the API client as it mounts, before any selection
+(`local-semantics.mjs`; `/prompt_manager/js/inspection-semantics.json` is the one JSON
+file the static route serves, by exact path). A table that cannot be fetched answers
+"The inspector's node table is unavailable." as the server does. The legacy fill in
+`projectInspectionPayload` then applies to a local record exactly where it applies to the
+Images answer for the same bytes. Python is the oracle:
+`tests/test_local_inspect_parity.py` `LocalResolverParityTests` compares the local
+evidence byte for byte with `inspect_prompt_evidence` for every parity PNG and inspection
+vector (prompts, resolution and facts), the golden and selection record sets
+(`tests/local_resolver_cases.py`, `tests/local_resolver_selection_cases.py`), every work
+bound and 1,200 seeded fuzz cases; `tests/fixtures/local-inspect/resolver-vectors.json`
+holds the committed answers the Node unit test reads. The browser spec `chooser shows the
+Images roles and resolution for every parity PNG` compares the rail with Images for all
+25 committed parity PNGs. The static route change needs a ComfyUI restart.
+
 Bounds (the server's own budgets, ported by PR L1; see "Follow-up: local Inspect parity"
 under "Chronological Library history" for the known divergences):
 - PNG: at most 10,000 chunks; keyword 1–79 bytes; every chunk range checked against the
@@ -1463,7 +1490,8 @@ under "Chronological Library history" for the known divergences):
 
 Privacy, asserted by `local inspection makes no content request or storage write` and
 `local roles send exactly` in `tests/browser/workspace-inspect.spec.mjs`, and by the
-managed-host spec below: no request carries the file's bytes, name or text (fetch, XHR,
+managed-host spec below: the only static file Inspect reads is its node table, once per
+page and before any selection; no request carries the file's bytes, name or text (fetch, XHR,
 beacon, WebSocket, EventSource); Inspect writes nothing to `localStorage`,
 `sessionStorage` or IndexedDB; only an explicit Send crosses the host bridge, and its
 payload carries neither the `blob:` URL nor the filename; no console message names the
@@ -1527,7 +1555,7 @@ mapped differences"):
   Modified with no Path row and no Show in folder, and ends with "Local file; no saved
   library association was checked." and Download original. There is no Prompt history
   action and no category or tag chips.
-- **D-NEW-1** (Copy settings summary, LI-4; number to be assigned): the legacy metadata
+- **D117** (Copy settings summary, LI-4): the legacy metadata
   page's COPY ALL, consolidated into the shared full inspector (the viewer's
   `#viewer-details`, so Images, the recorded history's current file and Inspect all have
   it). The concept has no such action. One plain button "Copy settings summary" follows
@@ -1564,7 +1592,7 @@ Legacy floor (`web/metadata.html`), dispositions:
 - Raw workflow view and Download workflow JSON: kept, in "Workflow & raw metadata".
 - Copy all summary and filename copy (LI-4): the filename is selectable text in the rail
   and Download original saves the file under its name. COPY ALL is the shared full
-  inspector's "Copy settings summary" (D-NEW-1), with the legacy text.
+  inspector's "Copy settings summary" (D117), with the legacy text.
 - Fully browser-local reading: kept and asserted (privacy above).
 - Case-variant keys `Workflow|comfy|ComfyUI|Prompt|Parameters` (LI-5): a separate
   backend issue; Inspect follows the server's readers, so the two never disagree.
@@ -2157,6 +2185,12 @@ skip without ffmpeg). The remaining known divergences, checked against ffprobe 9
   `unreadable`); ffprobe reads such files.
 - An EBML DocType other than `matroska`/`webm` is an invalid container locally; ffmpeg
   only warns and reads it.
+- Local roles (PR L3): a prompt graph nested deeper than CPython's `json.loads`
+  recursion limit (about 1,000 levels, depending on the Python version) is malformed on
+  the server and parsed locally. `\d` in the A1111 settings footer is any Unicode decimal
+  digit on both sides, but the browser's Unicode version can be newer than the server
+  Python's, so a footer whose step count uses a digit added after Unicode 15 can differ.
+  `str.lower()` and `toLowerCase()` differ only for characters no node class name uses.
 - Envelope JSON deeper than 1,000 levels is refused locally as Python's default
   recursion limit refuses it; the server's real limit depends on the interpreter and
   call stack. A duplicate key in an object enclosing a nest deeper than the running

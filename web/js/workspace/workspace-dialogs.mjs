@@ -282,7 +282,7 @@ export function openImportDialog({ scope, onInspect, onRescan, onMetadataScan = 
 
 /**
  * "Copy prompt": the text in a readonly, pre-selected textarea for a manual copy. `title` names another copy's dialog
- * (D-NEW-1 "Copy settings summary").
+ * (D117 "Copy settings summary").
  */
 export function openCopyFallback(text, { scope, trigger = null, title = 'Copy prompt' } = {}) {
     requireScope(scope);

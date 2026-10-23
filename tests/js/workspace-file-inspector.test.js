@@ -216,7 +216,7 @@ test('none and unavailable render no image chips', async () => {
     }
 });
 
-// LI-4 (D-NEW-1): "Copy settings summary" after the six facts of the full inspector consolidates the legacy metadata
+// LI-4 (D117): "Copy settings summary" after the six facts of the full inspector consolidates the legacy metadata
 // page's COPY ALL (web/metadata.html copyAllData). The legacy template is read from that page itself and run on the
 // legacy parse, so the summary's text is the legacy page's, line for line, wherever the two agree on the values.
 const METADATA_PAGE = fs.readFileSync(new URL('../../web/metadata.html', import.meta.url), 'utf8');
@@ -228,7 +228,7 @@ const legacyParams = record => ComfyMetadata.extractGenerationParams({prompt:rec
     workflow:record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null});
 
 /**
- * Each summary line against the legacy page's, allowing only the recorded differences (D-NEW-1): a number keeps the
+ * Each summary line against the legacy page's, allowing only the recorded differences (D117): a number keeps the
  * inspector's (the server's) spelling ("8.0" where the legacy page wrote 8); a fact the legacy parse left "Unknown" may
  * be known; and a negative the #249 ZeroOut guard zeroed reads "No negative prompt found" where the legacy parse read
  * the positive's text through the zero-out.

@@ -159,7 +159,7 @@ async function withProductionCopy(page) {
 }
 
 /**
- * D66: the viewer of a local file is titled by its filename and has no tag chips and no Prompt history. D-NEW-1 (LI-4):
+ * D66: the viewer of a local file is titled by its filename and has no tag chips and no Prompt history. D117 (LI-4):
  * "Copy settings summary" follows the six facts.
  */
 function mapViewerConcept(reference) {
@@ -274,7 +274,7 @@ for (const [width, height] of SIZES) for (const theme of THEMES) {
         // The chooser names the chosen file after a real setInputFiles, as the concept's does.
         expect(production.initial.chosen).toEqual({ name: '', files: [] });
         expect(production.selected.chosen).toEqual({ name: FILE, files: [FILE] });
-        // D66 in the rail: no tag chips and no Prompt history; the title is the filename. D-NEW-1 follows the facts.
+        // D66 in the rail: no tag chips and no Prompt history; the title is the filename. D117 follows the facts.
         expect(production.viewer.sections).toEqual(['heading', 'filename', 'badges', 'positive', 'send positive', 'negative',
             'send negative', 'facts', 'settings summary', 'File & provenance', 'Workflow & raw metadata', 'send pair']);
     });

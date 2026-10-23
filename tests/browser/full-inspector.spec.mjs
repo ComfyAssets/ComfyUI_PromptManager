@@ -237,7 +237,7 @@ const viewerStructure=details=>details.evaluate(node=>{
 test('viewer details hold provenance, raw records and downloads',async({page,request})=>{
     await page.setViewportSize({width:1600,height:1100});const reads=await patchInspection(page);
     await fullFixture(page,request);let details=await viewerDetails(page,'complete.png');
-    // The panel content without the cover, D-NEW-1's Copy settings summary after the facts, then the two disclosures,
+    // The panel content without the cover, D117's Copy settings summary after the facts, then the two disclosures,
     // then the pair send and history buttons (D20).
     expect(await viewerStructure(details)).toEqual({outer:['div','button.send','button'],
         inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','div.tags','dl.meta-grid','button','details','details']});

@@ -477,6 +477,30 @@ class TestStaticRoutes(CoreRoutesTestCase):
         self.assertEqual(resp.status, 200)
         self.assertIn("application/javascript", resp.headers["Content-Type"])
 
+    async def test_inspection_semantics_table_is_the_one_json_served(self):
+        """Local Inspect reads the node table the server resolves with (#249 PR L3).
+
+        Only that exact file is served; every other JSON stays forbidden.
+        """
+        resp = await self.client.request(
+            "GET", "/prompt_manager/js/inspection-semantics.json"
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertIn("application/json", resp.headers["Content-Type"])
+        table = Path(__file__).resolve().parents[1] / "web" / "js"
+        self.assertEqual(
+            await resp.read(), (table / "inspection-semantics.json").read_bytes()
+        )
+        for path in (
+            "js/shared/toolkit/provenance.json",
+            "lib/viewerjs/provenance.json",
+            "lib/inspection-semantics.json",
+            "js/workspace/..%2Finspection-semantics.json",
+            "js/INSPECTION-SEMANTICS.json",
+        ):
+            resp = await self.client.request("GET", f"/prompt_manager/{path}")
+            self.assertIn(resp.status, (403, 404), path)
+
     async def test_lib_served(self):
         web_dir = self._fake_root()
         (web_dir / "lib" / "x.css").write_text("body{}")

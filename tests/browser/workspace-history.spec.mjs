@@ -494,7 +494,7 @@ test('the inline current file names its prompts apart from the frozen run fields
     expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(before);
 });
 
-// LI-4 (D-NEW-1): the recorded history's current-file viewer is the shared full inspector, so it copies the legacy summary.
+// LI-4 (D117): the recorded history's current-file viewer is the shared full inspector, so it copies the legacy summary.
 test('the current file viewer copies its settings summary',async({page})=>{
     await page.addInitScript(()=>{window.__copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.__copied.push(text);}}});});
     await page.route(url=>url.pathname.endsWith('/inspection'),async route=>{const response=await route.fetch();const body=await response.json();

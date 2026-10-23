@@ -42,11 +42,12 @@ const { extractGenerationFacts } = require(path.join(here, '..', '..', '..', 'we
 /** The local evidence for one set of record texts. */
 const resolved = records => ({ evidence: resolveLocalEvidence(records, semantics) });
 
-/** The six facts for one local read (no legacy fill here, as in the vectors' own harness). */
-function localFacts(read, file, classification, evidence) {
-    const payload = { ...buildLocalPayload({ read, file, classification }), prompts: evidence.prompts, resolution: evidence.resolution };
+/** The local wire's evidence and six facts for one read (no legacy fill, as in the vectors' own harness). */
+function localPayload(read, file, classification) {
+    const payload = buildLocalPayload({ read, file, classification, semantics });
     const record = projectInspectionPayload(payload, { kind: 'local-file', key: 'local:1', path: file.name }, null, extractGenerationFacts);
-    return Object.fromEntries(Object.entries(record.generation).map(([field, fact]) => [field, { status: fact.status, value: fact.value }]));
+    const facts = Object.fromEntries(Object.entries(record.generation).map(([field, fact]) => [field, { status: fact.status, value: fact.value }]));
+    return { evidence: { prompts: payload.prompts, resolution: payload.resolution }, facts };
 }
 
 const selectionRead = (selection) => selection.status === 'complete' ?
@@ -63,8 +64,11 @@ for (const entry of JSON.parse(Buffer.concat(chunks).toString('utf8'))) {
         const { classification, result } = await readLocalFile(blob, { pngMetadata });
         const read = classification === null ? null : toInspectionRead(classification, result).read;
         if (classification === null) { output[name] = { unreadable: true }; continue; }
-        const answer = read === null ? { unreadable: true, evidence: unreadableEvidence() } : resolved(read.records);
-        output[name] = { ...answer, facts: localFacts(result, { name: path.basename(entry.path), size: blob.size }, classification, answer.evidence) };
+        // The evidence is the local wire's own (buildLocalPayload), and it equals resolveLocalEvidence of the records.
+        const local = localPayload(result, { name: path.basename(entry.path), size: blob.size }, classification);
+        const direct = read === null ? unreadableEvidence() : resolved(read.records).evidence;
+        if (JSON.stringify(direct) !== JSON.stringify(local.evidence)) throw new Error(`${name}: the wire's roles are not the resolver's`);
+        output[name] = read === null ? { unreadable: true, ...local } : local;
         continue;
     }
     if (entry.records !== undefined) {

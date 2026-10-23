@@ -213,7 +213,7 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
    where the toolkit's `nowrap` would push them past its edge. */
 .ca-tools #viewer-details > button { white-space: normal; /* D20 */ }
 /* LI-4: "Copy settings summary" after the facts wraps the same way in the narrow rail. */
-.ca-tools #viewer-details > div > button { white-space: normal; /* D-NEW-1 */ }
+.ca-tools #viewer-details > div > button { white-space: normal; /* D117 */ }
 /* The Images page narrows to one column inside a narrow container (the Library-embedded gallery). */
 .images-main { container: images-page / inline-size; }
 @container images-page (inline-size < 600px) {
