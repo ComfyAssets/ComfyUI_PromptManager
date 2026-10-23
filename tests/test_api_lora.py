@@ -36,15 +36,18 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
-from py import lora_utils
+from py import config_store, lora_utils
 from py.config import IntegrationConfig, PromptManagerConfig
 from py.api import admin as admin_module
+from py.api import lora_integration as lora_module
 from py.lora_utils import get_trigger_cache
 from utils.hashing import generate_prompt_hash
 
 try:
+    from tests.lock_probe import ProbeLock
     from tests.open_handles import assert_closed
 except ImportError:  # discovered with tests/ as the top-level directory
+    from lock_probe import ProbeLock
     from open_handles import assert_closed
 
 SECRET_KEY = "sk-civitai-super-secret-0123456789"
@@ -624,8 +627,27 @@ class TestConfigWritersShareOneStore(LoraAPITestCase):
 
             return gated
 
+        lora_calls = []
+        real_lora_mutation = lora_module._lora_settings_mutation
+
+        def recorded_lora_mutation(values):
+            mutate = real_lora_mutation(values)
+
+            def recorded(config):
+                lora_calls.append(dict(config))
+                return mutate(config)
+
+            return recorded
+
+        probe = ProbeLock()
         loop = asyncio.get_running_loop()
-        with patch.object(admin_module, "_settings_mutation", gated_mutation):
+        with (
+            patch.object(admin_module, "_settings_mutation", gated_mutation),
+            patch.object(
+                lora_module, "_lora_settings_mutation", recorded_lora_mutation
+            ),
+            patch.object(config_store, "_COMMIT_LOCK", probe),
+        ):
             settings = asyncio.ensure_future(
                 self._post_json("/prompt_manager/settings", {"result_timeout": 13})
             )
@@ -636,9 +658,14 @@ class TestConfigWritersShareOneStore(LoraAPITestCase):
                     {"enabled": False, "trigger_words_enabled": True},
                 )
             )
-            await asyncio.sleep(0)  # let the LoRA request reach the lock
+            # Wait until the LoRA commit is blocked on the lock the settings
+            # commit holds; its mutation must not have run yet.
+            self.assertTrue(await loop.run_in_executor(None, probe.contended.wait, 10))
+            self.assertEqual(lora_calls, [])
             release.set()
             settings_resp, lora_resp = await asyncio.gather(settings, lora)
+        self.assertEqual(len(lora_calls), 1)
+        self.assertEqual(lora_calls[0]["web_ui"]["result_timeout"], 13)
 
         self.assertEqual((settings_resp.status, lora_resp.status), (200, 200))
         saved = self._saved()
@@ -650,6 +677,68 @@ class TestConfigWritersShareOneStore(LoraAPITestCase):
         settings_body = await settings_resp.json()
         lora_body = await lora_resp.json()
         self.assertNotEqual(settings_body["revision"], lora_body["revision"])
+
+    def _delay_first_commit_result(self):
+        """Hold back the first config commit's result from its handler.
+
+        The commit itself has run (the file is written); only the handler's
+        continuation waits until the returned event is set. Before #220's fix
+        round the handler published after this point, so a later save could
+        publish first and the earlier one overwrite it at runtime.
+        """
+        original = self.api._run_in_executor
+        written = asyncio.Event()
+        resume = asyncio.Event()
+        delayed = []
+
+        async def run(func, *args, **kwargs):
+            result = await original(func, *args, **kwargs)
+            if getattr(func, "__func__", None) is config_store.ConfigStore.commit:
+                if not delayed:
+                    delayed.append(func)
+                    written.set()
+                    await resume.wait()
+            return result
+
+        patcher = patch.object(self.api, "_run_in_executor", run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return written, resume
+
+    async def test_concurrent_settings_saves_end_on_the_last_written(self):
+        written, resume = self._delay_first_commit_result()
+        first = asyncio.ensure_future(
+            self._post_json("/prompt_manager/settings", {"result_timeout": 11})
+        )
+        await asyncio.wait_for(written.wait(), 10)
+        second = await self._post_json(
+            "/prompt_manager/settings", {"result_timeout": 22}
+        )
+        resume.set()
+        first = await first
+        self.assertEqual((first.status, second.status), (200, 200))
+        self.assertEqual(self._saved()["web_ui"]["result_timeout"], 22)
+        self.assertEqual(PromptManagerConfig.RESULT_TIMEOUT, 22)
+
+    async def test_concurrent_lora_saves_end_on_the_last_written(self):
+        written, resume = self._delay_first_commit_result()
+        first = asyncio.ensure_future(
+            self._post_json(
+                "/prompt_manager/lora/enable",
+                {"enabled": False, "trigger_words_enabled": True},
+            )
+        )
+        await asyncio.wait_for(written.wait(), 10)
+        second = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "trigger_words_enabled": False},
+        )
+        resume.set()
+        first = await first
+        self.assertEqual((first.status, second.status), (200, 200))
+        lora = self._saved()["integrations"]["lora_manager"]
+        self.assertIs(lora["trigger_words_enabled"], False)
+        self.assertIs(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED, False)
 
 
 class TestLoraScanRoute(LoraAPITestCase):

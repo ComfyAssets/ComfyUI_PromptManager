@@ -12,6 +12,11 @@ A revision names the file content a client last saw: ``"sha256:<hex>"`` of
 the file bytes, or ``"absent"`` when there is no file. A commit that names a
 revision refuses to write over different content (``RevisionConflict``).
 
+Reads take the same lock, so a read handle is never open while the file is
+replaced (Windows refuses that), and a caller's ``publish`` runs inside the
+lock right after its write, so runtimes publish saves in the order they were
+written. A symlinked config.json is written beside its real target.
+
 config.json can hold the CivitAI key, so the file is written owner-only.
 """
 
@@ -21,12 +26,19 @@ import json
 import os
 import tempfile
 import threading
+import time
 from typing import Callable, Optional, Tuple
 
 ABSENT_REVISION = "absent"
 
-# One lock for the process: every ConfigStore writes the same file.
-_COMMIT_LOCK = threading.Lock()
+# One lock for the process: every ConfigStore writes the same file. It is
+# re-entrant so a commit's ``publish`` callback may read the config again.
+_COMMIT_LOCK = threading.RLock()
+
+# Windows: an antivirus, indexer or backup handle on config.json makes
+# os.replace fail with PermissionError for a moment, so it is retried briefly.
+_REPLACE_ATTEMPTS = 5 if os.name == "nt" else 1
+_REPLACE_BACKOFF_SECONDS = 0.05
 
 
 class ConfigUnreadable(Exception):
@@ -54,13 +66,29 @@ def _default_path() -> str:
     return PromptManagerConfig.get_config_path()
 
 
+def _replace(source: str, target: str) -> None:
+    """``os.replace`` with a short retry on a transient Windows PermissionError."""
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_BACKOFF_SECONDS)
+
+
 def _write_atomically(path: str, payload: bytes) -> None:
     """Replace ``path`` with ``payload``: temp file beside it, fsync, replace.
 
     The descriptor is closed before ``os.replace`` (Windows refuses to replace
     over an open handle), and on any failure the temp file is closed and
     removed, so a failed write leaves the old file and no stray temp file.
+    ``path`` is resolved first: a symlink keeps pointing at the updated
+    target. A single-file bind mount cannot be replaced (EBUSY) and fails as
+    an OSError, which callers report as not saved.
     """
+    path = os.path.realpath(path)
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(dir=parent, prefix=".config-", suffix=".tmp")
@@ -76,7 +104,7 @@ def _write_atomically(path: str, payload: bytes) -> None:
             os.fsync(handle.fileno())
         if os.name == "posix":
             os.chmod(temp_path, 0o600)
-        os.replace(temp_path, path)
+        _replace(temp_path, path)
     except BaseException:
         try:
             os.unlink(temp_path)
@@ -100,9 +128,11 @@ class ConfigStore:
         """``(config, revision)``; a missing file is ``({}, "absent")``.
 
         Raises ConfigUnreadable when the file cannot be read, is not JSON, or
-        is not a JSON object.
+        is not a JSON object. Waits for a running commit (see the module
+        docstring).
         """
-        return self._read(self.path)
+        with _COMMIT_LOCK:
+            return self._read(self.path)
 
     @staticmethod
     def _read(path: str) -> Tuple[dict, str]:
@@ -128,6 +158,7 @@ class ConfigStore:
         mutate: Callable[[dict], dict],
         *,
         expected_revision: Optional[str],
+        publish: Optional[Callable[[dict], None]] = None,
     ) -> Tuple[dict, str]:
         """Apply ``mutate`` to the current config and write the result.
 
@@ -137,6 +168,11 @@ class ConfigStore:
         write over different content. Returns ``(config, revision)`` as
         written. Raises ConfigUnreadable, RevisionConflict, TypeError (a
         non-object result) or OSError (the write failed; the old file stays).
+
+        ``publish(config)``, when given, runs under the lock once the file
+        holds the new config, so concurrent saves reach the runtime in the
+        order they were written. It must handle its own errors: the values
+        are already durable when it runs.
         """
         with _COMMIT_LOCK:
             path = self.path
@@ -148,6 +184,8 @@ class ConfigStore:
                 raise TypeError("A config commit must produce a JSON object")
             payload = json.dumps(candidate, indent=2).encode("utf-8")
             _write_atomically(path, payload)
+            if publish is not None:
+                publish(candidate)
             return candidate, revision_of(payload)
 
 

@@ -32,8 +32,10 @@ from py.config_store import (  # noqa: E402
 )
 
 try:
+    from tests.lock_probe import ProbeLock  # noqa: E402
     from tests.open_handles import assert_closed  # noqa: E402
 except ImportError:  # discovered with tests/ as the top-level directory
+    from lock_probe import ProbeLock  # noqa: E402
     from open_handles import assert_closed  # noqa: E402
 
 
@@ -210,41 +212,186 @@ class ConfigStoreTests(unittest.TestCase):
         self.store.commit(lambda c: c, expected_revision=None)
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
 
-    def test_concurrent_commits_serialize(self):
-        self._write({"keep": True})
+    def _probe_lock(self):
+        probe = ProbeLock()
+        patcher = patch.object(config_store, "_COMMIT_LOCK", probe)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return probe
+
+    def _hold_lock_in_a_commit(self, value="first"):
+        """Start a commit that holds the lock until the returned event is set."""
         inside = threading.Event()
         release = threading.Event()
         errors = []
 
         def slow(config):
             inside.set()
-            release.wait(10)  # hold the lock while the second commit waits
-            config["first"] = 1
+            release.wait(10)
+            config[value] = 1
             return config
 
+        def run():
+            try:
+                self.store.commit(slow, expected_revision=None)
+            except Exception as exc:  # pragma: no cover - reported by the test
+                errors.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.assertTrue(inside.wait(10))
+        return thread, release, errors
+
+    def test_concurrent_commits_serialize(self):
+        # The second commit is observed blocked on the lock before the first
+        # one may finish, so this fails whenever commit stops taking the lock.
+        self._write({"keep": True})
+        probe = self._probe_lock()
+        first, release, errors = self._hold_lock_in_a_commit()
+        calls = []
+
         def fast(config):
+            calls.append(dict(config))
             config["second"] = 2
             return config
 
-        def run(mutate):
-            try:
-                self.store.commit(mutate, expected_revision=None)
-            except Exception as exc:  # pragma: no cover - reported below
-                errors.append(exc)
-
-        first = threading.Thread(target=run, args=(slow,))
-        first.start()
-        self.assertTrue(inside.wait(10))
-        second = threading.Thread(target=run, args=(fast,))
+        second = threading.Thread(
+            target=lambda: self.store.commit(fast, expected_revision=None)
+        )
         second.start()
+        self.assertTrue(probe.contended.wait(10), "second commit never waited")
+        self.assertEqual(calls, [])  # not called while the first holds the lock
         release.set()
         first.join(10)
         second.join(10)
 
         self.assertEqual(errors, [])
+        self.assertEqual(calls, [{"keep": True, "first": 1}])  # re-read inside
         self.assertEqual(
             json.loads(self._bytes()), {"keep": True, "first": 1, "second": 2}
         )
+
+    def test_read_waits_for_a_running_commit(self):
+        # Windows cannot replace a file another handle has open, so a read
+        # runs under the commit lock and never overlaps a replace.
+        self._write({"keep": True})
+        probe = self._probe_lock()
+        first, release, errors = self._hold_lock_in_a_commit()
+        seen = []
+        reader = threading.Thread(target=lambda: seen.append(self.store.read()))
+        reader.start()
+        self.assertTrue(probe.contended.wait(10), "read did not take the lock")
+        self.assertEqual(seen, [])
+        release.set()
+        first.join(10)
+        reader.join(10)
+        self.assertEqual(errors, [])
+        self.assertEqual(seen[0][0], {"keep": True, "first": 1})
+        self.assertEqual(seen[0][1], revision_of(self._bytes()))
+
+    def test_replace_is_retried_after_a_transient_permission_error(self):
+        # Windows: an antivirus or indexer handle makes os.replace fail with
+        # PermissionError for a moment; the commit retries before failing.
+        self._write({"a": 1})
+        real_replace = os.replace
+        attempts = []
+
+        def flaky(src, dst):
+            attempts.append(dst)
+            if len(attempts) == 1:
+                raise PermissionError("in use by another process")
+            return real_replace(src, dst)
+
+        with (
+            patch.object(config_store, "_REPLACE_ATTEMPTS", 5),
+            patch.object(config_store.os, "replace", side_effect=flaky),
+            patch.object(config_store.time, "sleep") as sleep,
+        ):
+            saved, _ = self.store.commit(
+                lambda c: {**c, "b": 2}, expected_revision=None
+            )
+        self.assertEqual(saved, {"a": 1, "b": 2})
+        self.assertEqual(json.loads(self._bytes()), {"a": 1, "b": 2})
+        self.assertEqual(len(attempts), 2)
+        sleep.assert_called_once_with(config_store._REPLACE_BACKOFF_SECONDS)
+        self.assertEqual(self._leftovers(), [])
+
+    def test_replace_gives_up_after_the_last_attempt(self):
+        self._write({"a": 1})
+        before = self._bytes()
+        with (
+            patch.object(config_store, "_REPLACE_ATTEMPTS", 3),
+            patch.object(
+                config_store.os, "replace", side_effect=PermissionError("locked")
+            ) as replace,
+            patch.object(config_store.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(PermissionError):
+                self.store.commit(lambda c: {**c, "b": 2}, expected_revision=None)
+        self.assertEqual((replace.call_count, sleep.call_count), (3, 2))
+        self.assertEqual(self._bytes(), before)
+        self.assertEqual(self._leftovers(), [])
+
+    def test_replace_is_tried_once_outside_windows(self):
+        expected = 5 if os.name == "nt" else 1
+        self.assertEqual(config_store._REPLACE_ATTEMPTS, expected)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    def test_symlinked_config_is_written_through_the_link(self):
+        # A config.json that is a symlink (or a single-file bind mount) is
+        # written beside its real target, so the link stays a link.
+        real_dir = os.path.join(self.tmpdir, "real")
+        os.mkdir(real_dir)
+        target = os.path.join(real_dir, "settings.json")
+        Path(target).write_text(json.dumps({"a": 1}), encoding="utf-8")
+        try:
+            os.symlink(target, self.path)
+        except (OSError, NotImplementedError):  # pragma: no cover - Windows
+            self.skipTest("symlinks are not permitted here")
+
+        saved, revision = self.store.commit(
+            lambda c: {**c, "b": 2}, expected_revision=None
+        )
+
+        self.assertTrue(os.path.islink(self.path))
+        self.assertEqual(json.loads(Path(target).read_text()), {"a": 1, "b": 2})
+        self.assertEqual(self.store.read(), (saved, revision))
+        self.assertEqual(os.listdir(real_dir), ["settings.json"])
+
+    def test_publish_runs_under_the_lock_after_the_write(self):
+        # Runtimes publish inside the commit, so two saves publish in the
+        # order they were written and the runtime ends on the last one.
+        self._write({"a": 1})
+        seen = []
+
+        # The lock is re-entrant, so another thread probes whether it is held.
+        def probe_publish(config):
+            result = []
+            thread = threading.Thread(
+                target=lambda: result.append(
+                    config_store._COMMIT_LOCK.acquire(blocking=False)
+                )
+            )
+            thread.start()
+            thread.join(10)
+            seen.append((config, json.loads(self._bytes()), result[0]))
+
+        saved, _ = self.store.commit(
+            lambda c: {**c, "b": 2}, expected_revision=None, publish=probe_publish
+        )
+        self.assertEqual(seen, [(saved, {"a": 1, "b": 2}, False)])
+
+    def test_publish_is_skipped_when_the_write_fails(self):
+        self._write({"a": 1})
+        published = []
+        with patch.object(config_store.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.store.commit(
+                    lambda c: {**c, "b": 2},
+                    expected_revision=None,
+                    publish=published.append,
+                )
+        self.assertEqual(published, [])
 
     def test_handles_closed_after_commit(self):
         self._write({"a": 1})

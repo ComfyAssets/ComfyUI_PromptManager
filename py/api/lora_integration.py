@@ -204,19 +204,24 @@ class LoraIntegrationMixin:
                 "trigger_words_enabled": trigger_words,
                 "civitai_api_key": civitai_key,
             }
+
+            def publish(_config):
+                # Under the commit lock, so the last save written is the one
+                # the runtime keeps.
+                IntegrationConfig.LORA_MANAGER_ENABLED = enabled
+                IntegrationConfig.LORA_MANAGER_PATH = path
+                IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED = trigger_words
+                IntegrationConfig.CIVITAI_API_KEY = civitai_key
+
             try:
                 _saved, revision = await self._run_in_executor(
                     get_config_store().commit,
                     _lora_settings_mutation(values),
                     expected_revision=None,
+                    publish=publish,
                 )
             except (ConfigUnreadable, RevisionConflict, OSError) as exc:
                 return self._config_commit_failure(exc)
-
-            IntegrationConfig.LORA_MANAGER_ENABLED = enabled
-            IntegrationConfig.LORA_MANAGER_PATH = path
-            IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED = trigger_words
-            IntegrationConfig.CIVITAI_API_KEY = civitai_key
 
             cache = get_trigger_cache()
             if enabled and trigger_words and path:

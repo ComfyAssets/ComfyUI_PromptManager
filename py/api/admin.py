@@ -1026,11 +1026,19 @@ class AdminRoutesMixin:
             if error:
                 return web.json_response({"success": False, "error": error}, status=400)
 
+            published = {}
+
+            def publish(_config):
+                # Under the commit lock: saves reach the runtime in the order
+                # they were written, so the runtime ends on the last one.
+                published.update(self._publish_settings(updates, new_roots))
+
             try:
                 _saved, revision = await self._run_in_executor(
                     get_config_store().commit,
                     _settings_mutation(updates, new_roots),
                     expected_revision=expected_revision,
+                    publish=publish,
                 )
             except (ConfigUnreadable, RevisionConflict, OSError) as exc:
                 return self._config_commit_failure(exc)
@@ -1039,7 +1047,10 @@ class AdminRoutesMixin:
                 {
                     "success": True,
                     "message": "Settings saved successfully",
-                    **self._publish_settings(updates, new_roots, revision),
+                    "restart_required": bool(published["restart_required_fields"]),
+                    "persisted": True,
+                    "revision": revision,
+                    **published,
                 }
             )
         except Exception as e:
@@ -1049,12 +1060,12 @@ class AdminRoutesMixin:
                 status=500,
             )
 
-    def _publish_settings(self, updates, new_roots, revision):
-        """Install committed settings at runtime; the ConfigCommit fields.
+    def _publish_settings(self, updates, new_roots):
+        """Install committed settings at runtime (inside the config commit).
 
         The values are already durable. A publication that fails is reported
         as ``runtime_applied: false`` with the fields that need a restart;
-        nothing is retried or rolled back.
+        nothing is retried or rolled back. Never raises.
         """
         from ..config import PromptManagerConfig
 
@@ -1073,9 +1084,6 @@ class AdminRoutesMixin:
                 runtime_applied = False
                 restart_fields.append("gallery_root_paths")
         return {
-            "restart_required": bool(restart_fields),
-            "persisted": True,
-            "revision": revision,
             "runtime_applied": runtime_applied,
             "restart_required_fields": restart_fields,
         }
