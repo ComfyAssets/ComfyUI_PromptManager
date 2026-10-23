@@ -38,6 +38,11 @@ from .annotation_schema import TABLES as ANNOTATION_TABLES
 from .annotation_schema import _catalog as _annotation_catalog
 from .annotation_schema import annotation_schema_error
 
+try:
+    from ..utils.json_strict import dumps_strict
+except ImportError:
+    from utils.json_strict import dumps_strict
+
 SCHEMA_VERSION = 1
 METADATA_TABLE = "media_review_metadata"
 ITEMS_TABLE = "media_review_items"
@@ -173,12 +178,21 @@ def canonical_evidence(value: Any) -> str:
     """Serialize one evidence object canonically; ``ValueError`` when invalid.
 
     The text is a JSON object with sorted keys, no whitespace, ASCII only and
-    no NaN/infinity, at most ``MAX_EVIDENCE_BYTES`` bytes.
+    no NaN/infinity, at most ``MAX_EVIDENCE_BYTES`` bytes. A non-finite number
+    (ComfyUI stamps ``NaN`` into graphs) is written as ``null``, the store's
+    policy everywhere (``utils.json_strict.dumps_strict``).
     """
     if not isinstance(value, dict):
         raise ValueError("Review evidence must be a JSON object")
     try:
-        text = _ENCODER.encode(value)
+        try:
+            text = _ENCODER.encode(value)
+        except ValueError as error:
+            if "Out of range float" not in str(error):
+                raise
+            text = dumps_strict(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            )
     except (TypeError, RecursionError) as error:
         raise ValueError(f"Review evidence is not serializable: {error}") from None
     if len(text) > MAX_EVIDENCE_BYTES:

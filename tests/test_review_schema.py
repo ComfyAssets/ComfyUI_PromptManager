@@ -644,12 +644,16 @@ class ReviewSchemaTests(unittest.TestCase):
         self.assertEqual(
             evidence_digest(EVIDENCE), hashlib.sha256(EVIDENCE.encode()).hexdigest()
         )
+        # The store's non-finite policy (utils.json_strict): written as null.
+        self.assertEqual(
+            canonical_evidence({"x": float("nan"), "y": [float("-inf")]}),
+            '{"x":null,"y":[null]}',
+        )
         for bad in (
             [],
             "text",
-            {"x": float("nan")},
-            {"x": float("inf")},
             {"x": object()},
+            {"x": object(), "y": float("nan")},
             {1: 1, "a": 2},
         ):
             with self.subTest(value=repr(bad)), self.assertRaises(ValueError):
