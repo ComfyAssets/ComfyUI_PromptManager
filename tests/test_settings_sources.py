@@ -416,8 +416,8 @@ class TestValidateSource(SourcesTestCase):
             str(self.output_dir / "missing"): "not-found",
             str(a_file): "not-directory",
             str(self.outside_dir): "outside-allowed",
-            os.path.abspath(os.sep): "filesystem-root",
-            os.path.expanduser("~"): "home-directory",
+            os.path.abspath(os.sep): "outside-allowed",
+            os.path.expanduser("~"): "outside-allowed",
             os.path.join(str(self.output_dir), "b", "..", "a"): "traversal",
             "output/../output/a": "traversal",
             str(self.a) + "\x00": "invalid-form",
@@ -436,6 +436,47 @@ class TestValidateSource(SourcesTestCase):
                 self.assertIsNone(data["label"])
                 self.assertIsNone(data["path"])
                 self.assertNotIn(os.path.expanduser("~"), json.dumps(data))
+
+    async def test_outside_paths_answer_alike_whether_they_exist(self):
+        """No existence oracle: outside the allowed folders every path looks
+        the same, existing or not, file or folder."""
+        a_file = self.outside_dir / "file.txt"
+        a_file.write_bytes(b"x")
+        answers = []
+        for path in (
+            self.outside_dir,
+            self.outside_dir / "missing",
+            a_file,
+            os.path.join(self.tmpdir, "no", "such", "tree"),
+            os.path.abspath(os.sep),
+            os.path.expanduser("~"),
+        ):
+            status, data = await self._post(VALIDATE, {"path": str(path)})
+            answers.append((status, data))
+        self.assertEqual(answers[0][1]["code"], "outside-allowed")
+        self.assertEqual([answer for answer in answers], [answers[0]] * len(answers))
+
+    async def test_settings_save_refuses_outside_paths_alike(self):
+        (self.outside_dir / "x").mkdir()
+        answers = []
+        for path in (self.outside_dir / "x", self.tmpdir + "/nothing/x"):
+            status, data = await self._post(
+                "/prompt_manager/settings", {"gallery_root_paths": [str(path)]}
+            )
+            answers.append((status, data))
+        self.assertEqual(answers[0][0], 400)
+        self.assertEqual(answers[0], answers[1])
+
+    async def test_inside_paths_say_why_they_are_not_usable(self):
+        a_file = self.output_dir / "file.png"
+        a_file.write_bytes(b"x")
+        status, missing = await self._post(
+            VALIDATE, {"path": str(self.output_dir / "missing")}
+        )
+        status, not_dir = await self._post(VALIDATE, {"path": str(a_file)})
+        self.assertEqual(
+            (missing["code"], not_dir["code"]), ("not-found", "not-directory")
+        )
 
     async def test_malformed_request_is_400(self):
         for body in ({}, {"path": 42}, {"path": None}, ["x"]):

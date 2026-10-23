@@ -17,9 +17,12 @@ process has no monitor; else ``restart_pending`` (a source added since the
 monitor started, monitoring switched on, or an observer that stopped).
 """
 
+import logging
 import ntpath
 import os
 import re
+
+logger = logging.getLogger("prompt_manager.api")
 
 MAX_SOURCE_PATH = 4096  # characters
 FORM_REASONS = {
@@ -37,6 +40,12 @@ _COMFYUI_LABELS = (
     ("get_input_directory", "ComfyUI input"),
     ("get_temp_directory", "ComfyUI temp"),
     ("get_user_directory", "ComfyUI user"),
+)
+# Codes validate-source folds into "outside-allowed" (see validate_source).
+_OUTSIDE_CODES = frozenset({"filesystem-root", "home-directory", "outside-allowed"})
+OUTSIDE_REASON = (
+    "Gallery root must be inside a ComfyUI directory (output, input, temp, user) "
+    "or one listed in PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
 )
 WATCH_STATES = ("watching", "manual", "restart_pending")
 
@@ -217,6 +226,12 @@ def validate_source(text):
     reason = FORM_REASONS.get(code)
     if code is None:
         code, reason = GalleryConfig.gallery_root_problem(text)
+        if code in _OUTSIDE_CODES:
+            # One answer for every path outside the allowed folders: naming
+            # the filesystem root or the home directory would let a caller
+            # probe the server's layout. The detail goes to the log only.
+            logger.info(f"Source refused: {code}")
+            code, reason = "outside-allowed", OUTSIDE_REASON
     if code is not None:
         return {
             "valid": False,

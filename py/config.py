@@ -412,8 +412,10 @@ class GalleryConfig:
         """``(code, reason)`` why ``path`` may not be a gallery root, else (None, "").
 
         Codes: ``empty``, ``unresolvable``, ``filesystem-root``,
-        ``home-directory``, ``not-found``, ``not-directory`` and
-        ``outside-allowed``. No reason names the path.
+        ``home-directory``, ``outside-allowed``, ``not-found`` and
+        ``not-directory``. No reason names the path. Containment is decided
+        before existence, so a path outside the allowed folders answers
+        ``outside-allowed`` whether or not it exists (no existence oracle).
         """
         if not isinstance(path, str) or not path.strip():
             return "empty", "Gallery root must be a non-empty path"
@@ -427,21 +429,23 @@ class GalleryConfig:
             return "filesystem-root", "Gallery root cannot be a filesystem root"
         if canonical == _canonical_path(os.path.expanduser("~")):
             return "home-directory", "Gallery root cannot be the home directory"
+
+        candidate = Path(canonical)
+        if not any(
+            candidate.is_relative_to(Path(parent))
+            for parent in cls.allowed_gallery_parents()
+        ):
+            return (
+                "outside-allowed",
+                "Gallery root must be inside a ComfyUI directory "
+                f"(output, input, temp, user) or one listed in "
+                f"{EXTRA_GALLERY_ROOTS_ENV}",
+            )
         if not os.path.exists(canonical):
             return "not-found", "Gallery root does not exist"
         if not os.path.isdir(canonical):
             return "not-directory", "Gallery root is not a directory"
-
-        candidate = Path(canonical)
-        for parent in cls.allowed_gallery_parents():
-            if candidate.is_relative_to(Path(parent)):
-                return None, ""
-
-        return (
-            "outside-allowed",
-            "Gallery root must be inside a ComfyUI directory "
-            f"(output, input, temp, user) or one listed in {EXTRA_GALLERY_ROOTS_ENV}",
-        )
+        return None, ""
 
 
 class IntegrationConfig:
