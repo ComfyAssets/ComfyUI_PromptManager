@@ -443,6 +443,30 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/system-controls.mjs": {
+    "lines": 98,
+    "branches": 87,
+    "functions": 89,
+    "statements": 98
+  },
+  "workspace/system-overview.mjs": {
+    "lines": 96,
+    "branches": 92,
+    "functions": 98,
+    "statements": 96
+  },
+  "workspace/system-state.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 92,
+    "statements": 98
+  },
+  "workspace/system.mjs": {
+    "lines": 93,
+    "branches": 85,
+    "functions": 69,
+    "statements": 93
+  },
   "workspace/theme.mjs": {
     "lines": 98,
     "branches": 93,
