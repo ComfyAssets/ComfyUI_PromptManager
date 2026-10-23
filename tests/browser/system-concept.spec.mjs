@@ -584,7 +584,7 @@ function measureSources(mainSelector) {
     };
 }
 
-// D-NEW-S4-2: "watching until restart" after monitoring was switched off while the observer still runs.
+// D128: "watching until restart" after monitoring was switched off while the observer still runs.
 const WATCH_TEXT = { watching: 'watching', stopping: 'watching until restart', manual: 'manual scan', restart_pending: 'restart pending' };
 const WATCHED = new Set(['watching', 'stopping']);
 // D98: the operation Sources adds after the concept's own, as production renders it.

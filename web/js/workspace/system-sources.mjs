@@ -21,7 +21,7 @@
  * ComfyUI's output folder is used instead; "restart pending" for a source the running monitor does not watch yet; the
  * "Refresh files" operation (`/gallery/rescan`) closes the surface. D127: the add dialog's field is "Folder path",
  * starts empty and says the server's reason in place; its action is "Add", and Enter adds too.
- * D-NEW-S4-2: "watching until restart" for a source the running monitor still watches after monitoring was switched off;
+ * D128: "watching until restart" for a source the running monitor still watches after monitoring was switched off;
  * "same folder as another source" for a configured source the effective list already holds under another spelling; a
  * save refused for one source (`invalid-source`) marks that row and the status says the server's reason.
  */
@@ -306,7 +306,7 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
             actions.push(remove);
         }
         const node = el('div', undefined, 'operation');
-        // D-NEW-S4-2: the source the last save was refused for; the status says why.
+        // D128: the source the last save was refused for; the status says why.
         if (row.remove !== null && row.remove === drafts.invalidSource?.()) node.setAttribute('aria-invalid', 'true');
         const text = el('div');
         text.append(el('h3', row.title), el('p', row.description));

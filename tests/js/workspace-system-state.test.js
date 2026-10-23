@@ -318,7 +318,7 @@ test('host read state says whether the server settings could be read', async () 
     assert.equal(drafts.hostState(), 'loaded');
 });
 
-test('a host save names the settings that apply after a restart (D-NEW-S4-2)', async () => {
+test('a host save names the settings that apply after a restart (D128)', async () => {
     const { statusText, RESTART_LABELS } = await source;
     assert.deepEqual(RESTART_LABELS, { monitoring_enabled: 'Watch for new outputs' });
     const saved = { browser: 'clean', host: 'saved', runtime: 'clean' };

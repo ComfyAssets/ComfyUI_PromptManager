@@ -255,7 +255,7 @@ test('Watch for new outputs saves monitoring_enabled; a restart applies it', asy
     await saveButton(page).click();
     const answer = await (await saved).json();
     expect(answer.restart_required_fields).toEqual(['monitoring_enabled']);
-    // D-NEW-S4-2: saved for the next start, and the status says a restart applies it.
+    // D128: saved for the next start, and the status says a restart applies it.
     await expect(statusOf(page)).toHaveText('Saved to the server configuration. Restart ComfyUI to apply: Watch for new outputs.');
     // The running observer keeps watching until ComfyUI restarts, and the list says so.
     const { settings, monitor } = await serverJson(request, SETTINGS_URL);

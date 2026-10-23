@@ -126,7 +126,7 @@ test('Refresh files toasts the rescan counts, or says it finished when they are 
     assert.equal(refreshedText(null), 'Files refreshed.');
 });
 
-test('monitoring switched off: a source still watched says so until the restart (D-NEW-S4-2)', async () => {
+test('monitoring switched off: a source still watched says so until the restart (D128)', async () => {
     const { sourceRows } = await sourcesModule;
     const sources = { ...STATUS, effective: [{ ...STATUS.effective[0], watch: 'stopping' }, STATUS.effective[1]] };
     const { rows } = sourceRows({ sources, saved: ['output', 'input'], current: ['output', 'input'] });
@@ -134,7 +134,7 @@ test('monitoring switched off: a source still watched says so until the restart 
         [['output · watching until restart', 'Scan changes'], ['input · manual scan', 'Scan folder']]);
 });
 
-test('a valid configured source missing from the effective list is another spelling of a listed folder (D-NEW-S4-2)', async () => {
+test('a valid configured source missing from the effective list is another spelling of a listed folder (D128)', async () => {
     const { sourceRows, DUPLICATE_SOURCE } = await sourcesModule;
     assert.equal(DUPLICATE_SOURCE, 'same folder as another source');
     const sources = { ...STATUS, configured: [...STATUS.configured,

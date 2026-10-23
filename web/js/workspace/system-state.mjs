@@ -34,11 +34,11 @@ export const SETTINGS_STATUS = Object.freeze({
     partial: 'Some changes were not saved. Review the highlighted settings.',
     tabOnly: 'Saved for this tab only; browser storage is unavailable.',
     conflict: 'Settings changed elsewhere. Reload this section to see them.',
-    // D-NEW-S4-2: a saved setting the running server applies only after a restart.
+    // D128: a saved setting the running server applies only after a restart.
     restart: 'Restart ComfyUI to apply:',
 });
 
-/** D-NEW-S4-2: the settings a host save can report in `restart_required_fields`, by their row label. */
+/** D128: the settings a host save can report in `restart_required_fields`, by their row label. */
 export const RESTART_LABELS = Object.freeze({ monitoring_enabled: 'Watch for new outputs' });
 
 export const DRAFT_DOMAINS = Object.freeze(['browser', 'host', 'runtime']);
@@ -49,7 +49,7 @@ const ADAPTERS = ['readBrowser', 'readHost', 'readRuntime', 'writeBrowser', 'wri
 /**
  * The status copy of one `save()` outcome (`{browser, host, runtime}`, each clean/saved/tab-only/applied/failed/conflict).
  * `restart` lists the host fields the server applies at its next start, `invalid` the source a refused host save named
- * (`{source, message}`): its message is the status (D-NEW-S4-2).
+ * (`{source, message}`): its message is the status (D128).
  */
 export function statusText(outcome) {
     const results = DRAFT_DOMAINS.map(domain => outcome?.[domain]);

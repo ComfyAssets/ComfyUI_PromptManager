@@ -2006,7 +2006,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121–D127 assigned; D-NEW-S4-2 awaits its number):
+Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121–D128 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2102,7 +2102,7 @@ Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121�
   again."; neither adds anything.
   The concept dialog does no check, so `invalid source shows the server reason`
   (workspace-system-sources.spec) pins it.
-- **D-NEW-S4-2** (Sources): states the concept's sample rows never show. A source the
+- **D128** (Sources): states the concept's sample rows never show. A source the
   running monitor still watches after "Watch for new outputs" was saved off reads
   "<path> · watching until restart" (still "Scan changes"), and the save's status adds
   "Restart ComfyUI to apply: Watch for new outputs." from `restart_required_fields`. A
