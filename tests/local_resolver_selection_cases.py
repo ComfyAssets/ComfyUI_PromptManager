@@ -12,8 +12,10 @@ import json
 import random
 
 try:
+    from tests import passthrough_graphs as shapes
     from tests.local_resolver_cases import EXECUTION_KEY, SPACES, WORDS, _Builder
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
+    import passthrough_graphs as shapes
     from local_resolver_cases import EXECUTION_KEY, SPACES, WORDS, _Builder
 
 
@@ -437,10 +439,129 @@ def _parameters():
     return cases
 
 
+def _passthrough():
+    """Chains joined through lineage nodes, and the floor for added conditioning."""
+    cases = {
+        "hires-fix": shapes.hires_fix(),
+        "hires-fix-differs": shapes.hires_fix(second_positive=shapes.OTHER),
+        "hires-fix-unlisted": shapes.hires_fix(filter_class="MysteryImageEffect"),
+        "hires-fix-generated": shapes.generated_text_chain(),
+        "flux-three-stage": shapes.flux_three_stage(),
+        "flux-concat": shapes.flux_three_stage(composite="ConditioningConcat"),
+        "flux-average": shapes.flux_three_stage(composite="ConditioningAverage"),
+        "edit-batch": shapes.edit_batch(3),
+    }
+    graph = shapes.flux_three_stage(combined=(("37", 0), ("31", 0)))
+    graph["37"] = shapes.encode(shapes.OTHER)
+    cases["flux-without-base"] = graph
+    graph = shapes.flux_three_stage()
+    graph["38"] = shapes.encode("watermark")
+    graph["60"]["inputs"]["negative"] = ["38", 0]
+    cases["flux-other-negative"] = graph
+    graph = shapes.hires_fix()
+    graph["20"]["inputs"]["latent_image"] = ["10", 0]
+    graph["10"]["inputs"]["latent_image"] = ["20", 0]
+    cases["hires-fix-cycle"] = graph
+    graph = shapes.hires_fix()
+    graph["17"]["inputs"]["pixels"] = ["18", 0]
+    graph["18"] = {"class_type": "Reroute", "inputs": {"value": ["16", 0]}}
+    cases["hires-fix-reroute"] = graph
+    graph = shapes.hires_fix()
+    graph["24"] = {"class_type": "SaveImage", "inputs": {"images": ["11", 0]}}
+    cases["hires-fix-both-saved"] = graph
+    graph = shapes.hires_fix()
+    graph["20"]["inputs"]["latent_image"] = ["99", 0]
+    cases["hires-fix-missing-latent"] = graph
+    graph = shapes.flux_three_stage()
+    graph["38"] = {"class_type": "MysteryNegative", "inputs": {"seed": 1}}
+    graph["60"]["inputs"]["negative"] = ["38", 0]
+    cases["flux-negative-unsupported"] = graph
+    graph = shapes.flux_three_stage()
+    graph["39"] = {"class_type": "Reroute", "inputs": {"input": ["35", 0]}}
+    graph["60"]["inputs"]["positive"] = ["39", 0]
+    cases["flux-reroute-input"] = graph
+    graph = shapes.flux_three_stage()
+    graph["39"] = {
+        "class_type": "CLIPTextEncodeSDXL",
+        "inputs": {"text_g": shapes.POSITIVE, "text_l": shapes.STYLE},
+    }
+    graph["60"]["inputs"]["positive"] = ["39", 0]
+    cases["flux-encoder-parts"] = graph
+    cases.update(_passthrough_edges())
+    return cases
+
+
+def _passthrough_edges():
+    """Lineage and floor edges: branching refiners, other slots, cycles, guiders."""
+    cases = {}
+    graph = shapes.hires_fix()
+    graph["30"] = shapes.ksampler(["2", 0], ["3", 0], ["17", 0], denoise=0.4)
+    graph["31"] = {"class_type": "SaveImage", "inputs": {"images": ["30", 0]}}
+    cases["hires-fix-two-refiners"] = graph
+    graph = shapes.hires_fix()
+    graph["10"]["class_type"] = "SamplerCustom"
+    graph["11"]["inputs"]["samples"] = ["10", 1]
+    cases["hires-fix-denoised-slot"] = graph
+    graph = shapes.hires_fix()
+    graph["30"] = shapes.ksampler(["2", 0], ["3", 0], ["4", 0])
+    graph["31"] = {"class_type": "VAEDecode", "inputs": {"samples": ["30", 0]}}
+    graph["32"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["31", 0]}}
+    graph["30"]["inputs"]["latent_image"] = ["32", 0]
+    cases["hires-fix-self-latent"] = graph
+    graph = shapes.hires_fix()
+    graph["30"] = shapes.ksampler(["2", 0], ["3", 0], ["32", 0])
+    graph["31"] = {"class_type": "VAEDecode", "inputs": {"samples": ["32", 0]}}
+    graph["32"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["31", 0]}}
+    graph["33"] = {"class_type": "SaveImage", "inputs": {"images": ["30", 0]}}
+    cases["hires-fix-lineage-cycle"] = graph
+    graph = shapes.flux_three_stage()
+    graph["39"] = shapes.encode(shapes.OTHER)
+    graph["40"]["inputs"]["positive"] = ["39", 0]
+    cases["flux-base-stages-differ"] = graph
+    graph = shapes.flux_three_stage()
+    del graph["60"]["inputs"]["negative"]
+    cases["flux-no-last-negative"] = graph
+    graph = shapes.flux_three_stage()
+    graph["39"] = {"class_type": "MysteryPrompt", "inputs": {"seed": 1}}
+    graph["40"]["inputs"]["positive"] = ["39", 0]
+    graph["50"]["inputs"]["positive"] = ["39", 0]
+    cases["flux-unreadable-base"] = graph
+    graph = shapes.flux_three_stage()
+    graph["39"] = {
+        "class_type": "MysteryUpscaler",
+        "inputs": {"image": ["51", 0], "model": ["1", 0], "positive": ["34", 0]},
+    }
+    graph["52"]["inputs"]["images"] = ["39", 0]
+    cases["flux-unsupported-ancestry"] = graph
+    graph = shapes.flux_three_stage()
+    graph["60"] = {
+        "class_type": "SamplerCustomAdvanced",
+        "inputs": {
+            "noise": ["62", 0],
+            "guider": ["63", 0],
+            "sampler": ["64", 0],
+            "sigmas": ["65", 0],
+            "latent_image": ["66", 0],
+        },
+    }
+    graph["62"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": 1}}
+    graph["63"] = {
+        "class_type": "CFGGuider",
+        "inputs": {"model": ["1", 0], "positive": ["35", 0], "negative": ["33", 0]},
+    }
+    graph["64"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}}
+    graph["65"] = {"class_type": "BasicScheduler", "inputs": {"steps": 4}}
+    graph["66"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["52", 0]}}
+    graph["67"] = {"class_type": "VAEDecode", "inputs": {"samples": ["60", 0]}}
+    graph["61"]["inputs"]["images"] = ["67", 0]
+    cases["flux-custom-advanced-last"] = graph
+    return {f"edge-{name}": graph for name, graph in cases.items()}
+
+
 def selection_cases():
     """Named record sets for every Task 9 path, each a ``read_inspection_file`` dict."""
     cases = {}
-    for group in (_samplers(), _previews(), _detailers()):
+    for group in (_samplers(), _previews(), _detailers(), _passthrough()):
         for name, graph in group.items():
             cases[f"select-{name}"] = {"prompt": json.dumps(graph, ensure_ascii=False)}
     cases.update(_parameters())
@@ -571,4 +692,102 @@ def selection_fuzz_cases(seed, count):
         records = {"prompt": json.dumps(graph, ensure_ascii=rng.random() < 0.5)}
         records.update(builder.records)
         cases[f"select-fuzz-{seed}-{index}"] = records
+    return cases
+
+
+_LINEAGE_HOPS = (
+    ("VAEDecode", "samples"),
+    ("VAEDecodeTiled", "samples"),
+    ("Image Filter", "images"),
+    ("ImageUpscaleWithModel", "image"),
+    ("ImageScale", "image"),
+    ("ImageScaleBy", "image"),
+    ("VAEEncode", "pixels"),
+    ("LatentUpscaleBy", "samples"),
+    ("Reroute", "value"),
+    ("MysteryImageEffect", "image"),
+)
+
+
+def passthrough_fuzz_cases(seed, count):
+    """Seeded sampler chains joined by random lineage (and unlisted) hops.
+
+    Each later stage reads the earlier one's output through zero to four hops,
+    with a shared, a different, an added-to (combine, concat, average) or a
+    run-time positive, and a shared or different negative, under a saver or a
+    preview. The server is the oracle; nothing states the expected answer.
+    """
+    rng = random.Random(seed)
+    cases = {}
+    for index in range(count):
+        graph = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m"}},
+            "2": shapes.prompt_manager(rng.choice([shapes.POSITIVE, "fox"])),
+            "3": shapes.encode(shapes.NEGATIVE),
+            "4": {"class_type": "EmptyLatentBatch", "inputs": {"batch_size": 2}},
+            "5": shapes.encode(shapes.STYLE),
+            "6": shapes.encode(shapes.OTHER),
+        }
+        previous, next_id = ["4", 0], 10
+        for stage in range(rng.randint(2, 3)):
+            positive = ["2", 0]
+            choice = rng.randrange(8)
+            if stage and choice == 1:
+                positive = ["6", 0]
+            elif stage and choice in (2, 3, 4):
+                name = (
+                    "ConditioningCombine",
+                    "ConditioningConcat",
+                    "ConditioningAverage",
+                )[choice - 2]
+                names = shapes._COMPOSITE_INPUTS[name]
+                parts = [["2", 0], rng.choice([["5", 0], ["6", 0]])]
+                rng.shuffle(parts)
+                graph[str(next_id)] = {
+                    "class_type": name,
+                    "inputs": dict(zip(names, parts)),
+                }
+                positive, next_id = [str(next_id), 0], next_id + 1
+            elif stage and choice == 5:
+                graph[str(next_id)] = {
+                    "class_type": "FluxGuidance",
+                    "inputs": {"guidance": 3.5, "conditioning": ["2", 0]},
+                }
+                positive, next_id = [str(next_id), 0], next_id + 1
+            negative = ["6", 0] if stage and rng.random() < 0.15 else ["3", 0]
+            latent = previous
+            if stage:
+                image = previous
+                for _ in range(rng.randrange(5)):
+                    name, key = rng.choice(_LINEAGE_HOPS)
+                    graph[str(next_id)] = {"class_type": name, "inputs": {key: image}}
+                    image, next_id = [str(next_id), 0], next_id + 1
+                latent = image
+            sampler = shapes.ksampler(positive, negative, latent)
+            if stage and rng.random() < 0.2:
+                sampler = {
+                    "class_type": "UltimateSDUpscale",
+                    "inputs": {
+                        "image": latent,
+                        "model": ["1", 0],
+                        "positive": positive,
+                        "negative": negative,
+                    },
+                }
+            graph[str(next_id)] = sampler
+            previous, next_id = [str(next_id), 0], next_id + 1
+            if rng.random() < 0.3:
+                saver = rng.choice(["SaveImage", "PreviewImage"])
+                graph[str(next_id)] = {
+                    "class_type": saver,
+                    "inputs": {"images": previous},
+                }
+                next_id += 1
+        graph[str(next_id)] = {
+            "class_type": "SaveImage",
+            "inputs": {"images": previous},
+        }
+        cases[f"select-passthrough-fuzz-{seed}-{index}"] = {
+            "prompt": json.dumps(graph, ensure_ascii=False)
+        }
     return cases

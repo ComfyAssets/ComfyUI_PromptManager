@@ -40,6 +40,7 @@ import {
     isLink,
     nodeRef,
     readPairExecution,
+    rerouteValue,
     result,
     sideOf,
     slotKey,
@@ -543,11 +544,13 @@ class GraphResolver {
         }
     }
 
+    /** `latent_checked`: `latent_stages` once per sampler; returns the continued earlier stage, or null. */
     latentChecked(samplerId, value) {
-        let error;
+        let error, earlier = null;
         if (this.latentWalks.has(samplerId)) {
-            const [walked, cost] = this.latentWalks.get(samplerId);
+            const [walked, cost, found] = this.latentWalks.get(samplerId);
             error = walked;
+            earlier = found;
             if (!this.latentCharged.has(samplerId)) {
                 this.budget.charge(cost);
                 this.latentCharged.add(samplerId);
@@ -555,16 +558,37 @@ class GraphResolver {
         } else {
             const before = this.budget.allowance;
             try {
-                this.latentStages(samplerId, value);
+                earlier = this.latentStages(samplerId, value);
                 error = null;
             } catch (raised) {
                 if (!(raised instanceof Unresolved) || raised.code === 'work-limit') throw raised;
                 error = raised;
             }
-            this.latentWalks.set(samplerId, [error, before - this.budget.allowance]);
+            this.latentWalks.set(samplerId, [error, before - this.budget.allowance, earlier]);
             this.latentCharged.add(samplerId);
         }
         if (error !== null) throw new Unresolved(error.message, error.code, error.node === null ? null : { ...error.node });
+        return earlier;
+    }
+
+    /** `lineage_predecessor`: the sampler whose output a latent input continues through `lineage` nodes, or null. */
+    lineagePredecessor(value) {
+        const seen = new Set();
+        while (isLink(value) && seen.size < this.maxDepth) {
+            const nodeId = String(value[0]), slot = value[1];
+            if (seen.has(nodeId)) return null;
+            seen.add(nodeId);
+            const [name, inputs] = this.node(nodeId);
+            if (this.stageClasses.has(name)) return slot === 0 ? nodeId : null;
+            if (name === 'Reroute' && slot === 0) {
+                value = rerouteValue(inputs);
+                continue;
+            }
+            const entry = this.semantics.lineage.get(slotKey(name, slot));
+            if (entry === undefined) return null;
+            value = pyGet(inputs, entry.input);
+        }
+        return null;
     }
 
     enqueue(queue, queued, inputs, depth) {
@@ -586,16 +610,23 @@ class GraphResolver {
     latentStages(origin, value) {
         if (!isLink(value)) throw new Unresolved('Unknown latent ancestry', 'malformed');
         const start = String(value[0]), queue = [[start, 0]], queued = new Set([start]);
+        let earlier = null, lineage = null, traced = false;
         for (let head = 0; head < queue.length; head++) {
             const [nodeId, depth] = queue[head];
             if (nodeId === origin) throw new Unresolved('Cyclic latent ancestry', 'malformed');
             if (depth >= this.maxDepth) throw new Unresolved('Resolution depth limit reached', 'depth-limit');
             this.budget.spend();
             const [name, inputs] = this.node(nodeId);
-            if (this.stageClasses.has(name)) throw new Unresolved(MULTISTAGE_UNATTRIBUTED_REASON);
+            if (this.stageClasses.has(name)) {
+                if (!traced) { lineage = this.lineagePredecessor(value); traced = true; }
+                if (nodeId !== lineage) throw new Unresolved(MULTISTAGE_UNATTRIBUTED_REASON);
+                earlier = nodeId;
+                continue;
+            }
             if (this.stageShaped(name, inputs)) throw this.unsupported('Unsupported latent ancestry', nodeId);
             this.enqueue(queue, queued, inputs, depth + 1);
         }
+        return earlier;
     }
 }
 

@@ -52,7 +52,7 @@ from utils.prompt_inspector import (
 )
 
 from utils.prompt_inspector import inspect_prompt_evidence, unreadable_evidence
-from utils.prompt_pair_resolver import INSPECTION_PROFILE
+from utils.prompt_pair_resolver import ADDED_CONDITIONING_REASON, INSPECTION_PROFILE
 
 try:
     from tests import inspection_parity as parity
@@ -1293,6 +1293,33 @@ class LocalResolverParityTests(unittest.TestCase):
         self.assertEqual(
             answers["select-preview-dropped"]["resolution"]["sampler_id"], "3"
         )
+        # Pass-through lineage: the chain shapes reach every new outcome.
+        self.assertEqual(
+            {
+                name: answers[f"select-{name}"]["resolution"]["reason"]
+                for name in ("hires-fix", "flux-three-stage", "hires-fix-differs")
+            },
+            {
+                "hires-fix": "",
+                "flux-three-stage": ADDED_CONDITIONING_REASON,
+                "hires-fix-differs": "Sampler stages have different prompts",
+            },
+        )
+
+    def test_local_roles_match_fuzzed_pass_through_chains(self):
+        cases = {}
+        for seed in range(4):
+            cases.update(selection_cases.passthrough_fuzz_cases(seed, 120))
+        answers = self._compare(cases)
+        reasons = [answer["resolution"]["reason"] for answer in answers.values()]
+        for reason in (
+            "",
+            "Sampler stages have different prompts",
+            "A later stage adds conditioning to the base prompt",
+            "Combined conditioning has different texts",
+            "Multiple sampler branches",
+        ):
+            self.assertGreater(reasons.count(reason), 5, reason)
 
     def test_local_roles_match_fuzzed_selection_sets(self):
         cases = {}

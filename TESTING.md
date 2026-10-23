@@ -385,7 +385,8 @@ with source `zeroed-conditioning`. `easy ifElse` with a literal boolean follows 
 branch only; with a linked boolean both branches are traced, equal texts resolve and
 different texts make the sampler `ambiguous` with one candidate per choice (at most
 32, else `work-limit`). ConditioningCombine/Concat/Average resolve only when every
-part has the same text, otherwise `unresolved` with `composite` naming the node.
+part has the same text, otherwise `unresolved` with `composite` naming the node
+(but see the added-conditioning floor below for a later stage).
 Results that depend on a forced choice are never memoized. A `FaceDetailer`
 (`detailer-stage`) is a sampler stage: the samplers reached through its `image`
 ancestry are compared with it. Equal texts resolve with the detailer as the sampler;
@@ -396,9 +397,46 @@ A sampler's latent ancestry is walked through every link input of non-sampler
 nodes within the same visit and depth budgets: with no earlier sampler it is a
 single stage whatever the origin (VAEEncode, EmptyLatentBatch, EmptyFlux2LatentImage,
 EmptyHunyuanLatentVideo, SetLatentNoiseMask, InpaintModelConditioning or
-WanImageToVideo slot 2). An earlier sampler (img2img from a decode, hires fix) stays
-`unresolved` "Multistage sampler ancestry is ambiguous" until stage texts are
-compared; an unlisted node with sampler-shaped inputs (positive, negative, guider,
+WanImageToVideo slot 2). Pass-through lineage (#304 follow-up, maintainer option B,
+2026-10-23): the table's `lineage` section lists the outputs whose image or latent
+continues one input's (`VAEDecode`/`VAEDecodeTiled` `samples`, `VAEEncode`/
+`VAEEncodeTiled` `pixels`, `ImageUpscaleWithModel`, `ImageScale`, `ImageScaleBy`,
+`ImageScaleToTotalPixels` `image`, `LatentUpscale`/`LatentUpscaleBy` `samples`,
+cg-image-filter `Image Filter` slot 0 `images` and slot 1 `latents`; a selection of
+the same batch), plus Reroutes. Lineage describes no prompt, so its classes are not
+claimed by a prompt category. When the latent walk finds exactly one earlier sampler
+and the latent descends from that sampler's output slot 0 only through lineage
+nodes (a hires-fix or refiner chain, img2img from an in-graph decode, a direct
+latent link), the two stages are compared like a detailer and its upstream stage:
+equal role texts resolve with the later sampler named, different texts are
+`ambiguous` `multistage-differs` with one candidate per stage, and an unreadable
+earlier stage makes the chain `unresolved` with that stage's reason. Unanchored, the
+earlier sampler is judged inside the chain when its output reaches no other file
+output. A size or resolution node reading the same image beside the lineage (a
+`ResolutionCalculator` feeding `ImageScale` width and height) is allowed, since the
+walk then still finds only that sampler. Any other earlier sampler, or one reached
+only through an unlisted image node, stays `unresolved` "Multistage sampler ancestry
+is ambiguous". Added-conditioning floor: a later stage whose own positive fails only
+as `composite` keeps its earlier stages' shared pair ("A later stage adds
+conditioning to the base prompt", naming the earlier stage's sampler) when that
+positive reaches, through Reroutes and conditioning pass-throughs, a composite the
+table marks `additive` (ConditioningCombine, ConditioningConcat; never
+ConditioningAverage, which can weight a part away), one of its parts is exactly the
+earlier stages' positive text, and its negative text equals theirs. This is the
+three-stage Flux run whose UltimateSDUpscale combines the PromptManager prompt with
+a style-trigger encoder: legacy linked the PromptManager text and every stage is
+conditioned on it. A combine without the base text, a different negative, or
+different earlier stages stay as they were (`composite` or `multistage-differs`).
+An image-edit batch (several samplers with distinct prompts, one shared saver
+prefix) stays `ambiguous`, and text generated at run time stays untraceable
+(`tests/test_resolver_pass_through.py` on synthetic shapes from
+`tests/passthrough_graphs.py`; the browser port is compared on the named
+`select-*` chain cases and `passthrough_fuzz_cases`). Ingestion keeps the default
+profile's historical latent rule (D1), so the admin scan still reaches these files
+through its legacy-parser fallback. Known gap: a PromptManager whose `prepend_text`
+comes from LoraManager's `TriggerWord Toggle` stays `unsupported-node` naming that
+node (its output depends on run-time trigger words and version-specific widget
+handling); an unlisted node with sampler-shaped inputs (positive, negative, guider,
 latent_image, a pipe, video embeds, custom-sampler parts, or a `model` link together
 with conditioning, neg_conditioning, samples or latent) is `unsupported-node`
 naming it, here and in a detailer's image ancestry; a latent that is not a link or
@@ -1857,8 +1895,14 @@ and skip the parse.
   integers past 2**53 as their exact digits, so the card and the inspector read
   the same digits. The parse runs after the file handle closes. A record over
   2 MiB (UTF-8), a parser error, a recursion error, a placeholder, or a
-  non-integral, boolean or non-finite seed gives null. A card never shows a seed
-  that differs from the inspector's
+  non-integral, boolean or non-finite seed gives null. When the prompt graph's
+  sampler stages read different seed inputs and the inspector's resolution names
+  one sampler for a resolved pair (a detailer or pass-through chain, whose facts
+  are that final stage's, D19), the card shows no seed: the parser would show
+  another stage's. Only such graphs are resolved for the card, with
+  `INSPECTION_PROFILE` (`test_a_chain_the_inspector_names_one_stage_of_shows_no_differing_seed`;
+  before this rule a KSampler then FaceDetailer chain with two seeds broke the
+  contract below). A card never shows a seed that differs from the inspector's
   (`test_card_seed_equals_inspector_seed_when_both_present`, which `JSON.parse`s
   the listing in Node and compares `String(seed)` with the inspector's seed,
   including one past 2**53). The card shows no seed for A1111 `parameters` files

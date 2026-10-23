@@ -29,6 +29,7 @@ VECTORS_PATH = (
 # Committed record sets stay small; the large bound cases are built at test time.
 MAX_VECTOR_CHARS = 20_000
 COMMITTED_FUZZ = (0, 60)
+COMMITTED_PASSTHROUGH = (0, 40)
 
 SPACES = ["", " ", "\t", "\n", "\x1c", "\x85", "　", "﻿", "  "]
 WORDS = ["fox", "snow", "café", "猫", "\U0001f600", "a,", "detailed fur", ""]
@@ -1380,6 +1381,7 @@ def committed_vectors():
     }
     cases.update(fuzz_cases(*COMMITTED_FUZZ))
     cases.update(selection.selection_fuzz_cases(*COMMITTED_FUZZ))
+    cases.update(selection.passthrough_fuzz_cases(*COMMITTED_PASSTHROUGH))
     vectors = [
         {
             "name": name,

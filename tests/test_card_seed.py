@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils import card_seed as card_seed_rules  # noqa: E402
 from utils.card_seed import (  # noqa: E402
     MAX_RECORD_BYTES,
     card_seed,
@@ -67,6 +68,34 @@ class CardSeed(unittest.TestCase):
         expected = extract_from_records(info["prompt"], None)["seed"]
         self.assertIn(expected, (111, 222))
         self.assertEqual(info_seed(info), str(expected))
+
+    def test_a_chain_the_inspector_names_one_stage_of_shows_no_differing_seed(self):
+        # The inspector shows the named final stage's seed (D19, pass-through
+        # chains); the parser shows another stage's. Never two seeds: none.
+        extra = {"2": {"class_type": "EmptyLatentImage", "inputs": {}}}
+        extra["20"] = {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0]}}
+        extra["21"] = {
+            "class_type": "FaceDetailer",
+            "inputs": {
+                "seed": 333,
+                "image": ["20", 0],
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+            },
+        }
+        info = graph(seeded(111), extra=extra)
+        self.assertEqual(extract_from_records(info["prompt"], None)["seed"], 111)
+        self.assertIsNone(info_seed(info))
+        # The same chain on one seed keeps it; so does a refiner over a decode.
+        extra["21"]["inputs"]["seed"] = 111
+        self.assertEqual(info_seed(graph(seeded(111), extra=extra)), "111")
+        refiner = seeded(222, latent_image=["22", 0])
+        extra["22"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["20", 0]}}
+        del extra["21"]
+        self.assertIsNone(info_seed(graph(seeded(111), refiner, extra=extra)))
+        refiner["inputs"]["seed"] = 111
+        self.assertEqual(info_seed(graph(seeded(111), refiner, extra=extra)), "111")
 
     def test_card_seed_linked_input_follows_shared_parser(self):
         primitive = {"class_type": "PrimitiveNode", "inputs": {"value": 555}}
@@ -207,6 +236,7 @@ class CardSeed(unittest.TestCase):
         self.assertIsNone(parsed_positive(unparsable))
 
     def test_every_shared_case_reads_the_projected_graphs(self):
+        withheld = []
         for name, case in CASES.items():
             with self.subTest(case=name):
                 info = {k: v for k, v in case.items() if v is not None}
@@ -225,11 +255,16 @@ class CardSeed(unittest.TestCase):
                 except GenerationParamsError:
                     self.assertIsNone(params)
                     continue
+                if card_seed_rules._inspector_names_another_seed(values):
+                    # The inspector names a chain stage with another seed.
+                    expected = {**expected, "seed": None}
+                    withheld.append(name)
                 self.assertEqual(params, expected)
                 # Prompt text is the same as from a plain parse of the records.
                 if len(values) == len(info):
                     raw = extract_from_records(case["prompt"], case["workflow"])
                     self.assertEqual(params["positivePrompt"], raw["positivePrompt"])
+        self.assertEqual(withheld, ["shared-prompt-pipeline"])
 
 
 if __name__ == "__main__":

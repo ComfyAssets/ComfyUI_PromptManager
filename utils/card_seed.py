@@ -6,10 +6,15 @@ the inspection projection (``project_graph``: strict JSON, the depth and node
 bounds, big integers and decimals as text), and only graphs it parsed, through
 the shared parser (``extract_generation_params``, the Python twin of the
 browser parser the inspector fills from since #251). No separate seed
-heuristic, no graph resolution and no extra file reads. One parse feeds both
-the seed and the positive that confirms a first-line card title.
+heuristic and no extra file reads. One parse feeds both the seed and the
+positive that confirms a first-line card title. One exception keeps the card
+from ever showing a seed the inspector does not: when sampler stages read
+different seed inputs and the inspector's resolution names one of them (a
+resolved multi-stage chain, whose facts are that stage's), the card shows none.
+Only such graphs are resolved, with the inspector's own profile.
 """
 
+import json
 import re
 from collections.abc import Mapping
 
@@ -19,6 +24,8 @@ from .generation_params import (
     extract_generation_params,
 )
 from .inspection_response import project_graph
+from .inspection_semantics import SemanticsError, get_semantics
+from .prompt_pair_resolver import INSPECTION_PROFILE, resolve_prompt_pair
 
 __all__ = [
     "MAX_RECORD_BYTES",
@@ -73,10 +80,52 @@ def header_params(info) -> dict | None:
     if not graphs:
         return None
     try:
-        return extract_generation_params(graphs)
+        params = extract_generation_params(graphs)
     except (GenerationParamsError, RecursionError):
         # Defence in depth: a parser failure gives no card facts, never a 500.
         return None
+    if isinstance(params, dict) and _inspector_names_another_seed(graphs):
+        return {**params, "seed": None}
+    return params
+
+
+_SEED_INPUTS = ("seed", "noise_seed", "noise")
+
+
+def _inspector_names_another_seed(graphs: dict) -> bool:
+    """Whether the inspector may show another stage's seed than the parser's.
+
+    True when the prompt graph's sampler stages read different seed inputs and
+    the inspection resolution names one sampler for a resolved pair: the
+    inspector's facts are then that stage's (D19), not the parser's pick.
+    """
+    graph = graphs.get("prompt")
+    if not isinstance(graph, Mapping):
+        return False
+    try:
+        samplers = get_semantics().samplers
+    except SemanticsError:
+        return False
+    seeds = set()
+    for node in graph.values():
+        if not isinstance(node, Mapping) or not isinstance(node.get("inputs"), Mapping):
+            continue
+        if not isinstance(node.get("class_type"), str):
+            continue
+        if node["class_type"] not in samplers:
+            continue
+        inputs = node["inputs"]
+        value = next((inputs[key] for key in _SEED_INPUTS if key in inputs), None)
+        seeds.add(json.dumps(value, sort_keys=True, default=str))
+    if len(seeds) < 2:
+        return False
+    try:
+        resolution = resolve_prompt_pair(
+            {"prompt": dict(graph)}, profile=INSPECTION_PROFILE
+        )
+    except RecursionError:
+        return True
+    return resolution["state"] == "resolved" and resolution["sampler_id"] is not None
 
 
 def card_seed(params: dict | None) -> str | None:
