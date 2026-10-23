@@ -1706,6 +1706,82 @@ class TestLibrary(unittest.TestCase):
             self.db.list_library_images(positive, pair_id=foreign, archive="all")
 
 
+class LibraryCounts(unittest.TestCase):
+    """System › Overview counts and usage statistics follow Library eligibility."""
+
+    setUp = TestLibrary.setUp
+    tearDown = TestLibrary.tearDown
+    save = TestLibrary.save
+    state = TestLibrary.state
+
+    def test_counts_use_library_eligibility(self):
+        self.db.save_prompt_pair("Cat", "Blur")
+        archived = self.db.save_prompt_pair("Cat", "Noise")
+        self.db.archive_prompt_pair(archived)
+        titled_pair = self.db.save_prompt_pair("Dog", "Titled negative")
+        titled = self.db.get_prompt_pair(titled_pair)["negative_prompt_id"]
+        self.state(titled, "A titled parent")  # zero pairs of its own: counted
+        legacy = self.save("Legacy")
+        self.db.link_image_to_prompt(legacy, str(Path(self.temp.name) / "a.png"))
+        self.db.link_image_to_prompt(legacy, str(Path(self.temp.name) / "b.png"))
+        counts = self.db.library_counts()
+        # Cat, Dog, the titled negative and Legacy; "Blur" and "Noise" are
+        # negative-only.
+        self.assertEqual(counts["positive_prompts"], 4)
+        # Cat+Blur and Dog+Titled negative; the archived pair is excluded.
+        self.assertEqual(counts["negative_variants"], 2)
+        self.assertEqual(counts["images"], 2)
+        listed = self.db.list_library()
+        self.assertEqual(counts["positive_prompts"], listed["total"])
+        self.assertEqual(counts["negative_variants"], listed["variant_total"])
+
+    def test_counts_of_an_empty_library_are_zero(self):
+        self.assertEqual(
+            self.db.library_counts(),
+            {"positive_prompts": 0, "negative_variants": 0, "images": 0},
+        )
+
+    def test_statistics_sum_real_run_counts(self):
+        a = self.save("Alpha", category="Landscapes", rating=5)
+        b = self.save("Beta", category="Landscapes", rating=4)
+        self.save("Gamma", category="Landscapes")  # unrated: not in the average
+        c = self.save("Delta", category="Portraits", rating=3)
+        blank = self.save("Epsilon", category="  ")
+        uncategorised = self.save("Zeta")
+        self.db.record_prompt_use(a, times=3)
+        self.db.record_prompt_use(b, times=2)
+        self.db.record_prompt_use(c)
+        self.db.record_prompt_use(blank)
+        self.db.record_prompt_use(uncategorised, times=4)
+        # A negative-only prompt's runs are the pair's runs: never counted twice.
+        pair = self.db.save_prompt_pair("Alpha", "Only negative")
+        negative = self.db.get_prompt_pair(pair)["negative_prompt_id"]
+        with self.db.model.get_connection() as connection:
+            connection.execute(
+                "UPDATE prompts SET category='Landscapes',run_count=50 WHERE id=?",
+                (negative,),
+            )
+        rows = self.db.usage_by_category()
+        self.assertEqual(
+            rows,
+            [
+                {"category": "Landscapes", "runs": 5, "average_rating": 4.5},
+                {"category": None, "runs": 5, "average_rating": None},
+                {"category": "Portraits", "runs": 1, "average_rating": 3.0},
+            ],
+        )
+
+    def test_counts_and_usage_write_nothing(self):
+        self.save("Alpha", category="A")
+        with self.db.model.get_connection() as connection:
+            before = connection.total_changes
+        self.db.library_counts()
+        self.db.usage_by_category()
+        with self.db.model.get_connection() as connection:
+            self.assertEqual(connection.total_changes, before)
+            self.assertFalse(connection.in_transaction)
+
+
 class DisplayTitleUnits(unittest.TestCase):
     """The first-line title is cut like the Library's JavaScript title()."""
 
