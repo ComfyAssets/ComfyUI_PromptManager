@@ -6,6 +6,7 @@ from pathlib import Path
 from aiohttp import web
 
 from ..config_store import ConfigUnreadable, RevisionConflict, get_config_store
+from .jobs import LORA_IMPORT_JOB_KIND, JobBusy
 
 # Flags of POST /lora/enable; each must be a JSON boolean when present.
 _LORA_FLAGS = ("enabled", "trigger_words_enabled", "clear_civitai_api_key")
@@ -273,19 +274,38 @@ class LoraIntegrationMixin:
                 reason="OK",
                 headers={"Content-Type": "text/event-stream"},
             )
-            await response.prepare(request)
 
             async def send_progress(data):
                 line = f"data: {json.dumps(data)}\n\n"
                 await response.write(line.encode("utf-8"))
 
+            # The import replaces prompts and images: a records hold, so it
+            # never runs beside a scan, restore or tagging job.
             try:
-                await self._lora_scan_stream(allowed, send_progress)
-            except Exception as e:
-                self.logger.exception("LoRA scan failed")
-                await send_progress({"type": "error", "message": self._public_error(e)})
+                held = self._jobs.hold(
+                    LORA_IMPORT_JOB_KIND,
+                    "LoRA import (admin page)",
+                    admission="records",
+                )
+            except JobBusy as busy:
+                await response.prepare(request)
+                message = f"{busy.running.title} already running"
+                await send_progress({"type": "error", "message": message})
+                await response.write_eof()
+                return response
 
-            await response.write_eof()
+            async with held as job:
+                await response.prepare(request)
+                try:
+                    await self._lora_scan_stream(allowed, send_progress)
+                except Exception as e:
+                    self.logger.exception("LoRA scan failed")
+                    job.finish("failed")
+                    await send_progress(
+                        {"type": "error", "message": self._public_error(e)}
+                    )
+
+                await response.write_eof()
             return response
 
         except Exception as e:

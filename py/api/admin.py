@@ -22,6 +22,9 @@ from .jobs import (
     SCAN_GROUP_NAMES,
     SCAN_GROUPS,
     SCAN_SCOPES,
+    DUPLICATE_CLEANUP_JOB_KIND,
+    MAINTENANCE_JOB_KIND,
+    RESTORE_JOB_KIND,
     Job,
     JobBusy,
 )
@@ -696,7 +699,15 @@ class AdminRoutesMixin:
             job.finish()
 
     async def cleanup_duplicates_endpoint(self, request):
-        """Cleanup duplicate prompts endpoint."""
+        """Cleanup duplicate prompts endpoint (holds the registry: records)."""
+        return await self._run_held(
+            MAINTENANCE_JOB_KIND,
+            "Prompt cleanup (admin page)",
+            "records",
+            self._cleanup_duplicates,
+        )
+
+    async def _cleanup_duplicates(self):
         try:
             removed_count = await self._run_in_executor(self.db.cleanup_duplicates)
 
@@ -811,12 +822,26 @@ class AdminRoutesMixin:
         return hash_sha256.hexdigest()
 
     async def delete_duplicate_images_endpoint(self, request):
-        """Delete duplicate image files from disk (single flight with the scan)."""
-        job = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
-        if job is None:
+        """Delete duplicate image files from disk.
+
+        Single flight with the duplicate scan, and a records hold on the
+        registry, so no scan, restore or tagging job runs meanwhile.
+        """
+        guard = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
+        if guard is None:
             return self._long_job_busy_response("Duplicate scan or delete")
-        async with job:
-            return await self._delete_duplicate_images(request)
+
+        async def delete():
+            # No await since the check above: the lock is still free.
+            async with guard:
+                return await self._delete_duplicate_images(request)
+
+        return await self._run_held(
+            DUPLICATE_CLEANUP_JOB_KIND,
+            "Duplicate image delete (gallery page)",
+            "records",
+            delete,
+        )
 
     async def _delete_duplicate_images(self, request):
         try:
@@ -1268,6 +1293,11 @@ class AdminRoutesMixin:
         "vacuum",
         "cleanup_orphaned_images",
     )
+    # Operations that only read; a run of only these holds the registry as
+    # "read", every other run as "records".
+    READ_ONLY_MAINTENANCE_OPERATIONS = frozenset(
+        {"check_hash_duplicates", "statistics", "check_consistency"}
+    )
 
     async def run_maintenance(self, request):
         """Perform database maintenance operations and report each outcome."""
@@ -1280,7 +1310,27 @@ class AdminRoutesMixin:
             operations = data.get(
                 "operations", list(self.DEFAULT_MAINTENANCE_OPERATIONS)
             )
+        except Exception as e:
+            self.logger.error(f"Maintenance error: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "error": "Maintenance failed"}, status=500
+            )
+        writes = not (
+            isinstance(operations, list)
+            and all(
+                isinstance(name, str) and name in self.READ_ONLY_MAINTENANCE_OPERATIONS
+                for name in operations
+            )
+        )
+        return await self._run_held(
+            MAINTENANCE_JOB_KIND,
+            "Maintenance (admin page)",
+            "records" if writes else "read",
+            lambda: self._run_maintenance(operations),
+        )
 
+    async def _run_maintenance(self, operations):
+        try:
             results = await self._run_in_executor(
                 self._run_maintenance_operations, operations
             )
@@ -1434,8 +1484,18 @@ class AdminRoutesMixin:
 
         The upload is streamed to a temp file (capped at restore_max_bytes),
         verified with PromptModel.verify_database_file and only then copied
-        over the live database, which is backed up first.
+        over the live database, which is backed up first. The whole request
+        holds the registry (records): it is refused while a scan or another
+        record-changing job runs, and those are refused while it runs.
         """
+        return await self._run_held(
+            RESTORE_JOB_KIND,
+            "Database restore (admin page)",
+            "records",
+            lambda: self._restore_database(request),
+        )
+
+    async def _restore_database(self, request):
         max_bytes = getattr(self, "restore_max_bytes", 100 * 1024 * 1024)
         temp_path = None
         try:

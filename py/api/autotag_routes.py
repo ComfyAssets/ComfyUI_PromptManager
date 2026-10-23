@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
+from .jobs import AUTOTAG_BATCH_JOB_KIND, JobBusy
 from .prompts import thumbnail_url_for
 from .. import model_gate
 
@@ -440,6 +441,27 @@ class AutotagRoutesMixin:
                     "message": _INTERNAL_ERROR,
                 }
 
+        # The batch writes prompt tags: a records hold on the registry, so it
+        # never runs beside a scan, restore or the workspace tagging job.
+        try:
+            held = self._jobs.hold(
+                AUTOTAG_BATCH_JOB_KIND,
+                "Auto-tag images (legacy page)",
+                admission="records",
+            )
+        except JobBusy as busy:
+            if busy.running.kind == AUTOTAG_BATCH_JOB_KIND:  # unchanged payload
+                return web.json_response(
+                    {"success": False, "error": _BUSY_ERROR}, status=409
+                )
+            return self._long_job_busy_response(busy.running.title)
+        async with held as job:
+            response = await self._start_autotag_batch(request, opts, events)
+            if response.status >= 400:
+                job.finish("failed")
+            return response
+
+    async def _start_autotag_batch(self, request, opts, events):
         if not _autotag_batch_lock.acquire(blocking=False):
             return web.json_response(
                 {"success": False, "error": _BUSY_ERROR}, status=409

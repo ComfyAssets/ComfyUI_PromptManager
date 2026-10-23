@@ -34,7 +34,7 @@ from .images import ImageRoutesMixin
 from .admin import AdminRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
-from .jobs import JobRegistry
+from .jobs import JobBusy, JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
 from .lora_integration import LoraIntegrationMixin
@@ -360,6 +360,25 @@ class PromptManagerAPI(
     def _long_job_busy_response(label):
         """409 envelope for a long job that is already running."""
         return _json_error(f"{label} already running", 409)
+
+    async def _run_held(self, kind, title, admission, operation):
+        """Run a legacy-page operation under a registry hold (D80).
+
+        While ``operation()`` runs, the registry lists it as a running,
+        non-cancellable job, so workspace jobs its admission class conflicts
+        with are refused, naming it. When the registry refuses the hold, the
+        legacy 409 envelope names the running job and nothing is done. A
+        response of 400 or above ends the hold ``failed``.
+        """
+        try:
+            held = self._jobs.hold(kind, title, admission=admission)
+        except JobBusy as busy:
+            return self._long_job_busy_response(busy.running.title)
+        async with held as job:
+            response = await operation()
+            if getattr(response, "status", 200) >= 400:
+                job.finish("failed")
+            return response
 
     async def _run_in_executor(self, func, *args, **kwargs):
         """Run a blocking function in the default thread pool executor.

@@ -19,6 +19,7 @@ from typing import Callable, NamedTuple
 from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
+from .jobs import THUMBNAILS_JOB_KIND, JobBusy
 from .prompts import bad_request, parse_page_params, publish_image_paths
 from .prompts import thumbnail_url_for
 from .prompts import safe_error_message as _safe_error
@@ -102,6 +103,10 @@ def _card_header(path: Path) -> tuple:
         return width, height, None
     records = {k: inspection.metadata.get(k) for k in _CARD_RECORDS}
     return inspection.width, inspection.height, records
+
+
+# The legacy gallery page's thumbnail generation, as Activity lists it (D80).
+THUMBNAIL_GENERATION_TITLE = "Thumbnail generation (gallery page)"
 
 
 class _CardFacts(NamedTuple):
@@ -1736,7 +1741,19 @@ class ImageRoutesMixin:
         return cls.THUMBNAIL_SIZES.get(quality, cls.THUMBNAIL_SIZES["medium"])
 
     async def generate_thumbnails(self, request):
-        """Generate every thumbnail in one executor job (POST, blocking)."""
+        """Generate every thumbnail in one executor job (POST, blocking).
+
+        Holds the registry as guarded work: refused while a record-changing
+        job runs, and such jobs are refused while it runs.
+        """
+        return await self._run_held(
+            THUMBNAILS_JOB_KIND,
+            THUMBNAIL_GENERATION_TITLE,
+            "guarded",
+            lambda: self._generate_thumbnails(request),
+        )
+
+    async def _generate_thumbnails(self, request):
         try:
             data, error = await _json_body_or_error(request)
             if error is not None:
@@ -1935,14 +1952,31 @@ class ImageRoutesMixin:
                 "Connection": "keep-alive",
             },
         )
-        await response.prepare(request)
+        try:
+            held = self._jobs.hold(
+                THUMBNAILS_JOB_KIND, THUMBNAIL_GENERATION_TITLE, admission="guarded"
+            )
+        except JobBusy as busy:
+            # The gallery reads this stream: refuse with its error event.
+            await response.prepare(request)
+            message = f"{busy.running.title} already running"
+            await self._emit_sse(
+                response, "error", {"error": message, "message": message}
+            )
+            return response
+        async with held:
+            await response.prepare(request)
+            await self._thumbnail_progress_stream(response, thumbnail_size)
+        return response
+
+    async def _thumbnail_progress_stream(self, response, thumbnail_size):
         try:
             output_dirs = self._get_all_output_dirs()
             if not output_dirs:
                 await self._emit_sse(
                     response, "error", {"error": "ComfyUI output directory not found"}
                 )
-                return response
+                return
 
             await self._emit_sse(
                 response,
@@ -1970,7 +2004,6 @@ class ImageRoutesMixin:
                     "message": "Thumbnail generation failed. Check server logs.",
                 },
             )
-        return response
 
     async def _stream_thumbnails(
         self, response, targets, thumbnail_size, skipped=0, remaining=0
@@ -2179,8 +2212,17 @@ class ImageRoutesMixin:
         """Clear generated thumbnails across gallery roots, preserving originals.
 
         Invalid thumbnail directories return 400; unavailable gallery roots
-        return 404, and unexpected filesystem failures return 500.
+        return 404, and unexpected filesystem failures return 500. Holds the
+        registry as guarded work, like generation.
         """
+        return await self._run_held(
+            THUMBNAILS_JOB_KIND,
+            "Thumbnail clear (gallery page)",
+            "guarded",
+            self._clear_thumbnails,
+        )
+
+    async def _clear_thumbnails(self) -> web.Response:
         try:
             output_dirs = self._get_all_output_dirs()
             if not output_dirs:
