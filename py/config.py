@@ -31,7 +31,6 @@ routes = server_instance.routes
 extension_uri = None  # Will be set in __init__.py
 
 import os  # noqa: E402
-from pathlib import Path  # noqa: E402
 from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
 # Import logging system
@@ -50,6 +49,14 @@ config_logger = get_logger("prompt_manager.config")
 # Environment variable listing extra directories (os.pathsep-separated) that
 # may be used as gallery roots in addition to ComfyUI's own directories.
 EXTRA_GALLERY_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
+
+# The one answer for every path outside the allowed folders. The filesystem
+# root and the home directory answer it too, so no caller learns the server's
+# layout (home path, user name) from a refusal (#249 S4).
+OUTSIDE_ALLOWED_REASON = (
+    "Gallery root must be inside a ComfyUI directory (output, input, temp, user) "
+    f"or one listed in {EXTRA_GALLERY_ROOTS_ENV}"
+)
 
 # Environment variable overriding where config.json is read from and saved to.
 CONFIG_PATH_ENV = "PROMPT_MANAGER_CONFIG_PATH"
@@ -87,6 +94,29 @@ def write_private_json(path: str, data: Any) -> None:
         json.dump(data, f, indent=2)
     if os.name == "posix":
         os.chmod(path, 0o600)
+
+
+def _lexical_path(path: str) -> str:
+    """``path`` normalised for comparison without touching the filesystem.
+
+    normpath collapses ``.`` and ``..`` as text and normcase folds case on
+    Windows; neither opens, stats nor resolves anything (no SMB request for a
+    UNC path). A symlink is only seen by :func:`_canonical_path` later.
+    """
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _lexically_inside(path: str, parents: List[str]) -> bool:
+    """Whether the normalised ``path`` is one of ``parents`` or below one.
+
+    Pure text on normalised spellings (:func:`_lexical_path` or
+    :func:`_canonical_path`): no filesystem access.
+    """
+    sep = os.path.sep
+    return any(
+        path == parent or path.startswith(parent.rstrip(sep) + sep)
+        for parent in parents
+    )
 
 
 def _is_filesystem_root(path: str) -> bool:
@@ -268,7 +298,12 @@ class GalleryConfig:
         """
         monitoring = new_config.get("monitoring", {})
         if "enabled" in monitoring:
-            cls.MONITORING_ENABLED = monitoring["enabled"]
+            if isinstance(monitoring["enabled"], bool):
+                cls.MONITORING_ENABLED = monitoring["enabled"]
+            else:  # a hand-edited "false" would otherwise switch it on
+                config_logger.warning(
+                    "Ignoring gallery monitoring enabled: expected true or false"
+                )
         if "directories" in monitoring:
             directories = cls._validated_directories(monitoring["directories"])
             if directories is not None:
@@ -337,31 +372,56 @@ class GalleryConfig:
         Filesystem roots are never allowed as parents, even when listed in
         the environment, because that would re-open the whole disk.
         """
-        parents = []
+        return [canonical for canonical, _spelling in cls._allowed_parent_pairs()]
+
+    @classmethod
+    def _allowed_parent_pairs(cls) -> List[Tuple[str, str]]:
+        """``(canonical, lexical spelling)`` of each allowed parent.
+
+        Only trusted directories (ComfyUI's own and the environment's) are
+        resolved here; the spelling is how ComfyUI or the environment wrote
+        the directory, so a submitted path can be compared without resolving it.
+        """
+        pairs = []
+        seen = set()
         for candidate in _comfyui_directories() + _extra_gallery_roots():
             try:
                 canonical = _canonical_path(candidate)
+                spelling = _lexical_path(os.path.abspath(candidate))
             except (OSError, ValueError):
                 continue
             if _is_filesystem_root(canonical) or not os.path.isdir(canonical):
                 continue
-            if canonical not in parents:
-                parents.append(canonical)
-        return parents
+            if canonical not in seen:
+                seen.add(canonical)
+                pairs.append((canonical, spelling))
+        return pairs
 
     @classmethod
     def path_anchors(cls) -> List[str]:
         """Canonical directories that relative gallery paths are resolved against.
 
         The ComfyUI base directory comes first, followed by the parent of each
-        directory listed in PROMPT_MANAGER_EXTRA_GALLERY_ROOTS, so an extra
-        root is addressed by its own name (``gallery/sub``) rather than by an
-        absolute path. The same anchors drive the public (relative) form of
-        paths in API responses.
+        ComfyUI directory outside it (``--output-directory D:\\Renders``) and of
+        each directory listed in PROMPT_MANAGER_EXTRA_GALLERY_ROOTS, so such a
+        directory is addressed by its own name (``Renders/sub``) rather than by
+        an absolute path, and two folders of one name stay apart. The same
+        anchors drive the public (relative) form of paths in API responses.
         """
         anchors = []
         base = _comfyui_base_directory()
         candidates = [base] if base else []
+        try:
+            base_key = _canonical_path(base) if base else None
+        except (OSError, ValueError):
+            base_key = None
+        for directory in _comfyui_directories():
+            try:
+                canonical = _canonical_path(directory)
+            except (OSError, ValueError):
+                continue
+            if base_key is None or not _lexically_inside(canonical, [base_key]):
+                candidates.append(os.path.dirname(canonical))
         candidates.extend(os.path.dirname(root) for root in _extra_gallery_roots())
         for candidate in candidates:
             try:
@@ -399,33 +459,69 @@ class GalleryConfig:
             (True, "") when the directory lies inside one of
             :meth:`allowed_gallery_parents`; otherwise (False, reason).
         """
+        code, reason = cls.gallery_root_problem(path)
+        return code is None, reason
+
+    @classmethod
+    def gallery_root_problem(cls, path: Any) -> Tuple[Optional[str], str]:
+        """``(code, reason)`` why ``path`` may not be a gallery root, else (None, "").
+
+        Codes: ``empty``, ``unresolvable``, ``outside-allowed``, ``not-found``
+        and ``not-directory``. No reason names the path.
+
+        Containment is decided twice. First lexically, with no filesystem
+        access at all: a path (UNC, ``\\\\?\\``, a device, anything) whose
+        normalised spelling lies outside every allowed parent answers
+        ``outside-allowed`` before it is resolved, so the server never opens
+        or stats it (no SMB connection, no existence or timing oracle). Only
+        then is it resolved and checked again, which catches a symlink out.
+        The filesystem root and the home directory answer ``outside-allowed``
+        too: one answer for every caller (validate-source, the settings save,
+        config.json), and the detail goes to the log only.
+        """
         if not isinstance(path, str) or not path.strip():
-            return False, "Gallery root must be a non-empty path"
+            return "empty", "Gallery root must be a non-empty path"
+
+        pairs = cls._allowed_parent_pairs()
+        spellings = [spelling for pair in pairs for spelling in pair]
+        try:
+            lexical = cls._lexical_candidates(path)
+        except (TypeError, ValueError):
+            return "unresolvable", "Gallery root could not be resolved"
+        if not any(_lexically_inside(candidate, spellings) for candidate in lexical):
+            return "outside-allowed", OUTSIDE_ALLOWED_REASON
 
         try:
             canonical = cls.resolve_gallery_root(path)
         except (OSError, ValueError):
-            return False, "Gallery root could not be resolved"
+            return "unresolvable", "Gallery root could not be resolved"
 
         if _is_filesystem_root(canonical):
-            return False, "Gallery root cannot be a filesystem root"
+            config_logger.info("Gallery root refused: a filesystem root")
+            return "outside-allowed", OUTSIDE_ALLOWED_REASON
         if canonical == _canonical_path(os.path.expanduser("~")):
-            return False, "Gallery root cannot be the home directory"
+            config_logger.info("Gallery root refused: the home directory")
+            return "outside-allowed", OUTSIDE_ALLOWED_REASON
+        if not _lexically_inside(canonical, [canonical for canonical, _ in pairs]):
+            return "outside-allowed", OUTSIDE_ALLOWED_REASON
         if not os.path.exists(canonical):
-            return False, "Gallery root does not exist"
+            return "not-found", "Gallery root does not exist"
         if not os.path.isdir(canonical):
-            return False, "Gallery root is not a directory"
+            return "not-directory", "Gallery root is not a directory"
+        return None, ""
 
-        candidate = Path(canonical)
-        for parent in cls.allowed_gallery_parents():
-            if candidate.is_relative_to(Path(parent)):
-                return True, ""
+    @classmethod
+    def _lexical_candidates(cls, path: str) -> List[str]:
+        """Every spelling ``path`` may resolve to, normalised as text (no IO).
 
-        return (
-            False,
-            "Gallery root must be inside a ComfyUI directory "
-            f"(output, input, temp, user) or one listed in {EXTRA_GALLERY_ROOTS_ENV}",
-        )
+        An absolute path is itself; a relative one is joined to each
+        :meth:`path_anchors` entry, as :meth:`resolve_gallery_root` tries them.
+        """
+        path = path.strip()
+        if os.path.isabs(path):
+            return [_lexical_path(path)]
+        anchors = cls.path_anchors()
+        return [_lexical_path(os.path.join(anchor, path)) for anchor in anchors]
 
 
 class IntegrationConfig:

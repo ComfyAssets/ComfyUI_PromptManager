@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 from contextlib import closing
 import datetime
+import functools
 import hashlib
 import json
 import math
@@ -1370,28 +1371,34 @@ class AdminRoutesMixin:
             }
         )
 
-    def _start_scan_job(self, files=DEFAULT_SCAN_SCOPE):
+    def _start_scan_job(self, files=DEFAULT_SCAN_SCOPE, roots=None, output_dirs=None):
         """Register the scan job synchronously; its runner starts on the loop.
 
-        ``files`` is the scope (``SCAN_SCOPES``). Raises JobBusy while another
-        record-changing job runs.
+        ``files`` is the scope (``SCAN_SCOPES``). ``roots`` selects sources by
+        their index in ``output_dirs`` (the effective sources the caller
+        resolved); None scans every source, resolved when the job starts.
+        Raises JobBusy while another record-changing job runs.
         """
         if files not in SCAN_SCOPES:
             raise ValueError(f"Unknown scan scope: {files!r}")
+        if roots is not None and (
+            output_dirs is None or not roots or max(roots) >= len(output_dirs)
+        ):
+            raise ValueError("A scoped scan needs the sources its roots index")
         job = self._jobs.start(
             SCAN_JOB_KIND,
             SCAN_JOB_TITLE,
             record_changing=True,
-            scope={"files": files},
-            runner=self._run_scan_job,
+            scope={"files": files, "roots": None if roots is None else list(roots)},
+            runner=functools.partial(self._run_scan_job, output_dirs=output_dirs),
             groups=SCAN_GROUP_NAMES,
         )
         self._scan_job = job
         return job
 
-    async def _run_scan_job(self, job):
+    async def _run_scan_job(self, job, output_dirs=None):
         final = None
-        async for payload in self._scan_images_events(job):
+        async for payload in self._scan_images_events(job, output_dirs):
             job.publish(payload)
             final = payload.get("type")
         state = SCAN_FINAL_STATES.get(final, "finished")
@@ -1426,16 +1433,25 @@ class AdminRoutesMixin:
             )
         return response
 
-    async def _scan_images_events(self, job):
-        """Yield progress payloads while scanning every configured output directory.
+    async def _scan_images_events(self, job, output_dirs=None):
+        """Yield progress payloads while scanning the output directories.
 
-        The payloads are the legacy SSE events, unchanged; ``job`` also gets
-        its status line, totals and one outcome per processed file.
+        Every effective source is walked, or only those ``job.scope["roots"]``
+        selects (indexes into ``output_dirs``). The payloads are the legacy SSE
+        events, unchanged; ``job`` also gets its status line, totals and one
+        outcome per processed file. Rows keep each source's listing index.
         """
         try:
             self.logger.info("Starting image scan operation")
-            output_dirs = self._get_all_output_dirs()
-            if not output_dirs:
+            if output_dirs is None:
+                output_dirs = self._get_all_output_dirs()
+            selected = job.scope.get("roots")
+            walked = (
+                output_dirs
+                if selected is None
+                else [output_dirs[index] for index in selected]
+            )
+            if not walked:
                 self.logger.error("No output directories found")
                 message = (
                     "No output directories found. "
@@ -1445,18 +1461,18 @@ class AdminRoutesMixin:
                 yield {"type": "error", "message": message}
                 return
 
-            dir_names = [self._public_path(d) for d in output_dirs]
-            folders = _plural(len(output_dirs), "output folder")
-            job.scope["output_folders"] = len(output_dirs)
+            dir_names = [self._public_path(d) for d in walked]
+            folders = _plural(len(walked), "output folder")
+            job.scope["output_folders"] = len(walked)
             scope = SCAN_SCOPE_LOG[job.scope.get("files", "all")]
             job.log_line(f"Scan started · {folders} · {scope}")
             job.update(status_line=f"Looking for media files in {folders}")
             yield self._scan_progress(
-                0, f"Scanning {len(output_dirs)} directory(ies) for media files..."
+                0, f"Scanning {len(walked)} directory(ies) for media files..."
             )
 
             media_files = await self._run_in_executor(
-                self._collect_output_media_sync, output_dirs
+                self._collect_output_media_sync, walked
             )
             counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
             job.update(

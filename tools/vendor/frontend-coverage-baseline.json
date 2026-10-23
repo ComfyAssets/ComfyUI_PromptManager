@@ -7,7 +7,7 @@
   },
   "api-client.js": {
     "lines": 98,
-    "branches": 95,
+    "branches": 96,
     "functions": 98,
     "statements": 98
   },
@@ -163,7 +163,7 @@
   },
   "workspace/activity-scan.mjs": {
     "lines": 96,
-    "branches": 73,
+    "branches": 78,
     "functions": 98,
     "statements": 96
   },
@@ -485,6 +485,12 @@
     "functions": 98,
     "statements": 96
   },
+  "workspace/system-sources.mjs": {
+    "lines": 98,
+    "branches": 88,
+    "functions": 95,
+    "statements": 98
+  },
   "workspace/system-state.mjs": {
     "lines": 98,
     "branches": 94,
@@ -494,7 +500,7 @@
   "workspace/system.mjs": {
     "lines": 98,
     "branches": 92,
-    "functions": 85,
+    "functions": 86,
     "statements": 98
   },
   "workspace/theme.mjs": {

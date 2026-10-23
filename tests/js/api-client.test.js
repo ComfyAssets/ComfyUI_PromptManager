@@ -355,3 +355,20 @@ test("keepalive is forwarded only when asked, so a request can outlive its page"
     for (const call of fetch.calls) call.resolve(jsonResponse(200, { success: true }));
     await Promise.all(writes);
 });
+
+test("ApiError keeps a validated running job on busy and a validated source on invalid-source", () => {
+    const body = { running: { id: "a".repeat(32), title: "Scan for metadata" }, source: "output/gone" };
+    const busy = new ApiError(409, "busy", "busy", null, body);
+    assert.deepEqual([busy.running, busy.source], [{ id: "a".repeat(32), title: "Scan for metadata" }, null]);
+    assert.notEqual(busy.running, body.running, "server objects must be copied");
+    const invalid = new ApiError(400, "refused", "invalid-source", null, body);
+    assert.deepEqual([invalid.running, invalid.source], [null, "output/gone"]);
+    for (const running of [null, "x", { id: 1, title: "t" }, { id: "a b", title: "t" }, { id: "a", title: "" },
+        { id: "a", title: "x".repeat(201) }, { id: "a".repeat(65), title: "t" }]) {
+        assert.equal(new ApiError(409, "busy", "busy", null, { running }).running, null);
+    }
+    for (const source of [null, 7, "", "x".repeat(4097)]) {
+        assert.equal(new ApiError(400, "refused", "invalid-source", null, { source }).source, null);
+    }
+    assert.deepEqual([new ApiError(409, "old caller").running, new ApiError(409, "old caller").source], [null, null]);
+});
