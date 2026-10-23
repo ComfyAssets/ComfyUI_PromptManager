@@ -211,6 +211,28 @@ def _time_left(done, total, batches, elapsed):
     return f" · about {minutes} min left"
 
 
+def new_review_counts():
+    """The scan's Needs review tally: ``added`` new items, ``queued`` files
+    in the queue after this scan (new or already there), ``settled`` items
+    removed because their file is linked now, and ``errors``."""
+    return {"added": 0, "queued": 0, "settled": 0, "errors": 0}
+
+
+def _review_scope(review):
+    """The scan job's ``scope`` keys for its Needs review tally.
+
+    ``review_items`` is the number of this scan's files that are in the
+    pending queue after it: the review group's ambiguous files, less those a
+    capture could not read or a decision already settled.
+    """
+    return {
+        "review_items": review["queued"],
+        "review_added": review["added"],
+        "review_settled": review["settled"],
+        "review_errors": review["errors"],
+    }
+
+
 def _scan_status_line(done, total, batches, elapsed):
     """ "Processing file N of M", with an estimate once enough batches ran."""
     line = f"Processing file {done:,} of {total:,}"
@@ -1445,8 +1467,8 @@ class AdminRoutesMixin:
             known = set()
             if media_files and job.scope.get("files") != "all":
                 known = await self._known_scan_files(job, media_files)
-            review = {"recorded": 0, "errors": 0}
-            job.scope.update(review_items=0, review_errors=0)
+            review = new_review_counts()
+            job.scope.update(_review_scope(review))
             async for event in self._scan_batches(
                 media_files, counts, job, roots, known, review
             ):
@@ -1524,11 +1546,12 @@ class AdminRoutesMixin:
                 )
                 for key in counts:
                     counts[key] += batch_counts[key]
-                if review is not None:
-                    job.scope.update(
-                        review_items=review["recorded"],
-                        review_errors=review["errors"],
-                    )
+            if review is not None:
+                # After the batch's links: a file linked now leaves the queue.
+                await self._run_in_executor(
+                    self._settle_scanned_reviews, batch, roots, review
+                )
+                job.scope.update(_review_scope(review))
             for group, row, log_line in outcomes:
                 job.record(group, row, log_line)
 
@@ -1585,10 +1608,11 @@ class AdminRoutesMixin:
 
         Returns the legacy counts. When ``outcomes`` is a list, every processed
         file appends its ``(group, row, log_line)`` for the scan job, with the
-        path relative to its root in ``roots`` (see ``_scan_roots``). A file the
-        resolver finds ambiguous is also recorded for Needs review (best
-        effort, counted in ``review`` when given); statuses and counts do not
-        depend on it.
+        path relative to its root in ``roots`` (see ``_scan_roots``). A file
+        whose final outcome is ambiguous and unlinked (the resolver found it
+        ambiguous and the fallback did not link it) is recorded for Needs
+        review (best effort, counted in ``review`` when given); one a saved
+        row already links is reported ``unchanged`` and never queued.
         """
         counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
 
@@ -1610,8 +1634,11 @@ class AdminRoutesMixin:
                 counts["failed"] += 1
                 note(media_file, "error")
                 continue
-            if ambiguous:
-                self._record_scanned_review(media_file, roots, review)
+            if ambiguous and outcome == "ambiguous":
+                if self._review_file_linked(media_file, roots):
+                    outcome = "unchanged"  # already linked: not a review case
+                else:
+                    self._record_scanned_review(media_file, roots, review)
             if outcome is None:
                 note(media_file, None)
                 continue
@@ -1655,7 +1682,8 @@ class AdminRoutesMixin:
         ``status``, the prompt's display ``title`` and, for a resolved pair,
         the pair counts. When the resolver finds the file ambiguous (whether
         or not the browser parser then links it) and ``ambiguous`` is a list,
-        ``media_file`` is appended to it.
+        ``media_file`` is appended to it; only a file that then returns
+        ``"ambiguous"`` (nothing linked it) is a Needs review case.
         """
         if not metadata:
             return None

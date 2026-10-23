@@ -75,8 +75,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self.prompt_tracker = prompt_tracker
         self.metadata_extractor = ComfyUIMetadataExtractor()
         self.logger = get_logger("prompt_manager.image_monitor")
-        # Needs review recording for ambiguous outputs (the API's
-        # ``record_review_file``, wired at start-up); None records nothing.
+        # The Needs review pass for ambiguous outputs (the API's
+        # ``record_review_file``, wired at start-up): a linked output is
+        # never queued and its pending items leave the queue. None: no pass.
         self.review_recorder: Optional[Callable[[str], str]] = None
 
         # Read from GalleryConfig if available, otherwise use defaults
@@ -587,10 +588,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self._record_review(image_path)
 
     def _record_review(self, image_path: str) -> None:
-        """Queue an ambiguous output for Needs review, best effort.
+        """The Needs review pass for an ambiguous output, best effort.
 
-        The fallback link above stays whatever happens here: a failure is
-        logged, never raised.
+        The output is linked by now, so it is never queued; a pending item
+        an earlier scan left for its path leaves the queue. The link above
+        stays whatever happens here: a failure is logged, never raised.
         """
         recorder = getattr(self, "review_recorder", None)
         if recorder is None:

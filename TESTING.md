@@ -2213,10 +2213,24 @@ validation, annotation group included. The browser fixtures clear
 never the metadata row.
 
 Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
-`tests/test_review.py`): the output scan (Activity's Scan for metadata and the
-legacy `/scan`) and the live monitor hand every file the ingestion resolver
-finds `ambiguous` to `record_ambiguous_file`, whether or not the browser parser
-then links it (`conflict` and `unresolved` files are not queued). It captures
+`tests/test_review.py`, `tests/test_review_outcome.py`): a file is queued only
+when its final outcome is ambiguous and unlinked. The output scan (Activity's
+Scan for metadata and the legacy `/scan`) hands `record_ambiguous_file` a file
+the ingestion resolver finds `ambiguous` only when the browser-parser fallback
+then links nothing (status `ambiguous`) and no saved row links the file
+already; an ambiguous file a saved row links is reported `unchanged` ("Already
+linked to its prompt"), not Needs review. A file the fallback links, an exact
+pair the ingester stores, and `conflict` and `unresolved` files are not
+queued. The queue heals itself: after each batch, the scan removes the pending
+items of every listed file (read or skipped as known) that a saved row now
+links, and the monitor does the same for each ambiguous output it links
+(`settle_linked_review_items`; the review index revision moves). Only an
+undecided item goes (`pending`, revision 0, no decision row): a decision is
+never deleted or changed, so no schema state was added. The monitor never
+queues an output it linked; an unlinked file passed to `record_review_file`
+follows the scan's rule (a file the fallback would link is `skipped`). The
+maintainer's live check of #284/#288 found the queue at 10,232 against a review
+group of 4,677: every fallback-linked ambiguous file had been queued. It captures
 the file (scope `needs-review`), reads its metadata again from the capture,
 resolves it with the default profile and stores only an ambiguous result,
 bound to the capture's byte record (created or refreshed like an observe) and
@@ -2230,14 +2244,20 @@ resolver_version, evidence_hash)` and never touches an existing item or its
 decisions; changed bytes add a new pending item and keep the old one. The
 capture is released before the write; no model is loaded and no pixel is
 decoded. Scan statuses, counters, outcome rows and the legacy SSE events are
-unchanged; the job's `scope` gains `review_items` (new items) and
-`review_errors`, and the log ends with `? N images added to Needs review` (and
-`! N images could not be added to Needs review` on failures, e.g. capture
-capacity). Recording captures in the background: it never takes the store's
+unchanged apart from the already-linked case above; the job's `scope` gains
+`review_items` (this scan's files that are in the pending queue after it, new
+or already there: the review group's ambiguous rows, less files a capture could
+not read or a decision already settled), `review_added` (new items),
+`review_settled` (items removed because their file is linked now) and
+`review_errors`. The log ends with `? N images added to Needs review`,
+`? N images already in Needs review`, `= N images left Needs review · now
+linked` and `! N images could not be added to Needs review` (failures, e.g.
+capture capacity), each only when N > 0. Recording captures in the background: it never takes the store's
 last worker or capture slot, which stay free for an interactive Tag dialog or
 Apply, and waits up to 2 s for room before counting the file as not added
-(`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor records after its fallback link, best effort: a failure
-is logged and the link stays. Recording follows the registry's `records`
+(`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor's
+pass runs after its own link, best effort: a failure is logged and the link
+stays. Recording follows the registry's `records`
 admission (#289): the scan's recording runs under its own `records` job, and
 the monitor's (one file, not a job) is refused while a `records` or `guarded`
 job or hold runs. It then records nothing, logs that the file waits for the
