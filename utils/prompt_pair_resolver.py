@@ -194,6 +194,11 @@ MULTISTAGE_UNATTRIBUTED_REASON = "Multistage sampler ancestry is ambiguous"
 # A later stage's positive combines the earlier stages' shared prompt with more
 # conditioning (a style trigger): that shared pair is the run's prompt (floor).
 ADDED_CONDITIONING_REASON = "A later stage adds conditioning to the base prompt"
+# Maintainer option A (2026-10-23): a PromptManager prepend or append fed
+# directly by a run-time node (LoRA trigger words) is left out, never guessed;
+# the text is the node's own, labelled by this source and reason (D-NEW-R1).
+RUNTIME_PARTS_SOURCE = "runtime-parts-omitted"
+RUNTIME_PARTS_REASON = "Text added at run time, such as trigger words, is not included"
 _INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
 # Before 3.2.3 a save patch overwrote every PromptManager node's saved ``text``
 # with the last-run node's prompt (comfy-metadata.js ``createContext``).
@@ -326,6 +331,13 @@ def _reroute_value(inputs: dict) -> Any:
     """A Reroute's one input (``value``, ``input`` or ``in``), else ``None``."""
     keys = [key for key in ("value", "input", "in") if key in inputs]
     return inputs[keys[0]] if len(keys) == 1 else None
+
+
+def _parts_reason(*sides: dict) -> str:
+    """The run-time parts reason when a side left out a PromptManager part."""
+    if any(side["provenance"]["text_source"] == RUNTIME_PARTS_SOURCE for side in sides):
+        return RUNTIME_PARTS_REASON
+    return ""
 
 
 def _combined_positive(result: Dict[str, Any]) -> bool:
@@ -537,11 +549,12 @@ class _GraphResolver:
                     if adapter.compose or adapter.storage_input:
                         storage_text = text
                     if adapter.compose:
-                        before, before_path, _ = self.text(
-                            inputs.get("prepend_text", ""), "string", depth + 1
+                        omitted: list = []
+                        before, before_path = self.part(
+                            inputs.get("prepend_text", ""), depth, omitted
                         )
-                        after, after_path, _ = self.text(
-                            inputs.get("append_text", ""), "string", depth + 1
+                        after, after_path = self.part(
+                            inputs.get("append_text", ""), depth, omitted
                         )
                         self.scan(
                             len(before)
@@ -560,6 +573,8 @@ class _GraphResolver:
                             )
                         )
                         path = before_path + path + after_path
+                        if omitted:
+                            self.text_sources[(node_id, slot)] = RUNTIME_PARTS_SOURCE
             elif (
                 name in ("StringConcatenate", "Text Concatenate")
                 and slot == 0
@@ -628,6 +643,30 @@ class _GraphResolver:
             self.deepest = max(outer_deepest, self.deepest)
             self.tainted = outer_tainted or self.tainted
             self.active.discard(key)
+
+    def part(self, value: Any, depth: int, omitted: list) -> Tuple[str, list]:
+        """A PromptManager prepend or append: traced, or left out when run time.
+
+        Only with the semantics table (inspection), and only when the input is
+        a link to a node whose output is decided at run time (``runtime``, such
+        as LoraManager's TriggerWord Toggle): that part is not in the file, so
+        it is left out and recorded in ``omitted``. Anything else, including a
+        run-time node further upstream, keeps its trace or its failure.
+        """
+        try:
+            text, path, _ = self.text(value, "string", depth + 1)
+        except _Unresolved as error:
+            if (
+                self.semantics is None
+                or error.code != "runtime-value"
+                or not _link(value)
+                or error.node is None
+                or error.node["id"] != str(value[0])[:_CLASS_NAME_LENGTH]
+            ):
+                raise
+            omitted.append(str(value[0]))
+            return "", []
+        return text, path
 
     def historical(
         self, adapter: OutputAdapter, inputs: dict, depth: int
@@ -1539,7 +1578,13 @@ class _GraphResolver:
                     reason=absent_reason,
                 )
             negative = self.side(inputs[negative_name], sampler_id, guider_id, depth)
-            return _result("resolved", positive, negative, sampler_id)
+            return _result(
+                "resolved",
+                positive,
+                negative,
+                sampler_id,
+                _parts_reason(positive, negative),
+            )
         except _Unresolved as error:
             return _result(
                 "unresolved",

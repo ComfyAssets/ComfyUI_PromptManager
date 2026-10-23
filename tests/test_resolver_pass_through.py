@@ -202,6 +202,93 @@ class TestFluxThreeStage(unittest.TestCase):
         self.assertEqual(evidence["prompts"]["positive"]["text"], shapes.POSITIVE)
 
 
+class TestRunTimePromptManagerParts(unittest.TestCase):
+    """Maintainer option A: a run-time prepend or append is left out, labelled."""
+
+    def test_trigger_words_prepend_resolves_to_the_prompt_manager_text(self):
+        for anchor in (None, "22"):
+            with self.subTest(anchor=anchor):
+                result = _inspect(
+                    shapes.hires_fix_with_trigger_words(), output_node_id=anchor
+                )
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(_texts(result), (shapes.POSITIVE, shapes.NEGATIVE))
+                self.assertEqual(result["reason"], resolver.RUNTIME_PARTS_REASON)
+                provenance = result["positive"]["provenance"]
+                self.assertEqual(
+                    provenance["text_source"], resolver.RUNTIME_PARTS_SOURCE
+                )
+                self.assertEqual(result["positive"]["storage_text"], shapes.POSITIVE)
+                # The negative is untouched by the positive's run-time part.
+                self.assertEqual(
+                    result["negative"]["provenance"]["text_source"], "graph-inferred"
+                )
+
+    def test_append_and_a_single_sampler_are_labelled_too(self):
+        graph = shapes.hires_fix_with_trigger_words()
+        graph["2"]["inputs"]["prepend_text"] = "masterpiece"
+        graph["2"]["inputs"]["append_text"] = ["8", 0]
+        graph["20"]["inputs"]["latent_image"] = ["4", 0]
+        result = _inspect(graph, output_node_id="22")
+        self.assertEqual(result["state"], "resolved")
+        # The literal prepend is still combined exactly as before.
+        self.assertEqual(_texts(result)[0], "masterpiece " + shapes.POSITIVE)
+        self.assertEqual(result["reason"], resolver.RUNTIME_PARTS_REASON)
+
+    def test_the_inspector_shows_the_prompt_and_its_source(self):
+        evidence = inspect_prompt_evidence(
+            {"prompt": json.dumps(shapes.hires_fix_with_trigger_words())}
+        )
+        self.assertEqual(evidence["resolution"]["state"], "resolved")
+        self.assertEqual(
+            evidence["prompts"]["positive"],
+            {
+                "status": "resolved",
+                "text": shapes.POSITIVE,
+                "source": resolver.RUNTIME_PARTS_SOURCE,
+            },
+        )
+
+    def test_literal_and_traceable_parts_are_combined_as_before(self):
+        graph = shapes.hires_fix_with_trigger_words()
+        graph["8"] = {"class_type": "PrimitiveString", "inputs": {"value": "trig9word"}}
+        result = _inspect(graph)
+        self.assertEqual(_texts(result)[0], "trig9word " + shapes.POSITIVE)
+        self.assertEqual(result["reason"], "")
+        self.assertEqual(
+            result["positive"]["provenance"]["text_source"], "graph-inferred"
+        )
+
+    def test_only_a_run_time_feeder_is_left_out(self):
+        # An unknown feeder stays unsupported, naming it.
+        graph = shapes.hires_fix_with_trigger_words()
+        graph["8"]["class_type"] = "MysteryWords"
+        result = _inspect(graph)
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(result["node"]["class_type"], "MysteryWords")
+        # A run-time node deeper inside the part makes the whole part run time,
+        # but it is not a direct feeder: never leave out a traced literal.
+        graph = shapes.hires_fix_with_trigger_words()
+        graph["9"] = {
+            "class_type": "StringConcatenate",
+            "inputs": {"string_a": "kept", "string_b": ["8", 0], "delimiter": ""},
+        }
+        graph["2"]["inputs"]["prepend_text"] = ["9", 0]
+        result = _inspect(graph)
+        self.assertEqual(result["reason_code"], "runtime-value")
+
+    def test_the_main_text_from_a_run_time_node_is_never_left_out(self):
+        graph = shapes.hires_fix_with_trigger_words()
+        graph["2"]["inputs"]["prepend_text"] = ""
+        graph["2"]["inputs"]["text"] = ["8", 0]
+        result = _inspect(graph)
+        self.assertEqual(result["reason_code"], "runtime-value")
+
+    def test_ingestion_is_unchanged(self):
+        result = resolve_prompt_pair({"prompt": shapes.hires_fix_with_trigger_words()})
+        self.assertEqual(result["state"], "ambiguous")
+
+
 class TestStillAmbiguous(unittest.TestCase):
     def test_edit_batch_with_distinct_prompts_stays_ambiguous(self):
         result = _inspect(shapes.edit_batch(4))

@@ -433,10 +433,20 @@ prefix) stays `ambiguous`, and text generated at run time stays untraceable
 `tests/passthrough_graphs.py`; the browser port is compared on the named
 `select-*` chain cases and `passthrough_fuzz_cases`). Ingestion keeps the default
 profile's historical latent rule (D1), so the admin scan still reaches these files
-through its legacy-parser fallback. Known gap: a PromptManager whose `prepend_text`
-comes from LoraManager's `TriggerWord Toggle` stays `unsupported-node` naming that
-node (its output depends on run-time trigger words and version-specific widget
-handling); an unlisted node with sampler-shaped inputs (positive, negative, guider,
+through its legacy-parser fallback. Run-time PromptManager parts (maintainer option
+A, 2026-10-23): LoraManager's `TriggerWord Toggle` is a `runtime` class (its output is
+the LoRA's trigger words as filtered at run time). A PromptManager (or
+PromptManagerPair) `prepend_text` or `append_text` linked directly to a `runtime`
+node is left out: the text is the node's own, combined with any other literal or
+traced part exactly as before, the side's source is `runtime-parts-omitted`, and a
+resolved pair's reason is "Text added at run time, such as trigger words, is not
+included". The prompt block shows that line under the text (D-NEW-R1, placeholder
+copy the concept does not have; the evidence badge stays "Workflow inferred"). The
+toggle's output is never computed. A run-time node further upstream (inside a
+concatenation), a run-time main `text`, or an unknown feeder keep their outcome
+(`runtime-value` or `unsupported-node`). This is what legacy linked for the June
+hires-fix runs (`TestRunTimePromptManagerParts`, the `select-runtime-*` parity
+cases); an unlisted node with sampler-shaped inputs (positive, negative, guider,
 latent_image, a pipe, video embeds, custom-sampler parts, or a `model` link together
 with conditioning, neg_conditioning, samples or latent) is `unsupported-node`
 naming it, here and in a detailer's image ancestry; a latent that is not a link or

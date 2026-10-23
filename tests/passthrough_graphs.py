@@ -243,6 +243,32 @@ def edit_batch(count=3):
     return graph
 
 
+def trigger_toggle(words="trig9word"):
+    """LoraManager's TriggerWord Toggle: its output is decided at run time."""
+    return {
+        "class_type": "TriggerWord Toggle (LoraManager)",
+        "inputs": {
+            "group_mode": True,
+            "default_active": True,
+            "toggle_trigger_words": {"__value__": [{"text": words, "active": True}]},
+            "orinalMessage": words,
+            "trigger_words": ["7", 2],
+        },
+    }
+
+
+def hires_fix_with_trigger_words():
+    """``hires_fix`` whose PromptManager prepends LoRA trigger words (node 8)."""
+    graph = hires_fix()
+    graph["7"] = {
+        "class_type": "Lora Loader (LoraManager)",
+        "inputs": {"model": ["1", 0], "clip": ["1", 1], "text": "<lora:x:1>"},
+    }
+    graph["8"] = trigger_toggle()
+    graph["2"]["inputs"]["prepend_text"] = ["8", 0]
+    return graph
+
+
 def generated_text_chain():
     """``hires_fix`` whose positive text comes from a run-time text generator."""
     graph = hires_fix()

@@ -39,6 +39,8 @@ import {
     explained,
     isLink,
     nodeRef,
+    RUNTIME_PARTS_REASON,
+    RUNTIME_PARTS_SOURCE,
     readPairExecution,
     rerouteValue,
     result,
@@ -168,11 +170,13 @@ class GraphResolver {
                     [text, path, storageText] = this.text(pyGet(inputs, adapted.inputName), 'string', depth + 1);
                     if (adapted.compose || adapted.storageInput) storageText = text;
                     if (adapted.compose) {
-                        const [before, beforePath] = this.text(pyGet(inputs, 'prepend_text', ''), 'string', depth + 1);
-                        const [after, afterPath] = this.text(pyGet(inputs, 'append_text', ''), 'string', depth + 1);
+                        const omitted = [];
+                        const [before, beforePath] = this.part(pyGet(inputs, 'prepend_text', ''), depth, omitted);
+                        const [after, afterPath] = this.part(pyGet(inputs, 'append_text', ''), depth, omitted);
                         this.scan(pyLen(before) + pyLen(after) + beforePath.length + path.length + afterPath.length);
                         text = this.built(this.bounded([pyStrip(before), text, pyStrip(after)].filter(part => part).join(' ')));
                         path = [...beforePath, ...path, ...afterPath];
+                        if (omitted.length) this.textSources.set(slotKey(nodeId, slot), RUNTIME_PARTS_SOURCE);
                     }
                 }
             } else if ((name === 'StringConcatenate' || name === 'Text Concatenate') && slot === 0 && kind === 'string') {
@@ -403,6 +407,19 @@ class GraphResolver {
         return [text, path, text];
     }
 
+    /** `part`: a PromptManager prepend or append, traced, or left out when a direct run-time feeder decides it. */
+    part(value, depth, omitted) {
+        try {
+            const [text, path] = this.text(value, 'string', depth + 1);
+            return [text, path];
+        } catch (error) {
+            if (!(error instanceof Unresolved) || error.code !== 'runtime-value' || !isLink(value) || error.node === null ||
+                error.node.id !== pySlice(String(value[0]), CLASS_NAME_LENGTH)) throw error;
+            omitted.push(String(value[0]));
+            return ['', []];
+        }
+    }
+
     sourceOf(path) {
         if (!path.length) return 'graph-inferred';
         return this.textSources.get(slotKey(path[0].node_id, path[0].output_slot)) ?? 'graph-inferred';
@@ -528,7 +545,8 @@ class GraphResolver {
                 return result('absent', { positive, samplerId, reason: absentReason });
             }
             negative = this.side(inputs.get(negativeName), samplerId, guiderId, depth);
-            return result('resolved', { positive, negative, samplerId });
+            const omitted = [positive, negative].some(side => side.provenance.text_source === RUNTIME_PARTS_SOURCE);
+            return result('resolved', { positive, negative, samplerId, reason: omitted ? RUNTIME_PARTS_REASON : '' });
         } catch (error) {
             if (!(error instanceof Unresolved)) throw error;
             return result('unresolved', { positive, negative, samplerId, reason: error.message, reasonCode: error.code, node: error.node });

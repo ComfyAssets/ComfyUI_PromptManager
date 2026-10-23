@@ -488,7 +488,44 @@ def _passthrough():
     graph["60"]["inputs"]["positive"] = ["39", 0]
     cases["flux-encoder-parts"] = graph
     cases.update(_passthrough_edges())
+    cases.update(_runtime_parts())
     return cases
+
+
+def _runtime_parts():
+    """Option A: a PromptManager part fed by a run-time node is left out."""
+    cases = {"trigger-prepend": shapes.hires_fix_with_trigger_words()}
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["2"]["inputs"].update(prepend_text="masterpiece", append_text=["8", 0])
+    graph["20"]["inputs"]["latent_image"] = ["4", 0]
+    cases["trigger-append-single"] = graph
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["8"] = {"class_type": "PrimitiveString", "inputs": {"value": "trig9word"}}
+    cases["traced-prepend"] = graph
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["8"]["class_type"] = "MysteryWords"
+    cases["unknown-prepend"] = graph
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["9"] = {
+        "class_type": "StringConcatenate",
+        "inputs": {"string_a": "kept", "string_b": ["8", 0], "delimiter": ""},
+    }
+    graph["2"]["inputs"]["prepend_text"] = ["9", 0]
+    cases["indirect-prepend"] = graph
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["2"]["inputs"].update(prepend_text="", text=["8", 0])
+    cases["runtime-main-text"] = graph
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["2"]["class_type"] = "PromptManagerPair"
+    graph["2"]["inputs"]["negative_text"] = shapes.NEGATIVE
+    graph["10"]["inputs"]["negative"] = ["2", 1]
+    graph["20"]["inputs"]["negative"] = ["2", 1]
+    cases["trigger-pair"] = graph
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["30"] = {"class_type": "PromptSearchList", "inputs": {"search": "x"}}
+    graph["2"]["inputs"]["append_text"] = ["30", 0]
+    cases["search-list-append"] = graph
+    return {f"runtime-{name}": graph for name, graph in cases.items()}
 
 
 def _passthrough_edges():

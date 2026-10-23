@@ -175,7 +175,7 @@
       }
     }
   ],
-  "runtime": ["PromptSearchList"],
+  "runtime": ["PromptSearchList", "TriggerWord Toggle (LoraManager)"],
   "savers": {
     "SaveImage": {
       "strategy": "comfy-counter",

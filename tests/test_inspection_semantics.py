@@ -270,7 +270,12 @@ class SpecEntriesTest(unittest.TestCase):
         )
 
         # D18: decided at run time.
-        self.assertEqual(table.runtime, frozenset({"PromptSearchList"}))
+        # LoraManager's TriggerWord Toggle outputs the LoRA's trigger words as
+        # filtered at run time (option A leaves them out of a PromptManager).
+        self.assertEqual(
+            table.runtime,
+            frozenset({"PromptSearchList", "TriggerWord Toggle (LoraManager)"}),
+        )
 
         comfy = "{name}_{counter:05}_.{ext}"
         for name, image in (
