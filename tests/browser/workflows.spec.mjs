@@ -74,6 +74,24 @@ test('a page whose leave was called off reads its list again on the next input',
     await expect(page.locator('#resultsTitle')).toHaveText('Recent Prompts');
 });
 
+// The gallery's startup thumbnail check runs a second after load. When that second ends while the page is leaving,
+// the check must start no read: WebKit fails it with "Fetch API cannot load … due to access control checks." and
+// Playwright reports a page error (seen in CI on PR #289). The page clock makes the second end after the leave began.
+for (const leave of ['beforeunload', 'pagehide']) {
+    test(`the gallery startup check starts no read after ${leave}`, async ({ page }) => {
+        await page.clock.install();
+        const statusReads = [];
+        page.on('request', req => { if (req.url().includes('/images/thumbnails/status')) statusReads.push(req.url()); });
+        await page.goto('/prompt_manager/gallery');
+        await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);
+        await page.evaluate(type => window.dispatchEvent(new Event(type)), leave);
+        await page.clock.runFor(1500);
+        // A read made after the clock ran is listed, so the listener saw every status read.
+        await page.evaluate(() => fetch('/prompt_manager/images/thumbnails/status?probe=1'));
+        expect(statusReads.map(url => new URL(url).search)).toEqual(['?probe=1']);
+    });
+}
+
 test('actual gallery review generates and persists tags for the selected root', async ({ page, request }) => {
     await page.goto('/prompt_manager/gallery');
     await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);

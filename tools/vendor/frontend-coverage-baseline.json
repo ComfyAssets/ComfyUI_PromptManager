@@ -1,9 +1,9 @@
 {
   "admin.js": {
-    "lines": 28,
+    "lines": 31,
     "branches": 58,
-    "functions": 23,
-    "statements": 28
+    "functions": 26,
+    "statements": 31
   },
   "api-client.js": {
     "lines": 98,
@@ -42,10 +42,10 @@
     "statements": 98
   },
   "gallery.js": {
-    "lines": 39,
+    "lines": 40,
     "branches": 63,
-    "functions": 43,
-    "statements": 39
+    "functions": 44,
+    "statements": 40
   },
   "html-escape.js": {
     "lines": 98,
@@ -157,7 +157,7 @@
   },
   "workspace/activity-job-view.mjs": {
     "lines": 97,
-    "branches": 83,
+    "branches": 86,
     "functions": 98,
     "statements": 97
   },
@@ -174,10 +174,10 @@
     "statements": 98
   },
   "workspace/activity.mjs": {
-    "lines": 95,
+    "lines": 96,
     "branches": 87,
     "functions": 98,
-    "statements": 95
+    "statements": 96
   },
   "workspace/file-inspector.mjs": {
     "lines": 96,

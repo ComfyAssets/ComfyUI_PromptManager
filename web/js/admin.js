@@ -1180,6 +1180,11 @@
                                         `Done — ${data.imported} imported, ${data.skipped} skipped`;
                                     this.loadStatistics();
                                     setTimeout(() => this.hideModal("loraImportModal"), 2000);
+                                } else if (data.type === "error") {
+                                    // A refusal (another job runs) or a failed import: name it and close the modal.
+                                    document.getElementById("loraImportStatus").textContent = `Error: ${data.message}`;
+                                    this.showNotification(`LoRA import failed: ${data.message}`, "error");
+                                    setTimeout(() => this.hideModal("loraImportModal"), 3000);
                                 }
                             } catch (e) { /* skip malformed SSE */ }
                         }
@@ -1231,10 +1236,13 @@
                         }
                         this.hideModal("settingsModal");
                     } else {
-                        throw new Error("Failed to save settings");
+                        // A refusal names its reason (a corrupt config.json, a changed file): show it.
+                        const data = await response.json().catch(() => ({}));
+                        throw new Error(data.error ? `Failed to save settings: ${data.error}` : "Failed to save settings");
                     }
                 } catch (error) {
-                    this.showNotification("Failed to save settings", "error");
+                    const reason = error.message.startsWith("Failed to save settings:") ? error.message : "Failed to save settings";
+                    this.showNotification(reason, "error");
                 }
             }
 
@@ -1848,7 +1856,9 @@
                             throw new Error(data.error || 'Maintenance failed');
                         }
                     } else {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                        // A refusal names the job that runs ("Scan for metadata already running").
+                        const data = await response.json().catch(() => ({}));
+                        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
                     }
                 } catch (error) {
                     console.error('Maintenance error:', error);

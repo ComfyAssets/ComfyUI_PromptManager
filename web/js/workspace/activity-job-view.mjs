@@ -274,7 +274,8 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         const lost = job.state === 'lost';
         if (lost && document.activeElement === download) parts.h1.focus();
         download.disabled = lost;
-        if (job.state === 'running') {
+        // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel.
+        if (job.state === 'running' && job.cancellable) {
             if (!cancel.isConnected) parts.actions.append(cancel);
         } else if (cancel.isConnected) {
             // A focused Cancel that goes away hands its focus to the job's heading, never to the page body.
