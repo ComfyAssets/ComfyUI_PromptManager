@@ -1,6 +1,6 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, isHandoff, loadNavCounts,
+import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts,
     LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { mountImages, onFavoriteChange } from './images.mjs';
@@ -16,6 +16,7 @@ import { mountActivityPage, mountActivityTopbar } from './activity.mjs';
 import { mountActivityJobView } from './activity-job-view.mjs';
 import { mountInspect } from './inspect.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
+import { mountSystem } from './system.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -28,7 +29,8 @@ function element(tag, text, className) {
 
 function legacyLink(route) {
     const link = element('a', route.action, 'workspace-link');
-    link.href = resolveUrl(route.href);
+    // A native card (System, Q12) links its workspace hash; a legacy tool's page goes through the mount prefix.
+    link.href = route.native ? route.href : resolveUrl(route.href);
     return link;
 }
 
@@ -137,6 +139,9 @@ function mountWorkspace() {
     let leaveGuard = null, renderToken = 0;
     scope.cleanup(() => viewScope?.dispose());
 
+    // The mounted System page: another of its sections is shown in place, keeping the shell and the drafts.
+    let system = null;
+
     function render(route) {
         const token = ++renderToken;
         const hold = leaveGuard?.();
@@ -151,6 +156,11 @@ function mountWorkspace() {
         leaveGuard = null;
         // A shared page dialog never stays open over the next route.
         closeWorkspaceDialog();
+        if (route.id === 'system' && system && currentKey === 'system') {
+            system.show(route.section);
+            return;
+        }
+        system = null;
         viewScope?.dispose();
         images = null;
         viewScope = createScope();
@@ -251,19 +261,16 @@ function mountWorkspace() {
             else mountActivityPage(main, { store: activity, scope: view });
             return;
         }
+        if (route.id === 'system') {
+            // The concept's System (app.js renderSystem): its heading description, section nav and Save row.
+            description.textContent = route.description;
+            system = mountSystem(main, api, view, { section: route.section, activity });
+            return;
+        }
         if (route.id === 'inspect') {
             // The concept's Inspect a file (app.js renderMetadata): a local file, read only in this browser.
             description.textContent = route.description;
             ({ leaveGuard } = mountInspect(main, { parentScope: view, api, sender: createPromptSender({ scope: view }) }));
-            return;
-        }
-        if (isHandoff(route)) {
-            description.textContent = route.description;
-            const panel = element('section', undefined, 'surface handoff');
-            panel.append(element('h2', 'Your current tools are ready'),
-                element('p', 'This workspace is being introduced in stages. Continue in the existing tool with your saved data.'),
-                legacyLink(route));
-            main.append(panel);
             return;
         }
         description.textContent = 'A home for your prompts, images and creative history.';
