@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import binascii
+import functools
 import hashlib
 import hmac
 import json
@@ -37,6 +38,7 @@ try:
     from ...database.models import normalize_image_path
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
+    from ...utils.json_strict import dumps_strict
     from ...utils.inspection_response import (
         encode_inspection_response,
         library_metadata,
@@ -56,6 +58,7 @@ except ImportError:
     from database.models import normalize_image_path
     from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
+    from utils.json_strict import dumps_strict
     from utils.inspection_response import (
         encode_inspection_response,
         library_metadata,
@@ -982,27 +985,12 @@ class ImageRoutesMixin:
             # Add url and thumbnail_url so the frontend can serve them
             cleaned_images = self._present_images(cleaned_images)
 
-            # Additional fallback: convert to JSON string and clean NaN values manually
-            try:
-                response_data = {"success": True, "images": cleaned_images}
-                # Convert to JSON string
-                json_str = json.dumps(response_data, default=str)
-
-                # Clean any remaining NaN values with regex
-                json_str = re.sub(r":\s*NaN", ": null", json_str)
-                json_str = re.sub(r"\[\s*NaN\s*\]", "[null]", json_str)
-                json_str = re.sub(r",\s*NaN\s*,", ", null,", json_str)
-                json_str = re.sub(r",\s*NaN\s*\]", ", null]", json_str)
-                json_str = re.sub(r"\[\s*NaN\s*,", "[null,", json_str)
-
-                # Parse back to verify it's valid JSON
-                cleaned_data = json.loads(json_str)
-
-                return web.json_response(cleaned_data)
-            except Exception as json_error:
-                self.logger.error(f"JSON cleaning error: {json_error}")
-                # Fallback to original response
-                return web.json_response({"success": True, "images": cleaned_images})
+            # Rows an older version stored may still hold NaN/Infinity: answer
+            # strict JSON, and leave prompt text that spells "NaN" untouched.
+            return web.json_response(
+                {"success": True, "images": cleaned_images},
+                dumps=functools.partial(dumps_strict, default=str),
+            )
 
         except Exception as e:
             self.logger.error(f"Get prompt images error: {e}")

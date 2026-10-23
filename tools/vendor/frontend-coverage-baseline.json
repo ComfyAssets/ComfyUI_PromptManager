@@ -37,15 +37,15 @@
   },
   "gallery-settings.js": {
     "lines": 98,
-    "branches": 90,
+    "branches": 94,
     "functions": 98,
     "statements": 98
   },
   "gallery.js": {
-    "lines": 40,
+    "lines": 41,
     "branches": 63,
     "functions": 44,
-    "statements": 40
+    "statements": 41
   },
   "html-escape.js": {
     "lines": 98,
@@ -401,6 +401,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/preferences.mjs": {
+    "lines": 98,
+    "branches": 96,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/prompt-blocks.mjs": {
     "lines": 90,
     "branches": 92,
@@ -441,6 +447,36 @@
     "lines": 98,
     "branches": 98,
     "functions": 98,
+    "statements": 98
+  },
+  "workspace/system-appearance.mjs": {
+    "lines": 98,
+    "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/system-controls.mjs": {
+    "lines": 98,
+    "branches": 87,
+    "functions": 89,
+    "statements": 98
+  },
+  "workspace/system-overview.mjs": {
+    "lines": 96,
+    "branches": 92,
+    "functions": 98,
+    "statements": 96
+  },
+  "workspace/system-state.mjs": {
+    "lines": 98,
+    "branches": 94,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/system.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 85,
     "statements": 98
   },
   "workspace/theme.mjs": {

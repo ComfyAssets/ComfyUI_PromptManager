@@ -4,6 +4,7 @@ Database operations for KikoTextEncode prompt storage and retrieval.
 
 import sqlite3
 import json
+import math
 import datetime
 import os
 from typing import Optional, List, Dict, Any, Set, Tuple
@@ -20,11 +21,13 @@ from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations, LIVE_HINT_CTES
 from .execution_outputs import ExecutionOutputOperations
 from .history_reads import HistoryReadOperations
+from .health import HealthOperations, iter_consistency_issues
 
 # Import logging system
 try:
     from ..utils.logging_config import get_logger
     from ..utils.hashing import generate_prompt_hash
+    from ..utils.json_strict import dumps_strict
 except ImportError:
     import sys
 
@@ -32,6 +35,7 @@ except ImportError:
     sys.path.insert(0, current_dir)
     from utils.logging_config import get_logger
     from utils.hashing import generate_prompt_hash
+    from utils.json_strict import dumps_strict
 
 
 # Subquery to fetch tags from junction table, embedded in SELECT statements
@@ -342,6 +346,7 @@ class PromptDatabase(
     ImageFavoriteOperations,
     AnnotationOperations,
     SavedViewOperations,
+    HealthOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -1695,9 +1700,9 @@ class PromptDatabase(
                         width,
                         height,
                         image_format,
-                        json.dumps(metadata.get("workflow", {})),
-                        json.dumps(metadata.get("prompt", {})),
-                        json.dumps(metadata.get("parameters", {})),
+                        dumps_strict(metadata.get("workflow", {})),
+                        dumps_strict(metadata.get("prompt", {})),
+                        dumps_strict(metadata.get("parameters", {})),
                     ),
                 )
                 conn.commit()
@@ -1902,13 +1907,13 @@ class PromptDatabase(
             obj: The object to clean (dict, list, or scalar)
 
         Returns:
-            Cleaned object with NaN values replaced by None
+            Cleaned object with NaN and Infinity values replaced by None
         """
         if isinstance(obj, dict):
             return {key: self._clean_nan_values(value) for key, value in obj.items()}
         elif isinstance(obj, list):
             return [self._clean_nan_values(item) for item in obj]
-        elif isinstance(obj, float) and str(obj) == "nan":
+        elif isinstance(obj, float) and not math.isfinite(obj):
             return None
         else:
             return obj
@@ -2570,33 +2575,13 @@ class PromptDatabase(
             return cursor.rowcount
 
     def check_consistency(self) -> List[str]:
-        """Run consistency checks and return a list of issue descriptions."""
-        issues: List[str] = []
-        with self.model.get_connection() as conn:
-            # Check for orphaned prompt_tags entries
-            cursor = conn.execute("""
-                SELECT pt.prompt_id, pt.tag_id FROM prompt_tags pt
-                LEFT JOIN prompts p ON pt.prompt_id = p.id
-                WHERE p.id IS NULL
-            """)
-            for ref in cursor.fetchall():
-                issues.append(
-                    "prompt_tags entry references non-existent prompt "
-                    f"{ref['prompt_id']}"
-                )
+        """Run consistency checks and return a list of issue descriptions.
 
-            # Check for orphaned image entries
-            cursor = conn.execute("""
-                SELECT gi.id, gi.prompt_id FROM generated_images gi
-                LEFT JOIN prompts p ON gi.prompt_id = p.id
-                WHERE p.id IS NULL
-            """)
-            for ref in cursor.fetchall():
-                issues.append(
-                    f"Image {ref['id']} references non-existent prompt "
-                    f"{ref['prompt_id']}"
-                )
-        return issues
+        The same queries back the System health check's Consistency row
+        (database/health.py).
+        """
+        with self.model.get_connection() as conn:
+            return list(iter_consistency_issues(conn))
 
     def _image_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """

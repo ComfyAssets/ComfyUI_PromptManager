@@ -1854,6 +1854,214 @@ npm run --prefix tools/vendor test:workflows -- inspect-concept.spec.mjs workspa
 npm run --prefix tools/vendor test:comfyui -- inspect-sender.spec.mjs
 ```
 
+### Native System (#249 System)
+
+`#/system/<section>` is a native workspace route rendered by `web/js/workspace/system.mjs`
+on the concept's `renderSystem` markup (app.js a698–706; `concept.css` 709–895). `#/system`
+is Overview under the sidebar's own hash; `#/system/overview|appearance|sources|
+integrations|tagging|maintenance|backups|diagnostics` select a section, and an unknown
+child (the concept's `#/system/general`) is replaced by `#/system/overview`. The
+production hub `#/overview` is unchanged (D28); its System card opens
+`#/system/overview` (Q12). Switching sections keeps the shell, the drafts and focus on
+the pressed section button and disposes the previous section's scope, so its reads,
+listeners and dialogs never outlive it.
+
+Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
+browser fields, then the host fields (`POST /prompt_manager/settings` with
+`expected_revision`, #220), then the runtime fields. A failed domain keeps its drafts and
+highlights their controls; `settings-changed` is a conflict and keeps the draft. System
+reads the host values on mount and again after a conflict; until a read returned a
+revision, a host save fails without a request, so it never sends a blind
+`expected_revision: null` (which S1 merges into the file on disk). Save stays disabled
+until a section has an unsaved change.
+
+Appearance (`system-appearance.mjs`, S3) is the concept's "Browsing & display" surface
+on real values. Its browser rows are this browser's display defaults in the legacy
+gallery's own `gallerySettings` object (`web/js/workspace/preferences.mjs`, Q3): Default
+layout and Thumbnail size (`workspaceLayout` grid/list/masonry, `workspaceDensity`
+comfortable/large/compact, new keys), Load metadata on selection (`autoLoadMetadata`),
+Cache metadata in this browser (`cacheMetadata`), Image loading quality (`imageQuality`:
+Optimized→`medium`, Original→`high`, Fast→`low`; the thumbnail dialog's preselected quality
+once S5 lands), the three video rows (`videoAutoplay`, `videoMute`, `videoLoop`) and Show
+file paths (`showFilePaths`). A write re-reads the stored object and writes back only the
+changed keys, every other key (legacy paging, thumbnail state, unknown keys) as stored;
+the legacy gallery's Save also keeps the keys it does not edit, so the two pages stay in
+sync. The workspace never reads the legacy paging keys (`defaultLimit`, `gridColumns`,
+`infiniteScroll`; README continuous-browsing ruling). A browser that refuses storage
+(denied, or a full quota that leaves the stored bytes as they were) keeps the change for
+this tab only and the status says "Saved for this tab only; browser storage is
+unavailable.", never "Saved in this browser.". Another tab's change (a `storage` event)
+repaints the clean controls; a draft it overtook stays, highlighted, with the conflict
+status. Open from ComfyUI (New tab→`newtab`, Popup window→`popup`) and Node search
+auto-hide (seconds) (a whole number 0–300; anything else is highlighted and never sent)
+are the server's `webui_display_mode` and `result_timeout`, saved through
+`POST /prompt_manager/settings` with the revision. The consumers read the defaults on
+their next visit, never the current view: a new Images visit starts from the layout and
+size (the last visit keeps its own, a saved view opens at Grid and Comfortable as
+before); with metadata off a selection reads nothing until "Load metadata"; with the
+cache off selecting the shown file again re-reads it (on, the one current record is
+reused); paths off leaves out only the Path row of File & provenance; the viewer reads
+the video defaults.
+
+Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
+visit through `latestOnly()` on the section scope; a late answer after the section left
+paints nothing. Until it answers, the section shows "Loading the overview…"; a failure
+shows "The overview could not be loaded. Your saved data has not changed." and Retry,
+never zeros. The thumbnail row is a separate read of `/images/thumbnails/status` (a
+walk of every source), so the other values never wait for it: "Checking thumbnails…"
+until it answers. The health check (`POST /prompt_manager/system/health`) is a `read`
+registry job of kind `health`: one at a time, beside a scan, not cancellable and with
+no file outcomes. The page tracks the started job in the Activity store (its event
+stream; the store marks it lost if the server stops listing it), never by polling. A press while one runs (another tab) waits
+for that one. The last report lives for this server session (`GET
+/prompt_manager/system/health`) and describes the database it was taken from: a
+restore that replaces the database forgets it, and a check that started before the
+swap is not kept. The check's own connection opens a `mode=ro` URI that keeps a Windows
+UNC path (`file:////server/share/prompts.db`; pathlib's `file://server/share/...` is a
+remote authority SQLite refuses). A check that raises fails only itself, and the
+missing-files check reads its rows inside the snapshot but stats the files after it
+ended, so a slow source never pins the WAL. Statistics
+read `GET /prompt_manager/system/statistics` (`by_category`, the legacy `/stats` totals
+and `rated_images`).
+
+Read-only standard for a check or preview (S2's health check; S6 and S8 previews use
+the same): the database and `-wal` bytes are unchanged, the `-shm` size is unchanged,
+the connection's `total_changes` is 0 at close and the data reads back unchanged. The
+`-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
+reader can keep it byte-identical (`test_health_check_never_writes`).
+
+Recorded deviations (plan D60–D65 renumbered D92–D97; D121, D122, D123 and D124 assigned):
+
+- **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
+  unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
+  configuration." / "Applied until the server restarts.", "Some changes were not saved.
+  Review the highlighted settings.", "Saved for this tab only; browser storage is
+  unavailable." and "Settings changed elsewhere. Reload this section to see them."
+  "Save preferences" is `aria-disabled` (opacity .55, `not-allowed`) while clean or
+  saving; a setting the last save could not save gets a red outline. CSS under D92.
+- **D93** (Overview): real values. The metrics are the Library's eligible positives
+  and active saved negatives and the indexed `generated_images` rows (Q2). "Database
+  integrity" is "Not checked" until a check ran this session, then "N issues" (checks
+  that found issues, even beside a check that could not run), "Passed" or "Incomplete".
+  "Ambiguous image links" reads "Not available yet." with its Review metadata action
+  `aria-disabled` (CSS under D93) until the Needs review queue reports a count (Q6).
+  "Backup status" reads "No retained backup record." until verified backups exist (S8).
+  The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
+  missing thumbnails", "N missing thumbnails" (the pending count of
+  `/images/thumbnails/status`) or "Thumbnail status unavailable"; Review thumbnails
+  opens Sources until the thumbnail dialog (S5). "One display configuration" says "Grid
+  and density settings are shared across views." (no paging). The sources row is
+  "N output sources" with "Monitoring and enrichment share one source list.", prefixed
+  by "M of N configured sources available." or "None configured is available; ComfyUI's
+  output folder is used." when that is the case.
+- **D94** (all sections): a section not delivered yet shows the hand-off panel "Your
+  current tools are ready" with a link to each legacy tool that still owns it (the
+  plan's legacy coverage table); retired section by section, gone after S12.
+- **D95** (health report): the concept's `health-check` dialog titled "Health report",
+  with no sample note. It lists every check in the server's order: Integrity check,
+  Foreign keys & pair references, Canonical hashes, Pair uniqueness (added), Missing
+  files, Ambiguous metadata, Consistency (added). Missing files has one row per image
+  source when there are several ("Missing files · output"). Each chip is the real
+  result: "Passed", a count with what was found ("2 broken references", "1 link needs
+  review", the concept's "N links need review" and "N images need review"; "100+
+  problems found" when SQLite's integrity check stopped at its limit), "Not
+  available" (an unavailable source), "Not available yet" (Ambiguous metadata, Q6) or
+  "Could not check". A `p.small` after the list says when it was checked and whether
+  every check passed, some could not run, or issues need review. Close / Review missing
+  links (to Maintenance, its hand-off until S7). Nothing is changed by a check.
+- **D96** (Statistics): "Usage statistics" without the sample note: the concept's
+  "Runs by category" table (Category / Runs / Avg. rating) with the real runs and
+  average rating of eligible parents per category ("Uncategorized", "Not rated"),
+  then a second table "Library totals" (Total / Count: Prompts, Tags, Images from the
+  legacy statistics, and Rated images: indexed images whose linked prompt is rated).
+  The Overview row says "Runs and ratings by category, with library totals." because
+  that is what the dialog shows (the concept's own dialog shows only "Runs by
+  category"); per-prompt run counts, prompt tags and dated runs are recorded, but no
+  table of them exists yet. A failed read toasts "Statistics could not
+  be loaded. Your saved data has not changed."
+- **D121** (production hub): the Overview hub's System card reads the concept's System
+  heading and "Open System"; the concept has no hub card.
+- **D122** (shell): the section nav's `aria-label` is "System sections"; the concept's
+  literal label is its prototype action name "system-tab sections".
+- **D123** (Maintenance): the concept's Maintenance notice
+  ("Check first. Review changes. Then apply." + Run health checks) is delivered ahead of
+  the rest of Maintenance, above its D94 hand-off, as the native place that runs the
+  health check. A press shows "Checking…" (`aria-disabled`) and opens the report; a
+  failed check toasts "The health check could not finish. Nothing was changed."
+- **D97** (Appearance): added rows for the legacy gallery settings the concept leaves
+  out, after its own rows: "Show image details on cards" (`showImageInfo`; off hides a
+  card's title and file line, Info and Tag stay at the end of the row), "Collapse viewer
+  details by default" (`sidebarCollapsedByDefault`; the viewer opens with
+  `#viewer-details` hidden and a "Show details"/"Hide details" toggle with
+  `aria-expanded`, the stage taking the whole width), and the operation "Reset display
+  defaults" ("Restore this browser’s display defaults, then save. Other settings are
+  kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
+  The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D124** (inspector): with "Load metadata on selection" off, the Images panel and
+  the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
+  button instead of reading the file. The concept has no such state, so no concept
+  comparison renders it: `metadata off shows an explicit load and loads once on request`
+  (workspace-system.spec) pins it instead.
+
+Appearance scope and states. The Default layout and Thumbnail size defaults start the
+Images page only (a new visit, not the current view or a saved view); the embedded
+galleries (a prompt history's Shared gallery and its All images / Repeat run dialogs)
+have no toolbar, so they keep Grid/Comfortable, while the metadata, cache and card
+defaults apply there too. A host row whose `/settings` read failed stays disabled with
+"Server settings could not be read."; a rejected timeout says "Some changes were not
+saved. Review the highlighted settings." A display default another page saved under one
+of this tab's drafts flags that draft with the conflict status, whether it arrived while
+System was mounted (a `storage` event) or while it was not (checked again on mount, and
+before a write); the draft is never written over the other page's value without that
+status first. A change kept for this tab only is stored by the next write storage accepts.
+
+Open question (saved-views follow-up, M8): a saved view stores no layout or size and
+always opens at Grid/Comfortable, even when the Default layout is Masonry. Should saved
+views store a layout, or follow the default?
+
+`tests/browser/system-concept.spec.mjs` compares the shell and Overview with the concept
+(dark and light, 1600×1100 and 390×844), mapping only the deviations above; unmapped,
+the difference is exactly the D92, D93, D96 and D122 paths. Each surface's `top` is
+measured, which pins the concept's `.surface + .surface` 18px offset that concept.css
+also applies inside `.two-col` (copied as is). `statistics and health dialogs match
+the concept` maps D95 from the concept's own five rows (labels verbatim): it inserts
+Pair uniqueness after Canonical hashes and Consistency last, splits Missing files per
+source when there are several, replaces only the chips with the fixture's expected
+results, and asserts the full unmapped path list; it maps D96 and compares the
+Maintenance notice unchanged. `system comparison detects mutations` removes a row,
+renames a metric label, swaps the `--line` token, recolours a chip, renames a check,
+removes the totals table and renames a caption. `appearance matches the concept` maps
+only D97 and the real timeout (unmapped, exactly those paths differ), and `appearance
+comparison detects mutations` removes a row, renames a label and an option and swaps
+the `--line` token. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
+`{concept,production}-{statistics,health}-{dark,light}.png`,
+`{concept,production}-appearance-{dark,light}-{1600,390}.png`) are test artifacts; there
+are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real counts,
+the health check and metric 4, a failed check, the thumbnail row against the status
+endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
+route, a load failure with Retry and late answers after leaving, and Appearance: new
+visits versus the current view and a saved view, the embedded gallery keeping Grid,
+metadata off and on request, the cache (counted up to a request barrier), hidden paths,
+the video defaults, the host fields with their revision, a stale one and a failed read,
+reload and a second tab, a second tab's save while System was closed, storage refused,
+the D97 rows and reset. Its hooks are
+`tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
+failures, an absent source, a deleted linked file, unthumbnailed files) on the
+concept-shaped fixture, with delays through the shared request holds; reset also restores
+the server's host settings and its `config.json`, which must be the one inside the server's
+temp root (`tests/test_workspace_system_fixture.py`).
+
+```sh
+python3 -m unittest tests.test_database_health tests.test_system_api tests.test_library \
+  tests.test_workspace_system_fixture -v
+node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-controls.test.js \
+  tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js \
+  tests/js/workspace-system-appearance.test.js tests/js/workspace-preferences.test.js \
+  tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js
+npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+```
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no

@@ -2,14 +2,14 @@ import {createScope, createButton} from '../shared/toolkit/core.js';
 import {createViewerSession} from './viewer-state.mjs';
 import {rootedFileAdapter} from './inspection-state.mjs';
 import {mountFileInspector} from './file-inspector.mjs';
+import {displayPreferences, readPreferences} from './preferences.mjs';
 
 let viewerId = 0;
 // Upper bound on waiting for a closed Viewer's in-flight image view before destroying it.
 const PENDING_VIEW_DESTROY_MS = 10000;
+/** The video defaults, read through the shared display defaults (preferences.mjs, #249 System S3). */
 export function readViewerPreferences(getStorage = () => window.localStorage, normalize = globalThis.GallerySettings.normalizeGallerySettings) {
-    let stored;
-    try { stored = JSON.parse(getStorage().getItem('gallerySettings')); } catch { stored = null; }
-    const {videoAutoplay,videoMute,videoLoop} = normalize(stored);
+    const {videoAutoplay,videoMute,videoLoop} = readPreferences(getStorage,normalize).values;
     return {videoAutoplay,videoMute,videoLoop};
 }
 function element(tag, className, text) {
@@ -35,7 +35,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         if (scope.signal.aborted) return;
         active?.close(false);
         const {items,selectedKey,trigger = document.activeElement} = options;
-        let mounted = false, initial, entry, currentKey, viewer = null, mediaScope = null, closed = false;
+        let mounted = false, initial, entry, currentKey, viewer = null, withoutViewer = false, mediaScope = null, closed = false;
         let originalDownload = null, inspectionState = inspectionController.state;
         const session = createViewerSession({adapter,items,initialKey:selectedKey,onChange:(state,selected) => {
             if (!mounted) { initial = [state,selected]; return; }
@@ -74,15 +74,31 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         local.listen(download,'click',event => {session.stop();if (download.getAttribute('aria-disabled') === 'true') event.preventDefault();});
         controls.append(download);
         const next = button('Next media','Next →',() => session.navigate(1));
+        // D97: "Collapse viewer details by default" opens the viewer with its details hidden behind one toggle.
+        const collapsed = displayPreferences()?.sidebarCollapsedByDefault === true;
+        let detailsToggle = null;
+        if (collapsed) {
+            detailsToggle = createButton('Show details');detailsToggle.setAttribute('aria-expanded','false');
+            detailsToggle.setAttribute('aria-controls','viewer-details');controls.append(detailsToggle);
+        }
         const position = element('p','media-position muted');position.id = `media-viewer-position-${++viewerId}`;
         position.setAttribute('role','status');
         const reason = element('p','media-reason muted');reason.id = `media-viewer-reason-${viewerId}`;
         const slideshowReason = element('p','media-slideshow-reason muted');slideshowReason.id = `media-viewer-slideshow-${viewerId}`;
         controls.append(position,reason,slideshowReason);left.append(stage,controls);
         const details = element('aside');details.id = 'viewer-details';details.setAttribute('aria-label','Image metadata');
+        if (detailsToggle) {
+            details.hidden = true;
+            local.listen(detailsToggle,'click',() => {
+                details.hidden = !details.hidden;
+                detailsToggle.textContent = details.hidden ? 'Show details' : 'Hide details';
+                detailsToggle.setAttribute('aria-expanded',String(!details.hidden));
+            });
+        }
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
         const inspector = mountFileInspector(details,{api,sender:localSender,parentScope:local,variant:'full',onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
+            onLoad:() => inspectionController.load?.(),
             onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined});
         function closeViewer(restore = true) {
             if (closed) return;
@@ -115,7 +131,9 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
             mediaScope?.dispose();mediaScope = createScope();viewer = null;
             for (const child of [...stage.children]) if (child !== failure) child.remove();
             failure.hidden = true;
-            const mediaLocal = mediaScope, key = session.state.key;
+            const mediaLocal = mediaScope, key = session.state.key, ViewerJs = window.Viewer;
+            // Transforms follow the Viewer.js this media was built with, which builds once the image has loaded.
+            withoutViewer = !ViewerJs;
             const current = () => !local.signal.aborted && !mediaLocal.signal.aborted && session.state.key === key;
             // An adapter's own media URL (a session-owned blob:) is used exactly, so a retry reuses it; a server
             // original gets a fresh cache-buster on every build.
@@ -142,15 +160,23 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 },{once:true});
             } else {
                 node.alt = selected.filename;node.decoding = 'async';
-                node.hidden = !!window.Viewer;
+                node.hidden = !!ViewerJs;
                 // With Viewer.js the src is released after the viewer (see release below).
-                if (!window.Viewer) {
+                if (!ViewerJs) {
                     mediaLocal.listen(node,'load',() => {if (current()) session.ready(key);});
                     mediaLocal.cleanup(() => node.removeAttribute('src'));
                 }
             }
             node.src = src;stage.append(node);
-            if (!selected.is_video && window.Viewer) {
+            if (!selected.is_video && ViewerJs) {
+                // Viewer.js is built on an image that has loaded. Its own cancel removes its image listeners only
+                // while `image.complete` is false, so an image left with its load event still queued would build a
+                // viewer into the released image after destroy() (#293). Until then no viewer exists to cancel.
+                let mountedViewer = false;
+                mediaLocal.listen(node,'load',() => { if (current()) { mountedViewer = true;mountViewer(); } },{once:true});
+                mediaLocal.cleanup(() => { if (!mountedViewer) node.removeAttribute('src'); });
+            }
+            function mountViewer() {
                 let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
                 const release = () => {
                     if (released) return;
@@ -166,7 +192,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                         fitWidth = width;fitHeight = height;instance.resize();
                     });
                 };
-                const instance = new window.Viewer(node,{inline:true,toolbar:false,navbar:false,title:false,button:false,
+                const instance = new ViewerJs(node,{inline:true,toolbar:false,navbar:false,title:false,button:false,
                     keyboard:false,fullscreen:false,transition:false,viewed() {
                         viewSettled = true;
                         if (mediaLocal.signal.aborted) { release(); return; }
@@ -176,10 +202,12 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 const observer = new ResizeObserver(scheduleFit);observer.observe(stage);
                 viewer = instance;mediaLocal.cleanup(() => {
                     observer.disconnect();cancelAnimationFrame(fitFrame);
-                    // Inline Viewer.js keeps viewing a still-loading image after destroy(), and that view
-                    // rebuilds its list from images that still have a src; keep both until the view
-                    // settles, fails or times out.
-                    if (viewSettled) { release(); return; }
+                    // Before Viewer.js has built (its zero-delay build is pending), destroy() cancels that build;
+                    // deferring it would let the build run into the image the stage has just dropped.
+                    // Once built, inline Viewer.js keeps viewing a still-loading image after destroy(), and that
+                    // view rebuilds its list from images that still have a src; keep both until the view settles,
+                    // fails or times out.
+                    if (viewSettled || !instance.ready) { release(); return; }
                     node.addEventListener('error',release,{once:true});
                     fallback = setTimeout(release,PENDING_VIEW_DESTROY_MS);
                 });
@@ -188,7 +216,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         }
         function updateControls(state) {
             const unavailable = inspectionState.refreshRequired ? inspectionState.message : state.phase === 'error' ? 'Media could not be loaded. Retry this file.' : entry.is_video ?
-                'Image transforms are unavailable for video.' : !viewer ?
+                'Image transforms are unavailable for video.' : withoutViewer ?
                 'Image transforms are unavailable because Viewer.js could not load.' : !state.mediaReady ? 'Image transforms are available when the image is ready.' : '';
             reason.textContent = unavailable;reason.hidden = !unavailable;
             for (const node of transforms) {

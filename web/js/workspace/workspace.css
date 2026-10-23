@@ -82,6 +82,19 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .tool-card p { flex: 1; margin: 0 0 12px; }
 .workspace-link { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
 .handoff .workspace-link { margin-top: 12px; }
+/* D94: a System section not delivered yet links every legacy tool that still owns it, side by side. */
+.handoff .workspace-link + .workspace-link { margin-inline-start: 18px; /* D94 */ }
+
+/* D92: System's Save row is aria-disabled while nothing is unsaved (or a save runs), and a setting the last save could
+   not save is highlighted, as its "Review the highlighted settings" status says. */
+.save-row button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* D92 */ }
+.setting-row [aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; /* D92 */ }
+/* D93: an Overview row whose action is not available yet (the review queue, Q6) keeps its button, disabled. */
+.operation .row-actions button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* D93 */ }
+/* D97: Appearance's legacy display rows. "Show image details on cards" off keeps a card's Info and Tag at the end of
+   its row; "Collapse viewer details by default" gives the viewer's stage the whole width while its details are hidden. */
+.media-info > div[hidden] + .image-card-actions { margin-inline-start: auto; /* D97 */ }
+.viewer-layout:has(> #viewer-details[hidden]) { grid-template-columns: minmax(0, 1fr); /* D97 */ }
 @media (max-width: 700px) {
     .stat-grid { gap: 8px; }
     .stat { padding: 16px; }
