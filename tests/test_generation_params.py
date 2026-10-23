@@ -5,7 +5,10 @@ returns for the same input (tests/test_generation_params_js_parity.py checks
 that directly when Node is available).
 """
 
+import json
 import os
+import shutil
+import subprocess  # nosec B404 - runs a fixed Node one-liner
 import sys
 import unittest
 
@@ -17,6 +20,7 @@ from utils.generation_params import (  # noqa: E402
     extract_generation_params,
     extract_from_records,
     parse_js_json,
+    parse_page_json,
 )
 
 try:
@@ -218,6 +222,47 @@ class ParsesLikeJavaScript(unittest.TestCase):
         self.assertEqual(
             run("seed-beyond-double-precision")["seed"], 4974052037430000001.0
         )
+
+    def test_page_parse_reads_nan_numbers_as_null(self):
+        # gallery.js and admin.js replace NaN with null before JSON.parse.
+        self.assertEqual(
+            parse_page_json('{"a": NaN, "b": [NaN], "t": "NaN"}'),
+            {"a": None, "b": [None], "t": "NaN"},
+        )
+        self.assertEqual(
+            parse_page_json('{"seed": 9007199254740993}'), {"seed": 9007199254740992.0}
+        )
+        for text in ('{"a": Infinity}', "[-Infinity]", "not json", "", None):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_page_json(text))
+
+    @unittest.skipUnless(shutil.which("node"), "Node is not installed")
+    def test_page_parse_equals_the_legacy_pages_for_nan_numbers(self):
+        # gallery.js/admin.js: two NaN regexes, then JSON.parse (Infinity throws).
+        texts = [
+            '{"1": {"is_changed": [NaN]}, "2": {"is_changed": NaN, "v": 1.5}}',
+            '{"a":NaN,"b":[NaN, 2]}',
+            '{"a": Infinity}',
+            '{"seed": 9007199254740993}',
+        ]
+        script = (
+            "const texts = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+            "console.log(JSON.stringify(texts.map((t) => { try { return {v: JSON.parse("
+            "t.replace(/:\\s*NaN\\b/g, ': null').replace(/\\bNaN\\b/g, 'null'))}; }"
+            " catch (e) { return null; } })));"
+        )
+        completed = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["node", "-e", script],
+            input=json.dumps(texts),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        expected = json.loads(completed.stdout)
+        for text, page in zip(texts, expected):
+            with self.subTest(text=text):
+                self.assertEqual(parse_page_json(text), page and page["v"])
 
     def test_duplicate_keys_keep_the_last_value(self):
         self.assertEqual(parse_js_json('{"a": 1, "a": 2}'), {"a": 2})

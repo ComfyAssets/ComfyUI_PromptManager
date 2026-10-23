@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { startBrowserServer, createServerSupervisor, attachServerStderr } from '../../tools/vendor/start-browser-server.mjs';
+import { startBrowserServer, createServerSupervisor, attachServerStderr, forwardPrefixedLines, SLOW_RESET_PREFIX } from '../../tools/vendor/start-browser-server.mjs';
 import { workflowWorkers } from '../../tools/vendor/test-workers.mjs';
 
 const fakeServer = fileURLToPath(new URL('./fake-browser-server.mjs', import.meta.url));
@@ -191,6 +191,29 @@ test('a failed test gets the server stderr written during it attached; a passing
     assert.equal(attached[0].name, 'server-stderr');
     assert.equal(attached[0].contentType, 'text/plain');
     assert.equal(String(attached[0].body), 'Traceback (most recent call last): boom\n');
+});
+
+test('only complete slow-reset report lines are forwarded, however the chunks split them', () => {
+    const written = [];
+    const forward = forwardPrefixedLines(SLOW_RESET_PREFIX, text => written.push(text));
+    forward(`aiohttp access line\n${SLOW_RESET_PREFIX}POST /__test__/reset still`);
+    assert.deepEqual(written, [], 'a report line waits for its newline');
+    forward(` running after 2.000s\nplain stderr\n${SLOW_RESET_PREFIX}Thread 0x1 [asyncio_0]\n${SLOW_RESET_PREFIX.slice(0, 5)}`);
+    forward(`${SLOW_RESET_PREFIX.slice(5)}  File "server.py", line 1\nnot a report ${SLOW_RESET_PREFIX}\n`);
+    assert.deepEqual(written, [
+        `${SLOW_RESET_PREFIX}POST /__test__/reset still running after 2.000s\n${SLOW_RESET_PREFIX}Thread 0x1 [asyncio_0]\n`,
+        `${SLOW_RESET_PREFIX}  File "server.py", line 1\n`,
+    ]);
+});
+
+test('a slow-reset report on server stderr reaches the worker stderr; other stderr does not', async t => {
+    const reported = [];
+    const server = await startBrowserServer({ ...fake(), report: text => reported.push(text) });
+    t.after(() => server.stop());
+    await writeStderr(server, 'Traceback: ordinary stderr\n');
+    await writeStderr(server, `${SLOW_RESET_PREFIX}POST /__test__/reset answered 200 after 16.064s\n`);
+    assert.deepEqual(reported, [`${SLOW_RESET_PREFIX}POST /__test__/reset answered 200 after 16.064s\n`]);
+    assert.ok(server.stderrTail().includes('Traceback: ordinary stderr'), 'the stderr tail still keeps everything');
 });
 
 test('a server exits with its worker even when the worker is SIGKILLed', async () => {

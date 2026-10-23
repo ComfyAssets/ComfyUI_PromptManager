@@ -18,7 +18,8 @@ const routes = [
     ['tags', 'Tags & categories', null],
     // #249 local Inspect: the native Inspect a file page; Overview's tool card still links the legacy metadata page.
     ['inspect', 'Inspect a file', null],
-    ['system', 'System', '/prompt_manager/admin'],
+    // #249 System S2: native System; its undelivered sections hand off per section (D94, asserted below).
+    ['system', 'System', null],
     // #249 D51: SAVED VIEWS' Favorites, Images filtered to favorites.
     ['favorites', 'Favorites', null],
     // #249 Activity-1: the concept's Activity page in the tools-and-system group.
@@ -409,12 +410,106 @@ for (const width of [1600, 390]) test(`overview and handoff render with concept 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     await sidebarLink(page, 'System').click();
+    // System's Overview is native (S2 Task 6); a section not delivered yet still hands off (D94).
+    await main.locator('.section-nav').getByRole('button', { name: 'Integrations', exact: true }).click();
     const handoff = main.locator('section.handoff');
     await expect(handoff).toHaveClass(/\bsurface\b/);
     expect(await handoff.evaluate(surfaceStyle)).toMatchObject(SURFACE);
     await expect(handoff.locator('a[href="/prompt_manager/admin"]')).toBeVisible();
     await expect(main.locator('.panel')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+// #249 System S2 Task 5: the concept's renderSystem shell (app.js 698–706) at `#/system/<section>`, every section a D94
+// hand-off until its PR, and the Save row's truthful status (D92).
+const SYSTEM_SECTION_LABELS = ['Overview', 'Appearance', 'Sources & scans', 'Integrations', 'Auto-tagging', 'Maintenance',
+    'Backup & export', 'Diagnostics & logs'];
+const SYSTEM_HASHES = ['overview', 'appearance', 'sources', 'integrations', 'tagging', 'maintenance', 'backups', 'diagnostics'];
+const SYSTEM_HANDOFFS = { appearance: ['/prompt_manager/gallery', '/prompt_manager/admin'], sources: ['/prompt_manager/admin', '/prompt_manager/gallery'],
+    maintenance: ['/prompt_manager/admin', '/prompt_manager/gallery'] };
+
+test('System is native: the concept shell, section navigation, sections, hand-offs and the Save row', async ({ page }) => {
+    const mutations = [];
+    page.on('request', item => { if (!['GET', 'HEAD', 'OPTIONS'].includes(item.method())) mutations.push(item.url()); });
+    await page.goto(`${workspace}#/system`);
+    const main = page.locator('#workspace-main');
+    await expect(main.locator('h1')).toHaveText('System');
+    await expect(main.locator('.heading p.muted')).toHaveText('Configuration, maintenance and recovery—with browsing kept in the workspace.');
+    // D92: no "Sample configuration" chip.
+    await expect(main.locator('.heading .chip')).toHaveCount(0);
+    expect(await main.evaluate(node => [...node.children].map(child => `${child.localName}.${child.className}`)))
+        .toEqual(['div.heading', 'div.section-nav', 'div.settings-layout']);
+    const nav = main.getByRole('group', { name: 'System sections', exact: true });
+    await expect(nav.getByRole('button')).toHaveText(SYSTEM_SECTION_LABELS);
+    await expect(nav.getByRole('button', { name: 'Overview', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(nav.locator('[aria-pressed="true"]')).toHaveCount(1);
+    await expect(page.locator('aside.sidebar a[href="#/system"]')).toHaveAttribute('aria-current', 'page');
+    const layout = main.locator('.settings-layout');
+    await expect(layout.locator(':scope > .save-row > span.small#settings-status')).toHaveText('No unsaved changes.');
+    const save = layout.locator(':scope > .save-row > button.ca-primary');
+    await expect(save).toHaveText('Save preferences');
+    await expect(save).toHaveAttribute('aria-disabled', 'true');
+    // Playwright waits on an aria-disabled control, so the ignored press is forced.
+    await save.click({ force: true });
+    await expect(layout.locator('#settings-status')).toHaveText('No unsaved changes.');
+
+    for (const [index, label] of SYSTEM_SECTION_LABELS.entries()) {
+        const hash = SYSTEM_HASHES[index];
+        const button = nav.getByRole('button', { name: label, exact: true });
+        await button.click();
+        await expect(page).toHaveURL(`${workspace}#/system/${hash}`);
+        await expect(button).toHaveAttribute('aria-pressed', 'true');
+        await expect(nav.locator('[aria-pressed="true"]')).toHaveCount(1);
+        // The section changes in place: focus stays on the pressed section, not the page title.
+        await expect(button).toBeFocused();
+        // S2 Task 6: Overview is native (workspace-system.spec.mjs); Maintenance shows its health-check notice above
+        // the hand-off (D123); every other section hands off.
+        if (hash === 'overview') await expect(layout.locator(':scope > .summary-metrics')).toBeVisible();
+        expect(await layout.evaluate(node => [...node.children].map(child => `${child.localName}.${child.className}`)))
+            .toEqual({ overview: ['div.summary-metrics', 'div.two-col', 'div.save-row'],
+                maintenance: ['div.notice', 'section.surface handoff', 'div.save-row'] }[hash]
+                ?? ['section.surface handoff', 'div.save-row']);
+        if (hash === 'overview') continue;
+        const handoff = layout.locator('section.handoff');
+        await expect(handoff.locator('h2')).toHaveText('Your current tools are ready');
+        expect(await handoff.locator('a.workspace-link').evaluateAll(links => links.map(link => link.getAttribute('href'))))
+            .toEqual(SYSTEM_HANDOFFS[hash] ?? ['/prompt_manager/admin']);
+        await expect(layout.locator('#settings-status')).toHaveText('No unsaved changes.');
+        await expect(page.locator('aside.sidebar a[href="#/system"]')).toHaveAttribute('aria-current', 'page');
+    }
+    // Deep links, reload and history keep the section; an unknown section is Overview under its own hash.
+    await page.reload();
+    await expect(nav.getByRole('button', { name: 'Diagnostics & logs', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await page.goBack();
+    await expect(page).toHaveURL(`${workspace}#/system/backups`);
+    await expect(nav.getByRole('button', { name: 'Backup & export', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await page.goto(`${workspace}#/system/general`);
+    await expect(page).toHaveURL(`${workspace}#/system/overview`);
+    await expect(nav.getByRole('button', { name: 'Overview', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    // The sidebar's System returns to the Overview section.
+    await nav.getByRole('button', { name: 'Integrations', exact: true }).click();
+    await sidebarLink(page, 'System').click();
+    await expect(page).toHaveURL(`${workspace}#/system`);
+    await expect(nav.getByRole('button', { name: 'Overview', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    // Leaving System and coming back renders it once, with a fresh section.
+    await sidebarLink(page, 'Images').click();
+    await expect(main.locator('h1')).toHaveText('Images');
+    await expect(main.locator('.section-nav')).toHaveCount(0);
+    await page.goBack();
+    await expect(main.locator('.section-nav')).toHaveCount(1);
+    await expect(main.locator('.settings-layout')).toHaveCount(1);
+    expect(mutations).toEqual([]);
+});
+
+test('Overview opens native System from its System card (Q12)', async ({ page }) => {
+    await page.goto(`${workspace}#/overview`);
+    const card = page.locator('#workspace-main .tool-card').filter({ has: page.getByRole('heading', { name: 'System', exact: true }) });
+    await expect(card.locator('p.small')).toHaveText('Configuration, maintenance and recovery—with browsing kept in the workspace.');
+    const link = card.getByRole('link', { name: 'Open System', exact: true });
+    await expect(link).toHaveAttribute('href', '#/system/overview');
+    await link.click();
+    await expect(page.locator('#workspace-main h1')).toHaveText('System');
+    await expect(page.locator('#workspace-main .section-nav [aria-pressed="true"]')).toHaveText('Overview');
 });
 
 // Task A3: the concept sidebar (index.html h16-41, app.js nav()) rendered from real data (D27, D28).
