@@ -304,16 +304,151 @@ test('Refresh files calls /gallery/rescan and toasts its counts', async ({ page 
     await expect(toast(page)).toHaveText('Files could not be refreshed. Try again.');
 });
 
-test('Thumbnail generation hands off to the existing gallery until its review dialog', async ({ page }) => {
+const THUMBNAIL_PLAN_URL = '/prompt_manager/images/thumbnails/plan';
+const THUMBNAIL_JOB_URL = '/prompt_manager/jobs/thumbnails';
+const planCount = value => value.toLocaleString('en-US');
+
+/** Open "Thumbnail maintenance" from Sources' Thumbnail generation → Review options. */
+async function openThumbnailReview(page) {
     const layout = await openSources(page);
     const thumbnails = layout.locator('.operation').filter({ has: page.getByRole('heading', { name: 'Thumbnail generation', exact: true }) });
     await expect(thumbnails.locator('p')).toHaveText('Generate missing previews; rebuilding all is a separate explicit option.');
-    const popup = page.waitForEvent('popup');
     await thumbnails.getByRole('button', { name: 'Review options', exact: true }).click();
-    const gallery = await popup;
-    expect(new URL(gallery.url()).pathname).toBe('/prompt_manager/gallery');
-    await gallery.close();
-    await expect(statusOf(page)).toHaveText('No unsaved changes.');
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Thumbnail maintenance');
+    return dialog(page);
+}
+
+/** The thumbnail requests this page sends: plan reads (their query) and job starts (their body). */
+function thumbnailRequests(page) {
+    const seen = { plans: [], starts: [] };
+    page.on('request', item => {
+        const url = new URL(item.url());
+        if (url.pathname === THUMBNAIL_PLAN_URL) seen.plans.push(Object.fromEntries(url.searchParams));
+        if (item.method() === 'POST' && url.pathname === THUMBNAIL_JOB_URL) seen.starts.push(item.postDataJSON());
+    });
+    return seen;
+}
+
+const missingLine = plan => `${planCount(plan.targets)} ${plan.targets === 1 ? 'preview' : 'previews'} to generate · ` +
+    `${planCount(plan.fresh)} already up to date.`;
+
+test('Review options shows the plan counts for the chosen scope/quality/size before Start', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/unthumbnailed', { data: { count: 3 } })).toBeOK();
+    // Image loading quality (Appearance, Q3) preselects the dialog's quality.
+    await page.addInitScript(() => { if (location.protocol.startsWith('http')) localStorage.setItem('gallerySettings', JSON.stringify({ imageQuality: 'high' })); });
+    const seen = thumbnailRequests(page);
+    const plan = await serverJson(request, `${THUMBNAIL_PLAN_URL}?mode=missing&size=512&quality=high`);
+    expect(plan.targets).toBe(3);
+    const review = await openThumbnailReview(page);
+    await expect(review.locator('#modal-body > *')).toHaveCount(5);
+    await expect(review.locator('.field > label')).toHaveText(['Scope', 'Quality', 'Preview size limit']);
+    await expect(review.locator('#thumb-mode option')).toHaveText(['Missing thumbnails only', 'Rebuild all (explicit opt-in)']);
+    await expect(review.locator('#thumb-quality option')).toHaveText(['Medium · optimized', 'High · original', 'Low · fastest']);
+    await expect(review.locator('#thumb-mode')).toHaveValue('missing');
+    await expect(review.locator('#thumb-quality')).toHaveValue('high');
+    await expect(review.locator('#thumb-limit')).toHaveValue('512');
+    await expect(review.locator('#thumb-limit')).toHaveAttribute('min', '128');
+    await expect(review.locator('#thumb-limit')).toHaveAttribute('max', '2048');
+    const line = review.locator('#modal-body > p.small');
+    await expect(line).toHaveAttribute('role', 'status');
+    await expect(line).toHaveText(missingLine(plan));
+    expect(seen.plans).toEqual([{ mode: 'missing', size: '512', quality: 'high' }]);
+    await expect(review.locator('.dialog-actions > button')).toHaveText(['Cancel', 'Start']);
+    // Reviewing starts nothing; Cancel closes.
+    await review.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    expect(seen.starts).toEqual([]);
+    expect((await serverJson(request, '/prompt_manager/jobs')).jobs).toEqual([]);
+});
+
+test('size outside 128–2048 reports validity and requests nothing', async ({ page, request }) => {
+    const seen = thumbnailRequests(page);
+    const review = await openThumbnailReview(page);
+    const line = review.locator('#modal-body > p.small');
+    await expect(line).toHaveText(/ already up to date\.$/);
+    const size = review.locator('#thumb-limit');
+    for (const value of ['4096', '64', '']) {
+        await size.fill(value);
+        await expect(size).toHaveAttribute('aria-invalid', 'true');
+        await expect(line).toHaveText('Enter a size from 128 to 2048 pixels.');
+        expect(await size.evaluate(input => input.validity.valid)).toBe(false);
+        // Start keeps the dialog open and sends nothing; neither does a scope change.
+        await review.getByRole('button', { name: 'Start', exact: true }).click();
+        await expect(dialog(page).locator('#modal-title')).toHaveText('Thumbnail maintenance');
+        await review.locator('#thumb-mode').selectOption('rebuild');
+        await expect(line).toHaveText('Enter a size from 128 to 2048 pixels.');
+        await review.locator('#thumb-mode').selectOption('missing');
+    }
+    expect(seen.starts).toEqual([]);
+    expect(seen.plans).toEqual([{ mode: 'missing', size: '512', quality: 'medium' }]);
+    await size.fill('1024');
+    await expect(size).not.toHaveAttribute('aria-invalid');
+    await expect(line).toHaveText(/ already up to date\.$/);
+    expect((await serverJson(request, '/prompt_manager/jobs')).jobs).toEqual([]);
+});
+
+test('Start closes the dialog, toasts, and opens the job in Activity', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/unthumbnailed', { data: { count: 2 } })).toBeOK();
+    const seen = thumbnailRequests(page);
+    const review = await openThumbnailReview(page);
+    await review.locator('#thumb-quality').selectOption('low');
+    await review.locator('#thumb-limit').fill('256');
+    await review.getByRole('button', { name: 'Start', exact: true }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+    // The toast says it started (or, for a run this quick, that it already finished); Activity shows its progress.
+    await expect(toast(page)).toHaveText(/^(Thumbnail generation started\.|Thumbnails finished · 2 generated · 0 errors)$/);
+    expect(seen.starts).toEqual([{ mode: 'missing', size: 256, quality: 'low' }]);
+    const id = page.url().split('/').pop();
+    const { job } = await serverJson(request, `/prompt_manager/jobs/${id}`);
+    expect(job).toMatchObject({ kind: 'thumbnails', title: 'Thumbnail generation', scope: { mode: 'missing', size: 256, quality: 'low' } });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Thumbnail generation');
+    await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.state).toBe('finished');
+});
+
+test('Rebuild all is explicit and the plan line says every preview is regenerated', async ({ page, request }) => {
+    const seen = thumbnailRequests(page);
+    const rebuild = await serverJson(request, `${THUMBNAIL_PLAN_URL}?mode=rebuild&size=512&quality=medium`);
+    expect(rebuild.targets).toBeGreaterThan(0);
+    const review = await openThumbnailReview(page);
+    // Missing thumbnails only is the default; rebuilding is the explicit second option.
+    await expect(review.locator('#thumb-mode')).toHaveValue('missing');
+    const line = review.locator('#modal-body > p.small');
+    await expect(line).toHaveText(/ already up to date\.$/);
+    await review.locator('#thumb-mode').selectOption('rebuild');
+    await expect(line).toHaveText(`Every preview is regenerated: ${planCount(rebuild.targets)} files.`);
+    expect(seen.plans).toEqual([{ mode: 'missing', size: '512', quality: 'medium' }, { mode: 'rebuild', size: '512', quality: 'medium' }]);
+    // Back and forth reads each scope once.
+    await review.locator('#thumb-mode').selectOption('missing');
+    await expect(line).toHaveText(/ already up to date\.$/);
+    await review.locator('#thumb-mode').selectOption('rebuild');
+    await expect(line).toHaveText(`Every preview is regenerated: ${planCount(rebuild.targets)} files.`);
+    expect(seen.plans).toHaveLength(2);
+    await review.getByRole('button', { name: 'Start', exact: true }).click();
+    await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+    expect(seen.starts).toEqual([{ mode: 'rebuild', size: 512, quality: 'medium' }]);
+    const id = page.url().split('/').pop();
+    await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.state).toBe('finished');
+});
+
+test('a plan that cannot be read says so; Start still starts', async ({ page }) => {
+    await page.route(`**${THUMBNAIL_PLAN_URL}?*`, route => route.fulfill({ status: 500, json: { success: false, error: 'disk' } }));
+    const review = await openThumbnailReview(page);
+    await expect(review.locator('#modal-body > p.small')).toHaveText('The previews could not be counted.');
+    await expect(review.getByRole('button', { name: 'Start', exact: true })).not.toHaveAttribute('aria-disabled');
+    await review.getByRole('button', { name: 'Cancel', exact: true }).click();
+});
+
+test('a refused start shows the busy link toast', async ({ page, request }) => {
+    const running = await (await request.post('/__test__/jobs/start', { data: { title: 'Scan for metadata' } })).json();
+    const review = await openThumbnailReview(page);
+    await review.getByRole('button', { name: 'Start', exact: true }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(toast(page)).toHaveText('Another job is running: Scan for metadata.');
+    await expect(toast(page).getByRole('link', { name: 'Scan for metadata', exact: true })).toHaveAttribute('href', `#/activity/${running.job.id}`);
+    await expect(page).toHaveURL(`${workspace}#/system/sources`);
+    expect((await serverJson(request, '/prompt_manager/jobs')).jobs.map(job => job.kind)).toEqual(['scan']);
+    await request.post(`/__test__/jobs/${running.job.id}/finish`, { data: { state: 'finished' } });
 });
 
 test('a save refused by a running scan shows the busy link toast', async ({ page, request }) => {

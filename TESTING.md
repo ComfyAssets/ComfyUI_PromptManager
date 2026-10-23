@@ -1975,7 +1975,7 @@ keeps the drafts; a save refused for one source says the server's message as the
 and marks that row. After a save the source list is read again; a monitoring change
 waits for a restart (the running observer keeps watching until then, and the status
 says "Restart ComfyUI to apply: Watch for new outputs."). Thumbnail generation's
-Review options opens the legacy gallery in a new tab (D94) until its review dialog (S5).
+Review options opens the concept's "Thumbnail maintenance" dialog (D99, below).
 A list that cannot be read shows "Sources could not be loaded. Your saved data has not
 changed." and Retry, never an empty list.
 
@@ -2004,6 +2004,20 @@ server to cancel the running thumbnail job, and a job cancelled from Activity en
 stream with the error frame "Thumbnail generation was cancelled". The blocking
 `POST /images/generate-thumbnails` and the clear stay legacy holds.
 
+The workspace starts it from "Thumbnail maintenance" (`thumbnail-review.mjs`, the
+concept's `thumbnail-review`), opened by Sources' Thumbnail generation → Review options
+and Overview's Review thumbnails. Scope is Missing thumbnails only (`missing`, the
+default) or Rebuild all (explicit opt-in) (`rebuild`); Quality is Medium · optimized /
+High · original / Low · fastest (`medium` / `high` / `low`), preselected from
+Appearance's Image loading quality (`gallerySettings.imageQuality`, the same values,
+Q3); Preview size limit is the longest edge, 512 by default, a whole number from 128 to
+2048. A size outside that range marks the field `aria-invalid`, the plan line says
+"Enter a size from 128 to 2048 pixels." and nothing is requested; Start reports the
+field's validity and keeps the dialog open. Start closes the dialog and starts the job
+through the Activity store, which toasts "Thumbnail generation started."; the job opens
+in Activity. A start refused because another job holds the slot toasts the D57 busy
+link toast and stays. The legacy gallery's thumbnail tools are unchanged.
+
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
 paints nothing. Until it answers, the section shows "Loading the overview…"; a failure
@@ -2031,7 +2045,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D66, D79–D81 renumbered D92–D98 and D111–D113; D121–D128 assigned):
+Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D113; D121–D128 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2050,7 +2064,7 @@ Recorded deviations (plan D60–D66, D79–D81 renumbered D92–D98 and D111–D
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
   missing thumbnails", "N missing thumbnails" (the pending count of
   `/images/thumbnails/status`) or "Thumbnail status unavailable"; Review thumbnails
-  opens Sources until the thumbnail dialog (S5). "One display configuration" says "Grid
+  opens the thumbnail dialog (D99). "One display configuration" says "Grid
   and density settings are shared across views." (no paging). The sources row is
   "N output sources" with "Monitoring and enrichment share one source list.", prefixed
   by "M of N configured sources available." or "None configured is available; ComfyUI's
@@ -2111,6 +2125,21 @@ Recorded deviations (plan D60–D66, D79–D81 renumbered D92–D98 and D111–D
   legacy gallery's `/gallery/rescan` and toasts "Files refreshed. N files in M output
   folders." or "Files could not be refreshed. Try again.". The concept's "sample path"
   note is prototype copy and is dropped.
+- **D99** (Sources/Overview, S5): the concept's `thumbnail-review` dialog ("Thumbnail
+  maintenance") with production copy. A `p.small[role=status]` line before the actions
+  says what the server's read-only plan (`GET /images/thumbnails/plan`) counts for the
+  chosen scope: "N previews to generate · M already up to date." or, for Rebuild all,
+  "Every preview is regenerated: N files.", with "· R more on the next run" past the
+  per-run cap; "Counting previews…" while it is read and "The previews could not be
+  counted." when the read fails (Start still starts). Each scope is read once per
+  dialog, since size and quality change no count. The primary is "Start" (the
+  concept's "Simulate thumbnail job"). Overview's Review thumbnails opens the same
+  dialog (the concept's row starts a sample "Thumbnail check" job directly). Maintenance's
+  Thumbnail cache row takes the dialog with S7. `thumbnail dialog matches the concept
+  from sources|overview` (system-concept.spec, both themes and sizes) maps the line and
+  "Start"; `thumbnail dialog comparison detects mutations` proves they are the only
+  difference and catches a renamed option, swapped options, swapped actions and a
+  changed style.
 - **D111** (Activity, S5): each job kind's pill verb, toasts, line, tiles, outcomes,
   openable rows and labels come from one descriptor table (`activity-kinds.mjs`;
   `activity-store.mjs` re-exports it). The scan's (D56) and image tagging's (D89) are
@@ -2219,10 +2248,13 @@ and a source row, renames a label and the Add source button and swaps the `--lin
 token. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
 `{concept,production}-{statistics,health}-{dark,light}.png`,
 `{concept,production}-appearance-{dark,light}-{1600,390}.png`,
-`{concept,production}-sources-{with,without}-notice-{dark,light}-{1600,390}.png`) are test artifacts; there
+`{concept,production}-sources-{with,without}-notice-{dark,light}-{1600,390}.png`,
+`concept-thumbnail-review-{dark,light}-{1600,390}.png`,
+`production-thumbnail-review-{sources,overview}-{dark,light}-{1600,390}.png`) are test artifacts; there
 are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real counts,
 the health check and metric 4, a failed check, the thumbnail row against the status
-endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
+endpoint (painted after the rest when its read is held, unavailable when it fails), its Review thumbnails
+opening the thumbnail dialog and starting the job, the review row (Q6), the section links, the Statistics dialog against the
 route, a load failure with Retry and late answers after leaving, and Appearance: new
 visits versus the current view and a saved view, the embedded gallery keeping Grid,
 metadata off and on request, the cache (counted up to a request barrier), hidden paths,
@@ -2232,7 +2264,9 @@ the D97 rows and reset. `tests/browser/workspace-system-sources.spec.mjs` covers
 notice's Later and Review scan, a scoped scan from one source into Activity, Add source
 with its server check and Save, a refused folder, Remove down to auto-detect, an absent
 configured source, the three watch states, the monitoring and worker rows, Refresh
-files, the thumbnail hand-off, a save refused by a running scan and a failed read. Its hooks are
+files, the thumbnail dialog (its plan line per scope with the preselected quality, an
+invalid size that requests nothing, Start into Activity, Rebuild all, a failed plan and
+a refused start), a save refused by a running scan and a failed read. Its hooks are
 `tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
 failures, an absent source, a deleted linked file, unthumbnailed files, a fake image
 monitor) on the
@@ -2247,7 +2281,7 @@ node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-co
   tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js \
   tests/js/workspace-system-appearance.test.js tests/js/workspace-preferences.test.js \
   tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js \
-  tests/js/workspace-system-sources.test.js
+  tests/js/workspace-system-sources.test.js tests/js/workspace-thumbnail-review.test.js
 python3 -m unittest tests.test_settings_sources tests.test_scan_scope -v
 npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
   workspace-system-sources.spec.mjs \

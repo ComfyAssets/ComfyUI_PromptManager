@@ -776,3 +776,131 @@ test('add source comparison detects mutations', async ({ page, request }) => {
     await undoStyle();
     expect(diffInventory(expected, await page.evaluate(measureAddSource))).toEqual([]);
 });
+
+/**
+ * Runs in the page: the open "Thumbnail maintenance" dialog (the concept's `thumbnail-review`, app.js 1433–1437): its
+ * title, the body's tree, each `.field` (label, control, options, selection, limits), the `p.small` line and the
+ * actions, with the concept's geometry and tokens. The concept has no `p.small`, so a probe one stands in for its style.
+ */
+function measureThumbnailReview() {
+    const dialog = document.querySelector('dialog#modal[open]');
+    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
+    const name = node => [node.localName, ...[...node.classList].sort()].join('.');
+    const text = node => node?.textContent.trim() ?? null;
+    const body = dialog.querySelector('#modal-body');
+    const fields = [...body.querySelectorAll(':scope > .field')].map(field => {
+        const label = field.querySelector(':scope > label');
+        const control = field.querySelector(':scope > select, :scope > input');
+        return {
+            tree: [...field.children].map(name),
+            ...css(field, 'display', 'flexDirection', 'rowGap', 'marginBottom'),
+            label: { text: text(label), for: label.htmlFor, ...css(label, 'fontSize', 'fontWeight', 'color') },
+            control: { id: control.id, tag: control.localName, type: control.type,
+                options: control.options ? [...control.options].map(option => option.textContent) : null,
+                selected: control.options ? control.selectedIndex : null,
+                value: control.localName === 'input' ? control.value : null,
+                min: control.getAttribute('min'), max: control.getAttribute('max'),
+                ...css(control, 'height', 'paddingLeft', 'fontSize', 'color', 'backgroundColor', 'borderTopColor', 'borderTopLeftRadius') },
+        };
+    });
+    let line = body.querySelector(':scope > p.small');
+    const probe = !line;
+    if (probe) { line = document.createElement('p'); line.className = 'small'; body.append(line); }
+    const plan = { text: probe ? null : text(line), role: probe ? null : line.getAttribute('role'),
+        ...css(line, 'fontSize', 'color', 'marginTop', 'marginBottom') };
+    if (probe) line.remove();
+    const actions = body.querySelector(':scope > .dialog-actions');
+    const rect = dialog.getBoundingClientRect();
+    return {
+        title: text(dialog.querySelector('#modal-title')),
+        tree: [...body.children].map(name),
+        fields,
+        plan,
+        actions: { tree: [...actions.children].map(name), ...css(actions, 'display', 'justifyContent', 'columnGap', 'marginTop'),
+            buttons: [...actions.children].map(button => ({ text: text(button), className: button.className,
+                ...css(button, 'backgroundColor', 'color', 'fontSize', 'paddingTop', 'paddingLeft', 'borderTopColor') })) },
+        width: Math.round(rect.width),
+    };
+}
+
+/**
+ * D99: the planned counts line (`p.small[role=status]`) before the actions, from the server's plan for the chosen
+ * options, and the primary "Start" (the concept's "Simulate thumbnail job").
+ */
+function mapThumbnailConcept(reference, plan) {
+    const [cancel, start] = reference.actions.buttons;
+    const tree = [...reference.tree];
+    tree.splice(tree.indexOf('div.dialog-actions'), 0, 'p.small');
+    return { ...reference, tree,
+        plan: { ...reference.plan, role: 'status',
+            text: `${number(plan.targets)} ${plan.targets === 1 ? 'preview' : 'previews'} to generate · ${number(plan.fresh)} already up to date.` },
+        actions: { ...reference.actions, buttons: [cancel, { ...start, text: 'Start' }] } };
+}
+
+async function conceptThumbnailReview(page, theme) {
+    await conceptSources(page, theme, { notice: false });
+    const row = page.locator('#main .operation').filter({ has: page.getByRole('heading', { name: 'Thumbnail generation', exact: true }) });
+    await row.getByRole('button', { name: 'Review options', exact: true }).click();
+    await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Thumbnail maintenance');
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureThumbnailReview);
+}
+
+/** Production's dialog from Sources' Review options or Overview's Review thumbnails, once its plan line answered. */
+async function productionThumbnailReview(page, theme, entry) {
+    if (entry === 'sources') {
+        await productionSources(page, theme, { notice: false });
+        const row = page.locator('#workspace-main .operation').filter({ has: page.getByRole('heading', { name: 'Thumbnail generation', exact: true }) });
+        await row.getByRole('button', { name: 'Review options', exact: true }).click();
+    } else {
+        await openProduction(page, 'system/overview', theme);
+        await page.locator('#workspace-main').getByRole('button', { name: 'Review thumbnails', exact: true }).click();
+    }
+    await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Thumbnail maintenance');
+    await expect(page.locator('dialog#modal[open] #modal-body > p.small')).toHaveText(/ already up to date\.$/);
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureThumbnailReview);
+}
+
+const thumbnailPlan = request => serverJson(request, '/prompt_manager/images/thumbnails/plan?mode=missing&size=512&quality=medium');
+
+for (const entry of ['sources', 'overview']) for (const theme of THEMES) for (const [width, height] of SIZES) {
+    test(`thumbnail dialog matches the concept from ${entry} ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width, height });
+        await watchedSources(request);
+        const plan = await thumbnailPlan(request);
+        const concept = await conceptThumbnailReview(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`concept-thumbnail-review-${theme}-${width}.png`) });
+        const production = await productionThumbnailReview(page, theme, entry);
+        await page.screenshot({ path: testInfo.outputPath(`production-thumbnail-review-${entry}-${theme}-${width}.png`) });
+        expect(diffInventory(mapThumbnailConcept(concept, plan), production)).toEqual([]);
+    });
+}
+
+test('thumbnail dialog comparison detects mutations', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await watchedSources(request);
+    const plan = await thumbnailPlan(request);
+    const concept = await conceptThumbnailReview(page, 'dark');
+    const expected = mapThumbnailConcept(concept, plan);
+    const production = await productionThumbnailReview(page, 'dark', 'sources');
+    expect(diffInventory(expected, production)).toEqual([]);
+    // Unmapped, the concept differs only where D99 is recorded.
+    expect(diffInventory(concept, production).map(item => item.path).sort())
+        .toEqual(['actions.buttons.1.text', 'plan.role', 'plan.text', 'tree.3', 'tree.4', 'tree.length']);
+    const paths = async () => diffInventory(expected, await page.evaluate(measureThumbnailReview)).map(item => item.path);
+    // A changed option label, a swapped option order, a swapped action order and a changed style.
+    await page.evaluate(() => { document.querySelector('#thumb-quality option').textContent = 'Medium'; });
+    expect(await paths()).toEqual(['fields.1.control.options.0']);
+    await page.evaluate(() => { document.querySelector('#thumb-quality option').textContent = 'Medium · optimized'; });
+    await page.evaluate(() => { const select = document.querySelector('#thumb-mode'); select.prepend(select.lastElementChild); });
+    expect(await paths()).toEqual(expect.arrayContaining(['fields.0.control.options.0', 'fields.0.control.options.1']));
+    await page.evaluate(() => { const select = document.querySelector('#thumb-mode'); select.prepend(select.lastElementChild); select.selectedIndex = 0; });
+    await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
+    expect(await paths()).toEqual(expect.arrayContaining(['actions.buttons.0.text', 'actions.buttons.1.text']));
+    await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
+    const undoStyle = await mutate(page, { css: 'dialog#modal #thumb-limit { border-color: rgb(255, 0, 0); } dialog#modal #modal-body > p.small { color: rgb(255, 0, 0); }' });
+    expect(await paths()).toEqual(expect.arrayContaining(['fields.2.control.borderTopColor', 'plan.color']));
+    await undoStyle();
+    expect(diffInventory(expected, await page.evaluate(measureThumbnailReview))).toEqual([]);
+});

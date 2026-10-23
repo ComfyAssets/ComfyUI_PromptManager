@@ -14,8 +14,8 @@
  *   it to the host draft of `gallery_root_paths`; Remove takes one out. Both wait for the one Save row.
  * - "Watch for new outputs" (`monitoring_enabled`) and "Worker threads" (`worker_threads`, a range up to the server's
  *   `cpu_count`, D113) are host drafts too. "Enrich existing metadata" reviews a scan of every source.
- * - "Thumbnail generation → Review options" opens the existing gallery's thumbnail tool until its review dialog (S5),
- *   the D94 hand-off for the one capability not native yet.
+ * - "Thumbnail generation → Review options" opens "Thumbnail maintenance" (thumbnail-review.mjs, S5 Task 14), which
+ *   starts the thumbnail Activity job.
  *
  * D98: per-source Remove; an added source reads "not saved yet" until Save; the line under the list says when
  * ComfyUI's output folder is used instead; "restart pending" for a source the running monitor does not watch yet; the
@@ -28,6 +28,7 @@
 import { createButton } from '../shared/toolkit/core.js';
 import { closeWorkspaceDialog, field, openContentDialog } from './workspace-dialogs.mjs';
 import { openMetadataScan } from './activity-scan.mjs';
+import { openThumbnailReview } from './thumbnail-review.mjs';
 import { settingRow, operationRow } from './system-controls.mjs';
 import { HOST_UNAVAILABLE } from './system-appearance.mjs';
 import { showWorkspaceToast } from './toast.mjs';
@@ -36,7 +37,6 @@ import { noun } from './plural.mjs';
 const SETTINGS_URL = '/prompt_manager/settings';
 const VALIDATE_URL = '/prompt_manager/settings/validate-source';
 const RESCAN_URL = '/prompt_manager/gallery/rescan';
-const GALLERY_URL = '/prompt_manager/gallery';
 const ROOTS_KEY = 'gallery_root_paths';
 
 export const NOTICE_KEY = 'pm_update_notice_dismissed';
@@ -222,8 +222,7 @@ const controlOf = (row, id) => row.querySelector(`[data-setting="${id}"]`);
  * Activity store (scans start through it), `drafts` the System drafts.
  */
 export function mountSources(container, { api, activity, scope, drafts, notify = showWorkspaceToast, storage = defaultStorage,
-    openWindow = (url) => window.open(url, '_blank', 'noopener'), latestOnly = window.ApiClient.latestOnly,
-    STALE = window.ApiClient.STALE }) {
+    latestOnly = window.ApiClient.latestOnly, STALE = window.ApiClient.STALE }) {
     const statusRead = latestOnly({ lifetime: scope.signal });
     // undefined while read, null when the read failed, else GET /settings' `sources`.
     let sources;
@@ -270,9 +269,8 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
     surface.append(monitoring, workers,
         operationRow({ scope, title: 'Enrich existing metadata', description: 'Resolve both prompts, deduplicate recipes, preserve uncertain links.',
             label: 'Review scan', onClick: scanAll }),
-        // D94: the gallery keeps thumbnail generation until its review dialog (S5).
         operationRow({ scope, title: 'Thumbnail generation', description: 'Generate missing previews; rebuilding all is a separate explicit option.',
-            label: 'Review options', onClick: () => openWindow(window.ApiClient.resolveUrl(GALLERY_URL)) }),
+            label: 'Review options', onClick: trigger => openThumbnailReview({ api, store: activity, scope, trigger }) }),
         // D98: the legacy gallery's Refresh, which rereads every source's file list.
         operationRow({ scope, title: 'Refresh files', description: 'Read every source again to find files added or removed outside ComfyUI.',
             label: 'Refresh', onClick: refresh }));
