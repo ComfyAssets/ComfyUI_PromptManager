@@ -51,12 +51,19 @@ from utils.prompt_inspector import (
     read_inspection_file,
 )
 
+from utils.prompt_inspector import inspect_prompt_evidence, unreadable_evidence
+from utils.prompt_pair_resolver import INSPECTION_PROFILE
+
 try:
     from tests import inspection_parity as parity
+    from tests import local_resolver_cases as resolver_cases
+    from tests import local_resolver_selection_cases as selection_cases
     from tests.open_handles import assert_closed
     from tests.test_utils_video_metadata import HAVE_FFMPEG, write_video
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
     import inspection_parity as parity
+    import local_resolver_cases as resolver_cases
+    import local_resolver_selection_cases as selection_cases
     from open_handles import assert_closed
     from test_utils_video_metadata import HAVE_FFMPEG, write_video
 
@@ -1109,6 +1116,307 @@ class LocalProjectionParityTests(unittest.TestCase):
             {"reserialized-json", "original-text", "invalid", "limited"} <= seen
         )
         self.assertTrue({"parsed", "malformed", "limited"} <= seen)
+
+
+def _server_evidence(records):
+    return inspect_prompt_evidence(records, None, profile=INSPECTION_PROFILE)
+
+
+class LocalResolverParityTests(unittest.TestCase):
+    """``resolveLocalEvidence`` answers as ``inspect_prompt_evidence`` (L3 Tasks 8-9).
+
+    Python is the oracle: every expected value is the server's own answer on the
+    same record texts. Task 8 ported one sampler's tracing; Task 9 ports
+    candidate selection (several samplers, the identical-branch rule of #270,
+    preview-only stages, detailer stages) and A1111 ``parameters``, so no
+    record set is left to the server any more.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(assert_closed, self, temporary.name)
+        self.directory = Path(temporary.name)
+
+    def _compare(self, cases):
+        """Assert each record set's local evidence equal; return the server answers."""
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "records": records}
+                for name, records in cases.items()
+            ],
+        )
+        answers = {}
+        for name, records in cases.items():
+            with self.subTest(case=name):
+                local = observed[name]
+                server = _server_evidence(records)
+                answers[name] = server
+                self.assertEqual(
+                    _canonical_bytes(local["evidence"]), _canonical_bytes(server)
+                )
+        return answers
+
+    def test_local_roles_match_execution_and_single_chain_vectors(self):
+        files = {}
+        for name in parity.COMMITTED:
+            files[name] = parity.fixture_path(name)
+        for name in parity.TEST_TIME:
+            path = parity.fixture_path(name, self.directory)
+            parity.write_png(path, parity.build(name))
+            files[name] = path
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "path": str(path)}
+                for name, path in files.items()
+            ],
+        )
+        vectors = {
+            vector["fixture"]: vector
+            for vector in json.loads(parity.VECTORS_PATH.read_text(encoding="utf-8"))
+            if vector["profile"] == "inspection"
+        }
+        compared = 0
+        for name, path in files.items():
+            with self.subTest(fixture=name):
+                local = observed[name]
+                try:
+                    records = read_inspection_file(path).metadata
+                except MetadataReadError:
+                    self.assertTrue(local["unreadable"])
+                    continue
+                # The single-chain subset (Task 8); the rest is Task 9's test below.
+                if not resolver_cases.single_chain(records):
+                    continue
+                server = _server_evidence(records)
+                self.assertEqual(
+                    _canonical_bytes(local["evidence"]), _canonical_bytes(server)
+                )
+                # The committed vector agrees with the server read here.
+                expect = vectors[name]["expect"]
+                self.assertEqual(server["resolution"]["state"], expect["state"])
+                self.assertEqual(
+                    server["resolution"]["reason_code"], expect["reason_code"]
+                )
+                compared += 1
+        self.assertGreaterEqual(compared, 20)
+
+    def test_local_roles_match_inspection_vectors(self):
+        """Every inspection vector: local prompts, resolution and facts equal Images'.
+
+        The facts are ``extractGenerationFacts`` (with the legacy fill) on the
+        local payload, against the facts the committed vectors pin for the
+        server's response on the same file.
+        """
+        vectors = [
+            vector
+            for vector in json.loads(parity.VECTORS_PATH.read_text(encoding="utf-8"))
+            if vector["profile"] == "inspection"
+        ]
+        files = {}
+        for vector in vectors:
+            name = vector["fixture"]
+            if name in parity.TEST_TIME:
+                path = parity.fixture_path(name, self.directory)
+                parity.write_png(path, parity.build(name))
+            else:
+                path = parity.fixture_path(name)
+            files[name] = path
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "path": str(path)}
+                for name, path in files.items()
+            ],
+        )
+        for vector in vectors:
+            name = vector["fixture"]
+            with self.subTest(fixture=name):
+                local, expect = observed[name], vector["expect"]
+                try:
+                    server = _server_evidence(
+                        read_inspection_file(files[name]).metadata
+                    )
+                except MetadataReadError:
+                    server = unreadable_evidence()
+                    self.assertTrue(local["unreadable"])
+                self.assertEqual(
+                    _canonical_bytes(local["evidence"]), _canonical_bytes(server)
+                )
+                resolution, prompts = (
+                    local["evidence"]["resolution"],
+                    local["evidence"]["prompts"],
+                )
+                self.assertEqual(
+                    (
+                        resolution["state"],
+                        resolution["reason"],
+                        resolution["reason_code"],
+                    ),
+                    (expect["state"], expect["reason"], expect["reason_code"]),
+                )
+                self.assertEqual(
+                    [
+                        parity._role_text(
+                            prompts[role]["status"], prompts[role]["text"]
+                        )
+                        for role in ("positive", "negative")
+                    ],
+                    [expect["positive"], expect["negative"]],
+                )
+                self.assertEqual(local["facts"], expect["facts"])
+        self.assertEqual(len(vectors), 28)
+
+    def test_local_roles_match_selection_record_sets(self):
+        answers = self._compare(selection_cases.selection_cases())
+        reasons = {answer["resolution"]["reason"] for answer in answers.values()}
+        self.assertTrue(
+            {
+                "Every sampler branch uses the same prompt pair",
+                "Multiple sampler branches",
+                "Sampler stages have different prompts",
+                "Cyclic sampler stage ancestry",
+                "Expected an image link",
+                "Unsupported sampler stage ancestry",
+                "Resolution depth limit reached",
+                "A1111 settings footer is not unique",
+                "Multiple negative prompt delimiters",
+                "Negative prompt delimiter is absent",
+                "Parameters exceed the length limit",
+                "No A1111 parameters",
+            }
+            <= reasons
+        )
+        # A stage reaching only previews is dropped: one sampler is named.
+        self.assertEqual(
+            answers["select-preview-dropped"]["resolution"]["sampler_id"], "3"
+        )
+
+    def test_local_roles_match_fuzzed_selection_sets(self):
+        cases = {}
+        for seed in range(4):
+            cases.update(selection_cases.selection_fuzz_cases(seed, 150))
+        answers = self._compare(cases)
+        reasons = [answer["resolution"]["reason"] for answer in answers.values()]
+        self.assertGreater(reasons.count("Multiple sampler branches"), 20)
+        self.assertGreater(reasons.count("Sampler stages have different prompts"), 0)
+        self.assertGreater(
+            reasons.count("Every sampler branch uses the same prompt pair"), 0
+        )
+        self.assertGreater(reasons.count("A1111 settings footer is not unique"), 0)
+
+    def test_local_roles_match_golden_record_sets(self):
+        answers = self._compare(resolver_cases.golden_cases())
+        codes = {answer["resolution"]["reason_code"] for answer in answers.values()}
+        self.assertTrue(
+            {
+                "malformed",
+                "unsupported-node",
+                "runtime-value",
+                "composite",
+                "work-limit",
+                "depth-limit",
+                "text-limit",
+                "graph-ceiling",
+                "no-sampler",
+                None,
+            }
+            <= codes
+        )
+        sources = {
+            side["source"]
+            for answer in answers.values()
+            for side in answer["prompts"].values()
+        }
+        self.assertTrue(
+            {"execution", "graph-inferred", "zeroed-conditioning"} <= sources
+        )
+
+    def test_committed_resolver_vectors_are_current(self):
+        """The Node unit test's committed answers are still the server's."""
+        committed = json.loads(resolver_cases.VECTORS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            committed,
+            json.loads(json.dumps(resolver_cases.committed_vectors())),
+            "regenerate with: python3 -m tests.local_resolver_cases --write",
+        )
+
+    def test_local_roles_match_at_every_work_bound(self):
+        answers = self._compare(resolver_cases.boundary_cases())
+        for name in ("visits", "depth", "scanned"):
+            self.assertEqual(answers[f"{name}-edge"]["resolution"]["state"], "resolved")
+            self.assertIn(
+                answers[f"{name}-over"]["resolution"]["reason_code"],
+                ("work-limit", "depth-limit"),
+            )
+        self.assertEqual(
+            answers["named-astral"]["resolution"]["node"]["class_type"],
+            "\U0001f600" * 64,
+        )
+
+    def test_local_json_depth_cap_at_its_boundary(self):
+        """Both kinds of deep record at the browser's JSON depth cap (1,000).
+
+        Locally a record nested past the cap is invalid JSON: a prompt is
+        malformed and a workflow is ignored, as the server answers when
+        ``json.loads`` raises RecursionError. The server's own limit depends on
+        the Python (TESTING.md, "Deep JSON"): about 990 on 3.10 and 3.11, so it
+        agrees past the cap there; about 10,000 on 3.12 and 3.13 and over
+        50,000 on 3.14, so it agrees up to the cap there and reads deeper.
+        """
+        cases = resolver_cases.depth_cases()
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "records": records}
+                for name, _kind, _depth, records in cases
+            ],
+        )
+        newer = sys.version_info >= (3, 12)
+        compared = 0
+        for name, kind, depth, records in cases:
+            with self.subTest(case=name):
+                local = observed[name]["evidence"]["resolution"]
+                within = depth <= resolver_cases.JSON_MAX_DEPTH
+                if kind == "prompt":
+                    expected = (
+                        ("resolved", None) if within else ("unresolved", "malformed")
+                    )
+                else:
+                    # A workflow that is read finds the overwritten pair (R1).
+                    expected = (
+                        ("unresolved", "malformed") if within else ("resolved", None)
+                    )
+                self.assertEqual((local["state"], local["reason_code"]), expected)
+                server = _server_evidence(records)
+                if server["resolution"]["state"] == local["state"]:
+                    self.assertEqual(
+                        _canonical_bytes(observed[name]["evidence"]),
+                        _canonical_bytes(server),
+                    )
+                    compared += 1
+                else:
+                    # The documented divergence only: an older server refuses
+                    # a little below the cap, a newer one reads past it.
+                    self.assertEqual(within, not newer)
+        self.assertGreaterEqual(compared, 2)
+
+    def test_local_roles_match_fuzzed_record_sets(self):
+        cases = {}
+        for seed in range(4):
+            cases.update(resolver_cases.fuzz_cases(seed, 150))
+        answers = self._compare(cases)
+        states = [answer["resolution"]["state"] for answer in answers.values()]
+        # Coherent graphs reach real results, not only early refusals.
+        self.assertGreater(states.count("resolved"), len(states) // 5)
+        self.assertGreater(states.count("ambiguous"), 0)
+        self.assertGreater(states.count("unresolved"), len(states) // 10)
+        self.assertGreaterEqual(
+            len({answer["resolution"]["reason_code"] for answer in answers.values()}),
+            5,
+        )
 
 
 if __name__ == "__main__":

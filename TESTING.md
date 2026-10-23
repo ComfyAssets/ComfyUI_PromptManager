@@ -50,6 +50,13 @@ stdin open and the server (`--exit-on-stdin-eof`) shuts down cleanly, removing i
 temp root, when that pipe closes, so a worker killed without teardown leaves no
 server behind. A test that fails gets the stderr its server wrote during the test
 attached to the report as `server-stderr` (an aiohttp traceback behind a 500).
+A `/__test__/.../reset` still running after 2 s writes a report to the job log,
+passing test or not: every thread's stack taken while it waits, the default
+executor's threads and queue, the open connections and WAL size, then the total
+and how long each executor call queued and ran. Its lines start with
+`pm-slow-reset| ` (`tests/browser/slow_reset_watch.py`). The report never reads a
+connection another thread is using: one that is busy inside SQLite would block
+that read with the GIL held and freeze the whole server.
 
 The coverage run can be split the way CI splits it, and each shard keeps the raw
 V8 files it writes under `coverage/js/raw`:
@@ -398,6 +405,13 @@ naming it, here and in a detailer's image ancestry; a latent that is not a link 
 reaches its own sampler is `malformed`; running out of budget is `work-limit` or
 `depth-limit`, never single stage. Each sampler's walk runs once per resolution;
 selector branch runs share it and other candidates are charged its visit cost.
+A UI workflow node whose `type` is a list or an object (read only for the overwritten
+PromptManager check) is skipped like a non-object node, since it can be neither a
+subgraph instance nor a PromptManager node, so a prompt that resolves still resolves
+and the other nodes still feed the check; a list or object `class_type` is never a
+preview output. Before #286 both raised and the inspect route answered 500
+(`test_unhashable_*` in `tests/test_api_prompt_inspector.py`, the `workflow-type-*`
+golden cases on both sides).
 Text encoders: `single` encoders (the Qwen image encoders, `TextEncodeQwenImage21`
 slot 0 `prompt` and slot 1 `negative_prompt`, `KikoTextEncode`) read one string
 input unchanged. `parts-equal` encoders (CLIPTextEncodeSDXL, Flux, SD3) resolve when
@@ -862,9 +876,10 @@ Recorded deviations on this page (spec §8):
 - **D7**: the star is a real persisted favorite with "Added to favorites." /
   "Removed from favorites." and a rollback toast on failure.
 - **D8**: every Images card has the concept's select checkbox before the star; the
-  `#bulkbar` shows "N selected" and only the real actions in the concept's order (Set
-  category, Export metadata, Clear). Add tags and Add to collection wait for image tags
-  and collections; "Remove links…" is dropped. The selection survives Load more and
+  `#bulkbar` shows "N selected" and only the real actions in the concept's order (Add
+  tags, then D85's Auto-tag selected, Set category, Export metadata, Clear). Add to
+  collection waits for collections; "Remove links…" is dropped. (Amended by #249 PR D:
+  Add tags ships, see "Bulk tagging from the selection bar".) The selection survives Load more and
   bounded re-mounting and is cleared whenever the collection is replaced (search,
   category, sort, Filters, source change, rescan, reload). A return to Images restores
   the saved collection unreplaced and keeps its selection; a full page reload starts
@@ -1202,6 +1217,142 @@ production-versus-concept difference of PR C and its record:
 | Retry leads the actions when the controller allows it | D116 (ruling T5) |
 | States the concept lacks (busy, conflict, changed storage or file, unconfirmed save, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
 
+### Bulk tagging from the selection bar (#249 PR D)
+
+The Images selection bar shows the concept's **Add tags** after the count, then
+**Auto-tag selected** (D85), before Set category. Both take the checked files when
+pressed, in listing order, as their reveal identity (`{root_index, root_scope, path}`);
+more than 500 toasts "Select at most 500 images." and opens nothing. The selection
+stays after every start, refusal and review. The job's start body is bounded so 500
+targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) fit:
+`500 × (1024 × 6 + 256) + 64 KiB`; a larger body answers 413
+(`tests/test_image_tag_jobs.py` "test_start_body_bounds").
+
+- **Add tags** opens the concept's `simpleInput` (app.js a1378–1383) as Set category
+  does: "Tag selected images", "Tags, separated by commas" (empty: the concept's
+  "cinematic, concept" is sample text), Cancel / Apply. The names are parsed as the Tag
+  image dialog's manual field parses them (trimmed, case-insensitive repeats dropped,
+  first spelling wins); a field that parses to no names keeps the dialog open with the
+  typed text and reports "Enter at least one tag." on the field (its native validity,
+  cleared on the next edit), and nothing is sent. Apply starts the
+  `image-tags` job (`POST /prompt_manager/jobs/image-tags`, `{mode: "add", targets,
+  tags}`) and toasts "Tagging started."; Activity shows its progress.
+- A refused start toasts why and changes nothing: another record-changing job (a scan)
+  gives "Another job is running: <title>." with a link to it (D57's toast), a held model
+  gives the server's `model-busy` sentence, any other coded refusal its own sentence,
+  and anything else "Tagging could not start. Try again." / "Auto-tagging could not
+  start. Try again.".
+- When a job this page started ends having tagged files, those files are read again
+  once: the selected file's inspection (its chips, D88) and, under a Tags filter or a
+  search, the loaded range, as after a Tag save.
+
+- **D85** (plan D62, ruling L1, beyond the concept): **Auto-tag selected** opens
+  "Auto-tag selected images" in the Tag image dialog's shell (`tagging-modal`) with
+  its model panel, headed "Auto-tag <N> image(s)" (the panel's "Auto-tag this image"
+  for N files), without the preview, the manual field, the suggestions or Generate.
+  Its fields show the server's defaults (`GET /prompt_manager/autotag/models`, the
+  D91 Suggestions count included) once that read lands; Start waits for it. A model
+  the status lists as not downloaded keeps Start `aria-disabled` and
+  `#tag-generation-status` says "<model> is not downloaded. Download it from the
+  legacy Auto-tag page." (the server's own sentence), so no job starts only to fail.
+  Start validates the fields as Generate does (native validity; nothing is sent).
+  The concept comparison (`images-concept.spec.mjs`) uses the concept page itself as
+  the oracle, with Add to collection and Remove links… removed and a copy of its Add
+  tags button reading "Auto-tag selected" inserted after it.
+- **D90** (plan D67, ruling T3-bulk): the dialog's **How to apply** radio group
+  (`.field[role=radiogroup]`, radios beside their labels): **Apply automatically**
+  (checked; primary "Start auto-tagging") starts the `image-tags` job
+  (`{mode: "auto", targets, model_type, options}`) and toasts "Auto-tagging started.";
+  **Review each image** (primary "Start review") walks the selection in the browser
+  (`images-tagging-review.mjs`). Each image opens the Tag image dialog titled "Tag
+  image · Image <i> of <M>" on the chosen model and options with Generate already
+  running; its actions are Stop reviewing, Skip and Approve and next (Approve and
+  finish on the last). Approve saves the manual field plus the remaining chips as Save
+  does, without its per-image toast, and opens the next image; Skip writes nothing and
+  advances; Stop reviewing, Escape and × end the session. While Approve's save is in
+  flight, Skip and Stop reviewing are `aria-disabled` and Escape and × do nothing, so the
+  closing count includes that save. When no suggestions are on screen (a model change
+  cleared them, or Generate was refused) the primary saves the manual field only and
+  reads "Save and next" ("Save and finish" on the last image). Each image is one gated
+  `suggest` call, so the session holds no model between images; a `model-busy` answer
+  stays on that image with its sentence in `#tag-generation-status` and D116's Retry
+  until the user retries or skips. Ending toasts "<n> of <M> images tagged." and
+  returns focus to Auto-tag selected.
+- **D91** extends to the bulk dialog: its Suggestions field is the job's and the
+  review's `suggestion_limit`.
+- **D118** (copy the concept has no line for; the concept's `bulk-apply` only toasts a
+  demo sentence): an Add tags field that parses to no names reports "Enter at least one
+  tag." on the field; a start refused for no coded reason toasts "Tagging could not start. Try
+  again." or "Auto-tagging could not start. Try again." (as D55's "The scan could not
+  start. Try again."); and the bulk dialog's model panel is headed "Auto-tag <N>
+  image(s)" where the Tag image dialog's reads "Auto-tag this image". Everything else
+  the selection bar's tagging shows is the concept's or the plan's (D85, D90, D91).
+- **D89** (plan D66, Activity for the `image-tags` job): the job's Activity item and its
+  view are the scan's (D54, D56, D57, D59) with the job kind's own counters, from one
+  per-kind table (`JOB_VIEWS` in `activity-store.mjs`; a kind without one keeps the
+  scan's tiles under "Job log" and "Cancel job"). The titles are the server's: "Add
+  tags to images" and "Auto-tag images".
+  - The pill's verb is "Tagging" ("Tagging · 41% · 8,240 / 19,622").
+  - The item line and the view's heading line read "Started HH:MM · N images · closing
+    this view does not cancel it" (the job's image count, grouped "en-US"), "Finished
+    HH:MM · N tagged · M errors", "Cancelled HH:MM at a file boundary · N tagged ·
+    completed work is kept" or "Stopped on an error at HH:MM · N tagged · M errors".
+  - The view's actions are Download report and, while running, "Cancel tagging"
+    (`.danger`); the progress bar is "<title> progress".
+  - Four `dl.stat-row` tiles in the mockup's tones: Tagged (`.added`, green),
+    Unchanged, Skipped (`.warn`, warning), Errors (`.bad`, red). They keep the
+    mockup's five-column row (two columns on a phone), so a tile is the scan's width
+    and the fifth cell stays empty.
+  - The outcome list reads Tagged, Errors, Skipped, Unchanged (what got tagged and what
+    went wrong first, as the scan's), and the view opens on the first with files.
+  - Rows under Tagged and Unchanged are D57's `button.file-row`s that open the file in
+    the viewer by its listing identity; Skipped and Errors rows are plain text.
+  - The log is "● Tagging log — raw detail, click to show".
+  - The row and log wording is the job's (D1), since neither the concept nor the
+    mockup has a line for it: "Added N tag(s)", "No new tags", and the skip reasons
+    "Video: manual tags only", "Too large to verify", "File changed", "File not found",
+    "Not a supported still image" and "The file could not be read now. Run the job again
+    for it." (the capture store stayed at capacity, for example with Tag dialogs open in
+    other tabs, after a short backoff of retries). Log prefixes are `+` tagged, `=`
+    unchanged, `-` skipped and `!` error.
+  - The progress line is the scan's: "Processing file N of M · about X min left", the
+    estimate (D56's `_time_left`) shown once two files are done, each file one batch.
+  - Download report saves `prompt-manager-image-tags-<YYYYMMDD-HHMM>.json`.
+  - The start toasts are "Tagging started." / "Auto-tagging started." (D85); the end
+    toasts follow the design's pattern with the job's counts, as the scan's: "<title>
+    finished · N tagged · M errors", "<title> cancelled · N tagged" or "<title> failed ·
+    N tagged · M errors".
+  - Tests: `tests/js/workspace-activity-store.test.js` ("image-tags jobs get their own
+    tiles outcomes and pill verb", "unknown kinds keep the generic view");
+    `tests/browser/workspace-activity.spec.mjs` ("an image tagging job shows Tagged
+    Unchanged Skipped Errors and opens tagged rows", "cancel tagging stops at a file
+    boundary", "the report download names the kind", on fake `image-tags` jobs from
+    `workspace_activity_fixture.py`); `tests/browser/activity-concept.spec.mjs` ("image
+    tagging job view follows the approved mockup", dark and light, with a mutation
+    check). The scan's view is unchanged.
+
+Browser tests (`tests/browser/workspace-tagging-bulk.spec.mjs`, on the tagging
+fixture): "selection bar shows Add tags then Auto-tag selected before Set category",
+"Add tags runs a job and the cards show the tags after it finishes", "Auto-tag
+selected with Apply automatically runs a job with the chosen model, thresholds and
+suggestion count", "a model that is not downloaded keeps Start disabled and says
+why", "Suggestions field prefills from the setting and caps chips at the entered
+count", "Review each image walks the selection one dialog at a time and only approved
+images gain tags", "Review holds Stop reviewing, Escape and × while a save is in
+flight, and names a manual-only save" and "a running scan makes the start report
+busy". Units:
+`tests/js/workspace-images-tagging-bulk.test.js`,
+`tests/js/workspace-images-tagging-review.test.js`.
+
+| Difference | Record |
+| --- | --- |
+| Add tags ships (Add to collection and Remove links… still omitted) | D8 (amended) |
+| Auto-tag selected and its dialog | D85 (ruling L1) |
+| How to apply and the Review each image session | D90 (ruling T3-bulk) |
+| Suggestions count in the bulk dialog | D91 |
+| Copy without a concept line: no tags, start fallbacks, the panel heading | D118 |
+| Activity item and job view for image tagging jobs | D89 (plan D66) |
+
 Native image tagging (#249 PR B routes, PR C UI): `POST
 /prompt_manager/image-annotations/observe` (capture one listed file, its saved set and
 `tag_revision`), `GET`/`DELETE /prompt_manager/image-annotations/capture/<token>`
@@ -1445,7 +1596,43 @@ AVI/WMV preview only), chosen or dropped, previews inline. The heading's one act
 the shared viewer with the full inspector on a record read entirely in this browser
 (`web/js/workspace/inspect.mjs`, `local-session.mjs`, `local-inspection.mjs` and the L1
 readers `png-metadata.js`, `local-video.mjs`, `local-projection.mjs`). Nothing is
-uploaded, imported or stored. Only HTML and JS change, so no ComfyUI restart is needed.
+uploaded, imported or stored. PRs L1 and L2 change only HTML and JS, so they need no
+ComfyUI restart; PR L3 does (below).
+
+Local roles (#249 PR L3, decision LI-1): the prompts and resolution of a local record are
+the server inspector's for the same records. `web/js/workspace/local-resolver.mjs` (with
+`local-resolver-support.mjs`, `local-resolver-stages.mjs`, `local-parameters.mjs` and
+`py-json.mjs`) ports `inspect_prompt_evidence` with `INSPECTION_PROFILE`: execution
+evidence, graph tracing, every bound, several sampler candidates with the
+identical-branch rule (#270), preview-only stages, detailer stages (multistage) and A1111
+`parameters`. It reads the server's own node table, `web/js/inspection-semantics.json`,
+which the page fetches once through the API client as it mounts, before any selection
+(`local-semantics.mjs`; `/prompt_manager/js/inspection-semantics.json` is the one JSON
+file the static route serves, by exact path). A table that cannot be fetched answers
+"The inspector's node table is unavailable." as the server does. The legacy fill in
+`projectInspectionPayload` then applies to a local record exactly where it applies to the
+Images answer for the same bytes. Python is the oracle:
+`tests/test_local_inspect_parity.py` `LocalResolverParityTests` compares the local
+evidence byte for byte with `inspect_prompt_evidence` for every parity PNG and inspection
+vector (prompts, resolution and facts), the golden and selection record sets
+(`tests/local_resolver_cases.py`, `tests/local_resolver_selection_cases.py`), every work
+bound and 1,200 seeded fuzz cases; `tests/fixtures/local-inspect/resolver-vectors.json`
+holds the committed answers the Node unit test reads. The browser spec `chooser shows the
+Images roles and resolution for every parity PNG` compares the rail with Images for all
+25 committed parity PNGs. The static route change and the resolver fixes (Python) need a
+ComfyUI restart.
+
+Main thread (M4): the resolver runs on the page's thread, not a worker. On a desktop
+(Node 26) `resolveLocalEvidence` on maximal 2 MiB graphs (a 19,990-sampler chain, 6,600
+independent samplers, a consumer-dense scan, a 100,000-node PromptManager workflow) took
+130–455 ms; the server took 80–905 ms on the same inputs. `localFileAdapter.read` runs in
+bounded steps (read, table, parse and resolve, project, fit) with a turn of the event
+loop between them, every wait ends with the selection's signal (a stalled table request
+included), and the inspector carries `aria-busy="true"` with "Loading file details…"
+until the answer lands. `tests/js/workspace-local-inspection.test.js` pins a 2,500 ms
+budget per step on maximal independent-sampler and stage-chain graphs, checks that the
+stepped read answers byte for byte as one synchronous build, and that an abort at any
+step ends the read.
 
 Bounds (the server's own budgets, ported by PR L1; see "Follow-up: local Inspect parity"
 under "Chronological Library history" for the known divergences):
@@ -1464,7 +1651,8 @@ under "Chronological Library history" for the known divergences):
 
 Privacy, asserted by `local inspection makes no content request or storage write` and
 `local roles send exactly` in `tests/browser/workspace-inspect.spec.mjs`, and by the
-managed-host spec below: no request carries the file's bytes, name or text (fetch, XHR,
+managed-host spec below: the only static file Inspect reads is its node table, once per
+page and before any selection; no request carries the file's bytes, name or text (fetch, XHR,
 beacon, WebSocket, EventSource); Inspect writes nothing to `localStorage`,
 `sessionStorage` or IndexedDB; only an explicit Send crosses the host bridge, and its
 payload carries neither the `blob:` URL nor the filename; no console message names the
@@ -1491,19 +1679,27 @@ mapped differences"):
   `image/png,image/jpeg,image/webp` plus `video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.wmv`. A
   video previews in the same `#local-preview` slot as `video.local-file-preview` with
   native `controls`, `playsInline`, `preload="metadata"` and `muted`, never autoplays
-  inline, and is paused, has its `src` removed and is removed from the page on replacement
-  or dispose, before its URL is revoked. Each preview owns its listeners, so the page never
-  pins a released node. A settled video (metadata read, or failed) is then reset with
-  `load()` at once; one still starting is reset only once it reports metadata or an error,
-  because WebKit (GStreamer) blocked the page when such a pipeline was reset (`replacing a
-  video that just started loading never blocks the page`, `a video replaced while still
-  starting is reset once it settles`). A WebKit load cut off by the revoked URL usually
-  stalls and never settles; a fallback then only drops the waiting listeners. The viewer's
-  own video teardown was checked the same way (`closing the viewer on a video that just
-  started never blocks the page`, 15 fresh pages on WebKit) and needed no change.
-  Follow-up: on WebKit, a video released exactly at its `loadstart` sometimes blocks the
-  page, with or without any reset and also before the deferred reset (2 of 24 runs in the
-  pinned image), so the `loadstart` spec is skipped on WebKit until that is investigated.
+  inline. On replacement or dispose it is paused, has its `src` removed, is reset with
+  `load()` (which frees its decoder) and is removed from the page, before its URL is
+  revoked. Each preview owns its listeners, so the page never pins a released node.
+  A video replaced while still starting (a source, but neither metadata nor an error yet)
+  stays where it is, inert and `aria-hidden`, with the new preview inserted after it, and
+  the session's revoke of its URL waits; once it reports metadata or an error (or after
+  15 s) it is released as above and only then is its URL revoked. Page leave and dispose
+  release it at once. Cause, found with native stacks of the hung WPE web process in the
+  pinned image: WebKit (GStreamer) deadlocks when a video leaves the page or the viewport
+  before its pipeline has started. The main thread changes the pipeline state and waits
+  for the source's streaming thread, which is itself waiting on the main thread in a
+  synchronous bus handler. Removing the video, hiding it, or only pushing it below the
+  fold with a taller preview inserted before it all hung (7 to 21 of 120 fresh pages each,
+  replaced at `loadstart` + 0–7 ms), and none of the earlier steps (`pause()`, removing
+  `src`, `load()`, revoking the URL) was the cause on its own; pushing it out after
+  `loadedmetadata` hung 0 of 180. Specs: `replacing a video that just started loading
+  never blocks the page`, and `a video replaced while still starting is reset once it
+  settles`, which now runs on WebKit too (15 fresh pages, replaced at `loadstart` + 0–4
+  ms). The viewer's own video teardown was checked the same way (`closing the viewer on a
+  video that just started never blocks the page`, 15 fresh pages on WebKit) and needed no
+  change.
 - **D63** (status line): one `p.small.spaced-16` in `#local-preview`, for states the
   concept never shows: "Drop one file at a time.", "Folders cannot be inspected. Choose
   one image or video file.", "This file type cannot be previewed or inspected here.
@@ -1528,6 +1724,29 @@ mapped differences"):
   Modified with no Path row and no Show in folder, and ends with "Local file; no saved
   library association was checked." and Download original. There is no Prompt history
   action and no category or tag chips.
+- **D117** (Copy settings summary, LI-4): the legacy metadata
+  page's COPY ALL, consolidated into the shared full inspector (the viewer's
+  `#viewer-details`, so Images, the recorded history's current file and Inspect all have
+  it). The concept has no such action. One plain button "Copy settings summary" follows
+  the six facts (before "File & provenance"); the Images side panel keeps the concept's
+  footer and has none. Its text is the legacy `copyAllData` template, line for line:
+  `Checkpoint`, `Positive Prompt`, `Negative Prompt`, `Steps`, `CFG Scale`, `Sampler`,
+  `Seed`, with the legacy placeholders ("Unknown", "No prompt found", "No negative prompt
+  found"). The values are the ones the inspector shows: a confirmed prompt and a known
+  fact verbatim, anything else (an explicitly empty prompt included, as the legacy parse
+  treats '') the placeholder. Against the legacy page, for the same file, only these
+  differ: numbers keep the server's spelling ("8.0" where the legacy page wrote 8); a fact
+  the legacy parse could not read can be known; and a negative the #249 ZeroOut guard
+  zeroed reads "No negative prompt found" where the legacy parse read the positive's text
+  through the zero-out. `workspace-file-inspector.test.js` runs the template taken from
+  `web/metadata.html` itself on the legacy parse of every parity PNG: 22 of 25 are
+  byte-equal, f01b and f23 differ by the ZeroOut guard and f17 by facts the legacy parse
+  missed. Copying works as the concept's prompt copy: the toast "Settings summary
+  copied.", or, without a clipboard or when it is refused, the select-to-copy dialog
+  titled "Copy settings summary". `.ca-tools #viewer-details > div > button` wraps
+  (`white-space: normal`) in the narrow rail at 200% zoom, as D20's buttons do. The concept
+  comparisons add the button to the concept's viewer at runtime (a copy of its own plain
+  button) and to the Inspect rail's section order.
 
 The chooser keeps naming the chosen file, as the concept's does: it is cleared as the
 picker opens (so choosing the same file again is a new selection), not after `change`,
@@ -1541,9 +1760,8 @@ Legacy floor (`web/metadata.html`), dispositions:
 - Full text (the old "Show more"): the prompt blocks show the whole text.
 - Raw workflow view and Download workflow JSON: kept, in "Workflow & raw metadata".
 - Copy all summary and filename copy (LI-4): the filename is selectable text in the rail
-  and Download original saves the file under its name. The ruled "Copy settings summary"
-  button after the six facts of the shared full inspector is not part of PR L2; until it
-  lands, the legacy page keeps COPY ALL and stays reachable from Overview.
+  and Download original saves the file under its name. COPY ALL is the shared full
+  inspector's "Copy settings summary" (D117), with the legacy text.
 - Fully browser-local reading: kept and asserted (privacy above).
 - Case-variant keys `Workflow|comfy|ComfyUI|Prompt|Parameters` (LI-5): a separate
   backend issue; Inspect follows the server's readers, so the two never disagree.
@@ -1978,7 +2196,12 @@ capacity). Recording captures in the background: it never takes the store's
 last worker or capture slot, which stay free for an interactive Tag dialog or
 Apply, and waits up to 2 s for room before counting the file as not added
 (`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor records after its fallback link, best effort: a failure
-is logged and the link stays. A new item moves `review_index_revision`. A
+is logged and the link stays. Recording follows the registry's `records`
+admission (#289): the scan's recording runs under its own `records` job, and
+the monitor's (one file, not a job) is refused while a `records` or `guarded`
+job or hold runs. It then records nothing, logs that the file waits for the
+next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
+again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
 `mtime_ns` equal the verified fingerprint of bytes an item already cites (a
 stat compare); the file still stays in the default "new" scope, because it is
@@ -2445,12 +2668,41 @@ skip without ffmpeg). The remaining known divergences, checked against ffprobe 9
   `unreadable`); ffprobe reads such files.
 - An EBML DocType other than `matroska`/`webm` is an invalid container locally; ffmpeg
   only warns and reads it.
-- Envelope JSON deeper than 1,000 levels is refused locally as Python's default
-  recursion limit refuses it; the server's real limit depends on the interpreter and
-  call stack. A duplicate key in an object enclosing a nest deeper than the running
+- Deep JSON (local roles, PR L3, and video envelopes): both browser CPython-JSON
+  parsers (`py-json.mjs`, `local-video.mjs`) share one cap, `JSON_MAX_DEPTH` = 1,000
+  nested arrays or objects (each counts, an empty one too); past it a record is invalid
+  JSON locally. The server's `json.loads` raises RecursionError at a limit that depends
+  on the Python, measured on Linux x86-64: 993 levels from a bare script on 3.10 and
+  3.11 (the 1,000 recursion limit minus the caller's frames, so about 990 inside the
+  server), 9,997 on 3.12 and 9,998 on 3.13 (the C recursion counter; lower on Windows
+  builds), and about 52,150 on 3.14 (stack-based, varies with the thread's stack).
+  The record kinds answer: a deep `prompt` graph (or `comfyassets_prompt_pairs`
+  envelope) is malformed; a deep `workflow` is ignored, so the overwritten PromptManager
+  check (R1) does not run and a prompt can resolve; a deep video `comment` or
+  `description` envelope makes the file unreadable on both sides (the server's
+  RecursionError reaches `read_inspection_file`). That gives two directions:
+  - 3.10/3.11, between the server's limit and 1,000: the server refuses and the local
+    page reads, so a deep prompt resolves locally while the server says malformed, and
+    a deep workflow can make R1 refuse locally where the server resolves.
+  - 3.12 and newer, from 1,001 up to the server's limit: the local page refuses and
+    the server reads, so a deep prompt is malformed locally while the server resolves,
+    and a deep workflow is ignored locally while the server can refuse it under R1.
+  Past both limits they agree. `test_local_json_depth_cap_at_its_boundary` checks the
+  local answer at 999, 1,000 and 1,001 for both kinds and that any server difference
+  is only one of the two directions above.
+- Local roles (PR L3): `\d` in the A1111 settings footer is any Unicode decimal
+  digit on both sides, but the browser's Unicode version can be newer than the server
+  Python's, so a footer whose step count uses a digit added after Unicode 15 can differ.
+  `str.lower()` and `toLowerCase()` differ only for characters no node class name uses.
+- A duplicate key in an object enclosing a nest deeper than the running
   Python's json limit is `malformed` locally and `limited` on that Python.
 - Decimal exponent limits assume CPython's C `_decimal`; on a `_pydecimal` interpreter
   the server would read the over-limit exponents the local projection refuses.
+- Follow-up (two CPython-JSON emulations, review M6): `local-video.mjs`
+  (`pythonJsonLoads`/`pythonFloatRepr`, numbers kept as lexemes) and `py-json.mjs`
+  (`pyJsonLoads`/`pyFloatRepr`, Python value kinds) both emulate `json.loads`; only the
+  depth cap is shared so far. A fix to one parser can miss the other, so the video
+  reader should move onto `py-json.mjs` in a later PR.
 
 Preserve raw logs, failed traces, paired PNGs, geometry, runtime versions and
 source hashes before later managed commands clear their output directories.

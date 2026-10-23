@@ -787,7 +787,12 @@ test('density changes and resize preserve identity focus and selection', async (
     await page.getByRole('button',{name:'Grid',exact:true}).click();
     for (const [width,columns] of [[951,3],[950,3],[700,2],[390,2]]) {
         await page.setViewportSize({width,height:844});
-        await expect.poll(()=>cards(page).nth(columns).evaluate(node=>node.offsetLeft)).toBe(0);
+        // 700px and 390px both lay out two columns, so a card at the row start alone is also true of the previous
+        // width's cards before WebKit runs the first frame after the resize; wait for the row to fit the new grid.
+        await expect.poll(()=>page.locator('.image-grid').evaluate((grid,columns)=>{
+            const row=[...grid.querySelectorAll(':scope > article[data-image-key]')];
+            return row[columns].offsetLeft===0&&row[columns-1].getBoundingClientRect().right<=grid.getBoundingClientRect().right+1;
+        },columns)).toBe(true);
         await first.getByRole('button',{name:/^Open /}).focus();await page.keyboard.press('ArrowDown');
         await expect(cards(page).nth(columns).getByRole('button',{name:/^Open /})).toBeFocused();
         expect(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
@@ -902,6 +907,10 @@ test('browser Back closes the open Images dialog and leaves the next page usable
 
 test('count line shows images and positive prompts', async ({ page, request }) => {
     await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    // D17's "Today" is the newest file's day: the page's clock stands at that file's mtime, so the fixture's day and
+    // the page's agree on either side of midnight.
+    const { images } = await (await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();
+    await page.clock.setFixedTime(new Date(Math.max(...images.map(image => image.modified_time)) * 1000));
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
     await expect(caption(page).locator('#result-count')).toHaveText('2 of 2 images · 2 positive prompts');
@@ -1702,7 +1711,8 @@ test('card checkboxes select images into the concept bar and Clear empties it', 
     const selectedBefore = await cards(page).evaluateAll(nodes => nodes.map(node => node.classList.contains('selected')));
     await checkbox(first, 'same.png').check();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
-    await expect(barButtons(page)).toHaveText(['Set category', 'Export metadata', 'Clear']);
+    // D85: Add tags (the concept's) and Auto-tag selected lead the real actions.
+    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Export metadata', 'Clear']);
     // Toggling neither opens the viewer, nor inspects, nor moves focus.
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await expect(checkbox(first, 'same.png')).toBeFocused();

@@ -178,30 +178,28 @@ async function captureFooter(page,testInfo,name) {
 
 test.beforeEach(async({request})=>{await seedConcept(request);});
 
-for(const [width,height] of SIZES)for(const theme of THEMES)test(`shell geometry, tokens and controls match the concept ${width}x${height} ${theme}`,async({page},testInfo)=>{
-    // Twelve page loads (3 routes x 2 motions, concept and production) with captures, hovers and focus: 15-19 s on a
-    // CI WebKit runner, and past the 30 s default when the runner is loaded (reproduced with 2 CPUs and 3 workers).
-    test.setTimeout(90_000);
+// One test per route, size, theme and motion. All of them in one test per size and theme (12 page loads, 12 captures,
+// 36 hovers) steadily took 22 s median and up to 33 s on CI WebKit, past the 30 s budget with no step stalled; one
+// route in one motion is a sixth of that work under the same budget.
+for(const [route,breadcrumb] of ROUTES)for(const [width,height] of SIZES)for(const theme of THEMES)for(const motion of MOTIONS)test(`shell geometry, tokens and controls match the concept on ${route} ${width}x${height} ${theme} ${motion}`,async({page},testInfo)=>{
     await page.setViewportSize({width,height});const result={};
-    for(const motion of MOTIONS)for(const [route,breadcrumb] of ROUTES) {
-        await openConcept(page,route,theme,motion);await page.mouse.move(0,0);
-        const reference=await inventoryOf(page,'#main');
-        if(motion==='no-preference')await captureCanonicalState(page,testInfo,`concept-shell-${route}-${width}-${theme}`);
-        const referenceRings=FULL_HEADING.has(route)?await ringsOf(page,'#main'):null;
-        const referenceHovers=await hoversOf(page);
-        if(motion==='no-preference')await captureFooter(page,testInfo,`concept-footer-${route}-${width}-${theme}`);
-        await openProduction(page,route,theme,motion);await page.mouse.move(0,0);
-        const actual=await inventoryOf(page,'#workspace-main');
-        if(motion==='no-preference')await captureCanonicalState(page,testInfo,`production-shell-${route}-${width}-${theme}`);
-        const actualRings=FULL_HEADING.has(route)?await ringsOf(page,'#workspace-main'):null;
-        const actualHovers=await hoversOf(page);
-        if(motion==='no-preference')await captureFooter(page,testInfo,`production-footer-${route}-${width}-${theme}`);
-        result[`${motion} ${route}`]={route,breadcrumb,reference,actual,diff:compare(route,reference,actual),referenceRings,actualRings,
-            referenceHovers,actualHovers};
-    }
-    const path=testInfo.outputPath('shell-geometry.json');await writeFile(path,JSON.stringify(result,null,2));
-    await testInfo.attach('shell-geometry',{path,contentType:'application/json'});
-    for(const [key,{route,breadcrumb,reference,actual,diff,referenceRings,actualRings,referenceHovers,actualHovers}] of Object.entries(result)) {
+    await openConcept(page,route,theme,motion);await page.mouse.move(0,0);
+    const reference=await inventoryOf(page,'#main');
+    if(motion==='no-preference')await captureCanonicalState(page,testInfo,`concept-shell-${route}-${width}-${theme}`);
+    const referenceRings=FULL_HEADING.has(route)?await ringsOf(page,'#main'):null;
+    const referenceHovers=await hoversOf(page);
+    if(motion==='no-preference')await captureFooter(page,testInfo,`concept-footer-${route}-${width}-${theme}`);
+    await openProduction(page,route,theme,motion);await page.mouse.move(0,0);
+    const actual=await inventoryOf(page,'#workspace-main');
+    if(motion==='no-preference')await captureCanonicalState(page,testInfo,`production-shell-${route}-${width}-${theme}`);
+    const actualRings=FULL_HEADING.has(route)?await ringsOf(page,'#workspace-main'):null;
+    const actualHovers=await hoversOf(page);
+    if(motion==='no-preference')await captureFooter(page,testInfo,`production-footer-${route}-${width}-${theme}`);
+    result[`${motion} ${route}`]={reference,actual,diff:compare(route,reference,actual),referenceRings,actualRings,
+        referenceHovers,actualHovers};
+    const path=testInfo.outputPath(`shell-geometry-${route}-${motion}.json`);await writeFile(path,JSON.stringify(result,null,2));
+    await testInfo.attach(`shell-geometry-${route}-${motion}`,{path,contentType:'application/json'});
+    for(const [key,{reference,actual,diff,referenceRings,actualRings,referenceHovers,actualHovers}] of Object.entries(result)) {
         // The concept itself is what this comparison assumes: its sample counts and its shell controls.
         expect.soft(reference.chrome.navs[0].rows.map(row=>[row.text,row.count?.text??null]),`${key} concept WORKSPACE rows`)
             .toEqual([['Images','24'],['Prompt library','6'],['Tags & categories','15'],['Inspect a file',null]]);

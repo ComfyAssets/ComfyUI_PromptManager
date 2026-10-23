@@ -254,7 +254,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // The checked cards and the concept's selection bar (#249 D8), between the filter row and the gallery layout. The
     // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
     const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state.items, focusFallback,
-        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }});
+        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys)});
     if (bar) main.append(bar.element);
     main.append(body);
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
@@ -481,7 +481,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         scheduleLoad();
     }
     const stream = createImageStream({ api, fetchPage, onChange: renderState, restore: visit ? {filters, state:visit.state} : undefined });
-    followImageTagSaves({scope, stream, inspection, selection:() => selection, filtered:() => !embedded && !recovering && Boolean(filters.tags.length || filters.q),
+    const refreshTagged = followImageTagSaves({scope, stream, inspection, selection:() => selection, filtered:() => !embedded && !recovering && Boolean(filters.tags.length || filters.q),
         onRefreshing:busy => more.setAttribute('aria-disabled', String(busy || Boolean(state?.loading) || recovering))});
     scope.cleanup(() => {
         stream.dispose();

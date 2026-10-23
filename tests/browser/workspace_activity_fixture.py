@@ -4,7 +4,9 @@ A fake job is a real registry job whose runner waits for commands instead of
 reading files, so a test sets its progress and counters exactly:
 
 - ``POST /__test__/jobs/start`` starts one (``kind``, ``title``, ``total``,
-  ``output_folders``) and returns its summary, or 409 while one runs;
+  ``output_folders``; for ``kind: "image-tags"`` the image tagging job's
+  groups and its ``{mode, images}`` scope instead) and returns its summary,
+  or 409 while one runs;
 - ``POST /__test__/jobs/{id}/step`` records ``records`` (``{group, path,
   root, root_index, detail}`` file outcomes, counted, listed and logged as the scan
   records them) and ``bulk`` (``{group, count, root}``: ``count`` numbered
@@ -12,6 +14,9 @@ reading files, so a test sets its progress and counters exactly:
   the progress to every subscriber;
 - ``POST /__test__/jobs/{id}/finish`` ends it as ``finished``, ``cancelled``
   or ``failed``; a cancel through the real route ends it ``cancelled``;
+- ``POST /__test__/jobs/hold`` opens a legacy-page hold (``kind``, ``title``):
+  a running, non-cancellable ``records`` job, as a legacy restore or
+  maintenance request takes, until ``finish`` ends it;
 - ``POST /__test__/jobs/restart`` acts out a ComfyUI restart: the open job
   streams drop without a final event and the registry starts empty.
 """
@@ -28,6 +33,8 @@ POLL_SECONDS = 0.02
 
 PREFIXES = {"added": "+", "known": "=", "review": "?", "errors": "!"}
 PREFIXES["no_metadata"] = "-"
+# The image tagging job's groups (#249 PR D), logged with the runner's prefixes.
+PREFIXES.update({"tagged": "+", "unchanged": "=", "skipped": "-"})
 ROOT_INDEXES = {"output": 0, "input": 1}
 
 
@@ -72,10 +79,17 @@ def outcome_records(data):
 
 
 def register_activity_commands(app, routes, api):
-    from py.api.jobs import SCAN_GROUP_NAMES, JobBusy, JobRegistry
+    from py.api.jobs import (
+        IMAGE_TAG_GROUP_NAMES,
+        IMAGE_TAG_JOB_KIND,
+        SCAN_GROUP_NAMES,
+        JobBusy,
+        JobRegistry,
+    )
 
     streams = set()
     endings = {}
+    holders = set()
 
     @web.middleware
     async def track_streams(request, handler):
@@ -123,27 +137,69 @@ def register_activity_commands(app, routes, api):
     async def start_job(request):
         data = await body(request)
         ending = asyncio.get_running_loop().create_future()
+        kind = str(data.get("kind", "scan"))
+        if kind == IMAGE_TAG_JOB_KIND:
+            title = "Add tags to images"
+            scope = {
+                "mode": str(data.get("mode", "add")),
+                "images": count(data.get("images"), 0),
+            }
+            groups = IMAGE_TAG_GROUP_NAMES
+        else:
+            title = "Scan for metadata"
+            scope = {
+                "files": str(data.get("files", "new")),
+                "output_folders": count(data.get("output_folders"), 2),
+                # A real scan's count of files it added to Needs review.
+                **(
+                    {"review_items": count(data["review_items"])}
+                    if "review_items" in data
+                    else {}
+                ),
+            }
+            groups = SCAN_GROUP_NAMES
         try:
             job = api._jobs.start(
-                str(data.get("kind", "scan")),
-                str(data.get("title", "Scan for metadata")),
+                kind,
+                str(data.get("title", title)),
                 record_changing=True,
-                scope={
-                    "files": str(data.get("files", "new")),
-                    "output_folders": count(data.get("output_folders"), 2),
-                    # A real scan's count of files it added to Needs review.
-                    **(
-                        {"review_items": count(data["review_items"])}
-                        if "review_items" in data
-                        else {}
-                    ),
-                },
+                scope=scope,
                 runner=fake_runner(ending),
-                groups=SCAN_GROUP_NAMES,
+                groups=groups,
             )
         except JobBusy:
             raise web.HTTPConflict()
         job.update(total=count(data.get("total")))
+        endings[job.id] = ending
+        return web.json_response({"success": True, "job": job.summary()})
+
+    @routes.post("/__test__/jobs/hold")
+    async def hold_job(request):
+        data = await body(request)
+        loop = asyncio.get_running_loop()
+        ending = loop.create_future()
+        entered = loop.create_future()
+
+        async def hold():
+            async with api._jobs.hold(
+                str(data.get("kind", "restore")),
+                str(data.get("title", "Database restore (admin page)")),
+                admission="records",
+            ) as job:
+                entered.set_result(job)
+                state = await ending
+                if state != "finished":
+                    job.finish(state)
+
+        holder = asyncio.ensure_future(hold())
+        holders.add(holder)
+        holder.add_done_callback(holders.discard)
+        await asyncio.wait({entered, holder}, return_when=asyncio.FIRST_COMPLETED)
+        if not entered.done():
+            if isinstance(holder.exception(), JobBusy):
+                raise web.HTTPConflict()
+            raise holder.exception()
+        job = entered.result()
         endings[job.id] = ending
         return web.json_response({"success": True, "job": job.summary()})
 
@@ -194,6 +250,7 @@ def register_activity_commands(app, routes, api):
         for transport in list(streams):
             transport.close()
         tasks = [job.task for job in old.list() if job.task and not job.task.done()]
+        tasks += [holder for holder in holders if not holder.done()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

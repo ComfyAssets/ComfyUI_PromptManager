@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy,reflow,withoutItems} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConceptAt,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,countCopy,reflow,withoutItems} from './concept-inventory.mjs';
 
 // Task C7 of #249: the production Images page against the immutable concept, on the concept-shaped real fixture (24
 // images of the concept's six prompts, its seeds, sizes and favorites). Heading, toolbar, filter row, caption, grid,
@@ -30,9 +30,11 @@ function captionDay(seconds,now=new Date()) {
     return `${name} · ${date.toLocaleDateString('en-US',options)}`;
 }
 
-/** D8: the selection bar's real actions only; Add tags, Add to collection and Remove links… are left out. */
-const OMITTED_BULK=Object.freeze(['Add tags','Add to collection','Remove links…']);
-const OMITTED_BULK_SELECTORS=Object.freeze(['bulk-tags','bulk-collection','bulk-remove'].map(action=>`#bulkbar [data-action="${action}"]`));
+/** D8 (amended by #249 PR D): the selection bar's real actions only; Add to collection and Remove links… are left out. */
+const OMITTED_BULK=Object.freeze(['Add to collection','Remove links…']);
+const OMITTED_BULK_SELECTORS=Object.freeze(['bulk-collection','bulk-remove'].map(action=>`#bulkbar [data-action="${action}"]`));
+/** D85: Auto-tag selected follows the concept's Add tags, a concept button of its own text. */
+const AUTO_TAG_CLONE=Object.freeze([{selector:'#bulkbar [data-action="bulk-tags"]',text:'Auto-tag selected'}]);
 
 /**
  * `withoutItems` for a row with padding and a border (the `.bulkbar`): its items flow again inside the content box,
@@ -83,7 +85,7 @@ function listInfo(card,actionsWidth) {
 /** Recorded Images deviations only (spec §8); everything else in the concept inventory must equal production. */
 const nocase=(a,b)=>{const x=a.toLowerCase(),y=b.toLowerCase();return x<y?-1:x>y?1:a<b?-1:a>b?1:0;};
 
-export function mapImagesConcept(reference,{manifest,now=new Date()}) {
+export function mapImagesConcept(reference,{manifest,now=new Date(manifest.now*1000)}) {
     const paths=new Map(manifest.images.map(image=>[image.filename,image.path]));
     // D14: the sort appends production's two sorts. Save view is the concept's own (saved views, #249 D16 retired).
     const toolbar={...reference.toolbar};
@@ -316,7 +318,7 @@ async function behaviorsOf(page,scope) {
     return {hover,opened,viewerTitle,focusAfterViewer,selected,layouts,search,single};
 }
 
-test.beforeEach(async({request},testInfo)=>{testInfo.manifest=await seedConcept(request);});
+test.beforeEach(async({page,request},testInfo)=>{testInfo.manifest=await seedConceptAt(page,request);});
 
 for(const [width,height] of SIZES)for(const theme of THEMES)test(`images page geometry, tokens, controls and behaviors match the concept ${width}x${height} ${theme}`,async({page,request},testInfo)=>{
     test.setTimeout(240_000);
@@ -346,7 +348,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images page ge
             importDiff:diffInventory(mapImportConcept(referenceImport),actualImport),referenceBehaviors,actualBehaviors};
     }
     // Load more in production: a fixture past one listing page appends one batch and shows the concept's toast.
-    testInfo.manifest=await seedConcept(request,{extra_images:LOAD_MORE_EXTRA});
+    testInfo.manifest=await seedConceptAt(page,request,{extra_images:LOAD_MORE_EXTRA});
     for(const motion of MOTIONS) {
         const total=FIXTURE_IMAGES+LOAD_MORE_EXTRA;
         await openProductionLoaded(page,theme,motion,total);
@@ -443,6 +445,10 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images selecti
     const restore=await mutate(page,{remove:[...OMITTED_BULK_SELECTORS]});
     const removed=(await inventoryOf(page,'#main')).bulkbar;
     await restore();
+    // The oracle for production's bar: the concept page itself without the omitted actions and with D85's button.
+    const restoreProduction=await mutate(page,{remove:[...OMITTED_BULK_SELECTORS],clone:AUTO_TAG_CLONE});
+    const oracle=await inventoryOf(page,'#main');
+    await restoreProduction();
     await captureCanonicalState(page,testInfo,`concept-images-selected-${width}-${theme}`);
     await openProductionLoaded(page,theme,'no-preference');
     const emptyActual=await inventoryOf(page,'#workspace-main');
@@ -454,12 +460,13 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images selecti
     expect.soft(reference.bulkbar.bar.items.map(item=>item.text),'concept bar').toEqual(['1 selected','Add tags','Set category',
         'Add to collection','Export metadata','Remove links…','Clear']);
     expect.soft(diffInventory(stripExact(mapBulkbar(reference.bulkbar,0).bulkbar.bar),stripExact(removed.bar)),'bar without the omitted actions').toEqual([]);
-    expect.soft(actual.bulkbar.bar.items.map(item=>item.text),'production bar').toEqual(['1 selected','Set category','Export metadata','Clear']);
+    expect.soft(actual.bulkbar.bar.items.map(item=>item.text),'production bar').toEqual(['1 selected','Add tags','Auto-tag selected',
+        'Set category','Export metadata','Clear']);
     expect.soft(compare(empty,emptyActual,manifest,['bulkbar','cards','panel']),'nothing checked').toEqual([]);
-    expect.soft(compare(reference,actual,manifest,['bulkbar','cards','panel']),'one card checked').toEqual([]);
+    expect.soft(compare(oracle,actual,manifest,['bulkbar','cards','panel']),'one card checked').toEqual([]);
     // The bar comparison notices a change to the production bar.
     await mutate(page,{css:'.bulkbar { padding: 4px }'});
-    expect(compare(reference,await inventoryOf(page,'#workspace-main'),manifest,['bulkbar']).map(item=>item.path)).toContain('bulkbar.bar.paddingTop');
+    expect(compare(oracle,await inventoryOf(page,'#workspace-main'),manifest,['bulkbar']).map(item=>item.path)).toContain('bulkbar.bar.paddingTop');
 });
 
 // The comparison is only worth something if it notices a change (spec §7 mutation check): one CSS mutation (the
@@ -507,7 +514,7 @@ test('one appended image reads in the singular',async({page,request})=>{
     test.setTimeout(120_000);
     await page.setViewportSize({width:1600,height:1100});
     const total=PRODUCTION_BATCH+1;
-    await seedConcept(request,{extra_images:total-FIXTURE_IMAGES});
+    await seedConceptAt(page,request,{extra_images:total-FIXTURE_IMAGES});
     await openProductionLoaded(page,'dark','no-preference',total);
     await expect(page.locator('.infinite-continuation > p').first()).toHaveText(countCopy(`${PRODUCTION_BATCH} of ${total} images · more load as you scroll`));
     // A dispatched press: scrolling the button into view lets the page's own observer load the one image first.
@@ -523,7 +530,7 @@ test('one image appended by scrolling reads in the singular',async({page,request
     test.setTimeout(120_000);
     await page.setViewportSize({width:1600,height:1100});
     const total=PRODUCTION_BATCH+1;
-    await seedConcept(request,{extra_images:total-FIXTURE_IMAGES});
+    await seedConceptAt(page,request,{extra_images:total-FIXTURE_IMAGES});
     await openProductionLoaded(page,'dark','no-preference',total);
     await expect(page.locator('#result-count')).toHaveText(new RegExp(`^${PRODUCTION_BATCH} of ${total} images`));
     await page.locator('.infinite-continuation').scrollIntoViewIfNeeded();
@@ -544,7 +551,7 @@ test('one footer height for the collection (D3)',async({page,request})=>{
     const reference=await inventoryOf(page,'#main');
     expect(reference.grid.columns).toBe(2);
     expect(reference.cards.every(card=>card.info.p.height>parseFloat(card.info.p.lineHeight))).toBe(true);
-    const manifest=await seedConcept(request,{seedless_images:2,short_seedless:true});
+    const manifest=await seedConceptAt(page,request,{seedless_images:2,short_seedless:true});
     await openProductionLoaded(page,'dark','no-preference',FIXTURE_IMAGES+2);
     const actual=await inventoryOf(page,'#workspace-main');
     const box=card=>({left:card.left,top:card.top,width:card.width,height:card.height});
