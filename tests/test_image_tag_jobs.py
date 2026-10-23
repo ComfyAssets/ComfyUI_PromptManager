@@ -32,6 +32,7 @@ from database.execution_history_schema import rotate_history_epoch
 from py import model_gate
 from py.api import jobs as jobs_module
 from py.config import AutotagConfig
+from utils.media_capture import CaptureCapacity
 
 START = "/prompt_manager/jobs/image-tags"
 WAIT = 30.0
@@ -642,6 +643,144 @@ class TestStartAndExclusion(ImageTagJobTestCase):
             all(row["root"] == "output" for row in detail["outcomes"]["tagged"])
         )
         self.assertTrue(any("output/sub/a.png" in line for line in detail["log"]))
+
+
+class TestFixRound(ImageTagJobTestCase):
+    """The final review's fixes: estimate, body bound, busy captures, roots."""
+
+    async def test_status_line_estimates_minutes_left_after_the_minimum(self):
+        for index in range(3):
+            self.png(f"f{index}.png", color=(index, 7, 7))
+        clock = iter([0.0, 0.0, 120.0, 240.0])
+        lines = []
+        self.tagger.on_generate = lambda _path: lines.append(
+            self.api._jobs.list()[0].status_line
+        )
+
+        with patch(
+            "py.api.image_tag_jobs._monotonic", side_effect=lambda: next(clock, 240.0)
+        ):
+            await self.run_job(self.auto_body([f"f{i}.png" for i in range(3)]))
+
+        # Two files make the minimum (the scan's MIN_BATCHES_FOR_ESTIMATE); then
+        # 120 s per file leaves about 2 min for the third.
+        self.assertEqual(
+            lines,
+            [
+                "Processing file 1 of 3",
+                "Processing file 2 of 3",
+                "Processing file 3 of 3 · about 2 min left",
+            ],
+        )
+
+    def maximal_target(self, number):
+        """A distinct target whose path is 1024 non-ASCII code points long."""
+        head = f"{number:03d}/" + ("界" * 200 + "/") * 5
+        path = head + "界" * (1024 - len(head) - 4) + ".png"
+        self.assertEqual(len(path), 1024)
+        return self.target(path)
+
+    async def test_start_body_bounds(self):
+        from py.api import image_tag_jobs
+
+        body = {
+            "mode": "add",
+            "targets": [self.maximal_target(n) for n in range(500)],
+            "tags": ["x"],
+        }
+        # Escaped as \uXXXX (6 bytes a code point), far over the old 1 MiB.
+        payload = json.dumps(body).encode("utf-8")
+        self.assertGreater(len(payload), 3 * 1000 * 1000)
+        response = await self.client.post(
+            START, data=payload, headers={"Content-Type": "application/json"}
+        )
+        data = await self.json_of(response)
+        self.assertEqual(response.status, 202, data)
+        self.assertEqual(data["job"]["scope"]["images"], 500)
+        job = self.api._jobs.get(data["job"]["id"])
+        await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+
+        cap = image_tag_jobs.MAX_JOB_BODY_BYTES
+        self.assertGreaterEqual(cap, len(payload))
+        over = b'{"mode":"add","targets":[],"tags":["x"]'
+        over += b" " * (cap + 1 - len(over) - 1) + b"}"
+        self.assertEqual(len(over), cap + 1)
+        response = await self.client.post(
+            START, data=over, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(response.status, 413)
+
+    def saturate(self, store):
+        with store._lock:
+            store._workers += store.max_workers
+        self.addCleanup(self.unsaturate, store)
+
+    def unsaturate(self, store):
+        with store._lock:
+            if store._workers >= store.max_workers:
+                store._workers -= store.max_workers
+
+    async def test_busy_capture_workers_are_retried_then_left_for_a_rerun(self):
+        self.png("a.png")
+        self.png("b.png", color=(1, 2, 3))
+        store = self.api._capture_store()
+        self.saturate(store)
+
+        with patch("py.api.image_tag_jobs.CAPACITY_BACKOFF", (0.001, 0.001)):
+            added = await self.run_job(self.add_body(["a.png"], ["x"]))
+            auto = await self.run_job(self.auto_body(["b.png"]))
+
+        retry = "The file could not be read now. Run the job again for it."
+        for job, path in ((added, "a.png"), (auto, "b.png")):
+            self.assertEqual(job.state, "finished")
+            self.assertEqual(self.rows(job, "skipped"), [(path, retry)])
+            self.assertEqual(job.counters["errors"], 0)
+            self.assertNotIn("Tag dialog", json.dumps(job.detail()))
+        self.assertEqual(self.tagger.calls, [])
+        self.assertEqual(self.stored("a.png")["tags"], [])
+
+    async def test_a_busy_capture_worker_that_frees_up_is_tagged(self):
+        self.png("a.png")
+        store = self.api._capture_store()
+        real = store.verify
+        tries = []
+
+        def verify(root, relative):
+            tries.append(relative)
+            if len(tries) < 3:
+                raise CaptureCapacity("Too many captures are in progress")
+            return real(root, relative)
+
+        with (
+            patch.object(store, "verify", side_effect=verify),
+            patch("py.api.image_tag_jobs.CAPACITY_BACKOFF", (0.001, 0.001, 0.001)),
+        ):
+            job = await self.run_job(self.add_body(["a.png"], ["x"]))
+
+        self.assertEqual(len(tries), 3)
+        self.assertEqual(self.rows(job, "tagged"), [("a.png", "Added 1 tag")])
+        self.assertEqual(self.stored("a.png")["tags"], ["x"])
+
+    async def test_output_roots_are_read_once_per_job_off_the_event_loop(self):
+        for index in range(3):
+            self.png(f"f{index}.png", color=(index, 1, 1))
+        body = self.add_body([f"f{i}.png" for i in range(3)], ["x"])
+        original = self.api._get_all_output_dirs
+        threads = []
+
+        def lookup():
+            threads.append(threading.current_thread())
+            return original()
+
+        with patch.object(self.api, "_get_all_output_dirs", side_effect=lookup):
+            job = await self.run_job(body)
+
+        self.assertEqual(job.counters["tagged"], 3)
+        # One read when the start checks the scopes, one for the whole run.
+        self.assertEqual(len(threads), 2)
+        self.assertNotIn(threading.main_thread(), threads)
+        self.assertEqual(job.outcomes["tagged"][0]["root"], "output")
 
 
 if __name__ == "__main__":

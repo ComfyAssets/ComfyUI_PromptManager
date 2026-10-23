@@ -84,7 +84,16 @@ test('Add tags runs a job and the cards show the tags after it finishes', async 
     const field = modal(page).getByRole('textbox', { name: 'Tags, separated by commas', exact: true });
     await expect(field).toHaveValue('');
     await expect(actionButtons(page)).toHaveText(['Cancel', 'Apply']);
+    let posted = 0;
+    page.on('request', item => { if (new URL(item.url()).pathname === '/prompt_manager/jobs/image-tags') posted += 1; });
+    // A field that parses to no names keeps the dialog and its text, and reports why on the field (D118).
+    await field.fill(' , ,');
+    await actionButtons(page).last().click();
+    await expect.poll(() => field.evaluate(node => node.validationMessage)).toBe('Enter at least one tag.');
+    await expect(title(page)).toHaveText('Tag selected images');
+    await expect(field).toHaveValue(' , ,');
     await field.fill('sunset, Sunset , blue_hour,,');
+    expect(await field.evaluate(node => node.validity.valid)).toBe(true);
     const started = jobStart(page);
     const answer = page.waitForResponse(item => new URL(item.url()).pathname === '/prompt_manager/jobs/image-tags');
     await actionButtons(page).last().click();
@@ -93,7 +102,10 @@ test('Add tags runs a job and the cards show the tags after it finishes', async 
     expect((await started).postDataJSON()).toEqual({ mode: 'add', tags: ['sunset', 'blue_hour'], targets: [
         { root_index: 0, root_scope: scope, path: FIRST }, { root_index: 0, root_scope: scope, path: SECOND }] });
     const { job } = await (await answer).json();
+    // The refused Apply sent nothing: only the valid one was posted.
+    expect(posted).toBe(1);
     await expect.poll(() => toasts(page)).toContain('Tagging started.');
+    expect(await toasts(page)).not.toContain('Enter at least one tag.');
     await expect(modal(page)).toHaveCount(0);
     await expect(bar(page).locator('strong')).toHaveText('2 selected');
     expect((await ended(request, job.id)).counters).toEqual({ tagged: 2, unchanged: 0, skipped: 0, errors: 0 });
@@ -129,7 +141,6 @@ test('Auto-tag selected with Apply automatically runs a job with the chosen mode
     await actionButtons(page).last().click();
     expect(await limit.evaluate(node => node.validity.valid)).toBe(false);
     await expect(title(page)).toHaveText('Auto-tag selected images');
-    expect(posted).toBe(0);
     await limit.fill('2');
     const started = jobStart(page);
     const answer = page.waitForResponse(item => new URL(item.url()).pathname === '/prompt_manager/jobs/image-tags');
@@ -139,6 +150,8 @@ test('Auto-tag selected with Apply automatically runs a job with the chosen mode
         options: { general_threshold: 0.5, character_threshold: 0.9, suggestion_limit: 2 },
         targets: [{ root_index: 0, root_scope: scope, path: FIRST }, { root_index: 0, root_scope: scope, path: UNLINKED }] });
     const { job } = await (await answer).json();
+    // The invalid press sent nothing: only this Start was posted.
+    expect(posted).toBe(1);
     await expect.poll(() => toasts(page)).toContain('Auto-tagging started.');
     await expect(modal(page)).toHaveCount(0);
     await expect(bar(page).locator('strong')).toHaveText('2 selected');
@@ -226,7 +239,8 @@ test('Review each image walks the selection one dialog at a time and only approv
     await actionButtons(page).last().click();
     await expect(title(page)).toHaveText('Tag image · Image 2 of 3');
     await expect(modal(page).locator('#tag-generation-status')).toHaveText('The tagging model is busy. Try again when it finishes.');
-    await expect(actionButtons(page)).toHaveText(['Retry', 'Stop reviewing', 'Skip', 'Approve and next']);
+    // No suggestions on screen: the primary would save the manual field only (D90).
+    await expect(actionButtons(page)).toHaveText(['Retry', 'Stop reviewing', 'Skip', 'Save and next']);
     await actionButtons(page).nth(2).click();
     await expect(title(page)).toHaveText('Tag image · Image 3 of 3');
     await expect(chips(page)).toHaveCount(2);
@@ -243,6 +257,47 @@ test('Review each image walks the selection one dialog at a time and only approv
     // The reviewed file's panel shows its saved tags without reselecting.
     await expect(tagRow(page).locator('button.chip')).toHaveText(['mine', 'sandstone']);
     await expect.poll(async () => (await (await request.get('/__test__/tagging/captures')).json()).captures).toBe(0);
+});
+
+test('Review holds Stop reviewing, Escape and × while a save is in flight, and names a manual-only save', async ({ page, request }) => {
+    await select(page, FIRST, SECOND);
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    await page.route('**/prompt_manager/image-annotations/tags', async route => {
+        if (route.request().method() === 'PUT') await held;
+        await route.continue();
+    });
+    await barButton(page, 'Auto-tag selected').click();
+    await modal(page).getByRole('radio', { name: 'Review each image', exact: true }).check();
+    await actionButtons(page).last().click();
+    await expect(title(page)).toHaveText('Tag image · Image 1 of 2');
+    await expect(chips(page)).not.toHaveCount(0);
+    await expect(actionButtons(page)).toHaveText(['Stop reviewing', 'Skip', 'Approve and next']);
+    // D90: a model change clears the suggestions, so the primary saves the manual field only and says so.
+    await modal(page).getByRole('combobox', { name: 'Tagging model', exact: true }).selectOption('wd14-vit');
+    await expect(chips(page)).toHaveCount(0);
+    await expect(actionButtons(page)).toHaveText(['Stop reviewing', 'Skip', 'Save and next']);
+    await modal(page).getByRole('textbox', { name: 'Image tags · edit manually', exact: true }).fill('mine');
+    const put = page.waitForRequest(item => item.method() === 'PUT' && item.url().endsWith('/image-annotations/tags'));
+    await actionButtons(page).last().click();
+    await put;
+    const stop = actionButtons(page).first();
+    await expect(stop).toHaveAttribute('aria-disabled', 'true');
+    await expect(actionButtons(page).nth(1)).toHaveAttribute('aria-disabled', 'true');
+    // None of these ends the session while the save is in flight; the count then includes it.
+    await page.keyboard.press('Escape');
+    await modal(page).locator('#modal-close').click();
+    await stop.dispatchEvent('click'); // aria-disabled: Playwright's click would wait for it
+    release();
+    await expect(title(page)).toHaveText('Tag image · Image 2 of 2');
+    await expect(chips(page)).not.toHaveCount(0);
+    await expect(actionButtons(page)).toHaveText(['Stop reviewing', 'Skip', 'Approve and finish']);
+    await expect(actionButtons(page).first()).not.toHaveAttribute('aria-disabled', 'true');
+    await actionButtons(page).first().click();
+    await expect(modal(page)).toHaveCount(0);
+    await expect(toast(page)).toHaveText('1 of 2 images tagged.');
+    expect(await savedTags(request, FIRST)).toEqual(['mine']);
+    expect(await savedTags(request, SECOND)).toEqual([]);
 });
 
 test('a running scan makes the start report busy', async ({ page, request }) => {

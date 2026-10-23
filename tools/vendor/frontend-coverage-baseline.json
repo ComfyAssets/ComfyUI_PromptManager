@@ -169,7 +169,7 @@
   },
   "workspace/activity-store.mjs": {
     "lines": 98,
-    "branches": 95,
+    "branches": 96,
     "functions": 98,
     "statements": 98
   },
@@ -230,7 +230,7 @@
   "workspace/image-tagging.mjs": {
     "lines": 97,
     "branches": 90,
-    "functions": 87,
+    "functions": 88,
     "statements": 97
   },
   "workspace/images-category.mjs": {
@@ -265,8 +265,8 @@
   },
   "workspace/images-tagging-bulk.mjs": {
     "lines": 98,
-    "branches": 91,
-    "functions": 85,
+    "branches": 93,
+    "functions": 86,
     "statements": 98
   },
   "workspace/images-tagging-review.mjs": {

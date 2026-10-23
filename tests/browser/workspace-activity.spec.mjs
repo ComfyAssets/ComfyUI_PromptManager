@@ -861,11 +861,11 @@ test('an image tagging job shows Tagged Unchanged Skipped Errors and opens tagge
 
     // An error, then the end: the header and the Activity item read "N tagged · M errors".
     await step(request, job.id, { processed: 4, records: [
-        { group: 'errors', path: 'broken/truncated.png', root: 'output', detail: 'The file could not be tagged.' },
+        { group: 'errors', path: 'broken/truncated.png', root: 'output', detail: 'Auto-tagging failed. Check server logs for details.' },
     ] });
     await expect(tiles(page).last().locator('dd')).toHaveText('1');
     await finish(request, job.id);
-    await expect(toast(page)).toHaveText('Auto-tag images finished.');
+    await expect(toast(page)).toHaveText('Auto-tag images finished · 1 tagged · 1 error');
     await expect(heading(page).locator('p.muted')).toHaveText(/^Finished \d\d:\d\d · 1 tagged · 1 error$/);
     await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
     await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('4 of 4 files processed');
@@ -883,7 +883,7 @@ test('cancel tagging stops at a file boundary', async ({ page, request }) => {
     await openJob(page, job.id);
     await heading(page).getByRole('button', { name: 'Cancel tagging', exact: true }).focus();
     await page.keyboard.press('Enter');
-    await expect(toast(page)).toHaveText('Add tags to images was cancelled.');
+    await expect(toast(page)).toHaveText('Add tags to images cancelled · 2 tagged');
     await expect(heading(page).locator('h1')).toBeFocused();
     await expect(heading(page).locator('p.muted')).toHaveText(/^Cancelled \d\d:\d\d at a file boundary · 2 tagged · completed work is kept$/);
     await expect(heading(page).getByRole('button', { name: 'Cancel tagging', exact: true })).toHaveCount(0);

@@ -275,7 +275,9 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     const skip = createButton('Skip');
     const primary = createButton('Save manual tags', 'ca-primary');
     const last = review && position.index === position.total;
-    const approveLabel = last ? 'Approve and finish' : 'Approve and next';
+    // D90: Approve with suggestions on screen; after a model change cleared them (M2) Save keeps only the manual field.
+    const reviewLabel = state => (state.generated ? (last ? 'Approve and finish' : 'Approve and next')
+        : (last ? 'Save and finish' : 'Save and next'));
     if (review) actions.append(cancel, skip, primary);
     else actions.append(cancel, primary);
 
@@ -343,9 +345,10 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         if (state.suggestions !== shownRows || state.suggestionsText !== shownText) renderSuggestions(state);
         setText(count, state.countText);
         setText(status, state.statusText);
-        setText(primary, review ? approveLabel : state.primaryLabel);
+        setText(primary, review ? reviewLabel(state) : state.primaryLabel);
         setDisabled(primary, !state.canSave);
-        if (review) setDisabled(skip, state.phase === 'saving');
+        // D90: while Approve's save is in flight the session cannot be left, so its count includes that save.
+        if (review) for (const button of [skip, cancel]) setDisabled(button, state.phase === 'saving');
         if (state.canRetry !== retry.isConnected) {
             if (state.canRetry) actions.prepend(retry); // D116
             else {
@@ -356,7 +359,7 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         if (state.phase === 'saved') complete(state);
     }
 
-    cancel.addEventListener('click', () => closeWorkspaceDialog());
+    cancel.addEventListener('click', () => { if (!disabled(cancel)) closeWorkspaceDialog(); });
     skip.addEventListener('click', () => {
         if (!open || advancing || disabled(skip)) return;
         advancing = true;
@@ -382,7 +385,8 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         if (review && !advancing) onStop?.();
     }
     const dialogTitle = review ? `Tag image · Image ${position.index} of ${position.total}` : 'Tag image'; // D90
-    openContentDialog({scope, title: dialogTitle, nodes, trigger, onClose: release});
+    openContentDialog({scope, title: dialogTitle, nodes, trigger, onClose: release,
+        canClose: review ? () => controller.state.phase !== 'saving' : null});
     document.getElementById('modal')?.classList.add('tagging-modal');
     local.cleanup(controller.subscribe(render));
     render(controller.state);

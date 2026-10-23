@@ -112,12 +112,19 @@ const errorsOf = job => `${number(job.counters.errors ?? 0)} ${noun(job.counters
 /** "1,420 added". */
 export const addedOf = job => `${number(job.counters.added ?? 0)} added`;
 
-/** The toast when a job ends: "Scan finished · N added · M errors", "Scan cancelled · N added". */
+/**
+ * The toast when a job ends: "Scan finished · N added · M errors", "Scan cancelled · N added"; an image tagging job
+ * the same way with its own title and count (D89): "Auto-tag images finished · N tagged · M errors".
+ */
 export function finishToast(job) {
     if (job.kind === 'scan') {
         if (job.state === 'cancelled') return `Scan cancelled · ${addedOf(job)}`;
         if (job.state === 'failed') return `Scan failed · ${addedOf(job)} · ${errorsOf(job)}`;
         return `Scan finished · ${addedOf(job)} · ${errorsOf(job)}`;
+    }
+    if (job.kind === 'image-tags') {
+        if (job.state === 'cancelled') return `${job.title} cancelled · ${taggedOf(job)}`;
+        return `${job.title} ${job.state === 'failed' ? 'failed' : 'finished'} · ${outcomeLine(job)}`;
     }
     if (job.state === 'cancelled') return `${job.title} was cancelled.`;
     if (job.state === 'failed') return `${job.title} failed.`;

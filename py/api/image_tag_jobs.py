@@ -20,14 +20,16 @@ keeping what it already wrote. Rows and log lines carry root-relative paths
 and public root labels only.
 """
 
+import asyncio
 import functools
 import os
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from aiohttp import web
 
 from .. import model_gate
-from .admin import _plural
+from .admin import _plural, _time_left
 from .annotation_suggest import (
     OptionError,
     unavailable_message,
@@ -35,6 +37,8 @@ from .annotation_suggest import (
 )
 from .annotations import (
     _MESSAGES,
+    MAX_TARGET_PATH,
+    _coded,
     _error,
     _pinned_suggestions,
     _settled,
@@ -71,9 +75,14 @@ except ImportError:
     from utils.video_metadata import is_video_path
 
 MAX_JOB_TARGETS = 500
-# 500 targets of up to ~1.1 KiB each plus the options: the annotation routes'
-# 64 KiB bound is for one target, too small for a full selection.
-MAX_JOB_BODY_BYTES = 1024 * 1024
+# 500 maximal targets plus the options: a path of MAX_TARGET_PATH code points
+# takes at most 6 bytes each on the wire (a \uXXXX escape; raw UTF-8 is at most
+# 4), and the root index and scope fit in 256. The annotation routes' 64 KiB
+# bound is for one target, too small for a full selection.
+MAX_JOB_BODY_BYTES = MAX_JOB_TARGETS * (MAX_TARGET_PATH * 6 + 256) + 64 * 1024
+# A busy capture worker (a Tag dialog in another tab) is waited for this long,
+# try by try, before the file is left for a rerun.
+CAPACITY_BACKOFF = (0.1, 0.2, 0.4, 0.8)
 
 ADD_TITLE = "Add tags to images"
 AUTO_TITLE = "Auto-tag images"
@@ -97,10 +106,30 @@ SAVE_FAILED = "The tags could not be saved. Check server logs for details."
 READ_FAILED = "The file could not be read."
 SOURCE_CHANGED = "The source changed. Refresh the image collection."
 STORAGE_RESTORED = "Prompt storage was restored; start the job again."
+BUSY_RETRY = "The file could not be read now. Run the job again for it."
+
+_monotonic = time.monotonic  # the job's clock (a test can fake it)
 
 
 class _JobStopped(Exception):
     """No later file can be written (prompt storage was restored)."""
+
+
+@dataclass
+class _Run:
+    """One running job: its request, the gate owner and the resolved roots.
+
+    ``roots`` maps each target's ``(root_index, root_scope)`` to ``(root,
+    label)``, read once per job off the event loop; ``root`` is None when the
+    scope no longer names a current root.
+    """
+
+    job: object
+    spec: object
+    epoch: str
+    owner: object
+    service: object = None
+    roots: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -197,8 +226,24 @@ def _capture_outcome(exc: CaptureError, root, relative: str):
         path = os.path.join(root, *relative.split("/"))
         return "skipped", FILE_CHANGED if os.path.lexists(path) else FILE_NOT_FOUND
     if isinstance(exc, CaptureCapacity):
-        return "errors", _MESSAGES["review-capacity"]
+        return "skipped", BUSY_RETRY
     return "errors", READ_FAILED
+
+
+async def _capacity_retried(job, attempt):
+    """``await attempt()``, tried again while the capture store is at capacity.
+
+    Raises the last ``CaptureCapacity`` once ``CAPACITY_BACKOFF`` is spent or the
+    job was cancelled meanwhile.
+    """
+    for delay in CAPACITY_BACKOFF:
+        try:
+            return await attempt()
+        except CaptureCapacity:
+            if job.cancelled:
+                raise
+        await asyncio.sleep(delay)
+    return await attempt()
 
 
 def _load_model(service, model_type: str, use_gpu: bool) -> None:
@@ -225,10 +270,9 @@ class ImageTagJobsMixin:
         spec, error = parse_image_tag_request(data)
         if error is not None:
             return error
-        for index, scope in dict.fromkeys((t[0], t[1]) for t in spec.targets):
-            _root, error = self._scoped_root(index, scope)
-            if error is not None:
-                return error
+        roots = await self._run_in_executor(self._job_roots, spec.targets)
+        if any(root is None for root, _label in roots.values()):
+            return _coded("source-changed")
         epoch = await self._run_in_executor(self.db.get_execution_epoch)
         # A running job in the way answers first: it says which job to wait for.
         blocker = self._jobs.blocker(IMAGE_TAG_JOB_KIND, record_changing=True)
@@ -259,6 +303,18 @@ class ImageTagJobsMixin:
 
     # -- runner ----------------------------------------------------------------
 
+    def _job_roots(self, targets) -> dict:
+        """Worker thread: ``{(index, scope): (root or None, label)}`` (see _Run)."""
+        roots = list(self._get_all_output_dirs())
+        resolved = {}
+        for index, scope in dict.fromkeys((t[0], t[1]) for t in targets):
+            label = _public_path(roots[index]) if index < len(roots) else ""
+            error = self._gallery_scope_error(
+                {"root_scope": scope, "root": str(index)}, roots
+            )
+            resolved[(index, scope)] = (roots[index] if error is None else None, label)
+        return resolved
+
     async def _run_image_tag_job(self, spec: _Spec, epoch: str, owner, job) -> None:
         verb = _VERBS[spec.mode]
         total = len(spec.targets)
@@ -267,14 +323,14 @@ class ImageTagJobsMixin:
         if spec.mode == "auto":
             started += f" · {spec.model_type}"
         job.log_line(started)
+        run = _Run(job, spec, epoch, owner)
         try:
-            service = None
             if spec.mode == "auto":
-                service = await self._prepare_tagging_model(job, spec, owner)
-                if service is None:
+                run.service = await self._prepare_tagging_model(job, spec, owner)
+                if run.service is None:
                     job.finish("failed")
                     return
-            if not await self._tag_each_file(job, spec, epoch, owner, service):
+            if not await self._tag_each_file(run):
                 job.log_line(f"{verb} stopped · {STORAGE_RESTORED}")
                 job.finish("failed")
                 return
@@ -286,25 +342,27 @@ class ImageTagJobsMixin:
             if owner is not None:
                 model_gate.release(owner)
 
-    async def _tag_each_file(self, job, spec, epoch, owner, service) -> bool:
+    async def _tag_each_file(self, run: _Run) -> bool:
         """Tag the targets in order; False when the job had to stop."""
-        total = len(spec.targets)
-        for number, target in enumerate(spec.targets, 1):
+        job, total = run.job, len(run.spec.targets)
+        run.roots = await self._run_in_executor(self._job_roots, run.spec.targets)
+        started = _monotonic()
+        for number, target in enumerate(run.spec.targets, 1):
             if job.cancelled:
                 break
-            job.update(status_line=f"Processing file {number:,} of {total:,}")
+            # The scan's estimate (D56), with each finished file as one batch.
+            left = _time_left(number - 1, total, number - 1, _monotonic() - started)
+            job.update(status_line=f"Processing file {number:,} of {total:,}{left}")
             job.publish({"type": "progress", "progress": job.progress})
             stopped = False
             try:
-                group, detail = await self._tag_one_file(
-                    spec, epoch, owner, service, target
-                )
+                group, detail = await self._tag_one_file(run, target)
             except _JobStopped:
                 stopped, group, detail = True, "errors", STORAGE_RESTORED
             except Exception:
                 self.logger.exception("Image tagging failed for one file")
                 group, detail = "errors", SAVE_FAILED
-            self._record_tag_outcome(job, target, group, detail)
+            self._record_tag_outcome(run, target, group, detail)
             job.update(processed=number, progress=number * 100 // total)
             if stopped:
                 return False
@@ -337,57 +395,63 @@ class ImageTagJobsMixin:
             return None
         return service
 
-    async def _tag_one_file(self, spec, epoch, owner, service, target):
+    async def _verified(self, run: _Run, store, root, relative):
+        """The current file's facts, waiting out a busy capture store."""
+        return await _capacity_retried(
+            run.job, lambda: self._run_in_executor(store.verify, root, relative)
+        )
+
+    async def _tag_one_file(self, run: _Run, target):
         """The (group, detail) of one target; raises _JobStopped on a restore."""
         index, scope, relative = target
-        root, error = self._scoped_root(index, scope)
-        if error is not None:
+        root, _label = run.roots[(index, scope)]
+        if root is None:
             return "errors", SOURCE_CHANGED
         store = self._capture_store()
-        if spec.mode == "add":
+        if run.spec.mode == "add":
             try:
-                facts = await self._run_in_executor(store.verify, root, relative)
+                facts = await self._verified(run, store, root, relative)
             except CaptureError as exc:
                 return _capture_outcome(exc, root, relative)
-            return await self._union_image_tags(facts, list(spec.tags), epoch)
+            return await self._union_image_tags(facts, list(run.spec.tags), run.epoch)
         if is_video_path(relative):
             return "skipped", VIDEO_SKIPPED
         try:
-            capture = await _settled(
-                _submit(
-                    store.capture,
-                    root,
-                    relative,
-                    epoch=epoch,
-                    scope=scope,
-                    root_index=index,
+            capture = await _capacity_retried(
+                run.job,
+                lambda: _settled(
+                    _submit(
+                        store.capture,
+                        root,
+                        relative,
+                        epoch=run.epoch,
+                        scope=scope,
+                        root_index=index,
+                    ),
+                    lambda made: made is not None and store.release(made.token),
                 ),
-                lambda made: made is not None and store.release(made.token),
             )
         except CaptureError as exc:
             return _capture_outcome(exc, root, relative)
         try:
-            return await self._auto_tag_capture(
-                store, capture, spec, epoch, owner, service, root, relative
-            )
+            return await self._auto_tag_capture(run, store, capture, root, relative)
         finally:
             store.release(capture.token)
 
-    async def _auto_tag_capture(
-        self, store, capture, spec, epoch, owner, service, root, relative
-    ):
+    async def _auto_tag_capture(self, run: _Run, store, capture, root, relative):
         """Suggest on the capture, then union only onto the same current bytes."""
         if not capture.inferable:
             return "skipped", NOT_A_STILL
         if store.acquire(capture.token) is None:
             raise _JobStopped  # every capture was invalidated (restore)
+        spec = run.spec
         try:
             pairs = await model_gate.run(
-                owner,
+                run.owner,
                 _pinned_suggestions,
                 store,
                 capture.token,
-                service,
+                run.service,
                 capture,
                 spec.model_type,
                 spec.options,
@@ -397,7 +461,7 @@ class ImageTagJobsMixin:
             self.logger.exception("Auto-tagging failed for one file")
             return "errors", INFERENCE_FAILED
         try:
-            facts = await self._run_in_executor(store.verify, root, relative)
+            facts = await self._verified(run, store, root, relative)
         except CaptureError as exc:
             return _capture_outcome(exc, root, relative)
         if facts.locator != capture.locator or facts.sha256 != capture.sha256:
@@ -405,7 +469,7 @@ class ImageTagJobsMixin:
         names = [str(name) for name, _score in pairs]
         if not names:
             return "unchanged", NO_NEW_TAGS
-        return await self._union_image_tags(facts, names, epoch)
+        return await self._union_image_tags(facts, names, run.epoch)
 
     async def _union_image_tags(self, facts, tags: list, epoch: str):
         """``add_image_tags`` on the verified bytes, as a (group, detail)."""
@@ -434,12 +498,11 @@ class ImageTagJobsMixin:
             return "tagged", f"Added {_plural(added, 'tag')}"
         return "unchanged", NO_NEW_TAGS
 
-    def _record_tag_outcome(self, job, target, group: str, detail: str) -> None:
-        index, _scope, relative = target
-        roots = list(self._get_all_output_dirs())
-        label = _public_path(roots[index]) if index < len(roots) else ""
+    def _record_tag_outcome(self, run: _Run, target, group: str, detail: str) -> None:
+        index, scope, relative = target
+        _root, label = run.roots[(index, scope)]
         where = f"{label}/{relative}" if label else relative
-        job.record(
+        run.job.record(
             group,
             {"path": relative, "root": label, "root_index": index, "detail": detail},
             f"{_LOG_PREFIXES[group]} {where} · {detail}",

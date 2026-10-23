@@ -300,6 +300,13 @@ test('image-tags jobs get their own tiles outcomes and pill verb', async () => {
     assert.equal(outcomeLine(job), '1,420 tagged · 1 error');
     assert.equal(outcomeLine({ ...job, counters: {} }), '0 tagged · 0 errors');
     assert.equal(startToast(job), 'Auto-tagging started.');
+    // The design's toast pattern, as the scan's: "<Job> finished · N tagged · M errors".
+    const { finishToast } = await source;
+    assert.equal(finishToast({ ...job, state: 'finished' }), 'Auto-tag images finished · 1,420 tagged · 1 error');
+    assert.equal(finishToast({ ...job, state: 'cancelled' }), 'Auto-tag images cancelled · 1,420 tagged');
+    assert.equal(finishToast({ ...job, state: 'failed' }), 'Auto-tag images failed · 1,420 tagged · 1 error');
+    assert.equal(finishToast({ ...job, title: 'Add tags to images', counters: {}, state: 'finished' }),
+        'Add tags to images finished · 0 tagged · 0 errors');
 });
 
 test('unknown kinds keep the generic view', async () => {

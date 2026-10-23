@@ -49,6 +49,24 @@ test('add parses comma tags with the same dedupe as the dialog', () => {
     assert.equal(parseBulkTags, state.parseManualTags);
 });
 
+test('Add tags keeps its dialog and the typed text when the field parses to no names', async () => {
+    const { openAddTags, NO_TAGS } = module();
+    const toasts = [];
+    const posted = [];
+    const store = { start: async (kind, body) => { posted.push(body); return { job: { id: JOB_ID, state: 'running' } }; },
+        find: () => null, subscribe: () => () => {} };
+    let dialog = null;
+    openAddTags({ scope: pageScope(), store, images: [image('a.png')], trigger: null, notify: text => toasts.push(text),
+        openInput: args => { dialog = args; } });
+    assert.equal(typeof dialog?.validate, 'function');
+    // The dialog reports the message on its field and stays open: nothing toasts, nothing is sent.
+    assert.equal(dialog.validate(' , ,'), NO_TAGS);
+    assert.equal(dialog.validate('sunset'), null);
+    assert.deepEqual(toasts, []);
+    await dialog.onApply('sunset, Sunset');
+    assert.deepEqual(posted.map(body => body.tags), [['sunset']]);
+});
+
 test('busy start keeps the selection and names the running job', async () => {
     const { startTagJob } = module();
     const toasts = [];

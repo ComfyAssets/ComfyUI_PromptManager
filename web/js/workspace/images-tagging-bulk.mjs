@@ -26,14 +26,14 @@ import { showWorkspaceToast } from './toast.mjs';
 export const IMAGE_TAG_JOB = 'image-tags';
 export const MAX_BULK_IMAGES = 500;
 export const TOO_MANY = 'Select at most 500 images.';
-export const NO_TAGS = 'Enter at least one tag.'; // D117
+export const NO_TAGS = 'Enter at least one tag.'; // D118
 export const ADD_DIALOG = Object.freeze({title: 'Tag selected images', label: 'Tags, separated by commas', action: 'Apply'});
 export const AUTO_TITLE = 'Auto-tag selected images';
 export const APPLY_CHOICES = Object.freeze([
     Object.freeze({value: 'auto', label: 'Apply automatically', action: 'Start auto-tagging'}),
     Object.freeze({value: 'review', label: 'Review each image', action: 'Start review'}),
 ]);
-// D117: the concept has no copy for these; they follow D55's "The scan could not start. Try again.".
+// D118: the concept has no copy for these; they follow D55's "The scan could not start. Try again.".
 const START_FAILED = Object.freeze({add: 'Tagging could not start. Try again.', auto: 'Auto-tagging could not start. Try again.'});
 const FINAL = new Set(['finished', 'cancelled', 'failed']);
 
@@ -102,13 +102,17 @@ function followTagged({store, scope, job, images, onTagged}) {
     followJobEnd({store, scope, id: job.id, onEnd: ended => { if ((ended.counters.tagged ?? 0) > 0) onTagged(keys); }});
 }
 
-/** Add tags: the concept's simpleInput, then the job over `images` (the checked files, taken now). */
-export function openAddTags({scope, store, images, trigger, onTagged = () => {}, notify = showWorkspaceToast}) {
+/**
+ * Add tags: the concept's simpleInput, then the job over `images` (the checked files, taken now). A field that parses
+ * to no names keeps the dialog and its text, and reports NO_TAGS on the field (D118). `openInput` is the dialog seam.
+ */
+export function openAddTags({scope, store, images, trigger, onTagged = () => {}, notify = showWorkspaceToast,
+    openInput = openInputDialog}) {
     const targets = bulkTargets(images);
     if (!targets) { notify(TOO_MANY); return; }
-    openInputDialog({scope, trigger, ...ADD_DIALOG, onApply: async text => {
+    openInput({scope, trigger, ...ADD_DIALOG, validate: text => (parseBulkTags(text).length ? null : NO_TAGS),
+        onApply: async text => {
         const tags = parseBulkTags(text);
-        if (!tags.length) { notify(NO_TAGS); return; }
         const job = await startTagJob({store, scope, body: {mode: 'add', targets, tags}, notify});
         if (job) followTagged({store, scope, job, images, onTagged});
     }});
@@ -145,7 +149,7 @@ export function openAutoTag({api, scope, store, images, trigger, onTagged = () =
     const options = createTaggingOptionsController({api});
     // D85: the Tag image dialog's model panel without Generate; its Suggestions field is the job's count (D91).
     const {element: panel, validate} = renderModelPanel({scope: local, controller: options,
-        heading: `Auto-tag ${countOf(listed.length, 'image')}`, generate: false}); // D117
+        heading: `Auto-tag ${countOf(listed.length, 'image')}`, generate: false}); // D118
     let choice = APPLY_CHOICES[0];
     const actions = el('div', undefined, 'dialog-actions');
     const cancel = createButton('Cancel');
