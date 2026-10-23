@@ -20,6 +20,7 @@ from .prompt_pair_resolver import (
     _FOOTER,
     EMPTY_POSITIVE_REASON,
     INSPECTION_PROFILE,
+    MALFORMED_EVIDENCE_REASON,
     ResolverProfile,
     resolve_prompt_pair,
 )
@@ -548,7 +549,7 @@ def inspect_prompt_evidence(
     resolution = {
         "state": "unresolved",
         "sampler_id": None,
-        "reason": "Prompt evidence is malformed",
+        "reason": MALFORMED_EVIDENCE_REASON,
         "reason_code": "malformed",
         "node": None,
     }

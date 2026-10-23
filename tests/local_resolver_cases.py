@@ -833,6 +833,33 @@ def golden_cases():
         _graph(["6", 0], ["7", 0], overwritten),
         workflow="{bad",
     )
+    # A list or object node ``type`` is malformed evidence (#286), also inside a
+    # subgraph and after a node the walk skips; one with an invalid ID is skipped.
+    for label, kind in (("list", ["PromptManager"]), ("dict", {"a": 1})):
+        add(
+            f"workflow-type-{label}",
+            _graph(["6", 0], ["7", 0], overwritten),
+            workflow=json.dumps(
+                {"nodes": [{"id": 6, "type": "PromptManager"}, {"id": 8, "type": kind}]}
+            ),
+        )
+    add(
+        "workflow-type-in-subgraph",
+        _graph(["1:6", 0], ["1:7", 0], nested_graph),
+        workflow=json.dumps(
+            {
+                **nested,
+                "definitions": {
+                    "subgraphs": [{"id": "sub-a", "nodes": [{"id": 2, "type": [1]}]}]
+                },
+            }
+        ),
+    )
+    add(
+        "workflow-type-without-id",
+        _graph(["6", 0], ["7", 0], overwritten),
+        workflow=json.dumps({"nodes": [{"id": True, "type": ["x"]}, "skipped"]}),
+    )
     add(
         "several-samplers",
         _graph(

@@ -1643,6 +1643,43 @@ class TestPromptInspector(ImageAPITestCase):
                         str(path), False, report_ambiguity=True
                     )
 
+    async def test_unhashable_workflow_node_type_answers_malformed(self):
+        """A UI workflow node whose ``type`` is a list or dict is malformed (#286).
+
+        The R1 check looks each node's ``type`` up among subgraph IDs; an
+        unhashable ``type`` used to raise there and the route answered 500.
+        """
+        source = graph()
+        source["1"]["class_type"] = "PromptManager"
+        for kind in (["PromptManager"], {"name": "PromptManager"}):
+            with self.subTest(kind=type(kind).__name__):
+                workflow = json.dumps(
+                    {"nodes": [{"id": 1, "type": kind, "widgets_values": ["x"]}]}
+                )
+                png(
+                    self.output_dir / "image.png",
+                    prompt=json.dumps(source),
+                    workflow=workflow,
+                )
+                response, result = await self.inspect()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    result["resolution"],
+                    {
+                        "state": "unresolved",
+                        "sampler_id": None,
+                        "reason": "Prompt evidence is malformed",
+                        "reason_code": "malformed",
+                        "node": None,
+                    },
+                )
+                for side in result["prompts"].values():
+                    self.assertEqual(side["status"], "unresolved")
+                    self.assertEqual(
+                        side["message"], "Prompt metadata in this file is malformed."
+                    )
+                self.assertNotIn("unhashable", json.dumps(result))
+
 
 class TestInspectorImageTags(ImageAPITestCase):
     """B3: the inspector envelope's ``image_tags`` facet (spec amendment S1)."""

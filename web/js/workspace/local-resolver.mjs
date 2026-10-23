@@ -20,6 +20,7 @@ import {
     GUIDER_ABSENT_REASON,
     INCOMPATIBLE_SLOT,
     LocalResolverGap,
+    MALFORMED_EVIDENCE_REASON,
     MAX_BRANCH_CANDIDATES,
     MAX_JOIN_INPUTS,
     MAX_SUBGRAPH_DEPTH,
@@ -632,9 +633,9 @@ function noSampler(graph) {
     return result('unresolved', { reason, reasonCode: 'no-sampler' });
 }
 
-/** Python `kind in mapping` for a workflow `type`: an unhashable list or dict raises `TypeError` there. */
+/** A workflow `type` that is a list or an object is malformed evidence on the server too (#286). */
 function hashable(value) {
-    if (isList(value) || isDict(value)) throw new TypeError("unhashable type in workflow node 'type'");
+    if (isList(value) || isDict(value)) throw new Unresolved(MALFORMED_EVIDENCE_REASON, 'malformed');
     return value;
 }
 
@@ -701,7 +702,13 @@ function resolve(metadata, semantics) {
     if (!isDict(graph) || !graph.size) return result('unresolved', { reason: 'API graph is missing or malformed', reasonCode: 'malformed' });
     if (graph.size > PROFILE.nodeCeiling) return result('unresolved', { reason: 'Prompt graph exceeds the inspection node ceiling', reasonCode: 'graph-ceiling' });
     if (semantics === null) return result('unresolved', { reason: SEMANTICS_UNAVAILABLE_REASON });
-    const overwritten = metadata.has('prompt') ? overwrittenPromptNodes(pyGet(metadata, 'workflow'), graph) : new Set();
+    let overwritten = new Set();
+    if (metadata.has('prompt')) {
+        try { overwritten = overwrittenPromptNodes(pyGet(metadata, 'workflow'), graph); } catch (error) {
+            if (!(error instanceof Unresolved)) throw error;
+            return result('unresolved', { reason: error.message, reasonCode: error.code });
+        }
+    }
     const resolver = new GraphResolver(graph, metadata.has('prompt') ? metadata : null, semantics, overwritten);
     const samplerIds = [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' && resolver.samplerClasses.has(node.get('class_type'))).map(([id]) => id);
     if (!samplerIds.length) return noSampler(graph);
@@ -744,7 +751,7 @@ function parsedWorkflow(value) {
 export function resolveLocalEvidence(records, semantics) {
     const source = records !== null && typeof records === 'object' ? records : {};
     const metadata = new Map(Object.entries(source).filter(([key]) => ROLE_METADATA_KEYS.has(key)));
-    const malformedResolution = { state: 'unresolved', sampler_id: null, reason: 'Prompt evidence is malformed', reason_code: 'malformed', node: null };
+    const malformedResolution = { state: 'unresolved', sampler_id: null, reason: MALFORMED_EVIDENCE_REASON, reason_code: 'malformed', node: null };
     if (!metadata.size) {
         return {
             prompts: { positive: sideOf('absent'), negative: sideOf('absent') },

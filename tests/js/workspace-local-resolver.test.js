@@ -108,3 +108,12 @@ test('committed server answers equal the local evidence', () => {
     }
     assert.ok(compared > 140, `compared ${compared}`);
 });
+
+test('a list or object workflow node type is malformed evidence, as on the server (#286)', () => {
+    const graph = base({'6': {class_type: 'PromptManager', inputs: {text: 'a fox', clip: ['4', 1]}}});
+    for (const type of [['PromptManager'], {name: 'PromptManager'}]) {
+        const evidence = resolver.resolveLocalEvidence({prompt: JSON.stringify(graph), workflow: JSON.stringify({nodes: [{id: 6, type}]})}, semantics);
+        assert.deepEqual(evidence.resolution, {state: 'unresolved', sampler_id: null, reason: 'Prompt evidence is malformed', reason_code: 'malformed', node: null});
+        assert.equal(evidence.prompts.negative.message, 'Prompt metadata in this file is malformed.');
+    }
+});

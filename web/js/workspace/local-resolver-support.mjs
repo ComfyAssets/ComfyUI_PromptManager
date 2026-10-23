@@ -38,6 +38,7 @@ export const MAX_BRANCH_CANDIDATES = 32;
 export const RUNTIME_REASON = 'Text is decided at run time';
 export const EMPTY_POSITIVE_REASON = 'Positive prompt is empty';
 export const MULTISTAGE_UNATTRIBUTED_REASON = 'Multistage sampler ancestry is ambiguous';
+export const MALFORMED_EVIDENCE_REASON = 'Prompt evidence is malformed';
 export const SEMANTICS_UNAVAILABLE_REASON = 'Inspection node semantics are unavailable';
 export const INCOMPATIBLE_SLOT = 'Output slot has an incompatible type';
 export const OVERWRITTEN_PROMPT_REASON = 'Saved PromptManager text was overwritten by another node';

@@ -1753,7 +1753,12 @@ def _resolve(
         )
     overwritten = frozenset()
     if semantics is not None and "prompt" in metadata:
-        overwritten = _overwritten_prompt_nodes(metadata.get("workflow"), normalized)
+        try:
+            overwritten = _overwritten_prompt_nodes(
+                metadata.get("workflow"), normalized
+            )
+        except _Unresolved as error:
+            return _result("unresolved", reason=str(error), reason_code=error.code)
     resolver = _GraphResolver(
         normalized,
         adapters or {},
@@ -1832,6 +1837,8 @@ def _shared_pair(candidates: list) -> Optional[Dict[str, Any]]:
 
 # Bounds for walking a UI workflow's subgraph instances (R1 only).
 _MAX_SUBGRAPH_DEPTH = 8
+# The inspector's own line for evidence it cannot read (``inspect_prompt_evidence``).
+MALFORMED_EVIDENCE_REASON = "Prompt evidence is malformed"
 _MAX_WORKFLOW_NODES = 100_000
 
 
@@ -1862,7 +1869,8 @@ def _prompt_manager_widgets(workflow: Any) -> Dict[str, str]:
 
     Nodes inside a subgraph run as ``"<instance>:<inner>"`` API IDs (nested
     instances chain their IDs); a definition without an instance runs nothing.
-    The walk is bounded in depth and in nodes visited.
+    The walk is bounded in depth and in nodes visited. A node ``type`` that is
+    a list or an object makes the workflow malformed (``_Unresolved``).
     """
     nodes = workflow.get("nodes") if isinstance(workflow, dict) else None
     if not isinstance(nodes, list):
@@ -1882,6 +1890,9 @@ def _prompt_manager_widgets(workflow: Any) -> Dict[str, str]:
             if not isinstance(node_id, (str, int)) or isinstance(node_id, bool):
                 continue
             api_id = f"{prefix}{node_id}"
+            if isinstance(kind, (list, dict)):
+                # JSON's unhashable values are never a node type (#286).
+                raise _Unresolved(MALFORMED_EVIDENCE_REASON, "malformed")
             if kind in subgraphs and depth < _MAX_SUBGRAPH_DEPTH:
                 stack.append((subgraphs[kind], api_id + ":", depth + 1))
                 continue
