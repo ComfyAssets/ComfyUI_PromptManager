@@ -196,9 +196,13 @@ MULTISTAGE_UNATTRIBUTED_REASON = "Multistage sampler ancestry is ambiguous"
 ADDED_CONDITIONING_REASON = "A later stage adds conditioning to the base prompt"
 # Maintainer option A (2026-10-23): a PromptManager prepend or append fed
 # directly by a run-time node (LoRA trigger words) is left out, never guessed;
-# the text is the node's own, labelled by this source and reason (D-NEW-R1).
+# the text is the node's own, labelled by this source and reason (D125). A side
+# is labelled when any node on its traced path left a part out.
 RUNTIME_PARTS_SOURCE = "runtime-parts-omitted"
 RUNTIME_PARTS_REASON = "Text added at run time, such as trigger words, is not included"
+# The added-conditioning floor's positive (D126), and both labels at once.
+ADDED_CONDITIONING_SOURCE = "added-conditioning"
+RUNTIME_AND_ADDED_SOURCE = "runtime-parts-omitted-and-added-conditioning"
 _INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
 # Before 3.2.3 a save patch overwrote every PromptManager node's saved ``text``
 # with the last-run node's prompt (comfy-metadata.js ``createContext``).
@@ -318,12 +322,30 @@ def _role_text(side: Any) -> Optional[str]:
     return side["text"] if isinstance(side, dict) else None
 
 
+def _left_out(side: Any) -> tuple:
+    """What a side's text leaves out: the PromptManager nodes that omitted a
+    run-time part, and the composite whose added conditioning is not included.
+
+    Empty for a complete text, so a partial prompt never equals a complete one.
+    """
+    provenance = side.get("provenance") if isinstance(side, dict) else None
+    if not isinstance(provenance, dict):
+        return ()
+    return (
+        tuple(provenance.get("omitted_parts", ())),
+        provenance.get("added_by"),
+    )
+
+
 def _outcome_key(result: Dict[str, Any]) -> tuple:
-    """What a reader sees of a result: state and the two role texts."""
+    """What a reader sees of a result: state, the two role texts, and what
+    each text leaves out."""
     return (
         result["state"],
         _role_text(result["positive"]),
         _role_text(result["negative"]),
+        _left_out(result["positive"]),
+        _left_out(result["negative"]),
     )
 
 
@@ -400,6 +422,8 @@ class _GraphResolver:
         self.active: set = set()
         self.metadata = metadata or {}
         self.text_sources: dict = {}
+        # PromptManager outputs that left out a run-time part (option A).
+        self.omitting: set = set()
         # Forced runtime selector choices (inspection); a result traced through
         # one is "tainted" and never memoized, since it depends on the choice.
         self.choices: dict = {}
@@ -574,7 +598,7 @@ class _GraphResolver:
                         )
                         path = before_path + path + after_path
                         if omitted:
-                            self.text_sources[(node_id, slot)] = RUNTIME_PARTS_SOURCE
+                            self.omitting.add((node_id, slot))
             elif (
                 name in ("StringConcatenate", "Text Concatenate")
                 and slot == 0
@@ -648,10 +672,11 @@ class _GraphResolver:
         """A PromptManager prepend or append: traced, or left out when run time.
 
         Only with the semantics table (inspection), and only when the input is
-        a link to a node whose output is decided at run time (``runtime``, such
-        as LoraManager's TriggerWord Toggle): that part is not in the file, so
-        it is left out and recorded in ``omitted``. Anything else, including a
-        run-time node further upstream, keeps its trace or its failure.
+        a link to a node the table lists as ``runtime`` (such as LoraManager's
+        TriggerWord Toggle), which raises ``runtime-value`` at itself: that part
+        is not in the file, so it is left out and recorded in ``omitted``.
+        Anything else, including a run-time source further upstream or another
+        ``runtime-value`` node (a JoinStringMulti list), keeps its failure.
         """
         try:
             text, path, _ = self.text(value, "string", depth + 1)
@@ -660,8 +685,7 @@ class _GraphResolver:
                 self.semantics is None
                 or error.code != "runtime-value"
                 or not _link(value)
-                or error.node is None
-                or error.node["id"] != str(value[0])[:_CLASS_NAME_LENGTH]
+                or self.node(str(value[0]))[0] not in self.semantics.runtime
             ):
                 raise
             omitted.append(str(value[0]))
@@ -1038,6 +1062,15 @@ class _GraphResolver:
         if guider_id is not None:
             # The conditioning path starts below the guider the sampler reads.
             provenance["guider_id"] = guider_id
+        omitted: list = []
+        for step in path:
+            if (step["node_id"], step["output_slot"]) in self.omitting:
+                if step["node_id"] not in omitted:
+                    omitted.append(step["node_id"])
+        if omitted:
+            # Through encoders, concatenations and chained PromptManagers (D125).
+            provenance["text_source"] = RUNTIME_PARTS_SOURCE
+            provenance["omitted_parts"] = omitted
         return {"text": text, "storage_text": storage_text, "provenance": provenance}
 
     def guider(self, value: Any) -> Tuple[str, dict, Mapping, str, int]:
@@ -1232,7 +1265,7 @@ class _GraphResolver:
             found = self.composite_of(inputs.get(conditioning["positive"]))
             if found is None:
                 return None
-            parts, depth = found
+            parts, depth, composite = found
             texts = [self.text(part, "conditioning", depth)[0] for part in parts]
             if base["positive"]["text"] not in texts:
                 return None
@@ -1243,9 +1276,18 @@ class _GraphResolver:
             return None
         if negative["text"] != base["negative"]["text"]:
             return None
+        # D126: the positive does not include what the later stage added.
+        provenance = dict(base["positive"]["provenance"])
+        provenance["text_source"] = (
+            RUNTIME_AND_ADDED_SOURCE
+            if provenance["text_source"] == RUNTIME_PARTS_SOURCE
+            else ADDED_CONDITIONING_SOURCE
+        )
+        provenance["added_by"] = composite
+        positive = {**base["positive"], "provenance": provenance}
         return _result(
             "resolved",
-            base["positive"],
+            positive,
             base["negative"],
             base["sampler_id"],
             ADDED_CONDITIONING_REASON,
@@ -1255,7 +1297,9 @@ class _GraphResolver:
         """An ``additive`` composite a conditioning input reaches, or ``None``.
 
         Reroutes and conditioning pass-throughs (FluxGuidance and the like) are
-        followed; returns the composite's part values and the depth reached.
+        followed; returns the composite's part values, the depth reached and
+        its node ID. ``text`` follows a composite only at output slot 0, so a
+        stage whose positive failed as ``composite`` reached it there.
         """
         depth = 0
         while _link(value) and depth < self.max_depth:
@@ -1269,10 +1313,10 @@ class _GraphResolver:
             if forward is not None and forward["strategy"] == "passthrough":
                 value = inputs.get(forward["input"])
                 continue
-            composite = self.semantics.composites.get(name) if slot == 0 else None
+            composite = self.semantics.composites.get(name)
             if composite is None or composite.get("additive") is not True:
                 return None
-            return [inputs.get(part) for part in composite["inputs"]], depth
+            return [inputs.get(part) for part in composite["inputs"]], depth, node_id
         return None
 
     @staticmethod

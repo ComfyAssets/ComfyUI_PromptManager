@@ -15,10 +15,16 @@ const statuses = {
     ambiguous: 'Multiple possible prompts. Source could not be determined.',
     unresolved: 'Prompt could not be resolved.',
 };
-// D-NEW-R1 (placeholder copy, not in the concept; maintainer option A): a PromptManager prepend or append that a
-// run-time node decided (LoRA trigger words) is not in the file, so the shown text leaves it out and says so.
-export const RUNTIME_PARTS_SOURCE = 'runtime-parts-omitted';
+// D125 (maintainer option A): a PromptManager prepend or append that a run-time node decided (LoRA trigger words) is
+// not in the file, so the shown text leaves it out and says so. D126: the conditioning a later stage combined with
+// the base prompt is not in the shown text either. Each source shows its muted line under the text.
 export const RUNTIME_PARTS_NOTE = 'Text added at run time, such as trigger words, is not included.';
+export const ADDED_CONDITIONING_NOTE = 'Conditioning added at a later stage is not included.';
+const SOURCE_NOTES = Object.freeze({
+    'runtime-parts-omitted': [RUNTIME_PARTS_NOTE],
+    'added-conditioning': [ADDED_CONDITIONING_NOTE],
+    'runtime-parts-omitted-and-added-conditioning': [RUNTIME_PARTS_NOTE, ADDED_CONDITIONING_NOTE],
+});
 const ROLE_LABELS = Object.freeze({positive: '+ Positive prompt', negative: '\u2212 Negative prompt'});
 function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -118,7 +124,7 @@ export function mountPromptBlocks(container, {prompts, sender, parentScope, role
                 // Production keeps a confirmed prompt keyboard-reachable for reading and selecting long text.
                 text.tabIndex = 0;
                 block.append(text);
-                if (record?.source === RUNTIME_PARTS_SOURCE) block.append(el('p', RUNTIME_PARTS_NOTE, 'small muted'));
+                for (const note of Object.hasOwn(SOURCE_NOTES, record?.source) ? SOURCE_NOTES[record.source] : []) block.append(el('p', note, 'small muted'));
             } else block.append(el('p', typeof record?.message === 'string' && record.message ? record.message : statuses[record?.status] || statuses.unresolved, 'prompt-text muted'));
             container.append(block);
         }

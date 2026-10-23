@@ -23,7 +23,6 @@ import {
     MAX_JOIN_INPUTS,
     MAX_SUBGRAPH_DEPTH,
     MAX_WORKFLOW_NODES,
-    MULTISTAGE_UNATTRIBUTED_REASON,
     NO_SAMPLER_NAMES,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
@@ -42,12 +41,11 @@ import {
     RUNTIME_PARTS_REASON,
     RUNTIME_PARTS_SOURCE,
     readPairExecution,
-    rerouteValue,
     result,
     sideOf,
     slotKey,
 } from './local-resolver-support.mjs';
-import { finalStages, outcomeKey, sharedPair, stage } from './local-resolver-stages.mjs';
+import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage } from './local-resolver-stages.mjs';
 import { parameters } from './local-parameters.mjs';
 
 export { SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
@@ -72,6 +70,7 @@ class GraphResolver {
         this.active = new Set();
         this.metadata = metadata ?? new Map();
         this.textSources = new Map();
+        this.omitting = new Set();
         this.choices = new Map();
         this.tainted = false;
         this.latentWalks = new Map();
@@ -171,12 +170,12 @@ class GraphResolver {
                     if (adapted.compose || adapted.storageInput) storageText = text;
                     if (adapted.compose) {
                         const omitted = [];
-                        const [before, beforePath] = this.part(pyGet(inputs, 'prepend_text', ''), depth, omitted);
-                        const [after, afterPath] = this.part(pyGet(inputs, 'append_text', ''), depth, omitted);
+                        const [before, beforePath] = promptPart(this, pyGet(inputs, 'prepend_text', ''), depth, omitted);
+                        const [after, afterPath] = promptPart(this, pyGet(inputs, 'append_text', ''), depth, omitted);
                         this.scan(pyLen(before) + pyLen(after) + beforePath.length + path.length + afterPath.length);
                         text = this.built(this.bounded([pyStrip(before), text, pyStrip(after)].filter(part => part).join(' ')));
                         path = [...beforePath, ...path, ...afterPath];
-                        if (omitted.length) this.textSources.set(slotKey(nodeId, slot), RUNTIME_PARTS_SOURCE);
+                        if (omitted.length) this.omitting.add(slotKey(nodeId, slot));
                     }
                 }
             } else if ((name === 'StringConcatenate' || name === 'Text Concatenate') && slot === 0 && kind === 'string') {
@@ -407,19 +406,6 @@ class GraphResolver {
         return [text, path, text];
     }
 
-    /** `part`: a PromptManager prepend or append, traced, or left out when a direct run-time feeder decides it. */
-    part(value, depth, omitted) {
-        try {
-            const [text, path] = this.text(value, 'string', depth + 1);
-            return [text, path];
-        } catch (error) {
-            if (!(error instanceof Unresolved) || error.code !== 'runtime-value' || !isLink(value) || error.node === null ||
-                error.node.id !== pySlice(String(value[0]), CLASS_NAME_LENGTH)) throw error;
-            omitted.push(String(value[0]));
-            return ['', []];
-        }
-    }
-
     sourceOf(path) {
         if (!path.length) return 'graph-inferred';
         return this.textSources.get(slotKey(path[0].node_id, path[0].output_slot)) ?? 'graph-inferred';
@@ -465,6 +451,10 @@ class GraphResolver {
             text_source: this.textSources.get(slotKey(origin.node_id, origin.output_slot)) ?? 'graph-inferred',
         };
         if (guiderId !== null) provenance.guider_id = guiderId;
+        const omitted = [];
+        for (const step of path) if (this.omitting.has(slotKey(step.node_id, step.output_slot)) && !omitted.includes(step.node_id)) omitted.push(step.node_id);
+        // Through encoders, concatenations and chained PromptManagers (D125).
+        if (omitted.length) { provenance.text_source = RUNTIME_PARTS_SOURCE; provenance.omitted_parts = omitted; }
         return { text, storage_text: storageText, provenance };
     }
 
@@ -576,7 +566,7 @@ class GraphResolver {
         } else {
             const before = this.budget.allowance;
             try {
-                earlier = this.latentStages(samplerId, value);
+                earlier = latentStages(this, samplerId, value);
                 error = null;
             } catch (raised) {
                 if (!(raised instanceof Unresolved) || raised.code === 'work-limit') throw raised;
@@ -587,26 +577,6 @@ class GraphResolver {
         }
         if (error !== null) throw new Unresolved(error.message, error.code, error.node === null ? null : { ...error.node });
         return earlier;
-    }
-
-    /** `lineage_predecessor`: the sampler whose output a latent input continues through `lineage` nodes, or null. */
-    lineagePredecessor(value) {
-        const seen = new Set();
-        while (isLink(value) && seen.size < this.maxDepth) {
-            const nodeId = String(value[0]), slot = value[1];
-            if (seen.has(nodeId)) return null;
-            seen.add(nodeId);
-            const [name, inputs] = this.node(nodeId);
-            if (this.stageClasses.has(name)) return slot === 0 ? nodeId : null;
-            if (name === 'Reroute' && slot === 0) {
-                value = rerouteValue(inputs);
-                continue;
-            }
-            const entry = this.semantics.lineage.get(slotKey(name, slot));
-            if (entry === undefined) return null;
-            value = pyGet(inputs, entry.input);
-        }
-        return null;
     }
 
     enqueue(queue, queued, inputs, depth) {
@@ -623,28 +593,6 @@ class GraphResolver {
         const { shaped, withModel } = this.semantics.stageInputs;
         if (shaped.some(key => isLink(pyGet(inputs, key)))) return true;
         return isLink(pyGet(inputs, 'model')) && withModel.some(key => isLink(pyGet(inputs, key)));
-    }
-
-    latentStages(origin, value) {
-        if (!isLink(value)) throw new Unresolved('Unknown latent ancestry', 'malformed');
-        const start = String(value[0]), queue = [[start, 0]], queued = new Set([start]);
-        let earlier = null, lineage = null, traced = false;
-        for (let head = 0; head < queue.length; head++) {
-            const [nodeId, depth] = queue[head];
-            if (nodeId === origin) throw new Unresolved('Cyclic latent ancestry', 'malformed');
-            if (depth >= this.maxDepth) throw new Unresolved('Resolution depth limit reached', 'depth-limit');
-            this.budget.spend();
-            const [name, inputs] = this.node(nodeId);
-            if (this.stageClasses.has(name)) {
-                if (!traced) { lineage = this.lineagePredecessor(value); traced = true; }
-                if (nodeId !== lineage) throw new Unresolved(MULTISTAGE_UNATTRIBUTED_REASON);
-                earlier = nodeId;
-                continue;
-            }
-            if (this.stageShaped(name, inputs)) throw this.unsupported('Unsupported latent ancestry', nodeId);
-            this.enqueue(queue, queued, inputs, depth + 1);
-        }
-        return earlier;
     }
 }
 

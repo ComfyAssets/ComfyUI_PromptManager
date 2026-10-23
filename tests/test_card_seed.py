@@ -7,7 +7,6 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import card_seed as card_seed_rules  # noqa: E402
 from utils.card_seed import (  # noqa: E402
     MAX_RECORD_BYTES,
     card_seed,
@@ -95,6 +94,27 @@ class CardSeed(unittest.TestCase):
         del extra["21"]
         self.assertIsNone(info_seed(graph(seeded(111), refiner, extra=extra)))
         refiner["inputs"]["seed"] = 111
+        self.assertEqual(info_seed(graph(seeded(111), refiner, extra=extra)), "111")
+
+    def test_a_seed_that_agrees_with_the_named_stage_is_kept(self):
+        # Review I3: a saved sampler (seed 7) beside a preview-only sampler
+        # (seed 5): the parser and the inspector both show 7, as on main.
+        extra = {"2": {"class_type": "EmptyLatentImage", "inputs": {}}}
+        extra["20"] = {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0]}}
+        extra["21"] = {"class_type": "SaveImage", "inputs": {"images": ["20", 0]}}
+        extra["30"] = {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0]}}
+        extra["31"] = {"class_type": "PreviewImage", "inputs": {"images": ["30", 0]}}
+        info = graph(seeded(7), seeded(5), extra=extra)
+        self.assertEqual(info_seed(info), "7")
+
+    def test_a_named_ambiguous_chain_keeps_the_parser_seed(self):
+        # Review M2: multistage-differs names a sampler, but its facts merge,
+        # and the inspector fills the parser's seed: the card keeps it.
+        extra = {"2": {"class_type": "EmptyLatentImage", "inputs": {}}}
+        extra["8"] = encoder("another scene")
+        extra["20"] = {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0]}}
+        extra["22"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["20", 0]}}
+        refiner = ksampler(("8", 0), ("7", 0), seed=222, latent_image=["22", 0])
         self.assertEqual(info_seed(graph(seeded(111), refiner, extra=extra)), "111")
 
     def test_card_seed_linked_input_follows_shared_parser(self):
@@ -255,8 +275,10 @@ class CardSeed(unittest.TestCase):
                 except GenerationParamsError:
                     self.assertIsNone(params)
                     continue
-                if card_seed_rules._inspector_names_another_seed(values):
-                    # The inspector names a chain stage with another seed.
+                if name == "shared-prompt-pipeline":
+                    # The inspector names the detailer (seed 333); the parser
+                    # reads the base sampler (111): the card shows none.
+                    self.assertEqual(expected["seed"], 111)
                     expected = {**expected, "seed": None}
                     withheld.append(name)
                 self.assertEqual(params, expected)

@@ -133,6 +133,62 @@ class TestFluxThreeStage(unittest.TestCase):
                 self.assertEqual(_texts(result), (shapes.POSITIVE, ""))
                 self.assertEqual(result["reason"], resolver.ADDED_CONDITIONING_REASON)
                 self.assertEqual(result["sampler_id"], "50")
+                # D126: the positive says a later stage added conditioning.
+                self.assertEqual(
+                    result["positive"]["provenance"]["text_source"],
+                    resolver.ADDED_CONDITIONING_SOURCE,
+                )
+                self.assertEqual(
+                    result["negative"]["provenance"]["text_source"],
+                    "zeroed-conditioning",
+                )
+
+    def test_any_added_conditioning_is_labelled_never_measured(self):
+        # Ruling I2: a whole other prompt combined in is labelled the same way;
+        # no length or "short trigger" heuristic.
+        graph = shapes.flux_three_stage()
+        graph["31"] = shapes.encode(shapes.OTHER)
+        result = _inspect(graph)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(_texts(result)[0], shapes.POSITIVE)
+        self.assertEqual(
+            result["positive"]["provenance"]["text_source"],
+            resolver.ADDED_CONDITIONING_SOURCE,
+        )
+
+    def test_trigger_words_and_added_conditioning_carry_both_labels(self):
+        graph = shapes.flux_three_stage()
+        graph["7"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "clip": ["2", 0], "text": "x"},
+        }
+        graph["8"] = shapes.trigger_toggle()
+        graph["30"]["inputs"]["prepend_text"] = ["8", 0]
+        result = _inspect(graph)
+        self.assertEqual(result["state"], "resolved")
+        self.assertEqual(
+            result["positive"]["provenance"]["text_source"],
+            resolver.RUNTIME_AND_ADDED_SOURCE,
+        )
+
+    def test_a_custom_advanced_last_stage_keeps_its_failure(self):
+        # Review M2: a guider's combined positive is not floored.
+        graph = shapes.flux_three_stage()
+        graph["60"] = {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {"guider": ["63", 0], "latent_image": ["66", 0]},
+        }
+        graph["63"] = {
+            "class_type": "CFGGuider",
+            "inputs": {"positive": ["35", 0], "negative": ["33", 0]},
+        }
+        graph["66"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["51", 0]}}
+        graph["67"] = {"class_type": "VAEDecode", "inputs": {"samples": ["60", 0]}}
+        graph["61"]["inputs"]["images"] = ["67", 0]
+        result = _inspect(graph, output_node_id="61")
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "composite")
+        )
 
     def test_concat_also_adds_to_the_base_prompt(self):
         result = _inspect(shapes.flux_three_stage(composite="ConditioningConcat"))
@@ -283,6 +339,68 @@ class TestRunTimePromptManagerParts(unittest.TestCase):
         graph["2"]["inputs"]["text"] = ["8", 0]
         result = _inspect(graph)
         self.assertEqual(result["reason_code"], "runtime-value")
+
+    def test_the_label_survives_nodes_between_the_prompt_manager_and_sampler(self):
+        # Review C1: encoders, chained PromptManagers and concatenations.
+        expected = {
+            "text-encode": shapes.POSITIVE,
+            "chained": shapes.POSITIVE,
+            "concat": shapes.POSITIVE + ", extra",
+        }
+        for shape, text in expected.items():
+            with self.subTest(shape=shape):
+                result = _inspect(shapes.trigger_words_through(shape))
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(_texts(result)[0], text)
+                self.assertEqual(result["reason"], resolver.RUNTIME_PARTS_REASON)
+                self.assertEqual(
+                    result["positive"]["provenance"]["text_source"],
+                    resolver.RUNTIME_PARTS_SOURCE,
+                )
+
+    def test_a_partial_prompt_never_equals_a_complete_one(self):
+        # Review C2: never collapse a branch that left out trigger words with
+        # one that did not, nor compare such stages as equal.
+        result = _inspect(shapes.branches_with_and_without_trigger_words())
+        self.assertEqual(
+            (result["state"], result["reason"]),
+            ("ambiguous", "Multiple sampler branches"),
+        )
+        graph = shapes.hires_fix_with_trigger_words()
+        graph["9"] = shapes.prompt_manager(shapes.POSITIVE)
+        graph["20"]["inputs"]["positive"] = ["9", 0]
+        result = _inspect(graph, output_node_id="22")
+        self.assertEqual(
+            (result["state"], result["reason_code"]),
+            ("ambiguous", "multistage-differs"),
+        )
+        # Two PromptManagers leaving out two different toggles differ too.
+        graph["8b"] = shapes.trigger_toggle("otherword")
+        graph["9"]["inputs"]["prepend_text"] = ["8b", 0]
+        result = _inspect(graph, output_node_id="22")
+        self.assertEqual(result["reason_code"], "multistage-differs")
+
+    def test_only_listed_run_time_classes_are_left_out(self):
+        # Review M1: a JoinStringMulti with a linked list flag is run time
+        # too, but it is not a listed run-time node: never left out.
+        graph = shapes.hires_fix()
+        graph["9"] = {
+            "class_type": "JoinStringMulti",
+            "inputs": {
+                "inputcount": 2,
+                "delimiter": " ",
+                "return_list": ["98", 0],
+                "string_1": "static words",
+                "string_2": "more",
+            },
+        }
+        graph["98"] = {"class_type": "PrimitiveBoolean", "inputs": {"value": False}}
+        graph["2"]["inputs"]["prepend_text"] = ["9", 0]
+        result = _inspect(graph)
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "runtime-value")
+        )
+        self.assertEqual(result["node"]["class_type"], "JoinStringMulti")
 
     def test_ingestion_is_unchanged(self):
         result = resolve_prompt_pair({"prompt": shapes.hires_fix_with_trigger_words()})

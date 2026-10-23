@@ -269,6 +269,51 @@ def hires_fix_with_trigger_words():
     return graph
 
 
+def prompt_manager_text(text, prepend=""):
+    """PromptManagerText: a STRING PromptManager (prepend/main/append)."""
+    return {
+        "class_type": "PromptManagerText",
+        "inputs": {
+            "text": text,
+            "category": "",
+            "tags": "",
+            "search_text": "",
+            "prepend_text": prepend,
+            "append_text": "",
+        },
+    }
+
+
+def trigger_words_through(shape):
+    """``hires_fix_with_trigger_words`` with nodes between the toggle and sampler.
+
+    ``text-encode``: PromptManagerText (prepend <- toggle) -> CLIPTextEncode.
+    ``chained``: a PromptManager whose ``text`` reads that PromptManagerText.
+    ``concat``: PromptManagerText -> StringConcatenate(..., "extra") -> encoder.
+    """
+    graph = hires_fix_with_trigger_words()
+    graph["9"] = prompt_manager_text(POSITIVE, ["8", 0])
+    if shape == "chained":
+        graph["2"]["inputs"].update(prepend_text="", text=["9", 0])
+    elif shape == "text-encode":
+        graph["2"] = {"class_type": "CLIPTextEncode", "inputs": {"text": ["9", 0]}}
+    else:
+        graph["19"] = {
+            "class_type": "StringConcatenate",
+            "inputs": {"string_a": ["9", 0], "string_b": "extra", "delimiter": ", "},
+        }
+        graph["2"] = {"class_type": "CLIPTextEncode", "inputs": {"text": ["19", 0]}}
+    return graph
+
+
+def branches_with_and_without_trigger_words():
+    """Two saved branches: one PromptManager prepends trigger words, one does not."""
+    graph = hires_fix_with_trigger_words()
+    graph["9"] = prompt_manager(POSITIVE)
+    graph["20"]["inputs"].update(positive=["9", 0], latent_image=["4", 0])
+    return graph
+
+
 def generated_text_chain():
     """``hires_fix`` whose positive text comes from a run-time text generator."""
     graph = hires_fix()

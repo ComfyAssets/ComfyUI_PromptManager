@@ -525,6 +525,53 @@ def _runtime_parts():
     graph["30"] = {"class_type": "PromptSearchList", "inputs": {"search": "x"}}
     graph["2"]["inputs"]["append_text"] = ["30", 0]
     cases["search-list-append"] = graph
+    for shape in ("text-encode", "chained", "concat"):
+        cases[f"through-{shape}"] = shapes.trigger_words_through(shape)
+    cases["branches-with-and-without"] = (
+        shapes.branches_with_and_without_trigger_words()
+    )
+    graph = shapes.hires_fix_with_trigger_words()
+    graph["9"] = shapes.prompt_manager(shapes.POSITIVE)
+    graph["20"]["inputs"]["positive"] = ["9", 0]
+    cases["stage-with-and-without"] = graph
+    graph = shapes.hires_fix()
+    graph["9"] = {
+        "class_type": "JoinStringMulti",
+        "inputs": {
+            "inputcount": 2,
+            "delimiter": " ",
+            "return_list": ["98", 0],
+            "string_1": "static words",
+            "string_2": "more",
+        },
+    }
+    graph["98"] = {"class_type": "PrimitiveBoolean", "inputs": {"value": False}}
+    graph["2"]["inputs"]["prepend_text"] = ["9", 0]
+    cases["join-multi-flag"] = graph
+    graph = shapes.flux_three_stage()
+    graph["31"] = shapes.encode(shapes.OTHER)
+    cases["flux-other-full-prompt"] = graph
+    graph = shapes.flux_three_stage()
+    graph["7"] = {
+        "class_type": "Lora Loader (LoraManager)",
+        "inputs": {"model": ["1", 0], "clip": ["2", 0], "text": "x"},
+    }
+    graph["8"] = shapes.trigger_toggle()
+    graph["30"]["inputs"]["prepend_text"] = ["8", 0]
+    cases["flux-trigger"] = graph
+    graph = shapes.flux_three_stage()
+    graph["60"] = {
+        "class_type": "SamplerCustomAdvanced",
+        "inputs": {"guider": ["63", 0], "latent_image": ["66", 0]},
+    }
+    graph["63"] = {
+        "class_type": "CFGGuider",
+        "inputs": {"positive": ["35", 0], "negative": ["33", 0]},
+    }
+    graph["66"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["51", 0]}}
+    graph["67"] = {"class_type": "VAEDecode", "inputs": {"samples": ["60", 0]}}
+    graph["61"]["inputs"]["images"] = ["67", 0]
+    cases["flux-custom-advanced-chained"] = graph
     return {f"runtime-{name}": graph for name, graph in cases.items()}
 
 
