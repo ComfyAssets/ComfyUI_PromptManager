@@ -433,6 +433,8 @@ class ReviewOperations:
                     removed += conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
             if removed:
                 conn.execute(_BUMP_REVIEW_INDEX)
+        if removed:
+            notify_review_change(self.model.db_path)
         return removed
 
     def review_queue_page(self, *, limit: int, after: tuple | None = None) -> dict:

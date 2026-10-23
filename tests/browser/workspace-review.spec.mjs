@@ -1,7 +1,7 @@
 // Needs review (#249 PR F, plan Tasks F1 and F2, Mock inventory M4): the SAVED VIEWS row and its count, the Metadata
 // review page over the real review routes, and Activity's Review metadata. Items are recorded by the real recorder
-// (tests/browser/workspace_review_fixture.py), as the live monitor records a new output; the conflict item is a real
-// monitor fallback link. An open page re-reads its queue from the review change stream (F2).
+// (tests/browser/workspace_review_fixture.py) through the monitor's entry point; the conflict item's file was linked
+// to another prompt after it was queued. An open page re-reads its queue from the review change stream (F2).
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
 
@@ -103,7 +103,7 @@ test('apply candidate links the pair and the item leaves the queue and the count
 });
 
 test('conflict leaves links unchanged and explains', async ({ page, request }) => {
-    // A real monitor fallback: the new output is linked to the most recent prompt, then queued.
+    // Queued first, then linked to another prompt (before a scan or monitor pass could settle it).
     await seed(request, 0, { conflict: true });
     const before = await links(request);
     expect(before).toEqual([{ filename: 'conflict.png', prompt: 'Misty forest path', pair_id: null, positive: null,

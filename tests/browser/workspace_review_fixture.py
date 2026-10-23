@@ -1,18 +1,19 @@
 """Owned, deterministic Needs review items for the workspace page (#249 PR F).
 
 Each file is a PNG whose workflow has two samplers with their own positive
-encoders and one shared negative, so the resolver finds it ``ambiguous``; it
-is recorded through the real recorder (``record_review_file``), exactly as the
-live monitor records a new output. No path or SQL comes from a request.
+encoders and one shared negative, so the resolver finds it ``ambiguous``. Its
+loader node carries ComfyUI's ``Infinity`` stamp, which the legacy pages'
+parser (the scan's fallback) cannot read, so nothing links the file and it is
+a Needs review case (#284: only ambiguous, unlinked files are queued). It is
+recorded through the producers' entry point (``record_review_file``). No path
+or SQL comes from a request.
 
 ``POST /__test__/review/reset`` also takes the special items F2 needs, queued
 after the plain ones in this order:
 
-- ``conflict``: a new output handled by the real monitor pipeline
-  (``ImageGenerationHandler.process_new_image``). Its positive encoders are
-  PromptManager nodes whose texts are not saved, so the monitor falls back to
-  the most recent prompt ("Misty forest path"), links the file to it and
-  records the item; applying a sampler path then conflicts with that link.
+- ``conflict``: an item whose file was linked to another prompt ("Misty
+  forest path") after it was queued (the next scan or monitor pass would
+  remove the item); applying a sampler path then conflicts with that link.
 - ``limited``: an A1111 ``parameters`` block with two negative lines, which
   the recorder stores ``limited`` (no candidates).
 - ``unavailable``: a file recorded under the ``temp`` directory while it was a
@@ -25,8 +26,10 @@ its first negative, the one the concept's panel shows), so the panel's text
 wraps as the concept's does.
 
 ``POST /__test__/review/add {kind}`` adds one file while a page is open:
-``monitor`` runs the monitor pipeline on a new ambiguous output (recorded),
-``file`` only writes one (a metadata scan records it). ``GET
+``monitor`` records a new ambiguous, unlinked output from a worker thread
+through ``record_review_file`` (the monitor's own entry point; the monitor
+never queues an output it linked itself), ``file`` only writes one (a
+metadata scan records it). ``GET
 /__test__/review/links`` answers each review file's prompt and pair links, and
 ``GET /__test__/review/streams`` the open change streams and captures.
 """
@@ -50,7 +53,7 @@ if TYPE_CHECKING:
 
 POSITIVES = ("Golden dunes at dusk", "Harbor lights at night")
 NEGATIVE = "Soft negative, blur"
-# The monitor's fallback: the most recent saved prompt.
+# The prompt the conflict item's file is linked to after it was queued.
 FALLBACK = "Misty forest path"
 SPECIAL = ("conflict", "limited", "unavailable")
 # The concept's first three images (concept app.js `images`) and first prompt.
@@ -91,7 +94,13 @@ def _graph(
     negative: str = NEGATIVE,
 ) -> dict:
     graph = {
-        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m"}},
+        # ``Infinity`` (as ComfyUI writes it): the legacy parser cannot read the
+        # graph, so the scan's fallback links nothing and the file is queued.
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "m"},
+            "is_changed": [float("inf")],
+        },
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": negative}},
     }
     for index, text in enumerate(positives):
@@ -138,36 +147,42 @@ def _stamp(path: Path, age: float) -> None:
 
 
 class _Monitor:
-    """The real monitor pipeline over this server's database (one per server)."""
+    """The monitor's recorder over this server's database (one per server)."""
 
     def __init__(self, api: PromptManagerAPI) -> None:
-        from utils.image_monitor import ImageGenerationHandler
-        from utils.prompt_tracker import PromptTracker
-
-        self.handler = ImageGenerationHandler(api.db, PromptTracker(api.db))
-        self.handler.review_recorder = api.record_review_file
+        self.api = api
         self.lock = threading.Lock()
 
     def new_output(self, path: Path) -> None:
-        """What the monitor does once a new output has settled."""
+        """The monitor's Needs review pass for a new output, from a worker thread."""
+        outcome = []
         with self.lock:
-            self.handler.process_new_image(str(path))
+            worker = threading.Thread(
+                target=lambda: outcome.append(self.api.record_review_file(str(path)))
+            )
+            worker.start()
+            worker.join()
+        if outcome != ["recorded"]:
+            raise RuntimeError(f"{path.name} was {outcome}, not recorded")
 
 
 def _monitored_output(api: PromptManagerAPI, monitor: _Monitor, path: Path) -> None:
+    _png(path, (150, 60, 40))
+    monitor.new_output(path)
+
+
+def _linked_after_queueing(api: PromptManagerAPI, path: Path) -> None:
     from utils.hashing import generate_prompt_hash
 
-    if api.db.get_prompt_by_hash(generate_prompt_hash(FALLBACK)) is None:
-        api.db.save_prompt(FALLBACK, prompt_hash=generate_prompt_hash(FALLBACK))
-    _png(path, (150, 60, 40), graph=_graph("PromptManager"))
-    before = len(api.db.review_items_for(_locator(path)))
-    monitor.new_output(path)
-    if len(api.db.review_items_for(_locator(path))) != before + 1:
-        raise RuntimeError(f"the monitor did not record {path.name}")
-
-
-def _locator(path: Path) -> str:
-    return os.path.normcase(os.path.realpath(path))
+    _png(path, (150, 60, 40))
+    _record(api, path, "recorded")
+    prompt = api.db.get_prompt_by_hash(generate_prompt_hash(FALLBACK))
+    prompt_id = (
+        prompt["id"]
+        if prompt is not None
+        else api.db.save_prompt(FALLBACK, prompt_hash=generate_prompt_hash(FALLBACK))
+    )
+    api.db.link_image_to_prompt(prompt_id, str(path))
 
 
 def _unavailable(api: PromptManagerAPI, root: Path, path: Path) -> None:
@@ -220,7 +235,7 @@ def seed_review(
         relative = f"review/{kind}.png"
         path = (root / "temp" if kind == "unavailable" else output) / relative
         if kind == "conflict":
-            _monitored_output(api, monitor, path)
+            _linked_after_queueing(api, path)
         elif kind == "limited":
             _png(
                 path,

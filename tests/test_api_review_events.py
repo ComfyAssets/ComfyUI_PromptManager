@@ -15,8 +15,10 @@ import threading
 
 try:
     from tests.test_api_review import ReviewRoutesTestCase
+    from tests.test_review import unlinkable_graph, write_png
 except ImportError:  # discovered with tests/ as the top-level directory
     from test_api_review import ReviewRoutesTestCase
+    from test_review import unlinkable_graph, write_png
 
 try:  # guarded so a missing module fails assertions, not test loading
     from database import review_changes
@@ -76,6 +78,13 @@ class ReviewEventsTestCase(ReviewRoutesTestCase):
         self.assertEqual(name, "ready")
         return data
 
+    def _queueable(self, name="two.png", color=(255, 0, 0)):
+        """A file the producers queue: ambiguous, and nothing links it."""
+        path = self.output_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_png(path, prompt=unlinkable_graph("cat", "dog"), color=color)
+        return path
+
     async def _record_in_thread(self, path):
         """Record as the monitor does: from a worker thread, not the loop."""
         self._roots()
@@ -92,7 +101,7 @@ class TestReviewEvents(ReviewEventsTestCase):
     async def test_monitor_recording_sends_one_change(self):
         self._require_events()
         stream = await self._stream()
-        self.assertEqual(await self._record_in_thread(self._ambiguous()), "recorded")
+        self.assertEqual(await self._record_in_thread(self._queueable()), "recorded")
         self.assertEqual(await self._event(stream), "change")
 
     async def test_duplicate_recording_and_refused_decision_send_nothing(self):
@@ -111,7 +120,7 @@ class TestReviewEvents(ReviewEventsTestCase):
             calls.append(db_path)
             original(db_path)
 
-        path = self._ambiguous("two.png")
+        path = self._queueable("two.png")
         self._record(path)
         with (
             patch.object(review_db, "notify_review_change", spy),
@@ -182,10 +191,23 @@ class TestReviewEvents(ReviewEventsTestCase):
     async def test_scan_recording_sends_a_change(self):
         self._require_events()
         self._roots()
-        self._ambiguous("sub/two.png")
+        self._queueable("sub/two.png")
         stream = await self._stream()
         job = await self._scan("all")
         self.assertEqual(job["scope"]["review_items"], 1)
+        self.assertEqual(await self._event(stream), "change")
+
+    async def test_a_linked_file_leaving_the_queue_sends_a_change(self):
+        """The queue heals (#284 maintainer test): a pending item whose file is
+        linked now leaves the queue, and the open page hears about it."""
+        self._require_events()
+        self._roots()
+        path = self._ambiguous("two.png")
+        self._record(path)  # as the pre-fix scan queued fallback-linked files
+        stream = await self._stream()
+        job = await self._scan("new")
+        self.assertEqual(job["scope"]["review_settled"], 1)
+        self.assertEqual(self._items(), [])
         self.assertEqual(await self._event(stream), "change")
 
     async def test_ready_carries_the_version_a_list_read_answers(self):
