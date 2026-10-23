@@ -420,6 +420,23 @@ class TestStartAndExclusion(ImageTagJobTestCase):
         # A refused start never leaves the gate taken.
         self.assertIsNone(model_gate.holder())
 
+    async def test_image_tag_job_refused_while_legacy_restore_holds(self):
+        self.png("a.png")
+        async with self.api._jobs.hold(
+            "restore", "Database restore (admin page)", admission="records"
+        ):
+            status, body = await self.start(self.add_body(["a.png"], ["x"]))
+            self.assertEqual((status, body["code"]), (409, "busy"))
+            self.assertEqual(body["running"]["title"], "Database restore (admin page)")
+            status, body = await self.start(self.auto_body(["a.png"]))
+            self.assertEqual((status, body["code"]), (409, "busy"))
+            self.assertIsNone(model_gate.holder())
+        async with self.api._jobs.hold(
+            "thumbnails", "Thumbnail generation (gallery page)", admission="guarded"
+        ):
+            status, body = await self.start(self.add_body(["a.png"], ["x"]))
+            self.assertEqual((status, body["code"]), (409, "busy"))
+
     async def test_record_changing_excludes_running_scan(self):
         self.png("a.png")
         gate = asyncio.Event()

@@ -678,6 +678,31 @@ test('cancel scan ends cancelled with partial counts', async ({ page, request })
     await expect(heading(page).getByRole('button', { name: 'Cancel scan', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
 });
 
+// Truth rule: a held legacy-page job (a restore from the admin page) cannot be cancelled, so neither the Activity
+// list nor the job's view offers Cancel; the cancellable scan beside it keeps its own (review I3).
+test('a held legacy job shows no Cancel in the list or its view', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const response = await request.post('/__test__/jobs/hold', { data: { kind: 'restore', title: 'Database restore (admin page)' } });
+    await expect(response).toBeOK();
+    const held = (await response.json()).job;
+    expect(held.cancellable).toBe(false);
+    await page.goto(`${workspace}#/activity`);
+    const item = items(page).filter({ has: page.getByRole('link', { name: /Database restore \(admin page\)$/ }) });
+    await expect(item.locator('.chip')).toHaveText('Running');
+    await expect(item.locator('progress')).toHaveCount(1);
+    await expect(main(page).getByRole('button', { name: 'Cancel job', exact: true })).toHaveCount(0);
+
+    await item.getByRole('link').click();
+    await expect(heading(page).locator('h1')).toHaveText('Database restore (admin page)');
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
+    await expect(heading(page).getByRole('button', { name: /^Cancel/ })).toHaveCount(0);
+
+    // When the hold ends the view shows the end, still without a Cancel.
+    await finish(request, held.id);
+    await expect(heading(page).locator('p.muted')).toHaveText(/^Finished/);
+    await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
+});
+
 test('busy start names the running job', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     const running = await startJob(request, { title: 'Database maintenance', kind: 'maintenance' });

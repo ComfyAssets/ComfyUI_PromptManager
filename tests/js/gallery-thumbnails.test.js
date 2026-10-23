@@ -73,6 +73,28 @@ test('Not Now persists the collection state and suppresses the unchanged prompt'
     assert.equal(f.prompts.length, 1);
 });
 
+// WebKit fails a fetch a leaving page starts ("Fetch API cannot load … due to access control checks.") and logs it
+// as a page error: the delayed startup check starts no read once the page has begun to leave (as admin.js, #290).
+test('the startup check starts no read once the page is leaving', async () => {
+    const f = fixture({ success: true, total_images: 100, pending: 30, collection_id: 'a' });
+    f.manager.pageLifetime = new AbortController();
+    f.manager.pageLifetime.abort();
+    await f.check();
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.prompts.length, 0);
+});
+
+test('the startup check passes the page lifetime to its read', async () => {
+    const f = fixture({ success: true, total_images: 100, pending: 30, collection_id: 'a' });
+    const signals = [];
+    f.manager.pageLifetime = new AbortController();
+    const get = f.manager.api.get;
+    f.manager.api.get = async (url, options) => { signals.push(options?.signal); return get(url); };
+    await f.check();
+    assert.deepEqual(signals, [f.manager.pageLifetime.signal]);
+    assert.equal(f.prompts.length, 1);
+});
+
 test('disabled checks do not request collection status', async () => {
     const f = fixture({}, { checkThumbnailsAtStartup: false });
     await f.check();
