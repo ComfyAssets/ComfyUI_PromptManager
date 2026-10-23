@@ -22,10 +22,17 @@ try:
         ReviewTestCase,
         ambiguous_graph,
         digest,
+        unlinkable_graph,
         write_png,
     )
 except ImportError:  # discovered with tests/ as the top-level directory
-    from test_review import ReviewTestCase, ambiguous_graph, digest, write_png
+    from test_review import (
+        ReviewTestCase,
+        ambiguous_graph,
+        digest,
+        unlinkable_graph,
+        write_png,
+    )
 
 from database.review_schema import canonical_evidence, evidence_digest
 from py.config import GalleryConfig
@@ -320,13 +327,9 @@ class TestQueueReads(ReviewRoutesTestCase):
         self._require_routes()
         self._roots()
         limited = self.output_dir / "limited.png"
-        write_png(
-            limited,
-            parameters=(
-                "cat\nNegative prompt: blur\nNegative prompt: noise\n"
-                "Steps: 20, Sampler: Euler"
-            ),
-        )
+        # More than 16 candidates with a prompt: limited, still a choice.
+        many = [f"prompt {n}" for n in range(17)]
+        write_png(limited, prompt=unlinkable_graph(*many))
         self.assertEqual(self._record_raw(str(limited)), "limited")
         self._record(self._ambiguous("two.png"))
         items = (await self._list())["items"]

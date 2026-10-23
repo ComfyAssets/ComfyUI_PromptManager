@@ -184,10 +184,12 @@ class TestOnlyUnlinkedAmbiguousFilesAreQueued(OutcomeTestCase):
                 if "could not be traced" in row["detail"]
             )
             queued = [name for name in review if name not in unresolved_rows]
-            self.assertEqual(queued, ["delims.png", "u1.png", "u2.png"], job)
-            self.assertEqual(job["scope"]["review_items"], 3)
-            self.assertEqual(self._pending(), 3)
-        self.assertIn("? 3 images already in Needs review", "\n".join(job["log"]))
+            # delims.png has nothing to choose: "could not be traced".
+            self.assertEqual(queued, ["u1.png", "u2.png"], job)
+            self.assertIn("delims.png", unresolved_rows)
+            self.assertEqual(job["scope"]["review_items"], 2)
+            self.assertEqual(self._pending(), 2)
+        self.assertIn("? 2 images already in Needs review", "\n".join(job["log"]))
 
 
 class TestQueueSelfHeals(OutcomeTestCase):

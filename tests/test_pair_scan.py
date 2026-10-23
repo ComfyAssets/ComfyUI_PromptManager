@@ -82,7 +82,8 @@ class TestPairScan(AdminAPITestCase):
             "class_type": "BasicGuider",
             "inputs": {"width": 2048, "height": 2048},
         }
-        self.assertEqual(self._scanned("untraceable.png", g), "ambiguous")
+        # Ambiguous with nothing to choose: unresolved, never a review item.
+        self.assertEqual(self._scanned("untraceable.png", g), "unresolved")
         self.assertEqual(self.api.db.list_prompt_pairs()["total"], 0)
         self.assertEqual(self._texts(), [])
 
@@ -159,9 +160,10 @@ class TestPairScan(AdminAPITestCase):
                 "\nSteps: 20, Sampler: Euler"
             )
         }
+        # No candidate to choose: reported unresolved, still not guessed.
         self.assertEqual(
             self.api._ingest_scanned_file(self.output_dir / "ambiguous.png", meta),
-            "ambiguous",
+            "unresolved",
         )
         self.assertEqual(self.api.db.get_recent_prompts()["prompts"], [])
 

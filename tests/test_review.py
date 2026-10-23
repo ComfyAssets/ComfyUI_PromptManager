@@ -267,10 +267,12 @@ class TestScanRecording(ReviewTestCase):
         with self.assertLogs("prompt_manager.api", logging.WARNING) as logs:
             without = run(other, broken)
         self.assertEqual(recorded, without)
-        self.assertEqual(recorded[0]["ambiguous"], 2)
+        # delims.png offers nothing to choose: unresolved, not queued.
+        self.assertEqual(recorded[0]["ambiguous"], 1)
+        self.assertEqual(recorded[0]["unresolved"], 1)
         self.assertEqual(recorded[0]["added"], 1)
         self.assertTrue(any("Needs review" in line for line in logs.output))
-        self.assertEqual(len(self._items()), 2)
+        self.assertEqual(len(self._items()), 1)
         other.close_annotation_captures()
         other_db.close_all()
 
@@ -407,7 +409,9 @@ class TestScanRecording(ReviewTestCase):
         self.assertEqual(items[0]["locator"], items[1]["locator"])
         self.assertEqual(job["scope"]["review_items"], 1)
 
-    async def test_parameters_delimiter_ambiguity_is_limited_without_candidates(self):
+    async def test_many_candidates_are_limited_without_candidates(self):
+        """Only ``many.png`` is queued: the A1111 delimiter ambiguity offers
+        no candidate to choose (``tests/test_review_choosable.py``)."""
         self._require_module()
         self._roots()
         write_png(
@@ -420,7 +424,7 @@ class TestScanRecording(ReviewTestCase):
         job = await self._scan()
 
         items = {Path(item["locator"]).name: item for item in self._items()}
-        self.assertEqual(set(items), {"delims.png", "many.png"})
+        self.assertEqual(set(items), {"many.png"})
         for item in items.values():
             self.assertEqual((item["limited"], item["candidate_count"]), (1, 0))
             evidence = json.loads(item["evidence"])
@@ -431,7 +435,7 @@ class TestScanRecording(ReviewTestCase):
             json.loads(items["many.png"]["evidence"])["candidate_total"],
             18,
         )
-        self.assertEqual(job["scope"]["review_items"], 2)
+        self.assertEqual(job["scope"]["review_items"], 1)
 
     async def test_capacity_errors_are_logged_and_counted_not_fatal(self):
         self._require_module()
@@ -533,8 +537,11 @@ class TestRecordAmbiguousFile(ReviewTestCase):
         self.assertEqual(self._record("two.png"), "duplicate")
         self.assertEqual(self._record("one.png"), "skipped")
         self.assertEqual(self._record("missing.png"), "skipped")
-        self.assertEqual(self._record("delims.png"), "limited")
-        self.assertEqual(self._record("delims.png"), "duplicate")
+        self.assertEqual(self._record("delims.png"), "untraced")
+        many = [f"prompt {n}" for n in range(17)]
+        write_png(self.output_dir / "many.png", prompt=unlinkable_graph(*many))
+        self.assertEqual(self._record("many.png"), "limited")
+        self.assertEqual(self._record("many.png"), "duplicate")
         self.assertEqual(self._review_revision(), 2)
 
     async def test_restore_between_capture_and_write_skips(self):

@@ -2490,15 +2490,26 @@ validation, annotation group included. The browser fixtures clear
 never the metadata row.
 
 Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
-`tests/test_review.py`, `tests/test_review_outcome.py`): a file is queued only
-when its final outcome is ambiguous and unlinked. The output scan (Activity's
+`tests/test_review.py`, `tests/test_review_outcome.py`,
+`tests/test_review_choosable.py`): a file is queued only when its final outcome
+is ambiguous and unlinked and there is something to choose. Only scans produce
+items; the monitor links new outputs and clears pending items it resolves
+(maintainer rulings, 2026-10-23). The output scan (Activity's
 Scan for metadata and the legacy `/scan`) hands `record_ambiguous_file` a file
 the ingestion resolver finds `ambiguous` only when the browser-parser fallback
 then links nothing (status `ambiguous`) and no saved row links the file
 already; an ambiguous file a saved row links is reported `unchanged` ("Already
 linked to its prompt"), not Needs review. A file the fallback links, an exact
 pair the ingester stores, and `conflict` and `unresolved` files are not
-queued. The queue heals itself: after each batch, the scan removes the pending
+queued. Neither is an ambiguous file with nothing to choose: fewer than two of
+its candidates are `resolved` with non-blank positive text (`reviewable`). With
+none the file could not be traced; with exactly one, the untraced branches may
+still have made the file, so that text is not certain either. Both report
+`unresolved` ("could not be traced"), are never linked, and their pending,
+undecided items whose own evidence offers no choice (a limited item counts as
+a choice when it holds at least two candidates) leave the queue on the next
+scan or monitor pass (`settle_untraced_review_items`). The maintainer's
+second live check found 39 items whose 11 candidates were all "unresolved". The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
 (`settle_linked_review_items`; the review index revision moves). Only an
@@ -2515,20 +2526,21 @@ fenced by the capture's storage epoch. Evidence is the resolver reason plus one
 `{sampler_id, state, reason, positive, negative, hash}` per selectable
 candidate (nested ambiguous stages flattened, duplicates dropped; each side
 `{text, storage_text, provenance}`; `hash` = SHA-256 of the canonical candidate
-without it). No candidate, more than 16, or evidence over 8 MiB is a `limited`
+without it). More than 16 candidates, or evidence over 8 MiB, is a `limited`
 item without candidates. Recording is idempotent per `(byte_id,
 resolver_version, evidence_hash)` and never touches an existing item or its
 decisions; changed bytes add a new pending item and keep the old one. The
 capture is released before the write; no model is loaded and no pixel is
 decoded. Scan statuses, counters, outcome rows and the legacy SSE events are
-unchanged apart from the already-linked case above; the job's `scope` gains
+unchanged apart from the already-linked and nothing-to-choose cases above; the job's `scope` gains
 `review_items` (this scan's files that are in the pending queue after it, new
 or already there: the review group's ambiguous rows, less files a capture could
 not read or a decision already settled), `review_added` (new items),
-`review_settled` (items removed because their file is linked now) and
+`review_settled` (items removed because their file is linked now),
+`review_untraced` (items removed because they offer nothing to choose) and
 `review_errors`. The log ends with `? N images added to Needs review`,
 `? N images already in Needs review`, `= N images left Needs review · now
-linked` and `! N images could not be added to Needs review` (failures, e.g.
+linked`, `= N images left Needs review · nothing to choose` and `! N images could not be added to Needs review` (failures, e.g.
 capture capacity), each only when N > 0. Recording captures in the background: it never takes the store's
 last worker or capture slot, which stay free for an interactive Tag dialog or
 Apply, and waits up to 2 s for room before counting the file as not added
