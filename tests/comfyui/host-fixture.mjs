@@ -1,11 +1,20 @@
 import { expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import runtime from '../../tools/vendor/comfyui-runtime.json' with { type: 'json' };
+import { hostBaseDirectory } from '../../tools/vendor/comfyui-host.mjs';
 
 export function installHostHooks(test, expectedTypes = ['PromptManager', 'PromptManagerText', 'PromptSearchList']) {
     test.beforeEach(async ({ page, context, request }, testInfo) => {
         const response = await request.get('/system_stats');
         expect(response.ok()).toBe(true);
-        const info = (await response.json()).system;
+        const stats = await response.json();
+        // comfyui.config.mjs's launcher reports the host it owns. The execution suite has no
+        // web server: it starts its own host per worker behind a port refusal.
+        if (testInfo.config.webServer) {
+            const ownedBase = process.env.PM_COMFY_HOST_BASE;
+            expect(ownedBase, 'the launcher reported the host it started').toBeTruthy();
+            expect(hostBaseDirectory(stats), 'the host answering the port is the one this run started').toBe(ownedBase);
+        }
+        const info = stats.system;
         expect(info.comfyui_version).toBe(runtime.serverVersion);
         expect(info.pytorch_version).toBe(`${runtime.torchVersion}+cpu`);
         expect(info.required_frontend_version).toBe(runtime.frontendVersion);
