@@ -27,6 +27,25 @@ test('json.loads keeps Python value kinds and dict order', () => {
     assert.equal(py.pyJsonLoads(` ${'9'.repeat(4300)}\n`), BigInt('9'.repeat(4300)));
 });
 
+// One depth cap for both browser CPython-JSON parsers (py-json.mjs here, local-video.mjs for video envelopes): every
+// array or object counts, an empty one too, as CPython's scanner enters recursion for each; past the cap it refuses.
+test('json.loads refuses nesting past the shared depth cap, counting every container', () => {
+    const video = import('../../web/js/workspace/local-video.mjs');
+    assert.equal(py.JSON_MAX_DEPTH, 1000);
+    const nest = (depth, inner = '') => '['.repeat(depth) + inner + ']'.repeat(depth);
+    const objects = (depth, inner) => '{"a":'.repeat(depth) + inner + '}'.repeat(depth);
+    for (const text of [nest(1000), nest(1000, '1'), nest(999, '{}'), objects(1000, '1'), objects(999, '[]')]) assert.doesNotThrow(() => py.pyJsonLoads(text));
+    for (const text of [nest(1001), nest(1001, '1'), nest(1000, '{}'), objects(1001, '1'), objects(1000, '[]')]) {
+        assert.throws(() => py.pyJsonLoads(text), py.PyValueError);
+    }
+    return video.then(({ pythonJsonLoads, PythonJsonError }) => {
+        for (const text of [nest(1000), nest(1000, '1'), objects(999, '[]')]) assert.doesNotThrow(() => pythonJsonLoads(text));
+        for (const text of [nest(1001), nest(1001, '1'), objects(1000, '[]')]) {
+            assert.throws(() => pythonJsonLoads(text), error => error instanceof PythonJsonError && error.recursion === true);
+        }
+    });
+});
+
 test('str helpers measure, slice and strip as CPython', () => {
     assert.equal(py.pyLen('a\u{1f600}\ud800'), 3);
     assert.equal(py.pySlice('\u{1f600}\u{1f600}x', 2), '\u{1f600}\u{1f600}');

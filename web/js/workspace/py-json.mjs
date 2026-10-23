@@ -22,6 +22,12 @@ export class PyValueError extends Error {
 
 // CPython's default int max str digits (PEP 651 / gh-95778).
 const INT_MAX_STR_DIGITS = 4300;
+/**
+ * The nesting both browser CPython-JSON parsers accept (this one and local-video.mjs's): every array or object counts,
+ * an empty one too, as CPython's scanner enters a recursion level for each. Past it `json.loads` raises RecursionError,
+ * which the server treats as invalid JSON; its real limit depends on the Python (TESTING.md, "Deep JSON").
+ */
+export const JSON_MAX_DEPTH = 1000;
 const MAX_SAFE_DIGITS = '9007199254740991';
 const NUMBER = /-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?/y;
 const STRING_STOP = /["\\\u0000-\u001f]/g;
@@ -118,17 +124,21 @@ export function pyJsonLoads(text) {
     }
     skip();
     const stack = [];
+    const enter = () => {
+        if (stack.length >= JSON_MAX_DEPTH) throw fail('Maximum JSON nesting depth exceeded');
+        pos++; skip();
+    };
     let result;
     for (;;) {
         let value;
         if (text[pos] === '{') {
-            pos++; skip();
+            enter();
             const frame = { value: new Map(), object: true, key: null };
             if (text[pos] === '}') pos++;
             else { frame.key = key(); stack.push(frame); continue; }
             value = frame.value;
         } else if (text[pos] === '[') {
-            pos++; skip();
+            enter();
             const frame = { value: [], object: false };
             if (text[pos] === ']') pos++;
             else { stack.push(frame); continue; }

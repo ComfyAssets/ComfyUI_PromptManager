@@ -17,6 +17,7 @@
 // server folds them.
 
 import { INT_MAX_STR_DIGITS } from "./local-projection.mjs";
+import { JSON_MAX_DEPTH } from "./py-json.mjs";
 
 // Role records (prompt, parameters, the pair execution record) share one budget:
 // past it the read fails. A workflow has its own budget; past it only the workflow
@@ -40,7 +41,6 @@ const MAX_NAME_BYTES = 64; // the longest carrier name is 24 bytes; longer names
 export const VIDEO_READ_CEILING = MAX_VIDEO_ELEMENTS * (MAX_HEADER_BYTES + MAX_NAME_BYTES) + VIDEO_TAG_READ_BYTES;
 const PREFIX_BYTES = 32;
 const YIELD_INTERVAL_MS = 8;
-const JSON_MAX_DEPTH = 1000; // Python's default recursion limit
 
 const ROLE_KEYS = ["prompt", "parameters", "comfyassets_prompt_pairs"];
 const METADATA_KEYS = ["prompt", "workflow", "parameters", "comfyassets_prompt_pairs"];
@@ -826,8 +826,9 @@ export function pythonJsonLoads(text) {
         }
     }
     function value(depth) {
-        if (depth > JSON_MAX_DEPTH) throw new PythonJsonError("Maximum recursion depth exceeded", true);
         const char = text[pos];
+        // The shared cap (py-json.mjs): `depth` containers enclose this value, and it would be one more.
+        if ((char === "{" || char === "[") && depth >= JSON_MAX_DEPTH) throw new PythonJsonError("Maximum recursion depth exceeded", true);
         if (char === '"') return string();
         if (char === "{") {
             pos += 1;

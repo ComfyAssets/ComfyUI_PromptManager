@@ -997,6 +997,48 @@ def _threshold(build, low, high):
     return low
 
 
+# The nesting the browser's CPython-JSON parsers accept (py-json.mjs JSON_MAX_DEPTH).
+JSON_MAX_DEPTH = 1000
+JSON_DEPTHS = (JSON_MAX_DEPTH - 1, JSON_MAX_DEPTH, JSON_MAX_DEPTH + 1)
+
+
+def _nested(depth):
+    """``depth`` nested arrays."""
+    return "[" * depth + "]" * depth
+
+
+def depth_cases():
+    """``(name, kind, depth, records)``: a deep record at the JSON depth cap.
+
+    A ``prompt`` holds a junk input nested to ``depth`` containers in all (the
+    graph, its node and the inputs are three); parsed, both roles resolve.
+    A ``workflow`` nested to ``depth`` makes two PromptManager nodes
+    overwritten (R1) when it is read, and the prompt resolves when it is not.
+    """
+    cases = []
+    base = {"6": _encode("a fox"), "7": _encode("blurry")}
+    for depth in JSON_DEPTHS:
+        graph = _dump(_graph(["6", 0], ["7", 0], {**base, "9": {"class_type": "Note"}}))
+        junk = '"inputs": {"junk": ' + _nested(depth - 3) + "}"
+        prompt = graph.replace('"class_type": "Note"', '"class_type": "Note", ' + junk)
+        cases.append((f"prompt-depth-{depth}", "prompt", depth, {"prompt": prompt}))
+        overwritten = {**base, "6": _encode("shared"), "7": _encode("shared")}
+        overwritten["6"]["inputs"]["search_text"] = ""
+        nodes = [
+            {"id": 6, "type": "PromptManager", "widgets_values": ["own text"]},
+            {"id": 7, "type": "PromptManager", "widgets_values": ["other text"]},
+        ]
+        workflow = json.dumps({"nodes": nodes, "extra": 0}).replace(
+            '"extra": 0', '"extra": ' + _nested(depth - 1)
+        )
+        records = {
+            "prompt": _dump(_graph(["6", 0], ["7", 0], overwritten)),
+            "workflow": workflow,
+        }
+        cases.append((f"workflow-depth-{depth}", "workflow", depth, records))
+    return cases
+
+
 def boundary_cases():
     """Each work bound at its edge: the last value that resolves, then the next."""
     cases = {}

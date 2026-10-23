@@ -1356,6 +1356,53 @@ class LocalResolverParityTests(unittest.TestCase):
             "\U0001f600" * 64,
         )
 
+    def test_local_json_depth_cap_at_its_boundary(self):
+        """Both kinds of deep record at the browser's JSON depth cap (1,000).
+
+        Locally a record nested past the cap is invalid JSON: a prompt is
+        malformed and a workflow is ignored, as the server answers when
+        ``json.loads`` raises RecursionError. The server's own limit depends on
+        the Python (TESTING.md, "Deep JSON"): about 990 on 3.10 and 3.11, so it
+        agrees past the cap there; about 10,000 on 3.12 and 3.13 and over
+        50,000 on 3.14, so it agrees up to the cap there and reads deeper.
+        """
+        cases = resolver_cases.depth_cases()
+        observed = _run_oracle(
+            self,
+            [
+                {"name": name, "mode": "resolve", "records": records}
+                for name, _kind, _depth, records in cases
+            ],
+        )
+        newer = sys.version_info >= (3, 12)
+        compared = 0
+        for name, kind, depth, records in cases:
+            with self.subTest(case=name):
+                local = observed[name]["evidence"]["resolution"]
+                within = depth <= resolver_cases.JSON_MAX_DEPTH
+                if kind == "prompt":
+                    expected = (
+                        ("resolved", None) if within else ("unresolved", "malformed")
+                    )
+                else:
+                    # A workflow that is read finds the overwritten pair (R1).
+                    expected = (
+                        ("unresolved", "malformed") if within else ("resolved", None)
+                    )
+                self.assertEqual((local["state"], local["reason_code"]), expected)
+                server = _server_evidence(records)
+                if server["resolution"]["state"] == local["state"]:
+                    self.assertEqual(
+                        _canonical_bytes(observed[name]["evidence"]),
+                        _canonical_bytes(server),
+                    )
+                    compared += 1
+                else:
+                    # The documented divergence only: an older server refuses
+                    # a little below the cap, a newer one reads past it.
+                    self.assertEqual(within, not newer)
+        self.assertGreaterEqual(compared, 2)
+
     def test_local_roles_match_fuzzed_record_sets(self):
         cases = {}
         for seed in range(4):

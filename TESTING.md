@@ -2324,15 +2324,33 @@ skip without ffmpeg). The remaining known divergences, checked against ffprobe 9
   `unreadable`); ffprobe reads such files.
 - An EBML DocType other than `matroska`/`webm` is an invalid container locally; ffmpeg
   only warns and reads it.
-- Local roles (PR L3): a prompt graph nested deeper than CPython's `json.loads`
-  recursion limit (about 1,000 levels, depending on the Python version) is malformed on
-  the server and parsed locally. `\d` in the A1111 settings footer is any Unicode decimal
+- Deep JSON (local roles, PR L3, and video envelopes): both browser CPython-JSON
+  parsers (`py-json.mjs`, `local-video.mjs`) share one cap, `JSON_MAX_DEPTH` = 1,000
+  nested arrays or objects (each counts, an empty one too); past it a record is invalid
+  JSON locally. The server's `json.loads` raises RecursionError at a limit that depends
+  on the Python, measured on Linux x86-64: 993 levels from a bare script on 3.10 and
+  3.11 (the 1,000 recursion limit minus the caller's frames, so about 990 inside the
+  server), 9,997 on 3.12 and 9,998 on 3.13 (the C recursion counter; lower on Windows
+  builds), and about 52,150 on 3.14 (stack-based, varies with the thread's stack).
+  The record kinds answer: a deep `prompt` graph (or `comfyassets_prompt_pairs`
+  envelope) is malformed; a deep `workflow` is ignored, so the overwritten PromptManager
+  check (R1) does not run and a prompt can resolve; a deep video `comment` or
+  `description` envelope makes the file unreadable on both sides (the server's
+  RecursionError reaches `read_inspection_file`). That gives two directions:
+  - 3.10/3.11, between the server's limit and 1,000: the server refuses and the local
+    page reads, so a deep prompt resolves locally while the server says malformed, and
+    a deep workflow can make R1 refuse locally where the server resolves.
+  - 3.12 and newer, from 1,001 up to the server's limit: the local page refuses and
+    the server reads, so a deep prompt is malformed locally while the server resolves,
+    and a deep workflow is ignored locally while the server can refuse it under R1.
+  Past both limits they agree. `test_local_json_depth_cap_at_its_boundary` checks the
+  local answer at 999, 1,000 and 1,001 for both kinds and that any server difference
+  is only one of the two directions above.
+- Local roles (PR L3): `\d` in the A1111 settings footer is any Unicode decimal
   digit on both sides, but the browser's Unicode version can be newer than the server
   Python's, so a footer whose step count uses a digit added after Unicode 15 can differ.
   `str.lower()` and `toLowerCase()` differ only for characters no node class name uses.
-- Envelope JSON deeper than 1,000 levels is refused locally as Python's default
-  recursion limit refuses it; the server's real limit depends on the interpreter and
-  call stack. A duplicate key in an object enclosing a nest deeper than the running
+- A duplicate key in an object enclosing a nest deeper than the running
   Python's json limit is `malformed` locally and `limited` on that Python.
 - Decimal exponent limits assume CPython's C `_decimal`; on a `_pydecimal` interpreter
   the server would read the over-limit exponents the local projection refuses.
