@@ -3,12 +3,15 @@
 The health check runs off-loop as a ``read`` registry job of kind ``health``
 (one at a time, beside a scan), and the API keeps its last report. The
 Overview reads only real values: Library-eligible counts, indexed images, the
-last health result or null, no backup until one exists, the effective sources
-and whether they were auto-detected, and the thumbnail plan's missing count.
+last health result or null, no backup until one exists, and the effective
+sources and whether they were auto-detected. The missing-thumbnail count is not
+part of it: the Overview reads ``/images/thumbnails/status`` on its own (its
+walk of every source must not hold the other values back).
 """
 
 import asyncio
 import os
+import sqlite3
 import sys
 import threading
 from pathlib import Path
@@ -56,6 +59,25 @@ class SystemAPITestCase(AdminAPITestCase):
         response = await self.client.request(method, url)
         self.assertEqual(response.status, status, await response.text())
         return await response.json()
+
+    async def restore_snapshot(self):
+        """Restore the live database from a copy of itself through the legacy route."""
+        from contextlib import closing
+
+        from aiohttp import FormData
+
+        snapshot = os.path.join(self.tmpdir, "snapshot.db")
+        with closing(sqlite3.connect(self.api.db.model.db_path)) as src:
+            with closing(sqlite3.connect(snapshot)) as dst:
+                src.backup(dst)
+        with open(snapshot, "rb") as handle:
+            upload = handle.read()
+        form = FormData()
+        form.add_field("database_file", upload, filename="upload.db")
+        response = await self.client.request(
+            "POST", "/prompt_manager/restore", data=form
+        )
+        self.assertEqual(response.status, 200, await response.text())
 
     async def run_health(self):
         body = await self.json("POST", "/prompt_manager/system/health", 202)
@@ -159,6 +181,77 @@ class TestHealthRoute(SystemAPITestCase):
         )
         self.assertEqual(report["status"], "incomplete")
 
+    async def test_restore_clears_health_report(self):
+        self.save("Any")
+        await self.run_health()
+        self.assertIsNotNone(
+            (await self.json("GET", "/prompt_manager/system/health"))["report"]
+        )
+        await self.restore_snapshot()
+        body = await self.json("GET", "/prompt_manager/system/health")
+        self.assertEqual(body, {"success": True, "report": None})
+        overview = await self.json("GET", "/prompt_manager/system/overview")
+        self.assertIsNone(overview["health"])
+
+    async def test_check_finishing_after_a_restore_is_not_kept(self):
+        # A check that started on the old database describes it, not the new one.
+        self.save("Any")
+        release = threading.Event()
+        entered = threading.Event()
+        real = self.api.db.run_health_checks
+
+        def gated(*args, **kwargs):
+            entered.set()
+            release.wait(WAIT)
+            return real(*args, **kwargs)
+
+        with patch.object(self.api.db, "run_health_checks", side_effect=gated):
+            body = await self.json("POST", "/prompt_manager/system/health", 202)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, entered.wait, WAIT)
+            await self.restore_snapshot()
+            release.set()
+            job = self.api._jobs.get(body["job"]["id"])
+            await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(job.state, "finished")
+        body = await self.json("GET", "/prompt_manager/system/health")
+        self.assertEqual(body, {"success": True, "report": None})
+        # A check started on the restored database is kept again.
+        await self.run_health()
+        self.assertIsNotNone(
+            (await self.json("GET", "/prompt_manager/system/health"))["report"]
+        )
+
+    async def test_health_sources_resolve_off_the_event_loop(self):
+        loop_thread = threading.get_ident()
+        threads = []
+        real = self.api._health_roots
+
+        def recording():
+            threads.append(threading.get_ident())
+            return real()
+
+        with patch.object(self.api, "_health_roots", side_effect=recording):
+            await self.run_health()
+        self.assertEqual(len(threads), 1)
+        self.assertNotEqual(threads[0], loop_thread)
+
+    async def test_health_start_failure_is_an_error_envelope(self):
+        with (
+            patch.object(self.api, "_health_roots", side_effect=RuntimeError("secret")),
+            self.assertLogs("prompt_manager.api", "ERROR"),
+        ):
+            body = await self.json("POST", "/prompt_manager/system/health", 500)
+        self.assertEqual(
+            body,
+            {
+                "success": False,
+                "code": None,
+                "error": "Failed to start the health check",
+            },
+        )
+        self.assertEqual(self.api._jobs.list(), [])
+
 
 class TestOverviewRoute(SystemAPITestCase):
     async def test_overview_reports_real_counts(self):
@@ -184,7 +277,6 @@ class TestOverviewRoute(SystemAPITestCase):
                 "backup",
                 "needs_review",
                 "sources",
-                "thumbnails",
             },
         )
 
@@ -241,32 +333,31 @@ class TestOverviewRoute(SystemAPITestCase):
             body["sources"], {"configured": 1, "effective": 1, "auto_detected": True}
         )
 
-    async def test_overview_thumbnails_follow_the_status_plan(self):
+    async def test_overview_never_walks_the_sources_for_thumbnails(self):
         (self.output_dir / "one.png").write_bytes(b"png")
-        (self.output_dir / "two.png").write_bytes(b"png")
-        status = await self.json("GET", "/prompt_manager/images/thumbnails/status")
-        body = await self.json("GET", "/prompt_manager/system/overview")
-        self.assertEqual(body["thumbnails"], {"missing": status["pending"]})
-        self.assertEqual(body["thumbnails"]["missing"], 2)
-
-    async def test_overview_thumbnails_unknown_without_sources(self):
-        self.output_dir.rmdir()
-        body = await self.json("GET", "/prompt_manager/system/overview")
-        self.assertEqual(body["thumbnails"], {"missing": None})
-        self.assertEqual(
-            body["sources"], {"configured": 0, "effective": 0, "auto_detected": False}
-        )
-
-    async def test_overview_thumbnail_failure_is_unknown_not_zero(self):
-        with (
-            patch.object(
-                self.api, "_plan_gallery_thumbnails", side_effect=OSError("denied")
-            ),
-            self.assertLogs("prompt_manager.api", "WARNING"),
+        with patch.object(
+            self.api,
+            "_plan_gallery_thumbnails",
+            side_effect=AssertionError("walked"),
         ):
             body = await self.json("GET", "/prompt_manager/system/overview")
         self.assertTrue(body["success"])
-        self.assertEqual(body["thumbnails"], {"missing": None})
+        self.assertNotIn("thumbnails", body)
+
+    async def test_overview_sources_resolve_off_the_event_loop(self):
+        loop_thread = threading.get_ident()
+        threads = []
+        real = self.api._output_dirs_with_origin
+
+        def recording():
+            threads.append(threading.get_ident())
+            return real()
+
+        with patch.object(self.api, "_output_dirs_with_origin", side_effect=recording):
+            body = await self.json("GET", "/prompt_manager/system/overview")
+        self.assertEqual(body["sources"]["effective"], 1)
+        self.assertEqual(len(threads), 1)
+        self.assertNotEqual(threads[0], loop_thread)
 
     async def test_overview_failure_is_an_error_envelope(self):
         with (

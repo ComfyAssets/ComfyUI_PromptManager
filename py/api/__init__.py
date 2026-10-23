@@ -328,8 +328,11 @@ class PromptManagerAPI(
         self._scan_job = None
         # The current duplicate scan (a py/api/jobs.Job outside the registry).
         self._duplicate_job = None
-        # The last System health report this session (py/api/system.py).
+        # The last System health report this session and the database
+        # generation it describes, bumped when a restore replaces self.db
+        # (py/api/system.py).
         self._health_report = None
+        self._db_generation = 0
 
         # Run cleanup on initialization to remove any existing duplicates
         try:

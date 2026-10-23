@@ -2,19 +2,25 @@
 
 ``run_health_checks`` opens its own ``mode=ro`` connection, reads one
 snapshot and closes the connection in ``finally``; it never writes. Each
-check reports ``passed``, ``issues`` (with an exact ``count``),
+check reports ``passed``, ``issues`` (with an exact ``count``; the
+integrity check stops at ``INTEGRITY_LIMIT`` problems and then says
+``capped``),
 ``unavailable`` (it could not be checked here, so ``count`` is None, or
 ``missing_files`` checked only some sources and found nothing) or ``failed``
-(it raised). ``missing_files`` also reports each source and whether the check
-was ``partial``. At most ``MAX_DETAIL`` detail strings are returned per
+(it raised; the other checks still run). ``missing_files`` also reports each
+source and whether the check was ``partial``; it reads the image rows inside
+the snapshot and checks their files after the snapshot ended, so a slow source
+never holds the WAL. At most ``MAX_DETAIL`` detail strings are returned per
 check, and none of them carries a server path.
 """
 
 import datetime
 import logging
+import ntpath
 import os
 import sqlite3
-from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
+from urllib.parse import quote
 
 try:
     from ..utils.hashing import generate_prompt_hash
@@ -83,13 +89,33 @@ def _counted(lines):
     return _result(count, detail)
 
 
+def readonly_uri(db_path, *, windows=None):
+    """The ``mode=ro`` SQLite URI of *db_path*, on this platform or the given one.
+
+    pathlib spells a UNC path ``\\\\server\\share\\x.db`` as
+    ``file://server/share/x.db``, a remote authority SQLite refuses to open.
+    With an empty authority (``file:////server/share/x.db``) SQLite hands
+    Windows the ``//server/share`` path, which it opens as the UNC path.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+        db_path = os.path.abspath(db_path)
+    if not windows:
+        return PurePosixPath(db_path).as_uri() + "?mode=ro"
+    path = PureWindowsPath(db_path)
+    if ntpath.splitdrive(str(path))[0].startswith("\\\\"):
+        return "file:" + quote("//" + path.as_posix()) + "?mode=ro"
+    return path.as_uri() + "?mode=ro"
+
+
 def _integrity(conn, _roots):
     rows = [
         row[0] for row in conn.execute(f"PRAGMA integrity_check({INTEGRITY_LIMIT})")
     ]
     if rows == ["ok"]:
-        return _result(0, [])
-    return _result(len(rows), rows)
+        return {**_result(0, []), "capped": False}
+    # SQLite stops listing at the limit: there may be more problems than that.
+    return {**_result(len(rows), rows), "capped": len(rows) >= INTEGRITY_LIMIT}
 
 
 def _foreign_keys(conn, _roots):
@@ -180,10 +206,24 @@ def _missing_files(conn, roots):
     readable sources' total (None when none is readable) and ``partial`` says
     some sources were not checked. Links outside every source are named in the
     detail, not counted.
+
+    Inside the snapshot this only reads the image rows; it returns the step
+    that checks their files, which runs after the snapshot ended.
     """
     if not roots:
         result = _result(None, ["No image source is available."], status="unavailable")
         return {**result, "partial": False, "sources": []}
+    rows = []
+    cursor = conn.execute(
+        "SELECT id,image_path,filename,file_path FROM generated_images ORDER BY id"
+    )
+    while batch := cursor.fetchmany(BATCH_ROWS):
+        rows.extend(batch)
+    return lambda: _check_files(rows, roots)
+
+
+def _check_files(rows, roots):
+    """The ``missing_files`` result of the image *rows*, from the file system."""
     readable = [_readable(root) for root in roots]
     sources = [
         {
@@ -201,19 +241,15 @@ def _missing_files(conn, roots):
         return {**result, "partial": False, "sources": sources}
     prefixes = [_root_prefix(root) for root in roots]
     outside, missing = 0, []
-    cursor = conn.execute(
-        "SELECT id,image_path,filename,file_path FROM generated_images ORDER BY id"
-    )
-    while rows := cursor.fetchmany(BATCH_ROWS):
-        for image_id, image_path, filename, file_path in rows:
-            owner = _image_owner(image_path, file_path, prefixes)
-            if owner is None:
-                outside += 1
-            elif readable[owner] and not os.path.exists(image_path):
-                sources[owner]["count"] += 1
-                if len(missing) < MAX_DETAIL:
-                    name = filename or os.path.basename(image_path)
-                    missing.append(f"Image {image_id}: {name} is missing")
+    for image_id, image_path, filename, file_path in rows:
+        owner = _image_owner(image_path, file_path, prefixes)
+        if owner is None:
+            outside += 1
+        elif readable[owner] and not os.path.exists(image_path):
+            sources[owner]["count"] += 1
+            if len(missing) < MAX_DETAIL:
+                name = filename or os.path.basename(image_path)
+                missing.append(f"Image {image_id}: {name} is missing")
     count = sum(source["count"] or 0 for source in sources)
     detail = [_unavailable_line(unavailable, partial=True)] if unavailable else []
     detail += missing
@@ -248,11 +284,24 @@ def _failed():
     return _result(None, [CHECK_FAILED], status="failed")
 
 
+def _run_check(check_id, step, *args):
+    """One check's result, or None (reported as failed) when it raised."""
+    try:
+        return step(*args)
+    except Exception:  # any error fails this check only; the others still run
+        logger.exception(f"Health check {check_id} failed")
+        return None
+
+
 def _run_database_checks(db_path, roots):
-    """Each database check's result (None when it raised), from one snapshot."""
+    """Each database check's result (None when it raised), from one snapshot.
+
+    A check may return a step instead of its result: the step runs after the
+    snapshot ended and the connection closed (``missing_files``' file checks).
+    """
     results = dict.fromkeys(_DATABASE_CHECKS)
     try:
-        conn = sqlite3.connect(Path(db_path).as_uri() + "?mode=ro", uri=True)
+        conn = sqlite3.connect(readonly_uri(db_path), uri=True)
     except sqlite3.Error:
         logger.exception("Health check could not open the database")
         return results
@@ -260,14 +309,14 @@ def _run_database_checks(db_path, roots):
         conn.execute("BEGIN")  # one read snapshot for every check
         for check_id in _DATABASE_CHECKS:
             runner = globals()["_" + check_id]  # looked up per run (tests patch it)
-            try:
-                results[check_id] = runner(conn, roots)
-            except (sqlite3.Error, OSError):
-                logger.exception(f"Health check {check_id} failed")
+            results[check_id] = _run_check(check_id, runner, conn, roots)
     except sqlite3.Error:
         logger.exception("Health check could not read the database")
     finally:
         conn.close()
+    for check_id, result in results.items():
+        if callable(result):
+            results[check_id] = _run_check(check_id, result)
     return results
 
 

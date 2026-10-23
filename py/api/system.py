@@ -4,10 +4,14 @@
   (``database/health.py``) off-loop as a ``read`` job of kind ``health``: one
   at a time, beside a scan, not cancellable and with no file outcomes. The
   API keeps the last report for this session; ``GET`` returns it or null.
+  A report describes the database it was taken from: replacing the database
+  (a restore) forgets it, and a check that started before the swap is not
+  kept.
 - ``GET /prompt_manager/system/overview`` is the System › Overview aggregate.
   Every value is real or null: there is no backup status until backups report
   one, no health result until a check ran, and no Needs-review count until
-  the review queue exists.
+  the review queue exists. The missing-thumbnail count is not part of it:
+  the page reads ``/images/thumbnails/status``, which walks every source.
 - ``GET /prompt_manager/system/statistics`` lists runs and ratings per
   category, with the legacy ``/stats`` totals and the Overview's count of
   rated images (images whose linked prompt is rated).
@@ -17,6 +21,7 @@ New routes answer errors with ``{success:false, code, error}``.
 
 import asyncio
 import os
+from collections import namedtuple
 
 from aiohttp import web
 
@@ -29,6 +34,10 @@ _HEALTH_STATUS_LINES = {
     "issues": "Health check found issues",
     "incomplete": "Health check incomplete",
 }
+
+
+# The last health report and the database generation it was taken from.
+_StoredReport = namedtuple("_StoredReport", "generation report")
 
 
 def _failure(message, status=500, code=None):
@@ -89,14 +98,36 @@ class SystemRoutesMixin:
                 roots.append(resolved)
         return roots
 
+    def _database_replaced(self):
+        """Forget what described the previous database (call after swapping ``db``)."""
+        self._db_generation += 1
+        self._health_report = None
+
+    def _current_health_report(self):
+        """The last report, or None when none was kept for the current database."""
+        stored = self._health_report
+        generation = self._db_generation
+        if isinstance(stored, _StoredReport) and stored.generation == generation:
+            return stored.report
+        return None
+
     async def start_health_check(self, request):
         """Start the health check job (202), or 409 naming the running check."""
-        roots = self._health_roots()
+        generation = self._db_generation
+        db = self.db
+        try:
+            roots = await self._run_in_executor(self._health_roots)
+        except Exception:
+            self.logger.exception("Health check could not resolve the image sources")
+            return _failure("Failed to start the health check")
 
         async def run(job):
             job.update(status_line="Checking the database and image links")
-            report = await self._run_in_executor(self.db.run_health_checks, roots)
-            self._health_report = report
+            report = await self._run_in_executor(db.run_health_checks, roots)
+            if generation == self._db_generation:
+                self._health_report = _StoredReport(generation, report)
+            else:
+                self.logger.info("Health report dropped: the database was replaced")
             job.update(progress=100, status_line=_HEALTH_STATUS_LINES[report["status"]])
 
         try:
@@ -113,29 +144,19 @@ class SystemRoutesMixin:
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
     async def get_health_report(self, request):
-        return web.json_response({"success": True, "report": self._health_report})
+        return web.json_response(
+            {"success": True, "report": self._current_health_report()}
+        )
 
     # ── overview ──────────────────────────────────────────────────────
-
-    def _missing_thumbnails(self, output_dirs):
-        """Pending thumbnails as ``/images/thumbnails/status`` counts them."""
-        if not output_dirs:
-            return None
-        try:
-            plan = self._plan_gallery_thumbnails(output_dirs)
-        except OSError:
-            self.logger.warning("Overview could not plan thumbnails", exc_info=True)
-            return None
-        return len(plan["targets"]) + plan["remaining"]
 
     async def get_system_overview(self, request):
         from ..config import GalleryConfig
 
         try:
-            output_dirs, auto_detected = self._output_dirs_with_origin()
-            counts, missing = await asyncio.gather(
+            (output_dirs, auto_detected), counts = await asyncio.gather(
+                self._run_in_executor(self._output_dirs_with_origin),
                 self._run_in_executor(self.db.library_counts),
-                self._run_in_executor(self._missing_thumbnails, output_dirs),
             )
         except Exception:
             self.logger.exception("System overview failed")
@@ -151,7 +172,7 @@ class SystemRoutesMixin:
                     "indexed": counts["images"],
                     "rated": counts["rated_images"],
                 },
-                "health": health_summary(self._health_report),
+                "health": health_summary(self._current_health_report()),
                 "backup": None,  # no verified backup status exists yet (S8)
                 "needs_review": {"pending": None},  # no review queue yet (Q6)
                 "sources": {
@@ -159,7 +180,6 @@ class SystemRoutesMixin:
                     "effective": len(output_dirs),
                     "auto_detected": auto_detected,
                 },
-                "thumbnails": {"missing": missing},
             },
             headers={"Cache-Control": "no-store"},
         )

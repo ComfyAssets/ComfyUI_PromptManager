@@ -1271,6 +1271,7 @@ class AdminRoutesMixin:
                 self.logger.info(f"Removed {len(removed)} old safety backups")
             previous = self.db
             self.db = PromptDatabase(model.db_path)
+            self._database_replaced()  # a health report described the old one
             # Its connections would otherwise linger (a file lock on Windows)
             previous.close_all()
             prompt_count = self.db.model.get_database_info().get("total_prompts", 0)

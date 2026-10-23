@@ -9,6 +9,7 @@ could not run into a count.
 """
 
 import hashlib
+import ntpath
 import os
 import sqlite3
 import sys
@@ -289,6 +290,94 @@ class TestHealthReport(HealthTestCase):
             [f"Positive prompt {positive} with no negative: 3 pair rows"],
         )
 
+    def test_integrity_count_at_the_limit_is_flagged_capped(self):
+        class Rows:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def execute(self, _sql):
+                return iter([(row,) for row in self.rows])
+
+        capped = health._integrity(Rows(["bad"] * health.INTEGRITY_LIMIT), [])
+        self.assertEqual(capped["status"], "issues")
+        self.assertEqual(capped["count"], health.INTEGRITY_LIMIT)
+        self.assertTrue(capped["capped"])
+        exact = health._integrity(Rows(["bad"] * 3), [])
+        self.assertEqual(exact["count"], 3)
+        self.assertFalse(exact["capped"])
+        self.assertFalse(health._integrity(Rows(["ok"]), [])["capped"])
+
+    def test_an_unexpected_error_fails_only_its_own_check(self):
+        self.save("Any")
+        with (
+            patch.object(health, "_pair_uniqueness", side_effect=KeyError("boom")),
+            self.assertLogs("prompt_manager.database.health", "ERROR"),
+        ):
+            report = self.run_checks(review_count=0)
+        statuses = {c["id"]: c["status"] for c in report["checks"]}
+        self.assertEqual(statuses.pop("pair_uniqueness"), "failed")
+        self.assertEqual(set(statuses.values()), {"passed"})
+
+
+class TestDatabaseUri(unittest.TestCase):
+    """The ``mode=ro`` URI of the database file, for every path form SQLite opens."""
+
+    def test_posix_path_is_a_local_file_uri(self):
+        self.assertEqual(
+            health.readonly_uri("/data/my db#1?.db", windows=False),
+            "file:///data/my%20db%231%3F.db?mode=ro",
+        )
+
+    def test_windows_drive_path(self):
+        self.assertEqual(
+            health.readonly_uri(r"C:\Users\Me\prompts.db", windows=True),
+            "file:///C:/Users/Me/prompts.db?mode=ro",
+        )
+
+    def test_windows_unc_path_has_an_empty_authority(self):
+        # pathlib spells \\server\share as file://server/share, which SQLite
+        # rejects (a non-local authority); an empty one keeps the UNC path.
+        uri = health.readonly_uri(r"\\server\share\Comfy UI\prompts.db", windows=True)
+        self.assertEqual(uri, "file:////server/share/Comfy%20UI/prompts.db?mode=ro")
+        self.assertTrue(ntpath.isabs(r"\\server\share\Comfy UI\prompts.db"))
+
+    def test_uri_opens_a_path_with_uri_characters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(os.path.realpath(temp), "a #b?c%20.db")
+            conn = sqlite3.connect(path)
+            try:
+                conn.execute("CREATE TABLE t(a)")
+                conn.commit()
+            finally:
+                conn.close()
+            ro = sqlite3.connect(health.readonly_uri(path), uri=True)
+            try:
+                self.assertEqual(ro.execute("SELECT COUNT(*) FROM t").fetchone(), (0,))
+                with self.assertRaises(sqlite3.OperationalError):
+                    ro.execute("INSERT INTO t VALUES(1)")
+            finally:
+                ro.close()
+
+    @unittest.skipUnless(os.name == "nt", "a native UNC path exists on Windows only")
+    def test_native_unc_path_opens(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = os.path.join(os.path.realpath(temp), "prompts.db")
+            conn = sqlite3.connect(path)
+            try:
+                conn.execute("CREATE TABLE t(a)")
+                conn.commit()
+            finally:
+                conn.close()
+            drive, rest = ntpath.splitdrive(path)
+            unc = "\\\\localhost\\" + drive[0] + "$" + rest
+            if not os.path.exists(unc):
+                self.skipTest("the administrative share is not reachable here")
+            ro = sqlite3.connect(health.readonly_uri(unc), uri=True)
+            try:
+                self.assertEqual(ro.execute("SELECT COUNT(*) FROM t").fetchone(), (0,))
+            finally:
+                ro.close()
+
 
 class TestMissingFiles(HealthTestCase):
     def test_missing_files_counted_under_readable_sources_only(self):
@@ -416,6 +505,55 @@ class TestMissingFiles(HealthTestCase):
         self.assertEqual(missing["detail"], ["No image source is available."])
         self.assertEqual(missing["sources"], [])
         self.assertFalse(missing["partial"])
+
+    def test_a_bad_stored_path_fails_only_missing_files(self):
+        prompt = self.save("Images")
+        self.image(prompt, "here.png")
+        with self.raw() as conn:
+            conn.execute(
+                "INSERT INTO generated_images(prompt_id,image_path,filename)"
+                " VALUES(?,?,?)",
+                (prompt, str(self.root / "else\x00where.png"), "bad.png"),
+            )
+        conn.close()
+        with self.assertLogs("prompt_manager.database.health", "ERROR"):
+            report = self.run_checks(review_count=0)
+        statuses = {c["id"]: c["status"] for c in report["checks"]}
+        self.assertEqual(statuses.pop("missing_files"), "failed")
+        self.assertEqual(set(statuses.values()), {"passed"})
+
+    def test_files_are_checked_after_the_read_snapshot_ends(self):
+        prompt = self.save("Images")
+        self.image(prompt, "here.png")
+        self.image(prompt, "gone.png", exists=False)
+        opened = []
+        real_connect = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        real_exists = os.path.exists
+        in_snapshot = []
+
+        def exists(path):
+            for conn in opened:
+                try:
+                    in_snapshot.append(conn.in_transaction)
+                except sqlite3.ProgrammingError:  # closed: no snapshot
+                    in_snapshot.append(False)
+            return real_exists(path)
+
+        with (
+            patch.object(health.sqlite3, "connect", side_effect=connect),
+            patch.object(health.os.path, "exists", side_effect=exists),
+        ):
+            missing = self.check(self.run_checks(review_count=0), "missing_files")
+        self.assertEqual((missing["status"], missing["count"]), ("issues", 1))
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(in_snapshot)
+        self.assertNotIn(True, in_snapshot)
 
 
 class TestAmbiguousMetadata(HealthTestCase):
