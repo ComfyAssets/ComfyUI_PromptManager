@@ -8,10 +8,14 @@ checks one path and writes nothing. No response carries an absolute path.
 """
 
 import asyncio
+import functools
 import json
 import ntpath
 import os
+import sys
+import types
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 try:
@@ -19,10 +23,40 @@ try:
 except ImportError:  # discovered with tests/ as the top-level directory
     from test_api_admin import AdminAPITestCase
 
+from py import config as config_module  # noqa: E402
 from py.api import settings_routes, sources  # noqa: E402
 from py.config import GalleryConfig  # noqa: E402
 
 VALIDATE = "/prompt_manager/settings/validate-source"
+SETTINGS = "/prompt_manager/settings"
+
+
+@contextmanager
+def no_filesystem_access_for(marker, test):
+    """Fail ``test`` if anything resolves, stats or opens a path holding ``marker``.
+
+    Trusted directories (ComfyUI's, the anchors) may still be resolved.
+    """
+    real = {
+        "realpath": os.path.realpath,
+        "stat": os.stat,
+        "lstat": os.lstat,
+    }
+
+    def guard(name):
+        def call(path, *args, **kwargs):
+            if isinstance(path, (str, bytes)) and marker in os.fsdecode(path):
+                test.fail(f"{name}({path!r}) touched an outside path")
+            return real[name](path, *args, **kwargs)
+
+        return call
+
+    with (
+        patch("os.path.realpath", guard("realpath")),
+        patch("os.stat", guard("stat")),
+        patch("os.lstat", guard("lstat")),
+    ):
+        yield
 
 
 class FakeMonitor:
@@ -188,12 +222,12 @@ class TestSourceStatus(SourcesTestCase):
         )
 
         # Monitoring switched off: the live observer still watches until the
-        # restart, and nothing else is pending.
+        # restart ("stopping"), and nothing else is pending.
         GalleryConfig.MONITORING_ENABLED = False
         data = await self._get()
         self.assertFalse(data["settings"]["monitoring_enabled"])
         self.assertEqual(
-            self._states(data), {"output/a": "watching", "output/b": "manual"}
+            self._states(data), {"output/a": "stopping", "output/b": "manual"}
         )
 
     async def test_scheduled_root_matches_through_its_spelling(self):
@@ -343,9 +377,7 @@ class TestSourceChangeHold(SourcesTestCase):
     async def test_mixed_case_windows_paths_dedupe(self):
         """Two spellings of one Windows folder are saved once (normcase)."""
         with (
-            patch.object(
-                GalleryConfig, "validate_gallery_root", return_value=(True, "")
-            ),
+            patch.object(sources, "source_problem", return_value=(None, "")),
             patch.object(
                 GalleryConfig, "resolve_gallery_root", side_effect=lambda path: path
             ),
@@ -457,15 +489,139 @@ class TestValidateSource(SourcesTestCase):
         self.assertEqual([answer for answer in answers], [answers[0]] * len(answers))
 
     async def test_settings_save_refuses_outside_paths_alike(self):
+        """The legacy save answers every outside path alike too: the
+        filesystem root, the home directory and a link to it included."""
         (self.outside_dir / "x").mkdir()
+        link = os.path.join(self.tmpdir, "link-home")
+        try:
+            os.symlink(os.path.expanduser("~"), link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            link = None
+        paths = [
+            str(self.outside_dir / "x"),
+            self.tmpdir + "/nothing/x",
+            os.path.abspath(os.sep),
+            os.path.expanduser("~"),
+        ]
+        if link:
+            paths.append(link)
         answers = []
-        for path in (self.outside_dir / "x", self.tmpdir + "/nothing/x"):
-            status, data = await self._post(
-                "/prompt_manager/settings", {"gallery_root_paths": [str(path)]}
+        for path in paths:
+            resp = await self.client.request(
+                "POST", SETTINGS, json={"gallery_root_paths": [path]}
             )
-            answers.append((status, data))
-        self.assertEqual(answers[0][0], 400)
-        self.assertEqual(answers[0], answers[1])
+            body = await resp.text()
+            self.assertNotIn(os.path.expanduser("~"), body)
+            data = json.loads(body)
+            # Only the name the caller sent may differ.
+            answers.append(
+                (
+                    resp.status,
+                    {k: v for k, v in data.items() if k not in ("source", "error")},
+                )
+            )
+            self.assertEqual(
+                data["error"],
+                f"{data['source']} can't be used: "
+                f"{config_module.OUTSIDE_ALLOWED_REASON}. Remove it, then save.",
+            )
+        self.assertEqual(
+            answers[0],
+            (
+                400,
+                {
+                    "success": False,
+                    "code": "invalid-source",
+                    "index": 0,
+                    "reason": config_module.OUTSIDE_ALLOWED_REASON,
+                },
+            ),
+        )
+        self.assertEqual(answers, [answers[0]] * len(answers))
+        self.assertEqual(GalleryConfig.MONITORING_DIRECTORIES, [])
+
+    def test_every_caller_folds_root_and_home_alike(self):
+        for path in (os.path.abspath(os.sep), os.path.expanduser("~")):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    GalleryConfig.gallery_root_problem(path),
+                    ("outside-allowed", config_module.OUTSIDE_ALLOWED_REASON),
+                )
+                self.assertEqual(
+                    GalleryConfig.validate_gallery_root(path),
+                    (False, config_module.OUTSIDE_ALLOWED_REASON),
+                )
+                self.assertEqual(
+                    sources.validate_source(path)["code"], "outside-allowed"
+                )
+
+    async def test_outside_path_is_never_resolved_or_stat(self):
+        """Containment is decided as text first: no realpath, stat or lstat of
+        an outside path, existing or not, by any caller (I2)."""
+        probe = self.outside_dir / "probe-x"
+        probe.mkdir()
+        (probe / "deep").mkdir()
+        cases = [str(probe), str(probe / "deep"), str(probe / "missing")]
+        with no_filesystem_access_for("probe-x", self):
+            for path in cases:
+                with self.subTest(path=path):
+                    self.assertEqual(
+                        GalleryConfig.gallery_root_problem(path)[0], "outside-allowed"
+                    )
+                    self.assertEqual(
+                        sources.validate_source(path)["code"], "outside-allowed"
+                    )
+                    _roots, error = self.api._parse_gallery_roots(
+                        {"gallery_root_paths": [path]}
+                    )
+                    self.assertEqual(error["code"], "invalid-source")
+                    status, data = await self._post(VALIDATE, {"path": path})
+                    self.assertEqual(data["code"], "outside-allowed")
+                    status, data = await self._post(
+                        SETTINGS, {"gallery_root_paths": [path]}
+                    )
+                    self.assertEqual((status, data["code"]), (400, "invalid-source"))
+            # A traversal that normalises outside is refused as text too.
+            sneaky = os.path.join(
+                str(self.output_dir), "..", "..", "outside", "probe-x"
+            )
+            self.assertEqual(
+                GalleryConfig.gallery_root_problem(sneaky)[0], "outside-allowed"
+            )
+
+    async def test_settings_save_applies_the_form_checks(self):
+        """POST /settings refuses what validate-source refuses, by its form."""
+        for path, code in {
+            str(self.a) + "\x00": "invalid-form",
+            os.path.join(str(self.output_dir), "b", "..", "a"): "traversal",
+        }.items():
+            with self.subTest(code=code):
+                status, data = await self._post(
+                    SETTINGS, {"gallery_root_paths": [path]}
+                )
+                self.assertEqual((status, data["code"]), (400, "invalid-source"))
+                self.assertEqual(data["reason"], sources.FORM_REASONS[code])
+        windows = functools.partial(sources.source_form_error, windows=True)
+        with (
+            patch.object(sources, "source_form_error", windows),
+            no_filesystem_access_for("C:", self),
+        ):
+            for path in (
+                "\\\\?\\C:\\ComfyUI\\output",
+                "\\\\.\\pipe\\x",
+                "C:\\ComfyUI\\output\\CON",
+                "C:\\ComfyUI\\output\\a:stream",
+                "C:ComfyUI",
+            ):
+                with self.subTest(path=path):
+                    _roots, error = self.api._parse_gallery_roots(
+                        {"gallery_root_paths": ["output/a", path]}
+                    )
+                    self.assertEqual(error["code"], "invalid-source")
+                    self.assertEqual(error["index"], 1)
+                    self.assertEqual(
+                        error["reason"], sources.FORM_REASONS["invalid-form"]
+                    )
 
     async def test_inside_paths_say_why_they_are_not_usable(self):
         a_file = self.output_dir / "file.png"
@@ -533,6 +689,218 @@ class TestSourceEdges(SourcesTestCase):
             self.assertEqual(sources.source_label(self.a), "a")
         with patch.dict(sys.modules, {"folder_paths": None}):
             self.assertEqual(sources.source_label(self.output_dir), "output")
+
+
+class TestOutsideBaseDirectories(SourcesTestCase):
+    """ComfyUI folders outside the base directory (``--output-directory``):
+    their sources round-trip and two folders of one name stay apart (I3)."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.renders = self.outside_dir / "renders"
+        self.input_dir = self.comfy_dir / "input"
+        (self.renders / "portraits").mkdir(parents=True)
+        (self.input_dir / "portraits").mkdir(parents=True)
+        sys.modules["folder_paths"] = types.SimpleNamespace(
+            base_path=str(self.comfy_dir),
+            get_output_directory=lambda: str(self.renders),
+            get_input_directory=lambda: str(self.input_dir),
+        )
+
+    async def test_source_outside_base_round_trips(self):
+        status, rendered = await self._post(
+            VALIDATE, {"path": str(self.renders / "portraits")}
+        )
+        self.assertEqual(
+            (rendered["valid"], rendered["path"]), (True, "renders/portraits")
+        )
+        status, data = await self._post(
+            SETTINGS, {"gallery_root_paths": [rendered["path"]]}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(
+            GalleryConfig.MONITORING_DIRECTORIES,
+            [self._root(self.renders / "portraits")],
+        )
+        configured = (await self._get())["sources"]["configured"]
+        self.assertEqual(
+            [(row["path"], row["valid"]) for row in configured],
+            [("renders/portraits", True)],
+        )
+        # The page resends what it read: still the same folder, no change.
+        status, data = await self._post(
+            SETTINGS, {"gallery_root_paths": ["renders/portraits"]}
+        )
+        self.assertEqual((status, data["restart_required_fields"]), (200, []))
+
+    async def test_same_name_folders_stay_apart(self):
+        answers = []
+        for path in (self.renders / "portraits", self.input_dir / "portraits"):
+            status, data = await self._post(VALIDATE, {"path": str(path)})
+            answers.append(data["path"])
+        self.assertEqual(answers, ["renders/portraits", "input/portraits"])
+        status, data = await self._post(SETTINGS, {"gallery_root_paths": answers})
+        self.assertEqual(status, 200, data)
+        sources_ = (await self._get())["sources"]
+        self.assertEqual([row["path"] for row in sources_["configured"]], answers)
+        self.assertEqual([row["path"] for row in sources_["effective"]], answers)
+
+
+class TestUnusableSourceSave(SourcesTestCase):
+    async def test_unusable_source_is_named_and_saves_nothing(self):
+        """A configured source that went missing blocks the save and is named."""
+        gone = self.output_dir / "gone"
+        gone.mkdir()
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.a), self._root(gone)]
+        self._write_config({"custom": 1})
+        before = self._config_bytes()
+        gone.rmdir()  # an unplugged drive
+
+        status, data = await self._post(
+            SETTINGS,
+            {
+                "gallery_root_paths": ["output/a", "output/gone", "output/b"],
+                "worker_threads": 2,
+            },
+        )
+
+        self.assertEqual(status, 400, data)
+        self.assertEqual(
+            data,
+            {
+                "success": False,
+                "code": "invalid-source",
+                "source": "output/gone",
+                "index": 1,
+                "reason": "Gallery root does not exist",
+                "error": "output/gone can't be used: Gallery root does not exist. "
+                "Remove it or reconnect it, then save.",
+            },
+        )
+        self.assertEqual(self._config_bytes(), before)
+
+    async def test_malformed_roots_are_coded_invalid_request(self):
+        for roots in ("output/a", [1]):
+            with self.subTest(roots=roots):
+                status, data = await self._post(SETTINGS, {"gallery_root_paths": roots})
+                self.assertEqual((status, data["code"]), (400, "invalid-request"))
+
+
+class TestUnchangedRootsTakeNoHold(SourcesTestCase):
+    async def test_resent_spelling_of_configured_roots_is_no_change(self):
+        """config.json holds a hand-written spelling; the legacy page resends
+        it resolved: no source change, so no hold and no 409 during a scan (M1)."""
+        GalleryConfig.MONITORING_DIRECTORIES = ["output/a"]
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+            job.finish("finished")
+
+        self.api._jobs.start(
+            "scan", "Metadata scan", record_changing=True, runner=runner
+        )
+        try:
+            status, data = await self._post(
+                SETTINGS, {"gallery_root_paths": [str(self.a)], "result_timeout": 30}
+            )
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["restart_required_fields"], [])
+            self.assertEqual([j.kind for j in self.api._jobs.list()], ["scan"])
+            status, data = await self._post(
+                SETTINGS, {"gallery_root_paths": [str(self.b)]}
+            )
+            self.assertEqual((status, data["code"]), (409, "busy"))
+        finally:
+            gate.set()
+
+
+class TestWindowsContainment(unittest.TestCase):
+    """Windows path forms, with ntpath fakes: anything outside the allowed
+    folders (a UNC share, the verbatim and device namespaces, another drive)
+    is refused as text, before any path is resolved or opened (I2)."""
+
+    ALLOWED = "c:\\comfyui\\output"
+    NAS = "\\\\nas\\share\\renders"
+
+    def setUp(self):
+        self.touched = []
+
+        def realpath(path, *args, **kwargs):
+            self.touched.append(path)
+            return ntpath.normcase(ntpath.normpath(path))
+
+        def probe(path):
+            self.touched.append(path)
+            return True
+
+        names = ("normcase", "normpath", "isabs", "join", "dirname", "basename", "sep")
+        fake_path = types.SimpleNamespace(
+            **{name: getattr(ntpath, name) for name in names},
+            realpath=realpath,
+            exists=probe,
+            isdir=probe,
+            expanduser=lambda path: "c:\\users\\someone",
+        )
+        fake_os = types.SimpleNamespace(
+            path=fake_path, environ={}, pathsep=";", name="nt"
+        )
+        for target, value in (
+            (patch.object(config_module, "os", fake_os), None),
+            (
+                patch.object(
+                    GalleryConfig,
+                    "_allowed_parent_pairs",
+                    classmethod(
+                        lambda cls: [(self.ALLOWED, self.ALLOWED), (self.NAS, self.NAS)]
+                    ),
+                ),
+                None,
+            ),
+            (
+                patch.object(
+                    GalleryConfig,
+                    "path_anchors",
+                    classmethod(lambda cls: ["c:\\comfyui", "\\\\nas\\share"]),
+                ),
+                None,
+            ),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def test_outside_forms_are_refused_untouched(self):
+        for path in (
+            "\\\\attacker\\share\\x",
+            "//attacker/share/x",
+            "\\\\?\\C:\\ComfyUI\\output\\a",
+            "\\\\?\\UNC\\attacker\\share",
+            "\\\\.\\pipe\\x",
+            "\\\\.\\C:\\ComfyUI\\output",
+            "D:\\Renders",
+            "C:\\Windows",
+            "C:\\ComfyUI\\output\\..\\..\\Windows",
+            "C:\\ComfyUI\\output2",
+            "\\\\nas\\share\\other",
+            "..\\..\\Windows",
+        ):
+            with self.subTest(path=path):
+                self.touched.clear()
+                self.assertEqual(
+                    GalleryConfig.gallery_root_problem(path),
+                    ("outside-allowed", config_module.OUTSIDE_ALLOWED_REASON),
+                )
+                self.assertEqual(self.touched, [])
+
+    def test_allowed_spellings_are_accepted(self):
+        for path in (
+            "C:\\ComfyUI\\output\\a",
+            "c:/comfyui/OUTPUT/a",
+            "output\\a",
+            "\\\\NAS\\share\\renders\\a",  # a UNC spelling of an allowed extra root
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(GalleryConfig.gallery_root_problem(path), (None, ""))
 
 
 class TestSourceFormError(unittest.TestCase):

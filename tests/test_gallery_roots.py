@@ -23,7 +23,11 @@ sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from py.config import GalleryConfig, PromptManagerConfig  # noqa: E402
+from py.config import (  # noqa: E402
+    OUTSIDE_ALLOWED_REASON,
+    GalleryConfig,
+    PromptManagerConfig,
+)
 
 EXTRA_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
 
@@ -158,9 +162,10 @@ class GalleryRootTestCase(unittest.TestCase):
 class TestValidateGalleryRootRejects(GalleryRootTestCase):
 
     def test_filesystem_root_rejected(self):
+        """Refused as outside the allowed folders: no reason names the layout."""
         ok, reason = GalleryConfig.validate_gallery_root(os.path.abspath(os.sep))
         self.assertFalse(ok)
-        self.assertIn("root", reason.lower())
+        self.assertEqual(reason, OUTSIDE_ALLOWED_REASON)
 
     @unittest.skipUnless(os.name == "nt", "drive roots only exist on Windows")
     def test_windows_drive_root_rejected(self):
@@ -170,7 +175,17 @@ class TestValidateGalleryRootRejects(GalleryRootTestCase):
     def test_home_directory_rejected(self):
         ok, reason = GalleryConfig.validate_gallery_root(os.path.expanduser("~"))
         self.assertFalse(ok)
-        self.assertIn("home", reason.lower())
+        self.assertEqual(reason, OUTSIDE_ALLOWED_REASON)
+
+    def test_home_directory_inside_an_allowed_parent_is_still_refused(self):
+        """Even when the environment opens the home's parent, home answers
+        like any outside path."""
+        home = os.path.expanduser("~")
+        os.environ[EXTRA_ROOTS_ENV] = os.path.dirname(home)
+        self.assertEqual(
+            GalleryConfig.gallery_root_problem(home),
+            ("outside-allowed", OUTSIDE_ALLOWED_REASON),
+        )
 
     def test_directory_outside_comfyui_rejected(self):
         outside = Path(self.tmpdir) / "elsewhere"

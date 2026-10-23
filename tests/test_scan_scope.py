@@ -275,8 +275,13 @@ class TestScanScope(ScanScopeTestCase):
         self.assertEqual(await _scan_request(Request("")), default)
         self.assertEqual(await _scan_request(Request("  \n")), default)
         self.assertEqual(
-            await _scan_request(Request('{"scope": "all", "roots": [2, 0, 2]}')),
-            ({"files": "all", "roots": [0, 2]}, None),
+            await _scan_request(
+                Request(
+                    '{"scope": "all", "roots": [2, 0, 2],'
+                    ' "paths": ["output/c", "output/a", "output/c"]}'
+                )
+            ),
+            ({"files": "all", "roots": {0: "output/a", 2: "output/c"}}, None),
         )
         request, error = await _scan_request(Request("{"))
         self.assertIsNone(request)
@@ -332,7 +337,7 @@ class TestPerSourceScope(ScanScopeTestCase):
         self.api._collect_output_media_sync = spy
         reads = self._spy_reads()
 
-        job = await self._scan({"scope": "all", "roots": [1]})
+        job = await self._scan({"scope": "all", "roots": [1], "paths": ["output/b"]})
 
         self.assertEqual(walked, [["b"]])
         self.assertEqual(reads, ["in_b.png"])
@@ -354,13 +359,15 @@ class TestPerSourceScope(ScanScopeTestCase):
         self.assertEqual(self.api._scan_job.last_event["directories"], ["output/b"])
 
     async def test_duplicate_roots_are_one_selection(self):
-        job = await self._scan({"roots": [1, 0, 1]})
+        job = await self._scan(
+            {"roots": [1, 0, 1], "paths": ["output/b", "output/a", "output/b"]}
+        )
         self.assertEqual(job["scope"]["roots"], [0, 1])
         self.assertEqual(job["scope"]["output_folders"], 2)
         self.assertEqual(job["counters"]["added"], 2)
 
     async def test_scope_line_counts_selected_folders(self):
-        job = await self._scan({"roots": [0]})
+        job = await self._scan({"roots": [0], "paths": ["output/a"]})
         self.assertTrue(
             job["log"][0].endswith(
                 "Scan started · 1 output folder · new and unresolved files"
@@ -375,11 +382,43 @@ class TestPerSourceScope(ScanScopeTestCase):
         )
         self.assertIn("Scan started · 2 output folders · all files", unscoped["log"][0])
 
-    async def test_invalid_root_index_is_400_without_job(self):
-        data = await self._refused({"roots": [2]})
-        self.assertEqual(data["code"], "unknown-source")
-        data = await self._refused({"roots": [0, 64]})
-        self.assertEqual(data["code"], "unknown-source")
+    async def _stale(self, body):
+        resp = await self.client.request("POST", "/prompt_manager/jobs/scan", json=body)
+        data = await resp.json()
+        self.assertEqual(resp.status, 409, data)
+        self.assertEqual(data["code"], "sources-changed")
+        self.assertFalse(data["success"])
+        self.assertNotIn(self.tmpdir, json.dumps(data))
+        self.assertIsNone(self.api._scan_job)
+        self.assertEqual(self.api._jobs.list(), [])
+        return data
+
+    async def test_index_past_the_sources_is_409_without_job(self):
+        await self._stale({"roots": [2], "paths": ["output/c"]})
+        await self._stale({"roots": [0, 64], "paths": ["output/a", "output/x"]})
+
+    async def test_stale_index_never_scans_another_source(self):
+        """The list changed after the page read it: source 0 was removed, so
+        old index 1 (b) is past the end and old index 0 now names b."""
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.b)]
+        await self._stale({"roots": [1], "paths": ["output/b"]})
+        await self._stale({"roots": [0], "paths": ["output/a"]})
+
+        job = await self._scan({"roots": [0], "paths": ["output/b"]})
+        self.assertEqual(job["outcomes"]["added"][0]["root"], "output/b")
+
+    async def test_roots_need_their_paths(self):
+        for body in (
+            {"roots": [0]},
+            {"roots": [0], "paths": None},
+            {"roots": [0], "paths": "output/a"},
+            {"roots": [0], "paths": []},
+            {"roots": [0, 1], "paths": ["output/a"]},
+            {"roots": [0], "paths": [0]},
+            {"roots": [0, 0], "paths": ["output/a", "output/b"]},
+        ):
+            with self.subTest(body=body):
+                await self._refused(body)
 
     async def test_bool_and_float_roots_rejected(self):
         for roots in (
@@ -399,7 +438,8 @@ class TestPerSourceScope(ScanScopeTestCase):
             list(range(65)),
         ):
             with self.subTest(roots=roots):
-                await self._refused({"roots": roots})
+                paths = ["output/a"] * len(roots) if isinstance(roots, list) else []
+                await self._refused({"roots": roots, "paths": paths})
 
     async def test_legacy_scan_unscoped_unchanged(self):
         from py.api.admin import SCAN_COUNT_KEYS
@@ -429,16 +469,29 @@ class TestPerSourceScope(ScanScopeTestCase):
             return original(output_dirs)
 
         self.api._collect_output_media_sync = gated
+        # The legacy route has decided to attach once it streams the job.
+        attached = asyncio.Event()
+        stream = self.api._stream_scan_job
+
+        async def attaching(request, job):
+            attached.set()
+            return await stream(request, job)
+
+        self.api._stream_scan_job = attaching
         resp = await self.client.request(
-            "POST", "/prompt_manager/jobs/scan", json={"roots": [0]}
+            "POST",
+            "/prompt_manager/jobs/scan",
+            json={"roots": [0], "paths": ["output/a"]},
         )
         self.assertEqual(resp.status, 202)
         started = (await resp.json())["job"]
         legacy = asyncio.ensure_future(
             self.client.request("POST", "/prompt_manager/scan", data="{}")
         )
-        await asyncio.sleep(0.05)
-        gate.set()
+        try:
+            await asyncio.wait_for(attached.wait(), 10)
+        finally:
+            gate.set()
         payloads = _sse_payloads(await (await legacy).text())
         await asyncio.wait_for(self.api._scan_job.task, 10)
 
@@ -459,7 +512,7 @@ class TestPerSourceScope(ScanScopeTestCase):
             return original()
 
         self.api._get_all_output_dirs = counting
-        job = await self._scan({"roots": [1]})
+        job = await self._scan({"roots": [1], "paths": ["output/b"]})
         self.assertEqual(len(resolved), 1)  # the request's own resolution only
         self.assertEqual(job["outcomes"]["added"][0]["root_index"], 1)
 

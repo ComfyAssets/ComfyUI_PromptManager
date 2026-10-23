@@ -6,15 +6,21 @@
   ``\\\\?\\`` and ``\\\\.\\`` namespaces, a drive-relative path, an alternate
   data stream, a device name or a part Windows would silently trim; on POSIX
   no Windows drive or backslash form).
+- ``source_problem`` is the one refusal every caller answers (validate-source
+  and the settings save): the form check, then
+  ``GalleryConfig.gallery_root_problem``, which decides containment as text
+  before it touches the filesystem.
 - ``describe_sources`` (blocking: it resolves paths) reports the configured
   sources with their validity, the effective sources with their listing
   index and watch state, and the image monitor's state. Every path in it is
   a public path (``_public_path``), never an absolute one.
 
-A source's watch state is ``watching`` when the monitor's observer is alive
-and scheduled that directory; ``manual`` when monitoring is off or this
-process has no monitor; else ``restart_pending`` (a source added since the
-monitor started, monitoring switched on, or an observer that stopped).
+A source's watch state is ``watching`` when the monitor's observer is alive,
+scheduled that directory and monitoring is on; ``stopping`` when it still
+watches it but monitoring was switched off (it stops at the next restart);
+``manual`` when monitoring is off or this process has no monitor; else
+``restart_pending`` (a source added since the monitor started, monitoring
+switched on, or an observer that stopped).
 """
 
 import logging
@@ -41,13 +47,7 @@ _COMFYUI_LABELS = (
     ("get_temp_directory", "ComfyUI temp"),
     ("get_user_directory", "ComfyUI user"),
 )
-# Codes validate-source folds into "outside-allowed" (see validate_source).
-_OUTSIDE_CODES = frozenset({"filesystem-root", "home-directory", "outside-allowed"})
-OUTSIDE_REASON = (
-    "Gallery root must be inside a ComfyUI directory (output, input, temp, user) "
-    "or one listed in PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
-)
-WATCH_STATES = ("watching", "manual", "restart_pending")
+WATCH_STATES = ("watching", "stopping", "manual", "restart_pending")
 
 
 def source_form_error(text, *, windows=None):
@@ -98,6 +98,45 @@ def _windows_form_error(text):
         if part[-1] in ". " or _DEVICE_NAME.match(part):
             return "invalid-form"
     return None
+
+
+def source_problem(text):
+    """``(code, reason)`` that refuses ``text`` as a source, else ``(None, "")``.
+
+    The form check runs first and touches nothing; then containment is
+    decided as text before any filesystem access (see
+    ``GalleryConfig.gallery_root_problem``). Every caller answers alike.
+    """
+    from ..config import GalleryConfig
+
+    code = source_form_error(text)
+    if code is not None:
+        return code, FORM_REASONS[code]
+    return GalleryConfig.gallery_root_problem(text)
+
+
+def public_spelling(text):
+    """How a refused source is named in a response, computed as text only.
+
+    Relative to the path anchor it lies under (its public path), else its
+    last part: the caller sent the path, so naming it reveals nothing, and a
+    refused path is never resolved to name it.
+    """
+    from ..config import GalleryConfig, _lexical_path, _lexically_inside
+
+    text = str(text).strip()
+    try:
+        lexical = os.path.normpath(text)
+        key = _lexical_path(text)  # the same length as ``lexical``
+        if not os.path.isabs(text):
+            return lexical.replace("\\", "/")
+        for anchor in GalleryConfig.path_anchors():
+            if _lexically_inside(key, [anchor]):
+                rest = lexical[len(anchor.rstrip(os.sep)) :].lstrip(os.sep)
+                return rest.replace(os.sep, "/") or "."
+        return os.path.basename(lexical) or lexical
+    except (TypeError, ValueError):
+        return ""
 
 
 def identity(path):
@@ -162,9 +201,9 @@ def monitor_state(monitor):
 
 
 def watch_state(path, *, present, alive, scheduled_keys, enabled):
-    """``watching``, ``manual`` or ``restart_pending`` (see the module docstring)."""
+    """One of ``WATCH_STATES`` (see the module docstring)."""
     if alive and identity(path) in scheduled_keys:
-        return "watching"
+        return "watching" if enabled else "stopping"
     if not present or not enabled:
         return "manual"
     return "restart_pending"
@@ -222,16 +261,7 @@ def validate_source(text):
     from ..config import GalleryConfig
     from . import _public_path
 
-    code = source_form_error(text)
-    reason = FORM_REASONS.get(code)
-    if code is None:
-        code, reason = GalleryConfig.gallery_root_problem(text)
-        if code in _OUTSIDE_CODES:
-            # One answer for every path outside the allowed folders: naming
-            # the filesystem root or the home directory would let a caller
-            # probe the server's layout. The detail goes to the log only.
-            logger.info(f"Source refused: {code}")
-            code, reason = "outside-allowed", OUTSIDE_REASON
+    code, reason = source_problem(text)
     if code is not None:
         return {
             "valid": False,

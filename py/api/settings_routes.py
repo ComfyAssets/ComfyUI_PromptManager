@@ -65,6 +65,45 @@ def _stat_identity(path):
     return (stat.st_dev, stat.st_ino) if stat.st_ino else None
 
 
+# Refusals that a reconnected drive or folder can lift.
+_RECONNECTABLE = frozenset({"not-found", "not-directory"})
+
+
+def _root_key(root):
+    """The directory a configured root names (resolved), else its spelling."""
+    from ..config import GalleryConfig
+
+    try:
+        return GalleryConfig.resolve_gallery_root(root)
+    except (OSError, TypeError, ValueError, AttributeError):
+        return root
+
+
+def _request_error(message):
+    return {"code": "invalid-request", "error": message}
+
+
+def _invalid_source(index, entry, code, reason):
+    """The 400 body for the source at ``index`` that cannot be used.
+
+    Names it by its public spelling (computed as text: a refused path is
+    never resolved), so the page can mark that row and say why.
+    """
+    source = sources.public_spelling(entry)
+    advice = (
+        "Remove it or reconnect it, then save."
+        if code in _RECONNECTABLE
+        else "Remove it, then save."
+    )
+    return {
+        "code": "invalid-source",
+        "source": source,
+        "index": index,
+        "reason": reason,
+        "error": f"{source} can't be used: {reason}. {advice}",
+    }
+
+
 def _section(config, name):
     """``config[name]`` as a fresh dict (a non-object section starts empty)."""
     value = config.get(name)
@@ -255,9 +294,15 @@ class SettingsRoutesMixin:
                     {"success": False, "error": str(ve)}, status=400
                 )
 
-            new_roots, error = self._parse_gallery_roots(data)
+            # Off the loop: an accepted root is resolved (filesystem access).
+            new_roots, error = await self._run_in_executor(
+                self._parse_gallery_roots, data
+            )
             if error:
-                return web.json_response({"success": False, "error": error}, status=400)
+                return web.json_response({"success": False, **error}, status=400)
+            roots_change = new_roots is not None and await self._run_in_executor(
+                self._roots_change, new_roots
+            )
 
             published = {}
 
@@ -268,7 +313,7 @@ class SettingsRoutesMixin:
 
             async with contextlib.AsyncExitStack() as stack:
                 hold = None
-                if self._roots_change(new_roots):
+                if roots_change:
                     try:
                         hold = await stack.enter_async_context(
                             self._jobs.hold(
@@ -344,12 +389,19 @@ class SettingsRoutesMixin:
 
     @staticmethod
     def _roots_change(new_roots):
-        """Whether a save changes the sources (the legacy page resends them)."""
+        """Whether a save changes the sources (blocking: it resolves them).
+
+        Compared as directories, not spellings: the legacy page resends the
+        roots resolved, while config.json may hold them as hand-written
+        (relative, another case), and an unchanged resend is no change.
+        """
         from ..config import GalleryConfig
 
-        return new_roots is not None and new_roots != list(
-            GalleryConfig.MONITORING_DIRECTORIES
-        )
+        if new_roots is None:
+            return False
+        return [_root_key(root) for root in new_roots] != [
+            _root_key(root) for root in GalleryConfig.MONITORING_DIRECTORIES
+        ]
 
     @staticmethod
     def _observer_alive():
@@ -441,15 +493,21 @@ class SettingsRoutesMixin:
         Accepts ``gallery_root_paths`` (list, preferred) or the legacy single
         ``gallery_root_path`` string. Blank entries are dropped.
 
+        Each entry passes the same checks as validate-source
+        (``sources.source_problem``): the form, then containment as text,
+        before anything is resolved. Blocking (an accepted root is resolved).
+
         Returns:
             (roots, error): ``roots`` is the validated list, or ``None`` when
-            the payload carries no gallery root key; ``error`` is a message
-            when validation failed (and ``roots`` is then ``None``).
+            the payload carries no gallery root key; ``error`` is the coded
+            body of the 400 when validation failed (``roots`` is then None).
+            An unusable source is ``invalid-source`` naming its public path
+            and its position in the list.
         """
         if "gallery_root_paths" in data:
             raw = data["gallery_root_paths"]
             if not isinstance(raw, list):
-                return None, "gallery_root_paths must be a list"
+                return None, _request_error("gallery_root_paths must be a list")
         elif "gallery_root_path" in data:
             raw = [data["gallery_root_path"]]
         else:
@@ -459,18 +517,15 @@ class SettingsRoutesMixin:
 
         roots = []
         seen = set()
-        for entry in raw:
+        for index, entry in enumerate(raw):
             if not isinstance(entry, str):
-                return None, "Gallery root paths must be strings"
+                return None, _request_error("Gallery root paths must be strings")
             entry = entry.strip()
             if not entry:
                 continue
-            ok, reason = GalleryConfig.validate_gallery_root(entry)
-            if not ok:
-                return (
-                    None,
-                    f"Invalid gallery root '{os.path.basename(entry)}': {reason}",
-                )
+            code, reason = sources.source_problem(entry)
+            if code is not None:
+                return None, _invalid_source(index, entry, code, reason)
             root = GalleryConfig.resolve_gallery_root(entry)
             keys = {("path", _source_identity(root)), ("file", _stat_identity(root))}
             keys.discard(("file", None))
@@ -481,10 +536,17 @@ class SettingsRoutesMixin:
         return roots, None
 
     def _apply_gallery_roots(self, roots):
-        """Install validated gallery roots; returns True when they changed."""
+        """Install validated gallery roots; returns True when they changed.
+
+        Another spelling of the same directories installs the resolved
+        spelling and is no change (nothing to restart for).
+        """
         from ..config import GalleryConfig
 
         if roots == list(GalleryConfig.MONITORING_DIRECTORIES):
+            return False
+        if not self._roots_change(roots):
+            GalleryConfig.MONITORING_DIRECTORIES = roots
             return False
         GalleryConfig.MONITORING_DIRECTORIES = roots
         self._cached_output_dir = None

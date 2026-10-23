@@ -21,8 +21,10 @@ def _not_found():
 MAX_SCAN_ROOTS = 64
 _SCOPE_ERROR = 'The scan scope must be "new" or "all"'
 _ROOTS_ERROR = (
-    f"roots must be a non-empty list of up to {MAX_SCAN_ROOTS} source indexes"
+    f"roots must be a non-empty list of up to {MAX_SCAN_ROOTS} source indexes, "
+    "with paths naming the public path of each"
 )
+SOURCES_CHANGED_ERROR = "The sources changed since they were loaded. Reload them."
 
 
 def _bad_request(message, code=None):
@@ -33,20 +35,29 @@ def _bad_request(message, code=None):
 
 
 def _scan_roots(body):
-    """``(roots, error)``: the sorted, deduplicated source indexes, or None.
+    """``(roots, error)``: ``{index: public path}`` of the selected sources, or None.
 
     Absent ``roots`` means every source. When present it is a non-empty list
-    of at most MAX_SCAN_ROOTS non-negative ints (never bools or floats).
+    of at most MAX_SCAN_ROOTS non-negative ints (never bools or floats), and
+    ``paths`` the same-length list of the public path the caller read for
+    each (GET /settings), so a stale index never scans another folder.
     """
     if "roots" not in body:
         return None, None
     raw = body["roots"]
+    paths = body.get("paths")
     if not isinstance(raw, list) or not raw or len(raw) > MAX_SCAN_ROOTS:
         return None, _ROOTS_ERROR
-    for value in raw:
+    if not isinstance(paths, list) or len(paths) != len(raw):
+        return None, _ROOTS_ERROR
+    selected = {}
+    for value, path in zip(raw, paths):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             return None, _ROOTS_ERROR
-    return sorted(set(raw)), None
+        if not isinstance(path, str) or selected.get(value, path) != path:
+            return None, _ROOTS_ERROR
+        selected[value] = path
+    return dict(sorted(selected.items())), None
 
 
 async def _scan_request(request):
@@ -97,6 +108,13 @@ def _summary_event(job):
 
 class JobRoutesMixin:
     """Mixin providing the /prompt_manager/jobs endpoints."""
+
+    def _roots_still_listed(self, selected, output_dirs):
+        """Whether each ``{index: public path}`` still names that source."""
+        return all(
+            index < len(output_dirs) and self._public_path(output_dirs[index]) == path
+            for index, path in selected.items()
+        )
 
     def _register_job_routes(self, routes):
         @routes.get("/prompt_manager/jobs")
@@ -167,24 +185,35 @@ class JobRoutesMixin:
 
         The body's ``scope`` is "new" (the default: new and unresolved files)
         or "all". ``roots``, when given, selects sources by their index in
-        the effective sources (``_get_all_output_dirs``); an index past them
-        is a 400 ``unknown-source`` and starts nothing. The job walks the
-        sources resolved here, so a later source change cannot move it.
+        the effective sources (``_get_all_output_dirs``), and ``paths`` names
+        the public path read for each. An index past them, or one whose
+        source now has another public path (the list changed since it was
+        read), is a 409 ``sources-changed`` and starts nothing. The job walks
+        the sources resolved here, so a later source change cannot move it.
         """
         scan, error = await _scan_request(request)
         if error:
             return _bad_request(error)
         output_dirs = None
+        roots = None
         if scan["roots"] is not None:
             output_dirs = await self._run_in_executor(self._get_all_output_dirs)
-            if scan["roots"][-1] >= len(output_dirs):
-                return _bad_request(
-                    "That source is no longer configured. Reload the sources.",
-                    code="unknown-source",
+            listed = await self._run_in_executor(
+                self._roots_still_listed, scan["roots"], output_dirs
+            )
+            if not listed:
+                return web.json_response(
+                    {
+                        "success": False,
+                        "code": "sources-changed",
+                        "error": SOURCES_CHANGED_ERROR,
+                    },
+                    status=409,
                 )
+            roots = list(scan["roots"])
         try:
             job = self._start_scan_job(
-                scan["files"], roots=scan["roots"], output_dirs=output_dirs
+                scan["files"], roots=roots, output_dirs=output_dirs
             )
         except JobBusy as busy:
             return busy_response(busy)
