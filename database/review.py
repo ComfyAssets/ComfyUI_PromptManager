@@ -107,6 +107,13 @@ _OTHER_ITEMS_OF_BYTES = (
     f"FROM {ITEMS_TABLE} i WHERE i.byte_id=? "
     "AND NOT (i.resolver_version=? AND i.evidence_hash=?)"
 )
+# Pending items of the bytes verified at one stat, with their versions.
+_PENDING_AT_STAT = (
+    f"SELECT i.id,i.resolver_version FROM {FILES_TABLE} f "  # nosec B608
+    f"JOIN {BYTES_TABLE} b ON b.file_id=f.id "
+    f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
+    "WHERE f.locator=? AND b.size=? AND b.mtime_ns=? AND i.state='pending'"
+)
 # Pending items of one file: the candidates a link settles.
 _PENDING_OF_LOCATOR = (
     f"SELECT i.id FROM {FILES_TABLE} f "  # nosec B608
@@ -320,6 +327,9 @@ class ReviewOperations:
             )
             if created or moved:
                 conn.execute(_BUMP_IMAGE_INDEX)
+            # The byte record is created or refreshed even when the item is
+            # refused below (an observe would do the same); that commits
+            # with the image index bump, and the review queue is unchanged.
             others = conn.execute(
                 _OTHER_ITEMS_OF_BYTES, (byte_id, resolver_version, evidence_hash)
             ).fetchall()
@@ -484,6 +494,38 @@ class ReviewOperations:
                     _PENDING_OF_LOCATOR, (locator,)
                 ).fetchall():
                     removed += conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
+            if removed:
+                conn.execute(_BUMP_REVIEW_INDEX)
+        if removed:
+            notify_review_change(self.model.db_path)
+        return removed
+
+    def settle_stale_review_items(
+        self, locator: str, size: int, mtime_ns: int, versions
+    ) -> int:
+        """Remove pending, undecided items of the bytes verified at this stat
+        whose ``resolver_version`` is not one of ``versions``.
+
+        The caller found these bytes untraced under the current versions, so
+        an older version's item could only refuse Apply. The same safe delete
+        as the other settles; one indexed read when nothing is pending.
+        """
+        _validate_locator(locator)
+        current = set(versions)
+        conn = self.model.get_connection()
+        stale = [
+            item_id
+            for item_id, version in conn.execute(
+                _PENDING_AT_STAT, (locator, size, mtime_ns)
+            )
+            if version not in current
+        ]
+        if not stale:
+            return 0
+        removed = 0
+        with self._pair_transaction() as conn:
+            for item_id in stale:
+                removed += conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
             if removed:
                 conn.execute(_BUMP_REVIEW_INDEX)
         if removed:

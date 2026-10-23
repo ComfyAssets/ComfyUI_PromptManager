@@ -5,8 +5,9 @@ encoders and one shared negative, so the resolver finds it ``ambiguous``. Its
 loader node carries ComfyUI's ``Infinity`` stamp, which the legacy pages'
 parser (the scan's fallback) cannot read, so nothing links the file and it is
 a Needs review case (#284: only ambiguous, unlinked files are queued). It is
-recorded through the producers' entry point (``record_review_file``). No path
-or SQL comes from a request.
+recorded through the scan's recorder (``_record_review_sync`` with
+``inspection=True``; only scans add items). No path or SQL comes from a
+request.
 
 ``POST /__test__/review/reset`` also takes the special items F2 needs, queued
 after the plain ones in this order:
@@ -28,10 +29,9 @@ its first negative, the one the concept's panel shows), so the panel's text
 wraps as the concept's does.
 
 ``POST /__test__/review/add {kind}`` adds one file while a page is open:
-``monitor`` records a new ambiguous, unlinked output from a worker thread
-through ``record_review_file`` (the monitor's own entry point; the monitor
-never queues an output it linked itself), ``file`` only writes one (a
-metadata scan records it). ``GET
+``scan`` records a new ambiguous, unlinked output from a worker thread
+through the scan's recorder (as a running scan's batch does; the monitor
+never adds items), ``file`` only writes one (a metadata scan records it). ``GET
 /__test__/review/links`` answers each review file's prompt and pair links, and
 ``GET /__test__/review/streams`` the open change streams and captures.
 """
@@ -139,8 +139,16 @@ def _png(
         image.save(path, pnginfo=info)
 
 
+def _scan_record(api: PromptManagerAPI, path: Path) -> str:
+    """Record ``path`` as the scan's recorder does."""
+    from py.api.admin import _scan_roots
+
+    roots = _scan_roots(api._get_all_output_dirs())
+    return api._record_review_sync(Path(str(path)), roots, inspection=True)
+
+
 def _record(api: PromptManagerAPI, path: Path, expected: str) -> None:
-    outcome = api.record_review_file(str(path))
+    outcome = _scan_record(api, path)
     if outcome != expected:
         raise RuntimeError(f"{path.name} was {outcome}, not {expected}")
 
@@ -150,19 +158,19 @@ def _stamp(path: Path, age: float) -> None:
     os.utime(path, (stamp, stamp))
 
 
-class _Monitor:
-    """The monitor's recorder over this server's database (one per server)."""
+class _ScanRecorder:
+    """The scan's recorder over this server's database (one per server)."""
 
     def __init__(self, api: PromptManagerAPI) -> None:
         self.api = api
         self.lock = threading.Lock()
 
     def new_output(self, path: Path) -> None:
-        """The monitor's Needs review pass for a new output, from a worker thread."""
+        """The scan's Needs review recording of a new output, from a worker thread."""
         outcome = []
         with self.lock:
             worker = threading.Thread(
-                target=lambda: outcome.append(self.api.record_review_file(str(path)))
+                target=lambda: outcome.append(_scan_record(self.api, path))
             )
             worker.start()
             worker.join()
@@ -170,9 +178,9 @@ class _Monitor:
             raise RuntimeError(f"{path.name} was {outcome}, not recorded")
 
 
-def _monitored_output(api: PromptManagerAPI, monitor: _Monitor, path: Path) -> None:
+def _scanned_output(api: PromptManagerAPI, recorder: _ScanRecorder, path: Path) -> None:
     _png(path, (150, 60, 40))
-    monitor.new_output(path)
+    recorder.new_output(path)
 
 
 def _linked_after_queueing(api: PromptManagerAPI, path: Path) -> None:
@@ -205,7 +213,7 @@ def seed_review(
     root: Path,
     items: int,
     special: tuple = (),
-    monitor: _Monitor | None = None,
+    recorder: _ScanRecorder | None = None,
     concept: bool = False,
 ) -> dict:
     """Replace this server's disposable rows and files with ``items`` queued files."""
@@ -258,9 +266,9 @@ def seed_review(
 
 
 def add_review_file(
-    api: PromptManagerAPI, root: Path, kind: str, monitor: _Monitor
+    api: PromptManagerAPI, root: Path, kind: str, recorder: _ScanRecorder
 ) -> dict:
-    """One more ambiguous output: through the monitor, or only written."""
+    """One more ambiguous output: recorded as a scan does, or only written."""
     output = root / "output"
     number = (
         len(list((output / "added").glob("*.png")))
@@ -268,8 +276,8 @@ def add_review_file(
         else 0
     )
     relative = f"added/added_{number:04}.png"
-    if kind == "monitor":
-        _monitored_output(api, monitor, output / relative)
+    if kind == "scan":
+        _scanned_output(api, recorder, output / relative)
     else:
         _png(output / relative, (200, 200, 40))
     api.invalidate_gallery_cache()
@@ -298,12 +306,12 @@ def register_review_commands(
     routes: web.RouteTableDef, api: PromptManagerAPI, root: Path
 ) -> None:
     """Register the review fixture's commands; no path or SQL comes from a request."""
-    monitors = []
+    recorders = []
 
-    def monitor() -> _Monitor:
-        if not monitors:
-            monitors.append(_Monitor(api))
-        return monitors[0]
+    def recorder() -> _ScanRecorder:
+        if not recorders:
+            recorders.append(_ScanRecorder(api))
+        return recorders[0]
 
     @routes.post("/__test__/review/reset")
     async def reset(request: web.Request) -> web.Response:
@@ -331,7 +339,7 @@ def register_review_commands(
             root,
             items,
             special,
-            monitor(),
+            recorder(),
             data.get("concept", False),
         )
         return web.json_response({"success": True, **manifest})
@@ -341,10 +349,10 @@ def register_review_commands(
         data = await request.json() if request.can_read_body else None
         if request.query or not isinstance(data, dict) or set(data) != {"kind"}:
             raise web.HTTPBadRequest()
-        if data["kind"] not in ("monitor", "file"):
+        if data["kind"] not in ("scan", "file"):
             raise web.HTTPBadRequest()
         added = await api._run_in_executor(
-            add_review_file, api, root, data["kind"], monitor()
+            add_review_file, api, root, data["kind"], recorder()
         )
         return web.json_response({"success": True, **added})
 

@@ -1,6 +1,6 @@
 // Needs review (#249 PR F, plan Tasks F1 and F2, Mock inventory M4): the SAVED VIEWS row and its count, the Metadata
 // review page over the real review routes, and Activity's Review metadata. Items are recorded by the real recorder
-// (tests/browser/workspace_review_fixture.py) through the monitor's entry point; the conflict item's file was linked
+// (tests/browser/workspace_review_fixture.py) through the scan's recorder (only scans add items); the conflict item's file was linked
 // to another prompt after it was queued. An open page re-reads its queue from the review change stream (F2).
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
@@ -318,13 +318,13 @@ test('keyboard focus labels and touch targets', async ({ page, request }) => {
     await expect(page).toHaveURL(/#\/images$/);
 });
 
-test('an open page shows items the monitor adds and keeps the open choice', async ({ page, request }) => {
+test('an open page shows items a scan adds and keeps the open choice', async ({ page, request }) => {
     await seed(request, 1);
     await open(page);
     await expect.poll(async () => (await streams(request)).streams).toBe(1);
     await context(page).selectOption({ label: OPTIONS[1] });
     await expect(reviewRow(page)).toHaveText('Needs review1');
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
     await expect(cards(page)).toHaveCount(2);
     await expect(main(page).locator('.notice h2')).toHaveText('2 images need a decision');
     await expect(reviewRow(page)).toHaveText('Needs review2');
@@ -381,7 +381,7 @@ test('a visit reads its queue once, and a change reads it once more', async ({ p
     const reads = reviewReads(page);
     await open(page);
     await expect.poll(async () => (await streams(request)).streams).toBe(1);
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
     await expect(cards(page)).toHaveCount(2);
     await expect(reviewRow(page)).toHaveText('Needs review2');
     // The page's first read and the change's re-read; the shell's count read at start, and the row follows the page.
@@ -423,7 +423,7 @@ test('a stream the browser gives up on is opened again, and the page says it is 
     // The page opens the stream again (after 3 s) and is live once it sends ready.
     await expect.poll(async () => (await streams(request)).streams, { timeout: 15000 }).toBe(1);
     await expect(live(page)).toBeHidden();
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
     await expect(cards(page)).toHaveCount(2);
     expect(attempts).toBe(2);
 });
@@ -444,8 +444,8 @@ test('a hidden tab closes its stream and a visible one reads only what changed m
     await open(page);
     await expect.poll(async () => (await streams(request)).streams).toBe(1);
     await setVisible(page, false);
-    // The server drops a closed stream at its next write: this monitor addition is one.
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    // The server drops a closed stream at its next write: this scan addition is one.
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
     await expect.poll(async () => (await streams(request)).streams).toBe(0);
     await expect(cards(page)).toHaveCount(1);
     expect(reads.filter(search => search === '?limit=40')).toHaveLength(1);
@@ -476,7 +476,7 @@ test('a re-read refreshes a card whose media or target changed', async ({ page, 
     const second = cards(page).nth(1);
     await expect(second.getByRole('button', { name: 'Open review_0001.png', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
     rewrite = true;
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
     await expect(cards(page)).toHaveCount(3);
     await expect(cards(page).first().locator('img')).toHaveAttribute('src', /&thumb=1$/);
     await expect(second.getByRole('button', { name: 'Open review_0001.png', exact: true })).toHaveAttribute('aria-disabled', 'true');
@@ -522,7 +522,7 @@ test('a live re-read keeps the loaded depth and the scroll position', async ({ p
     const before = await scrollTop();
     expect(before).toBeGreaterThan(0);
     const reads = reviewReads(page);
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
     await expect(main(page).locator('.notice h2')).toHaveText('46 images need a decision');
     await expect(cards(page)).toHaveCount(46);
     expect(await scrollTop()).toBe(before);
@@ -550,7 +550,7 @@ test('teardown releases captures listeners and requests', async ({ page, request
     await expect.poll(async () => (await streams(request)).captures).toBe(0);
     await route.abort().catch(() => {});
     // The server drops a closed stream at its next write: a monitor addition is one.
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'monitor' } })).toBeOK();
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
     await expect.poll(async () => (await streams(request)).streams).toBe(0);
     await expect.poll(() => inFlight.size).toBe(0);
 });

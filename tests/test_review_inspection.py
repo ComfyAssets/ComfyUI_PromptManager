@@ -416,7 +416,9 @@ class TestApplyInspectionCandidate(InspectionTestCase):
                 if entry["class"] != "TextEncodeQwenImageEdit"
             ]
 
+        version = _version()
         self._table(drop_encoder)
+        self.assertNotEqual(_version(), version)
         before = self._snapshot()
         status, data = await self._decide(
             item["id"], self._body(detail, observed, candidate["hash"])
@@ -425,6 +427,11 @@ class TestApplyInspectionCandidate(InspectionTestCase):
         self.assertEqual(status, 409, data)
         self.assertEqual(data["code"], "review-conflict")
         self.assertEqual(self._snapshot(), before)
+        # The rescan finds nothing to choose under the new version: the
+        # stale, undecided item leaves the queue instead of staying stuck.
+        job = await self._scan("all")
+        self.assertEqual(self._items(), [])
+        self.assertEqual(job["scope"]["review_untraced"], 1)
 
 
 class TestMonitorNeverQueues(InspectionTestCase):
@@ -437,7 +444,7 @@ class TestMonitorNeverQueues(InspectionTestCase):
         self._roots()
         path = self._write()
 
-        self.assertEqual(self.api.record_review_file(str(path)), "untraced")
+        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
         self.assertEqual(self._items(), [])
         self.assertEqual(self._capture_files(), [])
 
@@ -455,7 +462,7 @@ class TestMonitorNeverQueues(InspectionTestCase):
         # Other bytes, so the stat shortcut does not answer for the file.
         self._write(color=(0, 0, 255))
 
-        self.assertEqual(self.api.record_review_file(str(path)), "untraced")
+        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
         self.assertEqual([i["id"] for i in self._items()], [item["id"]])
 
     async def test_monitor_link_removes_the_inspection_item(self):
@@ -785,3 +792,164 @@ class TestRecordingEdges(InspectionTestCase):
             review_capture.semantics_version({"prompt": many}),
             inspection_semantics.get_semantics().version,
         )
+
+
+def _move_qwen_encoder_slot(doc):
+    """An edit of the Qwen-edit encoder's own table entry."""
+    for entry in doc["encoders"]:
+        if entry["class"] == "TextEncodeQwenImageEdit":
+            entry["slot"] = 1
+
+
+def _unused_sampler(doc):
+    """A new dict-keyed sampler class the Qwen-edit graph does not use."""
+    doc["samplers"]["UnusedSampler"] = dict(doc["samplers"]["KSampler"])
+
+
+class TestFingerprintCoverage(InspectionTestCase):
+    def test_editing_the_encoders_entry_moves_the_version(self):
+        version = _version()
+        self._table(_move_qwen_encoder_slot)
+        self.assertIsNotNone(_version())
+        self.assertNotEqual(_version(), version)
+
+    def test_an_unused_dict_keyed_class_leaves_the_version(self):
+        version = _version()
+        table = inspection_semantics.get_semantics().version
+        self._table(_unused_sampler)
+        self.assertNotEqual(inspection_semantics.get_semantics().version, table)
+        self.assertEqual(_version(), version)
+
+
+class TestInspectionResolverVersion(InspectionTestCase):
+    async def test_inspection_resolver_change_supersedes_the_item(self):
+        """An inspection-only resolver change moves the item version, so the
+        rescan re-inspects and the new item is applicable (never a stuck
+        409)."""
+        self._require_routes()
+        self._roots()
+        path = self._write()
+        await self._scan()
+        (old,) = self._items()
+        version = _version()
+        real = review_capture.resolve_inspection
+
+        def newer(metadata):
+            resolution = real(metadata)
+            return {
+                **resolution,
+                "candidates": [
+                    {**c, "reason": "a newer inspection resolver"}
+                    for c in resolution["candidates"]
+                ],
+            }
+
+        with (
+            patch.object(review_capture, "INSPECTION_RESOLVER_VERSION", 2),
+            patch.object(review_capture, "resolve_inspection", side_effect=newer),
+        ):
+            self.assertNotEqual(_version(), version)
+            await self._scan("all")
+            (item,) = self._items()
+            self.assertNotEqual(item["id"], old["id"])
+            _item, (status, data) = await self._apply("add a red hat")
+
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self._linked_text(path), "add a red hat")
+
+    def test_profile_budgets_are_folded_into_the_version(self):
+        from dataclasses import replace
+
+        version = _version()
+        wider = replace(
+            review_capture.INSPECTION_PROFILE,
+            total_visits=review_capture.INSPECTION_PROFILE.total_visits + 1,
+        )
+        with patch.object(review_capture, "INSPECTION_PROFILE", wider):
+            self.assertNotEqual(_version(), version)
+
+
+class TestScanContainment(InspectionTestCase):
+    async def test_an_inspection_failure_is_counted_and_the_scan_continues(self):
+        self._roots()
+        self._write("a.png")
+        self._write("b.png", graph=qwen_edit_graph("snow", "rain"))
+        real = review_capture.resolve_inspection
+
+        def fails_for_a(metadata):
+            if "make it night" in json.dumps(metadata):
+                raise RuntimeError("inspection blew up")
+            return real(metadata)
+
+        with (
+            patch.object(review_capture, "resolve_inspection", side_effect=fails_for_a),
+            self.assertLogs("prompt_manager.api", "WARNING") as logs,
+        ):
+            job = await self._scan()
+
+        self.assertEqual(job["state"], "finished")
+        (item,) = self._items()
+        self.assertEqual(os.path.basename(item["locator"]), "b.png")
+        self.assertEqual(job["scope"]["review_errors"], 1)
+        rows = {row["path"]: row for row in job["outcomes"]["review"]}
+        self.assertIn("could not be traced", rows["a.png"]["detail"])
+        self.assertIn("more than one prompt could match", rows["b.png"]["detail"])
+        self.assertTrue(any("a.png" in line for line in logs.output))
+
+
+class TestUntracedMemoryKeys(InspectionTestCase):
+    async def test_untraced_memory_is_keyed_by_a_16_byte_digest(self):
+        self._roots()
+        graph = qwen_edit_graph(*PROMPTS)
+        for node in graph.values():
+            if node["class_type"] == "TextEncodeQwenImageEdit":
+                node["class_type"] = "OpaqueTextEncode"
+        self._write(graph=graph)
+
+        await self._scan()
+
+        (key,) = self.api._untraced_inspections
+        self.assertIsInstance(key, bytes)
+        self.assertEqual(len(key), 16)
+
+
+class TestMonitorNeverRecords(InspectionTestCase):
+    async def test_monitor_never_records_an_unlinked_ambiguous_output(self):
+        """Only scans add items (maintainer ruling); the monitor only clears
+        the items of outputs it links."""
+        self._roots()
+        path = self.output_dir / "two.png"
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
+
+        with _counted(self.api._captures, "capture") as copies:
+            self.assertEqual(self.api.record_review_file(str(path)), "skipped")
+
+        self.assertEqual(copies, [])
+        self.assertEqual(self._items(), [])
+        await self._scan()
+        self.assertEqual(len(self._items()), 1)
+
+
+class TestStaleSettleContainment(InspectionTestCase):
+    async def test_a_failed_stale_settle_is_logged_and_counted(self):
+        import sqlite3
+
+        self._roots()
+        graph = qwen_edit_graph(*PROMPTS)
+        for node in graph.values():
+            if node["class_type"] == "TextEncodeQwenImageEdit":
+                node["class_type"] = "OpaqueTextEncode"
+        self._write(graph=graph)
+        with (
+            patch.object(
+                self.api.db,
+                "settle_stale_review_items",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ),
+            self.assertLogs("prompt_manager.api", "WARNING") as logs,
+        ):
+            job = await self._scan()
+
+        self.assertEqual(job["state"], "finished")
+        self.assertEqual(job["scope"]["review_errors"], 1)
+        self.assertTrue(any("Stale Needs review" in line for line in logs.output))

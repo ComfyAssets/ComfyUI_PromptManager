@@ -1,7 +1,8 @@
 """Capture-bound Needs review items for ambiguous files (#249 E2).
 
-The output scan and the live monitor hand every file the ingestion resolver
-finds ``ambiguous`` to :func:`record_ambiguous_file`. It captures the file
+The output scan hands every unlinked file the ingestion resolver finds
+``ambiguous`` to :func:`record_ambiguous_file` (only scans add items; the
+live monitor records nothing). It captures the file
 (the bounded private copy of ``utils.media_capture``, hashed while copied),
 reads the metadata again from the capture, resolves it with the default
 (ingestion) profile and stores only an ``ambiguous`` result, bound to the
@@ -24,7 +25,7 @@ a ``limited`` item without candidates (a result without any candidate is not
 
 Inspection-profile choices (ruling a, after the maintainer's Qwen image-edit
 batches): when the default profile is ambiguous without a choice, the scan
-(``inspection=True``; the live monitor never) asks ``INSPECTION_PROFILE``,
+(``inspection=True``) asks ``INSPECTION_PROFILE``,
 which knows more encoder and string nodes. With at least two choosable
 candidates there, the item is recorded from that profile: its evidence names
 ``profile: "inspection"`` and ``semantics``, the fingerprint of what the table
@@ -47,6 +48,7 @@ import hashlib
 import json
 import logging
 import os
+from dataclasses import astuple
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +69,7 @@ try:
     from .prompt_inspector import MetadataReadError, read_inspection_file
     from .prompt_pair_resolver import (
         INSPECTION_PROFILE,
+        INSPECTION_RESOLVER_VERSION,
         RESOLVER_VERSION,
         resolve_prompt_pair,
     )
@@ -87,6 +90,7 @@ except ImportError:  # imported with the repo root on sys.path
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.prompt_pair_resolver import (
         INSPECTION_PROFILE,
+        INSPECTION_RESOLVER_VERSION,
         RESOLVER_VERSION,
         resolve_prompt_pair,
     )
@@ -149,14 +153,16 @@ def semantics_version(metadata: Any = None) -> str | None:
 def inspection_review_version(metadata: Any = None) -> int | None:
     """The ``resolver_version`` of an item recorded from the inspection profile.
 
-    Folds the profile, ``RESOLVER_VERSION`` and ``semantics_version(metadata)``,
-    so a resolver change or a table change about the graph's classes moves
-    it. None when the table cannot be loaded.
+    Folds the profile with its budgets, ``RESOLVER_VERSION``,
+    ``INSPECTION_RESOLVER_VERSION`` and ``semantics_version(metadata)``, so
+    a change of either resolver, of the profile's bounds or of the table
+    about the graph's classes moves it. None when the table cannot be loaded.
     """
     table = semantics_version(metadata)
     if table is None:
         return None
-    seed = f"{INSPECTION_PROFILE.name}:{RESOLVER_VERSION}:{table}"
+    profile = repr(astuple(INSPECTION_PROFILE))
+    seed = f"{profile}:{RESOLVER_VERSION}:{INSPECTION_RESOLVER_VERSION}:{table}"
     folded = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return INSPECTION_VERSION_BASE + int(folded[:_INSPECTION_VERSION_HEX], 16)
 
@@ -190,7 +196,7 @@ def item_profile(evidence: Any) -> str:
 def item_versions(metadata: Any = None) -> tuple:
     """The item versions a file with ``metadata`` may already be queued under.
 
-    Without ``metadata`` (the monitor), only the ingestion version.
+    Without ``metadata``, only the ingestion version.
     """
     version = inspection_review_version(metadata) if metadata is not None else None
     return (RESOLVER_VERSION,) if version is None else (RESOLVER_VERSION, version)
@@ -216,7 +222,7 @@ def record_ambiguous_file(
 
     With ``inspection`` (the scan), a default result without a choice is
     resolved again with the inspection profile, and recorded from it when
-    that offers a choice; the live monitor passes False. ``scanned`` is the
+    that offers a choice. ``scanned`` is the
     scan's ``(metadata, inspection_resolution_or_None)`` for the file: its
     metadata names the item versions that count, and when the capture holds
     the same records its resolution is reused instead of resolving again.
