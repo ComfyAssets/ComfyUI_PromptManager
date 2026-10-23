@@ -508,7 +508,7 @@ class TestStaticRoutes(CoreRoutesTestCase):
             "js/INSPECTION-SEMANTICS.json",
         ):
             resp = await self.client.request("GET", f"/prompt_manager/{path}")
-            self.assertIn(resp.status, (403, 404), path)
+            self.assertEqual(resp.status, 403, path)
 
     async def test_lib_served(self):
         web_dir = self._fake_root()
@@ -601,6 +601,28 @@ class TestStaticRoutes(CoreRoutesTestCase):
             self.skipTest("symlinks not available")
         resp = await self.client.request("GET", "/prompt_manager/lib/link.js")
         self.assertEqual(resp.status, 403)
+
+    async def test_inspection_semantics_symlink_escaping_web_dir_is_403(self):
+        """The exact-path JSON gets the same realpath containment as any file."""
+        web_dir = self._fake_root()
+        secret = Path(self.tmpdir) / "secret.json"
+        secret.write_text('{"secret": true}')
+        try:
+            os.symlink(secret, web_dir / "js" / "inspection-semantics.json")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not available")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/js/inspection-semantics.json"
+        )
+        self.assertEqual(resp.status, 403)
+        self.assertNotIn("secret", await resp.text())
+
+    async def test_inspection_semantics_missing_is_404(self):
+        self._fake_root()
+        resp = await self.client.request(
+            "GET", "/prompt_manager/js/inspection-semantics.json"
+        )
+        self.assertEqual(resp.status, 404)
 
     async def test_empty_path_is_not_served(self):
         for prefix in ("lib", "js"):
