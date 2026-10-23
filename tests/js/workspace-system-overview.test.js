@@ -12,7 +12,6 @@ const OVERVIEW = Object.freeze({
     backup: null,
     needs_review: { pending: null },
     sources: { configured: 2, effective: 2, auto_detected: false },
-    thumbnails: { missing: 0 },
 });
 
 test('metrics are the server counts and Not checked before any health check', async () => {
@@ -35,7 +34,7 @@ test('metric 4 is the last health result', async () => {
 });
 
 test('library health rows never invent a review count, a backup or thumbnails', async () => {
-    const { ambiguousTitle, backupText, thumbnailTitle } = await overviewModule;
+    const { ambiguousTitle, backupText } = await overviewModule;
     assert.equal(ambiguousTitle({ pending: null }), 'Ambiguous image links');
     assert.equal(ambiguousTitle(undefined), 'Ambiguous image links');
     assert.equal(ambiguousTitle({ pending: 1 }), '1 ambiguous image link');
@@ -43,10 +42,28 @@ test('library health rows never invent a review count, a backup or thumbnails', 
     assert.equal(backupText(null), 'No retained backup record.');
     assert.equal(backupText({ verified_at: 'not a time' }), 'No retained backup record.');
     assert.match(backupText({ verified_at: '2026-10-22T09:30:00Z' }), /^Last verified backup .+\.$/);
-    assert.equal(thumbnailTitle({ missing: 0 }), 'No missing thumbnails');
-    assert.equal(thumbnailTitle({ missing: 1 }), '1 missing thumbnail');
-    assert.equal(thumbnailTitle({ missing: 12 }), '12 missing thumbnails');
-    assert.equal(thumbnailTitle({ missing: null }), 'Thumbnail status unavailable');
+});
+
+test('the thumbnail row is its own read of the thumbnail status', async () => {
+    const { thumbnailTitle, THUMBNAILS_LOADING } = await overviewModule;
+    // Until `/images/thumbnails/status` answers the row says it is checking; a failed read is unavailable, never 0.
+    assert.equal(THUMBNAILS_LOADING, 'Checking thumbnails…');
+    assert.equal(thumbnailTitle(undefined), THUMBNAILS_LOADING);
+    assert.equal(thumbnailTitle({ pending: 0 }), 'No missing thumbnails');
+    assert.equal(thumbnailTitle({ pending: 1 }), '1 missing thumbnail');
+    assert.equal(thumbnailTitle({ pending: 12 }), '12 missing thumbnails');
+    assert.equal(thumbnailTitle(null), 'Thumbnail status unavailable');
+    assert.equal(thumbnailTitle({ pending: 'x' }), 'Thumbnail status unavailable');
+    // With no image source there is nothing to count.
+    assert.equal(thumbnailTitle({ pending: 0 }, { effective: 0 }), 'Thumbnail status unavailable');
+    assert.equal(thumbnailTitle({ pending: 2 }, { effective: 1 }), '2 missing thumbnails');
+});
+
+test('an integrity count SQLite stopped at reads as a lower bound', async () => {
+    const { checkChip } = await overviewModule;
+    assert.equal(checkChip({ id: 'integrity', status: 'issues', count: 100, capped: true }), '100+ problems found');
+    assert.equal(checkChip({ id: 'integrity', status: 'issues', count: 37, capped: false }), '37 problems found');
+    assert.equal(checkChip({ id: 'integrity', status: 'issues', count: 1 }), '1 problem found');
 });
 
 test('the sources row tells configured, available and detected sources apart', async () => {
@@ -134,19 +151,57 @@ function fakeApi(answers) {
     return { calls, get: url => answer('GET', url), post: url => answer('POST', url) };
 }
 
-const immediate = { setTimeout: callback => { queueMicrotask(callback); return 0; }, clearTimeout() {} };
 const JOB = '0123456789abcdef0123456789abcdef';
+const job = (state, id = JOB, kind = 'health') => ({ id, kind, state });
 
-test('a health check waits for its read job, then reads the report', async () => {
+/**
+ * A fake Activity store holding `jobs`: `track(job)` lists a started job, `load()` applies the next of `reads` (the
+ * server's job lists) and `push(job)` is a stream update; each notifies as the real store does. It never polls.
+ */
+function fakeActivity({ jobs = [], reads = [] } = {}) {
+    const listeners = new Set();
+    const emit = () => { for (const listener of [...listeners]) listener(); };
+    const store = {
+        loads: 0,
+        find: id => jobs.find(item => item.id === id),
+        running: () => jobs.filter(item => item.state === 'running'),
+        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+        listeners: () => listeners.size,
+        async load() {
+            store.loads += 1;
+            if (reads.length) jobs = reads.shift();
+            emit();
+        },
+        track(item) {
+            if (!item?.id) throw new TypeError('Invalid job');
+            store.push(item);
+            return item;
+        },
+        push(item) {
+            jobs = [...jobs.filter(other => other.id !== item.id), item];
+            emit();
+        },
+    };
+    return store;
+}
+
+test('a health check tracks its job in the Activity store, then reads the report', async () => {
     const { runHealthCheck } = await overviewModule;
     const api = fakeApi({
-        'POST /prompt_manager/system/health': [{ job: { id: JOB } }],
-        [`GET /prompt_manager/jobs/${JOB}`]: [{ job: { state: 'running' } }, { job: { state: 'finished' } }],
+        'POST /prompt_manager/system/health': [{ job: job('running') }],
         'GET /prompt_manager/system/health': [{ report: REPORT }],
     });
-    assert.equal(await runHealthCheck(api, { timers: immediate }), REPORT);
-    assert.deepEqual(api.calls, ['POST /prompt_manager/system/health', `GET /prompt_manager/jobs/${JOB}`,
-        `GET /prompt_manager/jobs/${JOB}`, 'GET /prompt_manager/system/health']);
+    const activity = fakeActivity();
+    const checking = runHealthCheck(api, { activity });
+    await new Promise(resolve => setImmediate(resolve));
+    // The store follows the started job's event stream; nothing reads or polls the job here.
+    assert.equal(activity.loads, 0);
+    assert.equal(activity.find(JOB).state, 'running');
+    assert.deepEqual(api.calls, ['POST /prompt_manager/system/health']);
+    activity.push(job('finished'));
+    assert.equal(await checking, REPORT);
+    assert.deepEqual(api.calls, ['POST /prompt_manager/system/health', 'GET /prompt_manager/system/health']);
+    assert.equal(activity.listeners(), 0);
 });
 
 test('a check already running elsewhere is waited for, not refused', async () => {
@@ -154,35 +209,47 @@ test('a check already running elsewhere is waited for, not refused', async () =>
     const busy = Object.assign(new Error('busy'), { status: 409, code: 'busy' });
     const api = fakeApi({
         'POST /prompt_manager/system/health': [busy],
-        'GET /prompt_manager/jobs': [{ jobs: [{ id: 'f'.repeat(32), kind: 'scan', state: 'running' }, { id: JOB, kind: 'health', state: 'running' }] }],
-        [`GET /prompt_manager/jobs/${JOB}`]: [{ job: { state: 'finished' } }],
         'GET /prompt_manager/system/health': [{ report: REPORT }],
     });
-    assert.equal(await runHealthCheck(api, { timers: immediate }), REPORT);
-    assert.ok(api.calls.includes(`GET /prompt_manager/jobs/${JOB}`));
+    const activity = fakeActivity({ reads: [[job('running', 'f'.repeat(32), 'scan'), job('running')]] });
+    const checking = runHealthCheck(api, { activity });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(activity.loads, 1);
+    activity.push(job('finished'));
+    assert.equal(await checking, REPORT);
+    // The other check ended between the refusal and the read: its report is the latest.
+    const ended = fakeApi({ 'POST /prompt_manager/system/health': [busy], 'GET /prompt_manager/system/health': [{ report: REPORT }] });
+    assert.equal(await runHealthCheck(ended, { activity: fakeActivity({ reads: [[]] }) }), REPORT);
 });
 
 test('a failed, lost or reportless check rejects; other errors pass through', async () => {
     const { runHealthCheck, waitForJob, HEALTH_FAILED_TEXT } = await overviewModule;
-    const failed = fakeApi({ 'POST /prompt_manager/system/health': [{ job: { id: JOB } }],
-        [`GET /prompt_manager/jobs/${JOB}`]: [{ job: { state: 'failed' } }] });
-    await assert.rejects(runHealthCheck(failed, { timers: immediate }), { message: HEALTH_FAILED_TEXT });
-    const lost = fakeApi({ [`GET /prompt_manager/jobs/${JOB}`]: [Object.assign(new Error('gone'), { status: 404 })] });
-    assert.equal(await waitForJob(lost, JOB, { timers: immediate }), 'lost');
-    const empty = fakeApi({ 'POST /prompt_manager/system/health': [{ job: { id: JOB } }],
-        [`GET /prompt_manager/jobs/${JOB}`]: [{ job: { state: 'finished' } }], 'GET /prompt_manager/system/health': [{ report: null }] });
-    await assert.rejects(runHealthCheck(empty, { timers: immediate }), { message: HEALTH_FAILED_TEXT });
+    const failed = fakeApi({ 'POST /prompt_manager/system/health': [{ job: job('failed') }] });
+    await assert.rejects(runHealthCheck(failed, { activity: fakeActivity() }), { message: HEALTH_FAILED_TEXT });
+    // The store marks a job lost when the server no longer lists it (ComfyUI restarted).
+    const restarted = fakeActivity({ jobs: [job('running')] });
+    const waiting = waitForJob(restarted, JOB);
+    restarted.push(job('lost'));
+    assert.equal(await waiting, 'lost');
+    const empty = fakeApi({ 'POST /prompt_manager/system/health': [{ job: job('finished') }],
+        'GET /prompt_manager/system/health': [{ report: null }] });
+    await assert.rejects(runHealthCheck(empty, { activity: fakeActivity() }), { message: HEALTH_FAILED_TEXT });
     const broken = fakeApi({ 'POST /prompt_manager/system/health': [Object.assign(new Error('server'), { status: 500 })] });
-    await assert.rejects(runHealthCheck(broken, { timers: immediate }), { message: 'server' });
+    await assert.rejects(runHealthCheck(broken, { activity: fakeActivity() }), { message: 'server' });
+    const invalid = fakeApi({ 'POST /prompt_manager/system/health': [{ job: null }] });
+    await assert.rejects(runHealthCheck(invalid, { activity: fakeActivity() }), { message: 'Invalid job' });
 });
 
 test('waiting stops when its signal aborts', async () => {
     const { waitForJob } = await overviewModule;
     const controller = new AbortController();
-    const api = fakeApi({ [`GET /prompt_manager/jobs/${JOB}`]: [{ job: { state: 'running' } }] });
-    const never = { setTimeout: () => 1, clearTimeout() {} };
-    const waiting = waitForJob(api, JOB, { signal: controller.signal, timers: never });
+    const activity = fakeActivity({ jobs: [job('running')] });
+    const waiting = waitForJob(activity, JOB, { signal: controller.signal });
     await new Promise(resolve => setImmediate(resolve));
     controller.abort(new Error('left'));
     await assert.rejects(waiting, { message: 'left' });
+    assert.equal(activity.listeners(), 0);
+    const gone = new AbortController();
+    gone.abort(new Error('already'));
+    await assert.rejects(waitForJob(fakeActivity(), JOB, { signal: gone.signal }), { message: 'already' });
 });

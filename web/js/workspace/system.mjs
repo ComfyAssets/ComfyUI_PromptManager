@@ -24,7 +24,6 @@ const GALLERY = Object.freeze({ href: '/prompt_manager/gallery', label: 'Open ex
  * settings, thumbnails, duplicates and cache tools.
  */
 export const SECTION_HANDOFFS = Object.freeze({
-    overview: [ADMIN],
     appearance: [GALLERY, ADMIN],
     sources: [ADMIN, GALLERY],
     integrations: [ADMIN],
@@ -56,7 +55,8 @@ export function systemDrafts(api) {
         writeRuntime: undelivered,
         async readHost() {
             const result = await api.get(SETTINGS_URL, { cache: 'no-store' });
-            return { values: result.settings ?? {}, revision: result.revision ?? null };
+            // The store reads a missing value as none and a missing revision as unreadable (no host save).
+            return { values: result.settings, revision: result.revision };
         },
         writeHost: (changes, { expected_revision }) => api.post(SETTINGS_URL, { ...changes, expected_revision }),
     });
@@ -87,20 +87,25 @@ function markFailed(layout, store) {
 
 /**
  * The sections delivered so far: Overview (S2 Task 6), and Maintenance's notice with "Run health checks" above the
- * hand-off to the maintenance tools that are not native yet (D-NEW-S2-5).
+ * hand-off to the maintenance tools that are not native yet (D123).
  */
 export const DELIVERED_SECTIONS = Object.freeze({
     overview: mountOverview,
-    maintenance: (container, { api, scope }) => [healthNotice({ api, scope }), ...handoff('maintenance')],
+    maintenance: (container, { api, activity, scope }) => [healthNotice({ api, activity, scope }), ...handoff('maintenance')],
 });
 
 /**
  * Mount System under the heading `renderHeading` wrote in `main`. Returns `{show(section)}`, which shows another
  * section in place. `scope` is the page's view scope; `sections` maps a section id to a delivered section's mount
- * (`(container, {api, scope, drafts}) => nodes`), and every other section hands off.
+ * (`(container, {api, activity, scope, drafts}) => nodes`), and every other section hands off. `activity` is the page's
+ * Activity store, which follows the jobs a section starts.
+ *
+ * The host values are read on mount (and by the store again after a conflict), so a save carries the current revision;
+ * until a read returned one, a host save fails without a request (system-state.mjs).
  */
-export function mountSystem(main, api, scope, { section, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
+export function mountSystem(main, api, scope, { section, activity, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
     const store = systemDrafts(api);
+    store.reloadHost();
     const nav = sectionNav({ label: 'System sections', sections: SYSTEM_SECTIONS, active: section, scope,
         onSelect: id => navigate(`#/system/${id}`) });
     const layout = el('div', undefined, 'settings-layout');
@@ -134,7 +139,7 @@ export function mountSystem(main, api, scope, { section, sections = DELIVERED_SE
         for (const button of nav.children) button.setAttribute('aria-pressed', String(button.dataset.value === next));
         while (layout.firstChild !== saveRow) layout.firstChild.remove();
         const mount = sections[next];
-        const nodes = mount ? mount(layout, { api, scope: sectionScope, drafts: store }) : handoff(next);
+        const nodes = mount ? mount(layout, { api, activity, scope: sectionScope, drafts: store }) : handoff(next);
         layout.prepend(...nodes);
         paintStatus();
     }

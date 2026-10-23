@@ -450,22 +450,22 @@
     "statements": 98
   },
   "workspace/system-overview.mjs": {
-    "lines": 95,
-    "branches": 91,
+    "lines": 96,
+    "branches": 92,
     "functions": 98,
-    "statements": 95
+    "statements": 96
   },
   "workspace/system-state.mjs": {
     "lines": 98,
-    "branches": 91,
+    "branches": 92,
     "functions": 92,
     "statements": 98
   },
   "workspace/system.mjs": {
-    "lines": 91,
-    "branches": 84,
-    "functions": 62,
-    "statements": 91
+    "lines": 93,
+    "branches": 85,
+    "functions": 69,
+    "statements": 93
   },
   "workspace/theme.mjs": {
     "lines": 98,

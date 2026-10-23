@@ -463,7 +463,7 @@ test('System is native: the concept shell, section navigation, sections, hand-of
         // The section changes in place: focus stays on the pressed section, not the page title.
         await expect(button).toBeFocused();
         // S2 Task 6: Overview is native (workspace-system.spec.mjs); Maintenance shows its health-check notice above
-        // the hand-off (D-NEW-S2-5); every other section hands off.
+        // the hand-off (D123); every other section hands off.
         if (hash === 'overview') await expect(layout.locator(':scope > .summary-metrics')).toBeVisible();
         expect(await layout.evaluate(node => [...node.children].map(child => `${child.localName}.${child.className}`)))
             .toEqual({ overview: ['div.summary-metrics', 'div.two-col', 'div.save-row'],

@@ -6,6 +6,7 @@ import { seedConcept } from './concept-inventory.mjs';
 // Health report read the server, never sample values (D93, D95, D96). The hooks are workspace_system_fixture.py's.
 const workspace = '/prompt_manager/workspace';
 const OVERVIEW_URL = '/prompt_manager/system/overview';
+const THUMBNAILS_URL = '/prompt_manager/images/thumbnails/status';
 const number = value => value.toLocaleString('en-US');
 
 test.beforeEach(async ({ page, request, browserName }) => {
@@ -49,8 +50,11 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     const writes = [];
     page.on('request', item => { if (!['GET', 'HEAD', 'OPTIONS'].includes(item.method())) writes.push(item.url()); });
     const overview = await serverJson(request, OVERVIEW_URL);
+    const thumbnails = await serverJson(request, THUMBNAILS_URL);
     // The concept fixture: six positives, their saved negatives and 24 linked images, all with thumbnails.
-    expect([overview.library.positive_prompts, overview.images.indexed, overview.thumbnails.missing]).toEqual([6, 24, 0]);
+    expect([overview.library.positive_prompts, overview.images.indexed, thumbnails.pending]).toEqual([6, 24, 0]);
+    // I2: the Overview never walks the sources for thumbnails; the row reads the status route itself.
+    expect(overview).not.toHaveProperty('thumbnails');
     const layout = await openOverview(page);
     expect(await layout.locator('.summary-metrics > .metric').evaluateAll(items => items.map(item =>
         [item.querySelector('strong').textContent, item.querySelector('span').textContent]))).toEqual([
@@ -137,6 +141,29 @@ test('thumbnail row reflects the status endpoint', async ({ page, request }) => 
     // Until the thumbnail review dialog (S5), Review thumbnails opens Sources.
     await row.getByRole('button', { name: 'Review thumbnails', exact: true }).click();
     await expect(page).toHaveURL(`${workspace}#/system/sources`);
+});
+
+test('the thumbnail row paints when its own status read answers', async ({ page, request }) => {
+    const held = async () => (await serverJson(request, '/__test__/hold')).held[THUMBNAILS_URL] ?? 0;
+    await expect(await request.post('/__test__/hold', { data: { path: THUMBNAILS_URL } })).toBeOK();
+    const layout = await openOverview(page);
+    const row = layout.locator('.operation').filter({ has: page.getByRole('button', { name: 'Review thumbnails', exact: true }) });
+    // The other values do not wait for the walk of every source.
+    await expect(row.locator('h3')).toHaveText('Checking thumbnails…');
+    await expect(layout.locator('.summary-metrics > .metric')).toHaveCount(4);
+    await expect.poll(held).toBe(1);
+    await expect(await request.post('/__test__/release')).toBeOK();
+    await expect(row.locator('h3')).toHaveText('No missing thumbnails');
+});
+
+test('a failed thumbnail read is unavailable, never zero', async ({ page }) => {
+    await page.route(`**${THUMBNAILS_URL}`, route => route.fulfill({ status: 500, contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: 'Injected failure' }) }));
+    const layout = await openOverview(page);
+    const row = layout.locator('.operation').filter({ has: page.getByRole('button', { name: 'Review thumbnails', exact: true }) });
+    await expect(row.locator('h3')).toHaveText('Thumbnail status unavailable');
+    await expect(layout.getByRole('alert')).toHaveCount(0);
+    await expect(layout.locator('.metric').nth(2).locator('strong')).toHaveText('24');
 });
 
 test('ambiguous row reads Not available yet (Q6)', async ({ page }) => {

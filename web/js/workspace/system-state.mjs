@@ -7,7 +7,11 @@
  *
  * `save()` writes browser, then host, then runtime, and only the domains with changes. A domain that fails keeps its
  * drafts dirty and its keys `failed()`, so the section highlights them; the others are saved. A host save refused
- * because the configuration changed elsewhere (`settings-changed`) is a `conflict` and keeps the draft. Drafts live for
+ * because the configuration changed elsewhere (`settings-changed`) is a `conflict` and keeps the draft. A host save before
+ * `load('host')` returned a revision fails without a request: a blind write would merge over a configuration changed
+ * elsewhere (S1 reads a null `expected_revision` as "merge into what is on disk"). `reloadHost()` reads the host values
+ * again (System calls it on mount); a host conflict reloads them itself, so the next save carries the current revision.
+ * Drafts live for
  * the page session (Q10a): a section left and opened again shows them, and a reload of its values keeps them.
  *
  * Adapters: `readBrowser()` and `readRuntime()` return the values; `readHost()` returns `{values, revision}`.
@@ -138,6 +142,7 @@ export function createSystemDrafts(adapters) {
                 return result?.persisted === false ? 'tab-only' : 'saved';
             }
             if (domain === 'host') {
+                if (typeof revision !== 'string') { fail(domain, written); return 'failed'; }
                 const result = await adapters.writeHost(values, { expected_revision: revision });
                 if (result?.code === CONFLICT_CODE) { fail(domain, written); return 'conflict'; }
                 if (!result?.success || result.persisted !== true) { fail(domain, written); return 'failed'; }
@@ -154,12 +159,17 @@ export function createSystemDrafts(adapters) {
         }
     }
 
+    /** Read the host values again; a failed read leaves host saves refused until one succeeds. */
+    const reloadHost = () => load('host').then(() => true, () => false);
+
     /** Save the dirty domains in order; a Save pressed while one runs joins it. */
     function save() {
         saving ??= (async () => {
             for (const domain of DRAFT_DOMAINS) failedKeys[domain].clear();
             const result = {};
             for (const domain of DRAFT_DOMAINS) result[domain] = await saveDomain(domain);
+            // Settings changed elsewhere: read them (and their revision), keeping the drafts (Q10).
+            if (result.host === 'conflict') await reloadHost();
             return result;
         })().then(result => {
             saving = null;
@@ -172,6 +182,7 @@ export function createSystemDrafts(adapters) {
 
     return {
         load,
+        reloadHost,
         get,
         set,
         dirty,

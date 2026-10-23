@@ -5,11 +5,12 @@
  * - The four `.summary-metrics` and the two `.two-col` surfaces ("Library health", "Workspace preferences") come from
  *   one `GET /prompt_manager/system/overview`. D93: metric 4 is the last health result (Not checked / Passed /
  *   N issues / Incomplete); the review, backup, thumbnail and sources rows say what the server reports, and nothing
- *   reads 0 before the read answers: a load shows a status line, a failure an alert and Retry.
+ *   reads 0 before the read answers: a load shows a status line, a failure an alert and Retry. The thumbnail row is
+ *   its own read of `/images/thumbnails/status` (a walk of every source): "Checking thumbnails…" until it answers.
  * - D96: the Statistics dialog lists the real runs and average rating per category, then "Library totals".
  * - D95: the "Health report" lists every check the server ran, Missing files per image source, with a chip per real
- *   result and when it was checked. The check runs from Maintenance's notice ("Run health checks", D-NEW-S2-5) as a
- *   read job of the registry; the report opens when it ends.
+ *   result and when it was checked. The check runs from Maintenance's notice ("Run health checks", D123) as a
+ *   read job of the registry, tracked in the Activity store (its event stream); the report opens when it ends.
  *
  * Reads run through `latestOnly()` on the section's scope, so a late answer never repaints a newer section.
  */
@@ -23,11 +24,11 @@ import { operationRow } from './system-controls.mjs';
 export const OVERVIEW_URL = '/prompt_manager/system/overview';
 export const STATISTICS_URL = '/prompt_manager/system/statistics';
 export const HEALTH_URL = '/prompt_manager/system/health';
-const JOBS_URL = '/prompt_manager/jobs';
+export const THUMBNAILS_URL = '/prompt_manager/images/thumbnails/status';
 export const HEALTH_KIND = 'health';
-export const JOB_POLL_MS = 150;
 
 export const LOADING_TEXT = 'Loading the overview…';
+export const THUMBNAILS_LOADING = 'Checking thumbnails…';
 export const LOAD_FAILED_TEXT = 'The overview could not be loaded. Your saved data has not changed.';
 export const STATISTICS_FAILED_TEXT = 'Statistics could not be loaded. Your saved data has not changed.';
 export const HEALTH_FAILED_TEXT = 'The health check could not finish. Nothing was changed.';
@@ -76,10 +77,14 @@ export function backupText(backup) {
     return Number.isNaN(when.getTime()) ? 'No retained backup record.' : `Last verified backup ${when.toLocaleString()}.`;
 }
 
-/** D93: the thumbnail row's title, the `/images/thumbnails/status` plan's pending count. */
-export function thumbnailTitle(thumbnails) {
-    const missing = thumbnails?.missing;
-    if (!Number.isSafeInteger(missing)) return 'Thumbnail status unavailable';
+/**
+ * D93: the thumbnail row's title from the `/images/thumbnails/status` answer: undefined while it is read, null when
+ * the read failed; with no image source (`sources.effective` 0) there is nothing to count.
+ */
+export function thumbnailTitle(status, sources) {
+    if (status === undefined) return THUMBNAILS_LOADING;
+    const missing = status?.pending;
+    if (!Number.isSafeInteger(missing) || sources?.effective === 0) return 'Thumbnail status unavailable';
     if (missing === 0) return 'No missing thumbnails';
     return `${number(missing)} missing ${noun(missing, 'thumbnail')}`;
 }
@@ -112,7 +117,10 @@ export function checkChip(check) {
     if (check.status === 'failed') return 'Could not check';
     if (check.status === 'unavailable') return check.id === 'ambiguous_metadata' ? NOT_AVAILABLE.slice(0, -1) : 'Not available';
     const [one, many] = ISSUE_NOUNS[check.id] ?? ['issue', 'issues'];
-    return Number.isSafeInteger(check.count) ? `${number(check.count)} ${check.count === 1 ? one : many}` : 'Issues found';
+    if (!Number.isSafeInteger(check.count)) return 'Issues found';
+    // SQLite stops listing integrity problems at its limit, so a capped count is a lower bound ("100+").
+    if (check.capped === true) return `${number(check.count)}+ ${many}`;
+    return `${number(check.count)} ${check.count === 1 ? one : many}`;
 }
 
 function sourceChip(source) {
@@ -207,39 +215,47 @@ export function healthNodes(report, { scope, onReviewMissing }) {
     return [list, el('p', healthSummary(report), 'small'), actions];
 }
 
-/** Wait until the job `id` has ended; resolves its final state ('finished', 'failed', 'cancelled' or 'lost'). */
-export async function waitForJob(api, id, { signal, interval = JOB_POLL_MS, timers = globalThis } = {}) {
-    for (;;) {
-        let job;
-        try {
-            ({ job } = await api.get(`${JOBS_URL}/${encodeURIComponent(id)}`, { signal, cache: 'no-store' }));
-        } catch (error) {
-            if (error?.status === 404) return 'lost';
-            throw error;
+/**
+ * Wait until the job `id` has ended, following it in the Activity store (`activity`), which streams the job's events
+ * and marks it lost when the server no longer lists it; nothing here polls. Resolves its final state ('finished',
+ * 'failed', 'cancelled' or 'lost').
+ */
+export function waitForJob(activity, id, { signal } = {}) {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+        const check = () => {
+            const state = activity.find(id)?.state;
+            if (state && state !== 'running') finish(resolve, state);
+        };
+        const onAbort = () => finish(reject, signal.reason);
+        const unsubscribe = activity.subscribe(check);
+        function finish(settle, value) {
+            unsubscribe();
+            signal?.removeEventListener('abort', onAbort);
+            settle(value);
         }
-        if (job?.state !== 'running') return job?.state ?? 'lost';
-        await new Promise((resolve, reject) => {
-            const timer = timers.setTimeout(resolve, interval);
-            signal?.addEventListener('abort', () => { timers.clearTimeout(timer); reject(signal.reason); }, { once: true });
-        });
-    }
+        signal?.addEventListener('abort', onAbort, { once: true });
+        check();
+    });
 }
 
 /**
- * Run the health check and resolve its report. A check already running (409 busy, another tab) is waited for instead
- * of refused. Rejects when the check fails or ends without a report.
+ * Run the health check and resolve its report. The started job is tracked in the Activity store; a check already
+ * running (409 busy, another tab) is found in the store's job list and waited for instead of refused. Rejects when the
+ * check fails or ends without a report.
  */
-export async function runHealthCheck(api, { signal, interval, timers } = {}) {
+export async function runHealthCheck(api, { activity, signal } = {}) {
     let id;
     try {
-        ({ job: { id } } = await api.post(HEALTH_URL, {}, { signal }));
+        const { job } = await api.post(HEALTH_URL, {}, { signal });
+        id = activity.track(job).id;
     } catch (error) {
         if (error?.status !== 409 || error?.code !== 'busy') throw error;
-        const { jobs } = await api.get(JOBS_URL, { signal, cache: 'no-store' });
-        id = jobs.find(job => job.kind === HEALTH_KIND && job.state === 'running')?.id;
+        await activity.load();
+        id = activity.running().find(job => job.kind === HEALTH_KIND)?.id;
         // The other check ended between the refusal and this read: its report is the latest.
     }
-    const state = id ? await waitForJob(api, id, { signal, interval, timers }) : 'finished';
+    const state = id ? await waitForJob(activity, id, { signal }) : 'finished';
     if (state !== 'finished') throw new Error(HEALTH_FAILED_TEXT);
     const { report } = await api.get(HEALTH_URL, { signal, cache: 'no-store' });
     if (!report) throw new Error(HEALTH_FAILED_TEXT);
@@ -255,9 +271,9 @@ export function openHealthReport(report, { scope, trigger = null, navigate = nav
 
 /**
  * The concept's Maintenance notice ("Check first. Review changes. Then apply." + "Run health checks", a689), which
- * S2 delivers ahead of the rest of Maintenance (D-NEW-S2-5): the press runs the read-only check, then opens the report.
+ * S2 delivers ahead of the rest of Maintenance (D123): the press runs the read-only check, then opens the report.
  */
-export function healthNotice({ api, scope, navigate = navigateTo, notify = showWorkspaceToast }) {
+export function healthNotice({ api, activity, scope, navigate = navigateTo, notify = showWorkspaceToast }) {
     const notice = el('div', undefined, 'notice');
     const text = el('div');
     text.append(el('h2', 'Check first. Review changes. Then apply.'),
@@ -269,7 +285,7 @@ export function healthNotice({ api, scope, navigate = navigateTo, notify = showW
         run.setAttribute('aria-disabled', 'true');
         run.textContent = 'Checking…';
         try {
-            const report = await runHealthCheck(api, { signal: scope.signal });
+            const report = await runHealthCheck(api, { activity, signal: scope.signal });
             if (scope.signal.aborted) return;
             openHealthReport(report, { scope, trigger: run, navigate });
         } catch (error) {
@@ -300,6 +316,7 @@ function surface(heading, rows) {
     return section;
 }
 
+/** The Overview's nodes, and its thumbnail row (painted by its own read). */
 function overviewNodes(overview, { scope, navigate, openStatistics }) {
     const go = section => () => navigate(`#/system/${section}`);
     const review = operationRow({ scope, title: ambiguousTitle(overview.needs_review),
@@ -309,13 +326,14 @@ function overviewNodes(overview, { scope, navigate, openStatistics }) {
     // D93 (Q6): the review queue (Needs review) is not part of the workspace yet.
     review.querySelector('button').setAttribute('aria-disabled', 'true');
     const [sourcesTitle, sourcesDescription] = sourcesCopy(overview.sources);
+    const thumbnails = operationRow({ scope, title: THUMBNAILS_LOADING, description: 'Generate only missing previews when necessary.',
+        label: 'Review thumbnails', onClick: go('sources') });
     const health = surface('Library health', [
         review,
         operationRow({ scope, title: 'Backup status', description: backupText(overview.backup), label: 'View backups',
             onClick: go('backups') }),
         // Until the thumbnail review dialog (S5), Review thumbnails opens Sources, where thumbnail generation lives.
-        operationRow({ scope, title: thumbnailTitle(overview.thumbnails), description: 'Generate only missing previews when necessary.',
-            label: 'Review thumbnails', onClick: go('sources') }),
+        thumbnails,
     ]);
     const preferences = surface('Workspace preferences', [
         operationRow({ scope, title: 'One display configuration', description: 'Grid and density settings are shared across views.',
@@ -326,7 +344,7 @@ function overviewNodes(overview, { scope, navigate, openStatistics }) {
     ]);
     const columns = el('div', undefined, 'two-col');
     columns.append(health, preferences);
-    return [metricsNode(overview), columns];
+    return { nodes: [metricsNode(overview), columns], thumbnails };
 }
 
 /**
@@ -338,7 +356,15 @@ export function mountOverview(container, { api, scope, navigate = navigateTo, no
     latestOnly = window.ApiClient.latestOnly, STALE = window.ApiClient.STALE }) {
     const overviewRead = latestOnly({ lifetime: scope.signal });
     const statisticsRead = latestOnly({ lifetime: scope.signal });
+    const thumbnailsRead = latestOnly({ lifetime: scope.signal });
     let shown = [];
+    // The thumbnail status (undefined while read, null when it failed), painted into the row whenever both are there.
+    let thumbnailStatus;
+    let thumbnailRow = null;
+    let sources = null;
+    const paintThumbnails = () => {
+        if (thumbnailRow) thumbnailRow.querySelector('h3').textContent = thumbnailTitle(thumbnailStatus, sources);
+    };
 
     function swap(nodes) {
         const anchor = shown.find(node => node.isConnected);
@@ -368,7 +394,11 @@ export function mountOverview(container, { api, scope, navigate = navigateTo, no
         try {
             const overview = await overviewRead(signal => api.get(OVERVIEW_URL, { signal, cache: 'no-store' }));
             if (overview === STALE || scope.signal.aborted) return;
-            swap(overviewNodes(overview, { scope, navigate, openStatistics }));
+            const { nodes, thumbnails } = overviewNodes(overview, { scope, navigate, openStatistics });
+            thumbnailRow = thumbnails;
+            sources = overview.sources;
+            swap(nodes);
+            paintThumbnails();
         } catch (error) {
             if (scope.signal.aborted) return;
             const alert = el('p', LOAD_FAILED_TEXT);
@@ -377,13 +407,26 @@ export function mountOverview(container, { api, scope, navigate = navigateTo, no
             scope.listen(retry, 'click', () => {
                 swap(loading());
                 load();
+                loadThumbnails();
             });
             const panel = el('section', undefined, 'surface');
             panel.append(alert, retry);
             swap([panel]);
         }
     }
+    async function loadThumbnails() {
+        let status;
+        try {
+            status = await thumbnailsRead(signal => api.get(THUMBNAILS_URL, { signal, cache: 'no-store' }));
+        } catch (error) {
+            status = null;
+        }
+        if (status === STALE || scope.signal.aborted) return;
+        thumbnailStatus = status ?? null;
+        paintThumbnails();
+    }
     const first = swap(loading());
     load();
+    loadThumbnails();
     return first;
 }

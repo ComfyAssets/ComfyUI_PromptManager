@@ -250,7 +250,7 @@ function mountWorkspace() {
         if (route.id === 'system') {
             // The concept's System (app.js renderSystem): its heading description, section nav and Save row.
             description.textContent = route.description;
-            system = mountSystem(main, api, view, { section: route.section });
+            system = mountSystem(main, api, view, { section: route.section, activity });
             return;
         }
         if (route.id === 'inspect') {

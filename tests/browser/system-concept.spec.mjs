@@ -5,7 +5,7 @@ import { SIZES, THEMES, seedConcept, openConcept, openProduction, diffInventory,
 // #249 System S2 Task 6: System's shell and its Overview section (app.js renderSystem 658–706), the Statistics dialog
 // ("Usage statistics", a1600–1604) and the health report (a1439–1456) against the immutable concept, on the
 // concept-shaped real fixture. Each concept measurement is mapped only by the recorded deviations (D92–D96, D121,
-// D122, D-NEW-S2-5), each commented where it applies; after that the difference must be empty, and a mutation of a
+// D122, D123), each commented where it applies; after that the difference must be empty, and a mutation of a
 // row, a label or a token must be noticed.
 test.use({ locale: 'en-US', timezoneId: 'UTC' });
 
@@ -32,6 +32,13 @@ function measureSystem(mainSelector) {
     const box = (node, origin = main) => {
         const rect = node.getBoundingClientRect(), base = origin.getBoundingClientRect();
         return { left: Math.round(rect.left - base.left), width: Math.round(rect.width) };
+    };
+    // A surface's top: from `.two-col` beside its neighbour, else from the bottom of the surface above it. This pins the
+    // concept's `.surface + .surface` 18px offset, which concept.css applies inside `.two-col` too (copied, not ruled).
+    const top = node => {
+        const rect = node.getBoundingClientRect(), previous = node.previousElementSibling?.getBoundingClientRect();
+        if (previous && rect.top >= previous.bottom) return Math.round(rect.top - previous.bottom);
+        return Math.round(rect.top - node.parentElement.getBoundingClientRect().top);
     };
     const text = node => node?.textContent.trim() ?? null;
     const button = node => ({ text: text(node), className: node.className,
@@ -69,7 +76,7 @@ function measureSystem(mainSelector) {
         },
         columns: {
             ...css(columns, 'display', 'gridTemplateColumns', 'columnGap', 'rowGap'), box: box(columns),
-            surfaces: [...columns.children].map(surface => ({ tree: [...surface.children].map(name), box: box(surface),
+            surfaces: [...columns.children].map(surface => ({ tree: [...surface.children].map(name), box: box(surface), top: top(surface),
                 heading: text(surface.querySelector(':scope > h2')),
                 rows: [...surface.querySelectorAll(':scope > .operation')].map(row => ({ tree: [...row.children].map(name),
                     title: text(row.querySelector('h3')), description: text(row.querySelector('p')),
@@ -200,6 +207,8 @@ async function conceptOverview(page, theme) {
 async function productionOverview(page, theme) {
     await openProduction(page, 'system/overview', theme);
     await expect(page.locator('#workspace-main .summary-metrics')).toBeVisible();
+    // The thumbnail row is its own read (I2): compare once it answered.
+    await expect(page.locator('#workspace-main .operation h3').filter({ hasText: 'thumbnails' })).toHaveText('No missing thumbnails');
     await page.mouse.move(0, 0);
     return page.evaluate(measureSystem, '#workspace-main');
 }
@@ -209,7 +218,7 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
         await page.setViewportSize({ width, height });
         const overview = await serverJson(request, '/prompt_manager/system/overview');
         // The fixture's thumbnails all exist, so the concept's "No missing thumbnails" is also the real title.
-        expect(overview.thumbnails.missing).toBe(0);
+        expect((await serverJson(request, '/prompt_manager/images/thumbnails/status')).pending).toBe(0);
         const concept = await conceptOverview(page, theme);
         expect(concept.heading.actions).toEqual(['span.chip']);
         // Paired captures are artifacts only; there are no PNG baselines.
@@ -275,20 +284,49 @@ function mapStatisticsConcept(reference, statistics) {
     };
 }
 
-/** D95: the concept's health report titled "Health report", every real check, the checked line, the same actions. */
-function mapHealthConcept(reference, report) {
-    const chips = { passed: 'Passed', unavailable: 'Not available yet' };
-    const rows = report.checks.flatMap(check => check.id === 'missing_files' && check.sources.length > 1
-        ? check.sources.map(source => [`${check.label} · ${source.name}`, source.count === 0 ? 'Passed' : 'Not available'])
-        : [[check.label, chips[check.status]]]);
+// The fixture's image sources and each check's real chip on it: nothing is damaged, Needs review does not exist yet (Q6).
+const FIXTURE_SOURCES = ['output', 'input'];
+const FIXTURE_CHIPS = Object.freeze({ 'Integrity check': 'Passed', 'Foreign keys & pair references': 'Passed',
+    'Canonical hashes': 'Passed', 'Pair uniqueness': 'Passed', 'Missing files': 'Passed', 'Ambiguous metadata': 'Not available yet',
+    Consistency: 'Passed' });
+const chipOf = title => {
+    if (!(title in FIXTURE_CHIPS)) throw new Error(`No expected chip for ${title}`);
+    return FIXTURE_CHIPS[title];
+};
+
+/**
+ * D95: the concept's health report from its own five rows, labels verbatim, titled "Health report". Only the D95 rows
+ * are inserted where they are recorded (Pair uniqueness after Canonical hashes, Consistency last); Missing files has a
+ * row per image source when there are several; each chip is the fixture's expected result.
+ */
+function mapHealthConcept(reference, sources = FIXTURE_SOURCES) {
+    const [first] = reference.operations.rows;
+    const added = title => ({ ...first, title, chip: chipOf(title) });
+    const rows = reference.operations.rows.flatMap(row => {
+        const mapped = row.title === 'Missing files' && sources.length > 1
+            ? sources.map(source => ({ ...row, title: `Missing files · ${source}`, chip: chipOf(row.title) }))
+            : [{ ...row, chip: chipOf(row.title) }];
+        return row.title === 'Canonical hashes' ? [...mapped, added('Pair uniqueness')] : mapped;
+    });
     return {
         ...reference,
         title: 'Health report',
         // No sample note (prototype copy); D95 adds the checked line after the list.
         body: ['div.operation-list', 'p.small', 'div.dialog-actions'],
-        operations: { ...reference.operations, rows: rows.map(([title, chip]) => ({ tree: ['h3', 'span.chip'], title, chip })) },
+        operations: { ...reference.operations, rows: [...rows, added('Consistency')] },
     };
 }
+
+// Unmapped, the health report differs exactly where D95 is recorded: the title, the body sequence (no sample note, the
+// checked line), the rows after Canonical hashes (Pair uniqueness inserted, Missing files per source) and the chips of
+// the concept's sample findings.
+const UNMAPPED_HEALTH_PATHS = [
+    'body.0', 'body.1',
+    ...[3, 4].flatMap(row => [`operations.rows.${row}.chip`, `operations.rows.${row}.title`]),
+    // The concept's five rows end at row 4; rows 5–7 exist only with the D95 rows and the second source.
+    ...[5, 6, 7].flatMap(row => ['chip', 'title', 'tree.0', 'tree.1', 'tree.length'].map(key => `operations.rows.${row}.${key}`)),
+    'operations.rows.length', 'title',
+];
 
 async function conceptDialogs(page, theme, testInfo) {
     await openConcept(page, 'system', theme);
@@ -333,23 +371,30 @@ for (const theme of THEMES) test(`statistics and health dialogs match the concep
     const production = await productionDialogs(page, theme, testInfo);
     const statistics = await serverJson(request, '/prompt_manager/system/statistics');
     const { report } = await serverJson(request, '/prompt_manager/system/health');
+    // The fixture the expected chips describe: its two sources, and the concept's checks plus the D95 ones.
+    const missing = report.checks.find(check => check.id === 'missing_files');
+    expect(missing.sources.map(source => source.name)).toEqual(FIXTURE_SOURCES);
     expect(diffInventory(mapStatisticsConcept(concept.statistics, statistics), production.statistics)).toEqual([]);
-    expect(diffInventory(mapHealthConcept(concept.health, report), production.health)).toEqual([]);
-    // D-NEW-S2-5: Maintenance's notice is the concept's own, delivered ahead of the rest of the section.
+    expect(diffInventory(mapHealthConcept(concept.health), production.health)).toEqual([]);
+    // D123: Maintenance's notice is the concept's own, delivered ahead of the rest of the section.
     expect(diffInventory(concept.notice, production.notice)).toEqual([]);
 
     // Unmapped, the dialogs differ only where D95 and D96 are recorded.
-    expect(diffInventory(concept.health, production.health).map(item => item.path.split('.')[0])
-        .filter((part, index, all) => all.indexOf(part) === index).sort()).toEqual(['body', 'operations', 'title']);
+    expect(diffInventory(concept.health, production.health).map(item => item.path).sort()).toEqual(UNMAPPED_HEALTH_PATHS);
     expect(diffInventory(concept.statistics, production.statistics).map(item => item.path.split('.')[0])
         .filter((part, index, all) => all.indexOf(part) === index).sort()).toEqual(['body', 'tables']);
 
     // Mutation check: a changed chip token in the health report is noticed, then undone to an exact match again.
     const undo = await mutate(page, { css: '#modal .operation .chip { background: rgb(255, 0, 0); }' });
-    expect(diffInventory(mapHealthConcept(concept.health, report), await page.evaluate(measureDialog)).map(item => item.path))
+    expect(diffInventory(mapHealthConcept(concept.health), await page.evaluate(measureDialog)).map(item => item.path))
         .toEqual(['operations.chip.backgroundColor']);
     await undo();
-    expect(diffInventory(mapHealthConcept(concept.health, report), await page.evaluate(measureDialog))).toEqual([]);
+    expect(diffInventory(mapHealthConcept(concept.health), await page.evaluate(measureDialog))).toEqual([]);
+    // A renamed check (database/health.py's label) is noticed against the concept's own label.
+    await page.evaluate(() => { document.querySelector('#modal .operation h3').textContent = 'Integrity checks'; });
+    expect(diffInventory(mapHealthConcept(concept.health), await page.evaluate(measureDialog)).map(item => item.path))
+        .toEqual(['operations.rows.0.title']);
+    await page.evaluate(() => { document.querySelector('#modal .operation h3').textContent = 'Integrity check'; });
     // And a removed "Library totals" table and a changed caption in the statistics dialog.
     await page.keyboard.press('Escape');
     await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Overview', exact: true }).click();

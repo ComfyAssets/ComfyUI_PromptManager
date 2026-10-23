@@ -123,12 +123,49 @@ test('stale revision reports conflict and keeps the draft', async () => {
     assert.equal(drafts.dirty('host'), true);
     assert.equal(drafts.get('host', 'result_timeout'), 45);
     assert.equal(drafts.statusText(), 'Settings changed elsewhere. Reload this section to see them.');
+    // The conflict read the host values again (their new revision), keeping the draft.
+    assert.deepEqual(domains.calls.slice(-2).map(([name]) => name), ['writeHost', 'readHost']);
     // Reloading the section reads the new revision and keeps the draft (Q10).
     domains.outcome.host = null;
     await drafts.load('host');
     assert.equal(drafts.get('host', 'result_timeout'), 45);
     await drafts.save();
     assert.deepEqual(domains.calls.at(-1)[2], { expected_revision: 'sha256:one' });
+});
+
+test('host save without a read revision never posts', async () => {
+    const { createSystemDrafts } = await source;
+    // Never read: an edit made before the host values (and their revision) arrived must not merge blindly.
+    const unread = adapters({ host: { result_timeout: 30 } });
+    const drafts = createSystemDrafts(unread);
+    drafts.set('host', 'result_timeout', 45);
+    assert.deepEqual(await drafts.save(), { browser: 'clean', host: 'failed', runtime: 'clean' });
+    assert.deepEqual(unread.calls, []);
+    assert.equal(drafts.dirty('host'), true);
+    assert.deepEqual([...drafts.failed('host')], ['result_timeout']);
+    // A read of an unreadable configuration has no revision either.
+    const unreadable = adapters({ host: { result_timeout: 30 }, revision: null });
+    const blind = createSystemDrafts(unreadable);
+    await blind.load('host');
+    blind.set('host', 'result_timeout', 45);
+    assert.equal((await blind.save()).host, 'failed');
+    assert.equal(unreadable.calls.filter(([name]) => name === 'writeHost').length, 0);
+    // Once read, the same draft saves with the revision.
+    await drafts.load('host');
+    assert.equal((await drafts.save()).host, 'saved');
+    assert.deepEqual(unread.calls.at(-1), ['writeHost', { result_timeout: 45 }, { expected_revision: 'sha256:one' }]);
+});
+
+test('reloadHost reads the host values and says whether it could', async () => {
+    const { createSystemDrafts } = await source;
+    const domains = adapters({ host: { result_timeout: 30 } });
+    const drafts = createSystemDrafts(domains);
+    assert.equal(await drafts.reloadHost(), true);
+    assert.equal(drafts.get('host', 'result_timeout'), 30);
+    const broken = createSystemDrafts({ ...domains, readHost: async () => { throw new Error('offline'); } });
+    assert.equal(await broken.reloadHost(), false);
+    broken.set('host', 'result_timeout', 45);
+    assert.equal((await broken.save()).host, 'failed');
 });
 
 test('no domain called when clean', async () => {
