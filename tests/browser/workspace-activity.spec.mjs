@@ -724,6 +724,42 @@ test('a held legacy job shows no Cancel in the list or its view', async ({ page,
     await expect(heading(page).locator('.heading-actions > button')).toHaveText(['Download report']);
 });
 
+// Since #289 an item dropped its Cancel job only when it was already in the page, so the first render of jobs the
+// store already knew (Activity opened from another page) kept a Cancel job on a job that had ended, and moved a
+// running job's progress after its actions. The read Activity starts on opening is held, so that first render is
+// what the page shows (the read's own render would otherwise repair it a moment later).
+test('jobs that ended before Activity opened show no Cancel job, a running one keeps its progress first', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const finished = await startJob(request, { title: 'Finished scan' });
+    await finish(request, finished.id);
+    const cancelled = await startJob(request, { title: 'Cancelled scan' });
+    await finish(request, cancelled.id, 'cancelled');
+    await startJob(request, { title: 'Running scan' });
+    // The page's first list read has all three jobs once the running one shows in the pill.
+    await page.goto(`${workspace}#/images`);
+    await expect(pill(page)).toBeVisible();
+    let hold;
+    const held = new Promise(resolve => { hold = resolve; });
+    // Only the first read is held; any later one goes through.
+    await page.route(url => url.pathname === '/prompt_manager/jobs', route => {
+        if (!hold) return route.continue();
+        hold(route);
+        hold = null;
+    });
+    await activityButton(page).click();
+    const route = await held;
+    await expect(items(page)).toHaveCount(3);
+    const item = title => items(page).filter({ has: page.getByRole('link', { name: new RegExp(`${title}$`) }) });
+    for (const ended of ['Finished scan', 'Cancelled scan']) {
+        await expect(item(ended).locator('progress, .row-actions')).toHaveCount(0);
+        await expect(item(ended).getByRole('button', { name: 'Cancel job', exact: true })).toHaveCount(0);
+    }
+    await expect(item('Running scan').getByRole('button', { name: 'Cancel job', exact: true })).toHaveCount(1);
+    expect(await item('Running scan').evaluate(node => [...node.children].map(child => child.localName + (child.className ? `.${child.className}` : ''))))
+        .toEqual(['div.panel-heading', 'p', 'progress', 'div.row-actions']);
+    await route.continue();
+});
+
 test('busy start names the running job', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     // The page's timers are Playwright's, so the toast's lifetime below is run out rather than waited for.
