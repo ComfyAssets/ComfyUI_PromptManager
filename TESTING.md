@@ -121,6 +121,13 @@ npm run --prefix tools/vendor test:comfyui
 CI performs this setup automatically. `PM_COMFY_URL` can select another
 `http://127.0.0.1:PORT/` address (default port 8189). This is an owned managed
 server: a running host is never reused. Do not point it at your live checkout.
+One port serves one run. The launcher refuses a port that is already in use and
+reports ready only when `/system_stats` names its own base directory, so two runs
+started together on 8189 fail at startup ("already in use" or "answered by a
+ComfyUI host this run did not start") instead of one run testing the other's
+host and losing it mid-test (`ECONNREFUSED`, `ERR_CONNECTION_REFUSED`, Network
+Error). Every test checks the answering host again. Agents sharing a machine
+give each run its own `PM_COMFY_URL` port.
 The launcher verifies the upstream SHA and clean tracked files, snapshots only
 tracked PromptManager files, and creates temporary user/input/output/database/
 configuration/log directories. Personal untracked files are excluded. It runs
