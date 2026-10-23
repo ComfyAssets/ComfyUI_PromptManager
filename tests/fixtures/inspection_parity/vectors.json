@@ -594,12 +594,12 @@
     "anchor": null,
     "expect": {
       "metadata_status": "available",
-      "state": "ambiguous",
-      "reason": "Multiple sampler branches",
+      "state": "resolved",
+      "reason": "",
       "reason_code": null,
       "selection": null,
-      "positive": null,
-      "negative": null,
+      "positive": "a red fox in snow, detailed fur",
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {

@@ -51,3 +51,17 @@ test('CI retains stock, execution and pack suites in order with uploaded executi
     assert.deepEqual(commands, ['test:comfyui', 'test:executions', 'test:compat']);
     assert.match(workflow, /path: tools\/vendor\/test-results\//);
 });
+
+test('real-host config waits for its own launcher, never for whichever server holds the port', async t => {
+    const previous = process.env.PM_COMFY_ROOT;
+    process.env.PM_COMFY_ROOT = '/unused-pinned-checkout';
+    t.after(() => { if (previous === undefined) delete process.env.PM_COMFY_ROOT; else process.env.PM_COMFY_ROOT = previous; });
+    const { default: config } = await import('../../tools/vendor/comfyui.config.mjs');
+    const [server] = config.webServer;
+    assert.equal(server.url, undefined);
+    assert.equal(server.port, undefined);
+    assert.equal(server.reuseExistingServer, false);
+    const ready = server.wait.stdout.exec('Starting server\nPM_COMFY_HOST_READY base-directory=/tmp/comfyassets-host-a b\r\nlater');
+    assert.equal(ready.groups.pm_comfy_host_base, '/tmp/comfyassets-host-a b');
+    assert.equal(server.wait.stdout.exec('To see the GUI go to: http://127.0.0.1:8189'), null);
+});

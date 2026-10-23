@@ -124,8 +124,8 @@
     }
   },
   "composites": {
-    "ConditioningCombine": { "strategy": "combine", "inputs": ["conditioning_1", "conditioning_2"] },
-    "ConditioningConcat": { "strategy": "combine", "inputs": ["conditioning_to", "conditioning_from"] },
+    "ConditioningCombine": { "strategy": "combine", "inputs": ["conditioning_1", "conditioning_2"], "additive": true },
+    "ConditioningConcat": { "strategy": "combine", "inputs": ["conditioning_to", "conditioning_from"], "additive": true },
     "ConditioningAverage": { "strategy": "combine", "inputs": ["conditioning_to", "conditioning_from"] }
   },
   "encoders": [
@@ -175,7 +175,7 @@
       }
     }
   ],
-  "runtime": ["PromptSearchList"],
+  "runtime": ["PromptSearchList", "TriggerWord Toggle (LoraManager)"],
   "savers": {
     "SaveImage": {
       "strategy": "comfy-counter",
@@ -215,6 +215,20 @@
     }
   },
   "non_file_outputs": ["PreviewImage", "PreviewAny", "SaveImageWebsocket", "Image Comparer (rgthree)"],
+  "lineage": [
+    { "class": "VAEDecode", "slot": 0, "strategy": "continue", "input": "samples" },
+    { "class": "VAEDecodeTiled", "slot": 0, "strategy": "continue", "input": "samples" },
+    { "class": "VAEEncode", "slot": 0, "strategy": "continue", "input": "pixels" },
+    { "class": "VAEEncodeTiled", "slot": 0, "strategy": "continue", "input": "pixels" },
+    { "class": "ImageUpscaleWithModel", "slot": 0, "strategy": "continue", "input": "image" },
+    { "class": "ImageScale", "slot": 0, "strategy": "continue", "input": "image" },
+    { "class": "ImageScaleBy", "slot": 0, "strategy": "continue", "input": "image" },
+    { "class": "ImageScaleToTotalPixels", "slot": 0, "strategy": "continue", "input": "image" },
+    { "class": "LatentUpscale", "slot": 0, "strategy": "continue", "input": "samples" },
+    { "class": "LatentUpscaleBy", "slot": 0, "strategy": "continue", "input": "samples" },
+    { "class": "Image Filter", "slot": 0, "strategy": "continue", "input": "images" },
+    { "class": "Image Filter", "slot": 1, "strategy": "continue", "input": "latents" }
+  ],
   "stage_inputs": {
     "shaped": [
       "latent_image",

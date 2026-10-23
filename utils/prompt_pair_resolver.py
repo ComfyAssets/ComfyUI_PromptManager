@@ -197,6 +197,18 @@ EMPTY_POSITIVE_REASON = "Positive prompt is empty"
 # Several sampler branches, every one resolved to the same pair (#249).
 IDENTICAL_BRANCHES_REASON = "Every sampler branch uses the same prompt pair"
 MULTISTAGE_UNATTRIBUTED_REASON = "Multistage sampler ancestry is ambiguous"
+# A later stage's positive combines the earlier stages' shared prompt with more
+# conditioning (a style trigger): that shared pair is the run's prompt (floor).
+ADDED_CONDITIONING_REASON = "A later stage adds conditioning to the base prompt"
+# Maintainer option A (2026-10-23): a PromptManager prepend or append fed
+# directly by a run-time node (LoRA trigger words) is left out, never guessed;
+# the text is the node's own, labelled by this source and reason (D125). A side
+# is labelled when any node on its traced path left a part out.
+RUNTIME_PARTS_SOURCE = "runtime-parts-omitted"
+RUNTIME_PARTS_REASON = "Text added at run time, such as trigger words, is not included"
+# The added-conditioning floor's positive (D126), and both labels at once.
+ADDED_CONDITIONING_SOURCE = "added-conditioning"
+RUNTIME_AND_ADDED_SOURCE = "runtime-parts-omitted-and-added-conditioning"
 _INCOMPATIBLE_SLOT = "Output slot has an incompatible type"
 # Before 3.2.3 a save patch overwrote every PromptManager node's saved ``text``
 # with the last-run node's prompt (comfy-metadata.js ``createContext``).
@@ -316,13 +328,49 @@ def _role_text(side: Any) -> Optional[str]:
     return side["text"] if isinstance(side, dict) else None
 
 
+def _left_out(side: Any) -> tuple:
+    """What a side's text leaves out: the PromptManager nodes that omitted a
+    run-time part, and the composite whose added conditioning is not included.
+
+    Empty for a complete text, so a partial prompt never equals a complete one.
+    """
+    provenance = side.get("provenance") if isinstance(side, dict) else None
+    if not isinstance(provenance, dict):
+        return ()
+    return (
+        tuple(provenance.get("omitted_parts", ())),
+        provenance.get("added_by"),
+    )
+
+
 def _outcome_key(result: Dict[str, Any]) -> tuple:
-    """What a reader sees of a result: state and the two role texts."""
+    """What a reader sees of a result: state, the two role texts, and what
+    each text leaves out."""
     return (
         result["state"],
         _role_text(result["positive"]),
         _role_text(result["negative"]),
+        _left_out(result["positive"]),
+        _left_out(result["negative"]),
     )
+
+
+def _reroute_value(inputs: dict) -> Any:
+    """A Reroute's one input (``value``, ``input`` or ``in``), else ``None``."""
+    keys = [key for key in ("value", "input", "in") if key in inputs]
+    return inputs[keys[0]] if len(keys) == 1 else None
+
+
+def _parts_reason(*sides: dict) -> str:
+    """The run-time parts reason when a side left out a PromptManager part."""
+    if any(side["provenance"]["text_source"] == RUNTIME_PARTS_SOURCE for side in sides):
+        return RUNTIME_PARTS_REASON
+    return ""
+
+
+def _combined_positive(result: Dict[str, Any]) -> bool:
+    """Whether a stage failed only because its positive combines texts."""
+    return result["reason_code"] == "composite" and result["positive"] is None
 
 
 def _legacy_result(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -380,6 +428,8 @@ class _GraphResolver:
         self.active: set = set()
         self.metadata = metadata or {}
         self.text_sources: dict = {}
+        # PromptManager outputs that left out a run-time part (option A).
+        self.omitting: set = set()
         # Forced runtime selector choices (inspection); a result traced through
         # one is "tainted" and never memoized, since it depends on the choice.
         self.choices: dict = {}
@@ -529,11 +579,12 @@ class _GraphResolver:
                     if adapter.compose or adapter.storage_input:
                         storage_text = text
                     if adapter.compose:
-                        before, before_path, _ = self.text(
-                            inputs.get("prepend_text", ""), "string", depth + 1
+                        omitted: list = []
+                        before, before_path = self.part(
+                            inputs.get("prepend_text", ""), depth, omitted
                         )
-                        after, after_path, _ = self.text(
-                            inputs.get("append_text", ""), "string", depth + 1
+                        after, after_path = self.part(
+                            inputs.get("append_text", ""), depth, omitted
                         )
                         self.scan(
                             len(before)
@@ -552,6 +603,8 @@ class _GraphResolver:
                             )
                         )
                         path = before_path + path + after_path
+                        if omitted:
+                            self.omitting.add((node_id, slot))
             elif (
                 name in ("StringConcatenate", "Text Concatenate")
                 and slot == 0
@@ -620,6 +673,30 @@ class _GraphResolver:
             self.deepest = max(outer_deepest, self.deepest)
             self.tainted = outer_tainted or self.tainted
             self.active.discard(key)
+
+    def part(self, value: Any, depth: int, omitted: list) -> Tuple[str, list]:
+        """A PromptManager prepend or append: traced, or left out when run time.
+
+        Only with the semantics table (inspection), and only when the input is
+        a link to a node the table lists as ``runtime`` (such as LoraManager's
+        TriggerWord Toggle), which raises ``runtime-value`` at itself: that part
+        is not in the file, so it is left out and recorded in ``omitted``.
+        Anything else, including a run-time source further upstream or another
+        ``runtime-value`` node (a JoinStringMulti list), keeps its failure.
+        """
+        try:
+            text, path, _ = self.text(value, "string", depth + 1)
+        except _Unresolved as error:
+            if (
+                self.semantics is None
+                or error.code != "runtime-value"
+                or not _link(value)
+                or self.node(str(value[0]))[0] not in self.semantics.runtime
+            ):
+                raise
+            omitted.append(str(value[0]))
+            return "", []
+        return text, path
 
     def historical(
         self, adapter: OutputAdapter, inputs: dict, depth: int
@@ -991,6 +1068,15 @@ class _GraphResolver:
         if guider_id is not None:
             # The conditioning path starts below the guider the sampler reads.
             provenance["guider_id"] = guider_id
+        omitted: list = []
+        for step in path:
+            if (step["node_id"], step["output_slot"]) in self.omitting:
+                if step["node_id"] not in omitted:
+                    omitted.append(step["node_id"])
+        if omitted:
+            # Through encoders, concatenations and chained PromptManagers (D125).
+            provenance["text_source"] = RUNTIME_PARTS_SOURCE
+            provenance["omitted_parts"] = omitted
         return {"text": text, "storage_text": storage_text, "provenance": provenance}
 
     def guider(self, value: Any) -> Tuple[str, dict, Mapping, str, int]:
@@ -1067,19 +1153,18 @@ class _GraphResolver:
                 reason_code="depth-limit",
             )
         own = self.sides(sampler_id)
-        if own["state"] == "unresolved":
-            return own
-        name, inputs = self.node(sampler_id)
-        entry = self.semantics.samplers.get(name)
-        if entry is None or entry["strategy"] != _DETAILER:
+        # An unresolved stage is final, unless its positive combines texts: it
+        # may then add conditioning to its earlier stages' prompt (the floor).
+        combined = own["state"] == "unresolved" and _combined_positive(own)
+        if own["state"] == "unresolved" and not combined:
             return own
         try:
-            upstream = self.upstream_stages(
-                sampler_id, inputs.get(entry["image_stage"])
-            )
+            upstream = self.earlier_stages(sampler_id)
             if any(node_id in later for node_id in upstream):
                 raise _Unresolved("Cyclic sampler stage ancestry", "malformed")
         except _Unresolved as error:
+            if combined:
+                return own
             return _result(
                 "unresolved",
                 sampler_id=sampler_id,
@@ -1092,6 +1177,10 @@ class _GraphResolver:
         later = later | {sampler_id}
         stages = [self.stage(node_id, later) for node_id in upstream]
         blocked = next((item for item in stages if item["state"] == "unresolved"), None)
+        if combined:
+            if blocked is not None:
+                return own
+            return self.added_conditioning(sampler_id, stages) or own
         if blocked is not None:
             # A stage that cannot be read cannot be compared: never pick one.
             return _result(
@@ -1113,6 +1202,128 @@ class _GraphResolver:
             candidates=flat,
             reason_code="multistage-differs",
         )
+
+    def earlier_stages(self, sampler_id: str) -> list:
+        """The stages a sampler continues: a detailer's image ancestry, or the
+        one sampler its latent descends from through listed lineage nodes.
+
+        The latent walk already ran in ``sides`` (its outcome is cached); a
+        sampler without a latent input, or whose walk found no earlier sampler,
+        has none.
+        """
+        name, inputs = self.node(sampler_id)
+        entry = self.semantics.samplers[name]
+        if entry["strategy"] == _DETAILER:
+            return self.upstream_stages(sampler_id, inputs.get(entry["image_stage"]))
+        walked = self.latent_walks.get(sampler_id)
+        if walked is None or walked[2] is None:
+            return []
+        return [walked[2]]
+
+    def lineage_predecessor(self, value: Any) -> Optional[str]:
+        """The sampler whose output a latent input continues, or ``None``.
+
+        Follows only the table's ``lineage`` outputs (decode, image filter,
+        upscale, scale, encode) and Reroutes, from the input back to a listed
+        sampler's output slot 0. Any other node ends the lineage: its output is
+        not known to continue one image or latent. At most ``max_depth`` hops;
+        each node is read through ``node`` (one scan charge per node).
+        """
+        seen: set = set()
+        while _link(value) and len(seen) < self.max_depth:
+            node_id, slot = str(value[0]), value[1]
+            if node_id in seen:
+                return None
+            seen.add(node_id)
+            name, inputs = self.node(node_id)
+            if name in self.stage_classes:
+                return node_id if slot == 0 else None
+            if name == "Reroute" and slot == 0:
+                value = _reroute_value(inputs)
+                continue
+            entry = self.semantics.lineage.get((name, slot))
+            if entry is None:
+                return None
+            value = inputs.get(entry["input"])
+        return None
+
+    def added_conditioning(self, sampler_id: str, stages: list) -> Optional[dict]:
+        """The earlier stages' shared pair when this stage only adds to it.
+
+        This stage's positive reaches (through Reroutes and conditioning
+        pass-throughs) an ``additive`` composite, one of whose parts is exactly
+        the earlier stages' positive text, and its negative is exactly theirs:
+        every stage is conditioned on that prompt, the last one with more. Any
+        other shape, or a part that cannot be traced, is ``None``.
+        """
+        flat: list = []
+        for item in stages:
+            flat.extend(item["candidates"] if item["state"] == "ambiguous" else [item])
+        base = flat[0]
+        if base["state"] != "resolved" or len({_outcome_key(i) for i in flat}) != 1:
+            return None
+        name, inputs = self.node(sampler_id)
+        entry = self.semantics.samplers[name]
+        if entry["strategy"] == "custom-advanced":
+            return None
+        conditioning = entry["conditioning"]
+        try:
+            found = self.composite_of(inputs.get(conditioning["positive"]))
+            if found is None:
+                return None
+            parts, depth, composite = found
+            texts = [self.text(part, "conditioning", depth)[0] for part in parts]
+            if base["positive"]["text"] not in texts:
+                return None
+            if conditioning["negative"] not in inputs:
+                return None
+            negative = self.side(inputs[conditioning["negative"]], sampler_id)
+        except _Unresolved:
+            return None
+        if negative["text"] != base["negative"]["text"]:
+            return None
+        # D126: the positive does not include what the later stage added.
+        provenance = dict(base["positive"]["provenance"])
+        provenance["text_source"] = (
+            RUNTIME_AND_ADDED_SOURCE
+            if provenance["text_source"] == RUNTIME_PARTS_SOURCE
+            else ADDED_CONDITIONING_SOURCE
+        )
+        provenance["added_by"] = composite
+        positive = {**base["positive"], "provenance": provenance}
+        return _result(
+            "resolved",
+            positive,
+            base["negative"],
+            base["sampler_id"],
+            ADDED_CONDITIONING_REASON,
+        )
+
+    def composite_of(self, value: Any) -> Optional[Tuple[list, int]]:
+        """An ``additive`` composite a conditioning input reaches, or ``None``.
+
+        Reroutes and conditioning pass-throughs (FluxGuidance and the like) are
+        followed; returns the composite's part values, the depth reached and
+        its node ID. ``text`` follows a composite only at output slot 0, so a
+        stage whose positive failed as ``composite`` reached it there.
+        """
+        depth = 0
+        while _link(value) and depth < self.max_depth:
+            node_id, slot = str(value[0]), value[1]
+            name, inputs = self.node(node_id)
+            depth += 1
+            if name == "Reroute" and slot == 0:
+                value = _reroute_value(inputs)
+                continue
+            forward = self.semantics.conditioning.get((name, slot))
+            if forward is not None and forward["strategy"] == "passthrough":
+                value = inputs.get(forward["input"])
+                continue
+            composite = self.semantics.composites.get(name)
+            if composite is None or composite.get("additive") is not True:
+                return None
+            return [inputs.get(part) for part in composite["inputs"]], depth, node_id
+        return None
 
     @staticmethod
     def walk_from(value: list) -> Tuple[deque, set]:
@@ -1189,7 +1400,10 @@ class _GraphResolver:
             if self.semantics.samplers[self.graph[node_id]["class_type"]]["strategy"]
             == _DETAILER
         ]
-        if not detailers:
+        # A sampler whose latent continues another's (hires-fix, refiner) is
+        # judged with it in ``stage``, like a detailer's upstream samplers.
+        continued = self.continued_stages(sampler_ids) if len(sampler_ids) > 1 else []
+        if not detailers and not continued:
             return sampler_ids
         try:
             consumers = self.consumers()
@@ -1206,8 +1420,35 @@ class _GraphResolver:
                         absorbed.add(node_id)
             except _Unresolved:
                 continue
+        for node_id in continued:
+            self.budget.reset(self.per_candidate_visits)
+            try:
+                if not self.reaches_output(node_id, consumers):
+                    absorbed.add(node_id)
+            except _Unresolved:
+                continue
         kept = [node_id for node_id in sampler_ids if node_id not in absorbed]
         return kept or sampler_ids
+
+    def continued_stages(self, sampler_ids: list) -> list:
+        """Lineage predecessors of the non-detailer candidates, in order, once.
+
+        A predecessor equal to its own sampler (a cycle) is left out; a walk
+        that cannot read a node names none.
+        """
+        found: list = []
+        for node_id in sampler_ids:
+            entry = self.semantics.samplers[self.graph[node_id]["class_type"]]
+            if entry["strategy"] == _DETAILER or entry.get("latent") is None:
+                continue
+            try:
+                _, inputs = self.node(node_id)
+                earlier = self.lineage_predecessor(inputs.get(entry["latent"]))
+            except _Unresolved:
+                continue
+            if earlier is not None and earlier != node_id and earlier not in found:
+                found.append(earlier)
+        return found
 
     def file_stages(self, sampler_ids: list) -> list:
         """Stages not proven preview-only; all of them when every one is.
@@ -1387,7 +1628,13 @@ class _GraphResolver:
                     reason=absent_reason,
                 )
             negative = self.side(inputs[negative_name], sampler_id, guider_id, depth)
-            return _result("resolved", positive, negative, sampler_id)
+            return _result(
+                "resolved",
+                positive,
+                negative,
+                sampler_id,
+                _parts_reason(positive, negative),
+            )
         except _Unresolved as error:
             return _result(
                 "unresolved",
@@ -1438,7 +1685,7 @@ class _GraphResolver:
             return
         raise self.unsupported("Unsupported latent ancestry", node_id)
 
-    def latent_checked(self, sampler_id: str, value: Any) -> None:
+    def latent_checked(self, sampler_id: str, value: Any) -> Optional[str]:
         """``latent_stages`` once per sampler per resolution.
 
         A candidate reusing another candidate's walk is charged its visit cost
@@ -1447,26 +1694,29 @@ class _GraphResolver:
         out of work is never reused, since it depends on the remaining budget.
         """
         if sampler_id in self.latent_walks:
-            error, cost = self.latent_walks[sampler_id]
+            error, cost, earlier = self.latent_walks[sampler_id]
             if sampler_id not in self.latent_charged:
                 self.budget.charge(cost)
                 self.latent_charged.add(sampler_id)
         else:
             before = self.budget.allowance
+            earlier = None
             try:
-                self.latent_stages(sampler_id, value)
+                earlier = self.latent_stages(sampler_id, value)
                 error = None
             except _Unresolved as raised:
                 if raised.code == "work-limit":
                     raise
                 error = raised
-            self.latent_walks[sampler_id] = (error, before - self.budget.allowance)
+            cost = before - self.budget.allowance
+            self.latent_walks[sampler_id] = (error, cost, earlier)
             self.latent_charged.add(sampler_id)
         if error is not None:
             node = dict(error.node) if error.node is not None else None
             raise _Unresolved(str(error), error.code, node)
+        return earlier
 
-    def latent_stages(self, origin: str, value: Any) -> None:
+    def latent_stages(self, origin: str, value: Any) -> Optional[str]:
         """Semantics table: is there an earlier sampler in the latent ancestry?
 
         Every link input of non-sampler nodes is walked breadth-first (encoders,
@@ -1475,10 +1725,14 @@ class _GraphResolver:
         (VAEEncode, EmptyLatentBatch, WanImageToVideo slot 2, ...). An unlisted
         node with sampler-shaped inputs could itself be a stage, so it is
         ``unsupported-node``. Budget or depth exhaustion is never single stage.
+        One earlier sampler that the latent continues through ``lineage``
+        nodes (``lineage_predecessor``) is returned, to be compared in
+        ``stage``; any other sampler found leaves the stages unattributed.
         """
         if not _link(value):
             raise _Unresolved("Unknown latent ancestry", "malformed")
         queue, queued = self.walk_from(value)
+        earlier, lineage, traced = None, None, False
         while queue:
             node_id, depth = queue.popleft()
             if node_id == origin:
@@ -1488,12 +1742,17 @@ class _GraphResolver:
             self.budget.spend()
             name, inputs = self.node(node_id)
             if name in self.stage_classes:
-                # ``multistage-differs`` is reserved for when stage texts are
-                # compared (PR3); until then no stage's prompt is chosen.
-                raise _Unresolved(MULTISTAGE_UNATTRIBUTED_REASON)
+                if not traced:
+                    lineage, traced = self.lineage_predecessor(value), True
+                if node_id != lineage:
+                    # Not the one continued stage: no stage's prompt is chosen.
+                    raise _Unresolved(MULTISTAGE_UNATTRIBUTED_REASON)
+                earlier = node_id
+                continue
             if self.stage_shaped(name, inputs):
                 raise self.unsupported("Unsupported latent ancestry", node_id)
             self.enqueue(queue, queued, inputs, depth + 1)
+        return earlier
 
     def anchor(self, node_id: str) -> str:
         seen = set()
