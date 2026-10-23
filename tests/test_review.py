@@ -859,7 +859,9 @@ class TestMonitorRecording(ReviewTestCase):
         While a ``records`` or ``guarded`` job runs, the monitor's recording
         records nothing and answers ``deferred`` (its fallback link stands and
         a later scan reads the ambiguous file again); a ``read`` job does not
-        refuse it, and it records once the blocking job has ended.
+        refuse it, and it records once the blocking job has ended. Thumbnail
+        work (the job and the gallery's holds) is ``guarded`` but writes only
+        previews, never records, so it does not defer the recording (S5 M7).
         """
         self._require_module()
         from py.api.jobs import RESTORE_JOB_KIND, THUMBNAILS_JOB_KIND
@@ -870,7 +872,7 @@ class TestMonitorRecording(ReviewTestCase):
 
         for kind, admission in (
             (RESTORE_JOB_KIND, "records"),
-            (THUMBNAILS_JOB_KIND, "guarded"),
+            ("backup", "guarded"),
         ):
             with self.subTest(admission=admission):
                 async with self.api._jobs.hold(
@@ -888,7 +890,43 @@ class TestMonitorRecording(ReviewTestCase):
                 )
 
         async with self.api._jobs.hold("probe-read", "Read probe", admission="read"):
+            async with self.api._jobs.hold(
+                THUMBNAILS_JOB_KIND,
+                "Thumbnail clear (gallery page)",
+                admission="guarded",
+            ):
+                outcome = await asyncio.to_thread(
+                    self.api.record_review_file, str(path)
+                )
+        self.assertEqual(outcome, "recorded")
+        self.assertEqual(len(self._items()), 1)
+
+    async def test_a_running_thumbnail_job_does_not_defer_monitor_recording(self):
+        """S5 M7: a long rebuild never holds Needs review back (no records)."""
+        self._require_module()
+        from py.api.jobs import THUMBNAILS_JOB_KIND
+
+        self._roots()
+        path = self.output_dir / "beside.png"
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+
+        job = self.api._jobs.start(
+            THUMBNAILS_JOB_KIND,
+            "Thumbnail generation",
+            admission="guarded",
+            cancellable=True,
+            scope={},
+            runner=runner,
+        )
+        try:
             outcome = await asyncio.to_thread(self.api.record_review_file, str(path))
+        finally:
+            gate.set()
+            await asyncio.wait_for(job.task, 5)
         self.assertEqual(outcome, "recorded")
         self.assertEqual(len(self._items()), 1)
 
