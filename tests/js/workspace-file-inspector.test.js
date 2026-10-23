@@ -303,6 +303,8 @@ test('Copy settings summary follows the facts in the full inspector only', async
         const inner = full.button.parent, index = inner.children.indexOf(full.button);
         assert.equal(inner.children[index - 1].tagName, 'dl', 'it follows the six facts');
         assert.equal(inner.children[index + 1].tagName, 'details', 'File & provenance follows it');
+        // M7: the D117 wrap rule targets this button by its class, never any button of a details block.
+        assert.equal(full.button.className, 'settings-summary');
     } finally { full.done(); }
     const panel = renderSummary(record(), {variant:'panel'});
     try { assert.equal(panel.button, null, 'the Images side panel keeps the concept footer'); } finally { panel.done(); }
@@ -332,4 +334,32 @@ test('Copy settings summary without a clipboard opens the select-to-copy fallbac
             assert.notEqual(view.toast.textContent, 'Settings summary copied.');
         } finally { view.done(); }
     }
+});
+
+test('the inspector is busy while a read is loading, then not', async () => {
+    const f = mountedDom(), scope = createScope();
+    const view = mountFileInspector(f.container, {sender:{open() {}}, parentScope:scope, variant:'full'});
+    try {
+        view.setState({loading:true, error:false, record:null});
+        assert.equal(f.container.getAttribute('aria-busy'), 'true');
+        assert.ok(f.walk(f.container, n => n.textContent === 'Loading file details…').length);
+        view.setState({loading:false, error:false, record:record()});
+        assert.equal(f.container.getAttribute('aria-busy'), null);
+        view.setState({loading:true, error:false, record:null});
+        view.setState({loading:false, error:true, record:null});
+        assert.equal(f.container.getAttribute('aria-busy'), null);
+        view.setState({loading:true, error:false, record:null});
+    } finally {
+        view.dispose();
+        assert.equal(f.container.getAttribute('aria-busy'), null, 'dispose clears the busy state');
+        scope.dispose(); f.restore();
+    }
+});
+
+test('the D117 wrap rule targets only the settings summary button', async () => {
+    const fs = await import('node:fs');
+    const css = fs.readFileSync(new URL('../../web/js/workspace/workspace.css', import.meta.url), 'utf8');
+    const rules = css.split('\n').filter(line => line.includes('D117'));
+    assert.deepEqual(rules.map(line => line.trim()), ['.ca-tools #viewer-details .settings-summary { white-space: normal; /* D117 */ }']);
+    assert.doesNotMatch(css, /#viewer-details > div > button/);
 });

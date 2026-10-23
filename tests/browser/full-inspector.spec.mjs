@@ -240,8 +240,9 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     // The panel content without the cover, D117's Copy settings summary after the facts, then the two disclosures,
     // then the pair send and history buttons (D20).
     expect(await viewerStructure(details)).toEqual({outer:['div','button.send','button'],
-        inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','div.tags','dl.meta-grid','button','details','details']});
+        inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','div.tags','dl.meta-grid','button.settings-summary','details','details']});
     await expect(details.locator(':scope > div > button')).toHaveText('Copy settings summary');
+    await expect(details.locator(':scope > div > button.settings-summary')).toHaveCSS('white-space','normal');
     await expect(details.locator('.detail-cover,.detail-inner,.detail-footer')).toHaveCount(0);
     await expect(details.locator('.panel-heading h2')).toHaveText(POSITIVE_TITLE);await expect(details.locator('.panel-heading .chip')).toHaveText('PNG');
     await expect(details.locator(':scope > div > p.small')).toHaveText('complete.png');

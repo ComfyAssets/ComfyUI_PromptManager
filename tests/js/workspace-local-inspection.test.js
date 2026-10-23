@@ -23,8 +23,11 @@ globalThis.ComfyMetadata = ComfyMetadata;
 // The page's API client and the node table it serves (local-semantics.mjs fetches it once).
 const SEMANTICS = fs.readFileSync(path.join(here, "..", "..", "web", "js", "inspection-semantics.json"), "utf8");
 globalThis.window = { ApiClient: { resolveUrl: (value) => value } };
+// A test can hold the table request (`tableGate`) to stand for a slow or stalled proxy.
+let tableGate = null;
 globalThis.fetch = async (url) => {
     if (url !== "/prompt_manager/js/inspection-semantics.json") throw new Error(`unexpected request ${url}`);
+    if (tableGate) await tableGate;
     return new Response(SEMANTICS, { status: 200 });
 };
 const m = await import("../../web/js/workspace/local-inspection.mjs").catch((error) => {
@@ -64,6 +67,37 @@ test("contract", () => {
         assert.equal(typeof m.localFileAdapter[name], "function", `adapter.${name}`);
     }
     assert.ok(Object.isFrozen(m.localFileAdapter));
+});
+
+// M3: the first read waits for the page's one table request; an aborted, replaced or cleared selection must not.
+test("a read waiting for the node table ends with its selection", async () => {
+    let release;
+    tableGate = new Promise((resolve) => { release = resolve; });
+    try {
+        const file = pngFile("slow.png", [tEXt("prompt", PROMPT)]);
+        const aborted = new AbortController();
+        const reading = m.localFileAdapter.read(await handleFor(file), { signal: aborted.signal });
+        const settled = (promise) => Promise.race([promise.then(() => "resolved", (error) => error.name), new Promise((resolve) => setTimeout(() => resolve("pending"), 200))]);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        aborted.abort();
+        assert.equal(await settled(reading), "AbortError");
+        // Through the controller: clearing the selection ends its read; nothing is published for it.
+        const controller = createInspectionController({ api: null, adapter: m.localFileAdapter, extractFacts: extractGenerationFacts });
+        const states = [];
+        controller.subscribe((state) => states.push(state));
+        const selected = controller.select(await handleFor(file));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        controller.clear();
+        assert.equal(await settled(selected), "resolved");
+        assert.ok(states.every((state) => state.record === null && state.error === false), "no record or error for a cleared selection");
+        controller.dispose();
+    } finally {
+        tableGate = null;
+        release();
+    }
+    // The shared request still lands for the next selection.
+    const { wire } = await recordFor(pngFile("next.png", [tEXt("prompt", PROMPT)]));
+    assert.equal(wire.resolution.state, "resolved");
 });
 
 test("a PNG File becomes the server-shaped wire with local provenance", async () => {
@@ -343,5 +377,91 @@ test("the parity corpus PNGs read into renderable records", async () => {
         assert.equal(wire.metadata.status, "available", name);
         assert.equal(record.file.format, "PNG");
         assert.ok(["parsed", "limited", "malformed"].includes(wire.metadata.prompt_graph.status));
+    }
+});
+
+// M4: resolution runs on the page's main thread, so a read yields between its bounded steps (the busy state paints
+// and input is handled) and no step may exceed a budget on the largest record the readers keep (2 MiB of roles).
+const ROLE_BYTES = 2 * 1024 * 1024;
+// Generous for a shared CI runner: a desktop resolves these in 130-455 ms.
+const STEP_BUDGET_MS = 2500;
+const ENCODE = (text) => ({ class_type: "CLIPTextEncode", inputs: { text, clip: ["4", 1] } });
+const KSAMPLER = (positive, negative, latent) => ({ class_type: "KSampler", inputs: { seed: 1, steps: 20, cfg: 8.0, sampler_name: "euler", scheduler: "normal",
+    denoise: 1.0, model: ["4", 0], positive, negative, latent_image: latent } });
+const LOADERS = { "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "m.safetensors" } }, "5": { class_type: "EmptyLatentImage", inputs: { width: 64, height: 64, batch_size: 1 } } };
+/** The largest graph of this shape whose JSON fits the role budget. */
+function maximal(build, high) {
+    let low = 1;
+    while (low < high) {
+        const middle = (low + high + 1) >> 1;
+        if (Buffer.byteLength(JSON.stringify(build(middle)), "utf8") <= ROLE_BYTES) low = middle;
+        else high = middle - 1;
+    }
+    return JSON.stringify(build(low));
+}
+const MAXIMAL_GRAPHS = {
+    // Many candidates: every sampler is a final stage with its own pair.
+    independent: maximal((count) => {
+        const graph = { ...LOADERS };
+        for (let index = 0; index < count; index++) {
+            graph[`s${index}`] = KSAMPLER([`p${index}`, 0], [`n${index}`, 0], ["5", 0]);
+            graph[`p${index}`] = ENCODE(`fox ${index}`);
+            graph[`n${index}`] = ENCODE(`blur ${index}`);
+        }
+        return graph;
+    }, 6666),
+    // One long stage chain through the latent: the deepest stage walk.
+    chain: maximal((count) => {
+        const graph = { ...LOADERS, "6": ENCODE("fox"), "7": ENCODE("blur") };
+        for (let index = 0; index < count; index++) graph[`s${index}`] = KSAMPLER(["6", 0], ["7", 0], index ? [`s${index - 1}`, 0] : ["5", 0]);
+        return graph;
+    }, 19996),
+};
+
+test("resolution of a maximal 2 MiB graph stays within the step budget", async () => {
+    const { resolveLocalEvidence } = await import("../../web/js/workspace/local-resolver.mjs");
+    const semantics = await (await import("../../web/js/workspace/local-semantics.mjs")).loadInspectionSemantics();
+    for (const [name, prompt] of Object.entries(MAXIMAL_GRAPHS)) {
+        assert.ok(Buffer.byteLength(prompt, "utf8") > ROLE_BYTES - 1024, `${name} fills the role budget`);
+        const started = performance.now();
+        const evidence = resolveLocalEvidence({ prompt }, semantics);
+        const elapsed = performance.now() - started;
+        assert.ok(elapsed < STEP_BUDGET_MS, `${name}: ${Math.round(elapsed)} ms`);
+        assert.notEqual(evidence.resolution.reason_code, "malformed", name);
+    }
+});
+
+test("a read yields between bounded steps and answers byte for byte as one synchronous build", async () => {
+    const semantics = await (await import("../../web/js/workspace/local-semantics.mjs")).loadInspectionSemantics();
+    const file = pngFile("maximal.png", [tEXt("prompt", MAXIMAL_GRAPHS.independent)]);
+    const handle = await handleFor(file);
+    const marks = [];
+    const yieldControl = async (signal) => {
+        signal?.throwIfAborted();
+        marks.push(performance.now());
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    const started = performance.now();
+    const wire = await m.localFileAdapter.read(handle, { signal: new AbortController().signal, yieldControl });
+    marks.push(performance.now());
+    // Resolution and the projection each run in a turn of their own after the table is in.
+    assert.ok(marks.length >= 3, `yields: ${marks.length - 1}`);
+    const gaps = marks.map((mark, index) => mark - (index ? marks[index - 1] : started));
+    assert.ok(Math.max(...gaps) < STEP_BUDGET_MS, `longest step ${Math.round(Math.max(...gaps))} ms`);
+    const { result } = await m.readLocalFile(file, { classification: handle.classification });
+    const direct = await m.fitLocalPayload(m.buildLocalPayload({ read: result, file: { name: handle.filename, size: file.size, lastModified: file.lastModified },
+        classification: handle.classification, semantics }));
+    assert.equal(JSON.stringify(wire), JSON.stringify(direct));
+    assert.equal(wire.resolution.state, "ambiguous");
+    // An abort at any yield ends the read there.
+    for (let stop = 0; stop < marks.length - 1; stop++) {
+        const controller = new AbortController();
+        let seen = 0;
+        const stopping = async (signal) => {
+            if (seen++ === stop) controller.abort();
+            signal.throwIfAborted();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        };
+        await assert.rejects(m.localFileAdapter.read(handle, { signal: controller.signal, yieldControl: stopping }), { name: "AbortError" }, `yield ${stop}`);
     }
 });

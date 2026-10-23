@@ -1588,7 +1588,8 @@ AVI/WMV preview only), chosen or dropped, previews inline. The heading's one act
 the shared viewer with the full inspector on a record read entirely in this browser
 (`web/js/workspace/inspect.mjs`, `local-session.mjs`, `local-inspection.mjs` and the L1
 readers `png-metadata.js`, `local-video.mjs`, `local-projection.mjs`). Nothing is
-uploaded, imported or stored. Only HTML and JS change, so no ComfyUI restart is needed.
+uploaded, imported or stored. PRs L1 and L2 change only HTML and JS, so they need no
+ComfyUI restart; PR L3 does (below).
 
 Local roles (#249 PR L3, decision LI-1): the prompts and resolution of a local record are
 the server inspector's for the same records. `web/js/workspace/local-resolver.mjs` (with
@@ -1610,7 +1611,20 @@ vector (prompts, resolution and facts), the golden and selection record sets
 bound and 1,200 seeded fuzz cases; `tests/fixtures/local-inspect/resolver-vectors.json`
 holds the committed answers the Node unit test reads. The browser spec `chooser shows the
 Images roles and resolution for every parity PNG` compares the rail with Images for all
-25 committed parity PNGs. The static route change needs a ComfyUI restart.
+25 committed parity PNGs. The static route change and the resolver fixes (Python) need a
+ComfyUI restart.
+
+Main thread (M4): the resolver runs on the page's thread, not a worker. On a desktop
+(Node 26) `resolveLocalEvidence` on maximal 2 MiB graphs (a 19,990-sampler chain, 6,600
+independent samplers, a consumer-dense scan, a 100,000-node PromptManager workflow) took
+130–455 ms; the server took 80–905 ms on the same inputs. `localFileAdapter.read` runs in
+bounded steps (read, table, parse and resolve, project, fit) with a turn of the event
+loop between them, every wait ends with the selection's signal (a stalled table request
+included), and the inspector carries `aria-busy="true"` with "Loading file details…"
+until the answer lands. `tests/js/workspace-local-inspection.test.js` pins a 2,500 ms
+budget per step on maximal independent-sampler and stage-chain graphs, checks that the
+stepped read answers byte for byte as one synchronous build, and that an abort at any
+step ends the read.
 
 Bounds (the server's own budgets, ported by PR L1; see "Follow-up: local Inspect parity"
 under "Chronological Library history" for the known divergences):

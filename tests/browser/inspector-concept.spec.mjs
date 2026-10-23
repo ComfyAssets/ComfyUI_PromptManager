@@ -119,7 +119,7 @@ async function plainViewerChips(page) {
         });
         const summary=document.querySelector('#viewer-details [data-action="download-workflow"]').cloneNode(false);
         for(const key of Object.keys(summary.dataset))delete summary.dataset[key];
-        summary.textContent='Copy settings summary';
+        summary.textContent='Copy settings summary';summary.classList.add('settings-summary');
         document.querySelector('#viewer-details > div > dl.meta-grid').after(summary);window.__summaryButton=summary;
     });
     await settle(page);

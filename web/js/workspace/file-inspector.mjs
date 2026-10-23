@@ -205,7 +205,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
     scope.listen(container, 'keydown', onInteraction);
     scope.listen(container, 'click', onInteraction);
     scope.listen(container, 'wheel', onInteraction, {passive:true});
-    scope.cleanup(() => {contentScope?.dispose(); container.replaceChildren(); container.classList.remove('file-inspector');});
+    scope.cleanup(() => {contentScope?.dispose(); container.replaceChildren(); container.classList.remove('file-inspector'); container.removeAttribute('aria-busy');});
 
     const full = (variant ?? (inline ? 'panel' : 'full')) === 'full';
     function statusView(state, parent) {
@@ -224,6 +224,8 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         if (scope.signal.aborted) return;
         contentScope?.dispose(); contentScope = childScope(scope);
         container.replaceChildren();
+        // A local read resolves on this thread in bounded steps; the busy state stays until its answer lands.
+        if (state.loading) container.setAttribute('aria-busy', 'true'); else container.removeAttribute('aria-busy');
         render(state);
     }
     /**
@@ -290,7 +292,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
      * copy does: the shared toast, or the select-to-copy dialog where the clipboard is unavailable or refused.
      */
     function summaryButton(record) {
-        const button = createButton('Copy settings summary'), text = settingsSummary(record);
+        const button = createButton('Copy settings summary', 'settings-summary'), text = settingsSummary(record);
         contentScope.listen(button, 'click', async () => {
             try {
                 if (!navigator.clipboard) throw new Error('Clipboard requires a secure context');
