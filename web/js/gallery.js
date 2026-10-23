@@ -17,6 +17,14 @@
                 this.dupResults = null;
 
                 this.api = ApiClient.createApiClient();
+                // The page's lifetime ends when it starts to leave: WebKit fails a fetch a leaving page starts
+                // ("Fetch API cannot load … due to access control checks.") and logs it as a page error.
+                this.pageLifetime = new AbortController();
+                window.addEventListener("beforeunload", () => this.pageLifetime.abort());
+                window.addEventListener("pagehide", () => this.pageLifetime.abort());
+                window.addEventListener("pageshow", (e) => {
+                    if (e.persisted && this.pageLifetime.signal.aborted) this.pageLifetime = new AbortController();
+                });
                 // Only the newest page request may update the grid
                 this.imagesRequest = ApiClient.latestOnly();
 
@@ -2534,8 +2542,11 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         return;
                     }
                     
+                    // A leaving page starts no read, and one it aborts is not reported.
+                    const signal = this.pageLifetime?.signal;
+                    if (signal?.aborted) return;
                     try {
-                        const data = await this.api.get('/prompt_manager/images/thumbnails/status');
+                        const data = await this.api.get('/prompt_manager/images/thumbnails/status', { signal });
                         const total = data.total_images;
                         const pending = data.pending;
                         if (!data.success || !Number.isSafeInteger(total) ||
