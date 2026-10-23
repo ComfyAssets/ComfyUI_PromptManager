@@ -179,6 +179,9 @@ async function captureFooter(page,testInfo,name) {
 test.beforeEach(async({request})=>{await seedConcept(request);});
 
 for(const [width,height] of SIZES)for(const theme of THEMES)test(`shell geometry, tokens and controls match the concept ${width}x${height} ${theme}`,async({page},testInfo)=>{
+    // Twelve page loads (3 routes x 2 motions, concept and production) with captures, hovers and focus: 15-19 s on a
+    // CI WebKit runner, and past the 30 s default when the runner is loaded (reproduced with 2 CPUs and 3 workers).
+    test.setTimeout(90_000);
     await page.setViewportSize({width,height});const result={};
     for(const motion of MOTIONS)for(const [route,breadcrumb] of ROUTES) {
         await openConcept(page,route,theme,motion);await page.mouse.move(0,0);
