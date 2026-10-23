@@ -1643,7 +1643,7 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   Open and Tag follow it. When an unanswered decision's item leaves the queue in a
   re-read, the decision was recorded: the page finishes as a recorded decision does (its
   toast, back to Images), not with "decided elsewhere".
-- **D-NEW-F2** (placeholder number; the concept has no live-update state): while the
+- **D120** (the concept has no live-update state): while the
   change stream is down, the heading carries the quiet status line "Live updates are
   paused: changes made elsewhere appear once the connection returns." (`p.small
   .review-live`, `role="status"`); the stream's next `ready` hides it.
@@ -1679,7 +1679,7 @@ first change at once and collapses the notices of the next 0.4 s into one traili
 `change` (`COALESCE_SECONDS`), so a busy scan costs an open page one re-read per 0.4 s at
 most. Shutdown (`on_shutdown`) ends every stream and answers a later one 503. A
 reconnect the browser gives up on (a 503, or a proxy's error while ComfyUI restarts) is
-opened again by the page after 3 s, doubling to 30 s, with D-NEW-F2's line shown while
+opened again by the page after 3 s, doubling to 30 s, with D120's line shown while
 the stream is down; its `ready` re-syncs the queue. The stream lives only while the tab is
 visible: a hidden tab closes it and a visible one opens it again, and that `ready` reads
 only when the queue changed meanwhile. A duplicate recording and a refused decision change

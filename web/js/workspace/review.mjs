@@ -18,7 +18,7 @@
  * - The stream lives only while the tab is visible: a hidden tab closes it and a visible one opens it again, so
  *   background tabs hold no connection (I4); the reopened stream's `ready` reads only when the queue changed meanwhile.
  *   A stream the browser gave up on (a 503 or a proxy error on its reconnect) is opened again after 3 s, doubling to
- *   30 s; while the stream is down the page says so in a quiet status line (D-NEW-F2, I3).
+ *   30 s; while the stream is down the page says so in a quiet status line (D120, I3).
  * - A re-read refreshes each card whose media, target or availability changed (M6). Cards show the Images listing's
  *   thumbnail when the server knows one (M10).
  * - The SAVED VIEWS row's count follows the total the page shows (`onTotal`), so a change costs no count read.
@@ -45,7 +45,7 @@ export const REVIEW_EVENTS_URL = '/prompt_manager/review/events';
 // I3: reopening a stream the browser closed for good waits this long, doubling up to the maximum.
 export const REOPEN_FIRST_MS = 3000;
 export const REOPEN_MAX_MS = 30000;
-// D-NEW-F2: the page's line while the change stream is down (the concept has no such state).
+// D120: the page's line while the change stream is down (the concept has no such state).
 export const NOT_LIVE = 'Live updates are paused: changes made elsewhere appear once the connection returns.';
 const openEvents = url => new EventSource(window.ApiClient.resolveUrl(url));
 
@@ -136,7 +136,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     panel.append(panelTitle, filename, tagRow, contextField, warning, blocks, actions);
     layout.append(grid, panel);
 
-    const live = el('p', NOT_LIVE, 'small review-live'); // D-NEW-F2: the change stream is down
+    const live = el('p', NOT_LIVE, 'small review-live'); // D120: the change stream is down
     live.setAttribute('role', 'status');
     live.hidden = true;
     heading.description.after(live);
