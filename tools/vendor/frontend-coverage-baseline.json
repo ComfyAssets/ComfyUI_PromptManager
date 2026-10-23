@@ -390,16 +390,16 @@
     "statements": 95
   },
   "workspace/review-state.mjs": {
-    "lines": 94,
-    "branches": 77,
+    "lines": 95,
+    "branches": 82,
     "functions": 98,
-    "statements": 94
+    "statements": 95
   },
   "workspace/review.mjs": {
-    "lines": 96,
-    "branches": 84,
-    "functions": 90,
-    "statements": 96
+    "lines": 98,
+    "branches": 89,
+    "functions": 91,
+    "statements": 98
   },
   "workspace/saved-views.mjs": {
     "lines": 98,

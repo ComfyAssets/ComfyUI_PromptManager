@@ -195,6 +195,12 @@ test('tag image from review saves tags and the item remains pending', async ({ p
     expect(await links(request)).toEqual(before);
     const [item] = (await (await request.get('/prompt_manager/review/items')).json()).items;
     expect([item.state, item.revision]).toEqual(['pending', 0]);
+    // The card's Tag opens the same dialog.
+    await cards(page).first().getByRole('button', { name: 'Tag or auto-tag review_0000.png', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('p.tag-scope-note')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
 });
 
 test('an empty queue shows the empty notice only', async ({ page, request }) => {

@@ -63,7 +63,7 @@ export function imageOf(item) {
  * a change elsewhere (the shell re-reads the Needs review count); `controller` and `connect` (the change stream's
  * EventSource) are injectable for tests.
  */
-export function mountReview(main, { api, scope, onDecision = () => {}, onQueueChange = () => {},
+export function mountReview(main, { api, scope, onDecision = () => {}, onQueueChange,
     connect = openEvents, controller = createReviewController({ api }) }) {
     scope.cleanup(() => controller.dispose());
     const heading = pageHeading(main);
@@ -256,7 +256,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onQueueCh
     const changed = () => {
         if (scope.signal.aborted) return;
         controller.refresh();
-        onQueueChange();
+        onQueueChange?.();
     };
     events.addEventListener('ready', changed);
     events.addEventListener('change', changed);
