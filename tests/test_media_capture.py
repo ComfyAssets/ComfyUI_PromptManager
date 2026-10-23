@@ -471,6 +471,94 @@ class CaptureStoreTestCase(unittest.TestCase):
         self.assertEqual(results["capture"].size, 60)
         self.capture(workers, "b.png")
 
+    def _hold_worker(self, store, relative, **options):
+        """Start a capture that holds a worker until ``proceed`` is set."""
+        entered, proceed = threading.Event(), threading.Event()
+        original = CaptureStore._read
+        results = {}
+
+        def blocking(store_, stream, size):
+            if threading.current_thread() is thread and not entered.is_set():
+                entered.set()
+                self.assertTrue(proceed.wait(WAIT))
+            return original(store_, stream, size)
+
+        def worker():
+            try:
+                results["capture"] = self.capture(store, relative, **options)
+            except Exception as error:  # pragma: no cover - reported below
+                results["error"] = error
+
+        patcher = patch.object(CaptureStore, "_read", blocking)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        thread = threading.Thread(target=worker)
+        thread.start()
+        self.assertTrue(entered.wait(WAIT))
+
+        def finish():
+            proceed.set()
+            thread.join(WAIT)
+            self.assertFalse(thread.is_alive())
+            self.assertNotIn("error", results)
+            return results["capture"]
+
+        self.addCleanup(proceed.set)
+        return finish
+
+    def test_background_capture_never_takes_the_last_worker(self):
+        for name in ("a", "b", "c"):
+            self.write(f"{name}.png", bytes(60))
+        store = self.make_store(max_workers=2)
+        finish = self._hold_worker(store, "a.png", background=True)
+        # The second background capture waits, then fails: one worker is free
+        # but it is the interactive request's.
+        started = time.monotonic()
+        with patch("utils.media_capture.BACKGROUND_WAIT_SECONDS", 0.05):
+            with self.assertRaises(CaptureCapacity):
+                self.capture(store, "b.png", background=True)
+        self.assertGreaterEqual(time.monotonic() - started, 0.04)
+        # An interactive capture (Tag dialog, Apply) still gets the last one.
+        interactive = self.capture(store, "c.png")
+        self.assertEqual(interactive.size, 60)
+        finish()
+
+    def test_background_capture_waits_for_a_worker_to_free(self):
+        for name in ("a", "b"):
+            self.write(f"{name}.png", bytes(60))
+        store = self.make_store(max_workers=2)
+        finish = self._hold_worker(store, "a.png", background=True)
+        waited = {}
+
+        def background():
+            waited["capture"] = self.capture(store, "b.png", background=True)
+
+        thread = threading.Thread(target=background)
+        with patch("utils.media_capture.BACKGROUND_WAIT_SECONDS", WAIT):
+            thread.start()
+            finish()
+            thread.join(WAIT)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(waited["capture"].size, 60)
+
+    def test_single_worker_store_admits_no_background_capture(self):
+        self.write("a.png", bytes(60))
+        store = self.make_store(max_workers=1)
+        with patch("utils.media_capture.BACKGROUND_WAIT_SECONDS", 0.01):
+            with self.assertRaises(CaptureCapacity):
+                self.capture(store, "a.png", background=True)
+        self.assertEqual(self.capture(store, "a.png").size, 60)
+
+    def test_background_capture_leaves_the_last_capture_slot(self):
+        for name in ("a", "b", "c"):
+            self.write(f"{name}.png", bytes(60))
+        store = self.make_store(max_captures=2)
+        self.capture(store, "a.png")
+        with patch("utils.media_capture.BACKGROUND_WAIT_SECONDS", 0.01):
+            with self.assertRaises(CaptureCapacity):
+                self.capture(store, "b.png", background=True)
+        self.assertEqual(self.capture(store, "c.png").size, 60)
+
     # -- lifetime ------------------------------------------------------------
 
     def test_idle_and_hard_expiry_and_in_use_retention(self):

@@ -46,6 +46,10 @@ DEFAULT_MAX_BYTES = 512 * 2**20
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_IDLE_SECONDS = 900
 DEFAULT_HARD_SECONDS = 1800
+# Background recording (Needs review from the scan and the monitor) may use
+# every worker and capture slot but the last one, which stays free for an
+# interactive Tag dialog or Apply; it waits this long for room before failing.
+BACKGROUND_WAIT_SECONDS = 2.0
 MAX_INFERENCE_SIDE = 4096
 MAX_INFERENCE_PIXELS = 16_777_216
 MAX_RELATIVE_LENGTH = 1024
@@ -80,7 +84,7 @@ class CaptureError(Exception):
 
 
 class CaptureCapacity(CaptureError):
-    """Count, byte or worker admission failed (nonblocking)."""
+    """Count, byte or worker admission failed (interactive: nonblocking)."""
 
     code = "review-capacity"
 
@@ -220,6 +224,8 @@ class CaptureStore:
         # mkdtemp creates the directory with owner-only permissions.
         self.directory = tempfile.mkdtemp(prefix=_DIRECTORY_PREFIX, dir=parent)
         self._lock = threading.Lock()
+        # Signalled whenever a worker or a capture slot frees up.
+        self._room = threading.Condition(self._lock)
         self._entries: dict[str, _Entry] = {}
         self._completed_bytes = 0
         self._pending = 0
@@ -238,8 +244,14 @@ class CaptureStore:
         epoch: str,
         scope: str,
         root_index: int = 0,
+        background: bool = False,
     ) -> Capture:
-        """Copy and hash one rooted media file into a private capture."""
+        """Copy and hash one rooted media file into a private capture.
+
+        A ``background`` capture never takes the last worker or capture slot
+        and waits up to ``BACKGROUND_WAIT_SECONDS`` for room; an interactive
+        one is admitted or refused at once.
+        """
         if isinstance(root_index, bool) or not isinstance(root_index, int):
             raise CaptureDenied("Invalid gallery root")
         if root_index < 0:
@@ -250,7 +262,7 @@ class CaptureStore:
         parts, extension = _relative_parts(relative)
         candidate, locator = _resolve(root, parts)
         before = self._pre_stat(candidate)
-        self._admit(before.st_size, reserve=True)
+        self._admit(before.st_size, reserve=True, background=background)
         try:
             capture = self._copy(
                 candidate, locator, extension, before, root_index, epoch, scope
@@ -386,28 +398,44 @@ class CaptureStore:
 
     # -- admission -------------------------------------------------------------
 
-    def _admit(self, size: int, *, reserve: bool) -> None:
+    def _admit(self, size: int, *, reserve: bool, background: bool = False) -> None:
         try:
-            self._admit_locked(size, reserve=reserve)
+            self._admit_locked(size, reserve=reserve, background=background)
         finally:
             self._flush()
 
-    def _admit_locked(self, size: int, *, reserve: bool) -> None:
+    def _admit_locked(self, size: int, *, reserve: bool, background: bool) -> None:
+        deadline = time.monotonic() + BACKGROUND_WAIT_SECONDS
         with self._lock:
-            if self._closed:
-                raise RuntimeError("The capture store is closed")
-            self._sweep_locked(self._clock())
-            if self._workers >= self.max_workers:
-                raise CaptureCapacity("Too many captures are in progress")
+            while True:
+                if self._closed:
+                    raise RuntimeError("The capture store is closed")
+                self._sweep_locked(self._clock())
+                try:
+                    self._check_room_locked(size, reserve, background)
+                    break
+                except CaptureCapacity:
+                    remaining = deadline - time.monotonic()
+                    if not background or remaining <= 0:
+                        raise
+                    self._room.wait(remaining)
             if reserve:
-                if len(self._entries) + self._pending >= self.max_captures:
-                    raise CaptureCapacity("Too many captures are held")
-                reserved = self._completed_bytes + self._pending_bytes
-                if reserved + size > self.max_bytes:
-                    raise CaptureCapacity("Capture byte budget exhausted")
                 self._pending += 1
                 self._pending_bytes += size
             self._workers += 1
+
+    def _check_room_locked(self, size: int, reserve: bool, background: bool) -> None:
+        """Raise ``CaptureCapacity`` unless one more capture or verify fits."""
+        spare = 1 if background else 0
+        if self._workers + spare >= self.max_workers:
+            raise CaptureCapacity("Too many captures are in progress")
+        if reserve:
+            held = len(self._entries) + self._pending
+            if held + spare >= self.max_captures:
+                raise CaptureCapacity("Too many captures are held")
+            reserved = self._completed_bytes + self._pending_bytes
+            if reserved + size > self.max_bytes:
+                raise CaptureCapacity("Capture byte budget exhausted")
 
     def _release_admission(self, size: int, *, reserve: bool) -> None:
         with self._lock:
@@ -415,6 +443,7 @@ class CaptureStore:
             if reserve:
                 self._pending -= 1
                 self._pending_bytes -= size
+            self._room.notify_all()
             last_out = self._closed and self._pending == 0 and self._workers == 0
         if last_out:
             self._remove_directory()
@@ -457,6 +486,7 @@ class CaptureStore:
         if self._entries.pop(entry.capture.token, None) is not None:
             self._completed_bytes -= entry.capture.size
             self._stale.append(entry.capture.path)
+            self._room.notify_all()
 
     def _flush(self) -> None:
         """Unlink files released under the lock, without holding it (slow I/O)."""

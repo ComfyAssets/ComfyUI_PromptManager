@@ -14,6 +14,7 @@ import ntpath
 import os
 import posixpath
 import sqlite3
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,7 +31,12 @@ except ImportError:  # discovered with tests/ as the top-level directory
 from database.review_schema import canonical_evidence, evidence_digest
 from py.config import GalleryConfig
 from utils import review_capture as review_capture_module
-from utils.media_capture import CaptureChanged, FileFacts
+from utils.media_capture import (
+    CaptureCapacity,
+    CaptureChanged,
+    CaptureStore,
+    FileFacts,
+)
 from utils.hashing import generate_prompt_hash
 
 try:  # guarded so a missing module fails assertions, not test loading
@@ -1056,3 +1062,46 @@ class TestApplyRefusals(ReviewRoutesTestCase):
         with patch.object(store, "verify", return_value=foreign):
             data = await self._refused(item, body, 409, "capture-expired")
         self.assertIn("another file", data["error"])
+
+
+class TestInteractiveCapacity(ReviewRoutesTestCase):
+    async def test_background_recording_leaves_a_worker_for_the_tag_dialog(self):
+        """A scan or monitor recording in flight never starves an observe (I4)."""
+        self._require_routes()
+        self._record(self._ambiguous("two.png"))
+        busy = self._ambiguous("busy.png", color=(4, 5, 6))
+        item = (await self._list())["items"][0]
+        store = self.api._captures
+        entered, proceed = threading.Event(), threading.Event()
+        original = CaptureStore._read
+        outcome = {}
+
+        def blocking(store_, stream, size):
+            if threading.current_thread() is recorder and not entered.is_set():
+                entered.set()
+                proceed.wait(30)
+            return original(store_, stream, size)
+
+        def record():
+            outcome["value"] = self.api.record_review_file(str(busy))
+
+        recorder = threading.Thread(target=record)
+        with patch.object(CaptureStore, "_read", blocking):
+            recorder.start()
+            try:
+                self.assertTrue(entered.wait(30))
+                self.assertEqual(store.stats()["workers"], 1)
+                # Another background recording finds no worker it may use...
+                with patch("utils.media_capture.BACKGROUND_WAIT_SECONDS", 0.01):
+                    with self.assertRaises(CaptureCapacity):
+                        self.api.record_review_file(str(busy))
+                # ...while the interactive observe still gets the last one.
+                observed = await self._observe(item["target"])
+                self.assertEqual(
+                    observed["capture"]["sha256"], digest(self.output_dir / "two.png")
+                )
+            finally:
+                proceed.set()
+                recorder.join(30)
+        self.assertFalse(recorder.is_alive())
+        self.assertEqual(outcome["value"], "recorded")

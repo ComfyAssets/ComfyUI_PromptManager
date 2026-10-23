@@ -64,8 +64,14 @@ def record_ambiguous_file(db, store, root, root_index: int, relative: str) -> st
         return "duplicate"
     epoch = db.get_execution_epoch()
     try:
+        # Background: the last worker stays free for an interactive request.
         capture = store.capture(
-            root, relative, epoch=epoch, scope=REVIEW_SCOPE, root_index=root_index
+            root,
+            relative,
+            epoch=epoch,
+            scope=REVIEW_SCOPE,
+            root_index=root_index,
+            background=True,
         )
     except CaptureCapacity:
         raise
