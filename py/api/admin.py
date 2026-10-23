@@ -45,7 +45,7 @@ try:
         parse_page_json,
     )
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
-    from ...utils.review_capture import inspection_offers_choice, reviewable
+    from ...utils.review_capture import reviewable
 except ImportError:
     from database.operations import PromptDatabase
     from database.pair_ingestion import ingest_resolved_pair
@@ -56,7 +56,7 @@ except ImportError:
         parse_page_json,
     )
     from utils.prompt_pair_resolver import resolve_prompt_pair
-    from utils.review_capture import inspection_offers_choice, reviewable
+    from utils.review_capture import reviewable
 
 
 try:
@@ -250,22 +250,6 @@ def _file_size(path):
         return os.path.getsize(path)
     except OSError:
         return None
-
-
-def _untraced_outcome(media_file, canonical, ambiguous, untraced):
-    """The status of an unlinked file the default profile found ambiguous
-    without a choice: ``"ambiguous"`` when the inspection profile offers one
-    (the file moves from ``untraced`` to ``ambiguous``), else ``"unresolved"``.
-
-    Asked only when ``ambiguous`` is a list (the scan, which records review
-    items), so other callers never pay for the heavier profile.
-    """
-    if ambiguous is None or not inspection_offers_choice(canonical):
-        return "unresolved"
-    if untraced is not None and media_file in untraced:
-        untraced.remove(media_file)
-    ambiguous.append(media_file)
-    return "ambiguous"
 
 
 def _with_file_size(canonical, media_file):
@@ -1662,7 +1646,7 @@ class AdminRoutesMixin:
             if self._scan_job and self._scan_job.cancelled:
                 break
             counts["processed"] += 1
-            ambiguous, untraced = [], []
+            ambiguous, untraced, records = [], [], {}
             try:
                 outcome = self._ingest_scanned_file(
                     media_file,
@@ -1670,6 +1654,7 @@ class AdminRoutesMixin:
                     detailed=True,
                     ambiguous=ambiguous,
                     untraced=untraced,
+                    records=records,
                 )
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
@@ -1682,7 +1667,11 @@ class AdminRoutesMixin:
                 else:
                     self._record_scanned_review(media_file, roots, review)
             elif untraced and outcome == "unresolved":
-                self._settle_untraced_reviews(untraced, roots, review)
+                # Untraced by the default profile: the inspection profile may
+                # still offer a choice (queued for review, never linked).
+                outcome = self._untraced_scan_outcome(
+                    media_file, roots, records.get("canonical"), review
+                )
             if outcome is None:
                 note(media_file, None)
                 continue
@@ -1717,7 +1706,13 @@ class AdminRoutesMixin:
         return positive.strip() or None
 
     def _ingest_scanned_file(
-        self, media_file, metadata, detailed=False, ambiguous=None, untraced=None
+        self,
+        media_file,
+        metadata,
+        detailed=False,
+        ambiguous=None,
+        untraced=None,
+        records=None,
     ):
         """Enrich exact pairs; retain legacy positive-only import for absent pairs.
 
@@ -1730,10 +1725,9 @@ class AdminRoutesMixin:
         ``"ambiguous"`` (nothing linked it) is a Needs review case. An
         ambiguous result with nothing to choose (``reviewable`` is False: fewer
         than two candidates carry a prompt) that nothing links returns
-        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``,
-        unless the inspection profile offers a choice (only asked when
-        ``ambiguous`` is a list, so only by the scan): then it is
-        ``"ambiguous"`` and goes to ``ambiguous``. That profile never links.
+        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``;
+        its parsed records go to ``records["canonical"]`` when ``records`` is
+        a dict.
         """
         if not metadata:
             return None
@@ -1754,6 +1748,8 @@ class AdminRoutesMixin:
         if unchoosable:
             if untraced is not None:
                 untraced.append(media_file)
+            if records is not None:
+                records["canonical"] = canonical
         elif resolution["state"] == "ambiguous" and ambiguous is not None:
             ambiguous.append(media_file)
         if resolution["state"] == "resolved":
@@ -1775,13 +1771,9 @@ class AdminRoutesMixin:
             # Graphs without a recognized sampler keep the legacy extractor below.
             prompt_text = self._graph_prompt_text(metadata)
             if not prompt_text:
-                if unchoosable:
-                    return _untraced_outcome(media_file, canonical, ambiguous, untraced)
-                return resolution["state"]
+                return "unresolved" if unchoosable else resolution["state"]
         elif resolution["state"] == "ambiguous":
-            if unchoosable:
-                return _untraced_outcome(media_file, canonical, ambiguous, untraced)
-            return "ambiguous"
+            return "unresolved" if unchoosable else "ambiguous"
         elif resolution["state"] == "unresolved" and not isinstance(
             canonical.get("parameters"), str
         ):

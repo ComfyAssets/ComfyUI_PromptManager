@@ -33,6 +33,7 @@ the file again.
 """
 
 import os
+from collections import OrderedDict
 from pathlib import Path
 
 from .admin import SCAN_LOG_PREFIXES, _plural, _scan_location, _scan_roots
@@ -44,9 +45,15 @@ QUEUED_OUTCOMES = ("recorded", "limited", "duplicate")
 NEW_OUTCOMES = ("recorded", "limited")
 
 try:
+    from ...utils import review_capture
     from ...utils.review_capture import record_ambiguous_file
 except ImportError:
+    from utils import review_capture
     from utils.review_capture import record_ambiguous_file
+
+# Untraced files remembered per process so a rescan of an unchanged file does
+# not run the inspection profile again (oldest forgotten first).
+MAX_UNTRACED_MEMORY = 65_536
 
 # The scan log's reason for items that leave the queue with nothing to choose.
 NOTHING_TO_CHOOSE = "nothing to choose"
@@ -55,11 +62,14 @@ NOTHING_TO_CHOOSE = "nothing to choose"
 class ReviewRecordingMixin:
     """Record the scan's and the monitor's ambiguous files for Needs review."""
 
-    def _record_scanned_review(self, media_file, roots, review=None):
-        """Record one ambiguous, unlinked scanned file (logged and counted)."""
+    def _record_scanned_review(self, media_file, roots, review=None, scanned=None):
+        """Record one ambiguous, unlinked scanned file (logged and counted).
+
+        ``scanned`` is the scan's ``(metadata, inspection_resolution)``.
+        """
         try:
             outcome = self._record_review_sync(
-                media_file, roots, review, inspection=True
+                media_file, roots, review, inspection=True, scanned=scanned
             )
         except Exception:
             self.logger.warning(
@@ -76,7 +86,9 @@ class ReviewRecordingMixin:
         if outcome in QUEUED_OUTCOMES:
             review["queued"] += 1
 
-    def _record_review_sync(self, media_file, roots, review=None, inspection=False):
+    def _record_review_sync(
+        self, media_file, roots, review=None, inspection=False, scanned=None
+    ):
         """``record_ambiguous_file`` for a file under one of ``roots`` (blocking).
 
         ``inspection`` (the scan only) lets a file without a choice under the
@@ -95,10 +107,79 @@ class ReviewRecordingMixin:
             index,
             relative,
             inspection=inspection,
+            scanned=scanned,
         )
         if outcome == "untraced":
             self._settle_untraced_reviews([media_file], roots, review)
         return outcome
+
+    def _untraced_scan_outcome(self, media_file, roots, canonical, review=None):
+        """The scan status of an unlinked file the default profile left
+        ambiguous without a choice (blocking).
+
+        ``ambiguous`` when the inspection profile offers a choice: the file is
+        recorded for review from that profile (never linked), or ``unchanged``
+        when a saved row links it already. Otherwise ``unresolved``, and its
+        pending items without a choice leave the queue. The profile runs at
+        most once per file state: not for bytes already queued (or decided)
+        at the file's current size and ``mtime_ns`` under the version that
+        its records depend on, and not again for a state it already found
+        untraced in this process.
+        """
+        choice = self._inspection_choice(media_file, roots, canonical)
+        if choice is None:
+            self._settle_untraced_reviews([media_file], roots, review)
+            return "unresolved"
+        if self._review_file_linked(media_file, roots):
+            return "unchanged"
+        self._record_scanned_review(media_file, roots, review, scanned=choice)
+        return "ambiguous"
+
+    def _inspection_choice(self, media_file, roots, canonical):
+        """``(canonical, resolution_or_None)`` when the file offers a choice.
+
+        The resolution is None when the file's current state is already in
+        the queue (so the profile did not run). None when it offers none.
+        """
+        if canonical is None:
+            return None
+        version = review_capture.inspection_review_version(canonical)
+        located = self._review_location(media_file, roots)
+        if version is None or located is None:
+            return None
+        locator = os.path.normcase(located[3])
+        try:
+            facts = os.lstat(located[3])
+        except OSError:
+            facts = None
+        state = None
+        if facts is not None:
+            state = (facts.st_size, facts.st_mtime_ns, version)
+            if self.db.review_decided_at(
+                locator, facts.st_size, facts.st_mtime_ns
+            ) or self.db.review_fingerprint_queued(
+                locator, facts.st_size, facts.st_mtime_ns, version
+            ):
+                return canonical, None
+        memory = self._untraced_memory()
+        if state is not None and memory.get(locator) == state:
+            return None
+        resolution = review_capture.inspection_choice(canonical)
+        if resolution is not None:
+            memory.pop(locator, None)
+            return canonical, resolution
+        if state is not None:
+            memory[locator] = state
+            memory.move_to_end(locator)
+            while len(memory) > MAX_UNTRACED_MEMORY:
+                memory.popitem(last=False)
+        return None
+
+    def _untraced_memory(self):
+        memory = getattr(self, "_untraced_inspections", None)
+        if memory is None:
+            memory = self._untraced_inspections = OrderedDict()
+        return memory
 
     @staticmethod
     def _review_location(media_file, roots, real_roots=None):

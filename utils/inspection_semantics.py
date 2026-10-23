@@ -19,8 +19,13 @@ prompt, so its classes are not claimed by a category.
 
 ``Semantics.version`` is the SHA-256 of the table's canonical JSON (sorted
 keys, no whitespace): any change of content, never of layout, moves it.
-Needs review folds it into the version of the items it records from the
-inspection profile (``utils.review_capture``).
+``class_version(doc, classes)`` is the narrower fingerprint Needs review
+folds into the version of the items it records from the inspection profile
+(``utils.review_capture``): the SHA-256 of ``class_projection``, the table
+restricted to what it says about ``classes`` (the node classes of one graph)
+plus the class-independent ``schema`` and ``stage_inputs``. The resolver looks
+the table up only by the class of a graph node, so an edit about other
+classes cannot change how that graph resolves and leaves the version alone.
 """
 
 import hashlib
@@ -126,6 +131,8 @@ class Semantics:
     all_classes: FrozenSet[str]
     # SHA-256 of the canonical table JSON (set by ``load_semantics``).
     version: str = ""
+    # The canonical table JSON itself, for ``class_version``.
+    source: str = ""
 
 
 def _freeze(value: Any) -> Frozen:
@@ -529,13 +536,71 @@ def load_semantics(path: Optional[Union[str, Path]] = None) -> Semantics:
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise SemanticsError(f"cannot read semantics table {source.name}: {error}")
     _check_nesting(doc)
-    return replace(_validate(doc), version=table_version(doc))
+    return replace(
+        _validate(doc), version=table_version(doc), source=_canonical_json(doc)
+    )
+
+
+# Table parts that hold no class names: they apply to every graph.
+_CLASS_INDEPENDENT = frozenset({"schema", "stage_inputs"})
+
+
+def _canonical_json(doc: Any) -> str:
+    return json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def table_version(doc: Any) -> str:
     """SHA-256 of ``doc`` as canonical JSON: content, not layout."""
-    text = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(_canonical_json(doc).encode("utf-8")).hexdigest()
+
+
+def _about(value: Any, classes: FrozenSet[str]) -> Any:
+    """The part of one category that names a class in ``classes``.
+
+    Categories are keyed by class (objects), list classes (strings) or list
+    entries that carry a ``class``.
+    """
+    if isinstance(value, dict):
+        return {key: item for key, item in value.items() if key in classes}
+    if isinstance(value, list):
+        return [
+            entry
+            for entry in value
+            if (isinstance(entry, str) and entry in classes)
+            or (isinstance(entry, dict) and entry.get("class") in classes)
+        ]
+    return value
+
+
+def class_projection(doc: Mapping[str, Any], classes) -> dict:
+    """What ``doc`` says about ``classes``, plus its class-independent parts."""
+    classes = frozenset(classes)
+    projected = {}
+    for category, value in doc.items():
+        if category in _CLASS_INDEPENDENT:
+            projected[category] = value
+        elif category == "facts" and isinstance(value, dict):
+            projected[category] = {
+                table: _about(entries, classes) for table, entries in value.items()
+            }
+        else:
+            projected[category] = _about(value, classes)
+    return projected
+
+
+def class_version(doc: Mapping[str, Any], classes) -> str:
+    """SHA-256 of ``class_projection(doc, classes)`` as canonical JSON."""
+    return table_version(class_projection(doc, classes))
+
+
+@lru_cache(maxsize=256)
+def _cached_class_version(source: str, classes: FrozenSet[str]) -> str:
+    return class_version(json.loads(source), classes)
+
+
+def semantics_class_version(semantics: Semantics, classes) -> str:
+    """``class_version`` of a loaded table (cached per table and class set)."""
+    return _cached_class_version(semantics.source, frozenset(classes))
 
 
 @lru_cache(maxsize=1)

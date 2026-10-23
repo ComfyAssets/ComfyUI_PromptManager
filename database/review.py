@@ -90,6 +90,23 @@ _PENDING_AT = (
     "WHERE f.locator=? AND b.size=? AND b.mtime_ns=? AND i.resolver_version=? "
     "AND i.state='pending' LIMIT 1"
 )
+# Bytes verified at this stat whose item carries a decision (any version).
+_DECIDED_AT = (
+    f"SELECT 1 FROM {FILES_TABLE} f "  # nosec B608
+    f"JOIN {BYTES_TABLE} b ON b.file_id=f.id "
+    f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
+    "WHERE f.locator=? AND b.size=? AND b.mtime_ns=? "
+    "AND (i.state<>'pending' OR i.revision<>0 OR EXISTS (SELECT 1 FROM "
+    f"{DECISIONS_TABLE} d WHERE d.item_id=i.id)) LIMIT 1"
+)
+# The other items of one byte record (another version or evidence), with
+# whether each may be superseded: pending, revision 0, no decision row.
+_OTHER_ITEMS_OF_BYTES = (
+    "SELECT i.id, (i.state='pending' AND i.revision=0 AND NOT EXISTS "  # nosec B608
+    f"(SELECT 1 FROM {DECISIONS_TABLE} d WHERE d.item_id=i.id)) "
+    f"FROM {ITEMS_TABLE} i WHERE i.byte_id=? "
+    "AND NOT (i.resolver_version=? AND i.evidence_hash=?)"
+)
 # Pending items of one file: the candidates a link settles.
 _PENDING_OF_LOCATOR = (
     f"SELECT i.id FROM {FILES_TABLE} f "  # nosec B608
@@ -274,6 +291,12 @@ class ReviewOperations:
         ``LibraryCommandError("storage-changed")`` when the storage epoch is
         no longer ``epoch`` (a restore since the capture) and ``ValueError``
         for invalid facts or evidence.
+
+        One file never holds two pending items for the same bytes: the new
+        item supersedes the byte record's other items (an older resolver or
+        semantics version) when every one is pending and undecided (the safe
+        delete of the self-heal); when one carries a decision or a later
+        revision, it is kept and nothing new is stored (False).
         """
         _validate_target(locator, sha256, size, mtime_ns)
         _validate_spelling(spelled_path, locator)
@@ -297,6 +320,15 @@ class ReviewOperations:
             )
             if created or moved:
                 conn.execute(_BUMP_IMAGE_INDEX)
+            others = conn.execute(
+                _OTHER_ITEMS_OF_BYTES, (byte_id, resolver_version, evidence_hash)
+            ).fetchall()
+            if any(not removable for _id, removable in others):
+                return False
+            superseded = sum(
+                conn.execute(_SETTLE_ITEM, (item_id,)).rowcount
+                for item_id, _removable in others
+            )
             cursor = conn.execute(
                 _INSERT_ITEM,
                 (
@@ -314,9 +346,9 @@ class ReviewOperations:
             )
             inserted = cursor.rowcount > 0
             refreshed = _refresh_spelling(conn, locator, spelled_path)
-            if inserted or refreshed:
+            if inserted or refreshed or superseded:
                 conn.execute(_BUMP_REVIEW_INDEX)
-        if inserted or refreshed:
+        if inserted or refreshed or superseded:
             notify_review_change(self.model.db_path)
         return inserted
 
@@ -385,6 +417,19 @@ class ReviewOperations:
         row = (
             self.model.get_connection()
             .execute(_QUEUED, (locator, size, mtime_ns, resolver_version))
+            .fetchone()
+        )
+        return row is not None
+
+    def review_decided_at(self, locator: str, size: int, mtime_ns: int) -> bool:
+        """True when bytes verified at this stat carry a decided item.
+
+        Any version: a newer resolver or table never adds an item beside a
+        decision, so the rescan need not copy those bytes again.
+        """
+        row = (
+            self.model.get_connection()
+            .execute(_DECIDED_AT, (locator, size, mtime_ns))
             .fetchone()
         )
         return row is not None

@@ -2243,7 +2243,12 @@ class TestActivityJobs(AdminAPITestCase):
             (self.output_dir / name).write_bytes(b"not an image")
 
         def fake_ingest(
-            media_file, metadata, detailed=False, ambiguous=None, untraced=None
+            media_file,
+            metadata,
+            detailed=False,
+            ambiguous=None,
+            untraced=None,
+            records=None,
         ):
             key = Path(media_file).relative_to(self.output_dir).as_posix()
             outcome = names[key]

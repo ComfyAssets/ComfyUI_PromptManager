@@ -13,9 +13,11 @@ profile, and Apply re-resolves with the same profile. Nothing links
 automatically from the inspection profile, and the live monitor never queues.
 """
 
+import contextlib
 import json
 import os
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,6 +35,20 @@ from utils.prompt_tracker import PromptTracker
 
 NAME = "kittybear_00001_.png"
 PROMPTS = ("make it night", "add a red hat", "turn the cat into a bear")
+
+
+@contextlib.contextmanager
+def _counted(module, name):
+    """Count the calls of ``module.name`` while calling through."""
+    real = getattr(module, name)
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    with patch.object(module, name, side_effect=spy):
+        yield calls
 
 
 def qwen_edit_graph(*prompts, joined=()):
@@ -124,6 +140,29 @@ def _prefixed(graph, prefix):
     return renamed
 
 
+def _version(graph=None):
+    """The item version of a Qwen-edit graph under the current table."""
+    graph = graph if graph is not None else qwen_edit_graph(*PROMPTS)
+    return review_capture.inspection_review_version({"prompt": graph})
+
+
+def _retarget_unet_loader(doc):
+    """A table edit for a class the Qwen-edit graph uses (no prompt effect)."""
+    doc["facts"]["model_outputs"]["UNETLoader"] = "unet"
+
+
+def _unrelated_encoder(doc):
+    """A table edit for a class the Qwen-edit graph does not use."""
+    doc["encoders"].append(
+        {
+            "class": "UnrelatedTextEncode",
+            "slot": 0,
+            "strategy": "single",
+            "inputs": ["text"],
+        }
+    )
+
+
 def _texts(evidence):
     return sorted(
         c["positive"]["text"]
@@ -141,6 +180,9 @@ class InspectionTestCase(ReviewRoutesTestCase):
             color=color,
         )
         return path
+
+    def _pending(self):
+        return self.api.db.library_counts()["review_pending"]
 
     def _evidence(self, item):
         return json.loads(item["evidence"])
@@ -192,10 +234,11 @@ class TestQwenEditBatchIsQueued(InspectionTestCase):
         self.assertEqual(item["candidate_count"], 4)
         self.assertEqual(evidence["profile"], "inspection")
         self.assertEqual(
-            evidence["semantics"], inspection_semantics.get_semantics().version
+            evidence["semantics"], review_capture.semantics_version({"prompt": graph})
         )
         self.assertEqual(
-            item["resolver_version"], review_capture.inspection_review_version()
+            item["resolver_version"],
+            review_capture.inspection_review_version({"prompt": graph}),
         )
         self.assertNotEqual(item["resolver_version"], review_capture.RESOLVER_VERSION)
         self.assertEqual(job["scope"]["review_items"], 1)
@@ -212,11 +255,10 @@ class TestQwenEditBatchIsQueued(InspectionTestCase):
         await self._scan()
         (item,) = self._items()
 
-        with patch.object(
-            self.api._captures, "capture", side_effect=AssertionError("copied")
-        ):
+        with _counted(self.api._captures, "capture") as copies:
             job = await self._scan("all")
 
+        self.assertEqual(copies, [])
         self.assertEqual([i["id"] for i in self._items()], [item["id"]])
         self.assertEqual(job["scope"]["review_items"], 1)
         self.assertEqual(job["scope"]["review_untraced"], 0)
@@ -309,9 +351,7 @@ class TestApplyInspectionCandidate(InspectionTestCase):
         (link,) = links
         provenance = link["provenance"]
         self.assertEqual(provenance["kind"], "user-selection")
-        self.assertEqual(
-            provenance["resolver_version"], review_capture.inspection_review_version()
-        )
+        self.assertEqual(provenance["resolver_version"], _version())
         self.assertEqual(provenance["positive"]["text"], "add a red hat")
         (decision,) = self._decisions()
         self.assertEqual(decision["item_id"], item["id"])
@@ -339,45 +379,26 @@ class TestApplyInspectionCandidate(InspectionTestCase):
         self.assertEqual(len(calls), 1)
 
     async def test_table_change_keeps_the_item_applicable(self):
-        """A semantics table change moves the version (a rescan records the
-        new evidence beside the old item, as I2 does for the resolver), and
-        the pending item stays applicable while its candidate is offered."""
+        """A table change for a class the graph uses moves the item's
+        version; the pending item stays applicable while its candidate is
+        still offered."""
         self._require_routes()
         self._roots()
         path = self._write()
         await self._scan()
         (old,) = self._items()
-        version = review_capture.inspection_review_version()
-
-        def add_encoder(doc):
-            doc["encoders"].append(
-                {
-                    "class": "UnrelatedTextEncode",
-                    "slot": 0,
-                    "strategy": "single",
-                    "inputs": ["text"],
-                }
-            )
-
-        self._table(add_encoder)
-        self.assertNotEqual(review_capture.inspection_review_version(), version)
-
-        await self._scan("all")
-        items = self._items()
-        self.assertEqual(len(items), 2)
-        self.assertEqual(items[0]["id"], old["id"])
-        self.assertEqual(
-            self._evidence(items[1])["semantics"],
-            inspection_semantics.get_semantics().version,
-        )
-
+        version = _version()
         item, detail, observed = await self._open()
-        self.assertEqual(item["id"], old["id"])
+
+        self._table(_retarget_unet_loader)
+        self.assertNotEqual(_version(), version)
+
         candidate = self._candidate(detail, "add a red hat")
         status, data = await self._decide(
             item["id"], self._body(detail, observed, candidate["hash"])
         )
         self.assertEqual(status, 200, data)
+        self.assertEqual(item["id"], old["id"])
         self.assertEqual(self._linked_text(path), "add a red hat")
 
     async def test_table_change_that_drops_the_encoder_is_a_review_conflict(self):
@@ -483,8 +504,284 @@ class TestTableVersion(InspectionTestCase):
             patch.object(review_capture, "get_semantics", side_effect=unusable),
         ):
             self.assertIsNone(review_capture.inspection_review_version())
+            self.assertIsNone(_version())
             job = await self._scan()
 
         self.assertEqual(self._items(), [])
         (row,) = job["outcomes"]["review"]
         self.assertIn("could not be traced", row["detail"])
+
+
+class TestVersionChanges(InspectionTestCase):
+    """A version change never leaves two pending items for one file."""
+
+    async def test_table_change_for_a_graph_class_leaves_one_item(self):
+        self._require_routes()
+        self._roots()
+        path = self._write()
+        await self._scan()
+        (old,) = self._items()
+
+        self._table(_retarget_unet_loader)
+        job = await self._scan("all")
+
+        (item,) = self._items()
+        self.assertNotEqual(item["id"], old["id"])
+        self.assertEqual(item["resolver_version"], _version())
+        self.assertNotEqual(item["resolver_version"], old["resolver_version"])
+        self.assertEqual(job["scope"]["review_items"], 1)
+        self.assertEqual(self._pending(), 1)
+        _item, (status, data) = await self._apply("make it night")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self._linked_text(path), "make it night")
+
+    async def test_unrelated_table_edit_keeps_the_item_and_does_no_work(self):
+        self._roots()
+        self._write()
+        await self._scan()
+        (old,) = self._items()
+        version = _version()
+
+        self._table(_unrelated_encoder)
+        self.assertEqual(_version(), version)
+        self.assertNotEqual(
+            inspection_semantics.get_semantics().version,
+            json.loads(old["evidence"])["semantics"],
+        )
+        with (
+            _counted(self.api._captures, "capture") as copies,
+            _counted(review_capture, "resolve_inspection") as calls,
+        ):
+            await self._scan("all")
+
+        self.assertEqual(copies, [])
+        self.assertEqual([i["id"] for i in self._items()], [old["id"]])
+        self.assertEqual(calls, [])
+
+    async def test_resolver_change_leaves_one_default_item(self):
+        self._roots()
+        write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
+        await self._scan()
+        (old,) = self._items()
+        self.assertEqual(old["resolver_version"], 1)
+
+        with patch.object(review_capture, "RESOLVER_VERSION", 2):
+            await self._scan("all")
+
+        (item,) = self._items()
+        self.assertNotEqual(item["id"], old["id"])
+        self.assertEqual(item["resolver_version"], 2)
+        self.assertEqual(self._pending(), 1)
+
+    async def test_decided_old_item_is_kept_and_no_duplicate_is_made(self):
+        self._require_routes()
+        self._roots()
+        self._write()
+        await self._scan()
+        item, detail, observed = await self._open()
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, "unresolved")
+        )
+        self.assertEqual(status, 200, data)
+        before = (self._items(), self._decisions())
+
+        self._table(_retarget_unet_loader)
+        await self._scan("all")
+        self.assertEqual((self._items(), self._decisions()), before)
+        # The decided bytes are not copied again on the next rescan.
+        with _counted(self.api._captures, "capture") as copies:
+            await self._scan("all")
+
+        self.assertEqual(copies, [])
+        self.assertEqual((self._items(), self._decisions()), before)
+        self.assertEqual(self._pending(), 0)
+
+    async def test_advanced_pending_item_is_kept_and_no_duplicate_is_made(self):
+        self._roots()
+        self._write()
+        await self._scan()
+        (old,) = self._items()
+        conn = self.api.db.model.get_connection()
+        with conn:
+            conn.execute(
+                "UPDATE media_review_items SET revision=1 WHERE id=?", (old["id"],)
+            )
+        before = self._items()
+
+        self._table(_retarget_unet_loader)
+        await self._scan("all")
+
+        self.assertEqual(self._items(), before)
+
+
+class TestInspectionRuns(InspectionTestCase):
+    """The heavier profile runs once per new file state, never again."""
+
+    async def test_new_file_is_inspected_once_and_not_on_rescan(self):
+        self._roots()
+        self._write()
+        with _counted(review_capture, "resolve_inspection") as first:
+            await self._scan()
+        self.assertEqual(len(self._items()), 1)
+        self.assertEqual(len(first), 1)
+
+        with _counted(review_capture, "resolve_inspection") as again:
+            await self._scan("all")
+
+        self.assertEqual(again, [])
+        self.assertEqual(len(self._items()), 1)
+
+    async def test_untraced_file_is_not_inspected_again_until_it_changes(self):
+        self._roots()
+        graph = qwen_edit_graph(*PROMPTS)
+        for node in graph.values():
+            if node["class_type"] == "TextEncodeQwenImageEdit":
+                node["class_type"] = "OpaqueTextEncode"
+        self._write(graph=graph)
+        with _counted(review_capture, "resolve_inspection") as first:
+            job = await self._scan()
+        self.assertEqual(len(first), 1)
+        (row,) = job["outcomes"]["review"]
+        self.assertIn("could not be traced", row["detail"])
+
+        with _counted(review_capture, "resolve_inspection") as again:
+            await self._scan("all")
+        self.assertEqual(again, [])
+
+        self._write(graph=graph, color=(0, 255, 0))
+        with _counted(review_capture, "resolve_inspection") as changed:
+            await self._scan("all")
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(self._items(), [])
+
+    async def test_capture_with_other_records_is_inspected_again(self):
+        """The scan's result is reused only for identical records."""
+        self._roots()
+        self._write()
+        real = review_capture.captured_review
+
+        def edited(store, capture, profile=review_capture.DEFAULT):
+            metadata, resolution = real(store, capture, profile)
+            graph = json.loads(json.dumps(metadata["prompt"]))
+            graph["100"]["inputs"]["prompt"] = "a captured edit"
+            return {**metadata, "prompt": graph}, resolution
+
+        with (
+            patch.object(review_capture, "captured_review", side_effect=edited),
+            _counted(review_capture, "resolve_inspection") as calls,
+        ):
+            await self._scan()
+
+        self.assertEqual(len(calls), 2)
+        (item,) = self._items()
+        self.assertIn("a captured edit", _texts(self._evidence(item)))
+
+
+class TestClassProjection(unittest.TestCase):
+    def test_projection_over_every_named_class_is_the_whole_table(self):
+        doc = json.loads(inspection_semantics.SEMANTICS_PATH.read_text("utf-8"))
+        names = set(inspection_semantics.load_semantics().all_classes)
+        names |= set(doc["facts"]["configuration_outputs"])
+        names |= set(doc["facts"]["model_outputs"])
+        names |= set(doc["facts"]["model_passthroughs"])
+        names |= set(doc["facts"].get("scalar_outputs", {}))
+        names |= {entry["class"] for entry in doc["lineage"]}
+
+        self.assertEqual(inspection_semantics.class_projection(doc, names), doc)
+
+    def test_class_version_moves_only_for_the_classes_it_covers(self):
+        doc = json.loads(inspection_semantics.SEMANTICS_PATH.read_text("utf-8"))
+        classes = frozenset({"KSampler", "UNETLoader"})
+        version = inspection_semantics.class_version(doc, classes)
+        _unrelated_encoder(doc)
+        self.assertEqual(inspection_semantics.class_version(doc, classes), version)
+        _retarget_unet_loader(doc)
+        self.assertNotEqual(inspection_semantics.class_version(doc, classes), version)
+
+
+class TestRecordingEdges(InspectionTestCase):
+    async def test_store_refuses_a_new_version_beside_a_decided_item(self):
+        self._roots()
+        self._write()
+        await self._scan()
+        (old,) = self._items()
+        conn = self.api.db.model.get_connection()
+        with conn:
+            conn.execute(
+                "UPDATE media_review_items SET state='unresolved', revision=1 "
+                "WHERE id=?",
+                (old["id"],),
+            )
+        evidence = {**self._evidence(old), "resolver_version": 7}
+
+        inserted = self.api.db.record_review_item(
+            locator=old["locator"],
+            spelled_path=old["spelled_path"],
+            sha256=old["sha256"],
+            size=old["size"],
+            mtime_ns=old["mtime_ns"],
+            epoch=self.api.db.get_execution_epoch(),
+            resolver_version=7,
+            evidence=evidence,
+            candidate_count=old["candidate_count"],
+            limited=bool(old["limited"]),
+        )
+
+        self.assertFalse(inserted)
+        self.assertEqual([i["id"] for i in self._items()], [old["id"]])
+
+    async def test_already_linked_file_with_an_inspection_choice_is_unchanged(self):
+        self._roots()
+        path = self._write()
+        prompt_id = self.api.db.save_prompt(
+            text="latest", prompt_hash=generate_prompt_hash("latest")
+        )
+        handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+        handler.link_image_to_prompt(
+            str(path),
+            {"id": prompt_id, "text": "latest", "fallback": True},
+            {"prompt": qwen_edit_graph(*PROMPTS)},
+        )
+
+        job = await self._scan("all")
+
+        self.assertEqual(self._items(), [])
+        self.assertEqual(job["outcomes"]["review"], [])
+        (row,) = job["outcomes"]["known"]
+        self.assertIn("Already linked", row["detail"])
+        self.assertEqual(self._linked_text(path), "latest")
+
+    async def test_untraced_memory_forgets_the_oldest_state(self):
+        from py.api import review_recording
+
+        self._roots()
+        graph = qwen_edit_graph(*PROMPTS)
+        for node in graph.values():
+            if node["class_type"] == "TextEncodeQwenImageEdit":
+                node["class_type"] = "OpaqueTextEncode"
+        self._write("a.png", graph=graph)
+        self._write("b.png", graph=graph)
+        with patch.object(review_recording, "MAX_UNTRACED_MEMORY", 1):
+            await self._scan()
+            with _counted(review_capture, "resolve_inspection") as calls:
+                await self._scan("all")
+
+        # One remembered state: each file evicts the other, so both run.
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(self.api._untraced_inspections), 1)
+
+    def test_graph_classes(self):
+        self.assertEqual(review_capture.graph_classes({"parameters": "x"}), set())
+        self.assertEqual(
+            review_capture.graph_classes({"prompt": {"1": {"class_type": "A"}}}),
+            {"A"},
+        )
+        many = {
+            str(n): {"class_type": f"C{n}"}
+            for n in range(review_capture.MAX_FINGERPRINT_CLASSES + 1)
+        }
+        self.assertIsNone(review_capture.graph_classes({"prompt": many}))
+        self.assertEqual(
+            review_capture.semantics_version({"prompt": many}),
+            inspection_semantics.get_semantics().version,
+        )

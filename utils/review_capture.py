@@ -27,12 +27,15 @@ batches): when the default profile is ambiguous without a choice, the scan
 (``inspection=True``; the live monitor never) asks ``INSPECTION_PROFILE``,
 which knows more encoder and string nodes. With at least two choosable
 candidates there, the item is recorded from that profile: its evidence names
-``profile: "inspection"`` and the semantics table ``version``, and its
-``resolver_version`` is ``inspection_review_version()``, which folds the
-profile, ``RESOLVER_VERSION`` and the table version together. A table change
-therefore moves the version the way a resolver change does (I2): a rescan
-records the new evidence beside the pending item, which stays applicable
-while the bytes still offer its chosen candidate. Apply re-resolves with the
+``profile: "inspection"`` and ``semantics``, the fingerprint of what the table
+says about the graph's node classes, and its ``resolver_version`` is
+``inspection_review_version(metadata)``, which folds the profile,
+``RESOLVER_VERSION`` and that fingerprint together. A table edit about those
+classes moves the version the way a resolver change does (I2); an edit about
+other classes moves nothing. A pending item stays applicable while the bytes
+still offer its chosen candidate, and a rescan's new item supersedes it only
+while it is pending and undecided (never beside a decision, see
+``PromptDatabase.record_review_item``). Apply re-resolves with the
 profile the item recorded (``captured_review(..., item_profile(evidence))``).
 The inspection profile only ever produces review choices; ingestion's own
 links stay on the default profile, which never loads the table (D1).
@@ -55,7 +58,11 @@ try:
         canonical_evidence,
         choosable,
     )
-    from .inspection_semantics import SemanticsError, get_semantics
+    from .inspection_semantics import (
+        SemanticsError,
+        get_semantics,
+        semantics_class_version,
+    )
     from .media_capture import CaptureCapacity, CaptureError
     from .prompt_inspector import MetadataReadError, read_inspection_file
     from .prompt_pair_resolver import (
@@ -71,7 +78,11 @@ except ImportError:  # imported with the repo root on sys.path
         canonical_evidence,
         choosable,
     )
-    from utils.inspection_semantics import SemanticsError, get_semantics
+    from utils.inspection_semantics import (
+        SemanticsError,
+        get_semantics,
+        semantics_class_version,
+    )
     from utils.media_capture import CaptureCapacity, CaptureError
     from utils.prompt_inspector import MetadataReadError, read_inspection_file
     from utils.prompt_pair_resolver import (
@@ -95,21 +106,54 @@ INSPECTION_VERSION_BASE = 1 << 40
 _INSPECTION_VERSION_HEX = 10
 
 
-def semantics_version() -> str | None:
-    """The inspection semantics table's version, or None when it is unusable."""
+# Above this many distinct node classes the whole table is the fingerprint.
+MAX_FINGERPRINT_CLASSES = 1024
+
+
+def graph_classes(metadata: Any) -> frozenset | None:
+    """The node classes of ``metadata``'s prompt graph (empty without one).
+
+    None when the graph names more than ``MAX_FINGERPRINT_CLASSES`` classes.
+    """
+    graph = metadata.get("prompt") if isinstance(metadata, dict) else None
+    if not isinstance(graph, dict):
+        return frozenset()
+    classes = set()
+    for node in graph.values():
+        name = node.get("class_type") if isinstance(node, dict) else None
+        if isinstance(name, str):
+            classes.add(name)
+            if len(classes) > MAX_FINGERPRINT_CLASSES:
+                return None
+    return frozenset(classes)
+
+
+def semantics_version(metadata: Any = None) -> str | None:
+    """The semantics table fingerprint that ``metadata``'s graph depends on.
+
+    The table restricted to the graph's node classes
+    (``inspection_semantics.class_version``), so an edit about other classes
+    leaves it alone; the whole table's version without ``metadata`` or for a
+    graph of very many classes. None when the table is unusable.
+    """
     try:
-        return get_semantics().version
+        semantics = get_semantics()
     except SemanticsError:
         return None
+    classes = graph_classes(metadata) if metadata is not None else None
+    if classes is None:
+        return semantics.version
+    return semantics_class_version(semantics, classes)
 
 
-def inspection_review_version() -> int | None:
-    """The ``resolver_version`` of items recorded from the inspection profile.
+def inspection_review_version(metadata: Any = None) -> int | None:
+    """The ``resolver_version`` of an item recorded from the inspection profile.
 
-    Folds the profile, ``RESOLVER_VERSION`` and the table version, so either
-    change moves it. None when the table cannot be loaded.
+    Folds the profile, ``RESOLVER_VERSION`` and ``semantics_version(metadata)``,
+    so a resolver change or a table change about the graph's classes moves
+    it. None when the table cannot be loaded.
     """
-    table = semantics_version()
+    table = semantics_version(metadata)
     if table is None:
         return None
     seed = f"{INSPECTION_PROFILE.name}:{RESOLVER_VERSION}:{table}"
@@ -122,15 +166,18 @@ def resolve_inspection(metadata: dict) -> dict:
     return resolve_prompt_pair(metadata, profile=INSPECTION_PROFILE)
 
 
-def inspection_offers_choice(metadata: dict) -> bool:
-    """True when the inspection profile finds a choice in ``metadata``.
+def inspection_choice(metadata: dict) -> dict | None:
+    """The inspection profile's ambiguous result when it offers a choice.
 
     The scan asks only for a file the default profile found ambiguous
     without a choice that nothing links.
     """
-    if inspection_review_version() is None:
-        return False
-    return reviewable(resolve_inspection(metadata))
+    if inspection_review_version(metadata) is None:
+        return None
+    resolution = resolve_inspection(metadata)
+    if resolution.get("state") != "ambiguous" or not reviewable(resolution):
+        return None
+    return resolution
 
 
 def item_profile(evidence: Any) -> str:
@@ -140,22 +187,43 @@ def item_profile(evidence: Any) -> str:
     return DEFAULT
 
 
-def _versions(inspection: bool) -> tuple:
-    """The item versions a file may already be queued under."""
-    if not inspection:
-        return (RESOLVER_VERSION,)
-    version = inspection_review_version()
+def item_versions(metadata: Any = None) -> tuple:
+    """The item versions a file with ``metadata`` may already be queued under.
+
+    Without ``metadata`` (the monitor), only the ingestion version.
+    """
+    version = inspection_review_version(metadata) if metadata is not None else None
     return (RESOLVER_VERSION,) if version is None else (RESOLVER_VERSION, version)
 
 
+def _same_records(captured: dict, scanned: dict) -> bool:
+    """True when the capture holds the records the scan resolved."""
+    keys = (set(captured) | set(scanned)) - {"file_info"}
+    return all(captured.get(key) == scanned.get(key) for key in keys)
+
+
 def record_ambiguous_file(
-    db, store, root, root_index: int, relative: str, *, inspection: bool = False
+    db,
+    store,
+    root,
+    root_index: int,
+    relative: str,
+    *,
+    inspection: bool = False,
+    scanned: tuple | None = None,
 ) -> str:
     """Persist the ambiguous evidence of one rooted file.
 
     With ``inspection`` (the scan), a default result without a choice is
     resolved again with the inspection profile, and recorded from it when
-    that offers a choice; the live monitor passes False.
+    that offers a choice; the live monitor passes False. ``scanned`` is the
+    scan's ``(metadata, inspection_resolution_or_None)`` for the file: its
+    metadata names the item versions that count, and when the capture holds
+    the same records its resolution is reused instead of resolving again.
+
+    A new item supersedes the file's other items of the same bytes (an older
+    resolver or table version) when every one is still pending and
+    undecided; when one carries a decision, nothing new is stored.
 
     Returns ``recorded`` (new item with candidates), ``limited`` (new item
     without candidates), ``duplicate`` (these bytes already carry this
@@ -170,7 +238,7 @@ def record_ambiguous_file(
     ``CaptureCapacity`` and database errors propagate to the caller, which
     logs and counts them.
     """
-    versions = _versions(inspection)
+    versions = item_versions(scanned[0] if scanned is not None else None)
     spelled_path, queued = _queued_spelling(db, root, relative, versions)
     if queued is not None:
         return _already_queued(db, *queued, versions)
@@ -199,14 +267,24 @@ def record_ambiguous_file(
         return "skipped"
     profile, version = DEFAULT, RESOLVER_VERSION
     if not reviewable(resolution):
-        version = inspection_review_version() if inspection else None
+        version = inspection_review_version(captured[0]) if inspection else None
         if version is None:
             return "untraced"
-        # Heavier, so only for a file that is ambiguous with nothing to choose.
-        resolution, profile = resolve_inspection(captured[0]), INSPECTION
+        profile = INSPECTION
+        if (
+            scanned is not None
+            and scanned[1] is not None
+            and _same_records(captured[0], scanned[0])
+        ):
+            resolution = scanned[1]  # the same records: no second run
+        else:
+            # Heavier, so only for a file ambiguous with nothing to choose.
+            resolution = resolve_inspection(captured[0])
         if resolution.get("state") != "ambiguous" or not reviewable(resolution):
             return "untraced"
-    evidence, count, limited = review_evidence(resolution, profile, version)
+    evidence, count, limited = review_evidence(
+        resolution, profile, version, captured[0]
+    )
     try:
         inserted = db.record_review_item(
             locator=capture.locator,
@@ -249,7 +327,9 @@ def _queued_spelling(db, root, relative: str, versions) -> tuple[str, tuple | No
     an item already cites is not copied or hashed again (maintainer ruling:
     the rescan stays cheap and the file stays in the default scope); its
     items take the current spelling. A stat failure leaves the decision to
-    the capture. ``versions`` are the item versions that count.
+    the capture. ``versions`` are the item versions that count; bytes whose
+    item carries a decision count under any version (a new version never
+    adds an item beside a decision).
     """
     spelled = os.path.join(os.path.realpath(os.fspath(root)), *relative.split("/"))
     try:
@@ -257,7 +337,7 @@ def _queued_spelling(db, root, relative: str, versions) -> tuple[str, tuple | No
     except OSError:
         return spelled, None
     locator = os.path.normcase(spelled)
-    if any(
+    if db.review_decided_at(locator, facts.st_size, facts.st_mtime_ns) or any(
         db.review_fingerprint_queued(locator, facts.st_size, facts.st_mtime_ns, v)
         for v in versions
     ):
@@ -326,12 +406,16 @@ def reviewable(resolution: Any) -> bool:
 
 
 def review_evidence(
-    resolution: dict, profile: str = DEFAULT, version: int | None = None
+    resolution: dict,
+    profile: str = DEFAULT,
+    version: int | None = None,
+    metadata: Any = None,
 ) -> tuple[dict, int, bool]:
     """``(evidence, candidate_count, limited)`` for one ambiguous result.
 
-    Inspection evidence also names its ``profile`` and the semantics table
-    ``version`` it was resolved with; ``version`` is the item's version.
+    Inspection evidence also names its ``profile`` and ``semantics``, the
+    table fingerprint of ``metadata``'s graph it was resolved with;
+    ``version`` is the item's version.
     """
     base = {
         "resolver_version": RESOLVER_VERSION if version is None else version,
@@ -339,7 +423,7 @@ def review_evidence(
     }
     if profile == INSPECTION:
         base["profile"] = INSPECTION
-        base["semantics"] = semantics_version()
+        base["semantics"] = semantics_version(metadata)
     candidates: list[dict] = []
     seen: set[str] = set()
     total = 0

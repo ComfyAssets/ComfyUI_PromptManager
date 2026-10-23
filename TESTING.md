@@ -2622,18 +2622,28 @@ the scan (never the monitor) resolves it again with `INSPECTION_PROFILE`, which
 knows `TextEncodeQwenImageEdit`, `StringConstantMultiline`, `JoinStringMulti`
 and the rest of `web/js/inspection-semantics.json`. With at least two choosable
 candidates there, the file is `ambiguous` and is queued from that profile's
-evidence, which adds `profile: "inspection"` and `semantics` (the table's
-`version`, SHA-256 of its canonical JSON); the item's `resolver_version` is
-`inspection_review_version()`, 2^40 plus 40 bits of SHA-256 over the profile,
-`RESOLVER_VERSION` and the table version. A table change therefore behaves like
-a resolver change (I2): a rescan records the new evidence beside the pending
-item, which stays applicable while the bytes still offer its chosen candidate.
+evidence, which adds `profile: "inspection"` and `semantics`: the SHA-256 of
+`class_projection`, the table restricted to the graph's node classes plus its
+class-independent `schema` and `stage_inputs` (the resolver looks the table up
+only by a graph node's class). The item's `resolver_version` is
+`inspection_review_version(metadata)`, 2^40 plus 40 bits of SHA-256 over the
+profile, `RESOLVER_VERSION` and that fingerprint. A table edit about the
+graph's classes behaves like a resolver change (I2); an edit about other
+classes changes nothing. One file never holds two pending items for the same
+bytes: a new version's item supersedes the byte record's other items when all
+are pending and undecided (revision 0, no decision row, the self-heal's safe
+delete); beside a decided or advanced item nothing new is stored, and the
+rescan's stat shortcut then skips those bytes under any version. A pending item
+stays applicable while the bytes still offer its chosen candidate.
 Apply re-resolves the capture with the profile the item recorded and re-checks
 the chosen hash; the link goes through the same compatible-only ingestion. The
 inspection profile never links on its own, and ingestion keeps the default
 profile (D1). The heavier profile runs only for files already ambiguous without
-a choice (twice per new file: once on the scanned metadata, once on the
-capture; a rescan's stat shortcut skips the capture). The 16-candidate limited
+a choice, and once per file state: the capture reuses the scan's result when
+it holds the same records; a rescan skips files already queued or decided at
+their current size and `mtime_ns` under their version, and files this process
+already found untraced at the same state (an in-memory map of at most 65,536
+files, oldest forgotten first). The 16-candidate limited
 rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
