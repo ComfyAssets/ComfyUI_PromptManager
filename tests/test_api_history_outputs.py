@@ -1116,6 +1116,28 @@ class HistoryOutputAPITests(ImageAPITestCase):
         response = await self.current(descriptor["thumbnail_url"])
         self.assert_error(response, await response.json(), 403, "not-authorized")
 
+    async def test_missing_preview_is_never_made_through_a_linked_out_folder(self):
+        original = make_png(self.output_dir / "image.png", size=(64, 64))
+        elsewhere = self.temp_dir / "elsewhere"
+        elsewhere.mkdir()
+        (self.output_dir / "thumbnails").symlink_to(elsewhere, target_is_directory=True)
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["thumbnail_url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), original.read_bytes())
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    async def test_a_preview_that_cannot_be_made_serves_the_original(self):
+        broken = self.output_dir / "image.png"
+        broken.write_bytes(b"\x89PNG\r\n\x1a\n not an image")
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["thumbnail_url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), broken.read_bytes())
+        self.assertFalse((self.output_dir / "thumbnails" / "image_thumb.png").exists())
+
     async def test_disappearance_before_open_is_missing_and_closes_handle(
         self,
     ):

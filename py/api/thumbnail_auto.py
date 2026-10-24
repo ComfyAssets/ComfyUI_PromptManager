@@ -423,8 +423,13 @@ class AutoThumbnailMixin:
             return self._auto_thumbnailer
 
     def close_auto_thumbnails(self):
-        """Stop the capture worker (shutdown; safe when it never started)."""
-        thumbnailer = self._auto_thumbnailer
+        """Stop the capture worker and forget it (shutdown, a test's reset).
+
+        Waits for the batch in hand, so nothing writes into the output tree
+        after it returns; the next use starts a fresh one.
+        """
+        with AutoThumbnailMixin._auto_thumbnailer_lock:
+            thumbnailer, self._auto_thumbnailer = self._auto_thumbnailer, None
         if thumbnailer is not None:
             thumbnailer.close()
 

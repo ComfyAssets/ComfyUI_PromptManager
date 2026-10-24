@@ -80,6 +80,8 @@ class ImageAPITestCase(AioHTTPTestCase):
 
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
+        # The automatic preview worker writes into the temp tree: stop it first.
+        self.api.close_auto_thumbnails()
         self._anchor_patch.stop()
         # Windows refuses to unlink a database that still has open handles.
         self.api.db.close_all()

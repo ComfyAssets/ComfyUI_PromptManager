@@ -62,6 +62,8 @@ class BackupRestoreTestCase(AioHTTPTestCase):
 
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
+        # The automatic preview worker writes into the temp tree: stop it first.
+        self.api.close_auto_thumbnails()
         PromptModel.close_all_instances()  # restore may have swapped api.db
         assert_closed(self, self.tmpdir)
         for name in os.listdir(self.tmpdir):

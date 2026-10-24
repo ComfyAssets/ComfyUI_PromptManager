@@ -1932,8 +1932,8 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   unavailable file's empty media button keeps the concept's 1.33 media area, so its
   card lines up with the others. A long file name in the panel's `p.small` wraps inside
   the panel (`overflow-wrap: anywhere`), where the concept's short sample name never
-  overflows. A queue card shows the Images listing's thumbnail when the server knows one
-  (`thumbnail_url`, the same URL the Images page uses), else the original; a re-read
+  overflows. A queue card shows the Images listing's thumbnail (`thumbnail_url`, the
+  same URL the Images page uses; a preview not made yet is made on first view); a re-read
   rebuilds a card whose media, target or availability changed (a root came or went), so
   Open and Tag follow it. When an unanswered decision's item leaves the queue in a
   re-read, the decision was recorded: the page finishes as a recorded decision does (its
@@ -2230,6 +2230,42 @@ through the Activity store, which toasts "Thumbnail generation started."; the jo
 in Activity. A start refused because another job holds the slot toasts the D57 busy
 link toast and stays. The legacy gallery's thumbnail tools are unchanged.
 
+Automatic previews (#249, `py/api/thumbnail_auto.py`). The approved mock has no
+repeated global thumbnail prompt (`docs/concepts/workspace/README.md`), so the
+workspace never asks; previews are a cache the server keeps:
+
+- Every listing gives an image or video a thumbnail URL (`media_thumbnail_url`: Images,
+  saved views and favorites, Library cards and galleries, Needs review, duplicate
+  groups). An existing preview's URL keeps its `v=<mtime>`; a missing one is listed
+  without `v=`.
+- `GET /images/serve/thumbnails/<rel>_thumb<ext>` for a missing preview maps it back to
+  its media file under the same root (traversal and name checks on the text first; the
+  source must be a regular file inside the root, never through a link), makes it with
+  the job's defaults (512 px, medium) and serves it. At most 3 views write at once and
+  one flight runs per file. When it cannot be made the original is served with its own
+  content type and `Cache-Control: no-store`; an undecodable file is remembered for the
+  session by path, size and mtime (not retried per view, retried once it changes) and
+  counted as `failed` in `/images/thumbnails/status`, which Overview's row adds
+  ("N missing thumbnails · M failed"). A preview another program holds open (Windows)
+  is not remembered. A `thumbnails` folder linked out of the root is never written.
+  The recorded-history thumbnail route makes a missing preview the same way.
+- The image monitor hands every settled output to `queue_capture_thumbnail`, which
+  queues it for one background worker: each wake takes at most Worker threads files and
+  writes them on that many threads; a queued file is not queued twice; the queue holds
+  10,000 and a file left out is made on view.
+- A finished scan that added files counts the missing previews of the sources it
+  walked: 200 or more start the thumbnail job (missing only, visible and cancellable in
+  Activity, never silent bulk work); fewer go through the worker.
+- Holds: automatic previews write only `thumbnails/` files and no records, so they run
+  beside a scan, image tagging, the thumbnail job and the Needs review recording (S5
+  M7). They wait (a view gets the original, a queued file is left for its view) while a
+  restore, a duplicate removal, a sources change, the gallery's thumbnail clear or an
+  `exclusive` job runs (`_auto_thumbnail_blocker`).
+- Cards and strips load previews only: Images in every layout and size, Library cards,
+  Needs review cards and the inspector's cover (a video's cover is its preview frame).
+  The media viewer's main media and downloads load the original
+  (`workspace-thumbnails.spec.mjs` records every media request; `tests/test_thumbnail_auto.py`).
+
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
 paints nothing. Until it answers, the section shows "Loading the overview…"; a failure
@@ -2277,7 +2313,8 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   "Backup status" reads "No retained backup record." until verified backups exist (S8).
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
   missing thumbnails", "N missing thumbnails" (the pending count of
-  `/images/thumbnails/status`) or "Thumbnail status unavailable"; Review thumbnails
+  `/images/thumbnails/status`, followed by " · M failed" when automatic previews
+  failed this session) or "Thumbnail status unavailable"; Review thumbnails
   opens the thumbnail dialog (D99). "One display configuration" says "Grid
   and density settings are shared across views." (no paging). The sources row is
   "N output sources" with "Monitoring and enrichment share one source list.", prefixed

@@ -730,6 +730,32 @@ test('refresh releases the previous inspector cover source', async ({ page, requ
     expect(await page.evaluate(() => window.__oldInspectorCover.getAttribute('src'))).toBeNull();
 });
 
+/** A listing that names no preview for its videos (the fallback a card and the cover keep for one). */
+async function videosWithoutPreview(page) {
+    await page.route(url => url.pathname === '/prompt_manager/images/output', async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        if (Array.isArray(body.images)) body.images = body.images.map(image => image.is_video ? { ...image, thumbnail_url: null } : image);
+        await route.fulfill({ response, json: body });
+    });
+}
+
+test('a video listed without a preview keeps its own element, released on refresh', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
+    await videosWithoutPreview(page);
+    await page.goto(workspace);
+    const card = cards(page).filter({ hasText: 'clip.webm' });
+    await expect(card.locator('.media-art > .image-open > video')).toHaveCount(1);
+    await expect(card.locator('img')).toHaveCount(0);
+    await card.getByRole('button', { name: 'Inspect clip.webm', exact: true }).click();
+    await expect(details(page).locator('video')).toBeVisible();
+    await details(page).locator('video').evaluate(element => { window.__oldInspectorVideo = element; });
+    await card.locator('video').evaluate(element => { window.__oldCardVideo = element; });
+    await rescan(page);
+    await expect.poll(() => page.evaluate(() => !window.__oldInspectorVideo.isConnected && !window.__oldCardVideo.isConnected)).toBe(true);
+    expect(await page.evaluate(() => [window.__oldInspectorVideo.getAttribute('src'), window.__oldCardVideo.getAttribute('src')])).toEqual([null, null]);
+});
+
 test('Import Rescan rescans cached files and preserves the collection when rescan fails', async ({ page, request }) => {
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(2);
