@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 from py.api.maintenance_plans import PlanExpired  # noqa: E402
-from py.config import GalleryConfig  # noqa: E402
+from py.config import GalleryConfig, PromptManagerConfig  # noqa: E402
 from utils.hashing import generate_prompt_hash  # noqa: E402
 
 try:
@@ -47,7 +47,9 @@ PLAN_KEYS = {
     "backup",
     "media",
     "details",
+    "disk",
 }
+DISK_KEYS = {"free_bytes", "required_bytes", "sufficient"}
 
 
 def _digest(path):
@@ -77,6 +79,14 @@ class MaintenanceAPITestCase(AdminAPITestCase):
             path.write_bytes(b"png")
         return self.api.db.link_image_to_prompt(prompt_id, str(path))
 
+    def database_bytes(self):
+        conn = sqlite3.connect(self.api.db.model.db_path)
+        try:
+            size = conn.execute("PRAGMA page_size").fetchone()[0]
+            return size * conn.execute("PRAGMA page_count").fetchone()[0]
+        finally:
+            conn.close()
+
     async def post(self, url, body, status):
         response = await self.client.request("POST", url, json=body)
         text = await response.text()
@@ -102,6 +112,7 @@ class TestPreviewRoute(MaintenanceAPITestCase):
                 self.assertIsInstance(plan["token"], str)
                 self.assertEqual(set(plan["scope"]), {"count", "label"})
                 self.assertEqual(set(plan["protected"]), {"count", "reasons"})
+                expected = plan["backup"].pop("expected_bytes")
                 self.assertEqual(
                     plan["backup"],
                     {
@@ -109,6 +120,8 @@ class TestPreviewRoute(MaintenanceAPITestCase):
                         "destination_label": "prompts.db.backup_<date and time>",
                     },
                 )
+                self.assertEqual(expected, self.database_bytes())
+                self.assertEqual(set(plan["disk"]), DISK_KEYS)
                 self.assertFalse(plan["media"]["deletes_files"])
                 self.assertLessEqual(len(plan["details"]), 50)
                 self.assertTrue(plan["expires_at"].endswith("+00:00"))
@@ -377,7 +390,6 @@ class TestApplyRoute(ApplyTestCase):
                 self.assertEqual(self.strays(), [])
 
     async def test_policy_off_reports_no_backup(self):
-        from py.config import PromptManagerConfig
 
         PromptManagerConfig.SAFETY_BACKUP = False
         orphan = self.save("Orphan")
@@ -392,7 +404,6 @@ class TestApplyRoute(ApplyTestCase):
         self.assertIsNone(self.api.db.get_prompt_by_id(orphan))
 
     async def test_a_plan_reviewed_with_the_backup_on_keeps_that_promise(self):
-        from py.config import PromptManagerConfig
 
         self.save("Orphan")
         plan = await self.preview("unused_components")
@@ -624,6 +635,134 @@ class TestSafetyBackup(ApplyTestCase):
         self.assertEqual(mode.fetchone()[0], "wal")
 
 
+class TestBackupPoolAndDiskSpace(ApplyTestCase):
+    """Coordinator rulings: one backup pool; Apply refuses a short disk up front."""
+
+    def old_backup(self, name, mtime):
+        path = os.path.join(self.tmpdir, name)
+        with open(path, "wb") as handle:
+            handle.write(b"old")
+        os.utime(path, (mtime, mtime))
+        return name
+
+    async def test_safety_backups_share_the_restore_pool(self):
+        from py.api.admin import MAX_SAFETY_BACKUPS, _prune_safety_backups
+
+        restore_style = [
+            self.old_backup(f"prompts.db.backup_2000010{i}_000000", 1000 + i)
+            for i in range(6)
+        ]
+        maintenance_style = [
+            self.old_backup(f"prompts.db.backup_2001010{i}_000000_000000", 2000 + i)
+            for i in range(5)
+        ]
+        self.save("Orphan")
+        await self.run_apply("unused_components")
+        backups = self.backups()
+        # One pool of ten: the new backup plus the nine newest of the eleven.
+        self.assertEqual(len(backups), MAX_SAFETY_BACKUPS)
+        self.assertNotIn(restore_style[0], backups)
+        self.assertNotIn(restore_style[1], backups)
+        self.assertTrue(set(maintenance_style) <= set(backups))
+        # A restore prunes the same pool, maintenance backups included.
+        self.old_backup("prompts.db.backup_20020101_000000", 3000)
+        _prune_safety_backups(self.api.db.model.db_path)
+        self.assertEqual(len(self.backups()), MAX_SAFETY_BACKUPS)
+        self.assertNotIn(restore_style[2], self.backups())
+
+    async def test_the_pool_is_pruned_when_the_apply_fails_after_the_backup(self):
+        from py.api.admin import MAX_SAFETY_BACKUPS
+
+        for index in range(MAX_SAFETY_BACKUPS):
+            self.old_backup(f"prompts.db.backup_2000010{index}_00000{index}", 1000)
+        orphan = self.save("Orphan")
+        plan = await self.preview("unused_components")
+        self.save("Changed after the review")
+        body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(job.last_event["code"], "plan-changed")
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+        self.assertEqual(len(self.backups()), MAX_SAFETY_BACKUPS)
+
+    async def test_preview_reports_the_backup_size_and_free_space(self):
+        from py.api import maintenance
+
+        self.save("Orphan")
+        with patch.object(maintenance, "_free_bytes", return_value=10 * 2**30):
+            plan = await self.preview("unused_components")
+            optimize = await self.preview("optimize")
+        size = self.database_bytes()
+        self.assertEqual(plan["backup"]["expected_bytes"], size)
+        self.assertEqual(
+            plan["disk"],
+            {
+                "free_bytes": 10 * 2**30,
+                "required_bytes": size + maintenance.DISK_MARGIN_BYTES,
+                "sufficient": True,
+            },
+        )
+        # VACUUM rebuilds the database beside it, and the backup comes first.
+        self.assertEqual(
+            optimize["disk"]["required_bytes"],
+            3 * size + maintenance.DISK_MARGIN_BYTES,
+        )
+
+    async def test_policy_off_reports_no_backup_size(self):
+        from py.api import maintenance
+
+        PromptManagerConfig.SAFETY_BACKUP = False
+        self.save("Orphan")
+        with patch.object(maintenance, "_free_bytes", return_value=0):
+            plan = await self.preview("unused_components")
+            reply = await self.apply(plan["token"])
+        self.assertIsNone(plan["backup"]["expected_bytes"])
+        self.assertEqual(
+            plan["disk"], {"free_bytes": 0, "required_bytes": 0, "sufficient": True}
+        )
+        job = self.api._jobs.get(reply["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(job.state, "finished")
+
+    async def test_apply_refuses_up_front_when_the_backup_does_not_fit(self):
+        from py.api import maintenance
+
+        orphan = self.save("Orphan")
+        plan = await self.preview("unused_components")
+        with patch.object(maintenance, "_free_bytes", return_value=1024):
+            reply = await self.apply(plan["token"], 507)
+        self.assertEqual(reply["code"], "insufficient-space")
+        needed = self.database_bytes() + maintenance.DISK_MARGIN_BYTES
+        size_mb = f"{needed / 2**20:,.1f} MB"
+        self.assertEqual(
+            reply["error"],
+            f"Not enough free disk space: the safety backup needs about {size_mb} "
+            "in the database folder and 0.0 MB is free. Nothing was changed.",
+        )
+        self.assertEqual(self.api._jobs.list(), [])  # no job started
+        self.assertEqual(self.backups(), [])
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+        # The review is still usable once there is room.
+        body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertIsNone(self.api.db.get_prompt_by_id(orphan))
+
+    async def test_apply_refuses_up_front_when_vacuum_does_not_fit(self):
+        from py.api import maintenance
+
+        PromptManagerConfig.SAFETY_BACKUP = False
+        size = self.database_bytes()
+        plan = await self.preview("optimize")
+        free = size  # VACUUM needs about twice the database
+        with patch.object(maintenance, "_free_bytes", return_value=free):
+            reply = await self.apply(plan["token"], 507)
+        self.assertEqual(reply["code"], "insufficient-space")
+        self.assertIn("Optimize needs about", reply["error"])
+        self.assertTrue(reply["error"].endswith("Nothing was changed."))
+        self.assertEqual(self.api._jobs.list(), [])
+
+
 class TestSafetyBackupPolicy(MaintenanceAPITestCase):
     async def test_policy_round_trips_with_revision(self):
         settings = await self.client.request("GET", "/prompt_manager/settings")
@@ -655,9 +794,8 @@ class TestSafetyBackupPolicy(MaintenanceAPITestCase):
         self.assertFalse(bad["success"])
 
     async def test_config_file_value_is_read_at_load(self):
-        from py.config import PromptManagerConfig
 
-        PromptManagerConfig.update_config({"maintenance": {"safety_backup": False}})
+        PromptManagerConfig.SAFETY_BACKUP = False
         self.assertFalse(PromptManagerConfig.SAFETY_BACKUP)
         PromptManagerConfig.update_config({"maintenance": {"safety_backup": "no"}})
         self.assertFalse(PromptManagerConfig.SAFETY_BACKUP)  # non-bool ignored

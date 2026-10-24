@@ -14,6 +14,7 @@ Split into domain-specific mixins for maintainability:
 - ReviewEventsMixin: the Needs review change stream an open page re-reads on
 - SystemRoutesMixin: System health check, Overview and usage statistics
 - MaintenanceRoutesMixin: reviewed maintenance plans (preview, apply)
+- DuplicateFilesMixin: duplicate image files as find and removal jobs
 """
 
 import asyncio
@@ -48,6 +49,7 @@ from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
 from .system import SystemRoutesMixin
 from .maintenance import MaintenanceRoutesMixin
+from .duplicate_files import DuplicateFilesMixin
 from .maintenance_plans import PlanStore
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
@@ -289,6 +291,7 @@ class PromptManagerAPI(
     ThumbnailJobsMixin,
     SystemRoutesMixin,
     MaintenanceRoutesMixin,
+    DuplicateFilesMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
@@ -345,8 +348,9 @@ class PromptManagerAPI(
         self._jobs = JobRegistry(self.logger)
         # The latest metadata scan job (also in self._jobs), if one was started.
         self._scan_job = None
-        # The current duplicate scan (a py/api/jobs.Job outside the registry).
-        self._duplicate_job = None
+        # Duplicate-file finds by job id, with the groups each one holds for
+        # review (py/api/duplicate_files.py); the last few only.
+        self._duplicate_finds = {}
         # The last System health report this session and the database
         # generation it describes, bumped when a restore replaces self.db
         # (py/api/system.py).
@@ -516,6 +520,7 @@ class PromptManagerAPI(
         self._register_job_routes(routes)
         self._register_system_routes(routes)
         self._register_maintenance_routes(routes)
+        self._register_duplicate_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)

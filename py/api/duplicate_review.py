@@ -1,0 +1,285 @@
+"""Reviewing duplicate image files: the checks and the plan (#249 S6, T17).
+
+Pure helpers of ``py/api/duplicate_files.py``: the keep-list parsing, the
+per-file check ``file_problem`` (containment decided as text before any
+filesystem access, then a regular file of the found size and hash) and the
+public ``duplicate_files`` plan.
+"""
+
+import hashlib
+import json
+import os
+import stat as stat_module
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .admin import DELETABLE_MEDIA_EXTENSIONS
+from .maintenance import DUPLICATE_FILES
+
+MAX_KEEP = 5000  # keep entries one review takes
+MAX_DETAILS = 50
+MAX_JOB_ID = 64
+HASH_CHUNK = 1024 * 1024
+
+# What ``file_problem`` finds, and how a plan counts it as protected.
+OUTSIDE_SOURCE = "outside"
+LINK = "link"
+CHANGED_CONTENT = "changed"
+GONE = "gone"
+UNREADABLE = "unreadable"
+KEEPER = "keeper"
+PROTECTED_REASONS = {
+    OUTSIDE_SOURCE: (
+        "file is not inside a configured source",
+        "files are not inside a configured source",
+    ),
+    LINK: ("file is a link, not a regular file", "files are links, not regular files"),
+    CHANGED_CONTENT: (
+        "file changed since the search",
+        "files changed since the search",
+    ),
+    GONE: ("file no longer exists", "files no longer exist"),
+    UNREADABLE: ("file could not be read", "files could not be read"),
+    KEEPER: (
+        "file kept: its kept copy changed or is gone",
+        "files kept: their kept copy changed or is gone",
+    ),
+}
+# Job outcome rows (never an OS error text).
+CHANGED = "The file changed since the review; it was kept."
+KEEPER_CHANGED = "The kept copy changed or is gone; this file was kept."
+ROW_DETAILS = {
+    OUTSIDE_SOURCE: "The file is no longer inside its source; it was kept.",
+    LINK: "The file is now a link, not a regular file; it was kept.",
+    CHANGED_CONTENT: CHANGED,
+    GONE: "The file was already gone.",
+    UNREADABLE: "The file could not be read; it was kept.",
+    KEEPER: KEEPER_CHANGED,
+}
+LOCKED_FILE = "The file is open in another program or read-only; it was not deleted."
+DELETE_FAILED = "The file could not be deleted."
+NOT_ATTEMPTED = "Not attempted: the job stopped after an error."
+KEPT_COPY = "Kept copy"
+SOURCES_CHANGED = (
+    "The sources changed since the review; nothing was deleted. Review again."
+)
+LINKS_FAILED = (
+    "The files were removed, but their database links could not be moved. "
+    "Review Missing-file links to tidy them."
+)
+FIND_FAILED = "The duplicate search failed."
+FIND_ERROR_EVENT = "An internal error occurred. Check server logs for details."
+FIND_CANCELLED = "Duplicate scan cancelled"
+
+
+class SourcesChanged(Exception):
+    """A source a review or removal names is no longer listed at its index."""
+
+
+def _plural(count, one, many=None):
+    return f"{count:,} {one if count == 1 else (many or one + 's')}"
+
+
+def human_bytes(size):
+    """``10 B``, ``1.5 KB``, ``2.0 MB``…"""
+    if size < 1024:
+        return f"{size:,} B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        size /= 1024
+        if size < 1024 or unit == "TB":
+            return f"{size:,.1f} {unit}"
+    return f"{size:,.1f} TB"  # pragma: no cover - unreachable
+
+
+def _hash_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(HASH_CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_problem(path, root, digest, size, hasher=None):
+    """Why ``path`` may not be treated as a copy in ``root``, or None (blocking).
+
+    Containment is decided as text first, with no filesystem access: the
+    normalized path must lie below the normalized root, outside
+    ``thumbnails``, with a media extension. Only then is the file looked at:
+    a regular file, not a link, whose resolved path is still inside the
+    resolved root, of ``size`` bytes and with content hash ``digest``. Every
+    handle is closed when this returns.
+    """
+    # py.config imports ComfyUI's server module: only when it is in use.
+    from ..config import _canonical_path, _lexical_path, _lexically_inside
+
+    lexical = _lexical_path(str(path))
+    base = _lexical_path(str(root))
+    if lexical == base or not _lexically_inside(lexical, [base]):
+        return OUTSIDE_SOURCE
+    parts = Path(os.path.relpath(lexical, base)).parts
+    if "thumbnails" in parts or ".." in parts:
+        return OUTSIDE_SOURCE
+    if os.path.splitext(lexical)[1].lower() not in DELETABLE_MEDIA_EXTENSIONS:
+        return OUTSIDE_SOURCE
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return GONE
+    except OSError:
+        return UNREADABLE
+    if stat_module.S_ISLNK(info.st_mode):
+        return LINK
+    if not stat_module.S_ISREG(info.st_mode):
+        return LINK
+    try:
+        if not _lexically_inside(_canonical_path(path), [_canonical_path(root)]):
+            return OUTSIDE_SOURCE  # a linked folder on the way
+        if info.st_size != size:
+            return CHANGED_CONTENT
+        if (hasher or _hash_file)(path) != digest:
+            return CHANGED_CONTENT
+    except FileNotFoundError:
+        return GONE
+    except OSError:
+        return UNREADABLE
+    return None
+
+
+@dataclass
+class HeldFind:
+    """One find: where it looked and, once it finished, what it found."""
+
+    origin: str  # "workspace" or "gallery"
+    job_id: str = ""
+    roots: list = field(default_factory=list)  # [(source index or None, root)]
+    legacy_dir: str = None
+    groups: list = None  # [{group_id, hash, size, files:[record]}]
+
+    def covers(self, legacy_dir):
+        """Whether its events answer the legacy gallery for ``legacy_dir``."""
+        if self.origin == "gallery":
+            return True
+        if not legacy_dir:
+            return False
+        wanted = _identity(legacy_dir)
+        return any(_identity(root) == wanted for _index, root in self.roots)
+
+
+def _identity(path):
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
+def _group_order(group):
+    return (-(len(group["files"]) - 1) * group["size"], group["hash"])
+
+
+def _keep_entry(entry):
+    """``((group_id, root_index, path), None)`` or ``(None, message)``."""
+    if not isinstance(entry, dict) or set(entry) != {"group_id", "root_index", "path"}:
+        return None, "Each keep entry is {group_id, root_index, path}"
+    group_id, index, path = entry["group_id"], entry["root_index"], entry["path"]
+    if not isinstance(group_id, str) or not 0 < len(group_id) <= 128:
+        return None, "group_id must be a group's id"
+    if index is not None and (
+        isinstance(index, bool) or not isinstance(index, int) or index < 0
+    ):
+        return None, "root_index must be a source index"
+    if not isinstance(path, str) or not 0 < len(path) <= 4096:
+        return None, "path must be a file's path in its group"
+    return (group_id, index, path), None
+
+
+def _parse_options(options):
+    """``(job_id, keep, None)`` for duplicate_files options, else a message."""
+    if not isinstance(options, dict) or set(options) != {"job_id", "keep"}:
+        return None, None, "duplicate_files takes options {job_id, keep}"
+    job_id, keep = options["job_id"], options["keep"]
+    if not isinstance(job_id, str) or not 0 < len(job_id) <= MAX_JOB_ID:
+        return None, None, "job_id must be a duplicate search's job id"
+    if not isinstance(keep, list) or not 0 < len(keep) <= MAX_KEEP:
+        return None, None, f"keep must list 1 to {MAX_KEEP} files to keep"
+    parsed = []
+    for entry in keep:
+        key, message = _keep_entry(entry)
+        if message:
+            return None, None, message
+        parsed.append(key)
+    return job_id, parsed, None
+
+
+def _select(held, keep):
+    """``({group_id: (group, [keeper records])}, None)`` or ``(None, message)``."""
+    groups = {group["group_id"]: group for group in held.groups}
+    selection = {}
+    for group_id, index, path in keep:
+        group = groups.get(group_id)
+        if group is None:
+            return None, "A kept file names a group this search did not find"
+        match = [
+            record
+            for record in group["files"]
+            if record["root_index"] == index and record["rel"] == path
+        ]
+        if not match:
+            return None, "A kept file is not in its group"
+        _group, keepers = selection.setdefault(group_id, (group, []))
+        if match[0] not in keepers:
+            keepers.append(match[0])
+    return selection, None
+
+
+SOURCES_CHANGED_REVIEW = (
+    "The sources changed since the search. Search for duplicates again."
+)
+
+
+def _fingerprint(targets):
+    digest = hashlib.sha256()
+    for target in sorted(targets, key=lambda t: _identity(t["abs"])):
+        part = [
+            os.path.normcase(target["abs"]),
+            target["hash"],
+            target["size"],
+            os.path.normcase(target["keeper_abs"]),
+        ]
+        digest.update(json.dumps(part).encode("utf-8") + b"\n")
+    return "sha256:" + digest.hexdigest()
+
+
+def _public_plan(targets, protected, links):
+    count = len(targets)
+    groups = len({t["group_id"] for t in targets})
+    size = sum(t["size"] for t in targets)
+    reasons = [
+        f"{n:,} {PROTECTED_REASONS[code][0 if n == 1 else 1]}"
+        for code, n in sorted(protected.items())
+    ]
+    details = []
+    for target in targets[:MAX_DETAILS]:
+        n = links.get(target["abs"], 0)
+        moves = (
+            f"{_plural(n, 'database link')} "
+            f"{'moves' if n == 1 else 'move'} to the kept copy"
+            if n
+            else "no database links"
+        )
+        details.append(
+            {
+                "label": target["rel"],
+                "detail": f"{target['root_label']} · a copy of {target['keeper_rel']}"
+                f" · {moves}",
+            }
+        )
+    label = f"{_plural(count, 'duplicate file')} in {_plural(groups, 'group')}"
+    return {
+        "operation": DUPLICATE_FILES,
+        "scope": {"count": count, "label": label},
+        "protected": {"count": sum(protected.values()), "reasons": reasons},
+        "media": {
+            "deletes_files": True,
+            "label": f"Deletes {_plural(count, 'file')} ({human_bytes(size)}) from "
+            "disk; the kept copies stay. The safety backup covers the database, "
+            "not these files.",
+        },
+        "details": details,
+    }

@@ -41,6 +41,7 @@ from pathlib import Path
 
 from .execution_contexts import LIVE_HINT_CTES
 from .health import BATCH_ROWS, link_states, readable_roots, readonly_uri
+from .models import normalize_image_path
 from .pairs import PairDependencyError
 
 MAINTENANCE_OPERATIONS = (
@@ -627,3 +628,107 @@ class MaintenanceOperations:
             "changed": changed,
             "rows": [{"image_path": row[1]} for row in rows[:MAX_RESULT_ROWS]],
         }
+
+    # ── duplicate image files (py/api/duplicate_files.py) ────────────
+
+    def count_file_links(self, file_paths) -> dict:
+        """``{path: n}``: the image records linking each file (one snapshot).
+
+        A record links a file by its normalized ``file_path``, or, in rows
+        that predate that column, by ``image_path``.
+        """
+
+        def read(conn):
+            return {
+                path: sum(
+                    1
+                    for _row in _file_link_rows(conn, normalize_image_path(path), path)
+                )
+                for path in file_paths
+            }
+
+        return _read_snapshot(self.model.db_path, read)
+
+    def move_file_links(self, moves, favorites=()) -> dict:
+        """Point the links of removed duplicate files at their kept copy.
+
+        ``moves`` is ``[(removed path, kept path)]`` for files that were
+        removed; nothing else is touched. Each image record of a removed file
+        moves to the kept copy, unless its prompt already links the kept copy:
+        then its saved-pair links join that record and it is deleted.
+        ``favorites`` is ``[(root key, removed key, kept root key, kept key)]``:
+        a removed file's favorite moves to the kept copy. One ``BEGIN
+        IMMEDIATE`` transaction. Returns ``{moved, merged, favorites}``.
+        """
+        counts = {"moved": 0, "merged": 0, "favorites": 0}
+        with self._pair_transaction() as conn:
+            for removed, kept in moves:
+                kept_key = normalize_image_path(kept)
+                rows = list(
+                    _file_link_rows(conn, normalize_image_path(removed), removed)
+                )
+                for image_id, prompt_id in rows:
+                    existing = conn.execute(KEEPER_LINK_SQL, (prompt_id, kept_key))
+                    existing = existing.fetchone()
+                    if existing is not None:
+                        conn.execute(MOVE_PAIR_LINKS_SQL, (existing[0], image_id))
+                        conn.execute(DELETE_LINK_SQL, (image_id,))
+                        counts["merged"] += 1
+                        continue
+                    conn.execute(
+                        MOVE_LINK_SQL,
+                        (kept, os.path.basename(kept), kept_key, image_id),
+                    )
+                    counts["moved"] += 1
+            for root_key, removed_key, kept_root, kept_key in favorites:
+                row = conn.execute(FAVORITE_SQL, (root_key, removed_key)).fetchone()
+                if row is None:
+                    continue
+                conn.execute(INSERT_FAVORITE_SQL, (kept_root, kept_key, row[0]))
+                conn.execute(DELETE_FAVORITE_SQL, (root_key, removed_key))
+                counts["favorites"] += 1
+        return counts
+
+
+# Link reconciliation of removed duplicate files: every statement is an
+# index SEARCH (idx_image_file_path, idx_image_path, the (prompt_id,
+# file_path) unique index, idx_image_prompt_pairs_image, the favorites key).
+LINKS_BY_FILE_SQL = "SELECT id, prompt_id FROM generated_images WHERE file_path = ?"
+LEGACY_LINKS_SQL = (
+    "SELECT id, prompt_id FROM generated_images "
+    "WHERE image_path = ? AND file_path IS NULL"
+)
+KEEPER_LINK_SQL = (
+    "SELECT id FROM generated_images WHERE prompt_id = ? AND file_path = ?"
+)
+MOVE_PAIR_LINKS_SQL = (
+    "UPDATE OR IGNORE image_prompt_pairs SET image_id = ? WHERE image_id = ?"
+)
+MOVE_LINK_SQL = (
+    "UPDATE generated_images SET image_path = ?, filename = ?, file_path = ? "
+    "WHERE id = ?"
+)
+DELETE_LINK_SQL = "DELETE FROM generated_images WHERE id = ?"
+FAVORITE_SQL = (
+    "SELECT created_at FROM image_favorites WHERE root_key = ? AND relative_path = ?"
+)
+INSERT_FAVORITE_SQL = "INSERT OR IGNORE INTO image_favorites VALUES (?, ?, ?)"
+DELETE_FAVORITE_SQL = (
+    "DELETE FROM image_favorites WHERE root_key = ? AND relative_path = ?"
+)
+FILE_LINK_SQL = (
+    LINKS_BY_FILE_SQL,
+    LEGACY_LINKS_SQL,
+    KEEPER_LINK_SQL,
+    MOVE_PAIR_LINKS_SQL,
+    MOVE_LINK_SQL,
+    DELETE_LINK_SQL,
+    FAVORITE_SQL,
+    DELETE_FAVORITE_SQL,
+)
+
+
+def _file_link_rows(conn, file_key, raw_path):
+    """``(id, prompt_id)`` of the image records linking one file."""
+    yield from (tuple(row) for row in conn.execute(LINKS_BY_FILE_SQL, (file_key,)))
+    yield from (tuple(row) for row in conn.execute(LEGACY_LINKS_SQL, (raw_path,)))

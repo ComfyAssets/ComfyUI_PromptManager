@@ -2518,7 +2518,8 @@ protected reasons are exactly the prune's rules) and `missing_links` (legacy
 `cleanup_orphaned_images`, judged as the health check's `missing_files` through
 `health.link_states`: only a link under a source that can be read now counts; one under
 an unavailable source or outside every source is protected). The operation enum is
-strict, `options` must be `{}` and the body is capped at 4 KiB. A preview meets the
+strict, `options` must be `{}` and the body is capped at 4 KiB (512 KiB for
+`duplicate_files`, below). A preview meets the
 read-only standard above on its own `mode=ro` snapshot (`test_preview_writes_nothing`,
 per operation, plus the media bytes) and stats files after the snapshot ended. The
 plan lists at most 50 detail rows and no server path. Its fingerprint (the ids, text
@@ -2564,6 +2565,67 @@ replaced the database since the review; the plan is dropped). The job:
 3. counts the changed and protected records (outcome rows hold root-relative paths or
    prompt ids only), logs the backup by its file name, and prunes safety backups to the
    newest 10. With no backup the log and the status line say "No safety backup".
+
+Safety backups and restore backups are one pool: every `<db>.backup_*` file beside the
+database counts toward the same `MAX_SAFETY_BACKUPS` (10), whichever wrote it, and the
+pool is pruned after every backup a job took, also when the apply then failed
+(`test_safety_backups_share_the_restore_pool`,
+`test_the_pool_is_pruned_when_the_apply_fails_after_the_backup`). The legacy
+`GET /backup` download writes no file beside the database, so it adds nothing to the
+pool. Each plan reports `backup.expected_bytes` (the backup's size, `page_count *
+page_size`, or null with the policy off) and `disk: {free_bytes, required_bytes,
+sufficient}` for the database folder: the backup needs its size there, and Optimize
+needs the database's size twice (the WAL beside it and SQLite's temporary copy, added
+up when the temporary folder is on the same disk), each plus a 16 MiB margin. Apply
+measures again before it starts a job and refuses a short disk up front with 507
+`insufficient-space` and a truthful message ("Not enough free disk space: the safety
+backup needs about … in the database folder and … is free. Nothing was changed."); no
+job starts and the token stays usable
+(`test_apply_refuses_up_front_when_the_backup_does_not_fit`,
+`test_apply_refuses_up_front_when_vacuum_does_not_fit`).
+
+**Duplicate image files** (`py/api/duplicate_files.py`, `py/api/duplicate_review.py`;
+`tests/test_api_duplicate_files.py`). `POST /prompt_manager/jobs/duplicates` starts the
+find: kind `duplicates`, "Find duplicate image files", admission `read`, cancellable,
+group `groups_found`, over every effective source (the legacy scan's
+`_hash_media_groups`: no symlinks, no `thumbnails`, bounded, each file once). The
+server holds the groups (content hash, root-relative paths, source index) for the last
+three finds; `GET /prompt_manager/maintenance/duplicates/{job_id}?offset&limit` pages
+them ten at a time (`not-found` 404, `job-running` or `no-groups` 409). The preview
+`{operation:"duplicate_files", options:{job_id, keep:[{group_id, root_index, path}]}}`
+(body cap 512 KiB, at most 5,000 keep entries) removes, in each group named, every copy
+not kept; a keeper that is not in its group is `invalid-request`, and a source no longer
+listed at its index is `sources-changed`. Every keeper and removal is checked with
+`file_problem`: containment as text first, with no filesystem access (inside its
+source, not under `thumbnails`, a media extension), then `lstat` (a link or any
+non-regular file is refused), the resolved path still inside the resolved source, the
+same size and the same sha256. A removal that fails, or whose kept copies all fail, is
+protected with its reason. The plan names each removal, its kept copy and how many
+database links move, says the safety backup covers the database and not the files,
+and writes nothing. Apply runs `duplicate_cleanup` (records, not cancellable, groups
+`removed`, `kept`, `errors`): sources unchanged, the promised safety backup, then per
+file the kept copy and the file are checked again and the file is removed (every hash
+handle closed first: `test_handles_closed_before_unlink`), with its thumbnail (a
+video's `.jpg` too). A changed file is kept (`test_changed_content_skips_file`); the
+first failed unlink stops the job, a locked or read-only file with "The file is open in
+another program or read-only; it was not deleted." and never the OS text, and the
+files after it are listed as not attempted (`test_partial_failure_reports_each_path`).
+Only the files actually removed have their links moved: each image record moves to the
+kept copy, or, when its prompt already links the kept copy, hands its saved-pair links
+to that record and is deleted; a favorite moves with it
+(`test_db_links_reconciled_only_for_removed_files`). The find refuses while a removal
+runs and the removal while a find runs.
+
+The legacy gallery routes keep their shapes on the same kinds: `/scan_duplicates`
+holds `duplicates` (read, "Find duplicate image files (gallery page)"),
+`/scan_duplicates/stream` starts the find over the gallery's output folder or attaches
+to a running one that covers it (409 otherwise), `/scan_duplicates/status` reports the
+latest find, and `/delete_duplicate_images` holds `duplicate_cleanup` (records) and is
+refused while a find runs (`test_legacy_delete_duplicates_unchanged`). The link
+statements are index searches (`test_link_queries_use_the_path_indexes`; the fixture
+check is in the PR). Windows: the hash reads close before `os.remove`; a sharing
+violation is a `PermissionError` answered with the coded message (native on the
+Windows runners, `test_locked_file_gives_a_coded_message`).
 
 A failure the job cannot name ends it "Maintenance failed; nothing was changed." with a
 null code and no exception text. Windows: every connection the backup and the previews

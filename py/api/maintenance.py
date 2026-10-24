@@ -43,7 +43,9 @@ a restore replaced the database since the review) and ``busy`` (409).
 """
 
 import datetime
+import json
 import os
+import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
@@ -56,11 +58,19 @@ from .jobs import MAINTENANCE_JOB_KIND, JobBusy
 from .maintenance_plans import PlanExpired, PlanUsed, ScopeTooLarge
 
 try:
+    from ...database.health import readonly_uri
     from ...database.maintenance import MAINTENANCE_OPERATIONS, PlanChanged
 except ImportError:
+    from database.health import readonly_uri
     from database.maintenance import MAINTENANCE_OPERATIONS, PlanChanged
 
 PREVIEW_BODY_MAX = 4096
+# Duplicate-file previews carry the reviewed keepers (py/api/duplicate_files.py).
+DUPLICATE_PREVIEW_BODY_MAX = 512 * 1024
+DUPLICATE_FILES = "duplicate_files"
+PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES,)
+# Room left over beyond what a step writes, so a disk is never filled to 0.
+DISK_MARGIN_BYTES = 16 * 2**20
 # The concept's Maintenance row titles, which name each operation's job.
 MAINTENANCE_TITLES = {
     "duplicate_prompts": "Duplicate prompt text",
@@ -68,7 +78,7 @@ MAINTENANCE_TITLES = {
     "unused_components": "Unused prompt components",
     "missing_links": "Missing-file links",
 }
-_OPERATION_ERROR = "operation must be one of: " + ", ".join(MAINTENANCE_OPERATIONS)
+_OPERATION_ERROR = "operation must be one of: " + ", ".join(PREVIEW_OPERATIONS)
 MAINTENANCE_GROUPS = ("changed", "protected", "errors")
 MAX_TOKEN_LENGTH = 128
 BACKUP_FAILED = (
@@ -89,6 +99,91 @@ class SafetyBackupFailed(Exception):
 
 def _now():
     return datetime.datetime.now()
+
+
+def _free_bytes(path):
+    return shutil.disk_usage(path).free
+
+
+def _device(path):
+    try:
+        return os.stat(path).st_dev
+    except OSError:
+        return path
+
+
+def database_bytes(db_path):
+    """The size a safety backup of the database will be (blocking).
+
+    SQLite's backup API copies every page, committed WAL content included, so
+    the copy is ``page_count * page_size`` read on one read-only snapshot.
+    """
+    conn = sqlite3.connect(readonly_uri(db_path), uri=True)
+    try:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        return page_size * conn.execute("PRAGMA page_count").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _megabytes(size):
+    return f"{size / 2**20:,.1f} MB"
+
+
+def disk_plan(db_path, *, backup, vacuum):
+    """Whether the disk has room for an apply's writes (blocking).
+
+    ``backup``: the safety backup, one database-sized file beside the
+    database. ``vacuum``: VACUUM writes the rebuilt database through the WAL
+    beside it and builds it in a temporary copy in the temporary folder
+    (SQLite's documentation: up to twice the database in free space). Needs
+    on one device add up. Returns ``(public, short)``: ``public`` is
+    ``{free_bytes, required_bytes, sufficient}`` for the database folder,
+    ``short`` None or ``(place, what, required, free)`` of the first place
+    that is short, and ``size`` the database's size (0 when nothing is
+    written).
+    """
+    db_path = os.path.abspath(db_path)
+    folder = os.path.dirname(db_path)
+    size = database_bytes(db_path) if backup or vacuum else 0
+    needs = []  # (place, folder, bytes, what)
+    if backup:
+        needs.append(("database folder", folder, size, "the safety backup"))
+    if vacuum:
+        needs.append(("database folder", folder, size, "Optimize"))
+        needs.append(("temporary folder", tempfile.gettempdir(), size, "Optimize"))
+    devices = {}
+    for place, path, needed, what in needs:
+        entry = devices.setdefault(_device(path), {"place": place, "path": path})
+        entry["bytes"] = entry.get("bytes", 0) + needed
+        entry.setdefault("what", [])
+        if what not in entry["what"]:
+            entry["what"].append(what)
+    short = None
+    public = {"free_bytes": _free_bytes(folder), "required_bytes": 0}
+    for device, entry in devices.items():
+        required = entry["bytes"] + DISK_MARGIN_BYTES
+        free = (
+            public["free_bytes"]
+            if entry["path"] == folder
+            else _free_bytes(entry["path"])
+        )
+        if device == _device(folder):
+            public["required_bytes"] = required
+        if free < required and short is None:
+            short = (entry["place"], " and ".join(entry["what"]), required, free)
+    public["sufficient"] = short is None
+    return public, short, size
+
+
+def short_space_message(short):
+    """The truthful refusal for ``disk_plan``'s ``short``."""
+    place, what, required, free = short
+    verb = "need" if " and " in what else "needs"
+    return (
+        f"Not enough free disk space: {what} {verb} about {_megabytes(required)} "
+        f"in the {place} and {_megabytes(free)} is free. Nothing was changed."
+    )
 
 
 def _changed_line(operation, count):
@@ -220,13 +315,22 @@ class MaintenanceRoutesMixin:
 
         return "on" if PromptManagerConfig.SAFETY_BACKUP else "off"
 
-    async def _read_maintenance_body(self, request, allowed):
-        """``(data, None)`` for a capped JSON object with only ``allowed`` keys."""
-        data, error = await self._read_json_body(request, max_bytes=PREVIEW_BODY_MAX)
+    async def _read_maintenance_body(self, request, allowed, cap=None):
+        """``(data, None)`` for a capped JSON object with only ``allowed`` keys.
+
+        ``cap(data)``, when given, is the body's byte limit for what it asks
+        (read up to ``DUPLICATE_PREVIEW_BODY_MAX``); else PREVIEW_BODY_MAX.
+        """
+        limit = PREVIEW_BODY_MAX if cap is None else DUPLICATE_PREVIEW_BODY_MAX
+        data, error = await self._read_json_body(request, max_bytes=limit)
         if error is not None:
             if error.status == 413:
                 return None, _failure("Request body too large", 413, "too-large")
             return None, _invalid("Request body must be a JSON object")
+        if cap is not None:
+            size = len(json.dumps(data, separators=(",", ":")).encode("utf-8"))
+            if size > cap(data):
+                return None, _failure("Request body too large", 413, "too-large")
         unknown = sorted(set(data) - set(allowed))
         if unknown:
             return None, _invalid("Unknown field: " + ", ".join(unknown)[:200])
@@ -234,14 +338,22 @@ class MaintenanceRoutesMixin:
 
     async def preview_maintenance(self, request):
         data, error = await self._read_maintenance_body(
-            request, ("operation", "options")
+            request,
+            ("operation", "options"),
+            cap=lambda body: (
+                DUPLICATE_PREVIEW_BODY_MAX
+                if body.get("operation") == DUPLICATE_FILES
+                else PREVIEW_BODY_MAX
+            ),
         )
         if error is not None:
             return error
         operation = data.get("operation")
         options = data.get("options", {})
-        if not isinstance(operation, str) or operation not in MAINTENANCE_OPERATIONS:
+        if not isinstance(operation, str) or operation not in PREVIEW_OPERATIONS:
             return _invalid(_OPERATION_ERROR)
+        if operation == DUPLICATE_FILES:
+            return await self.preview_duplicate_files(options)
         if not isinstance(options, dict) or options:
             return _invalid(f"{operation} takes no options")
         db = self.db
@@ -258,6 +370,28 @@ class MaintenanceRoutesMixin:
         except Exception:
             self.logger.exception(f"Maintenance preview of {operation} failed")
             return _failure("Failed to review maintenance", 500)
+        return await self._plan_response(
+            db,
+            identity,
+            draft.operation,
+            draft.fingerprint,
+            draft.public(),
+            {
+                "targets": draft.targets,
+                "roots": roots,
+                "protected": draft.protected["count"],
+            },
+        )
+
+    async def _plan_response(
+        self, db, identity, operation, fingerprint, public, payload
+    ):
+        """Issue the reviewed plan's token and answer the ``Plan``.
+
+        Refused with ``storage-changed`` when the database was replaced while
+        it was reviewed. The plan reports the safety backup's expected size
+        and the disk space the apply needs (``disk_plan``).
+        """
         if identity != self._database_identity(self.db):
             return _failure(
                 "The database was replaced while it was reviewed. Review again.",
@@ -265,18 +399,20 @@ class MaintenanceRoutesMixin:
                 "storage-changed",
             )
         policy = self._safety_backup_policy()
+        try:
+            disk, _short, size = await self._run_in_executor(
+                disk_plan,
+                db.model.db_path,
+                backup=policy == "on",
+                vacuum=operation == "optimize",
+            )
+        except (OSError, sqlite3.Error):
+            self.logger.exception("Could not measure the disk space for a plan")
+            return _failure("Failed to review maintenance", 500)
         store = self._maintenance_plans
         try:
             token = store.issue(
-                operation,
-                draft.fingerprint,
-                {
-                    "targets": draft.targets,
-                    "roots": roots,
-                    "protected": draft.protected["count"],
-                    "backup": policy,
-                },
-                identity,
+                operation, fingerprint, {**payload, "backup": policy}, identity
             )
         except ScopeTooLarge:
             return _failure(
@@ -289,11 +425,13 @@ class MaintenanceRoutesMixin:
                 "success": True,
                 "token": token,
                 "expires_at": _iso(plan.expires_at),
-                **draft.public(),
+                **public,
                 "backup": {
                     "policy": policy,
                     "destination_label": f"{name}.backup_<date and time>",
+                    "expected_bytes": size if policy == "on" else None,
                 },
+                "disk": disk,
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -330,36 +468,81 @@ class MaintenanceRoutesMixin:
                 409,
                 "storage-changed",
             )
+        backup = self._backup_promised(plan)
         try:
-            job = self._jobs.start(
-                MAINTENANCE_JOB_KIND,
-                MAINTENANCE_TITLES[plan.operation],
-                admission="records",
-                cancellable=False,
-                scope={"operation": plan.operation},
-                groups=MAINTENANCE_GROUPS,
-                runner=lambda job: self._run_maintenance_plan(job, db, plan),
+            _disk, short, _size = await self._run_in_executor(
+                disk_plan,
+                db.model.db_path,
+                backup=backup,
+                vacuum=plan.operation == "optimize",
             )
+        except (OSError, sqlite3.Error):
+            self.logger.exception("Could not measure the disk space for an apply")
+            return _failure(APPLY_FAILED, 500)
+        if short is not None:
+            # Refused before any job starts: nothing fails halfway for space.
+            return _failure(short_space_message(short), 507, "insufficient-space")
+        try:
+            if plan.operation == DUPLICATE_FILES:
+                job = self._start_duplicate_cleanup(db, plan)
+            else:
+                job = self._jobs.start(
+                    MAINTENANCE_JOB_KIND,
+                    MAINTENANCE_TITLES[plan.operation],
+                    admission="records",
+                    cancellable=False,
+                    scope={"operation": plan.operation},
+                    groups=MAINTENANCE_GROUPS,
+                    runner=lambda job: self._run_maintenance_plan(job, db, plan),
+                )
         except JobBusy as busy:
             return busy_response(busy)  # the token stays usable
         # Same loop turn as the start: the runner has not run yet.
         store.consume(token, plan.operation, job_id=job.id)
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
-    async def _run_maintenance_plan(self, job, db, plan):
-        payload = plan.payload
-        backup = None
-        if payload["backup"] == "on" or self._safety_backup_policy() == "on":
-            job.update(status_line="Taking a safety backup")
-            job.log_line("Taking a safety backup of the database")
-            try:
-                backup = await self._run_in_executor(take_safety_backup, db.model)
-            except SafetyBackupFailed:
-                self.logger.error("Safety backup failed", exc_info=True)
-                return _fail_job(job, "backup-failed", BACKUP_FAILED)
-            job.log_line(f"Safety backup {backup} verified")
-        else:
+    def _backup_promised(self, plan):
+        """A plan reviewed with the policy on keeps that promise; so does on now."""
+        return plan.payload["backup"] == "on" or self._safety_backup_policy() == "on"
+
+    async def _safety_backup_step(self, job, db, plan):
+        """``(ok, name)``: take the promised safety backup, or report none.
+
+        ``name`` is the backup's file name, or None when the policy is off.
+        A failed backup ends the job ``backup-failed`` (``ok`` False).
+        """
+        if not self._backup_promised(plan):
             job.log_line("No safety backup (the policy is off)")
+            return True, None
+        job.update(status_line="Taking a safety backup")
+        job.log_line("Taking a safety backup of the database")
+        try:
+            backup = await self._run_in_executor(take_safety_backup, db.model)
+        except SafetyBackupFailed:
+            self.logger.error("Safety backup failed", exc_info=True)
+            _fail_job(job, "backup-failed", BACKUP_FAILED)
+            return False, None
+        job.log_line(f"Safety backup {backup} verified")
+        return True, backup
+
+    async def _prune_backup_pool(self, job, db):
+        """Keep the one ``<db>.backup_*`` pool (restore's too) at its cap."""
+        removed = await self._run_in_executor(_prune_safety_backups, db.model.db_path)
+        if removed:
+            job.log_line(f"Removed {len(removed)} older safety backups")
+
+    async def _run_maintenance_plan(self, job, db, plan):
+        ok, backup = await self._safety_backup_step(job, db, plan)
+        if not ok:
+            return
+        try:
+            await self._apply_maintenance_plan(job, db, plan, backup)
+        finally:
+            if backup:
+                await self._prune_backup_pool(job, db)
+
+    async def _apply_maintenance_plan(self, job, db, plan, backup):
+        payload = plan.payload
         job.update(status_line=f"Applying: {job.title}")
         try:
             result = await self._run_in_executor(
@@ -381,17 +564,7 @@ class MaintenanceRoutesMixin:
         job.record_counted("protected", payload["protected"])
         line = _changed_line(plan.operation, result["changed"])
         job.log_line(line)
-        if backup:
-            removed = await self._run_in_executor(
-                _prune_safety_backups, db.model.db_path
-            )
-            if removed:
-                job.log_line(f"Removed {len(removed)} older safety backups")
-        job.update(
-            progress=100,
-            status_line=f"{line} · "
-            + (f"Safety backup {backup}" if backup else NO_BACKUP),
-        )
+        job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
 
     def _maintenance_rows(self, operation, described):
         """Outcome rows for the changed records (root-relative paths only)."""
@@ -424,6 +597,11 @@ class MaintenanceRoutesMixin:
             {"path": "", "detail": f"Removed: {item.get('text') or item['prompt_id']}"}
             for item in described
         ]
+
+
+def backup_note(backup):
+    """The status line's backup part: the file name, or that there is none."""
+    return f"Safety backup {backup}" if backup else NO_BACKUP
 
 
 def _fail_job(job, code, message):
