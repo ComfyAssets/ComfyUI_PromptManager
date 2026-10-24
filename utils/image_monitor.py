@@ -604,7 +604,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
                             self.db_manager, image_path, metadata, resolution
                         )
                         return None
-                return self.db_manager.link_image_to_prompt(
+                # The raising form: a failed write reaches survive_switch.
+                return self.db_manager.link_image_to_prompt_or_raise(
                     prompt_id=prompt_context["id"],
                     image_path=image_path,
                     metadata=metadata,
@@ -613,11 +614,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
             image_id = survive_switch(self.db_manager, link)
             if image_id is None:
                 return
-            fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
-            self.logger.debug(
-                f"Successfully linked image {image_id} to prompt "
-                f"{prompt_context['id']}{fallback_note}"
-            )
+            if image_id:  # 0: nothing new was linked (logged by the database)
+                fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
+                self.logger.debug(
+                    f"Successfully linked image {image_id} to prompt "
+                    f"{prompt_context['id']}{fallback_note}"
+                )
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")
             return

@@ -5,7 +5,8 @@
   keeps it. A follow-up after a complete switch only logs.
 - I2: a background write (run counting, the image monitor) that fails
   because Move library switched runs once more, on the new library; a write
-  racing the switch on a real connection lands in the new library.
+  racing the switch on a real connection (a run count, an image link) lands
+  in the new library only.
 - M2: the copy is verified through a file URI that survives ``#`` and ``%``.
 - M6: a restart after a crash between the switch and the rename renames the
   old files, never deletes them.
@@ -66,7 +67,7 @@ class TestFailedSwitchIsUndone(_MoveCase):
         real_switch_to = ll.switch_to
         real_repoint = models.PromptModel.repoint_instances
 
-        def switch(old_db, location):
+        def switch(old_db, location, detached):
             if point == "before":
                 raise RuntimeError("switch failed before anything")
             if point == "resolver":
@@ -74,10 +75,9 @@ class TestFailedSwitchIsUndone(_MoveCase):
                 raise RuntimeError("switch failed after the resolver")
             if point == "repoint":
                 real_switch_to(location)
-                real_repoint(old_db, location.db_path)
+                detached.extend(real_repoint(old_db, location.db_path))
                 raise RuntimeError("switch failed after the models")
-            detached = lm.switch_process(old_db, location)
-            models.PromptModel.close_detached(detached)
+            lm.switch_process(old_db, location, detached)
             raise RuntimeError("switch failed at its very end")
 
         return switch
@@ -91,6 +91,18 @@ class TestFailedSwitchIsUndone(_MoveCase):
                     self.move(switch=self._failing(point))
                 self._assert_not_moved(caught)
                 self.assertEqual(node.model.db_path, self.old_db)
+                self.assertEqual(node.get_prompt_by_id(1)["text"], "a cat number 0")
+
+    def test_a_failed_switch_closes_the_old_connections_it_detached(self):
+        node = PromptDatabase(self.old_db)
+        for point in ("repoint", "complete"):
+            with self.subTest(point=point):
+                before = node.model.get_connection()
+                with self.assertRaises(lm.MoveFailed):
+                    self.move(switch=self._failing(point))
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    before.execute("SELECT 1")
+                # The model reopens the old library on next use.
                 self.assertEqual(node.get_prompt_by_id(1)["text"], "a cat number 0")
 
     def test_a_failing_follow_up_after_the_switch_only_logs(self):
@@ -149,17 +161,69 @@ class TestBackgroundWritesSurviveTheSwitch(_MoveCase):
             db.survive_library_switch(broken)
         self.assertEqual(calls, [1])
 
-    def test_the_image_monitor_link_retries_once_after_a_switch(self):
+    def test_an_image_link_racing_the_switch_lands_in_the_new_library(self):
+        from utils.image_monitor import ImageGenerationHandler
+
+        self.db.model.close_all()
+        image = os.path.join(self.comfy, "output", "late.png")
+        # A short busy timeout so the blocked writer gives up in seconds.
+        with mock.patch.object(models, "BUSY_TIMEOUT_SECONDS", 2):
+            writer_db = PromptDatabase(self.old_db)
+            handler = ImageGenerationHandler(writer_db, mock.MagicMock())
+            started = threading.Event()
+            outcome = {}
+
+            def write():
+                conn = writer_db.model.get_connection()
+                conn.set_trace_callback(
+                    lambda sql: (
+                        started.set()
+                        if sql.lstrip().upper().startswith(("BEGIN", "INSERT"))
+                        else None
+                    )
+                )
+                try:
+                    # No metadata: the fallback link, not the resolved pair.
+                    handler.link_image_to_prompt(image, {"id": 1}, {})
+                    outcome["ok"] = True
+                except Exception as error:  # pragma: no cover - reported below
+                    outcome["error"] = error
+                finally:
+                    writer_db.model.close()
+
+            thread = threading.Thread(target=write)
+
+            def checkpoint(step):
+                if step == "locked":
+                    # The old file is write-locked now: start the writer and
+                    # wait until its first write is running (it then waits on us).
+                    thread.start()
+                    self.assertTrue(started.wait(WAIT))
+
+            self.move(checkpoint=checkpoint)
+            thread.join(WAIT)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome, {"ok": True})
+        moved = [
+            row
+            for row in _rows(self.new_db)["generated_images"]
+            if "late.png" in repr(row)
+        ]
+        self.assertEqual(len(moved), 1)
+        renamed = os.path.join(self.ext, "prompts.db.moved-to-__promptmanager")
+        self.assertNotIn("late.png", repr(_rows(renamed).get("generated_images")))
+
+    def test_an_image_that_was_not_linked_is_not_reported_as_linked(self):
         from utils.image_monitor import ImageGenerationHandler
 
         db = PromptDatabase(self.old_db)
         handler = ImageGenerationHandler(db, mock.MagicMock())
-        flaky = _Flaky(db, "link_image_to_prompt")
-        image = os.path.join(self.comfy, "output", "late.png")
-        with mock.patch.object(db, "link_image_to_prompt", flaky):
-            handler.link_image_to_prompt(image, {"id": 1}, {})
-        self.assertEqual(flaky.calls, 2)
-        self.assertIn("late.png", repr(_rows(self.old_db)["generated_images"]))
+        image = os.path.join(self.comfy, "output", "orphan.png")
+        with mock.patch.object(handler, "logger") as log:
+            handler.link_image_to_prompt(image, {"id": 99999}, {})
+        messages = [str(call) for call in log.debug.call_args_list]
+        self.assertFalse([m for m in messages if "Successfully linked" in m])
+        self.assertNotIn("orphan.png", repr(_rows(self.old_db)["generated_images"]))
 
     def test_a_write_racing_the_switch_lands_in_the_new_library(self):
         text = "a racing prompt"

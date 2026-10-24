@@ -2900,7 +2900,11 @@ code to the node folder, and that `/userdata` serves none of it.
 The switch runs while the copy is write-locked too (a guard transaction on it), so a
 switch that fails at any point (the resolver, part of the models, the observers) is
 undone whole: every model points at the old file again, the copy and its marker are
-removed, and the move fails "… Nothing was moved." (`TestFailedSwitchIsUndone`). What
+removed, the old file's connections the partial switch detached are closed (the models
+reopen it on next use), and the move fails "… Nothing was moved."
+(`TestFailedSwitchIsUndone`). A failed switch can stall up to the 30 s busy timeout when
+a writer is blocked on the copy's guard lock; this is not a deadlock, and the writer
+then retries on the old file. What
 follows a complete switch (dropping plans, the health report, the history read fence,
 which is closed first) is best effort: logged, never a failed move. A thread that
 opens a connection while the model is being repointed keeps it only if the model's
@@ -2909,10 +2913,15 @@ generation did not change meanwhile (`PromptModel.get_connection`).
 Writes racing the switch: a background write that was waiting on the old file's lock
 when the switch closed its connection fails, and run counting (`count_runs`,
 `count_pair_runs`) and the image monitor's link (`ImageGenerationHandler.
-link_image_to_prompt`) run it once more through `PromptDatabase.survive_library_switch`
-when the model's generation changed during the attempt; the retry opens the new
-library (`TestBackgroundWritesSurviveTheSwitch`, including a real UPDATE blocked on the
-lock that lands in the new file). Any other failure is not retried. Known limit: that
+link_image_to_prompt`: the resolved-pair ingest and the fallback or recent-prompt link)
+run it once more through `PromptDatabase.survive_library_switch` when the model's
+generation changed during the attempt; the retry opens the new library. The monitor
+links through `PromptDatabase.link_image_to_prompt_or_raise`, which raises database
+errors (`link_image_to_prompt` keeps its log-and-return-0 contract for other callers);
+each attempt is one transaction, so a failed attempt rolls back and a committed one
+does not retry, and the image is linked once. `TestBackgroundWritesSurviveTheSwitch`
+races a real UPDATE (run counting) and a real fallback image link against the lock and
+asserts each lands in the new file only. Any other failure is not retried. Known limit: that
 blocked writer, and the mover with it, waits out the writer's busy timeout (30 s)
 before its connection closes: SQLite holds the connection's mutex during the busy
 wait, so neither a close nor `Connection.interrupt()` ends it sooner (measured), and

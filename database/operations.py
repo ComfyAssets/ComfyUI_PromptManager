@@ -1617,103 +1617,117 @@ class PromptDatabase(
             metadata: Optional metadata about the image
 
         Returns:
-            int: The ID of the created image record
+            int: The ID of the created image record, or 0 when nothing was
+            linked (invalid or unknown prompt, already linked, or an error,
+            which is logged)
+        """
+        try:
+            return self.link_image_to_prompt_or_raise(prompt_id, image_path, metadata)
+        except Exception as e:
+            self.logger.error(f"Error linking image to prompt {prompt_id}: {e}")
+            return 0
+
+    def link_image_to_prompt_or_raise(
+        self, prompt_id: str, image_path: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """``link_image_to_prompt`` that raises database errors.
+
+        The image monitor links through this so a write that failed because
+        Move library switched reaches ``survive_library_switch`` and runs
+        again on the new library (#249 S6b). Each call is one transaction:
+        a failed attempt rolls back, and a committed one does not raise.
+        Returns 0 for an invalid or unknown prompt or an image already linked.
         """
         # Validate that prompt_id is a valid integer and exists in prompts table
-        try:
-            # Convert prompt_id to integer if it's a string number
-            if isinstance(prompt_id, str) and prompt_id.isdigit():
-                prompt_id_int = int(prompt_id)
-            elif isinstance(prompt_id, int):
-                prompt_id_int = prompt_id
+        # Convert prompt_id to integer if it's a string number
+        if isinstance(prompt_id, str) and prompt_id.isdigit():
+            prompt_id_int = int(prompt_id)
+        elif isinstance(prompt_id, int):
+            prompt_id_int = prompt_id
+        else:
+            # Handle temporary IDs like "temp_123456" - skip linking
+            if isinstance(prompt_id, str) and prompt_id.startswith("temp_"):
+                self.logger.debug(
+                    f"Skipping image linking for temporary prompt ID: {prompt_id}"
+                )
+                return 0
             else:
-                # Handle temporary IDs like "temp_123456" - skip linking
-                if isinstance(prompt_id, str) and prompt_id.startswith("temp_"):
-                    self.logger.debug(
-                        f"Skipping image linking for temporary prompt ID: {prompt_id}"
-                    )
-                    return 0
-                else:
-                    self.logger.warning(
-                        f"Invalid prompt_id format: {prompt_id}, skipping image linking"
-                    )
-                    return 0
-
-            # Verify the prompt exists in the database
-            with self.model.get_connection() as conn:
-                cursor = conn.execute(
-                    "SELECT id FROM prompts WHERE id = ?", (prompt_id_int,)
+                self.logger.warning(
+                    f"Invalid prompt_id format: {prompt_id}, skipping image linking"
                 )
-                if not cursor.fetchone():
-                    self.logger.warning(
-                        f"Prompt ID {prompt_id_int} not found in database, skipping "
-                        "image linking"
-                    )
-                    return 0
+                return 0
 
-                # Proceed with linking
-                if not isinstance(metadata, dict):
-                    metadata = {}
-                filename = os.path.basename(image_path)
-                file_path = normalize_image_path(image_path)
-                file_size, width, height, image_format = _coerce_file_info(metadata)
-                # Each workflow and prompt graph is stored once (new form).
-                documents = stored_values(
+        # Verify the prompt exists in the database
+        with self.model.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT id FROM prompts WHERE id = ?", (prompt_id_int,)
+            )
+            if not cursor.fetchone():
+                self.logger.warning(
+                    f"Prompt ID {prompt_id_int} not found in database, skipping "
+                    "image linking"
+                )
+                return 0
+
+            # Proceed with linking
+            if not isinstance(metadata, dict):
+                metadata = {}
+            filename = os.path.basename(image_path)
+            file_path = normalize_image_path(image_path)
+            file_size, width, height, image_format = _coerce_file_info(metadata)
+            # Each workflow and prompt graph is stored once (new form).
+            documents = stored_values(
+                conn,
+                {
+                    "workflow_data": dumps_strict(metadata.get("workflow", {})),
+                    "prompt_metadata": dumps_strict(metadata.get("prompt", {})),
+                },
+            )
+
+            # INSERT OR IGNORE skips a file already linked to this prompt
+            # (same prompt_id + normalised full path)
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO generated_images
+                (prompt_id, image_path, filename, file_path, file_size, width,
+                 height, format, workflow_data, prompt_metadata, parameters,
+                 workflow_document_id, prompt_document_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prompt_id_int,
+                    image_path,
+                    filename,
+                    file_path,
+                    file_size,
+                    width,
+                    height,
+                    image_format,
+                    documents["workflow_data"],
+                    documents["prompt_metadata"],
+                    dumps_strict(metadata.get("parameters", {})),
+                    documents["workflow_document_id"],
+                    documents["prompt_document_id"],
+                ),
+            )
+            if cursor.rowcount == 0:
+                # Already linked: a document made only for this row goes.
+                release_documents(
                     conn,
-                    {
-                        "workflow_data": dumps_strict(metadata.get("workflow", {})),
-                        "prompt_metadata": dumps_strict(metadata.get("prompt", {})),
-                    },
-                )
-
-                # INSERT OR IGNORE skips a file already linked to this prompt
-                # (same prompt_id + normalised full path)
-                cursor = conn.execute(
-                    """
-                    INSERT OR IGNORE INTO generated_images
-                    (prompt_id, image_path, filename, file_path, file_size, width,
-                     height, format, workflow_data, prompt_metadata, parameters,
-                     workflow_document_id, prompt_document_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
                     (
-                        prompt_id_int,
-                        image_path,
-                        filename,
-                        file_path,
-                        file_size,
-                        width,
-                        height,
-                        image_format,
-                        documents["workflow_data"],
-                        documents["prompt_metadata"],
-                        dumps_strict(metadata.get("parameters", {})),
                         documents["workflow_document_id"],
                         documents["prompt_document_id"],
                     ),
                 )
-                if cursor.rowcount == 0:
-                    # Already linked: a document made only for this row goes.
-                    release_documents(
-                        conn,
-                        (
-                            documents["workflow_document_id"],
-                            documents["prompt_document_id"],
-                        ),
-                    )
-                conn.commit()
+            conn.commit()
 
-                if cursor.rowcount == 0:
-                    self.logger.debug(
-                        f"Image {file_path} already linked to prompt {prompt_id_int}"
-                    )
-                    return 0
+            if cursor.rowcount == 0:
+                self.logger.debug(
+                    f"Image {file_path} already linked to prompt {prompt_id_int}"
+                )
+                return 0
 
-                return cursor.lastrowid
-
-        except Exception as e:
-            self.logger.error(f"Error linking image to prompt {prompt_id}: {e}")
-            return 0
+            return cursor.lastrowid
 
     def get_prompt_images(self, prompt_id: str) -> List[Dict[str, Any]]:
         """

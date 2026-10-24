@@ -434,20 +434,20 @@ def _noop(*_args, **_kwargs):
     return None
 
 
-def switch_process(old_db: str, location) -> list:
+def switch_process(old_db: str, location, detached: list) -> None:
     """Point this process at ``location``: resolver, every model, observers.
 
-    Returns the old file's connections, detached and still open: the mover
-    closes them once the switch is final (``PromptModel.close_detached``).
+    Adds the old file's connections, detached and still open, to
+    ``detached`` as soon as they are detached, so the mover closes them
+    (``PromptModel.close_detached``) whether or not the rest succeeds.
     """
     from .execution_history import rekey_history_restore
     from .review_changes import rekey_review_changes
 
     ll.switch_to(location)
-    detached = PromptModel.repoint_instances(old_db, location.db_path)
+    detached.extend(PromptModel.repoint_instances(old_db, location.db_path))
     rekey_review_changes(old_db, location.db_path)
     rekey_history_restore(old_db, location.db_path)
-    return detached
 
 
 def unswitch_process(old_db: str, new_db: str) -> list:
@@ -660,10 +660,11 @@ def move_library(
 ) -> MoveResult:
     """Move the library as planned (blocking; see the module docstring).
 
-    ``switch(old_db, location)`` points the process at the copy and returns
-    the old connections it detached; if it raises, ``unswitch(old_db,
-    new_db)`` undoes it while both files are still locked, the copy is
-    removed and the move fails (``switch-failed``). ``after_switch()`` runs
+    ``switch(old_db, location, detached)`` points the process at the copy
+    and adds the old connections it detached to ``detached``; if it raises,
+    ``unswitch(old_db, new_db)`` undoes it while both files are still
+    locked, every detached connection is closed, the copy is removed and
+    the move fails (``switch-failed``). ``after_switch()`` runs
     once the switch is final; it is best effort (logged, never fails the move).
     """
     short = space_problem(plan)
@@ -711,8 +712,9 @@ def _switch_guarded(move: _Move, location) -> list:
     )
     try:
         guard.execute("BEGIN IMMEDIATE")
+        detached: list = []
         try:
-            detached = move.switch(plan.db_path, location)
+            move.switch(plan.db_path, location, detached)
         except Exception as error:
             logger.exception("Library move: switching failed; undoing it")
             move.moved = False  # the copy and its marker are removed
@@ -722,6 +724,9 @@ def _switch_guarded(move: _Move, location) -> list:
                 )
             except Exception:
                 logger.exception("Library move: undoing the switch failed")
+            # The old file's connections a partial switch detached: the
+            # models reopen it on next use, so close them now, not at GC.
+            PromptModel.close_detached(detached, logger)
             raise MoveFailed("switch-failed") from error
         move.checkpoint("switched")
         return detached
