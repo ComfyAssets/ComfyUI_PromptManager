@@ -354,6 +354,15 @@ class TestPreview(MigrationTestCase):
         self.assertIn("Older versions", labels)
         self.assertIn("Reclaim space", labels)
 
+    def test_preview_without_octet_length_omits_the_inline_bytes(self):
+        # SQLite before 3.43 (older Windows Python builds) has no octet_length.
+        self.library(count=4)
+        with patch.object(ws.sqlite3, "sqlite_version_info", (3, 37, 2)):
+            draft = self.db.preview_maintenance("workflow_storage")
+        labels = [row["label"] for row in draft.details]
+        self.assertNotIn("Inline text", labels)
+        self.assertEqual(draft.scope["count"], 4)
+
     def test_preview_of_a_migrated_library_has_nothing_to_do(self):
         self.library(count=5)
         self.migrate()
