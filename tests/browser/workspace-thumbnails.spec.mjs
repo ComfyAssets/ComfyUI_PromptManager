@@ -116,3 +116,20 @@ test('a video whose preview cannot be loaded swaps back to its own element', asy
     await expect(details(page).locator('video.detail-cover')).toHaveCount(1);
     await expect(details(page).locator('img.detail-cover')).toHaveCount(0);
 });
+
+test('an image listed without a preview (a nested thumbnails folder) shows its original', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset')).toBeOK();
+    // M10: such files are listed with a null thumbnail_url; the card falls back to the original as before.
+    await page.route(url => url.pathname === '/prompt_manager/images/output', async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        if (Array.isArray(body.images)) body.images = body.images.map(image => ({ ...image, thumbnail_url: null }));
+        await route.fulfill({ response, json: body });
+    });
+    const seen = recordMedia(page);
+    await page.goto(images);
+    await expect(cards(page)).toHaveCount(2);
+    await settled(page);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(item => !item.preview)).toBe(true);
+});

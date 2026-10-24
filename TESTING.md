@@ -2238,17 +2238,29 @@ workspace never asks; previews are a cache the server keeps:
   saved views and favorites, Library cards and galleries, Needs review, duplicate
   groups). An existing preview's URL keeps its `v=<mtime>`; a missing one is listed
   without `v=`.
-- `GET /images/serve/thumbnails/<rel>_thumb<ext>` for a missing preview maps it back to
-  its media file under the same root (traversal and name checks on the text first; the
-  source must be a regular file inside the root, never through a link), makes it with
-  the job's defaults (512 px, medium) and serves it. At most 3 views write at once and
-  one flight runs per file. When it cannot be made the original is served with its own
-  content type and `Cache-Control: no-store`; an undecodable file is remembered for the
-  session by path, size and mtime (not retried per view, retried once it changes) and
-  counted as `failed` in `/images/thumbnails/status`, which Overview's row adds
-  ("N missing thumbnails · M failed"). A preview another program holds open (Windows)
-  is not remembered. A `thumbnails` folder linked out of the root is never written.
-  The recorded-history thumbnail route makes a missing preview the same way.
+- `GET /images/serve/thumbnails/<rel>_thumb<ext>` for a missing preview is refused as
+  text first (traversal, a backslash, a drive or stream colon, empty or dot segments, so
+  `D:/x`, `\\server\share` and a leading `/` never reach a joined path), then admitted
+  on the event loop (`_PreviewGate`): 3 previews are written at once on the API's own
+  `pm-preview` pool (never the default executor), one flight runs per file (the history
+  route shares the flight key and the admission), and at most 64 requests wait; one
+  more gets its fallback at once without listing a folder. Inside the admission the
+  preview maps back to its media file under the same root (exact names, then one folder
+  listing for a mixed-case extension; a regular file inside the root, never through a
+  link) and is made with the job's defaults (512 px, medium). When it cannot be made an
+  image's original is served and a video's placeholder frame (a video is never sent to
+  an `<img>`), both `Cache-Control: no-store`; cards and the inspector cover also swap a
+  video back to its own element when its preview image fails. Only a file that cannot
+  be decoded is remembered for the session (path, size, mtime; retried once it changes)
+  and counted as `failed` in `/images/thumbnails/status`, which Overview's row adds
+  ("N missing thumbnails · M failed"); I/O errors and a preview another program holds
+  open (Windows) are not. A preview folder (or any link segment of it) resolving out of
+  the root is never written. Media inside a nested `thumbnails` folder is listed with no
+  thumbnail and keeps its original. The listing's `thumbnail_ready` says whether the
+  preview file exists (the legacy gallery's dot and "Fast").
+- The video decoder falls through OpenCV, ffmpeg (a tracked process, killed on
+  shutdown) and the placeholder frame: an OpenCV that cannot open or read a clip (AV1)
+  no longer ends the run.
 - The image monitor hands every settled output to `queue_capture_thumbnail`, which
   queues it for one background worker: each wake takes at most Worker threads files and
   writes them on that many threads; a queued file is not queued twice; the queue holds
@@ -2260,7 +2272,11 @@ workspace never asks; previews are a cache the server keeps:
   beside a scan, image tagging, the thumbnail job and the Needs review recording (S5
   M7). They wait (a view gets the original, a queued file is left for its view) while a
   restore, a duplicate removal, a sources change, the gallery's thumbnail clear or an
-  `exclusive` job runs (`_auto_thumbnail_blocker`).
+  `exclusive` job runs (`_auto_thumbnail_blocker`), checked when a write starts (after
+  its slot) and again just before its rename.
+- Shutdown is bounded and logged: the worker stops at a file boundary, ffmpeg is
+  killed, the view pool shuts down, and after the app's cleanup a late monitor event
+  starts nothing. A package reload stops the workers the previous import left.
 - Cards and strips load previews only: Images in every layout and size, Library cards,
   Needs review cards and the inspector's cover (a video's cover is its preview frame).
   The media viewer's main media and downloads load the original

@@ -34,7 +34,8 @@ export function cardMedia(image, lazy = false) {
     if (image.is_video && !image.thumbnail_url) return videoMedia(image);
     const node = el('img');
     node.src = resolveUrl(image.thumbnail_url || image.url);
-    if (image.is_video) node.addEventListener('error', () => { if (node.isConnected) node.replaceWith(videoMedia(image)); }, { once: true });
+    // replaceWith does nothing for a card no longer in the page.
+    if (image.is_video) node.addEventListener('error', () => node.replaceWith(videoMedia(image)), { once: true });
     // The concept card image: alt is the card title, with the listing's intrinsic size when known.
     node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';
     if ([image.width, image.height].every(value => Number.isFinite(value) && value > 0)) {
