@@ -34,6 +34,9 @@ through the scan's recorder (as a running scan's batch does; the monitor
 never adds items), ``file`` only writes one (a metadata scan records it). ``GET
 /__test__/review/links`` answers each review file's prompt and pair links, and
 ``GET /__test__/review/streams`` the open change streams and captures.
+``POST /__test__/review/notify`` sends one queue change notice without
+changing the queue: each open stream writes a ``change``, and a stream whose
+page closed is dropped at such a write.
 """
 
 from __future__ import annotations
@@ -355,6 +358,15 @@ def register_review_commands(
             add_review_file, api, root, data["kind"], recorder()
         )
         return web.json_response({"success": True, **added})
+
+    @routes.post("/__test__/review/notify")
+    async def notify(request: web.Request) -> web.Response:
+        if request.query or request.can_read_body:
+            raise web.HTTPBadRequest()
+        from database.review_changes import notify_review_change
+
+        notify_review_change(api.db.model.db_path)
+        return web.json_response({"success": True})
 
     @routes.get("/__test__/review/links")
     async def links(request: web.Request) -> web.Response:

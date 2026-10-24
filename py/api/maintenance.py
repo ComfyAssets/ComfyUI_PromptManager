@@ -215,6 +215,57 @@ def disk_plan(db_path, *, backup, vacuum, vacuum_bytes=None):
     return public, short, size
 
 
+# A restore upload's hard ceiling; below it, free disk space decides.
+RESTORE_MAX_BYTES = 64 * 2**30
+
+
+def size_label(size):
+    """``1.6 GB`` or ``120.0 MB``: a backup's size for a message."""
+    if size >= 2**30:
+        return f"{size / 2**30:,.1f} GB"
+    return _megabytes(size)
+
+
+def restore_room(db_path):
+    """The largest restore upload the disks have room for (blocking).
+
+    The upload is written to a temp file and staged once more in the
+    temporary folder (2x), then copied over the live database beside it,
+    whose current contents are first kept as a safety backup (1x the upload
+    for the WAL, plus the current database). Needs on one device add up,
+    each with ``DISK_MARGIN_BYTES``.
+    """
+    db_path = os.path.abspath(db_path)
+    folder = os.path.dirname(db_path)
+    current = database_bytes(db_path) if os.path.exists(db_path) else 0
+    devices = {}
+    for path, per_upload, fixed in (
+        (tempfile.gettempdir(), 2, 0),
+        (folder, 1, current),
+    ):
+        entry = devices.setdefault(_device(path), {"path": path, "per": 0, "fixed": 0})
+        entry["per"] += per_upload
+        entry["fixed"] += fixed
+    room = min(
+        (_free_bytes(e["path"]) - e["fixed"] - DISK_MARGIN_BYTES) // e["per"]
+        for e in devices.values()
+    )
+    return max(0, room)
+
+
+def restore_space_message(size, room, *, known):
+    """The truthful refusal of a restore the disks have no room for."""
+    if known:
+        return (
+            f"Not enough free disk space to restore a {size_label(size)} backup; "
+            f"there is room for about {size_label(room)}. Nothing was changed."
+        )
+    return (
+        "Not enough free disk space to restore this backup: it is larger than "
+        f"the {size_label(room)} there is room for. Nothing was changed."
+    )
+
+
 def short_space_message(short):
     """The truthful refusal for ``disk_plan``'s ``short``."""
     place, what, required, free = short
