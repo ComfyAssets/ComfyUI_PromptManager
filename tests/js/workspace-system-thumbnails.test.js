@@ -67,7 +67,7 @@ const HOST = { thumbnail_format: 'webp', thumbnail_quality: 80, thumbnail_edge: 
 const NO_JXL = { webp: { available: true }, jpeg: { available: true },
     jxl: { available: false, encoder: null, reason: 'No JPEG XL encoder found. Install pillow-jxl-plugin.' } };
 
-async function mounted({ host = HOST, browserJxl = true, writeHost = async () => ({ success: true, persisted: true, revision: 'sha256:two' }) } = {}) {
+async function mounted({ host = HOST, browserJxl = true, hostFails = false, writeHost = async () => ({ success: true, persisted: true, revision: 'sha256:two' }) } = {}) {
     const { mountThumbnailSettings } = await thumbnailsModule;
     const { createSystemDrafts } = await stateModule;
     const { createScope } = await coreModule;
@@ -75,7 +75,7 @@ async function mounted({ host = HOST, browserJxl = true, writeHost = async () =>
     let hostValues = null;
     const drafts = createSystemDrafts({
         readBrowser: () => ({}), readRuntime: () => ({}),
-        readHost: async () => ({ values: hostValues, revision: 'sha256:one' }),
+        readHost: async () => { if (hostFails) throw new Error('offline'); return { values: hostValues, revision: 'sha256:one' }; },
         writeBrowser: async () => ({ persisted: true }), writeHost, writeRuntime: async () => ({}),
     });
     const scope = createScope();
@@ -179,5 +179,17 @@ test('Convert outdated opens Thumbnail maintenance on its convert scope; a forma
         await drafts.save();
         assert.equal(operation.children[0].children[1].textContent, FORMAT_SAVED);
         assert.equal(reviews.length, 1, 'nothing starts by itself');
+    } finally { scope.dispose(); assert.equal(dom.listenerCount(), 0); dom.restore(); }
+});
+
+test('rows whose server settings could not be read say so, like Appearance’s host rows', async () => {
+    const { HOST_UNAVAILABLE } = await import('../../web/js/workspace/system-appearance.mjs');
+    const { dom, drafts, scope, surface, byId } = await mounted({ hostFails: true });
+    const notes = () => surface.children.slice(2, 5).map(row => row.children[0].children.slice(2).map(note => note.textContent));
+    try {
+        assert.deepEqual(notes(), [[], [], []]);
+        assert.equal(await drafts.reloadHost(), false);
+        assert.deepEqual(notes(), [[HOST_UNAVAILABLE], [HOST_UNAVAILABLE], [HOST_UNAVAILABLE]]);
+        for (const id of ['thumbnail-format', 'thumbnail-quality', 'thumbnail-edge']) assert.equal(byId(id).disabled, true, id);
     } finally { scope.dispose(); assert.equal(dom.listenerCount(), 0); dom.restore(); }
 });

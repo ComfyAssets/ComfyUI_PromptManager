@@ -14,11 +14,13 @@
  *   automatic. After a save that changed the format, its line says existing previews keep their old format until
  *   converted.
  *
- * Host rows stay disabled until the server settings were read, like Appearance's.
+ * Host rows stay disabled until the server settings were read, like Appearance's, and say "Server settings could not
+ * be read." while a read failed.
  */
 import { settingRow, operationRow } from './system-controls.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
 import { openThumbnailReview } from './thumbnail-review.mjs';
+import { HOST_UNAVAILABLE } from './system-appearance.mjs';
 
 export const FORMAT_OPTIONS = Object.freeze([['webp', 'WebP'], ['jxl', 'JPEG XL'], ['jpeg', 'JPEG']]);
 export const QUALITY_LIMIT = Object.freeze({ min: 1, max: 100 });
@@ -84,7 +86,6 @@ export function mountThumbnailSettings(container, { scope, drafts, api, activity
     let browserJxl;
     let savedFormat;
     const format = controls[0];
-    const notes = [];
     const repaint = () => {
         const encoders = drafts.get('host', 'thumbnail_encoders');
         for (const { input, key } of controls) {
@@ -95,12 +96,13 @@ export function mountThumbnailSettings(container, { scope, drafts, api, activity
         const jxl = Array.from(format.input.children).find(option => option.value === 'jxl');
         const unavailable = encoders?.jxl?.available === false;
         if (jxl) jxl.disabled = unavailable;
-        for (const note of notes.splice(0)) note.remove();
-        const lines = [unavailable ? encoders.jxl.reason : null, browserJxl === false ? BROWSER_NO_JXL : null];
-        for (const line of lines.filter(Boolean)) {
-            const note = el('p', line, 'small');
-            format.text.append(note);
-            notes.push(note);
+        const failed = drafts.hostState?.() === 'failed';
+        for (const row of controls) {
+            for (const note of row.notes ?? []) note.remove();
+            const lines = [failed && drafts.get('host', row.key) === undefined ? HOST_UNAVAILABLE : null];
+            if (row === format) lines.push(unavailable ? encoders.jxl.reason : null, browserJxl === false ? BROWSER_NO_JXL : null);
+            row.notes = lines.filter(Boolean).map(line => el('p', line, 'small'));
+            row.text.append(...row.notes);
         }
         // A format save (not the first read) leaves the existing previews outdated: say so, never convert.
         const saved = drafts.saved('host').thumbnail_format;

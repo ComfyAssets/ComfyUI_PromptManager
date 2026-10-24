@@ -650,14 +650,16 @@ test('server settings that cannot be read say so in their rows', async ({ page }
         ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ success: false, error: 'Injected failure' }) })
         : route.continue()));
     await page.goto(`${workspace}#/system/appearance`);
-    for (const id of ['open-mode', 'timeout']) {
+    // #317: the Thumbnails rows are server settings too.
+    for (const id of ['open-mode', 'timeout', 'thumbnail-format', 'thumbnail-quality', 'thumbnail-edge']) {
         const row = page.locator('#workspace-main .setting-row').filter({ has: page.locator(`#${id}`) });
-        await expect(row.locator('p.small')).toHaveText('Server settings could not be read.');
+        await expect(row.locator('p.small').first()).toHaveText('Server settings could not be read.');
         await expect(page.locator(`#${id}`)).toBeDisabled();
     }
     // The browser rows are this browser's, and work as before.
     await expect(page.locator('#default-view')).toBeEnabled();
-    await expect(page.locator('#workspace-main .setting-row p.small')).toHaveCount(2);
+    await expect(page.locator('#workspace-main .setting-row p.small', { hasText: 'Server settings could not be read.' })).toHaveCount(5);
+    await expect(page.locator('#workspace-main section.surface').first().locator('.setting-row p.small')).toHaveCount(2);
 });
 
 test('stale revision shows the conflict status', async ({ page, request }) => {
