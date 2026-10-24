@@ -69,8 +69,8 @@ class GalleryDiagnostics:
 
         Args:
             db_path: Path to the SQLite database file to diagnose.
-                     If None, resolves from config.json or defaults to
-                     prompts.db in the extension root.
+                     If None, the library's database (see
+                     ``utils.library_location``).
         """
         if db_path is None:
             db_path = self._resolve_db_path()
@@ -79,18 +79,12 @@ class GalleryDiagnostics:
 
     @staticmethod
     def _resolve_db_path() -> str:
-        """Resolve database path from config, matching PromptDatabase logic."""
-        extension_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        """The library's database: the same resolver as PromptDatabase."""
         try:
-            from py.config import PromptManagerConfig
-
-            db_path = PromptManagerConfig.DEFAULT_DB_PATH
-        except Exception:
-            db_path = "prompts.db"
-
-        if not os.path.isabs(db_path):
-            db_path = os.path.normpath(os.path.join(extension_root, db_path))
-        return db_path
+            from ..database.operations import resolve_library_location
+        except ImportError:
+            from database.operations import resolve_library_location
+        return resolve_library_location().db_path
 
     def run_full_diagnostic(self) -> Dict[str, Any]:
         """Run a complete diagnostic check.

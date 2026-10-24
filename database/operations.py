@@ -46,6 +46,7 @@ try:
     from ..utils.logging_config import get_logger
     from ..utils.hashing import generate_prompt_hash
     from ..utils.json_strict import dumps_strict
+    from ..utils import library_location
 except ImportError:
     import sys
 
@@ -54,6 +55,7 @@ except ImportError:
     from utils.logging_config import get_logger
     from utils.hashing import generate_prompt_hash
     from utils.json_strict import dumps_strict
+    from utils import library_location
 
 
 # Subquery to fetch tags from junction table, embedded in SELECT statements
@@ -99,40 +101,67 @@ def escape_like(term: str) -> str:
     )
 
 
-def _resolve_db_path(db_path: Optional[str] = None) -> str:
-    """Resolve the database path from config, falling back to defaults.
+def _configured_library():
+    """``(database.default_path, gallery roots)`` from config, or ``(None, [])``.
 
-    When no explicit path is given, reads PromptManagerConfig.DEFAULT_DB_PATH
-    (set via config.json). Relative paths are resolved against the extension
-    root directory so the database location is predictable regardless of the
-    process working directory (important for Docker deployments).
+    The package-qualified config wins over a standalone ``py.config`` (a
+    custom-node package uses its own configuration).
+    """
+    try:
+        try:
+            from ..py.config import PromptManagerConfig
+        except ImportError:
+            from py.config import PromptManagerConfig
+    except Exception:
+        return None, []
+    roots = []
+    try:
+        try:
+            from ..py.config import GalleryConfig
+        except ImportError:
+            from py.config import GalleryConfig
+        directories = list(GalleryConfig.MONITORING_DIRECTORIES or [])
+    except Exception:
+        directories = []
+    for directory in directories:
+        try:
+            roots.append(GalleryConfig.resolve_gallery_root(directory))
+        except Exception:
+            continue
+    return getattr(PromptManagerConfig, "DEFAULT_DB_PATH", None), roots
+
+
+def resolve_library_location():
+    """Where the library lives now (``utils.library_location``, #249 S6b)."""
+    default_path, roots = _configured_library()
+    return library_location.resolve_library(default_path, gallery_roots=roots)
+
+
+def _resolve_db_path(db_path: Optional[str] = None) -> str:
+    """Resolve the database path through the one library resolver.
+
+    With no explicit path, ``utils.library_location.resolve_library`` decides
+    (``PROMPT_MANAGER_DATA_DIR``, an explicit ``database.default_path``, a
+    node-folder library not moved yet, else ComfyUI's ``user/__promptmanager``).
+    An explicit relative path is resolved against the extension root, as
+    before, so the location does not depend on the working directory.
 
     Args:
-        db_path: Explicit database path, or None to use config/default.
+        db_path: Explicit database path, or None to use the resolver.
 
     Returns:
-        Absolute path to the SQLite database file.
+        Absolute path to the SQLite database file; its folder exists (a new
+        data folder is created owner-only).
     """
-    extension_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
     if db_path is None:
-        try:
-            try:
-                from ..py.config import PromptManagerConfig
-            except ImportError:
-                from py.config import PromptManagerConfig
-
-            db_path = PromptManagerConfig.DEFAULT_DB_PATH
-        except Exception:
-            db_path = "prompts.db"
-
-    if not os.path.isabs(db_path):
+        db_path = resolve_library_location().db_path
+    elif not os.path.isabs(db_path):
+        extension_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         db_path = os.path.normpath(os.path.join(extension_root, db_path))
 
-    # Ensure parent directory exists for custom paths
     parent = os.path.dirname(db_path)
     if parent:
-        os.makedirs(parent, exist_ok=True)
+        library_location.ensure_private_dir(parent)
 
     return db_path
 
