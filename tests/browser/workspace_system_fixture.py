@@ -23,6 +23,12 @@ read. These per-server hooks only change what a System test needs on top:
   image monitor whose observer is ``alive`` (default true) and schedules the
   named folders of this server's root (``["output"]``), so Sources reads
   watching, manual scan and restart pending states (S4).
+- ``POST /__test__/system/library`` ``{state}`` (S6b): ``node_folder`` makes
+  the live database read as a node-folder library that can move to
+  ``user/__promptmanager``; Move library then runs a stand-in move that
+  touches no file and ends with the library in the default folder.
+  ``failing`` is the same library whose move fails verification. Reset
+  restores the real resolver, the real move and "Keep it here".
 
 Delays use the shared request holds (``request_hold.py``).
 """
@@ -54,7 +60,12 @@ def register_system_commands(app, routes, api, root: Path):
     from py.config import GalleryConfig, PromptManagerConfig
     from utils import image_monitor
 
+    from database import library_move
+    from utils import library_location
+
     configured = list(GalleryConfig.MONITORING_DIRECTORIES)
+    real_move = library_move.move_library
+    keep = PromptManagerConfig.KEEP_LIBRARY_IN_NODE_FOLDER
     config_bytes = config_path.read_bytes() if config_path.exists() else None
     host_values = (
         PromptManagerConfig.RESULT_TIMEOUT,
@@ -92,6 +103,9 @@ def register_system_commands(app, routes, api, root: Path):
             GalleryConfig.MONITORING_ENABLED,
         ) = host_values
         image_monitor._monitor_instance = monitor
+        api.__dict__.pop("_library_resolver", None)
+        library_move.move_library = real_move
+        PromptManagerConfig.KEEP_LIBRARY_IN_NODE_FOLDER = keep
         if config_bytes is None:
             config_path.unlink(missing_ok=True)
         else:
@@ -185,6 +199,43 @@ def register_system_commands(app, routes, api, root: Path):
         image_monitor._monitor_instance = _FakeMonitor(
             [str(root / name) for name in watching], alive
         )
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/system/library")
+    async def library_state(request):
+        data = await request.json()
+        state = data.get("state")
+        if state not in ("node_folder", "failing"):
+            raise web.HTTPBadRequest()
+        target = str(root / "user" / "__promptmanager")
+
+        def located(source):
+            return library_location.LibraryLocation(
+                source,
+                api.db.model.db_path,
+                str(config_path),
+                str(root),
+                target if source == library_location.SOURCE_NODE_FOLDER else None,
+                target_source=library_location.SOURCE_DEFAULT,
+            )
+
+        current = {"source": library_location.SOURCE_NODE_FOLDER}
+        api._library_resolver = lambda: located(current["source"])
+
+        def stand_in_move(plan, *, progress, **_kwargs):
+            if state == "failing":
+                raise library_move.MoveFailed("verify-failed")
+            progress("Copying the database")
+            counts = api.db.library_counts()
+            current["source"] = library_location.SOURCE_DEFAULT
+            return library_move.MoveResult(
+                located(library_location.SOURCE_DEFAULT),
+                {"prompts": counts["positive_prompts"], "generated_images": 0},
+                ["prompts.db"],
+                ["browser.db.moved-to-__promptmanager"],
+            )
+
+        library_move.move_library = stand_in_move
         return web.json_response({"success": True})
 
     return reset

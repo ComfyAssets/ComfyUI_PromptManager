@@ -206,10 +206,9 @@ test('Remove marks the draft; removing the last entry states auto-detect', async
     expect(await rowsOf(page)).toEqual([['p', 'small', 'No source is configured. After saving, ComfyUI’s output folder is used.']]);
     await saveButton(page).click();
     await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
-    // Saved: ComfyUI's output folder is detected and listed without Remove.
+    // Saved: ComfyUI's output folder is detected and listed without Remove, its row saying it is the default.
     await expect.poll(rowsOf.bind(null, page)).toEqual([
-        ['ComfyUI output', 'output · manual scan', ['Scan folder']],
-        ['p', 'small', 'No source is configured; ComfyUI’s output folder is used.'],
+        ['ComfyUI output', 'ComfyUI/output · manual scan · default', ['Scan folder']],
     ]);
     const { sources } = await serverJson(request, SETTINGS_URL);
     expect([sources.configured, sources.auto_detected]).toEqual([[], true]);

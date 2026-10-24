@@ -211,3 +211,6 @@ coverage/
 
 # Disposable upstream checkout for real-host CI
 .ci-comfyui/
+
+# Old library files a Move library renamed (never deleted; #249 S6b)
+*.moved-to-*

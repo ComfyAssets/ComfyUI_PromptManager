@@ -66,7 +66,7 @@ class TestIngestionKeepsDefaultProfile(unittest.TestCase):
             handler.link_image_to_prompt("/out/f03.png", {"id": 1}, metadata)
         self.assertEqual(len(spy.calls), 2)
         spy.assert_default_and_gated(self)
-        handler.db_manager.link_image_to_prompt.assert_called_once()
+        handler.db_manager.link_image_to_prompt_or_raise.assert_called_once()
 
     def test_admin_scan_ingestion_uses_the_default_profile(self):
         from py.api import admin

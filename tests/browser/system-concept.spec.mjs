@@ -181,6 +181,17 @@ function mapOverviewConcept(reference, overview) {
         // D96: the dialog shows runs and ratings by category and library totals, not prompt, tag or date usage.
         Statistics: row => ({ ...row, description: 'Runs and ratings by category, with library totals.' }),
     };
+    const surfaces = reference.columns.surfaces.map(surface => ({ ...surface,
+        rows: surface.rows.map(row => (rows[row.title] ?? (value => value))(row)) }));
+    // D129: "Library location" after Backup status, in the backup row's own markup; the fixture's database is configured
+    // explicitly (config.json), so it does not move and its action is Details.
+    const [health] = surfaces;
+    const backup = health.rows.find(row => row.title === 'Backup status');
+    const location = { ...backup, title: 'Library location',
+        description: `${overview.location.path} · The database path set in config.json.`,
+        action: { ...backup.action, text: 'Details' } };
+    surfaces[0] = { ...health, tree: [...health.tree, 'div.operation'],
+        rows: [...health.rows.slice(0, 2), location, ...health.rows.slice(2)] };
     return {
         ...reference,
         // D92: no "Sample configuration" chip.
@@ -188,8 +199,7 @@ function mapOverviewConcept(reference, overview) {
         // D122: the concept's literal label is its prototype action name ("system-tab sections").
         nav: { ...reference.nav, label: 'System sections' },
         metrics: { ...reference.metrics, items: reference.metrics.items.map(item => ({ ...item, value: relabel[item.label] })) },
-        columns: { ...reference.columns, surfaces: reference.columns.surfaces.map(surface => ({ ...surface,
-            rows: surface.rows.map(row => (rows[row.title] ?? (value => value))(row)) })) },
+        columns: { ...reference.columns, surfaces },
         save: { ...reference.save,
             // D92: truthful status copy, and "Save preferences" is aria-disabled (dimmed) while nothing is unsaved.
             status: { ...reference.save.status, text: 'No unsaved changes.' },
@@ -232,13 +242,21 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
 
 // The recorded differences, by path: D93 the review row (its real count), the backup row, the
 // preferences row and the sources row, and metric 4; D96 the statistics row; D92 the chip, the status and the dimmed
-// Save; D122 the nav label. (The fixture's first three metrics are the concept's own counts.)
+// Save; D122 the nav label; D129 the inserted "Library location" row, which shifts the thumbnail row to the fourth place
+// (row 2 takes its title, text and action; row 3 and the surface's fifth child are new). (The fixture's first three
+// metrics are the concept's own counts.)
+const D129_ROW_ACTION = ['backgroundColor', 'borderTopColor', 'borderTopLeftRadius', 'borderTopWidth', 'className', 'color',
+    'cursor', 'fontSize', 'opacity', 'paddingLeft', 'paddingTop', 'text'].map(key => `columns.surfaces.0.rows.3.action.${key}`);
 const UNMAPPED_PATHS = [
     'columns.surfaces.0.rows.0.title', 'columns.surfaces.0.rows.1.description',
+    'columns.surfaces.0.rows.2.action.text', 'columns.surfaces.0.rows.2.description', 'columns.surfaces.0.rows.2.title',
+    ...D129_ROW_ACTION, 'columns.surfaces.0.rows.3.description', 'columns.surfaces.0.rows.3.title',
+    'columns.surfaces.0.rows.3.tree.0', 'columns.surfaces.0.rows.3.tree.1', 'columns.surfaces.0.rows.3.tree.length',
+    'columns.surfaces.0.rows.length', 'columns.surfaces.0.tree.4', 'columns.surfaces.0.tree.length',
     'columns.surfaces.1.rows.0.description', 'columns.surfaces.1.rows.1.title', 'columns.surfaces.1.rows.2.description',
     'heading.actions.0', 'heading.actions.length', 'metrics.items.3.value', 'nav.label',
     'save.button.cursor', 'save.button.opacity', 'save.status.text',
-];
+].sort();
 
 test('system comparison detects mutations', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
@@ -902,4 +920,86 @@ test('thumbnail dialog comparison detects mutations', async ({ page, request }) 
     expect(await paths()).toEqual(expect.arrayContaining(['fields.2.control.borderTopColor', 'plan.color']));
     await undoStyle();
     expect(diffInventory(expected, await page.evaluate(measureThumbnailReview))).toEqual([]);
+});
+
+/**
+ * Runs in the page: one `.notice` (the concept's markup: `div > h2 + p`, then `.row-actions` buttons) with its tokens and
+ * geometry, and its left edge against `edgeSelector` (the content it lines up with).
+ */
+function measureNoticeOf([selector, edgeSelector]) {
+    const notice = document.querySelector(selector);
+    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
+    const name = node => [node.localName, ...[...node.classList].sort()].join('.');
+    const text = node => node?.textContent.trim() ?? null;
+    const button = node => ({ text: text(node), className: node.className,
+        ...css(node, 'backgroundColor', 'color', 'fontSize', 'paddingTop', 'paddingLeft', 'borderTopColor', 'borderTopLeftRadius') });
+    const edge = document.querySelector(edgeSelector);
+    return {
+        tree: [...notice.children].map(name),
+        text: [...notice.querySelectorAll(':scope > div:not(.row-actions) > *')].map(node => [node.localName, text(node)]),
+        actions: [...notice.querySelectorAll(':scope > .row-actions > button')].map(button),
+        frame: css(notice, 'display', 'alignItems', 'justifyContent', 'columnGap', 'borderTopWidth', 'borderTopColor',
+            'borderTopLeftRadius', 'backgroundColor', 'paddingTop', 'paddingLeft', 'marginBottom', 'flexDirection'),
+        h2: css(notice.querySelector('h2'), 'fontSize', 'fontWeight', 'color'),
+        p: css(notice.querySelector('p'), 'fontSize', 'color', 'marginTop'),
+        rowActions: css(notice.querySelector(':scope > .row-actions'), 'display', 'columnGap', 'flexShrink'),
+        alignedWith: Math.round(notice.getBoundingClientRect().left - edge.getBoundingClientRect().left),
+        pageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+}
+
+/** D129: the concept's Sources notice as the library notice: its own copy and actions, no bottom margin (main's padding). */
+function mapLibraryNotice(reference) {
+    return {
+        ...reference,
+        text: [['h2', 'Your library is inside the node folder'], ['p', 'Your library is stored inside the node folder, where an '
+            + 'update or reinstall can delete it. Move it to ComfyUI\'s user folder: it is copied and verified first, and nothing '
+            + 'is deleted.']],
+        actions: reference.actions.map((action, index) => ({ ...action, text: ['Keep it here', 'Move library'][index] })),
+        frame: { ...reference.frame, marginBottom: '0px' },
+    };
+}
+
+async function conceptNotice(page, theme) {
+    await openConcept(page, 'system', theme);
+    await page.locator('#main .section-nav').getByRole('button', { name: 'Sources & scans', exact: true }).click();
+    await expect(page.locator('#main .settings-layout > .notice')).toBeVisible();
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureNoticeOf, ['#main .settings-layout > .notice', '#main .heading']);
+}
+
+async function productionNotice(page, theme) {
+    await openProduction(page, 'system/overview', theme);
+    await expect(page.locator('#library-banner > .notice')).toBeVisible();
+    await expect(page.locator('#workspace-main .summary-metrics')).toBeVisible();
+    await page.mouse.move(0, 0);
+    return page.evaluate(measureNoticeOf, ['#library-banner > .notice', '#workspace-main .heading']);
+}
+
+for (const theme of THEMES) for (const [width, height] of SIZES) {
+    test(`library notice matches the concept notice ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width, height });
+        await expect(await request.post('/__test__/system/library', { data: { state: 'node_folder' } })).toBeOK();
+        const concept = await conceptNotice(page, theme);
+        const production = await productionNotice(page, theme);
+        await page.screenshot({ path: testInfo.outputPath(`production-library-notice-${theme}-${width}.png`), fullPage: true });
+        expect(diffInventory(mapLibraryNotice(concept), production)).toEqual([]);
+        expect(production.alignedWith).toBe(0);
+        expect(production.pageScroll).toBe(false);
+    });
+}
+
+test('library notice comparison detects mutations', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await expect(await request.post('/__test__/system/library', { data: { state: 'node_folder' } })).toBeOK();
+    const expected = mapLibraryNotice(await conceptNotice(page, 'dark'));
+    await productionNotice(page, 'dark');
+    const paths = async () => diffInventory(expected,
+        await page.evaluate(measureNoticeOf, ['#library-banner > .notice', '#workspace-main .heading'])).map(item => item.path);
+    expect(await paths()).toEqual([]);
+    const undoToken = await mutate(page, { css: '#library-banner { --soft-blue: rgb(255, 0, 0); }' });
+    expect(await paths()).toEqual(['frame.backgroundColor']);
+    await undoToken();
+    await page.evaluate(() => { document.querySelector('#library-banner .notice h2').textContent = 'Library'; });
+    expect(await paths()).toEqual(['text.0.1']);
 });

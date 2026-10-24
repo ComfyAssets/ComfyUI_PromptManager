@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import os
 import shutil
 import socket
@@ -656,6 +657,18 @@ def exit_when_stdin_closes(loop: asyncio.AbstractEventLoop) -> threading.Thread:
     return thread
 
 
+def close_owned_log_files() -> None:
+    """Close Prompt Manager's own log handlers before the temp root goes.
+
+    The logs live in the library's data folder (#249 S6b), which for this
+    server is <root>/user/__promptmanager; Windows cannot remove a file
+    this process still has open.
+    """
+    for handler in logging.getLogger("prompt_manager").handlers[:]:
+        if getattr(handler, "_prompt_manager_owned", False) is True:
+            handler.close()
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -680,6 +693,7 @@ def main(argv: list[str] | None = None) -> None:
         finally:
             # create_app works inside the root; Windows cannot remove a process's cwd.
             os.chdir(original_cwd)
+            close_owned_log_files()
 
 
 if __name__ == "__main__":

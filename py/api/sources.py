@@ -13,7 +13,9 @@
 - ``describe_sources`` (blocking: it resolves paths) reports the configured
   sources with their validity, the effective sources with their listing
   index and watch state, and the image monitor's state. Every path in it is
-  a public path (``_public_path``), never an absolute one.
+  a public path (``_public_path``), never an absolute one; ``in_comfyui``
+  says whether an effective source's public path is relative to the ComfyUI
+  base (``in_comfyui_base``), so the page can read it as ``ComfyUI/<path>``.
 
 A source's watch state is ``watching`` when the monitor's observer is alive,
 scheduled that directory and monitoring is on; ``stopping`` when it still
@@ -209,6 +211,27 @@ def watch_state(path, *, present, alive, scheduled_keys, enabled):
     return "restart_pending"
 
 
+def in_comfyui_base(path):
+    """Whether ``_public_path(path)`` is relative to the ComfyUI base directory.
+
+    The base is the first anchor ``_public_path`` tries, so this agrees with
+    it: the same canonical (realpath + normcase) spelling on both sides.
+    """
+    from pathlib import Path
+
+    from ..config import _comfyui_base_directory
+
+    base = _comfyui_base_directory()
+    if not path or not base:
+        return False
+    try:
+        canonical = Path(os.path.normcase(os.path.realpath(str(path))))
+        anchor = Path(os.path.normcase(os.path.realpath(base)))
+    except (OSError, ValueError):
+        return False
+    return canonical.is_relative_to(anchor)
+
+
 def describe_sources(*, configured, output_dirs, auto_detected, monitor, enabled):
     """``(sources, monitor)`` for GET /settings (blocking; public paths only).
 
@@ -233,6 +256,7 @@ def describe_sources(*, configured, output_dirs, auto_detected, monitor, enabled
                 scheduled_keys=scheduled_keys,
                 enabled=enabled,
             ),
+            "in_comfyui": in_comfyui_base(path),
         }
         for index, path in enumerate(output_dirs)
     ]

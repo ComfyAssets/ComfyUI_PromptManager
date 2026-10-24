@@ -36,12 +36,14 @@ from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 # Import logging system
 try:
     from ..utils.logging_config import get_logger
+    from ..utils import library_location
 except ImportError:
     import sys
 
     current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.path.insert(0, current_dir)
     from utils.logging_config import get_logger
+    from utils import library_location
 
 # Initialize logger for config operations
 config_logger = get_logger("prompt_manager.config")
@@ -663,6 +665,10 @@ class PromptManagerConfig:
     # database first (System › Backup & export › Recovery policy, #249 S6).
     SAFETY_BACKUP = True
 
+    # "Keep it here" (#249 S6b): the user chose to keep a node-folder library
+    # where it is, so the workspace stops offering to move it.
+    KEEP_LIBRARY_IN_NODE_FOLDER = False
+
     @classmethod
     def max_worker_threads(cls) -> int:
         """Largest accepted worker-thread count: the detected core count."""
@@ -718,6 +724,7 @@ class PromptManagerConfig:
                 "worker_threads": cls.WORKER_THREADS,
             },
             "maintenance": {"safety_backup": cls.SAFETY_BACKUP},
+            "library": {"keep_in_node_folder": cls.KEEP_LIBRARY_IN_NODE_FOLDER},
             "gallery": GalleryConfig.get_config(),
             "integrations": IntegrationConfig.get_config(),
             "autotag": AutotagConfig.get_config(),
@@ -727,14 +734,12 @@ class PromptManagerConfig:
     def get_config_path(cls) -> str:
         """Path of the persisted config.json.
 
-        Honours ``PROMPT_MANAGER_CONFIG_PATH`` when set; otherwise the file
-        lives at the repository root next to ``pyproject.toml``.
+        Honours ``PROMPT_MANAGER_CONFIG_PATH`` when set; otherwise it lives in
+        the library's data folder (``utils.library_location``): the node
+        folder for a library that was not moved, else ComfyUI's
+        ``user/__promptmanager``.
         """
-        override = os.environ.get(CONFIG_PATH_ENV, "").strip()
-        if override:
-            return override
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(repo_root, "config.json")
+        return library_location.config_location()[0]
 
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None):
@@ -858,6 +863,12 @@ class PromptManagerConfig:
             maintenance.get("safety_backup"), bool
         ):
             cls.SAFETY_BACKUP = maintenance["safety_backup"]
+
+        library = new_config.get("library", {})
+        if isinstance(library, dict) and isinstance(
+            library.get("keep_in_node_folder"), bool
+        ):
+            cls.KEEP_LIBRARY_IN_NODE_FOLDER = library["keep_in_node_folder"]
 
         # Update gallery config
         if "gallery" in new_config:

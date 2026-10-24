@@ -25,14 +25,16 @@ test('execution script discovers only the new matrix and preserves all 78 origin
     assert.match(stock, /Total: 82 tests in 8 files/);  // + local Inspect host case (inspect-sender.spec.mjs, 2 projects)
     assert.doesNotMatch(stock, /execution-history/);
     assert.doesNotMatch(stock, /execution-outputs/);
+    assert.doesNotMatch(stock, /library-location/);  // it starts its own fresh host (#249 S6b)
     const executions = list('tools/vendor/playwright.execution.config.mjs');
     assert.match(executions, /\[classic-start\]/);
     assert.match(executions, /\[nodes2-start\]/);
-    assert.match(executions, /Total: 46 tests in 2 files/);
+    assert.match(executions, /Total: 48 tests in 3 files/);  // + the fresh-host library location case
     for (const project of ['classic-start', 'nodes2-start']) {
         const cases = executions.split('\n').filter(line => line.includes(`[${project}]`));
         assert.equal(cases.filter(line => line.includes('execution-history.spec.mjs')).length, 15);
         assert.equal(cases.filter(line => line.includes('execution-outputs.spec.mjs')).length, 8);
+        assert.equal(cases.filter(line => line.includes('library-location.spec.mjs')).length, 1);
     }
     assert.doesNotMatch(executions, /prompt-manager.spec/);
 });

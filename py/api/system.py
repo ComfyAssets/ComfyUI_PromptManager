@@ -168,9 +168,10 @@ class SystemRoutesMixin:
         from ..config import GalleryConfig
 
         try:
-            (output_dirs, auto_detected), counts = await _gather_settled(
+            (output_dirs, auto_detected), counts, location = await _gather_settled(
                 self._run_in_executor(self._output_dirs_with_origin),
                 self._run_in_executor(self.db.library_counts),
+                self._run_in_executor(self._library_payload),
             )
         except Exception:
             self.logger.exception("System overview failed")
@@ -194,6 +195,8 @@ class SystemRoutesMixin:
                     "effective": len(output_dirs),
                     "auto_detected": auto_detected,
                 },
+                # Where the library lives and why (py/api/library_location.py).
+                "location": location,
             },
             headers={"Cache-Control": "no-store"},
         )

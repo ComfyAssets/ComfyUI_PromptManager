@@ -36,6 +36,7 @@ from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
 from .prompt_graph import resolve_text, run_prompt_nodes
 from .prompt_pair_resolver import resolve_prompt_pair
+from .usage_tracking import survive_switch
 
 try:
     from ..database.pair_ingestion import ingest_resolved_pair
@@ -587,24 +588,38 @@ class ImageGenerationHandler(FileSystemEventHandler):
         """
         try:
             resolution = resolve_prompt_pair(metadata)
-            if resolution["state"] == "resolved":
-                positive = resolution["positive"]
-                expected = self.db_manager.get_prompt_by_hash(
-                    generate_prompt_hash(positive.get("storage_text", positive["text"]))
-                )
-                if expected and expected["id"] == prompt_context["id"]:
-                    ingest_resolved_pair(
-                        self.db_manager, image_path, metadata, resolution
+
+            def link():
+                # One write; run again on the moved library when a Move
+                # library switched while it waited (#249 S6b).
+                if resolution["state"] == "resolved":
+                    positive = resolution["positive"]
+                    expected = self.db_manager.get_prompt_by_hash(
+                        generate_prompt_hash(
+                            positive.get("storage_text", positive["text"])
+                        )
                     )
-                    return
-            image_id = self.db_manager.link_image_to_prompt(
-                prompt_id=prompt_context["id"], image_path=image_path, metadata=metadata
-            )
-            fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
-            self.logger.debug(
-                f"Successfully linked image {image_id} to prompt "
-                f"{prompt_context['id']}{fallback_note}"
-            )
+                    if expected and expected["id"] == prompt_context["id"]:
+                        ingest_resolved_pair(
+                            self.db_manager, image_path, metadata, resolution
+                        )
+                        return None
+                # The raising form: a failed write reaches survive_switch.
+                return self.db_manager.link_image_to_prompt_or_raise(
+                    prompt_id=prompt_context["id"],
+                    image_path=image_path,
+                    metadata=metadata,
+                )
+
+            image_id = survive_switch(self.db_manager, link)
+            if image_id is None:
+                return
+            if image_id:  # 0: nothing new was linked (logged by the database)
+                fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
+                self.logger.debug(
+                    f"Successfully linked image {image_id} to prompt "
+                    f"{prompt_context['id']}{fallback_note}"
+                )
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")
             return

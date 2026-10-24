@@ -609,18 +609,36 @@ class PromptModel:
         if conn is not None and self._local.generation == self._generation:
             return conn
 
-        # check_same_thread=False only so close_all can clean up other
-        # threads' connections; each connection is still used by one thread.
-        conn = sqlite3.connect(
-            self.db_path, check_same_thread=False, timeout=BUSY_TIMEOUT_SECONDS
-        )
-        conn.row_factory = sqlite3.Row
-        configure_connection(conn)
+        while True:
+            # The path and generation are read together, and the new
+            # connection is kept only if no Move library repointed the model
+            # meanwhile: otherwise it would write to the old file.
+            with self._conn_lock:
+                path, generation = self.db_path, self._generation
+            # check_same_thread=False only so close_all can clean up other
+            # threads' connections; each connection is still used by one thread.
+            conn = sqlite3.connect(
+                path, check_same_thread=False, timeout=BUSY_TIMEOUT_SECONDS
+            )
+            try:
+                conn.row_factory = sqlite3.Row
+                configure_connection(conn)
+            except BaseException:
+                conn.close()
+                raise
+            with self._conn_lock:
+                if generation == self._generation:
+                    self._connections.add(conn)
+                    break
+            conn.close()
         self._local.conn = conn
-        self._local.generation = self._generation
-        with self._conn_lock:
-            self._connections.add(conn)
+        self._local.generation = generation
         return conn
+
+    @property
+    def generation(self) -> int:
+        """Bumped whenever every connection is closed or the model repointed."""
+        return self._generation
 
     @classmethod
     def close_all_instances(cls) -> None:
@@ -630,22 +648,59 @@ class PromptModel:
         for model in models:
             model.close_all()
 
+    @classmethod
+    def repoint_instances(cls, old_path: str, new_path: str) -> list:
+        """Point every model of ``old_path`` at ``new_path`` (Move library).
+
+        Every thread opens the new file on its next ``get_connection``. The
+        old connections are detached, not closed, and returned: the caller
+        closes them once nothing can block on the new file any more. Closing
+        a connection another thread is using waits for its statement; a write
+        waiting on the mover's lock then fails (and, through
+        ``PromptDatabase.survive_library_switch``, runs again on the new file).
+        """
+        old_key = os.path.normcase(os.path.realpath(old_path))
+        with cls._instances_lock:
+            models = list(cls._instances)
+        with cls._init_lock:
+            cls._initialized_paths.add(os.path.normcase(os.path.realpath(new_path)))
+        detached = []
+        for model in models:
+            if model._schema_key() == old_key:
+                detached.extend(model._detach_connections(new_path))
+        return detached
+
+    @staticmethod
+    def close_detached(connections, logger=None) -> None:
+        """Close connections ``repoint_instances`` detached."""
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error as e:
+                if logger is not None:
+                    logger.warning(f"Error closing database connection: {e}")
+
     def close_all(self) -> None:
         """Close every thread's connection; they reopen lazily on next use.
 
         Needed before deleting the database file (Windows keeps open files
         locked) and by tests that ran queries through executor threads.
         """
+        self.close_detached(self._detach_connections(), self.logger)
+
+    def _detach_connections(self, new_path: Optional[str] = None) -> list:
+        """Forget every connection (optionally pointing the model elsewhere).
+
+        Returns them for the caller to close; threads reopen on next use.
+        """
         with self._conn_lock:
+            if new_path is not None:
+                self.db_path = new_path
             connections = list(self._connections)
             self._connections.clear()
             self._generation += 1
         self._local.conn = None
-        for conn in connections:
-            try:
-                conn.close()
-            except sqlite3.Error as e:
-                self.logger.warning(f"Error closing database connection: {e}")
+        return connections
 
     def close(self) -> None:
         """Close the calling thread's connection, if it has one.
