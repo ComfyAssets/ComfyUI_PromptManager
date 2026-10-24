@@ -32,10 +32,10 @@ import sqlite3
 
 from .jobs import MAINTENANCE_JOB_KIND, JobBusy
 from .maintenance import (
-    BACKUP_FAILED,
     MAINTENANCE_GROUPS,
     PRE_MIGRATION_LABEL,
     SafetyBackupFailed,
+    backup_failed_message,
     _fail_job,
     _megabytes,
     disk_plan,
@@ -61,8 +61,7 @@ RECLAIM_FAILED = "Reclaim space failed; the database is unchanged."
 ROW_KEPT = "could not be rewritten; it keeps its inline text and reads as before"
 
 
-def _backup_part(backup):
-    return f"Pre-migration backup {backup}"
+NOTHING_LEFT = "Every image record already stores its workflow once"
 
 
 def _plural(count, one, many=None):
@@ -97,34 +96,57 @@ class WorkflowStorageRoutesMixin:
         )
 
     async def _run_workflow_storage(self, job, db, _backup_on):
-        # Always backed up first, whatever the policy: the way back.
-        backup = await self._pre_migration_backup(job, db)
+        # Always backed up first, whatever the policy: the way back. The first
+        # apply keeps a pre-migration backup; later ones (after a Cancel, a
+        # rerun) take a pooled safety backup, so only one copy is never pruned.
+        counts = await self._run_in_executor(db.workflow_storage_status)
+        if not counts["rows"]:
+            job.log_line(NOTHING_LEFT)
+            job.update(progress=100, status_line=NOTHING_LEFT)
+            return
+        kept = await self._run_in_executor(
+            workflow_storage.pre_migration_backups, db.model.db_path
+        )
+        label = "backup" if kept else PRE_MIGRATION_LABEL
+        backup = await self._backup_before_rewrite(job, db, label, kept)
         if backup is None:
             return
-        if await self._rewrite_workflows(job, db, backup):
+        try:
+            done = await self._rewrite_workflows(job, db, backup)
+        finally:
+            if kept:
+                await self._prune_backup_pool(job, db)
+        if done:
             job.finish("finished")
             self._start_reclaim_space(job, db)
 
-    async def _pre_migration_backup(self, job, db):
-        """The verified ``<db>.pre-workflow-storage_<stamp>`` copy, or None.
+    async def _backup_before_rewrite(self, job, db, label, kept):
+        """The verified backup's status note, or None (the job failed).
 
-        Outside the pruned ``<db>.backup_*`` pool: it stays until the user
-        removes it. A failure ends the job ``backup-failed``, nothing changed.
+        ``label`` ``pre-workflow-storage``: kept until the user removes it.
+        ``backup``: a pooled safety backup, while the earliest kept
+        pre-migration backup (``kept[0]``) stays. A failure ends the job
+        ``backup-failed``, nothing changed.
         """
-        job.update(status_line="Taking the pre-migration backup")
-        job.log_line("Taking the pre-migration backup of the database")
+        noun = "safety backup" if kept else "pre-migration backup"
+        job.update(status_line=f"Taking the {noun}")
+        job.log_line(f"Taking the {noun} of the database")
         try:
-            backup = await self._run_in_executor(
-                take_safety_backup, db.model, PRE_MIGRATION_LABEL
-            )
-        except SafetyBackupFailed:
-            self.logger.error("Pre-migration backup failed", exc_info=True)
-            _fail_job(job, "backup-failed", BACKUP_FAILED)
+            name = await self._run_in_executor(take_safety_backup, db.model, label)
+        except SafetyBackupFailed as error:
+            self.logger.error("Backup before the rewrite failed", exc_info=True)
+            _fail_job(job, "backup-failed", backup_failed_message(error))
             return None
+        if kept:
+            job.log_line(
+                f"Safety backup {name} verified; the pre-migration backup "
+                f"{kept[0]} is kept"
+            )
+            return f"Safety backup {name}"
         job.log_line(
-            f"Pre-migration backup {backup} verified; it is kept until you remove it"
+            f"Pre-migration backup {name} verified; it is kept until you remove it"
         )
-        return backup
+        return f"Pre-migration backup {name}"
 
     async def _rewrite_workflows(self, job, db, backup):
         """Rewrite every old-form row; True when every row was looked at."""
@@ -185,7 +207,7 @@ class WorkflowStorageRoutesMixin:
         job.log_line(line)
         if removed:
             job.log_line(f"Removed {_plural(removed, 'unused workflow document')}")
-        job.update(progress=100, status_line=f"{line} · {_backup_part(backup)}")
+        job.update(progress=100, status_line=f"{line} · {backup}")
         return True
 
     def _stopped(self, job, rows, backup):
@@ -194,7 +216,7 @@ class WorkflowStorageRoutesMixin:
             "run it again to continue"
         )
         job.log_line(line)
-        job.update(status_line=f"{line} · {_backup_part(backup)}")
+        job.update(status_line=f"{line} · {backup}")
         job.finish("cancelled")
         return False
 

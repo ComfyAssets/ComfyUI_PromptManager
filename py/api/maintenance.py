@@ -58,9 +58,11 @@ from .jobs import MAINTENANCE_JOB_KIND, JobBusy
 from .maintenance_plans import PlanExpired, PlanUsed, ScopeTooLarge
 
 try:
+    from ...database.workflow_storage import PRE_MIGRATION_LABEL, pre_migration_backups
     from ...database.health import readonly_uri
     from ...database.maintenance import MAINTENANCE_OPERATIONS, PlanChanged
 except ImportError:
+    from database.workflow_storage import PRE_MIGRATION_LABEL, pre_migration_backups
     from database.health import readonly_uri
     from database.maintenance import MAINTENANCE_OPERATIONS, PlanChanged
 
@@ -69,8 +71,6 @@ PREVIEW_BODY_MAX = 4096
 DUPLICATE_PREVIEW_BODY_MAX = 1024 * 1024
 DUPLICATE_FILES = "duplicate_files"
 WORKFLOW_STORAGE = "workflow_storage"  # applied by py/api/workflow_storage.py
-# Its backup's name, outside the pruned ``<db>.backup_*`` pool.
-PRE_MIGRATION_LABEL = "pre-workflow-storage"
 PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES,)
 # Room left over beyond what a step writes, so a disk is never filled to 0.
 DISK_MARGIN_BYTES = 16 * 2**20
@@ -93,12 +93,28 @@ PLAN_CHANGED = (
     "Review the plan again."
 )
 APPLY_FAILED = "Maintenance failed; nothing was changed."
+NOTHING_TO_DO = "Every image record already stores its workflow once; nothing to do."
 NO_BACKUP = "No safety backup"
 _NAME_ATTEMPTS = 1000
 
 
 class SafetyBackupFailed(Exception):
-    """The safety backup could not be written, verified or put in place."""
+    """The safety backup could not be written, verified or put in place.
+
+    ``reason`` is the verify reason when the copy did not verify.
+    """
+
+    def __init__(self, message, reason=None):
+        super().__init__(message)
+        self.reason = reason
+
+
+def backup_failed_message(error):
+    """The job line for a failed backup, naming a damaged workflow document."""
+    reason = getattr(error, "reason", None) or ""
+    if reason.startswith("Workflow document "):
+        return f"{BACKUP_FAILED} {reason}"
+    return BACKUP_FAILED
 
 
 def _now():
@@ -409,9 +425,9 @@ def take_safety_backup(model, label="backup"):
         if not model.backup_database(temp):
             raise SafetyBackupFailed("The backup could not be written")
         _standalone(temp)
-        ok, _reason = model.verify_database_file(temp)
+        ok, reason = model.verify_database_file(temp)
         if not ok:
-            raise SafetyBackupFailed("The backup did not verify")
+            raise SafetyBackupFailed("The backup did not verify", reason)
         _fsync(temp)
         if os.name != "nt":
             os.chmod(temp, 0o600)
@@ -530,6 +546,7 @@ class MaintenanceRoutesMixin:
                 "targets": draft.targets,
                 "roots": roots,
                 "protected": draft.protected["count"],
+                "rows": draft.scope["count"],
             },
         )
 
@@ -551,8 +568,11 @@ class MaintenanceRoutesMixin:
         policy = self._safety_backup_policy()
         destination = "backup"
         if operation == WORKFLOW_STORAGE:
-            # Always backed up first, whatever the policy (the way back).
-            policy, destination = "required", PRE_MIGRATION_LABEL
+            # Always backed up first, whatever the policy (the way back);
+            # one kept pre-migration backup ever, pooled ones after it.
+            policy = "required"
+            kept = await self._run_in_executor(pre_migration_backups, db.model.db_path)
+            destination = "backup" if kept else PRE_MIGRATION_LABEL
         try:
             disk, _short, size = await self._run_in_executor(
                 disk_plan,
@@ -611,6 +631,9 @@ class MaintenanceRoutesMixin:
                 409,
                 "storage-changed",
             )
+        if plan.operation == WORKFLOW_STORAGE and not plan.payload.get("rows"):
+            store.discard(token)  # no job, no backup: nothing to rewrite
+            return _failure(NOTHING_TO_DO, 409, "nothing-to-do")
         backup = self._backup_promised(plan)
         try:
             _disk, short, _size = await self._run_in_executor(
@@ -698,9 +721,9 @@ class MaintenanceRoutesMixin:
         job.log_line("Taking a safety backup of the database")
         try:
             backup = await self._run_in_executor(take_safety_backup, db.model)
-        except SafetyBackupFailed:
+        except SafetyBackupFailed as error:
             self.logger.error("Safety backup failed", exc_info=True)
-            _fail_job(job, "backup-failed", BACKUP_FAILED)
+            _fail_job(job, "backup-failed", backup_failed_message(error))
             return False, None
         job.log_line(f"Safety backup {backup} verified")
         return True, backup

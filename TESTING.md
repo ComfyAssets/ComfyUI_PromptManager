@@ -2743,16 +2743,24 @@ reports `backup.policy: "required"`; `test_the_backup_is_taken_even_with_the_pol
 range search and read one row at a time, followed by 0.15 s with the write lock free so
 a writer on another connection gets in (`test_a_writer_on_another_connection_gets_in_between_batches`).
 Each text is read back through the accessor before its row changes. Each row has its own
-savepoint: a row that cannot be rewritten (undecodable text, a text that would not come
-back) stays inline, is listed in `errors` and named in the job's last line, and the rest
-go on, Reclaim space included (`TestRowErrors`); any other failure rolls the batch back
-whole. A reused document is decompressed and checked first and repaired from the text
+savepoint: a row that cannot be rewritten (text SQLite cannot decode, a text that would
+not come back) stays inline, is listed in `errors` and named in the job's last line, and
+the rest go on, Reclaim space included (`TestRowErrors`); any other failure (a full disk,
+an I/O error, a malformed database, a bug) rolls the batch back whole and fails the job
+(`TestSystemErrorsFailTheBatch`, `TestSystemErrorsInTheJob`). With nothing to rewrite the
+plan says "Nothing to rewrite" and Apply answers 409 `nothing-to-do` with no backup; only
+the first apply keeps a `pre-workflow-storage` backup, and a later one (after a Cancel, a
+rerun) takes a pooled safety backup (`TestOneKeptBackup`). The job loop's pause is tested
+with a second-connection writer (`TestLiveLoopLetsWritersIn`). A reused document is decompressed and checked first and repaired from the text
 when damaged, and `verify_database_file` (restore and backup verification) reads every
 document and refuses a damaged one (`TestDamagedDocuments`). The legacy table rebuilds
 refuse a file that already has the document id columns (`TestRebuildGuards`).
 `tools/workflow_text_digests.py <db> <out>` writes the sha256 of every record's stored
-texts (read-only), so a `diff` of its output before and after the rewrite proves byte
-identity. A crash or Cancel leaves
+texts, so a `diff` of its output before and after the rewrite proves byte identity. It
+loads only `database/workflow_documents.py` (no package start-up, no log handler) and
+opens the database `mode=ro`, with `immutable=1` when no `-wal`/`-shm` exists, so it
+creates none (`TestDigestToolSideEffects`). A damaged document's verify reason names it
+and says what to do, and a backup that fails on it says so in the job line. A crash or Cancel leaves
 committed batches new form and the rest old form, and the next apply continues
 (`test_a_crash_mid_migration_leaves_every_row_readable_and_resumes`,
 `test_cancel_stops_after_the_current_batch_and_a_rerun_continues`). Values that are not

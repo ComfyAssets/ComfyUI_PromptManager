@@ -11,23 +11,44 @@ Run it from this repository on the database before the rewrite (or on its
 
 Each line is ``<image id> <sha256 of workflow_data> <sha256 of prompt_metadata>``
 (``-`` for none), hashing the exact stored bytes: the inline column before the
-rewrite, the document read through the one accessor after it. Read-only: the
-database is opened with ``mode=ro`` and nothing is written to it.
+rewrite, the document read through the one accessor after it.
+
+Read-only, with no side effects: the database is opened with ``mode=ro``,
+and with ``immutable=1`` when no ``-wal``/``-shm`` file exists beside it (a
+stopped database or a backup), so SQLite creates none. A live database
+already has them and is read through its WAL. Only
+``database/workflow_documents.py`` is loaded (by path; it needs only the
+standard library), so no package start-up runs and no log file or handler is
+added. Run it as the user that runs ComfyUI.
 """
 
 import argparse
 import hashlib
+import importlib.util
 import os
 import sqlite3
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_ROOT = Path(__file__).resolve().parents[1]
 
-from database.workflow_documents import (  # noqa: E402
-    DocumentReader,
-    resolve_image_row,
-)
+
+def _load_documents():
+    """``database/workflow_documents.py`` alone, without the ``database`` package."""
+    path = _ROOT / "database" / "workflow_documents.py"
+    spec = importlib.util.spec_from_file_location("_pm_workflow_documents", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def database_uri(db_path):
+    """``mode=ro``, plus ``immutable=1`` when nothing has the database open."""
+    path = os.path.abspath(db_path)
+    uri = Path(path).as_uri() + "?mode=ro"
+    if not any(os.path.exists(path + suffix) for suffix in ("-wal", "-shm")):
+        uri += "&immutable=1"
+    return uri
 
 
 def _digest(value):
@@ -39,16 +60,16 @@ def _digest(value):
 
 def write_digests(db_path, out):
     """Write one digest line per image record of ``db_path`` to ``out``."""
-    uri = Path(os.path.abspath(db_path)).as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    documents = _load_documents()
+    conn = sqlite3.connect(database_uri(db_path), uri=True)
     try:
         conn.row_factory = sqlite3.Row
         conn.text_factory = bytes  # inline text exactly as stored, even undecodable
-        reader = DocumentReader(conn)
+        reader = documents.DocumentReader(conn)
         count = 0
         with open(out, "w", encoding="utf-8") as handle:
             for row in conn.execute("SELECT * FROM generated_images ORDER BY id"):
-                texts = resolve_image_row(reader, row)
+                texts = documents.resolve_image_row(reader, row)
                 handle.write(
                     f"{row['id']} {_digest(texts.get('workflow_data'))} "
                     f"{_digest(texts.get('prompt_metadata'))}\n"
