@@ -2897,15 +2897,52 @@ still have made the file, so that text is not certain either. Both report
 `unresolved` ("could not be traced"), are never linked, and their pending,
 undecided items whose own evidence offers no choice (a limited item counts as
 a choice when it holds at least two candidates) leave the queue on the next
-scan or monitor pass (`settle_untraced_review_items`). The maintainer's
-second live check found 39 items whose 11 candidates were all "unresolved". The queue heals itself: after each batch, the scan removes the pending
+scan (`settle_untraced_review_items`). The maintainer's
+second live check found 39 items whose 11 candidates were all "unresolved".
+Inspection-profile choices (`tests/test_review_inspection.py`, ruling a): when
+the default profile is ambiguous without a choice and nothing links the file,
+the scan (never the monitor) resolves it again with `INSPECTION_PROFILE`, which
+knows `TextEncodeQwenImageEdit`, `StringConstantMultiline`, `JoinStringMulti`
+and the rest of `web/js/inspection-semantics.json`. With at least two choosable
+candidates there, the file is `ambiguous` and is queued from that profile's
+evidence, which adds `profile: "inspection"` and `semantics`: the SHA-256 of
+`class_projection`, the table restricted to the graph's node classes plus its
+class-independent `schema` and `stage_inputs` (the resolver looks the table up
+only by a graph node's class). The item's `resolver_version` is
+`inspection_review_version(metadata)`, 2^40 plus 40 bits of SHA-256 over the
+profile with its budgets, `RESOLVER_VERSION`, `INSPECTION_RESOLVER_VERSION`
+(bump it when the inspection profile would resolve the same metadata otherwise)
+and that fingerprint. A table edit about the
+graph's classes behaves like a resolver change (I2); an edit about other
+classes changes nothing. One file never holds two pending items for the same
+bytes: a new version's item supersedes the byte record's other items when all
+are pending and undecided (revision 0, no decision row, the self-heal's safe
+delete); beside a decided or advanced item nothing new is stored, and the
+rescan's stat shortcut then skips those bytes under any version. A pending item
+stays applicable while the bytes still offer its chosen candidate.
+Apply re-resolves the capture with the profile the item recorded and re-checks
+the chosen hash; the link goes through the same compatible-only ingestion. The
+inspection profile never links on its own, and ingestion keeps the default
+profile (D1). The heavier profile runs only for files already ambiguous without
+a choice, and once per file state: the capture reuses the scan's result when
+it holds the same records; a rescan skips files already queued or decided at
+their current size and `mtime_ns` under their version, and files this process
+already found untraced at the same state (an in-memory map of at most 65,536
+files, oldest forgotten first, keyed by 16-byte digests: 8.6 MiB measured at
+the cap). A file whose inspection raises is logged, counted in
+`review_errors` and reported `unresolved`; the scan goes on. An older version's
+pending, undecided item of bytes now untraced leaves the queue
+(`settle_stale_review_items`), so an item never stays stuck at 409. The 16-candidate limited
+rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
 (`settle_linked_review_items`; the review index revision moves). Only an
 undecided item goes (`pending`, revision 0, no decision row): a decision is
 never deleted or changed, so no schema state was added. The monitor never
-queues an output it linked; an unlinked file passed to `record_review_file`
-follows the scan's rule (a file the fallback would link is `skipped`). The
+records an item (only scans add items, maintainer ruling 2026-10-23): an
+unlinked file passed to `record_review_file` is `skipped` with no capture,
+and only a linked one's pending items are settled
+(`test_monitor_never_records_an_unlinked_ambiguous_output`). The
 maintainer's live check of #284/#288 found the queue at 10,232 against a review
 group of 4,677: every fallback-linked ambiguous file had been queued. It captures
 the file (scope `needs-review`), reads its metadata again from the capture,
@@ -2937,9 +2974,10 @@ Apply, and waits up to 2 s for room before counting the file as not added
 pass runs after its own link, best effort: a failure is logged and the link
 stays. Recording follows the registry's `records`
 admission (#289): the scan's recording runs under its own `records` job, and
-the monitor's (one file, not a job) is refused while a `records` or `guarded`
-job or hold runs, except thumbnail work, which writes no records (S5 M7). It then records nothing, logs that the file waits for the
-next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
+the monitor's pass (one file, not a job, which only settles) is refused
+while a `records` or `guarded` job or hold runs, except thumbnail work, which
+writes no records (S5 M7). It then writes nothing, logs that the file waits
+for the next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
 again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
 `mtime_ns` equal the verified fingerprint of bytes an item already cites (a

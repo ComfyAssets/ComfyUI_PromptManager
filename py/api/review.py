@@ -38,13 +38,17 @@ try:
     from ...database.library_commands import LibraryCommandError
     from ...database.review_decisions import ReviewCommandError
     from ...utils.media_capture import CaptureError
-    from ...utils.review_capture import captured_review, review_evidence
+    from ...utils.review_capture import (
+        captured_review,
+        item_profile,
+        review_evidence,
+    )
 except ImportError:
     from database.library import display_title
     from database.library_commands import LibraryCommandError
     from database.review_decisions import ReviewCommandError
     from utils.media_capture import CaptureError
-    from utils.review_capture import captured_review, review_evidence
+    from utils.review_capture import captured_review, item_profile, review_evidence
 
 ITEMS_URL = "/prompt_manager/review/items"
 DEFAULT_LIMIT = 40
@@ -641,7 +645,8 @@ def _verify_and_read(store, capture, item, root, need_metadata: bool):
     """Worker thread: ``(relative, facts, captured)``, or None off the root.
 
     Formats the item's target under the capture's root (resolving the root's
-    real path), re-hashes the current file, then reads the capture.
+    real path), re-hashes the current file, then reads the capture and
+    resolves it with the profile the item's evidence was recorded with.
     """
     found = format_review_target(
         item["spelled_path"],
@@ -652,7 +657,9 @@ def _verify_and_read(store, capture, item, root, need_metadata: bool):
         return None
     relative = found[1]
     facts = store.verify(root, relative)
-    captured = captured_review(store, capture) if need_metadata else None
+    captured = None
+    if need_metadata:
+        captured = captured_review(store, capture, item_profile(item["evidence"]))
     return relative, facts, captured
 
 

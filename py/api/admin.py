@@ -1711,7 +1711,7 @@ class AdminRoutesMixin:
             if self._scan_job and self._scan_job.cancelled:
                 break
             counts["processed"] += 1
-            ambiguous, untraced = [], []
+            ambiguous, untraced, records = [], [], {}
             try:
                 outcome = self._ingest_scanned_file(
                     media_file,
@@ -1719,6 +1719,7 @@ class AdminRoutesMixin:
                     detailed=True,
                     ambiguous=ambiguous,
                     untraced=untraced,
+                    records=records,
                 )
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
@@ -1731,7 +1732,11 @@ class AdminRoutesMixin:
                 else:
                     self._record_scanned_review(media_file, roots, review)
             elif untraced and outcome == "unresolved":
-                self._settle_untraced_reviews(untraced, roots, review)
+                # Untraced by the default profile: the inspection profile may
+                # still offer a choice (queued for review, never linked).
+                outcome = self._untraced_scan_outcome(
+                    media_file, roots, records.get("canonical"), review
+                )
             if outcome is None:
                 note(media_file, None)
                 continue
@@ -1766,7 +1771,13 @@ class AdminRoutesMixin:
         return positive.strip() or None
 
     def _ingest_scanned_file(
-        self, media_file, metadata, detailed=False, ambiguous=None, untraced=None
+        self,
+        media_file,
+        metadata,
+        detailed=False,
+        ambiguous=None,
+        untraced=None,
+        records=None,
     ):
         """Enrich exact pairs; retain legacy positive-only import for absent pairs.
 
@@ -1779,7 +1790,9 @@ class AdminRoutesMixin:
         ``"ambiguous"`` (nothing linked it) is a Needs review case. An
         ambiguous result with nothing to choose (``reviewable`` is False: fewer
         than two candidates carry a prompt) that nothing links returns
-        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``.
+        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``;
+        its parsed records go to ``records["canonical"]`` when ``records`` is
+        a dict.
         """
         if not metadata:
             return None
@@ -1800,6 +1813,8 @@ class AdminRoutesMixin:
         if unchoosable:
             if untraced is not None:
                 untraced.append(media_file)
+            if records is not None:
+                records["canonical"] = canonical
         elif resolution["state"] == "ambiguous" and ambiguous is not None:
             ambiguous.append(media_file)
         if resolution["state"] == "resolved":

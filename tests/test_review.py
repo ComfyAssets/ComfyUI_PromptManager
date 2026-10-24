@@ -171,6 +171,13 @@ class ReviewTestCase(AdminAPITestCase):
     def _require_module(self):
         self.assertIsNotNone(review_capture, "utils.review_capture is not implemented")
 
+    def _scan_record(self, path):
+        """Record ``path`` as the scan's recorder does (only scans add items)."""
+        from py.api.admin import _scan_roots
+
+        roots = _scan_roots(self.api._get_all_output_dirs())
+        return self.api._record_review_sync(Path(str(path)), roots, inspection=True)
+
 
 class TestScanRecording(ReviewTestCase):
     async def test_scan_persists_only_ambiguous_files_with_capture_digest(self):
@@ -502,13 +509,13 @@ class TestNonFiniteGraphs(ReviewTestCase):
             ["cat NaN", "dog Infinity"],
         )
 
-    async def test_record_review_file_records_a_nan_stamped_graph(self):
+    async def test_scan_recorder_records_a_nan_stamped_graph(self):
         self._require_module()
         self._roots()
         path = self.output_dir / "nan.png"
         write_png(path, prompt=self._nan_stamped("cat", "dog"))
 
-        self.assertEqual(self.api.record_review_file(str(path)), "recorded")
+        self.assertEqual(self._scan_record(path), "recorded")
         (item,) = self._items()
         self.assertEqual(item["candidate_count"], 2)
 
@@ -856,12 +863,13 @@ class TestMonitorRecording(ReviewTestCase):
     async def test_monitor_recording_is_refused_beside_record_changing_jobs(self):
         """S1 admission: a ``records`` recording waits for no job; it is refused.
 
-        While a ``records`` or ``guarded`` job runs, the monitor's recording
-        records nothing and answers ``deferred`` (its fallback link stands and
+        While a ``records`` or ``guarded`` job runs, the monitor's pass
+        writes nothing and answers ``deferred`` (its fallback link stands and
         a later scan reads the ambiguous file again); a ``read`` job does not
-        refuse it, and it records once the blocking job has ended. Thumbnail
-        work (the job and the gallery's holds) is ``guarded`` but writes only
-        previews, never records, so it does not defer the recording (S5 M7).
+        refuse it. Thumbnail work (the job and the gallery's holds) is
+        ``guarded`` but writes only previews, never records, so it does not
+        defer the pass either (S5 M7). Not deferred, the pass still records
+        nothing: only scans add items, so an unlinked output is ``skipped``.
         """
         self._require_module()
         from py.api.jobs import RESTORE_JOB_KIND, THUMBNAILS_JOB_KIND
@@ -898,11 +906,11 @@ class TestMonitorRecording(ReviewTestCase):
                 outcome = await asyncio.to_thread(
                     self.api.record_review_file, str(path)
                 )
-        self.assertEqual(outcome, "recorded")
-        self.assertEqual(len(self._items()), 1)
+        self.assertEqual(outcome, "skipped")
+        self.assertEqual(self._items(), [])
 
     async def test_a_running_thumbnail_job_does_not_defer_monitor_recording(self):
-        """S5 M7: a long rebuild never holds Needs review back (no records)."""
+        """S5 M7: a long rebuild never defers the monitor's pass (no records)."""
         self._require_module()
         from py.api.jobs import THUMBNAILS_JOB_KIND
 
@@ -927,8 +935,9 @@ class TestMonitorRecording(ReviewTestCase):
         finally:
             gate.set()
             await asyncio.wait_for(job.task, 5)
-        self.assertEqual(outcome, "recorded")
-        self.assertEqual(len(self._items()), 1)
+        # Not deferred (thumbnail work writes no records); only scans add items.
+        self.assertEqual(outcome, "skipped")
+        self.assertEqual(self._items(), [])
 
     async def test_monitor_wiring_reaches_new_and_existing_handlers(self):
         self._require_module()
@@ -996,12 +1005,12 @@ class TestRecordedSpelling(ReviewTestCase):
         upper = self.output_dir / "Two.PNG"
         write_png(upper, prompt=unlinkable_graph("cat", "dog"))
         with _case_folding():
-            self.assertEqual(self.api.record_review_file(str(upper)), "recorded")
+            self.assertEqual(self._scan_record(upper), "recorded")
             (before,) = self._items()
             revision = self._review_revision()
             lower = self.output_dir / "two.png"
             os.rename(upper, lower)  # keeps size and mtime_ns
-            self.assertEqual(self.api.record_review_file(str(lower)), "duplicate")
+            self.assertEqual(self._scan_record(lower), "duplicate")
             (after,) = self._items()
             self.assertEqual(self._spelled(), [str(lower)])
             self.assertEqual(self._review_revision(), revision + 1)
@@ -1029,7 +1038,7 @@ class TestRecordedSpelling(ReviewTestCase):
             self.assertEqual(capture.locator, after["locator"])
             self.api._captures.release(capture.token)
             # Seeing the same spelling again writes nothing.
-            self.assertEqual(self.api.record_review_file(str(lower)), "duplicate")
+            self.assertEqual(self._scan_record(lower), "duplicate")
             self.assertEqual(self._review_revision(), revision + 1)
 
     async def test_duplicate_insert_refreshes_the_spelling(self):
@@ -1070,7 +1079,8 @@ class TestRecordedSpelling(ReviewTestCase):
 
 class TestCaptureStoreShutdown(ReviewTestCase):
     async def test_recording_after_close_creates_no_store(self):
-        """A monitor recording still in flight at shutdown leaks nothing (M2)."""
+        """A scan recording still in flight at shutdown leaks nothing (M2),
+        and the monitor's pass after it captures nothing at all."""
         self._require_module()
         self._roots()
         path = self.output_dir / "two.png"
@@ -1079,11 +1089,12 @@ class TestCaptureStoreShutdown(ReviewTestCase):
         self.assertIsNone(self.api._captures)
         with patch("utils.media_capture.tempfile.mkdtemp") as mkdtemp:
             with self.assertRaises(CaptureError):
-                self.api.record_review_file(str(path))
-            # The monitor logs the failure and keeps its link.
+                self._scan_record(path)
+            # The monitor's pass records nothing, so it needs no store.
             handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
             handler.review_recorder = self.api.record_review_file
             handler._record_review(str(path))
+            self.assertEqual(self.api.record_review_file(str(path)), "skipped")
         mkdtemp.assert_not_called()
         self.assertIsNone(self.api._captures)
         self.assertIsNone(self.api._captures_unsubscribe)
