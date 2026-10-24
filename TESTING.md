@@ -2721,10 +2721,25 @@ table definition, the id columns, their foreign keys and indexes, the stored val
 dangling ids (`TestSchemaErrors`); a pre-dedupe file is accepted and migrated on open
 and on restore. The `workflow_storage` maintenance plan counts the old-form records
 (one pass over record headers) and its apply starts "Store each workflow once"
-(`records`, cancellable): the verified safety backup, then batches of at most 200 rows or
-16 MB of text, each one `BEGIN IMMEDIATE` transaction found by a rowid range search and
-read one row at a time; each text is read back through the accessor before its row
-changes, and a mismatch or any error rolls the batch back whole. A crash or Cancel leaves
+(`records`, cancellable): first, always and whatever `maintenance.safety_backup` says,
+a verified pre-migration backup named `<db>.pre-workflow-storage_<YYYYmmdd_HHMMSS_ffffff>`,
+outside the pruned `<db>.backup_*` pool and kept until the user removes it (the preview
+reports `backup.policy: "required"`; `test_the_backup_is_taken_even_with_the_policy_off`,
+`test_the_backup_is_outside_the_pool_never_pruned_and_restores`); then batches of at most
+200 rows, 16 MB of text or 0.5 s, each one `BEGIN IMMEDIATE` transaction found by a rowid
+range search and read one row at a time, followed by 0.15 s with the write lock free so
+a writer on another connection gets in (`test_a_writer_on_another_connection_gets_in_between_batches`).
+Each text is read back through the accessor before its row changes. Each row has its own
+savepoint: a row that cannot be rewritten (undecodable text, a text that would not come
+back) stays inline, is listed in `errors` and named in the job's last line, and the rest
+go on, Reclaim space included (`TestRowErrors`); any other failure rolls the batch back
+whole. A reused document is decompressed and checked first and repaired from the text
+when damaged, and `verify_database_file` (restore and backup verification) reads every
+document and refuses a damaged one (`TestDamagedDocuments`). The legacy table rebuilds
+refuse a file that already has the document id columns (`TestRebuildGuards`).
+`tools/workflow_text_digests.py <db> <out>` writes the sha256 of every record's stored
+texts (read-only), so a `diff` of its output before and after the rewrite proves byte
+identity. A crash or Cancel leaves
 committed batches new form and the rest old form, and the next apply continues
 (`test_a_crash_mid_migration_leaves_every_row_readable_and_resumes`,
 `test_cancel_stops_after_the_current_batch_and_a_rerun_continues`). Values that are not
@@ -2735,8 +2750,9 @@ does not start and the finished migration names Optimize database. No image or v
 file is opened (`test_the_jobs_never_open_a_media_file` tracks every Python open under
 the output folder and compares bytes and mtimes). Memory stays bounded by one row plus
 the batch's distinct documents (`test_memory_stays_bounded_by_one_row`, tracemalloc).
-Restoring a deduped backup on a version before this one is not supported (that version
-reads rewritten images without their workflow).
+Restoring a deduped backup on a version before this one is not supported: that
+version's restore accepts the file and then reads rewritten images without their
+workflow (README changelog).
 
 ## Workspace data fields for the concept pages (#249)
 

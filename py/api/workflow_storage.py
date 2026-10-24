@@ -6,13 +6,17 @@ records to rewrite, the backup and the disk check) and applied with its token
 (``POST /prompt_manager/maintenance/apply``). The apply starts:
 
 1. **Store each workflow once**: kind ``maintenance``, admission ``records``,
-   cancellable, groups ``changed``/``protected``/``errors``. It takes the
-   promised verified safety backup (``backup-failed`` ends it with nothing
-   rewritten), then rewrites old-form rows batch by batch
-   (``database/workflow_storage.py``): one transaction per batch, progress
-   after each, Cancel honoured between batches. A failed batch rolls back
-   whole and fails the job; every record still reads as before. Stopped or
-   failed, the next apply continues from the first old-form row.
+   cancellable, groups ``changed``/``protected``/``errors``. It always takes
+   a verified pre-migration backup, whatever the safety backup policy, named
+   ``<db>.pre-workflow-storage_<stamp>`` outside the pruned ``<db>.backup_*``
+   pool and kept until the user removes it (``backup-failed`` ends the job
+   with nothing rewritten). It then rewrites old-form rows batch by batch
+   (``database/workflow_storage.py``): one transaction per batch of at most
+   ``BATCH_SECONDS``, then ``BATCH_PAUSE`` with the write lock free, progress
+   after each, Cancel honoured between batches. A row that cannot be
+   rewritten stays inline and is listed in ``errors``; any other failure
+   rolls its batch back whole and fails the job. Every record still reads as
+   before, and the next apply continues from the first old-form row.
 2. **Reclaim space**, once every record was looked at: kind ``maintenance``,
    admission ``exclusive`` (it runs alone; VACUUM holds the write lock), not
    cancellable. It checks the disk for VACUUM's copies of the live pages
@@ -23,16 +27,20 @@ records to rewrite, the backup and the disk check) and applied with its token
 Only the database changes: no image or video file is opened.
 """
 
+import asyncio
 import sqlite3
 
 from .jobs import MAINTENANCE_JOB_KIND, JobBusy
 from .maintenance import (
+    BACKUP_FAILED,
     MAINTENANCE_GROUPS,
+    PRE_MIGRATION_LABEL,
+    SafetyBackupFailed,
     _fail_job,
     _megabytes,
-    backup_note,
     disk_plan,
     short_space_message,
+    take_safety_backup,
 )
 
 try:
@@ -50,6 +58,11 @@ REWRITE_FAILED = (
     "rolled back; every record reads as before. Run it again to continue."
 )
 RECLAIM_FAILED = "Reclaim space failed; the database is unchanged."
+ROW_KEPT = "could not be rewritten; it keeps its inline text and reads as before"
+
+
+def _backup_part(backup):
+    return f"Pre-migration backup {backup}"
 
 
 def _plural(count, one, many=None):
@@ -83,18 +96,35 @@ class WorkflowStorageRoutesMixin:
             runner=lambda job: self._run_workflow_storage(job, db, backup),
         )
 
-    async def _run_workflow_storage(self, job, db, backup_on):
-        ok, backup = await self._safety_backup_step(job, db, backup_on)
-        if not ok:
+    async def _run_workflow_storage(self, job, db, _backup_on):
+        # Always backed up first, whatever the policy: the way back.
+        backup = await self._pre_migration_backup(job, db)
+        if backup is None:
             return
-        try:
-            done = await self._rewrite_workflows(job, db, backup)
-        finally:
-            if backup:
-                await self._prune_backup_pool(job, db)
-        if done:
+        if await self._rewrite_workflows(job, db, backup):
             job.finish("finished")
             self._start_reclaim_space(job, db)
+
+    async def _pre_migration_backup(self, job, db):
+        """The verified ``<db>.pre-workflow-storage_<stamp>`` copy, or None.
+
+        Outside the pruned ``<db>.backup_*`` pool: it stays until the user
+        removes it. A failure ends the job ``backup-failed``, nothing changed.
+        """
+        job.update(status_line="Taking the pre-migration backup")
+        job.log_line("Taking the pre-migration backup of the database")
+        try:
+            backup = await self._run_in_executor(
+                take_safety_backup, db.model, PRE_MIGRATION_LABEL
+            )
+        except SafetyBackupFailed:
+            self.logger.error("Pre-migration backup failed", exc_info=True)
+            _fail_job(job, "backup-failed", BACKUP_FAILED)
+            return None
+        job.log_line(
+            f"Pre-migration backup {backup} verified; it is kept until you remove it"
+        )
+        return backup
 
     async def _rewrite_workflows(self, job, db, backup):
         """Rewrite every old-form row; True when every row was looked at."""
@@ -102,7 +132,7 @@ class WorkflowStorageRoutesMixin:
         job.update(total=counts["rows"], processed=0)
         job.update(status_line="Rewriting image records")
         job.log_line(f"{_plural(counts['rows'], 'image record')} to rewrite")
-        rows = protected = 0
+        rows = protected = errors = 0
         last_id = 0
         while True:
             if job.cancelled:
@@ -123,8 +153,15 @@ class WorkflowStorageRoutesMixin:
             last_id = batch["last_id"]
             rows += batch["rows"]
             protected += batch["protected"]
+            errors += len(batch["errors"])
             job.record_counted("changed", batch["rows"])
             job.record_counted("protected", batch["protected"])
+            for image_id in batch["errors"]:
+                job.record(
+                    "errors",
+                    {"path": "", "detail": f"Image record {image_id}: {ROW_KEPT}"},
+                    f"! Image record {image_id}: {ROW_KEPT}",
+                )
             total = max(job.total, rows)
             job.update(
                 processed=rows,
@@ -133,14 +170,22 @@ class WorkflowStorageRoutesMixin:
                 status_line=f"Rewrote {_plural(rows, 'image record')}",
             )
             job.publish({"type": "progress", "processed": rows, "total": total})
+            # Leave the write lock free between batches (monitor, run counts).
+            await asyncio.sleep(workflow_storage.BATCH_PAUSE)
         removed = await self._run_in_executor(db.sweep_workflow_documents)
         line = f"Rewrote {_plural(rows, 'image record')}"
         if protected:
             line += f"; {_plural(protected, 'stored value')} not text, kept as is"
+        if errors:
+            kept = "keeps its" if errors == 1 else "keep their"
+            line += (
+                f"; {_plural(errors, 'image record')} could not be rewritten and "
+                f"{kept} inline text"
+            )
         job.log_line(line)
         if removed:
             job.log_line(f"Removed {_plural(removed, 'unused workflow document')}")
-        job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
+        job.update(progress=100, status_line=f"{line} · {_backup_part(backup)}")
         return True
 
     def _stopped(self, job, rows, backup):
@@ -149,7 +194,7 @@ class WorkflowStorageRoutesMixin:
             "run it again to continue"
         )
         job.log_line(line)
-        job.update(status_line=f"{line} · {backup_note(backup)}")
+        job.update(status_line=f"{line} · {_backup_part(backup)}")
         job.finish("cancelled")
         return False
 

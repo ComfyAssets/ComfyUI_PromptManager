@@ -69,6 +69,8 @@ PREVIEW_BODY_MAX = 4096
 DUPLICATE_PREVIEW_BODY_MAX = 1024 * 1024
 DUPLICATE_FILES = "duplicate_files"
 WORKFLOW_STORAGE = "workflow_storage"  # applied by py/api/workflow_storage.py
+# Its backup's name, outside the pruned ``<db>.backup_*`` pool.
+PRE_MIGRATION_LABEL = "pre-workflow-storage"
 PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES,)
 # Room left over beyond what a step writes, so a disk is never filled to 0.
 DISK_MARGIN_BYTES = 16 * 2**20
@@ -245,9 +247,9 @@ def _remove_quietly(*paths):
             pass
 
 
-def _reserve_backup_name(db_path):
-    """Create and return an unused ``<db>.backup_<stamp>[_n]`` (O_EXCL)."""
-    for candidate in _backup_names(db_path):
+def _reserve_backup_name(db_path, label="backup"):
+    """Create and return an unused ``<db>.<label>_<stamp>[_n]`` (O_EXCL)."""
+    for candidate in _backup_names(db_path, label):
         try:
             fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -257,13 +259,13 @@ def _reserve_backup_name(db_path):
     raise SafetyBackupFailed("No free backup name")
 
 
-def _backup_names(db_path):
-    base = f"{db_path}.backup_{_now().strftime('%Y%m%d_%H%M%S_%f')}"
+def _backup_names(db_path, label="backup"):
+    base = f"{db_path}.{label}_{_now().strftime('%Y%m%d_%H%M%S_%f')}"
     for attempt in range(_NAME_ATTEMPTS):
         yield base if attempt == 0 else f"{base}_{attempt}"
 
 
-def _place_backup(temp, db_path):
+def _place_backup(temp, db_path, label="backup"):
     """Give the verified ``temp`` its unique backup name; return that path.
 
     ``os.link`` is atomic and refuses an existing name, so no empty or half
@@ -271,7 +273,7 @@ def _place_backup(temp, db_path):
     without hard links falls back to reserving the name (``O_EXCL``) and
     ``os.replace``. The temp file is removed by the caller.
     """
-    for candidate in _backup_names(db_path):
+    for candidate in _backup_names(db_path, label):
         try:
             os.link(temp, candidate)
         except FileExistsError:
@@ -282,7 +284,7 @@ def _place_backup(temp, db_path):
             return candidate
     else:
         raise SafetyBackupFailed("No free backup name")
-    final = _reserve_backup_name(db_path)
+    final = _reserve_backup_name(db_path, label)
     try:
         os.replace(temp, final)
     except OSError:
@@ -336,12 +338,15 @@ def _fsync(path):
         os.fsync(handle.fileno())
 
 
-def take_safety_backup(model):
+def take_safety_backup(model, label="backup"):
     """Write and verify a safety backup; return its file name (blocking).
 
     The copy is made in a temp file beside the database and only renamed
-    onto its final, unique name once it verified, so a backup file on disk
-    is always a verified one. Raises SafetyBackupFailed, leaving no file.
+    onto its final, unique name ``<db>.<label>_<stamp>`` once it verified,
+    so a backup file on disk is always a verified one. ``label`` "backup"
+    joins the pruned pool; another label (the workflow storage migration's
+    ``pre-workflow-storage``) is kept until the user removes it. Raises
+    SafetyBackupFailed, leaving no file.
     """
     db_path = os.path.abspath(model.db_path)
     fd, temp = tempfile.mkstemp(
@@ -359,7 +364,7 @@ def take_safety_backup(model):
         _fsync(temp)
         if os.name != "nt":
             os.chmod(temp, 0o600)
-        final = _place_backup(temp, db_path)
+        final = _place_backup(temp, db_path, label)
         return os.path.basename(final)
     except OSError as exc:
         _remove_quietly(final)
@@ -493,11 +498,15 @@ class MaintenanceRoutesMixin:
                 "storage-changed",
             )
         policy = self._safety_backup_policy()
+        destination = "backup"
+        if operation == WORKFLOW_STORAGE:
+            # Always backed up first, whatever the policy (the way back).
+            policy, destination = "required", PRE_MIGRATION_LABEL
         try:
             disk, _short, size = await self._run_in_executor(
                 disk_plan,
                 db.model.db_path,
-                backup=policy == "on",
+                backup=policy != "off",
                 vacuum=operation == "optimize",
             )
         except (OSError, sqlite3.Error):
@@ -522,8 +531,8 @@ class MaintenanceRoutesMixin:
                 **public,
                 "backup": {
                     "policy": policy,
-                    "destination_label": f"{name}.backup_<date and time>",
-                    "expected_bytes": size if policy == "on" else None,
+                    "destination_label": f"{name}.{destination}_<date and time>",
+                    "expected_bytes": size if policy != "off" else None,
                 },
                 "disk": disk,
             },
@@ -620,6 +629,8 @@ class MaintenanceRoutesMixin:
         Decided once, when the apply starts (the disk check measured it), and
         handed to the job.
         """
+        if plan.operation == WORKFLOW_STORAGE:
+            return True  # never without its pre-migration backup
         return plan.payload["backup"] == "on" or self._safety_backup_policy() == "on"
 
     async def _safety_backup_step(self, job, db, backup_on):

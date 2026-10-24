@@ -19,7 +19,7 @@ from unittest.mock import patch
 from PIL import Image, PngImagePlugin
 
 from database import workflow_storage as ws
-from database.workflow_documents import DocumentReader, resolve_image_row
+from database.workflow_documents import DocumentReader, resolve_image_row, store_text
 from py.api import maintenance
 from py.api.jobs import MAINTENANCE_JOB_KIND
 
@@ -118,7 +118,11 @@ class TestWorkflowStorageJob(WorkflowStorageTestCase):
             plan["media"]["label"],
             "No image or video file is opened or changed; only the database.",
         )
-        self.assertEqual(plan["backup"]["policy"], "on")
+        self.assertEqual(plan["backup"]["policy"], "required")
+        self.assertEqual(
+            plan["backup"]["destination_label"],
+            "prompts.db.pre-workflow-storage_<date and time>",
+        )
         self.assertGreater(plan["backup"]["expected_bytes"], 0)
         self.assertTrue(plan["disk"]["sufficient"])
 
@@ -143,9 +147,17 @@ class TestWorkflowStorageJob(WorkflowStorageTestCase):
         self.assertEqual(job.processed, 40)
         self.assertEqual(self.inline_count(), 0)
         self.assertEqual(self.texts(), before)
-        [backup] = self.backups()
-        self.assertIn(f"Safety backup {backup} verified", "\n".join(job.log))
-        self.assertTrue(job.status_line.startswith("Rewrote 40 image records"))
+        self.assertEqual(self.backups(), [])  # never in the pruned pool
+        [backup] = [
+            name
+            for name in os.listdir(self.tmpdir)
+            if name.startswith("prompts.db.pre-workflow-storage_")
+        ]
+        self.assertIn(f"Pre-migration backup {backup} verified", "\n".join(job.log))
+        self.assertEqual(
+            job.status_line,
+            f"Rewrote 40 image records · Pre-migration backup {backup}",
+        )
         # The safety backup holds the old form, verified.
         conn = sqlite3.connect(os.path.join(self.tmpdir, backup))
         try:
@@ -169,13 +181,15 @@ class TestWorkflowStorageJob(WorkflowStorageTestCase):
             "GET", f"/prompt_manager/prompts/{prompt_id}/images"
         )
         self.assertEqual(await listed.json(), listed_before)
-        self.assertEqual(self.strays(), [])
+        self.assertEqual(self.strays(), [backup])  # only the kept backup
         self.assertNotIn(self.tmpdir, json.dumps(job.report()))
 
     async def test_a_backup_failure_rewrites_nothing(self):
         self.old_library()
+        from py.api import workflow_storage as api_storage
+
         with patch.object(
-            maintenance,
+            api_storage,
             "take_safety_backup",
             side_effect=maintenance.SafetyBackupFailed("no"),
         ):
@@ -354,10 +368,7 @@ class TestWorkflowStorageOutcomes(WorkflowStorageTestCase):
                 "file_path, workflow_data) VALUES (?, '/x/b', 'b', '/x/b', x'00')",
                 (prompt_id,),
             )
-            conn.execute(
-                "INSERT INTO workflow_documents (sha256, byte_length, data) "
-                "VALUES (zeroblob(32), 0, x'789c030000000001')"
-            )
+            store_text(conn, "a document no record references")
         _plan, _summary, job = await self.start()
         await self.finish(job)
         log = "\n".join(job.log)
