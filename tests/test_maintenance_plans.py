@@ -428,6 +428,109 @@ class TestPreviews(MaintenanceDatabaseCase):
         # The teardown's assert_closed proves the read-only handle was closed.
 
 
+class TestApply(MaintenanceDatabaseCase):
+    """``apply_maintenance`` rechecks the fingerprint inside BEGIN IMMEDIATE."""
+
+    def apply(self, draft, roots=None):
+        roots = [str(self.output)] if roots is None else roots
+        return self.db.apply_maintenance(
+            draft.operation, draft.fingerprint, draft.targets, roots
+        )
+
+    def test_unused_components_apply_removes_exactly_the_reviewed_prompts(self):
+        first, second = self.save("One"), self.save("Two")
+        draft = self.preview("unused_components")
+        with patch.object(maintenance, "ID_BATCH", 1):  # one id per statement
+            result = self.apply(draft)
+        self.assertEqual(result["changed"], 2)
+        self.assertEqual(
+            [row["prompt_id"] for row in result["rows"]], sorted([first, second])
+        )
+        self.assertIsNone(self.db.get_prompt_by_id(first))
+        self.assertIsNone(self.db.get_prompt_by_id(second))
+
+    def test_changed_targets_raise_before_anything_is_written(self):
+        orphan, protected = self.save("Orphan"), self.save("Soon protected")
+        prompt = self.save("Links")
+        gone = self.image(prompt, "gone.png", exists=False)
+        kept = self.save("Kept")
+        self.duplicate("KEPT")
+        cases = {
+            "unused_components": lambda: self.db.model.get_connection().execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (protected, "Now a recipe"),
+            ),
+            "missing_links": lambda: (self.output / "gone.png").write_bytes(b"back"),
+            "duplicate_prompts": lambda: self.db.update_prompt_metadata(kept, rating=4),
+        }
+        for operation, change in cases.items():
+            with self.subTest(operation=operation):
+                draft = self.preview(operation)
+                self.assertTrue(draft.targets)
+                change()
+                self.db.model.get_connection().commit()
+                with self.assertRaises(maintenance.PlanChanged):
+                    self.apply(draft)
+        self.assertIsNotNone(self.db.get_prompt_by_id(orphan))
+        self.assertIsNotNone(self.db.get_image_by_id(gone))
+        self.assertEqual(len(self.db.search_prompts(text="kept")), 2)
+
+    def test_a_link_whose_source_went_away_is_never_removed(self):
+        folder = self.root / "drive"
+        prompt = self.save("Links")
+        link = self.image(prompt, "gone.png", folder=folder, exists=False)
+        roots = [str(folder)]
+        draft = self.preview("missing_links", roots)
+        self.assertEqual(draft.targets, [link])
+        folder.rmdir()  # unmounted between the review and the apply
+        with self.assertRaises(maintenance.PlanChanged):
+            self.apply(draft, roots)
+        self.assertIsNotNone(self.db.get_image_by_id(link))
+
+    def test_missing_links_apply_removes_rows_only(self):
+        prompt = self.save("Links")
+        kept = self.image(prompt, "kept.png")
+        gone = [self.image(prompt, f"gone-{n}.png", exists=False) for n in range(3)]
+        media = {p.name: _digest(p) for p in self.output.iterdir()}
+        draft = self.preview("missing_links")
+        with patch.object(maintenance, "ID_BATCH", 2):
+            result = self.apply(draft)
+        self.assertEqual(result["changed"], 3)
+        self.assertEqual(
+            [os.path.basename(row["image_path"]) for row in result["rows"]],
+            [f"gone-{n}.png" for n in range(3)],
+        )
+        self.assertEqual({p.name: _digest(p) for p in self.output.iterdir()}, media)
+        self.assertIsNotNone(self.db.get_image_by_id(kept))
+        for image_id in gone:
+            self.assertIsNone(self.db.get_image_by_id(image_id))
+
+    def test_duplicate_prompts_apply_merges_into_the_oldest(self):
+        kept = self.save("A cat")
+        copy = self.duplicate("A CAT")
+        image = self.image(copy, "cat.png")
+        draft = self.preview("duplicate_prompts")
+        result = self.apply(draft)
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(result["rows"], [{"prompt_id": copy, "kept_id": kept}])
+        self.assertIsNone(self.db.get_prompt_by_id(copy))
+        self.assertEqual(self.db.get_image_by_id(image)["prompt_id"], kept)
+
+    def test_optimize_apply_vacuums(self):
+        self.save("Some")
+        draft = self.preview("optimize")
+        with patch.object(self.db.model, "vacuum_database") as vacuum:
+            self.assertEqual(self.apply(draft), {"changed": 1, "rows": []})
+        vacuum.assert_called_once_with()
+        self.assertEqual(self.apply(self.preview("optimize"))["changed"], 1)
+        with self.assertRaises(maintenance.PlanChanged):
+            self.db.apply_maintenance("optimize", "sha256:other", [], [])
+
+    def test_apply_of_an_unknown_operation_raises(self):
+        with self.assertRaises(ValueError):
+            self.db.apply_maintenance("reboot", "x", [], [])
+
+
 class TestVacuum(MaintenanceDatabaseCase):
     def test_vacuum_failure_raises(self):
         with patch(

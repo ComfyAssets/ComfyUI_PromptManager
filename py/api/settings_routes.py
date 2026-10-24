@@ -40,6 +40,7 @@ _SETTINGS_FILE_KEYS = {
     "INFINITE_SCROLL": ("web_ui", "infinite_scroll"),
     "WORKER_THREADS": ("performance", "worker_threads"),
     "MONITORING_ENABLED": ("gallery", "monitoring", "enabled"),
+    "SAFETY_BACKUP": ("maintenance", "safety_backup"),
 }
 # Attributes that live on GalleryConfig; the others on PromptManagerConfig.
 _GALLERY_SETTINGS = frozenset({"MONITORING_ENABLED"})
@@ -187,6 +188,7 @@ class SettingsRoutesMixin:
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
                         "infinite_scroll": PromptManagerConfig.INFINITE_SCROLL,
                         "worker_threads": PromptManagerConfig.WORKER_THREADS,
+                        "safety_backup": PromptManagerConfig.SAFETY_BACKUP,
                         "cpu_count": PromptManagerConfig.max_worker_threads(),
                         "gallery_root_paths": root_paths,
                         "gallery_root_path": root_paths[0] if root_paths else "",
@@ -481,6 +483,10 @@ class SettingsRoutesMixin:
             if not isinstance(data["monitoring_enabled"], bool):
                 raise ValueError("monitoring_enabled must be true or false")
             updates["MONITORING_ENABLED"] = data["monitoring_enabled"]
+        if "safety_backup" in data:
+            if not isinstance(data["safety_backup"], bool):
+                raise ValueError("safety_backup must be true or false")
+            updates["SAFETY_BACKUP"] = data["safety_backup"]
         if "worker_threads" in data:
             updates["WORKER_THREADS"] = validate_worker_threads(
                 data["worker_threads"], PromptManagerConfig.max_worker_threads()

@@ -659,6 +659,10 @@ class PromptManagerConfig:
     DEFAULT_WORKER_THREADS = max(1, (os.cpu_count() or 1) // 2)
     WORKER_THREADS = DEFAULT_WORKER_THREADS
 
+    # Maintenance: a reviewed apply takes a verified safety backup of the
+    # database first (System › Backup & export › Recovery policy, #249 S6).
+    SAFETY_BACKUP = True
+
     @classmethod
     def max_worker_threads(cls) -> int:
         """Largest accepted worker-thread count: the detected core count."""
@@ -713,6 +717,7 @@ class PromptManagerConfig:
                 "auto_backup_interval": cls.AUTO_BACKUP_INTERVAL,
                 "worker_threads": cls.WORKER_THREADS,
             },
+            "maintenance": {"safety_backup": cls.SAFETY_BACKUP},
             "gallery": GalleryConfig.get_config(),
             "integrations": IntegrationConfig.get_config(),
             "autotag": AutotagConfig.get_config(),
@@ -847,6 +852,12 @@ class PromptManagerConfig:
             cls.WORKER_THREADS = cls.clamp_worker_threads(
                 performance["worker_threads"], cls.WORKER_THREADS
             )
+
+        maintenance = new_config.get("maintenance", {})
+        if isinstance(maintenance, dict) and isinstance(
+            maintenance.get("safety_backup"), bool
+        ):
+            cls.SAFETY_BACKUP = maintenance["safety_backup"]
 
         # Update gallery config
         if "gallery" in new_config:

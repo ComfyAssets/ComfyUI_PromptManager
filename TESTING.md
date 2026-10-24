@@ -2499,6 +2499,7 @@ node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-co
   tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js \
   tests/js/workspace-system-sources.test.js tests/js/workspace-thumbnail-review.test.js
 python3 -m unittest tests.test_settings_sources tests.test_scan_scope -v
+python3 -m unittest tests.test_maintenance_plans tests.test_api_maintenance -v
 npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
   workspace-system-sources.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
@@ -2530,6 +2531,44 @@ forgets them all. A plan is bound to the database it read: a restore during the 
 answers `storage-changed`. Errors are coded (`invalid-request`, `too-large`,
 `storage-changed`, or a null code with "Failed to review maintenance") and carry no
 path or exception text.
+
+`POST /prompt_manager/maintenance/apply {token}` starts the reviewed plan as an
+Activity job (202 `{job}`): kind `maintenance`, titled after the concept's row
+("Duplicate prompt text", "Optimize database", "Unused prompt components", "Missing-file
+links"), admission `records` (it never runs beside a scan, restore, LoRA import or other
+record-changing job, legacy-page holds included: `test_apply_refused_while_restore_runs`),
+not cancellable, with the groups `changed`, `protected` and `errors`. The token is consumed
+on the loop turn the job starts, so a second apply answers 409 `plan-used` with that job;
+a refused start (`busy`) keeps it. Other errors: `invalid-request`, `plan-expired` (410:
+unknown, expired, or forgotten after a restart) and `storage-changed` (409: a restore
+replaced the database since the review; the plan is dropped). The job:
+
+1. takes a safety backup when the plan was reviewed with the policy on or the policy is
+   on now (`maintenance.safety_backup` in `config.json`, default `true`; GET/POST
+   `/prompt_manager/settings` field `safety_backup` with the revision). The copy is made
+   with SQLite's backup API into a temp file beside the database, switched to a
+   rollback journal (so a later read-only open leaves no `-wal`/`-shm` beside it),
+   verified with `verify_database_file`, fsynced, made `0o600` on POSIX and only then
+   renamed with `os.replace` onto `<db>.backup_<YYYYmmdd_HHMMSS_ffffff>`, reserved with
+   `O_EXCL` (`_1`, `_2`… when a coarse clock repeats a stamp:
+   `test_backup_names_unique_within_one_second`). A backup file on disk is therefore
+   always a verified one. Any failure removes what it wrote and ends the job
+   `backup-failed` before anything is changed (`test_backup_failure_aborts_before_write`);
+2. applies the plan: inside `BEGIN IMMEDIATE` the fingerprint is computed again on the
+   write connection and a difference ends the job `plan-changed` with nothing written
+   (`test_apply_rejects_changed_target`; a missing link whose file is back or whose source
+   went away is never removed). The targets are deleted in batches of 400 ids in that one
+   transaction. Missing-file links remove database rows only; every media file's bytes
+   are unchanged (`test_missing_links_never_deletes_files`). VACUUM runs outside a
+   transaction and binds to its database only;
+3. counts the changed and protected records (outcome rows hold root-relative paths or
+   prompt ids only), logs the backup by its file name, and prunes safety backups to the
+   newest 10. With no backup the log and the status line say "No safety backup".
+
+A failure the job cannot name ends it "Maintenance failed; nothing was changed." with a
+null code and no exception text. Windows: every connection the backup and the previews
+open is closed before the temp copy is renamed or removed, and the suites' teardown
+asserts no handle under the temp root is still open.
 
 The legacy `POST /prompt_manager/maintenance` keeps its shape. Its `vacuum` result is
 `success:false` with the error when VACUUM fails (`vacuum_database` now raises after

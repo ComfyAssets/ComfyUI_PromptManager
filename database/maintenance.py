@@ -50,6 +50,7 @@ MAINTENANCE_OPERATIONS = (
     "missing_links",
 )
 MAX_DETAILS = 50  # detail rows a plan lists
+MAX_RESULT_ROWS = 200  # changed records an apply describes (the job lists 200)
 EXCERPT_CHARS = 80
 # Ids bound per statement: the pair-reference read binds each id twice, which
 # stays under SQLite's historical 999-variable limit.
@@ -220,9 +221,9 @@ def _add_prompt_state(fingerprint, conn, ids):
                 fingerprint.add(list(row))
 
 
-def _texts(conn, ids):
-    """``{id: text}`` of at most MAX_DETAILS prompts, for detail rows."""
-    ids = list(ids)[:MAX_DETAILS]
+def _texts(conn, ids, limit=MAX_DETAILS):
+    """``{id: text}`` of the first ``limit`` prompts, for detail rows."""
+    ids = list(ids)[:limit]
     if not ids:
         return {}
     rows = conn.execute(
@@ -548,3 +549,81 @@ class MaintenanceOperations:
                 },
             ],
         )
+
+    # ── apply ─────────────────────────────────────────────────────────
+
+    def apply_maintenance(self, operation, fingerprint, targets, roots=()) -> dict:
+        """Apply a reviewed plan exactly, or raise PlanChanged (blocking).
+
+        Inside ``BEGIN IMMEDIATE`` the fingerprint is computed again on the
+        write connection; when it differs nothing is written. ``targets`` and
+        ``roots`` are the plan's. Returns ``{changed, rows}``: how many
+        records changed and up to ``MAX_RESULT_ROWS`` descriptions of them
+        (``{prompt_id[, kept_id]}`` or ``{image_path}``).
+        """
+        if operation not in MAINTENANCE_OPERATIONS:
+            raise ValueError(f"Unknown maintenance operation {operation!r}")
+        if operation == "optimize":
+            # VACUUM cannot run in a transaction; the plan binds the database.
+            if fingerprint != _Fingerprint("optimize").hexdigest():
+                raise PlanChanged("optimize")
+            self.model.vacuum_database()
+            return {"changed": 1, "rows": []}
+        appliers = {
+            "duplicate_prompts": self._apply_duplicate_prompts,
+            "unused_components": self._apply_unused_components,
+            "missing_links": self._apply_missing_links,
+        }
+        with self._pair_transaction() as conn:
+            return appliers[operation](conn, fingerprint, targets, roots)
+
+    def _apply_duplicate_prompts(self, conn, fingerprint, targets, _roots):
+        groups, _paired, current = self._duplicates_fingerprint(conn)
+        if current != fingerprint or groups != targets:
+            raise PlanChanged("duplicate_prompts")
+        changed, rows = 0, []
+        for sorted_ids in groups:
+            removed, _moved = self._merge_duplicate_group(conn, sorted_ids)
+            changed += removed
+            rows.extend(
+                {"prompt_id": duplicate_id, "kept_id": sorted_ids[0]}
+                for duplicate_id in sorted_ids[1:]
+            )
+        return {"changed": changed, "rows": rows[:MAX_RESULT_ROWS]}
+
+    def _apply_unused_components(self, conn, fingerprint, targets, _roots):
+        ids, current = self._unused_fingerprint(conn)
+        if current != fingerprint or ids != targets:
+            raise PlanChanged("unused_components")
+        texts = _texts(conn, ids, limit=MAX_RESULT_ROWS)
+        changed = _delete_ids(conn, "prompts", ids)
+        rows = [
+            {"prompt_id": prompt_id, "text": _excerpt(texts.get(prompt_id))}
+            for prompt_id in ids[:MAX_RESULT_ROWS]
+        ]
+        return {"changed": changed, "rows": rows}
+
+    def _apply_missing_links(self, conn, fingerprint, targets, roots):
+        rows = []
+        for batch in _batches(sorted(targets)):
+            rows.extend(
+                tuple(row)
+                for row in conn.execute(
+                    "SELECT id, image_path, filename, file_path FROM generated_images "
+                    f"WHERE id IN ({_marks(batch)}) ORDER BY id",  # nosec B608
+                    batch,
+                )
+            )
+        readable = readable_roots(roots)
+        candidates = []
+        for row, owner, state in link_states(rows, roots, readable):
+            if state != "missing":  # back, or its source went away
+                raise PlanChanged("missing_links")
+            candidates.append((row, owner))
+        if self._links_fingerprint(candidates) != fingerprint:
+            raise PlanChanged("missing_links")
+        changed = _delete_ids(conn, "generated_images", [row[0] for row in rows])
+        return {
+            "changed": changed,
+            "rows": [{"image_path": row[1]} for row in rows[:MAX_RESULT_ROWS]],
+        }

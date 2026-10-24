@@ -6,8 +6,11 @@ exactly that plan. Errors are coded and never carry a server path or an
 exception text.
 """
 
+import asyncio
+import datetime
 import hashlib
 import json
+import re
 import os
 import sqlite3
 import sys
@@ -227,6 +230,440 @@ class TestPreviewRoute(MaintenanceAPITestCase):
                 restarted._maintenance_plans.peek(plan["token"], "optimize")
         finally:
             restarted.db.close_all()
+
+
+APPLY = "/prompt_manager/maintenance/apply"
+BACKUP_NAME = re.compile(r"^prompts\.db\.backup_\d{8}_\d{6}_\d{6}(_\d+)?$")
+
+
+class ApplyTestCase(MaintenanceAPITestCase):
+    def backups(self):
+        return sorted(
+            name
+            for name in os.listdir(self.tmpdir)
+            if name.startswith("prompts.db.backup_")
+        )
+
+    def strays(self):
+        """Files beside the database that are neither it nor a safety backup."""
+        known = {"prompts.db", "prompts.db-wal", "prompts.db-shm", "config.json"}
+        return sorted(
+            name
+            for name in os.listdir(self.tmpdir)
+            if os.path.isfile(os.path.join(self.tmpdir, name))
+            and name not in known
+            and not BACKUP_NAME.match(name)
+        )
+
+    async def apply(self, token, status=202):
+        return await self.post(APPLY, {"token": token}, status)
+
+    async def run_apply(self, operation):
+        plan = await self.preview(operation)
+        body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        return plan, body["job"], job
+
+
+class TestApplyRoute(ApplyTestCase):
+    async def test_apply_runs_as_a_records_job_with_a_verified_backup(self):
+        orphan = self.save("Orphan")
+        plan, summary, job = await self.run_apply("unused_components")
+        self.assertEqual(summary["kind"], "maintenance")
+        self.assertEqual(summary["title"], "Unused prompt components")
+        self.assertEqual(summary["admission"], "records")
+        self.assertFalse(summary["cancellable"])
+        self.assertEqual(
+            summary["counters"], {"changed": 0, "protected": 0, "errors": 0}
+        )
+        self.assertEqual(summary["scope"], {"operation": "unused_components"})
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(job.counters, {"changed": 1, "protected": 0, "errors": 0})
+        self.assertIsNone(self.api.db.get_prompt_by_id(orphan))
+        [backup] = self.backups()
+        self.assertRegex(backup, BACKUP_NAME)
+        ok, _reason = self.api.db.model.verify_database_file(
+            os.path.join(self.tmpdir, backup)
+        )
+        self.assertTrue(ok)
+        self.assertEqual(self.strays(), [])
+        self.assertIn(f"Safety backup {backup} verified", "\n".join(job.log))
+        self.assertEqual(
+            job.status_line,
+            f"Removed 1 unused prompt component · Safety backup {backup}",
+        )
+        self.assertEqual(job.outcomes["changed"][0]["detail"], "Removed: Orphan")
+        report = json.dumps(job.report())
+        self.assertNotIn(self.tmpdir, report)
+        if os.name == "nt":  # pragma: no cover - native path spelling
+            self.assertNotIn(self.tmpdir.replace("\\", "/"), report)
+
+    async def test_apply_rejects_changed_target(self):
+        orphan, soon = self.save("Orphan"), self.save("Soon a recipe")
+        plan = await self.preview("unused_components")
+        with self.api.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (soon, "Recipe"),
+            )
+        body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.last_event["code"], "plan-changed")
+        self.assertEqual(
+            job.status_line,
+            "The library changed since the review; nothing was changed. "
+            "Review the plan again.",
+        )
+        self.assertEqual(job.counters["errors"], 1)
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(soon))
+
+    async def test_token_is_single_use(self):
+        self.save("Orphan")
+        plan, summary, job = await self.run_apply("unused_components")
+        again = await self.apply(plan["token"], 409)
+        self.assertEqual(again["code"], "plan-used")
+        self.assertEqual(
+            again["job"], {"id": summary["id"], "title": "Unused prompt components"}
+        )
+        kinds = [j.kind for j in self.api._jobs.list()]
+        self.assertEqual(kinds.count("maintenance"), 1)
+
+    async def test_apply_refused_while_restore_runs(self):
+        orphan = self.save("Orphan")
+        plan = await self.preview("unused_components")
+        async with self.api._jobs.hold(
+            "restore", "Database restore (admin page)", admission="records"
+        ) as restore:
+            busy = await self.apply(plan["token"], 409)
+            self.assertEqual(busy["code"], "busy")
+            self.assertEqual(
+                busy["running"],
+                {"id": restore.id, "title": "Database restore (admin page)"},
+            )
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+        # The refused apply kept the token: it applies once the restore ended.
+        body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertIsNone(self.api.db.get_prompt_by_id(orphan))
+
+    async def test_backup_failure_aborts_before_write(self):
+        orphan = self.save("Orphan")
+        model = self.api.db.model
+        failures = {
+            "backup": patch.object(model, "backup_database", return_value=False),
+            "verify": patch.object(
+                model, "verify_database_file", return_value=(False, "broken")
+            ),
+        }
+        for name, failure in failures.items():
+            with self.subTest(failure=name):
+                with failure, patch.object(self.api.db, "apply_maintenance") as applied:
+                    _plan, _summary, job = await self.run_apply("unused_components")
+                applied.assert_not_called()
+                self.assertEqual(job.state, "failed")
+                self.assertEqual(job.last_event["code"], "backup-failed")
+                self.assertEqual(
+                    job.status_line,
+                    "The safety backup could not be taken and verified; "
+                    "nothing was changed.",
+                )
+                self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+                self.assertEqual(self.backups(), [])
+                self.assertEqual(self.strays(), [])
+
+    async def test_policy_off_reports_no_backup(self):
+        from py.config import PromptManagerConfig
+
+        PromptManagerConfig.SAFETY_BACKUP = False
+        orphan = self.save("Orphan")
+        plan, _summary, job = await self.run_apply("unused_components")
+        self.assertEqual(plan["backup"]["policy"], "off")
+        self.assertEqual(job.state, "finished")
+        self.assertIn("No safety backup (the policy is off)", "\n".join(job.log))
+        self.assertEqual(
+            job.status_line, "Removed 1 unused prompt component · No safety backup"
+        )
+        self.assertEqual(self.backups(), [])
+        self.assertIsNone(self.api.db.get_prompt_by_id(orphan))
+
+    async def test_a_plan_reviewed_with_the_backup_on_keeps_that_promise(self):
+        from py.config import PromptManagerConfig
+
+        self.save("Orphan")
+        plan = await self.preview("unused_components")
+        PromptManagerConfig.SAFETY_BACKUP = False  # turned off after the review
+        body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(len(self.backups()), 1)
+
+    async def test_backup_verified_before_write(self):
+        self.save("Orphan")
+        model, db = self.api.db.model, self.api.db
+        order = []
+        real_backup, real_verify = model.backup_database, model.verify_database_file
+        real_apply = db.apply_maintenance
+
+        def backup(path):
+            order.append("backup")
+            return real_backup(path)
+
+        def verify(path, **kwargs):
+            order.append("verify")
+            return real_verify(path, **kwargs)
+
+        def apply(*args):
+            order.append("apply")
+            self.assertEqual(len(self.backups()), 1)  # in place before the write
+            return real_apply(*args)
+
+        with (
+            patch.object(model, "backup_database", side_effect=backup),
+            patch.object(model, "verify_database_file", side_effect=verify),
+            patch.object(db, "apply_maintenance", side_effect=apply),
+        ):
+            _plan, _summary, job = await self.run_apply("unused_components")
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(order, ["backup", "verify", "apply"])
+
+    async def test_missing_links_never_deletes_files(self):
+        prompt = self.save("Links")
+        kept = self.image(prompt, "kept.png")
+        gone = self.image(prompt, "sub/gone.png", exists=False)
+        other = Path(self.tmpdir) / "elsewhere"
+        self.image(prompt, "x.png", folder=other)
+        media = {
+            str(path): _digest(path)
+            for path in Path(self.tmpdir).rglob("*")
+            if path.is_file() and "prompts.db" not in path.name
+        }
+        _plan, _summary, job = await self.run_apply("missing_links")
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(job.counters["changed"], 1)
+        self.assertEqual(
+            job.outcomes["changed"][0],
+            {
+                "path": "sub/gone.png",
+                "root": "output",
+                "root_index": 0,
+                "detail": "Link removed; the file was already missing",
+            },
+        )
+        after = {
+            str(path): _digest(path)
+            for path in Path(self.tmpdir).rglob("*")
+            if path.is_file() and "prompts.db" not in path.name and str(path) in media
+        }
+        self.assertEqual(after, media)
+        self.assertIsNone(self.api.db.get_image_by_id(gone))
+        self.assertIsNotNone(self.api.db.get_image_by_id(kept))
+
+    async def test_duplicate_prompts_and_optimize_apply(self):
+        kept = self.save("A cat")
+        with self.api.db.model.get_connection() as conn:
+            copy = conn.execute(
+                "INSERT INTO prompts(text, created_at) VALUES('A CAT', '2999-01-01')"
+            ).lastrowid
+        _plan, _summary, job = await self.run_apply("duplicate_prompts")
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(job.status_line.split(" · ")[0], "Merged 1 duplicate prompt")
+        self.assertEqual(
+            job.outcomes["changed"][0]["detail"],
+            f"Prompt {copy} merged into prompt {kept}",
+        )
+        self.assertIsNone(self.api.db.get_prompt_by_id(copy))
+        _plan, _summary, job = await self.run_apply("optimize")
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(job.status_line.split(" · ")[0], "Optimized the database")
+
+    async def test_protected_items_are_counted(self):
+        self.save("Orphan")
+        self.save("Kept", tags=["__protected__"])
+        _plan, _summary, job = await self.run_apply("unused_components")
+        self.assertEqual(job.counters, {"changed": 1, "protected": 1, "errors": 0})
+
+    async def test_apply_failure_changes_nothing_and_is_coded(self):
+        orphan = self.save("Orphan")
+        with patch.object(
+            self.api.db,
+            "apply_maintenance",
+            side_effect=sqlite3.OperationalError(f"locked {self.tmpdir}"),
+        ):
+            with self.assertLogs("prompt_manager", "ERROR"):
+                _plan, _summary, job = await self.run_apply("unused_components")
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.last_event["code"], None)
+        self.assertEqual(job.status_line, "Maintenance failed; nothing was changed.")
+        self.assertNotIn(self.tmpdir, json.dumps(job.report()))
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+
+    async def test_apply_errors_are_coded(self):
+        missing = await self.post(APPLY, {}, 400)
+        self.assertEqual(missing["code"], "invalid-request")
+        wrong = await self.post(APPLY, {"token": 7}, 400)
+        self.assertEqual(wrong["code"], "invalid-request")
+        extra = await self.post(APPLY, {"token": "x", "force": True}, 400)
+        self.assertEqual(extra["code"], "invalid-request")
+        expired = await self.apply("not-a-token", 410)
+        self.assertEqual(expired["code"], "plan-expired")
+
+    async def test_a_restore_after_the_review_is_storage_changed(self):
+        orphan = self.save("Orphan")
+        plan = await self.preview("unused_components")
+        self.api._database_replaced()  # what the legacy restore calls
+        reply = await self.apply(plan["token"], 409)
+        self.assertEqual(reply["code"], "storage-changed")
+        again = await self.apply(plan["token"], 410)  # the plan is forgotten
+        self.assertEqual(again["code"], "plan-expired")
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+
+    async def test_restart_loses_plans_for_apply(self):
+        plan = await self.preview("optimize")
+        self.api._maintenance_plans = type(self.api._maintenance_plans)()
+        reply = await self.apply(plan["token"], 410)
+        self.assertEqual(reply["code"], "plan-expired")
+
+    async def test_safety_backups_are_pruned(self):
+        from py.api.admin import MAX_SAFETY_BACKUPS
+
+        for index in range(MAX_SAFETY_BACKUPS):
+            old = os.path.join(
+                self.tmpdir, f"prompts.db.backup_20000101_0000{index:02d}"
+            )
+            with open(old, "wb") as handle:
+                handle.write(b"old")
+            os.utime(old, (1000 + index, 1000 + index))
+        self.save("Orphan")
+        await self.run_apply("unused_components")
+        backups = self.backups()
+        self.assertEqual(len(backups), MAX_SAFETY_BACKUPS)
+        self.assertNotIn("prompts.db.backup_20000101_000000", backups)
+
+
+class TestSafetyBackup(ApplyTestCase):
+    async def test_backup_names_unique_within_one_second(self):
+        from py.api import maintenance
+
+        frozen = datetime.datetime(2026, 10, 23, 12, 0, 0, 123456)
+        model = self.api.db.model
+        with patch.object(maintenance, "_now", return_value=frozen):
+            names = [maintenance.take_safety_backup(model) for _ in range(3)]
+        self.assertEqual(
+            names,
+            [
+                "prompts.db.backup_20261023_120000_123456",
+                "prompts.db.backup_20261023_120000_123456_1",
+                "prompts.db.backup_20261023_120000_123456_2",
+            ],
+        )
+        for name in names:
+            ok, _reason = model.verify_database_file(os.path.join(self.tmpdir, name))
+            self.assertTrue(ok, name)
+        self.assertEqual(self.strays(), [])
+
+    async def test_backup_is_private_on_posix(self):
+        from py.api import maintenance
+
+        name = maintenance.take_safety_backup(self.api.db.model)
+        if os.name != "nt":
+            mode = os.stat(os.path.join(self.tmpdir, name)).st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+    async def test_a_failed_replace_leaves_no_file(self):
+        from py.api import maintenance
+
+        with patch.object(maintenance.os, "replace", side_effect=OSError("busy")):
+            with self.assertRaises(maintenance.SafetyBackupFailed):
+                maintenance.take_safety_backup(self.api.db.model)
+        self.assertEqual(self.backups(), [])
+        self.assertEqual(self.strays(), [])
+
+    async def test_a_backup_that_cannot_be_finished_leaves_no_file(self):
+        from py.api import maintenance
+
+        real_connect = sqlite3.connect
+        calls = []
+
+        def connect(*args, **kwargs):
+            calls.append(args[0])
+            if len(calls) == 2:  # the backup is written; finishing it fails
+                raise sqlite3.OperationalError("x")
+            return real_connect(*args, **kwargs)
+
+        with patch.object(maintenance.sqlite3, "connect", side_effect=connect):
+            with self.assertRaises(maintenance.SafetyBackupFailed) as failed:
+                maintenance.take_safety_backup(self.api.db.model)
+        self.assertEqual(str(failed.exception), "The backup could not be finished")
+        self.assertEqual(calls[0], calls[1])  # the temp copy, both times
+        self.assertEqual((self.backups(), self.strays()), ([], []))
+
+    async def test_a_safety_backup_restores_through_the_legacy_route(self):
+        from aiohttp import FormData
+
+        from py.api import maintenance
+
+        self.save("Before the backup")
+        name = maintenance.take_safety_backup(self.api.db.model)
+        self.save("After the backup")
+        with open(os.path.join(self.tmpdir, name), "rb") as handle:
+            upload = handle.read()
+        form = FormData()
+        form.add_field("database_file", upload, filename=name)
+        response = await self.client.request(
+            "POST", "/prompt_manager/restore", data=form
+        )
+        self.assertEqual(response.status, 200, await response.text())
+        texts = [p["text"] for p in self.api.db.search_prompts()]
+        self.assertEqual(texts, ["Before the backup"])
+        mode = self.api.db.model.get_connection().execute("PRAGMA journal_mode")
+        self.assertEqual(mode.fetchone()[0], "wal")
+
+
+class TestSafetyBackupPolicy(MaintenanceAPITestCase):
+    async def test_policy_round_trips_with_revision(self):
+        settings = await self.client.request("GET", "/prompt_manager/settings")
+        body = await settings.json()
+        self.assertTrue(body["settings"]["safety_backup"])
+        saved = await self.post(
+            "/prompt_manager/settings",
+            {"safety_backup": False, "expected_revision": body["revision"]},
+            200,
+        )
+        self.assertTrue(saved["persisted"])
+        self.assertNotEqual(saved["revision"], body["revision"])
+        with open(self.config_path, encoding="utf-8") as handle:
+            self.assertIs(json.load(handle)["maintenance"]["safety_backup"], False)
+        again = await (
+            await self.client.request("GET", "/prompt_manager/settings")
+        ).json()
+        self.assertFalse(again["settings"]["safety_backup"])
+        self.assertEqual(again["revision"], saved["revision"])
+        plan = await self.preview("optimize")
+        self.assertEqual(plan["backup"]["policy"], "off")
+        stale = await self.post(
+            "/prompt_manager/settings",
+            {"safety_backup": True, "expected_revision": body["revision"]},
+            409,
+        )
+        self.assertEqual(stale["code"], "settings-changed")
+        bad = await self.post("/prompt_manager/settings", {"safety_backup": "yes"}, 400)
+        self.assertFalse(bad["success"])
+
+    async def test_config_file_value_is_read_at_load(self):
+        from py.config import PromptManagerConfig
+
+        PromptManagerConfig.update_config({"maintenance": {"safety_backup": False}})
+        self.assertFalse(PromptManagerConfig.SAFETY_BACKUP)
+        PromptManagerConfig.update_config({"maintenance": {"safety_backup": "no"}})
+        self.assertFalse(PromptManagerConfig.SAFETY_BACKUP)  # non-bool ignored
+        self.assertEqual(
+            PromptManagerConfig.get_config()["maintenance"], {"safety_backup": False}
+        )
 
 
 class TestLegacyMaintenance(MaintenanceAPITestCase):
