@@ -24,6 +24,10 @@ from .review_schema import (
     review_without_annotations_error,
 )
 from .saved_views import migrate_saved_views, saved_views_schema_error
+from .workflow_documents import (
+    migrate_workflow_documents,
+    workflow_documents_schema_error,
+)
 from .execution_history_schema import (
     history_schema_error,
     migrate_execution_history,
@@ -316,6 +320,8 @@ class PromptModel:
             raise sqlite3.DatabaseError(review_error)
         migrate_annotation_state(conn)
         migrate_review_state(conn)
+        # Last: the older generated_images rebuilds run only before file_path.
+        migrate_workflow_documents(conn)
 
     def _migrate_prompt_pairs(self, conn: sqlite3.Connection) -> None:
         conn.execute("SAVEPOINT prompt_pair_schema")
@@ -1117,6 +1123,11 @@ class PromptModel:
             )
             if review_error:
                 return False, review_error
+            documents_error = workflow_documents_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if documents_error:
+                return False, documents_error
             return True, "ok"
         except sqlite3.Error as e:
             return False, f"Invalid SQLite database: {e}"

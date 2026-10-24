@@ -42,6 +42,7 @@ from pathlib import Path
 from .execution_contexts import LIVE_HINT_CTES
 from .health import BATCH_ROWS, link_states, readable_roots, readonly_uri
 from .pairs import PairDependencyError
+from .workflow_documents import documents_of_rows, release_documents
 
 MAINTENANCE_OPERATIONS = (
     "duplicate_prompts",
@@ -260,16 +261,24 @@ def _orphaned_ids(conn):
 
 
 def _delete_ids(conn, table, ids):
-    """Delete ``table`` rows by id in batches; returns the rows removed."""
+    """Delete ``table`` rows by id in batches; returns the rows removed.
+
+    The workflow documents only those rows referenced go with them (a
+    prompt's images go by cascade), in the same transaction.
+    """
     if table not in ("prompts", "generated_images"):
         raise ValueError(f"Unsupported table {table!r}")
     removed = 0
     for batch in _batches(ids):
+        documents = documents_of_rows(
+            conn, "id" if table == "generated_images" else "prompt_id", batch
+        )
         cursor = conn.execute(
             f"DELETE FROM {table} WHERE id IN ({_marks(batch)})",  # nosec B608
             batch,
         )
         removed += cursor.rowcount
+        release_documents(conn, documents)
     return removed
 
 
@@ -379,10 +388,13 @@ class MaintenanceOperations:
                 conn, primary_id, merged_metadata, strict=strict
             )
         removed = 0
+        # Images the lenient merge could not move go with their prompt.
+        documents = documents_of_rows(conn, "prompt_id", duplicate_ids)
         for duplicate_id in duplicate_ids:
             conn.execute("DELETE FROM prompts WHERE id = ?", (duplicate_id,))
             removed += 1
             self.logger.debug(f"Removed duplicate prompt {duplicate_id}")
+        release_documents(conn, documents)
         return removed, moved
 
     @staticmethod

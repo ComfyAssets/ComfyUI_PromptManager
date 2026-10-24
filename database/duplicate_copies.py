@@ -25,6 +25,7 @@ from .annotations import _BUMP_INDEX
 from .models import normalize_image_path, utc_now_iso
 from .review import _BUMP_REVIEW_INDEX, _PENDING_OF_LOCATOR, _SETTLE_ITEM
 from .review_changes import notify_review_change
+from .workflow_documents import documents_of_rows, release_documents
 
 LINKS_BY_FILE_SQL = "SELECT id, prompt_id FROM generated_images WHERE file_path = ?"
 LEGACY_LINKS_SQL = (
@@ -155,7 +156,9 @@ class DuplicateCopyOperations:
                             break
                     if existing is not None:
                         conn.execute(MOVE_PAIR_LINKS_SQL, (existing[0], image_id))
+                        documents = documents_of_rows(conn, "id", [image_id])
                         conn.execute(DELETE_LINK_SQL, (image_id,))
+                        release_documents(conn, documents)
                         counts["merged"] += 1
                         continue
                     conn.execute(

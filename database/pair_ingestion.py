@@ -5,6 +5,13 @@ from typing import Any, Dict
 
 from .models import normalize_image_path
 from .operations import _coerce_file_info
+from .workflow_documents import (
+    TEXT_COLUMNS,
+    DocumentReader,
+    release_documents,
+    resolve_image_row,
+    stored_values,
+)
 
 try:
     from ..utils.hashing import generate_prompt_hash
@@ -116,25 +123,35 @@ def _ingest_resolved_pair_in(
     changed = False
     if existing:
         image_id = existing["id"]
+        # Compared as stored text, whichever form the row is in.
+        current = resolve_image_row(DocumentReader(conn), existing)
         updates = {
-            key: value for key, value in snapshots.items() if existing[key] != value
+            key: value for key, value in snapshots.items() if current[key] != value
         }
         if updates:
+            replaced = [
+                existing[reference]
+                for column, reference in TEXT_COLUMNS
+                if column in updates
+            ]
+            updates = _document_form(conn, updates)
             conn.execute(
                 "UPDATE generated_images SET "
                 + ",".join(f"{key}=?" for key in updates)
                 + " WHERE id=?",
                 [*updates.values(), image_id],
             )
+            release_documents(conn, replaced)
             changed = True
     else:
-        columns = ["prompt_id", "image_path", "filename", "file_path", *snapshots]
+        stored = _document_form(conn, snapshots)
+        columns = ["prompt_id", "image_path", "filename", "file_path", *stored]
         values = [
             pair["positive_prompt_id"],
             image_path,
             os.path.basename(image_path),
             normalized,
-            *snapshots.values(),
+            *stored.values(),
         ]
         image_id = conn.execute(
             "INSERT INTO generated_images("
@@ -162,3 +179,18 @@ def _ingest_resolved_pair_in(
         "pair_id": pair_id,
         "image_id": image_id,
     }
+
+
+def _document_form(conn: Any, values: Dict[str, Any]) -> Dict[str, Any]:
+    """``values`` with the workflow and prompt graph texts stored once.
+
+    Each of those columns becomes NULL beside its document id (new form);
+    every other column is unchanged.
+    """
+    texts = {
+        column: values[column]
+        for column, _reference in TEXT_COLUMNS
+        if column in values
+    }
+    rest = {key: value for key, value in values.items() if key not in texts}
+    return {**rest, **stored_values(conn, texts)}
