@@ -1,9 +1,9 @@
 {
   "admin.js": {
-    "lines": 31,
+    "lines": 32,
     "branches": 58,
-    "functions": 26,
-    "statements": 31
+    "functions": 27,
+    "statements": 32
   },
   "api-client.js": {
     "lines": 98,
@@ -188,7 +188,7 @@
   "workspace/file-inspector.mjs": {
     "lines": 96,
     "branches": 93,
-    "functions": 92,
+    "functions": 93,
     "statements": 96
   },
   "workspace/heading.mjs": {
@@ -241,7 +241,7 @@
   },
   "workspace/image-tagging.mjs": {
     "lines": 97,
-    "branches": 90,
+    "branches": 92,
     "functions": 88,
     "statements": 97
   },
@@ -338,7 +338,7 @@
   "workspace/library-location.mjs": {
     "lines": 94,
     "branches": 91,
-    "functions": 92,
+    "functions": 93,
     "statements": 94
   },
   "workspace/library-state.mjs": {
@@ -372,14 +372,14 @@
     "statements": 97
   },
   "workspace/local-resolver-stages.mjs": {
-    "lines": 94,
+    "lines": 95,
     "branches": 93,
     "functions": 98,
-    "statements": 94
+    "statements": 95
   },
   "workspace/local-resolver-support.mjs": {
     "lines": 96,
-    "branches": 80,
+    "branches": 81,
     "functions": 98,
     "statements": 96
   },
@@ -426,10 +426,10 @@
     "statements": 98
   },
   "workspace/prompt-blocks.mjs": {
-    "lines": 90,
-    "branches": 92,
+    "lines": 98,
+    "branches": 95,
     "functions": 98,
-    "statements": 90
+    "statements": 98
   },
   "workspace/prompt-inspector.mjs": {
     "lines": 98,
@@ -487,7 +487,7 @@
   },
   "workspace/system-controls.mjs": {
     "lines": 98,
-    "branches": 87,
+    "branches": 89,
     "functions": 89,
     "statements": 98
   },
@@ -509,6 +509,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/system-thumbnails.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 83,
+    "statements": 98
+  },
   "workspace/system.mjs": {
     "lines": 98,
     "branches": 92,
@@ -522,10 +528,16 @@
     "statements": 98
   },
   "workspace/thumbnail-review.mjs": {
-    "lines": 96,
+    "lines": 98,
     "branches": 93,
     "functions": 98,
-    "statements": 96
+    "statements": 98
+  },
+  "workspace/thumbnail-support.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/toast.mjs": {
     "lines": 98,

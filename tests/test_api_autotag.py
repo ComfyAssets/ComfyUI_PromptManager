@@ -1133,10 +1133,17 @@ class TestScanOutputDir(AutotagAPITestCase):
         self.assertEqual(data["count"], 2)
         self.assertIs(data["truncated"], False)
         self.assertIsNone(data["images"][0]["thumbnail_url"])
+        # An older release's preview keeps its spelling; a case-insensitive
+        # disk (Windows, macOS) finds it under the ".jpg" lookup first (#317).
+        # Either way the URL names that file and is served.
+        thumb_url = data["images"][1]["thumbnail_url"]
         self.assertRegex(
-            data["images"][1]["thumbnail_url"],
-            r"^/prompt_manager/images/serve/thumbnails/sub/b_thumb\.JPG\?v=\d+$",
+            thumb_url,
+            r"^/prompt_manager/images/serve/thumbnails/sub/b_thumb\.(JPG|jpg)\?v=\d+$",
         )
+        served = await self.client.request("GET", thumb_url)
+        self.assertEqual(served.status, 200)
+        self.assertEqual(await served.read(), b"t")
         self.assertEqual(
             data["images"][1]["url"], "/prompt_manager/images/serve/sub/b.JPG"
         )

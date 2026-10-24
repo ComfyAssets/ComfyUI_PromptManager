@@ -8,6 +8,8 @@
  *   reads 0 before the read answers: a load shows a status line, a failure an alert and Retry. The thumbnail row is
  *   its own read of `/images/thumbnails/status` (a walk of every source): "Checking thumbnails…" until it answers.
  *   D99: its Review thumbnails opens the same "Thumbnail maintenance" dialog as Sources (thumbnail-review.mjs).
+ *   #317: it reads "N missing · M outdated · K failed"; while previews are outdated (another format than the
+ *   configured one) a second button, "Convert outdated", opens that dialog on its Convert outdated scope (D131).
  * - D96: the Statistics dialog lists the real runs and average rating per category, then "Library totals".
  * - D95: the "Health report" lists every check the server ran, Missing files per image source, with a chip per real
  *   result and when it was checked. The check runs from Maintenance's notice ("Run health checks", D123) as a
@@ -88,10 +90,29 @@ export function thumbnailTitle(status, sources) {
     if (status === undefined) return THUMBNAILS_LOADING;
     const missing = status?.pending;
     if (!Number.isSafeInteger(missing) || sources?.effective === 0) return 'Thumbnail status unavailable';
-    if (missing === 0) return 'No missing thumbnails';
+    const parts = [missing === 0 ? 'No missing thumbnails' : `${number(missing)} missing ${noun(missing, 'thumbnail')}`];
+    // #317: previews in another format than the configured one (Convert outdated replaces them).
+    if (convertOffered(status)) parts.push(`${number(status.outdated)} outdated`);
     // #249: files whose automatic preview could not be made this session (they show the original).
-    const failed = Number.isSafeInteger(status.failed) && status.failed > 0 ? ` · ${number(status.failed)} failed` : '';
-    return `${number(missing)} missing ${noun(missing, 'thumbnail')}${failed}`;
+    if (Number.isSafeInteger(status.failed) && status.failed > 0) parts.push(`${number(status.failed)} failed`);
+    return parts.join(' · ');
+}
+
+/** #317: whether the status counts previews in an older format (the row then offers Convert outdated). */
+export function convertOffered(status) {
+    return Number.isSafeInteger(status?.outdated) && status.outdated > 0;
+}
+
+/** #317: the row's "Convert outdated" button, present only while previews are outdated (D131). */
+function paintConvert(row, status, { scope, openConvert }) {
+    const actions = row.querySelector('.row-actions');
+    let button = actions.querySelector('[data-convert]');
+    if (!convertOffered(status)) { button?.remove(); return; }
+    if (button) return;
+    button = createButton('Convert outdated');
+    button.dataset.convert = '';
+    scope.listen(button, 'click', () => openConvert(button));
+    actions.append(button);
 }
 
 const SOURCES_SHARED = 'Monitoring and enrichment share one source list.';
@@ -368,8 +389,11 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
     let thumbnailStatus;
     let thumbnailRow = null;
     let sources = null;
+    const openConvert = trigger => openThumbnailReview({ api, store: activity, scope, trigger, navigate, mode: 'convert' });
     const paintThumbnails = () => {
-        if (thumbnailRow) thumbnailRow.querySelector('h3').textContent = thumbnailTitle(thumbnailStatus, sources);
+        if (!thumbnailRow) return;
+        thumbnailRow.querySelector('h3').textContent = thumbnailTitle(thumbnailStatus, sources);
+        paintConvert(thumbnailRow, thumbnailStatus, { scope, openConvert });
     };
 
     function swap(nodes) {

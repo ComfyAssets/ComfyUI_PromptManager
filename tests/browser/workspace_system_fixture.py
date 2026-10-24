@@ -29,6 +29,13 @@ read. These per-server hooks only change what a System test needs on top:
   touches no file and ends with the library in the default folder.
   ``failing`` is the same library whose move fails verification. Reset
   restores the real resolver, the real move and "Keep it here".
+- ``POST /__test__/system/legacy-previews`` ``{count}`` (#317) writes ``count``
+  PNGs into ``output/legacy`` with an older release's preview beside each
+  (``thumbnails/legacy/<name>_thumb.png``, newer than its file): outdated
+  previews for Convert outdated;
+- ``POST /__test__/system/jxl-encoder`` ``{available}`` (#317) makes the
+  server read as having (``cjxl``) or lacking a JPEG XL encoder without
+  probing; reset restores the thumbnail settings and the real detection.
 
 Delays use the shared request holds (``request_hold.py``).
 """
@@ -72,7 +79,12 @@ def register_system_commands(app, routes, api, root: Path):
         PromptManagerConfig.WEBUI_DISPLAY_MODE,
         PromptManagerConfig.WORKER_THREADS,
         GalleryConfig.MONITORING_ENABLED,
+        PromptManagerConfig.THUMBNAIL_FORMAT,
+        PromptManagerConfig.THUMBNAIL_QUALITY,
+        PromptManagerConfig.THUMBNAIL_EDGE,
     )
+    from py.api import thumbnail_encode
+
     monitor = getattr(image_monitor, "_monitor_instance", None)
     failures: dict[str, int] = {}
 
@@ -101,7 +113,11 @@ def register_system_commands(app, routes, api, root: Path):
             PromptManagerConfig.WEBUI_DISPLAY_MODE,
             PromptManagerConfig.WORKER_THREADS,
             GalleryConfig.MONITORING_ENABLED,
+            PromptManagerConfig.THUMBNAIL_FORMAT,
+            PromptManagerConfig.THUMBNAIL_QUALITY,
+            PromptManagerConfig.THUMBNAIL_EDGE,
         ) = host_values
+        thumbnail_encode.reset_encoders()
         image_monitor._monitor_instance = monitor
         api.__dict__.pop("_library_resolver", None)
         library_move.move_library = real_move
@@ -184,6 +200,43 @@ def register_system_commands(app, routes, api, root: Path):
             with Image.new("RGB", (64, 64), "#2b3442") as image:
                 image.save(folder / f"plain_{number + 1:03}.png")
         api.invalidate_gallery_cache()
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/system/legacy-previews")
+    async def legacy_previews(request):
+        data = await request.json()
+        count = data.get("count")
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= MAX_UNTHUMBNAILED
+        ):
+            raise web.HTTPBadRequest()
+        folder = root / "output" / "legacy"
+        previews = root / "output" / "thumbnails" / "legacy"
+        folder.mkdir(exist_ok=True)
+        previews.mkdir(parents=True, exist_ok=True)
+        names = []
+        for number in range(count):
+            name = f"old_{number + 1:03}"
+            with Image.effect_noise((256, 256), 50) as noise:
+                noise.convert("RGB").save(folder / f"{name}.png")
+                noise.convert("RGB").save(previews / f"{name}_thumb.png")
+            later = (folder / f"{name}.png").stat().st_mtime + 5
+            os.utime(previews / f"{name}_thumb.png", (later, later))
+            names.append(f"legacy/{name}.png")
+        api.invalidate_gallery_cache()
+        return web.json_response({"success": True, "files": names})
+
+    @routes.post("/__test__/system/jxl-encoder")
+    async def jxl_encoder(request):
+        data = await request.json()
+        available = data.get("available")
+        if not isinstance(available, bool):
+            raise web.HTTPBadRequest()
+        # Test-only: stand in the cached detection (no probe).
+        with thumbnail_encode._detect_lock:
+            thumbnail_encode._detected = "cjxl" if available else None
         return web.json_response({"success": True})
 
     @routes.post("/__test__/system/monitor")

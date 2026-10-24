@@ -9,6 +9,7 @@ Split into domain-specific mixins for maintainability:
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 - ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
 - ThumbnailJobsMixin: thumbnail plan, thumbnail job and the gallery stream on it
+- ThumbnailConvertMixin: Convert outdated thumbnails (#317), a thumbnail job mode
 - AutoThumbnailMixin: previews made on first view, on capture and after a scan
 - ReviewRoutesMixin: the Needs review queue, item detail and decisions
 - ReviewRecordingMixin: Needs review recording for the scan and the monitor
@@ -50,6 +51,7 @@ from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
+from .thumbnail_convert import ThumbnailConvertMixin
 from .thumbnail_auto import AutoThumbnailMixin
 from .system import SystemRoutesMixin
 from .library_location import LibraryLocationRoutesMixin
@@ -295,6 +297,7 @@ class PromptManagerAPI(
     JobRoutesMixin,
     ImageTagJobsMixin,
     ThumbnailJobsMixin,
+    ThumbnailConvertMixin,
     AutoThumbnailMixin,
     SystemRoutesMixin,
     LibraryLocationRoutesMixin,
@@ -638,16 +641,20 @@ class PromptManagerAPI(
                         f"{url_quote(rel_path.as_posix(), safe='/')}"
                     )
 
-                    # Check for thumbnail
-                    rel_no_ext = rel_path.with_suffix("")
-                    thumb_rel = (
-                        f"thumbnails/{rel_no_ext.as_posix()}_thumb{rel_path.suffix}"
-                    )
+                    # Any preview the file owns, the current format first (#317)
+                    from . import thumbnail_settings
                     from .prompts import thumbnail_url_for
 
-                    thumbnail_url = thumbnail_url_for(
-                        thumb_rel, output_path / thumb_rel
+                    existing = thumbnail_settings.existing_thumbnail(
+                        output_path, rel_path
                     )
+                    thumbnail_url = None
+                    if existing is not None:
+                        thumb_rel = (
+                            thumbnail_settings.thumbnail_stem_rel(rel_path)
+                            + existing.suffix
+                        )
+                        thumbnail_url = thumbnail_url_for(thumb_rel, existing)
                     if thumbnail_url:
                         image["thumbnail_url"] = thumbnail_url
                     break  # Found matching root, stop searching

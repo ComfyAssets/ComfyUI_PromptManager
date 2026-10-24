@@ -775,6 +775,23 @@ serve `__` system folders. Thumbnails stay in `output/thumbnails`.
 - **An explicit `database.default_path`** in `config.json` and `PROMPT_MANAGER_CONFIG_PATH`
   keep working as before (described below); such a library is not offered a move.
 
+### Thumbnails
+
+Previews in `output/thumbnails` are written as **WebP, quality 80, 512 px** by default
+(System › Appearance › Thumbnails sets the format, quality and size limit for every
+preview). Previews from older versions keep their old format (usually PNG) until you
+run **Convert outdated** (System › Overview or Appearance): it rewrites each one from
+its original and then removes the old file. Nothing converts on its own.
+
+**JPEG XL** (smaller still) can be chosen once the server has an encoder. Install one
+of these, then restart ComfyUI:
+
+- `pip install pillow-jxl-plugin` in ComfyUI's Python environment (simplest), or
+- an `ffmpeg` on PATH built with `libjxl`, or
+- `cjxl` from [libjxl](https://github.com/libjxl/libjxl) on PATH.
+
+Browsers that cannot show JPEG XL see the original images in the grid instead.
+
 ### Database Settings
 
 You can customize the database path by creating a `config.json` file in the library's

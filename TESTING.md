@@ -2163,20 +2163,21 @@ A list that cannot be read shows "Sources could not be loaded. Your saved data h
 changed." and Retry, never an empty list.
 
 Thumbnail generation is an Activity job (S5, `py/api/thumbnail_jobs.py`). `GET
-/prompt_manager/images/thumbnails/plan?mode=missing|rebuild&size=128..2048&quality=low|medium|high`
-counts the work (`targets`, `fresh`, `remaining` past the 10,000-file cap, the source
-labels) and writes nothing; a value out of range is a 400 `invalid-request` that starts
-nothing. `POST /prompt_manager/jobs/thumbnails {mode, size, quality}` starts the
+/prompt_manager/images/thumbnails/plan?mode=missing|rebuild|convert`
+counts the work (`targets`, `fresh`, `outdated`, `remaining` past the 10,000-file cap,
+the source labels, and the server's `format`, `quality` and `size` it writes with) and
+writes nothing; an unknown mode is a 400 `invalid-request` that starts nothing. `size`
+and `quality` an older client sends are ignored (#317). `POST /prompt_manager/jobs/thumbnails {mode}` starts the
 `thumbnails` job ("Thumbnail generation"): admission `guarded` (never beside a scan or
 another record-changing job, one at a time, a legacy clear refused while it runs),
 cancellable at a file boundary (a file not yet started is left alone; written previews
 stay), outcome groups Generated / Skipped (already fresh, listed without a log line
-each) / Errors. `size` is the longest edge and `quality` the encoder (low: JPEG 70, no
-optimize; medium: 85, optimized, what the legacy routes always wrote; high: 95,
-optimized). Video previews take the same choice: the OpenCV frame and the placeholder
-are saved with those JPEG settings, and the ffmpeg fallback (no OpenCV) maps them to
-`-q:v` 8 / 4 / 2 and fits the frame inside the edge keeping its aspect ratio (`-vf
-scale=E:E:force_original_aspect_ratio=decrease`, no longer a stretched square).
+each) / Errors. Format, quality and the longest edge are the server's thumbnail
+settings (#317, below), read once when the job starts and shown in its scope. Video
+previews take the same settings: the OpenCV frame, ffmpeg's frame (no OpenCV; a PNG on
+stdout fitted inside the edge keeping its aspect ratio and never upscaled, `-vf
+scale='min(iw,E)':'min(ih,E)':force_original_aspect_ratio=decrease`) and the
+placeholder are encoded like an image's preview.
 `rebuild` writes fresh previews again, each through the same temp-file
 rename, so nothing is cleared first and a failed file keeps its old preview (a video
 whose frame cannot be decoded keeps its preview instead of getting the placeholder);
@@ -2201,8 +2202,9 @@ recording runs beside it instead of being deferred for a whole rebuild
 all `records` jobs still defer it.
 
 Deliberate change: the legacy gallery stream `POST /images/generate-thumbnails/progress`
-now starts this job (missing previews, its quality preset as the size, medium encoding)
-or attaches to the running one, and streams the job's unchanged `status`/`start`/
+now starts this job (missing previews with the server's thumbnail settings; its
+`quality` preset no longer sizes anything, #317 R3) or attaches to the running one (never
+to a running Convert outdated, which it refuses with its error frame), and streams the job's unchanged `status`/`start`/
 `progress`/`file_error`/`complete` frames after a first `job {id, started}` frame that
 names the job and whether this stream started it. The stream reads the registry after
 its headers are sent, so a job that starts in that gap is attached to, not refused. A
@@ -2218,18 +2220,17 @@ generation was cancelled". The blocking
 `POST /images/generate-thumbnails` and the clear stay legacy holds.
 
 The workspace starts it from "Thumbnail maintenance" (`thumbnail-review.mjs`, the
-concept's `thumbnail-review`), opened by Sources' Thumbnail generation → Review options
-and Overview's Review thumbnails. Scope is Missing thumbnails only (`missing`, the
-default) or Rebuild all (explicit opt-in) (`rebuild`); Quality is Medium · optimized /
-High · original / Low · fastest (`medium` / `high` / `low`), preselected from
-Appearance's Image loading quality (`gallerySettings.imageQuality`, the same values,
-Q3); Preview size limit is the longest edge, 512 by default, a whole number from 128 to
-2048. A size outside that range marks the field `aria-invalid`, the plan line says
-"Enter a size from 128 to 2048 pixels." and nothing is requested; Start reports the
-field's validity and keeps the dialog open. Start closes the dialog and starts the job
-through the Activity store, which toasts "Thumbnail generation started."; the job opens
+concept's `thumbnail-review`), opened by Sources' Thumbnail generation → Review options,
+Overview's Review thumbnails and Convert outdated, and Appearance's Convert outdated.
+Scope is Missing thumbnails only (`missing`, the default), Rebuild all (explicit opt-in)
+(`rebuild`) or Convert outdated (removes older formats) (`convert`, #317). D131: the
+concept's Quality and Preview size limit fields are replaced by a line naming the
+server's settings ("Previews are written as WebP · quality 80 · 512 px. Change this in
+System › Appearance."). Start closes the dialog and starts the job
+through the Activity store, which toasts "<job title> started."; the job opens
 in Activity. A start refused because another job holds the slot toasts the D57 busy
-link toast and stays. The legacy gallery's thumbnail tools are unchanged.
+link toast and stays. The legacy gallery's thumbnail tools keep working on the same
+server settings.
 
 Automatic previews (#249, `py/api/thumbnail_auto.py`). The approved mock has no
 repeated global thumbnail prompt (`docs/concepts/workspace/README.md`), so the
@@ -2248,13 +2249,13 @@ workspace never asks; previews are a cache the server keeps:
   more gets its fallback at once without listing a folder. Inside the admission the
   preview maps back to its media file under the same root (exact names, then one folder
   listing for a mixed-case extension; a regular file inside the root, never through a
-  link) and is made with the job's defaults (512 px, medium). When it cannot be made an
+  link) and is made with the server's thumbnail settings (#317). When it cannot be made an
   image's original is served and a video's placeholder frame (a video is never sent to
   an `<img>`), both `Cache-Control: no-store`; cards and the inspector cover also swap a
   video back to its own element when its preview image fails. Only a file that cannot
   be decoded is remembered for the session (path, size, mtime; retried once it changes)
   and counted as `failed` in `/images/thumbnails/status`, which Overview's row adds
-  ("N missing thumbnails · M failed"); I/O errors and a preview another program holds
+  ("N missing · M outdated · K failed"); I/O errors and a preview another program holds
   open (Windows) are not. A preview folder (or any link segment of it) resolving out of
   the root is never written. Media inside a nested `thumbnails` folder is listed with no
   thumbnail and keeps its original. The listing's `thumbnail_ready` says whether the
@@ -2284,6 +2285,87 @@ workspace never asks; previews are a cache the server keeps:
   The media viewer's main media and downloads load the original
   (`workspace-thumbnails.spec.mjs` records every media request; `tests/test_thumbnail_auto.py`).
 
+Thumbnail format and settings (#317, `py/api/thumbnail_settings.py`,
+`py/api/thumbnail_encode.py`, `py/api/thumbnail_convert.py`):
+
+- Server settings `thumbnail_format` (`webp` default, `jxl`, `jpeg`),
+  `thumbnail_quality` (1–100, default 80) and `thumbnail_edge` (128–2048 px, default
+  512) live in config.json's `thumbnails` section and are saved through `POST
+  /prompt_manager/settings` with its revision; a bad value is a 400 and changes
+  nothing. The legacy `gallery.web_interface.thumbnail_size` (never read; older saves
+  wrote its default 256) is ignored. `GET /prompt_manager/settings` also reports
+  `thumbnail_encoders` (`jxl: {available, encoder, reason}`). One module reads the
+  settings; every writer uses it: automatic previews (capture and first view), the
+  thumbnail job, the history route, and the legacy gallery's stream and blocking
+  generate (`tests/test_thumbnail_format.py`).
+- Names: `thumbnails/<stem>_thumb.webp|.jxl|.jpg` for images and videos alike. Every
+  lookup (listings, duplicates, enrichment, the autotag scan, the history route) takes
+  the first existing preview the file owns, the configured format first: an older
+  release's `_thumb.png` (or `.jpeg`, `.gif`, the source's own spelling or the
+  upper-case one) keeps showing, and counts as outdated, until it is converted. History's
+  cover uses the same lookup as the Images listing. Two files with one stem in a folder
+  share one preview name, made from the first source in `.png`, `.jpg`, `.jpeg`,
+  `.webp`, `.gif`, then videos. A request for an older name answers the current preview. Previews
+  are served with an explicit `image/webp` / `image/jxl` type (the platform's mimetypes
+  table may not know them) and the same cache headers; `.jxl` is served from
+  `thumbnails/` only.
+- Every preview is written by `write_thumbnail`: the first frame (animated sources give
+  a still), RGB, fitted inside the edge, encoded into a hidden temp sibling that is
+  closed, verified to decode (a JPEG XL file Pillow cannot read is checked by its
+  signature) and renamed over the preview; a failure keeps the old file. ffmpeg writes
+  with `-update 1`, so a `%` in a name is never a sequence pattern, and reads a video as
+  `file:<path>`. Temp files a crash left (`.<stem>.part-<pid>-<thread><ext>`) are
+  removed by the clear and, when older than two minutes, by a sweep at startup (which
+  also removes one carrying its own PID that predates the process: containers reuse
+  PIDs).
+- JPEG XL needs no new dependency: Pillow (natively or with `pillow_jxl`, imported when
+  installed), else ffmpeg with `libjxl`, else `cjxl`, detected once. Quality maps to
+  libjxl's distance (`0.1 + (100 − q) × 0.09` from 30 up: q80 → 1.9, q85 → 1.45; never
+  lossless). Without an encoder, saving `jxl` is a 400 `jxl-unavailable` with the
+  reason. An encoder that fails because its binary or module is gone makes that write
+  detect again once: another encoder found is used, none at all writes the file as WebP
+  (logged once) and refreshes the availability Appearance reads; any other failure
+  raises without a probe. "No encoder" is probed again on the settings read, on a
+  `jxl` save and after 60 s, so one slow probe never disables JPEG XL until a restart; if JPEG XL has no encoder, previews are written as WebP
+  and count as the format written. Encoder processes (and ffmpeg's frames) are tracked,
+  bounded by a 30 s timeout and killed at the app's cleanup, after which none starts.
+- A preview in another format than the one written now is *outdated*.
+  `/images/thumbnails/status` reports `pending` (missing), `outdated` and `ready`; the
+  missing job never writes a second preview beside an outdated one. Convert outdated
+  (`POST /jobs/thumbnails {mode: "convert"}`, "Convert outdated thumbnails") runs under
+  the thumbnail job's kind, guarded admission, worker threads and cancel: for each
+  outdated file it writes the new preview from the source (a video with no decodable
+  frame fails instead of getting the placeholder; a current preview it keeps must
+  decode), then removes that file's old-format previews (regular files in its
+  `thumbnails/` folder that the source owns, the source still present; one already gone
+  counts as removed, and a path that is the new preview under another spelling is never
+  removed). Files sharing a preview name are converted once, as a group, from
+  the first source above, and each file's bytes count once. A failure keeps the old
+  preview; orphans (source gone) and links are never touched. While it runs, a change of
+  the thumbnail format, quality or size limit is a 409 `busy` naming it, and should the
+  format still change underneath, the job stops at the next file without removing
+  anything ("Stopped: the thumbnail format changed …"). Its final line is "N converted · F
+  failed · <before> → <after>"
+  (`tests/test_thumbnail_convert.py`, "Convert outdated replaces older-format previews"
+  in `workspace-system-sources.spec.mjs`). Nothing converts by itself: Appearance's
+  format change only makes previews outdated.
+- A thumbnail is only a grid or cover placeholder. Inspection refuses any path under a
+  root's `thumbnails/` (403) and always parses the original; the media viewer, its
+  download, History's viewer and sending use the original
+  (`TestThumbnailsAreOnlyPlaceholders`, `the viewer and its download always use the
+  original` in `workspace-media-viewer.test.js`). The inspector cover accepts the
+  listing's preview in any format the file owns (`inspection-state.mjs`).
+- The workspace decodes a 1×1 embedded JPEG XL once (`thumbnail-support.mjs`); where it
+  fails, cards and the inspector cover load the original for a `.jxl` preview, and any
+  preview `<img>` that fails to load falls back to the original (the legacy gallery
+  already does). A video whose preview it cannot show keeps its own element (Images) or
+  its "Video preview" label (Library), never a broken image. History's cover URL names
+  no format, so the server serves a `.jxl` preview only when the URL carries `jxl=1`
+  (added by the workspace where its probe decoded JPEG XL: Firefox may not list it in
+  Accept; any value but `0` or `1` is a 400) or the request's `Accept` lists
+  `image/jxl`; otherwise the file's preview in another format, else the original
+  image or a video's placeholder. Appearance says when this browser cannot show JPEG XL thumbnails.
+
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
 paints nothing. Until it answers, the section shows "Loading the overview…"; a failure
@@ -2311,7 +2393,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D113; D121–D129 assigned):
+Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D113; D121–D131 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2331,9 +2413,11 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   "Backup status" reads "No retained backup record." until verified backups exist (S8).
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
   missing thumbnails", "N missing thumbnails" (the pending count of
-  `/images/thumbnails/status`, followed by " · M failed" when automatic previews
-  failed this session) or "Thumbnail status unavailable"; Review thumbnails
-  opens the thumbnail dialog (D99). "One display configuration" says "Grid
+  `/images/thumbnails/status`, followed by " · M outdated" when previews are in an
+  older format and " · K failed" when automatic previews failed this session) or
+  "Thumbnail status unavailable"; Review thumbnails opens the thumbnail dialog (D99),
+  and while previews are outdated a second button, Convert outdated, opens it on that
+  scope (D131). "One display configuration" says "Grid
   and density settings are shared across views." (no paging). The sources row is
   "N output sources" with "Monitoring and enrichment share one source list.", prefixed
   by "M of N configured sources available." or "None configured is available; ComfyUI's
@@ -2476,6 +2560,30 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   `system shell and overview match the concept` (the mapping inserts the row) and
   `library notice matches the concept notice` with its mutation check
   (system-concept.spec), and the D129 tests of workspace-system.spec.
+- **D130** (Appearance, #317): the concept keeps "Thumbnail quality, size limit" in
+  Appearance (README) but draws no rows for them. Appearance gains a second
+  `section.surface`, "Thumbnails", after "Browsing & display", built from the concept's
+  `.setting-row` markup: "Thumbnail format" (WebP / JPEG XL / JPEG), "Thumbnail
+  quality" (1–100), "Thumbnail size limit" (128–2048 px), all host settings saved with
+  the revision, then the operation "Convert outdated thumbnails". JPEG XL is not in the
+  concept: it is offered only when the server found an encoder, else the option is
+  disabled and the row shows the server's reason ("No JPEG XL encoder found. Install
+  pillow-jxl-plugin …"); a row note also says when this browser cannot show JPEG XL
+  thumbnails. After a save that changed the format, the operation's line reads "Format
+  saved. Existing previews keep their old format until you convert them." Pinned by the
+  appearance comparison (the mapping inserts the surface), `Appearance › Thumbnails
+  saves the server thumbnail settings` (workspace-system.spec) and
+  `workspace-system-thumbnails.test.js`.
+- **D131** (Thumbnail maintenance and Overview, #317): the dialog's Quality and Preview
+  size limit fields are replaced by a `p.small` after the plan line naming the server's
+  settings ("Previews are written as WebP · quality 80 · 512 px. Change this in System ›
+  Appearance."), since previews follow those settings everywhere; Scope gains "Convert
+  outdated (removes older formats)", whose plan line reads "N previews in an older format
+  to convert." Overview's thumbnail row reads "N missing · M outdated · K failed" and,
+  while previews are outdated, adds a second button, Convert outdated, that opens the
+  dialog on that scope. Pinned by the thumbnail dialog comparison (mapped) and its
+  mutation check (system-concept.spec) and `the thumbnail row counts outdated previews`
+  (workspace-system.spec).
 - **D124** (inspector): with "Load metadata on selection" off, the Images panel and
   the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
   button instead of reading the file. The concept has no such state, so no concept

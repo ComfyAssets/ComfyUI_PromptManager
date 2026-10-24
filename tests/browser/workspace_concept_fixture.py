@@ -513,7 +513,12 @@ def seed_workspace_concept(
         tags = [row[0] for row in conn.execute("SELECT name FROM tags ORDER BY id")]
     if tuple(counts) != (len(CONCEPT_PROMPTS), CONCEPT_RUN_COUNT, CONCEPT_RUN_COUNT):
         raise RuntimeError(f"Concept fixture run counts are not real: {tuple(counts)}")
-    api._generate_gallery_thumbnails_sync(api._get_all_output_dirs(), (150, 150))
+    from py.api.thumbnail_settings import ThumbnailSettings
+
+    # 150 px previews in the default format (#317 thumbnail settings).
+    api._generate_gallery_thumbnails_sync(
+        api._get_all_output_dirs(), ThumbnailSettings("webp", 80, 150)
+    )
     api.invalidate_gallery_cache()
     return {
         "epoch": epoch,

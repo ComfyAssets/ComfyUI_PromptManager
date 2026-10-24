@@ -1328,6 +1328,168 @@ class TestSettingsMisc(AdminAPITestCase):
         self.assertEqual(resp.status, 500)
 
 
+class TestThumbnailSettings(AdminAPITestCase):
+    """#317: thumbnail format, quality and size limit are server settings."""
+
+    URL = "/prompt_manager/settings"
+
+    def _encoder(self, name):
+        from py.api import thumbnail_encode
+
+        return patch.object(thumbnail_encode, "detect_jxl_encoder", return_value=name)
+
+    async def test_get_reports_the_settings_and_the_encoders(self):
+        PromptManagerConfig.update_config(
+            {"thumbnails": {"format": "webp", "quality": 80, "edge": 512}}
+        )
+        with self._encoder(None):
+            body = await (await self.client.request("GET", self.URL)).json()
+        settings = body["settings"]
+        self.assertEqual(
+            (
+                settings["thumbnail_format"],
+                settings["thumbnail_quality"],
+                settings["thumbnail_edge"],
+            ),
+            ("webp", 80, 512),
+        )
+        jxl = body["thumbnail_encoders"]["jxl"]
+        self.assertEqual((jxl["available"], jxl["encoder"]), (False, None))
+        self.assertIn("pillow-jxl-plugin", jxl["reason"])
+        with self._encoder("cjxl"):
+            body = await (await self.client.request("GET", self.URL)).json()
+        self.assertEqual(
+            body["thumbnail_encoders"]["jxl"],
+            {"available": True, "encoder": "cjxl", "reason": None},
+        )
+
+    async def test_save_commits_the_thumbnails_section(self):
+        self._write_config({"custom": {"keep": 1}})
+        resp = await self.client.request(
+            "POST",
+            self.URL,
+            json={
+                "thumbnail_format": "jpeg",
+                "thumbnail_quality": 60,
+                "thumbnail_edge": 300,
+            },
+        )
+        self.assertEqual(resp.status, 200)
+        saved = self._read_config()
+        self.assertEqual(
+            saved["thumbnails"], {"format": "jpeg", "quality": 60, "edge": 300}
+        )
+        self.assertEqual(saved["custom"], {"keep": 1})
+        self.assertEqual(
+            (
+                PromptManagerConfig.THUMBNAIL_FORMAT,
+                PromptManagerConfig.THUMBNAIL_QUALITY,
+                PromptManagerConfig.THUMBNAIL_EDGE,
+            ),
+            ("jpeg", 60, 300),
+        )
+
+    async def test_bad_values_are_refused_and_change_nothing(self):
+        before = PromptManagerConfig.get_config()["thumbnails"]
+        for payload in (
+            {"thumbnail_format": "png"},
+            {"thumbnail_quality": 0},
+            {"thumbnail_quality": "80"},
+            {"thumbnail_edge": 4096},
+            {"thumbnail_edge": True},
+        ):
+            resp = await self.client.request("POST", self.URL, json=payload)
+            self.assertEqual(resp.status, 400, payload)
+        self.assertEqual(PromptManagerConfig.get_config()["thumbnails"], before)
+        self.assertFalse(os.path.exists(self.config_path))
+
+    async def test_jpeg_xl_without_an_encoder_is_refused_with_a_code(self):
+        with self._encoder(None):
+            resp = await self.client.request(
+                "POST", self.URL, json={"thumbnail_format": "jxl", "result_timeout": 7}
+            )
+        body = await resp.json()
+        self.assertEqual((resp.status, body["code"]), (400, "jxl-unavailable"))
+        self.assertIn("pillow-jxl-plugin", body["error"])
+        self.assertNotEqual(PromptManagerConfig.THUMBNAIL_FORMAT, "jxl")
+        self.assertNotEqual(PromptManagerConfig.RESULT_TIMEOUT, 7)
+        self.assertFalse(os.path.exists(self.config_path))
+
+    async def test_jpeg_xl_with_an_encoder_is_saved(self):
+        with self._encoder("ffmpeg"):
+            resp = await self.client.request(
+                "POST", self.URL, json={"thumbnail_format": "jxl"}
+            )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._read_config()["thumbnails"]["format"], "jxl")
+        self.assertEqual(PromptManagerConfig.THUMBNAIL_FORMAT, "jxl")
+
+    async def _running_job(self, mode):
+        from py.api.jobs import THUMBNAILS_JOB_KIND
+        from py.api.thumbnail_convert import CONVERT_JOB_TITLE
+
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+            job.finish("finished")
+
+        job = self.api._jobs.start(
+            THUMBNAILS_JOB_KIND,
+            CONVERT_JOB_TITLE if mode == "convert" else "Thumbnail generation",
+            admission="guarded",
+            scope={"mode": mode},
+            runner=runner,
+        )
+
+        async def release():
+            gate.set()
+            await asyncio.wait_for(job.task, 5)
+
+        self.addAsyncCleanup(release)
+        return job
+
+    async def test_thumbnail_changes_wait_for_a_running_conversion(self):
+        # Review I4: a convert job's format is fixed; changing the format,
+        # quality or size limit under it is refused with the job named.
+        PromptManagerConfig.update_config(
+            {"thumbnails": {"format": "webp", "quality": 80, "edge": 512}}
+        )
+        job = await self._running_job("convert")
+        for change in (
+            {"thumbnail_format": "jpeg"},
+            {"thumbnail_quality": 70},
+            {"thumbnail_edge": 300},
+        ):
+            resp = await self.client.request("POST", self.URL, json=change)
+            body = await resp.json()
+            self.assertEqual(resp.status, 409, change)
+            self.assertEqual(body["code"], "busy")
+            self.assertEqual(body["running"]["id"], job.id)
+            self.assertIn("Convert outdated thumbnails", body["error"])
+            self.assertIn("thumbnail", body["error"].lower())
+        self.assertEqual(
+            (
+                PromptManagerConfig.THUMBNAIL_FORMAT,
+                PromptManagerConfig.THUMBNAIL_QUALITY,
+                PromptManagerConfig.THUMBNAIL_EDGE,
+            ),
+            ("webp", 80, 512),
+        )
+        # The same values, or other settings, still save.
+        resp = await self.client.request(
+            "POST", self.URL, json={"thumbnail_format": "webp", "thumbnail_quality": 80}
+        )
+        self.assertEqual(resp.status, 200)
+
+    async def test_a_missing_previews_job_does_not_block_thumbnail_changes(self):
+        await self._running_job("missing")
+        resp = await self.client.request(
+            "POST", self.URL, json={"thumbnail_format": "jpeg"}
+        )
+        self.assertEqual(resp.status, 200)
+
+
 class TestDiagnostics(AdminAPITestCase):
 
     def _install_monitor(self, monitor):

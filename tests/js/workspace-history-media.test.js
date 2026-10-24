@@ -40,3 +40,22 @@ test('stale inspection echoes use the canonical recovery vocabulary and identity
     }
 });
 test('the recorded output inspector cover is its preview, not the original (#249)',()=>{const a=adapter(),target=media('2',1);const record=a.toRecord(envelope(target),target,extractGenerationFacts);assert.deepEqual(record.preview,{url:target.thumbnail_url});assert.notEqual(record.preview.url,record.download.url);});
+
+// #317 M3 follow-up: Firefox may decode JPEG XL without listing image/jxl in Accept, so the cover URL says so itself.
+test('the recorded output cover asks for JPEG XL only where this browser decodes it',async()=>{
+    const support=await import('../../web/js/workspace/thumbnail-support.mjs');
+    const a=adapter(),target=media('2',1);
+    const probe=ok=>({createImage:()=>({set src(_){queueMicrotask(()=>ok?this.onload():this.onerror());}})});
+    try {
+        support.resetJxlSupport();
+        assert.equal(a.toRecord(envelope(target),target,extractGenerationFacts).preview.url,target.thumbnail_url,'unknown: no flag');
+        await support.detectJxlSupport(probe(true));
+        const flagged=new URL(a.toRecord(envelope(target),target,extractGenerationFacts).preview.url,'http://localhost/');
+        assert.equal(flagged.searchParams.get('jxl'),'1');
+        assert.equal(flagged.searchParams.getAll('jxl').length,1);
+        assert.equal(`${flagged.pathname}?${new URLSearchParams([...flagged.searchParams].filter(([k])=>k!=='jxl'))}`,target.thumbnail_url);
+        support.resetJxlSupport();
+        await support.detectJxlSupport(probe(false));
+        assert.equal(a.toRecord(envelope(target),target,extractGenerationFacts).preview.url,target.thumbnail_url,'no support: no flag');
+    } finally {support.resetJxlSupport();}
+});

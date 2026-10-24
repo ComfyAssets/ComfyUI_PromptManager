@@ -6,10 +6,11 @@ import binascii
 import functools
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
-import threading
+import subprocess  # nosec B404 - ffmpeg frames through run_encoder, fixed argv
 import time as _time
 import urllib.parse
 from bisect import bisect_left, bisect_right
@@ -21,6 +22,19 @@ from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
 from .jobs import MAX_OUTCOME_ROWS, THUMBNAILS_JOB_KIND
+from . import thumbnail_settings
+from .thumbnail_encode import (
+    PREVIEW_HELD,
+    EncoderClosed,
+    PreviewWriteHeld,
+    replace_unless_held,
+    run_encoder,
+    sweep_stray_temps,
+    temp_sibling,
+    thumbnail_frame,
+    writer_settings,
+    write_thumbnail,
+)
 from .prompts import bad_request, parse_page_params, publish_image_paths
 from .prompts import thumbnail_url_for
 from .prompts import safe_error_message as _safe_error
@@ -212,6 +226,13 @@ def _has_traversal(relative):
     return ".." in re.split(r"[\\/]+", relative)
 
 
+def _is_thumbnail_cache_path(relative):
+    """True when *relative* names something in a root's ``thumbnails/``
+    cache (any case, either separator): never inspected as a media file."""
+    first = re.split(r"[\\/]+", relative.lstrip("\\/"), maxsplit=1)[0]
+    return first.casefold() == "thumbnails"
+
+
 def _forbidden(message="Access denied"):
     return web.json_response({"success": False, "error": message}, status=403)
 
@@ -256,55 +277,10 @@ def _thumbnail_batch_size(workers):
     return max(4, workers * 2)
 
 
-def _temp_sibling(dst):
-    """Hidden temp path next to *dst* that keeps its extension (for format sniffing)."""
-    dst = Path(dst)
-    token = f"{os.getpid()}-{threading.get_ident()}"
-    return dst.with_name(f".{dst.stem}.part-{token}{dst.suffix}")
-
-
-class PreviewWriteHeld(Exception):
-    """A preview write stopped before its rename: ``guard()`` said no (#249)."""
-
-
-# The result error of a write held before its rename (never remembered).
-PREVIEW_HELD = "Preview writes are held while another job runs"
-
-
-def _replace_unless_held(tmp, dst, guard=None):
-    """Rename *tmp* over *dst*, unless ``guard()`` is false (PreviewWriteHeld)."""
-    if guard is not None and not guard():
-        raise PreviewWriteHeld(PREVIEW_HELD)
-    os.replace(tmp, dst)
-
-
-def _atomic_save(img, dst, fmt=None, *, guard=None, **save_kwargs):
-    """Save a PIL image to *dst* without a partially written file ever being
-    visible at that path: write a temp sibling, then rename over it.
-
-    ``guard()`` (automatic previews) is asked again just before the rename;
-    false leaves *dst* untouched and raises PreviewWriteHeld.
-    """
-    tmp = _temp_sibling(dst)
-    try:
-        img.save(tmp, fmt, **save_kwargs)
-        _replace_unless_held(tmp, dst, guard)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
-
-
-# Encoder settings per thumbnail quality (the System thumbnail dialog's
-# "Medium · optimized", "High · original", "Low · fastest"). The legacy
-# routes always encode as "medium", which is what they always wrote.
-THUMBNAIL_ENCODINGS = {
-    "low": {"quality": 70, "optimize": False},
-    "medium": {"quality": 85, "optimize": True},
-    "high": {"quality": 95, "optimize": True},
-}
-DEFAULT_THUMBNAIL_ENCODING = THUMBNAIL_ENCODINGS["medium"]
-# ffmpeg's JPEG scale (-q:v, 2 best to 31 worst) for each encoding's quality.
-_FFMPEG_QSCALE = {95: 2, 85: 4, 70: 8}
+# Preview files are written by thumbnail_encode in the configured format
+# (thumbnail_settings, #317); these names stay importable from here.
+_temp_sibling = temp_sibling
+_replace_unless_held = replace_unless_held
 
 # A preview that could not be replaced (#249 S5 M6). Windows refuses to rename
 # over a file another process has open (WinError 5 or 32), such as a preview
@@ -321,26 +297,15 @@ def _preview_write_error(exc):
     return PREVIEW_NOT_WRITABLE
 
 
-def _ffmpeg_qscale(encoding):
-    """ffmpeg's ``-q:v`` for a THUMBNAIL_ENCODINGS entry."""
-    return str(_FFMPEG_QSCALE.get(encoding["quality"], 4))
+def _write_image_thumbnail(src, dst, settings, guard=None, track=None):
+    """Write *src*'s preview into *dst* with *settings* (blocking, atomic).
 
-
-def _write_image_thumbnail(src, dst, thumbnail_size, encoding=None, guard=None):
-    """Resize *src* into *dst* (blocking PIL work), atomically.
-
-    ``encoding`` is one of THUMBNAIL_ENCODINGS (medium when None); a PNG
-    preview keeps only its ``optimize`` flag. ``guard`` see _atomic_save.
+    The first frame, fitted inside the edge, in the configured format;
+    returns the path written (see thumbnail_encode.write_thumbnail).
     """
-    encoding = encoding or DEFAULT_THUMBNAIL_ENCODING
     with Image.open(src) as img:
-        if img.mode in ("RGBA", "LA", "P"):
-            img = img.convert("RGB")
-        img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
-        save_kwargs = dict(encoding)
-        if dst.suffix.lower() == ".png":
-            save_kwargs = {"optimize": encoding["optimize"]}
-        _atomic_save(img, dst, guard=guard, **save_kwargs)
+        frame = thumbnail_frame(img, settings.edge)
+    return write_thumbnail(frame, dst, settings, guard=guard, track=track)
 
 
 def _video_placeholder_image(thumbnail_size):
@@ -450,6 +415,58 @@ def _thumbnail_complete_payload(total, stats, start, remaining=0, processed=None
         "processing_rate": round(processed / elapsed if elapsed > 0 else 0, 2),
         "message": message,
     }
+
+
+# The per-file states a thumbnail plan counts (#317).
+_PLAN_COUNTS = ("skipped", "remaining", "fresh", "outdated", "missing")
+
+
+def _preview_names(folders, folder):
+    """{normcased name: mtime} of the regular files in *folder*, listed
+    once per plan (a missing folder is empty)."""
+    names = folders.get(folder)
+    if names is None:
+        names = {}
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            stat = entry.stat(follow_symlinks=False)
+                            names[os.path.normcase(entry.name)] = stat.st_mtime
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        folders[folder] = names
+    return names
+
+
+def _preview_state(src, folder, stem, settings, folders):
+    """fresh, outdated or missing for *src* (see _plan_thumbnails)."""
+    names = _preview_names(folders, folder)
+    try:
+        src_mtime = src.stat().st_mtime
+    except OSError:
+        return "missing"
+    current = names.get(os.path.normcase(stem + settings.extension))
+    others = [
+        names[key]
+        for key in (
+            os.path.normcase(stem + extension)
+            for extension in thumbnail_settings.owned_extensions(
+                src.suffix, settings.extension
+            )
+            if extension != settings.extension
+        )
+        if key in names
+    ]
+    current_fresh = current is not None and current >= src_mtime
+    if current_fresh and not others:
+        return "fresh"
+    if others and (current_fresh or max(others) >= src_mtime):
+        return "outdated"
+    return "missing"
 
 
 def _thumbnail_is_fresh(src, dst):
@@ -774,39 +791,48 @@ def _iter_media_files(output_path, max_files):
             yield root_path / name
 
 
-def media_thumbnail_rel(rel_path):
-    """``thumbnails/<rel>_thumb<ext>`` (POSIX) for the media file *rel_path*.
+def media_thumbnail_rel(rel_path, settings=None):
+    """``thumbnails/<rel>_thumb<ext>`` (POSIX) for the media file *rel_path*:
+    the name the preview gets when it is written now (#317), images and
+    videos alike (``writer_settings``' extension)."""
+    settings = settings or writer_settings()
+    return thumbnail_settings.thumbnail_rel(rel_path, settings.extension)
 
-    The extension is lower case, and a video's preview is a ``.jpg``: the
-    name every thumbnail writer (the plan, the job, automatic previews) uses.
-    """
-    rel_path = Path(rel_path)
-    extension = rel_path.suffix.lower()
-    return (
-        f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb"
-        f"{'.jpg' if extension in VIDEO_EXTENSIONS else extension}"
+
+def existing_media_thumbnail(output_path, rel_path):
+    """The existing preview *rel_path* owns that a listing or cover shows
+    (the format written now first, then older ones), or None. The Images
+    listing and History's cover use this one lookup (review M5)."""
+    return thumbnail_settings.existing_thumbnail(
+        output_path, rel_path, writer_settings().extension
     )
 
 
 def media_thumbnail(output_path, rel_path, root_index, *, root_scope=None):
-    """``(thumbnail_url, ready)`` for *rel_path* under *output_path* (one
-    blocking stat). The Images listing, the Needs review queue cards and the
+    """``(thumbnail_url, ready)`` for *rel_path* under *output_path* (a few
+    blocking stats). The Images listing, the Needs review queue cards and the
     Library use the same URL (#249 F, M10).
 
-    An existing preview's URL carries its mtime as ``v=`` and ``ready`` is
-    True. A missing one is still listed (without ``v=``): the serve route
-    makes it on first view and falls back when it cannot
-    (py/api/thumbnail_auto.py), so no card loads the full file because its
-    preview was not made yet. Media inside a nested ``thumbnails`` folder is
-    never previewed: ``(None, False)``, and its card shows the original.
+    An existing preview the file owns (the configured format first, then an
+    older name such as ``_thumb.png``, #317) is listed with its mtime as
+    ``v=`` and ``ready`` True. A missing one is still listed under the name
+    it will get (without ``v=``): the serve route makes it on first view and
+    falls back when it cannot (py/api/thumbnail_auto.py), so no card loads the
+    full file because its preview was not made yet. Media inside a nested
+    ``thumbnails`` folder is never previewed: ``(None, False)``, and its card
+    shows the original.
     """
     rel_path = Path(rel_path)
     if "thumbnails" in rel_path.parts[:-1]:
         return None, False
-    thumb_rel = media_thumbnail_rel(rel_path)
-    thumbnail_url = thumbnail_url_for(thumb_rel, Path(output_path) / thumb_rel)
+    existing = existing_media_thumbnail(output_path, rel_path)
+    thumbnail_url = None
+    if existing is not None:
+        thumb_rel = thumbnail_settings.thumbnail_stem_rel(rel_path) + existing.suffix
+        thumbnail_url = thumbnail_url_for(thumb_rel, existing)
     ready = thumbnail_url is not None
     if thumbnail_url is None:
+        thumb_rel = media_thumbnail_rel(rel_path)
         quoted = urllib.parse.quote(thumb_rel, safe="/")
         thumbnail_url = f"/prompt_manager/images/serve/{quoted}?root={root_index}"
     else:
@@ -1733,6 +1759,11 @@ class ImageRoutesMixin:
     def _file_response(path):
         response = web.FileResponse(path)
         response.headers["Cache-Control"] = "public, max-age=3600"
+        # #317: name the image types explicitly; the platform's mimetypes
+        # table (the Windows registry) may not know .webp or .jxl.
+        content_type = thumbnail_settings.content_type(path)
+        if content_type is not None:
+            response.headers["Content-Type"] = content_type
         return response
 
     @staticmethod
@@ -1758,7 +1789,12 @@ class ImageRoutesMixin:
             filepath = request.match_info["filepath"]
             if _has_traversal(filepath):
                 return _forbidden()
-            if Path(filepath).suffix.lower() not in SERVABLE_EXTENSIONS:
+            suffix = Path(filepath).suffix.lower()
+            if suffix not in SERVABLE_EXTENSIONS and not (
+                # A JPEG XL preview is served from thumbnails/ only (#317).
+                suffix in thumbnail_settings.THUMBNAIL_EXTENSIONS
+                and _is_thumbnail_cache_path(filepath)
+            ):
                 return _forbidden("Only media files can be served")
 
             output_dirs = self._select_root(roots, request.query.get("root"))
@@ -1873,22 +1909,14 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
-    # Fixed quality presets: clients choose a name, never a raw pixel size.
-    THUMBNAIL_SIZES = {"low": (150, 150), "medium": (300, 300), "high": (600, 600)}
-
-    @classmethod
-    def _thumbnail_size(cls, quality):
-        """Map a quality preset name to a pixel size; anything else is medium."""
-        if not isinstance(quality, str):
-            return cls.THUMBNAIL_SIZES["medium"]
-        return cls.THUMBNAIL_SIZES.get(quality, cls.THUMBNAIL_SIZES["medium"])
-
     async def generate_thumbnails(self, request):
         """Generate every thumbnail in one executor job (POST, blocking).
 
         Holds the registry as guarded work: refused while a record-changing
         job runs, and such jobs are refused while it runs. A body that cannot
         be read is refused before the hold, so it is never listed as a job.
+        The legacy ``quality`` preset is accepted and ignored: previews follow
+        the server's thumbnail settings (#317 R3).
         """
         data, error = await _json_body_or_error(request)
         if error is not None:
@@ -1902,8 +1930,6 @@ class ImageRoutesMixin:
 
     async def _generate_thumbnails(self, data):
         try:
-            thumbnail_size = self._thumbnail_size(data.get("quality", "medium"))
-
             output_dirs = self._get_all_output_dirs()
             if not output_dirs:
                 return web.json_response(
@@ -1912,7 +1938,7 @@ class ImageRoutesMixin:
                 )
 
             result = await self._run_in_executor(
-                self._generate_gallery_thumbnails_sync, output_dirs, thumbnail_size
+                self._generate_gallery_thumbnails_sync, output_dirs
             )
             self.invalidate_gallery_cache()
             return web.json_response(result)
@@ -1923,30 +1949,30 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
-    def _generate_thumbnails_sync(self, output_path, thumbnails_dir, thumbnail_size):
+    def _generate_thumbnails_sync(self, output_path, thumbnails_dir, settings=None):
         """Blocking thumbnail generation loop (run in executor)."""
+        settings = writer_settings(settings)
         start = _time.monotonic()
-        plan = self._plan_thumbnails(output_path, thumbnails_dir)
-        payload = self._execute_thumbnail_plan(plan, thumbnail_size, start)
+        plan = self._plan_thumbnails(output_path, thumbnails_dir, settings=settings)
+        payload = self._execute_thumbnail_plan(plan, settings, start)
         payload["thumbnails_path"] = _public_path(thumbnails_dir)
         return payload
 
     def _generate_gallery_thumbnails_sync(
-        self, output_dirs: list[Path], thumbnail_size: tuple[int, int]
+        self, output_dirs: list[Path], settings=None
     ) -> dict:
+        settings = writer_settings(settings)
         start = _time.monotonic()
-        plan = self._plan_gallery_thumbnails(output_dirs)
-        payload = self._execute_thumbnail_plan(plan, thumbnail_size, start)
+        plan = self._plan_gallery_thumbnails(output_dirs, settings=settings)
+        payload = self._execute_thumbnail_plan(plan, settings, start)
         payload["thumbnails_path"] = _public_path(output_dirs[0] / "thumbnails")
         return payload
 
-    def _execute_thumbnail_plan(
-        self, plan: dict, thumbnail_size: tuple[int, int], start: float
-    ) -> dict:
+    def _execute_thumbnail_plan(self, plan: dict, settings, start: float) -> dict:
         targets = plan["targets"]
         stats = _new_thumbnail_stats()
         stats["skipped"] = plan["skipped"]
-        for result in self._generate_batch(targets, thumbnail_size):
+        for result in self._generate_batch(targets, settings):
             _record_thumbnail_result(stats, result)
         payload = _thumbnail_complete_payload(
             len(targets) + plan["skipped"] + plan["remaining"],
@@ -1960,7 +1986,11 @@ class ImageRoutesMixin:
         return payload
 
     def _plan_gallery_thumbnails(
-        self, output_dirs: list[Path], rebuild: bool = False, stop=None
+        self,
+        output_dirs: list[Path],
+        mode: str = "missing",
+        stop=None,
+        settings=None,
     ) -> dict:
         """Plan every gallery root with one shared per-run generation cap.
 
@@ -1968,33 +1998,32 @@ class ImageRoutesMixin:
         MAX_FRESH_LISTED files across the roots. ``stop()`` true ends the walk
         at the next file (a cancelled job); the partial plan is returned.
         """
-        combined = {
-            "targets": [],
-            "skipped": 0,
-            "remaining": 0,
-            "fresh": 0,
-            "fresh_files": [],
-        }
+        settings = writer_settings(settings)
+        combined = {key: 0 for key in _PLAN_COUNTS}
+        combined.update(targets=[], fresh_files=[])
         for root in output_dirs:
             if stop is not None and stop():
                 break
             root = Path(root)
             plan = self._plan_thumbnails(
-                root, root / "thumbnails", rebuild=rebuild, stop=stop
+                root, root / "thumbnails", mode=mode, stop=stop, settings=settings
             )
             available = max(0, MAX_THUMBNAIL_FILES - len(combined["targets"]))
             combined["targets"].extend(plan["targets"][:available])
-            combined["skipped"] += plan["skipped"]
-            combined["fresh"] += plan["fresh"]
+            for key in _PLAN_COUNTS:
+                combined[key] += plan[key]
             room = max(0, MAX_FRESH_LISTED - len(combined["fresh_files"]))
             combined["fresh_files"].extend(plan["fresh_files"][:room])
-            combined["remaining"] += plan["remaining"] + max(
-                0, len(plan["targets"]) - available
-            )
+            combined["remaining"] += max(0, len(plan["targets"]) - available)
         return combined
 
     async def get_thumbnail_status(self, request: web.Request) -> web.Response:
-        """Count pending thumbnails off-loop without generating files."""
+        """Count previews off-loop without generating files.
+
+        ``pending`` previews are missing, ``outdated`` ones exist in another
+        format than the one written now (Convert outdated, #317) and ``ready``
+        counts every file with a preview, outdated or not.
+        """
         try:
             output_dirs = self._get_all_output_dirs()
             plan = await self._run_in_executor(
@@ -2008,6 +2037,8 @@ class ImageRoutesMixin:
                     "total_images": pending + plan["skipped"],
                     "pending": pending,
                     "ready": plan["skipped"],
+                    "outdated": plan["outdated"],
+                    "format": writer_settings().format,
                     # Files whose automatic preview failed this session (#249).
                     "failed": self._auto_thumbnail_failures(),
                     "collection_id": hashlib.sha256(collection.encode()).hexdigest()[
@@ -2022,76 +2053,81 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(exc)}, status=500
             )
 
-    def _plan_thumbnails(self, output_path, thumbnails_dir, rebuild=False, stop=None):
-        """Decide which media files need a thumbnail (blocking walk).
+    def _plan_thumbnails(
+        self, output_path, thumbnails_dir, mode="missing", stop=None, settings=None
+    ):
+        """Decide which media files need a preview (blocking walk).
 
-        Returns ``{"targets": [(src, dst, is_video)], "skipped": n,
-        "remaining": n, "fresh": n, "fresh_files": [src]}``. Files whose
-        thumbnail is already newer than the source are ``fresh``. Without
-        ``rebuild`` they are counted as skipped and never queued, so a large
-        library that is mostly done only pays for the files that changed;
-        ``fresh_files`` lists the first MAX_FRESH_LISTED of them. With
-        ``rebuild`` every file is a target (nothing is skipped). The walk is
-        bounded like the gallery listing (MAX_SCAN_DEPTH, MAX_GALLERY_FILES,
-        no symlinks) and at most MAX_THUMBNAIL_FILES targets are queued per
-        run; ``remaining`` counts the targets beyond that cap. ``stop()`` true
-        ends the walk before the next file.
+        Each file is ``fresh`` (its preview in the format written now is at
+        least as new as the file, and no other owned preview is left),
+        ``outdated`` (an owned preview in another format: a legacy
+        ``_thumb.png`` or a format switched away from, #317) or ``missing``.
+        ``mode`` picks the targets: ``missing`` the missing ones (fresh and
+        outdated are ``skipped`` and never queued, so a large library that is
+        mostly done only pays for the files that changed), ``rebuild`` every
+        file, ``convert`` the outdated ones (missing ones are left to the
+        missing run). Returns ``{"targets": [(src, dst, is_video)], "skipped",
+        "remaining", "fresh", "outdated", "missing", "fresh_files": [src]}``;
+        ``fresh_files`` lists the first MAX_FRESH_LISTED fresh files. The walk
+        is bounded like the gallery listing (MAX_SCAN_DEPTH, MAX_GALLERY_FILES,
+        no symlinks), each preview folder is listed once, and at most
+        MAX_THUMBNAIL_FILES targets are queued per run; ``remaining`` counts
+        the targets beyond that cap. ``stop()`` true ends the walk before the
+        next file.
         """
+        settings = writer_settings(settings)
         output_path = Path(output_path)
-        targets = []
-        skipped = 0
-        remaining = 0
-        fresh = 0
-        fresh_files = []
+        thumbnails_dir = Path(thumbnails_dir)
+        plan = {key: 0 for key in _PLAN_COUNTS}
+        plan.update(targets=[], fresh_files=[])
+        folders = {}
         for src in _iter_media_files(output_path, MAX_GALLERY_FILES):
             if stop is not None and stop():
                 break
-            suffix = src.suffix.lower()
-            is_video = suffix in VIDEO_EXTENSIONS
             rel_no_ext = src.relative_to(output_path).with_suffix("")
-            thumb_suffix = ".jpg" if is_video else suffix
-            dst = thumbnails_dir / f"{rel_no_ext.as_posix()}_thumb{thumb_suffix}"
+            stem = f"{rel_no_ext.name}{thumbnail_settings.THUMB_SUFFIX}"
+            dst = thumbnails_dir / rel_no_ext.parent / (stem + settings.extension)
             if not _is_within(dst, thumbnails_dir):
                 self.logger.warning(f"Skipping thumbnail outside safe dir: {src.name}")
                 continue
-            if _thumbnail_is_fresh(src, dst):
-                fresh += 1
-                if not rebuild:
-                    skipped += 1
-                    if len(fresh_files) < MAX_FRESH_LISTED:
-                        fresh_files.append(src)
-                    continue
-            if len(targets) >= MAX_THUMBNAIL_FILES:
-                remaining += 1
+            state = _preview_state(src, dst.parent, stem, settings, folders)
+            plan[state] += 1
+            target = (
+                mode == "rebuild"
+                or (mode == "missing" and state == "missing")
+                or (mode == "convert" and state == "outdated")
+            )
+            if not target:
+                plan["skipped"] += 1
+                if state == "fresh" and len(plan["fresh_files"]) < MAX_FRESH_LISTED:
+                    plan["fresh_files"].append(src)
                 continue
-            targets.append((src, dst, is_video))
-        if remaining:
+            if len(plan["targets"]) >= MAX_THUMBNAIL_FILES:
+                plan["remaining"] += 1
+                continue
+            is_video = src.suffix.lower() in VIDEO_EXTENSIONS
+            plan["targets"].append((src, dst, is_video))
+        if plan["remaining"]:
             self.logger.warning(
                 f"Thumbnail run capped at {MAX_THUMBNAIL_FILES} new files; "
-                f"{remaining} more will be generated on the next run"
+                f"{plan['remaining']} more will be generated on the next run"
             )
-        return {
-            "targets": targets,
-            "skipped": skipped,
-            "remaining": remaining,
-            "fresh": fresh,
-            "fresh_files": fresh_files,
-        }
+        return plan
 
     def _thumbnail_targets(self, output_path, thumbnails_dir):
         """Pending (src, dst, is_video) triples; see _plan_thumbnails."""
         return self._plan_thumbnails(output_path, thumbnails_dir)["targets"]
 
-    def _generate_batch(self, targets, thumbnail_size, **options):
+    def _generate_batch(self, targets, settings, **options):
         """Create thumbnails for ``targets`` on the configured worker threads.
 
         Blocking; returns one result dict per target, in order. ``options``
-        go to ``_generate_one`` (``encoding``, ``rebuild``, ``stop``).
+        go to ``_generate_one`` (``rebuild``, ``stop``).
         """
 
         def one(target):
             src, dst, is_video = target
-            return self._generate_one(src, dst, thumbnail_size, is_video, **options)
+            return self._generate_one(src, dst, settings, is_video, **options)
 
         return map_parallel(one, targets, _worker_threads())
 
@@ -2099,48 +2135,55 @@ class ImageRoutesMixin:
         self,
         src,
         dst,
-        thumbnail_size,
+        settings,
         is_video,
-        encoding=None,
         rebuild=False,
         stop=None,
         guard=None,
         track=None,
+        placeholder=True,
     ):
         """Create one thumbnail (blocking). Never raises; returns a result dict.
 
-        ``stop()`` true before the file starts gives ``action: "cancelled"``
-        and touches nothing (a job's file boundary). ``rebuild`` writes a
-        fresh preview again and never replaces an existing video preview with
-        the placeholder. Every write is atomic, so a failure keeps the old
-        preview. ``guard()`` false just before the rename gives ``action:
-        "error"`` with ``held: True`` and writes nothing; ``track(process)``
-        is handed the ffmpeg process (both for automatic previews, #249). An
-        error result carries ``decode: True`` when the file itself cannot be
-        decoded (an I/O error does not).
+        *settings* (``thumbnail_settings.ThumbnailSettings``) give the format,
+        quality and edge; *dst* takes the format's extension. ``stop()`` true
+        before the file starts gives ``action: "cancelled"`` and touches
+        nothing (a job's file boundary). ``rebuild`` writes a fresh preview
+        again and never replaces an existing video preview with the
+        placeholder. Every write is atomic and verified, so a failure keeps
+        the old preview. ``guard()`` false just before the rename gives
+        ``action: "error"`` with ``held: True`` and writes nothing;
+        ``track(process)`` is handed every encoder process (both for automatic
+        previews, #249). An error result carries ``decode: True`` when the
+        file itself cannot be decoded (an I/O error does not). A generated
+        result names the file written as ``path``. Without ``placeholder``
+        (Convert outdated) a video with no decodable frame fails instead.
         """
         result = {
             "file": src.name,
             "dir": src.parent.name,
             "type": "video" if is_video else "image",
         }
+        dst = Path(dst)
+        if dst.suffix != settings.extension:
+            dst = dst.with_suffix(settings.extension)
         try:
             if stop is not None and stop():
                 return {**result, "action": "cancelled"}
             if not src.is_file():
                 return {**result, "action": "error", "error": "File no longer exists"}
             if not rebuild and _thumbnail_is_fresh(src, dst):
-                return {**result, "action": "skipped"}
+                return {**result, "action": "skipped", "path": str(dst)}
             dst.parent.mkdir(parents=True, exist_ok=True)
             if is_video:
                 made = self._generate_video_thumbnail(
                     src,
                     dst,
-                    thumbnail_size,
-                    encoding,
+                    settings,
                     keep_existing=rebuild,
                     guard=guard,
                     track=track,
+                    placeholder=placeholder,
                 )
                 if not made:
                     return {
@@ -2149,9 +2192,10 @@ class ImageRoutesMixin:
                         "error": "Video decode failed",
                         "decode": True,
                     }
+                written = made if isinstance(made, Path) else dst
             else:
-                _write_image_thumbnail(src, dst, thumbnail_size, encoding, guard)
-            return {**result, "action": "generated"}
+                written = _write_image_thumbnail(src, dst, settings, guard, track)
+            return {**result, "action": "generated", "path": str(written)}
         except PreviewWriteHeld:
             return {**result, "action": "error", "error": PREVIEW_HELD, "held": True}
         except UnidentifiedImageError:
@@ -2186,62 +2230,70 @@ class ImageRoutesMixin:
         self,
         video_path,
         thumbnail_path,
-        thumbnail_size,
-        encoding=None,
+        settings,
         keep_existing=False,
         *,
         guard=None,
         track=None,
+        placeholder=True,
     ):
-        """Generate thumbnail from video file. Returns True if successful.
+        """Write a video's preview; returns the path written, or False.
 
-        Tries OpenCV, then ffmpeg, then writes the placeholder frame: a
-        decoder that cannot open or read the clip (an AV1 file OpenCV was
-        built without) falls through to the next one (#249 I1). ``encoding``
-        is one of THUMBNAIL_ENCODINGS (medium when None); it encodes the
-        OpenCV frame, ffmpeg's frame (as ``-q:v``) and the placeholder alike.
-        Both decoders fit the frame inside ``thumbnail_size`` keeping its
-        aspect ratio. With ``keep_existing`` an existing preview is kept, and
-        the run fails, when no frame could be decoded, rather than replaced
-        by the placeholder. A PermissionError while replacing the preview
-        propagates (``_generate_one`` names it), as does PreviewWriteHeld
-        when ``guard()`` refuses the rename. ``track(process)`` is handed the
-        ffmpeg process so a shutdown can kill it.
+        The frame comes from OpenCV, else ffmpeg, else the placeholder frame:
+        a decoder that cannot open or read the clip (an AV1 file OpenCV was
+        built without) falls through to the next one (#249 I1). Every frame
+        is fitted inside the edge and encoded in *settings*' format like an
+        image's preview (#317). With ``keep_existing`` an existing preview is
+        kept, and the run fails, when no frame could be decoded, rather than
+        replaced by the placeholder. A PermissionError while replacing the
+        preview propagates (``_generate_one`` names it), as do
+        PreviewWriteHeld when ``guard()`` refuses the rename and
+        EncoderClosed at shutdown. ``track(process)`` is handed the ffmpeg
+        process so a shutdown can kill it. Without ``placeholder`` no
+        placeholder is written: the run fails when no frame decodes.
         """
-        encoding = encoding or DEFAULT_THUMBNAIL_ENCODING
         try:
-            frame = self._opencv_frame(video_path, thumbnail_size)
+            frame = self._opencv_frame(video_path, settings.size)
+            source = "OpenCV"
+            if frame is None:
+                frame = self._ffmpeg_frame(video_path, settings.size, track)
+                source = "ffmpeg"
             if frame is not None:
-                _atomic_save(frame, thumbnail_path, "JPEG", guard=guard, **encoding)
-                self.logger.debug(
-                    f"Generated video thumbnail using OpenCV: {thumbnail_path}"
+                written = write_thumbnail(
+                    thumbnail_frame(frame, settings.edge),
+                    thumbnail_path,
+                    settings,
+                    guard=guard,
+                    track=track,
                 )
-                return True
-            if self._ffmpeg_frame(
-                video_path, thumbnail_path, thumbnail_size, encoding, guard, track
-            ):
-                return True
-            if keep_existing and thumbnail_path.exists():
+                self.logger.debug(
+                    f"Generated video thumbnail using {source}: {written}"
+                )
+                return written
+            if not placeholder or (keep_existing and thumbnail_path.exists()):
                 self.logger.warning(
                     f"No frame decoded for {video_path.name}; keeping its preview"
                 )
                 return False
             # Last resort: the placeholder frame.
             try:
-                img = _video_placeholder_image(thumbnail_size)
-                _atomic_save(img, thumbnail_path, "JPEG", guard=guard, **encoding)
-                self.logger.debug(
-                    f"Generated placeholder video thumbnail: {thumbnail_path}"
+                written = write_thumbnail(
+                    _video_placeholder_image(settings.size),
+                    thumbnail_path,
+                    settings,
+                    guard=guard,
+                    track=track,
                 )
-                return True
-            except (PermissionError, PreviewWriteHeld):
+                self.logger.debug(f"Generated placeholder video thumbnail: {written}")
+                return written
+            except (PermissionError, PreviewWriteHeld, EncoderClosed):
                 raise
             except Exception as e:
                 self.logger.warning(
                     f"Failed to create placeholder thumbnail for {video_path}: {e}"
                 )
                 return False
-        except (PermissionError, PreviewWriteHeld):
+        except (PermissionError, PreviewWriteHeld, EncoderClosed):
             raise
         except Exception as e:
             self.logger.error(
@@ -2275,61 +2327,52 @@ class ImageRoutesMixin:
             self.logger.debug(f"OpenCV could not read {video_path}: {e}")
             return None
 
-    def _ffmpeg_frame(
-        self, video_path, thumbnail_path, thumbnail_size, encoding, guard, track
-    ):
-        """Write ffmpeg's frame at 1 s into *thumbnail_path*; True on success."""
-        import subprocess  # nosec B404 - fixed argv, no shell
-
-        tmp_path = _temp_sibling(thumbnail_path)
+    def _ffmpeg_frame(self, video_path, thumbnail_size, track=None):
+        """ffmpeg's frame at 1 s, fitted to *thumbnail_size*, as a PIL image
+        (a PNG on stdout, never a temp file), or None. EncoderClosed (the
+        shutdown) propagates."""
         cmd = [
             "ffmpeg",
+            "-v",
+            "error",
             "-i",
-            str(video_path),
+            # Read as a file, never as a protocol URL (review M6).
+            f"file:{video_path}",
             "-ss",
             "00:00:01",
             "-vframes",
             "1",
             "-vf",
-            f"scale={thumbnail_size[0]}:{thumbnail_size[1]}"
+            # Fit inside the edge, never upscale a small clip.
+            f"scale='min(iw,{thumbnail_size[0]})':'min(ih,{thumbnail_size[1]})'"
             ":force_original_aspect_ratio=decrease",
-            "-q:v",
-            _ffmpeg_qscale(encoding),
-            "-y",
-            str(tmp_path),
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "-",
         ]
         try:
-            process = subprocess.Popen(  # nosec B603 B607 - fixed argv
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if track is not None:
-                track(process)
-            try:
-                _out, stderr = process.communicate(timeout=30)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
-                return False
-            if process.returncode == 0 and tmp_path.exists():
-                _replace_unless_held(tmp_path, thumbnail_path, guard)
-                self.logger.debug(
-                    f"Generated video thumbnail using ffmpeg: {thumbnail_path}"
-                )
-                return True
-            self.logger.warning(f"ffmpeg failed for {video_path}: {stderr}")
-            return False
-        except (FileNotFoundError, OSError) as e:
-            if isinstance(e, PermissionError) and tmp_path.exists():
-                raise
-            return False
-        finally:
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+            done = run_encoder(cmd, track=track)
+        except EncoderClosed:
+            raise
+        except (OSError, subprocess.SubprocessError) as e:
+            self.logger.debug(f"ffmpeg could not read {video_path}: {e}")
+            return None
+        if done.returncode != 0 or not done.stdout:
+            detail = done.stderr or b""
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", "replace")
+            detail = detail[-300:]
+            self.logger.warning(f"ffmpeg failed for {video_path}: {detail}")
+            return None
+        try:
+            frame = Image.open(io.BytesIO(done.stdout))
+            frame.load()
+            return frame
+        except Exception as e:
+            self.logger.warning(f"ffmpeg gave no readable frame for {video_path}: {e}")
+            return None
 
     async def clear_thumbnails(self, request: web.Request) -> web.Response:
         """Clear generated thumbnails across gallery roots, preserving originals.
@@ -2391,6 +2434,25 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(exc)}, status=500
             )
 
+    def sweep_thumbnail_temps(self):
+        """Remove the old temp files crashed preview writes left in every
+        root's ``thumbnails/`` folder (blocking; run at startup on its own
+        thread). Returns how many went."""
+        removed = 0
+        try:
+            output_dirs = self._get_all_output_dirs()
+        except Exception as exc:
+            self.logger.debug(f"No roots to sweep for preview temp files: {exc}")
+            return 0
+        for output_path in output_dirs:
+            folder = Path(output_path) / "thumbnails"
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+            removed += sweep_stray_temps(folder)[0]
+        if removed:
+            self.logger.info(f"Removed {removed} interrupted preview temp files")
+        return removed
+
     def _clear_gallery_thumbnails_sync(
         self, output_dirs: list[Path]
     ) -> tuple[int, int]:
@@ -2418,12 +2480,18 @@ class ImageRoutesMixin:
         cleared_count = 0
         cleared_size = 0
         for thumbnails_dir in directories:
+            # Temp files a crashed write left (review I1): the clear holds
+            # every preview write, so none is in use.
+            temps, temp_bytes = sweep_stray_temps(thumbnails_dir, min_age=0)
+            cleared_count += temps
+            cleared_size += temp_bytes
             for root, _dirs, files in os.walk(thumbnails_dir):
                 for name in files:
                     path = Path(root) / name
                     if (
                         "_thumb" not in name.lower()
-                        or path.suffix.lower() not in GALLERY_IMAGE_EXTENSIONS
+                        or path.suffix.lower()
+                        not in thumbnail_settings.THUMBNAIL_EXTENSIONS
                         or path.is_symlink()
                     ):
                         continue
@@ -2746,6 +2814,9 @@ class ImageRoutesMixin:
             or re.match(r"^[a-zA-Z]:", relative)
         ):
             return _forbidden()
+        if _is_thumbnail_cache_path(relative):
+            # A preview is a placeholder: it carries no metadata (#317).
+            return _forbidden("Previews are not inspected; inspect the original")
         path = Path(roots[index]) / relative
         denied = _media_access_error(path, [roots[index]])
         if denied is not None:
