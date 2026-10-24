@@ -101,6 +101,35 @@ class TestJobFanOut(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(await _collect(job), [{"type": "complete"}])
 
+    async def test_lead_comes_first_and_nothing_published_meanwhile_is_lost(self):
+        """S5 I1: the ``job`` frame leads, with the subscription already in place."""
+        job = Job("thumbnails", "Thumbnail generation")
+        job.publish({"type": "status"})
+        lead = {"type": "job"}
+        seen = []
+        async with contextlib.aclosing(job.events(lead=lead)) as events:
+            async for payload in events:
+                seen.append(payload)
+                if payload is lead:
+                    # Published while the consumer is still sending the lead.
+                    job.publish({"type": "progress"})
+                    job.publish({"type": "complete"})
+                    job.finish()
+        self.assertEqual(
+            seen,
+            [lead, {"type": "status"}, {"type": "progress"}, {"type": "complete"}],
+        )
+
+    async def test_lead_on_a_finished_job_then_its_last_event(self):
+        job = Job("thumbnails", "Thumbnail generation")
+        job.publish({"type": "complete"})
+        job.finish()
+        seen = []
+        async with contextlib.aclosing(job.events(lead={"type": "job"})) as events:
+            async for payload in events:
+                seen.append(payload)
+        self.assertEqual(seen, [{"type": "job"}, {"type": "complete"}])
+
     async def test_departed_subscriber_is_forgotten(self):
         job = Job("scan", "Scan")
         job.publish({"type": "progress", "progress": 1})
@@ -150,6 +179,30 @@ class TestJobFanOut(unittest.IsolatedAsyncioTestCase):
 
 
 class TestJobRegistry(unittest.IsolatedAsyncioTestCase):
+
+    async def test_a_compatible_kind_never_blocks(self):
+        """S5 M7: a caller may name running kinds that cannot conflict with it."""
+        registry = JobRegistry()
+        gate = asyncio.Event()
+        thumbs = registry.start(
+            "thumbnails",
+            "Thumbnail generation",
+            admission="guarded",
+            runner=_gated_runner(gate),
+        )
+        self.assertIs(registry.blocker("probe", admission="records"), thumbs)
+        self.assertIsNone(
+            registry.blocker("probe", admission="records", compatible=("thumbnails",))
+        )
+        backup = registry.start(
+            "backup", "Backup", admission="guarded", runner=_gated_runner(gate)
+        )
+        self.assertIs(
+            registry.blocker("probe", admission="records", compatible=("thumbnails",)),
+            backup,
+        )
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(thumbs.task, backup.task), 2)
 
     async def test_start_lists_and_finishes_a_job(self):
         registry = JobRegistry()
@@ -420,6 +473,28 @@ class TestJobOutcomesAndLog(unittest.TestCase):
         self.assertEqual(
             SCAN_GROUP_NAMES, ("added", "known", "review", "no_metadata", "errors")
         )
+
+    def test_record_counted_counts_exactly_lists_capped_and_logs_nothing(self):
+        job = Job("thumbnails", "Thumbnail generation", groups=("skipped",))
+        rows = [
+            {"path": os.path.abspath(f"out{os.sep}f{i}.png"), "root": "output"}
+            for i in range(MAX_OUTCOME_ROWS + 5)
+        ]
+        job.record_counted("skipped", 10_000, rows)
+        job.record_counted("skipped", 1, [{"path": "late.png", "root_index": True}])
+        self.assertEqual(job.counters["skipped"], 10_001)
+        self.assertEqual(len(job.outcomes["skipped"]), MAX_OUTCOME_ROWS)
+        self.assertEqual(job.outcomes["skipped"][0]["path"], "f0.png")
+        self.assertIsNone(job.outcomes["skipped"][0]["root_index"])
+        self.assertEqual(job.log, [])
+        with self.assertRaises(ValueError):
+            job.record_counted("bogus", 1)
+
+    def test_thumbnail_job_groups(self):
+        self.assertEqual(
+            jobs_module.THUMBNAIL_GROUP_NAMES, ("generated", "skipped", "errors")
+        )
+        self.assertEqual(jobs_module.THUMBNAILS_JOB_KIND, "thumbnails")
 
     def test_image_tag_job_kind_and_groups(self):
         # #249 D1: bulk Add tags / Auto-tag, counter-tile order.

@@ -866,8 +866,10 @@ class TestMonitorRecording(ReviewTestCase):
         While a ``records`` or ``guarded`` job runs, the monitor's pass
         writes nothing and answers ``deferred`` (its fallback link stands and
         a later scan reads the ambiguous file again); a ``read`` job does not
-        refuse it. Once the blocking job has ended it still records nothing:
-        only scans add items, so an unlinked output is ``skipped``.
+        refuse it. Thumbnail work (the job and the gallery's holds) is
+        ``guarded`` but writes only previews, never records, so it does not
+        defer the pass either (S5 M7). Not deferred, the pass still records
+        nothing: only scans add items, so an unlinked output is ``skipped``.
         """
         self._require_module()
         from py.api.jobs import RESTORE_JOB_KIND, THUMBNAILS_JOB_KIND
@@ -878,7 +880,7 @@ class TestMonitorRecording(ReviewTestCase):
 
         for kind, admission in (
             (RESTORE_JOB_KIND, "records"),
-            (THUMBNAILS_JOB_KIND, "guarded"),
+            ("backup", "guarded"),
         ):
             with self.subTest(admission=admission):
                 async with self.api._jobs.hold(
@@ -896,7 +898,44 @@ class TestMonitorRecording(ReviewTestCase):
                 )
 
         async with self.api._jobs.hold("probe-read", "Read probe", admission="read"):
+            async with self.api._jobs.hold(
+                THUMBNAILS_JOB_KIND,
+                "Thumbnail clear (gallery page)",
+                admission="guarded",
+            ):
+                outcome = await asyncio.to_thread(
+                    self.api.record_review_file, str(path)
+                )
+        self.assertEqual(outcome, "skipped")
+        self.assertEqual(self._items(), [])
+
+    async def test_a_running_thumbnail_job_does_not_defer_monitor_recording(self):
+        """S5 M7: a long rebuild never defers the monitor's pass (no records)."""
+        self._require_module()
+        from py.api.jobs import THUMBNAILS_JOB_KIND
+
+        self._roots()
+        path = self.output_dir / "beside.png"
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+
+        job = self.api._jobs.start(
+            THUMBNAILS_JOB_KIND,
+            "Thumbnail generation",
+            admission="guarded",
+            cancellable=True,
+            scope={},
+            runner=runner,
+        )
+        try:
             outcome = await asyncio.to_thread(self.api.record_review_file, str(path))
+        finally:
+            gate.set()
+            await asyncio.wait_for(job.task, 5)
+        # Not deferred (thumbnail work writes no records); only scans add items.
         self.assertEqual(outcome, "skipped")
         self.assertEqual(self._items(), [])
 

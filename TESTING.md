@@ -1353,8 +1353,8 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
   the selection bar's tagging shows is the concept's or the plan's (D85, D90, D91).
 - **D89** (plan D66, Activity for the `image-tags` job): the job's Activity item and its
   view are the scan's (D54, D56, D57, D59) with the job kind's own counters, from one
-  per-kind table (`JOB_VIEWS` in `activity-store.mjs`; a kind without one keeps the
-  scan's tiles under "Job log" and "Cancel job"). The titles are the server's: "Add
+  per-kind table (`activity-kinds.mjs` since S5, D111; a kind without one gets no
+  tiles, "Job log" and "Cancel job"). The titles are the server's: "Add
   tags to images" and "Auto-tag images".
   - The pill's verb is "Tagging" ("Tagging · 41% · 8,240 / 19,622").
   - The item line and the view's heading line read "Started HH:MM · N images · closing
@@ -1387,7 +1387,7 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
     finished · N tagged · M errors", "<title> cancelled · N tagged" or "<title> failed ·
     N tagged · M errors".
   - Tests: `tests/js/workspace-activity-store.test.js` ("image-tags jobs get their own
-    tiles outcomes and pill verb", "unknown kinds keep the generic view");
+    tiles outcomes and pill verb", "unknown kinds get the generic view without the scan tiles");
     `tests/browser/workspace-activity.spec.mjs` ("an image tagging job shows Tagged
     Unchanged Skipped Errors and opens tagged rows", "cancel tagging stops at a file
     boundary", "the report download names the kind", on fake `image-tags` jobs from
@@ -2157,9 +2157,78 @@ keeps the drafts; a save refused for one source says the server's message as the
 and marks that row. After a save the source list is read again; a monitoring change
 waits for a restart (the running observer keeps watching until then, and the status
 says "Restart ComfyUI to apply: Watch for new outputs."). Thumbnail generation's
-Review options opens the legacy gallery in a new tab (D94) until its review dialog (S5).
+Review options opens the concept's "Thumbnail maintenance" dialog (D99, below).
 A list that cannot be read shows "Sources could not be loaded. Your saved data has not
 changed." and Retry, never an empty list.
+
+Thumbnail generation is an Activity job (S5, `py/api/thumbnail_jobs.py`). `GET
+/prompt_manager/images/thumbnails/plan?mode=missing|rebuild&size=128..2048&quality=low|medium|high`
+counts the work (`targets`, `fresh`, `remaining` past the 10,000-file cap, the source
+labels) and writes nothing; a value out of range is a 400 `invalid-request` that starts
+nothing. `POST /prompt_manager/jobs/thumbnails {mode, size, quality}` starts the
+`thumbnails` job ("Thumbnail generation"): admission `guarded` (never beside a scan or
+another record-changing job, one at a time, a legacy clear refused while it runs),
+cancellable at a file boundary (a file not yet started is left alone; written previews
+stay), outcome groups Generated / Skipped (already fresh, listed without a log line
+each) / Errors. `size` is the longest edge and `quality` the encoder (low: JPEG 70, no
+optimize; medium: 85, optimized, what the legacy routes always wrote; high: 95,
+optimized). Video previews take the same choice: the OpenCV frame and the placeholder
+are saved with those JPEG settings, and the ffmpeg fallback (no OpenCV) maps them to
+`-q:v` 8 / 4 / 2 and fits the frame inside the edge keeping its aspect ratio (`-vf
+scale=E:E:force_original_aspect_ratio=decrease`, no longer a stretched square).
+`rebuild` writes fresh previews again, each through the same temp-file
+rename, so nothing is cleared first and a failed file keeps its old preview (a video
+whose frame cannot be decoded keeps its preview instead of getting the placeholder);
+originals are only read (`tests/test_thumbnail_jobs.py`). Cancel is also checked per
+file during the planning walk: a job cancelled there stops the walk at the next file,
+publishes no `start` frame and ends "Cancelled before any preview was written". Every
+exit sets a final status line: "N previews written · M errors" (plus "· R more on the
+next run" past the cap), "No previews to generate · N already up to date" (or "No
+images or videos to preview"), "Cancelled · N previews written", or the failure; a job
+with nothing to do never reads "Processing file 0 of 0" (`test_every_exit_sets_a_truthful_final_status_line`,
+and "a finished thumbnail job with nothing to do says so" in `workspace-activity.spec.mjs`).
+Windows: replacing a preview another process holds open (the gallery serving it, an
+image viewer) fails with WinError 5 or 32; that file counts as an error reading
+"Preview in use by another program; the old one was kept" (never the raw "[WinError
+5]"), and its old preview stays. Any other PermissionError reads "Permission denied
+writing the preview" (`test_a_locked_preview_is_a_readable_coded_error`).
+Thumbnail work (the job and the gallery's generate and clear holds) is `guarded`, but it
+writes only preview files and no records, so the image monitor's Needs review
+recording runs beside it instead of being deferred for a whole rebuild
+(`PREVIEW_ONLY_KINDS` in `py/api/review_recording.py`, `blocker(..., compatible=)`;
+`test_a_running_thumbnail_job_does_not_defer_monitor_recording`). Other `guarded` and
+all `records` jobs still defer it.
+
+Deliberate change: the legacy gallery stream `POST /images/generate-thumbnails/progress`
+now starts this job (missing previews, its quality preset as the size, medium encoding)
+or attaches to the running one, and streams the job's unchanged `status`/`start`/
+`progress`/`file_error`/`complete` frames after a first `job {id, started}` frame that
+names the job and whether this stream started it. The stream reads the registry after
+its headers are sent, so a job that starts in that gap is attached to, not refused. A
+client that goes away no longer stops the work (`test_thumbnail_job_survives_client_disconnect`:
+one worker, 9 files in three batches; the stream sees its client go after the first
+batch and all 9 previews are written, where a stream that stops on disconnect leaves 1).
+The gallery's Cancel (its settings panel and the startup dialog) cancels by that id,
+and only a job its own stream started: a Cancel before the `job` frame keeps the stream
+open until it arrives, a double Cancel posts once, and a job another tab or System
+started keeps running while the gallery stops following it (`tests/js/gallery-thumbnails.test.js`).
+A job cancelled from Activity ends the stream with the error frame "Thumbnail
+generation was cancelled". The blocking
+`POST /images/generate-thumbnails` and the clear stay legacy holds.
+
+The workspace starts it from "Thumbnail maintenance" (`thumbnail-review.mjs`, the
+concept's `thumbnail-review`), opened by Sources' Thumbnail generation → Review options
+and Overview's Review thumbnails. Scope is Missing thumbnails only (`missing`, the
+default) or Rebuild all (explicit opt-in) (`rebuild`); Quality is Medium · optimized /
+High · original / Low · fastest (`medium` / `high` / `low`), preselected from
+Appearance's Image loading quality (`gallerySettings.imageQuality`, the same values,
+Q3); Preview size limit is the longest edge, 512 by default, a whole number from 128 to
+2048. A size outside that range marks the field `aria-invalid`, the plan line says
+"Enter a size from 128 to 2048 pixels." and nothing is requested; Start reports the
+field's validity and keeps the dialog open. Start closes the dialog and starts the job
+through the Activity store, which toasts "Thumbnail generation started."; the job opens
+in Activity. A start refused because another job holds the slot toasts the D57 busy
+link toast and stays. The legacy gallery's thumbnail tools are unchanged.
 
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left
@@ -2188,7 +2257,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121–D128 assigned):
+Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D113; D121–D128 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2209,7 +2278,7 @@ Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121�
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
   missing thumbnails", "N missing thumbnails" (the pending count of
   `/images/thumbnails/status`) or "Thumbnail status unavailable"; Review thumbnails
-  opens Sources until the thumbnail dialog (S5). "One display configuration" says "Grid
+  opens the thumbnail dialog (D99). "One display configuration" says "Grid
   and density settings are shared across views." (no paging). The sources row is
   "N output sources" with "Monitoring and enrichment share one source list.", prefixed
   by "M of N configured sources available." or "None configured is available; ComfyUI's
@@ -2270,6 +2339,43 @@ Recorded deviations (plan D60–D66 and D81 renumbered D92–D98 and D113; D121�
   legacy gallery's `/gallery/rescan` and toasts "Files refreshed. N files in M output
   folders." or "Files could not be refreshed. Try again.". The concept's "sample path"
   note is prototype copy and is dropped.
+- **D99** (Sources/Overview, S5): the concept's `thumbnail-review` dialog ("Thumbnail
+  maintenance") with production copy. A `p.small[role=status]` line before the actions
+  says what the server's read-only plan (`GET /images/thumbnails/plan`) counts for the
+  chosen scope: "N previews to generate · M already up to date." or, for Rebuild all,
+  "Every preview is regenerated: N files.", with "· R more on the next run" past the
+  per-run cap; "Counting previews…" while it is read and "The previews could not be
+  counted." when the read fails (Start still starts). Each scope is read once per
+  dialog, since size and quality change no count. The primary is "Start" (the
+  concept's "Simulate thumbnail job"). Overview's Review thumbnails opens the same
+  dialog (the concept's row starts a sample "Thumbnail check" job directly). Maintenance's
+  Thumbnail cache row takes the dialog with S7. `thumbnail dialog matches the concept
+  from sources|overview` (system-concept.spec, both themes and sizes) maps the line and
+  "Start"; `thumbnail dialog comparison detects mutations` proves they are the only
+  difference and catches a renamed option, swapped options, swapped actions and a
+  changed style.
+- **D111** (Activity, S5): each job kind's pill verb, toasts, line, tiles, outcomes,
+  openable rows and labels come from one descriptor table (`activity-kinds.mjs`;
+  `activity-store.mjs` re-exports it). The scan's (D56) and image tagging's (D89) are
+  unchanged. A thumbnail job reads "Generating thumbnails · N% · a / b" in the pill,
+  counts Generated (green), Skipped and Errors (red), lists Generated, Errors, Skipped
+  (Generated and Skipped rows open the viewer), says "Thumbnails finished · N generated ·
+  M errors" ("cancelled · N generated", "failed · …") and keeps "Job log" and "Cancel
+  job". Every other kind (the health check, a kind this page does not know) gets the
+  generic descriptor: title-based toasts and no tiles or Results, so it never shows the
+  scan's zero tiles (S1 review M6, S2 review M3). A running job without a known total
+  has an indeterminate `<progress>` (no `value`) and a pill without a percentage, whose
+  mini bar (`aria-hidden`; the pill's label carries the state) is marked `indeterminate`
+  and sweeps instead of showing an empty fill (a dimmed full bar under reduced motion). Only a
+  running job the server can cancel shows Cancel. Tests:
+  `tests/js/workspace-activity-kinds.test.js`, and in `workspace-activity.spec.mjs` "a
+  thumbnail job shows Generated Skipped Errors, its pill verb and its toasts" and "a held
+  legacy job and the health check show no tiles, no Results and no made-up percentage".
+- **D112** (Activity, S5): a legacy-page operation held on the registry (not
+  cancellable, no outcome groups) reads as its server title ("Database restore (admin
+  page)", "Thumbnail clear (gallery page)"), with no tiles, no Results, no Cancel, an
+  indeterminate bar while it runs and "<title> finished." when it ends, whatever its
+  kind (the gallery's clear is a `thumbnails` hold).
 - **D113** (Sources): the Worker threads range ends at the server's `cpu_count` (the
   concept's fixed `max=16`) and shows the server's real `worker_threads` (the concept's
   sample 4).
@@ -2358,10 +2464,13 @@ and a source row, renames a label and the Add source button and swaps the `--lin
 token. Paired captures (`{concept,production}-system-{dark,light}-{1600,390}.png`,
 `{concept,production}-{statistics,health}-{dark,light}.png`,
 `{concept,production}-appearance-{dark,light}-{1600,390}.png`,
-`{concept,production}-sources-{with,without}-notice-{dark,light}-{1600,390}.png`) are test artifacts; there
+`{concept,production}-sources-{with,without}-notice-{dark,light}-{1600,390}.png`,
+`concept-thumbnail-review-{dark,light}-{1600,390}.png`,
+`production-thumbnail-review-{sources,overview}-{dark,light}-{1600,390}.png`) are test artifacts; there
 are no PNG baselines. `tests/browser/workspace-system.spec.mjs` covers the real counts,
 the health check and metric 4, a failed check, the thumbnail row against the status
-endpoint (painted after the rest when its read is held, unavailable when it fails), the review row (Q6), the section links, the Statistics dialog against the
+endpoint (painted after the rest when its read is held, unavailable when it fails), its Review thumbnails
+opening the thumbnail dialog and starting the job, the review row (Q6), the section links, the Statistics dialog against the
 route, a load failure with Retry and late answers after leaving, and Appearance: new
 visits versus the current view and a saved view, the embedded gallery keeping Grid,
 metadata off and on request, the cache (counted up to a request barrier), hidden paths,
@@ -2371,7 +2480,9 @@ the D97 rows and reset. `tests/browser/workspace-system-sources.spec.mjs` covers
 notice's Later and Review scan, a scoped scan from one source into Activity, Add source
 with its server check and Save, a refused folder, Remove down to auto-detect, an absent
 configured source, the three watch states, the monitoring and worker rows, Refresh
-files, the thumbnail hand-off, a save refused by a running scan and a failed read. Its hooks are
+files, the thumbnail dialog (its plan line per scope with the preselected quality, an
+invalid size that requests nothing, Start into Activity, Rebuild all, a failed plan and
+a refused start), a save refused by a running scan and a failed read. Its hooks are
 `tests/browser/workspace_system_fixture.py` (`/__test__/system/*`: reset, injected
 failures, an absent source, a deleted linked file, unthumbnailed files, a fake image
 monitor) on the
@@ -2386,7 +2497,7 @@ node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-co
   tests/js/workspace-system-overview.test.js tests/js/workspace-state.test.js \
   tests/js/workspace-system-appearance.test.js tests/js/workspace-preferences.test.js \
   tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js \
-  tests/js/workspace-system-sources.test.js
+  tests/js/workspace-system-sources.test.js tests/js/workspace-thumbnail-review.test.js
 python3 -m unittest tests.test_settings_sources tests.test_scan_scope -v
 npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
   workspace-system-sources.spec.mjs \
@@ -2692,8 +2803,9 @@ pass runs after its own link, best effort: a failure is logged and the link
 stays. Recording follows the registry's `records`
 admission (#289): the scan's recording runs under its own `records` job, and
 the monitor's pass (one file, not a job, which only settles) is refused
-while a `records` or `guarded` job or hold runs. It then writes nothing, logs
-that the file waits for the next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
+while a `records` or `guarded` job or hold runs, except thumbnail work, which
+writes no records (S5 M7). It then writes nothing, logs that the file waits
+for the next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
 again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
 `mtime_ns` equal the verified fingerprint of bytes an item already cites (a

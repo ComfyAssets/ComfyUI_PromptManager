@@ -72,6 +72,9 @@ SCAN_GROUPS = {
 IMAGE_TAG_JOB_KIND = "image-tags"
 IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
 
+# Thumbnail generation (#249 System S5): previews written, already fresh, failed.
+THUMBNAIL_GROUP_NAMES = ("generated", "skipped", "errors")
+
 ADMISSIONS = ("read", "guarded", "records")
 # What each admission class is refused beside (besides its own kind).
 _REFUSED_BESIDE = {
@@ -247,6 +250,32 @@ class Job:
             )
         self.log_line(log_line)
 
+    def record_counted(self, group, count, rows=()):
+        """Count ``count`` outcomes in ``group`` at once, listing ``rows``.
+
+        For outcomes that need no log line each (a thumbnail job's already
+        fresh previews): the counter is exact, ``rows`` (``record``'s row
+        shape) are listed up to MAX_OUTCOME_ROWS, and nothing is logged.
+        """
+        if group not in self.counters:
+            raise ValueError(f"Unknown outcome group {group!r} for {self.kind}")
+        self.counters[group] += max(0, int(count))
+        listed = self.outcomes[group]
+        for row in rows:
+            if len(listed) >= MAX_OUTCOME_ROWS:
+                break
+            index = row.get("root_index")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                index = None
+            listed.append(
+                {
+                    "path": _relative_path(row.get("path")),
+                    "root": str(row.get("root") or ""),
+                    "root_index": index,
+                    "detail": str(row.get("detail") or ""),
+                }
+            )
+
     def finish(self, state="finished"):
         """End the job in ``state`` and release every subscriber.
 
@@ -263,18 +292,24 @@ class Job:
         for queue in list(self._subscribers):
             queue.put_nowait(None)
 
-    async def events(self):
+    async def events(self, lead=None):
         """Yield the latest event, then each later one, until the job finishes.
 
+        ``lead``, when given, is yielded first, after the subscription is in
+        place, so nothing published while the consumer sends it is missed.
         Consume it under ``contextlib.aclosing`` so a consumer that stops early
         (a closed socket) drops its queue at once instead of at garbage collection.
         """
         queue = asyncio.Queue()
         self._subscribers.add(queue)
+        # As of the subscription: a later event or the end reaches the queue.
+        snapshot, ended = self.last_event, self.finished
         try:
-            if self.last_event is not None:
-                yield self.last_event
-            if self.finished:
+            if lead is not None:
+                yield lead
+            if snapshot is not None:
+                yield snapshot
+            if ended:
                 return
             while True:
                 payload = await queue.get()
@@ -425,11 +460,14 @@ class JobRegistry:
         self._jobs[job.id] = job
         return job
 
-    def blocker(self, kind, *, admission=None, record_changing=None):
+    def blocker(self, kind, *, admission=None, record_changing=None, compatible=()):
         """The running job a new ``kind`` job would be refused for, or None.
 
         The same kind refuses first; then the oldest running job whose class
-        the new job's admission class may not run beside.
+        the new job's admission class may not run beside. Running jobs of a
+        kind in ``compatible`` never refuse it: the caller knows that work
+        cannot conflict with its own (the monitor's Needs review recording
+        beside thumbnail work, which writes previews and no records).
         """
         same_kind = self.active(kind)
         if same_kind is not None:
@@ -439,7 +477,7 @@ class JobRegistry:
         running = [job for job in tuple(self._jobs.values()) if job.running]
         running.sort(key=lambda job: job._started_seq)
         for job in running:
-            if job.admission in refused:
+            if job.admission in refused and job.kind not in compatible:
                 return job
         return None
 

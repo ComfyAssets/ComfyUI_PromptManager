@@ -413,11 +413,11 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         lock = threading.Lock()
         original = images_module._write_image_thumbnail
 
-        def recording(src, dst, size):
+        def recording(src, dst, size, *args):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)
-            return original(src, dst, size)
+            return original(src, dst, size, *args)
 
         images_module._write_image_thumbnail = recording
         self.addCleanup(setattr, images_module, "_write_image_thumbnail", original)
@@ -1939,7 +1939,11 @@ class TestGalleryRescan(ImageAPITestCase):
 
 
 class TestOutputScanHelpers(ImageAPITestCase):
-    """Stable ids for filesystem entries, no symlink reads, stop on disconnect."""
+    """Stable ids for filesystem entries and no symlink reads.
+
+    The thumbnail stream no longer stops when its client goes away: see
+    ``tests/test_thumbnail_jobs.py`` (the work is a job that outlives it).
+    """
 
     def test_output_entry_id_is_a_stable_digest_of_the_path(self):
         import hashlib
@@ -1963,28 +1967,6 @@ class TestOutputScanHelpers(ImageAPITestCase):
                 self.skipTest("symlinks not available")
             names = sorted(p.name for p in images_module._iter_media_files(output, 100))
         self.assertEqual(names, ["real.png"])
-
-    async def test_thumbnail_stream_stops_when_the_client_disconnects(self):
-        generated = []
-
-        def fake_generate(src, dst, size, is_video):
-            generated.append(src)
-            return {
-                "action": "generated",
-                "file": src.name,
-                "dir": src.parent.name,
-                "type": "image",
-            }
-
-        self.api._generate_one = fake_generate
-
-        class GoneResponse:
-            async def write(self, data):
-                raise ConnectionResetError("client went away")
-
-        targets = [(Path(f"/x/{i}.png"), Path(f"/x/t{i}.jpg"), False) for i in range(3)]
-        await self.api._stream_thumbnails(GoneResponse(), targets, (256, 256))
-        self.assertEqual(generated, [])
 
 
 class TestThumbnailStartupStatus(ThumbnailTestCase):

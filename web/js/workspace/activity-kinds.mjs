@@ -1,0 +1,189 @@
+/**
+ * Per-kind Activity descriptors (#249 System S5, D111): one table that says, for each job kind, what Activity shows.
+ *
+ * `kindOf(kind)` → `{pillVerb, startToast(job), finishToast(job), line(job), kept(job), scope(job), tiles, outcomes,
+ * openable, log, cancelLabel}`:
+ * - `pillVerb`: the pill's verb ("Scanning"); null shows the job's title.
+ * - `startToast` / `finishToast`: what a toast says when this tab starts the job and when it ends.
+ * - `line`: the counters as one line ("N added · M errors"); `kept`: what a cancelled job kept ("N added"); `scope`:
+ *   what the job covers ("2 output folders").
+ * - `tiles` (`[group, label, tone]`), `outcomes` (`[group, label]`) and `openable` (rows that open the viewer, D57).
+ * - `log` and `cancelLabel` (`cancel` is the same label under the job view's older name).
+ *
+ * `scan` is exactly the D56 view and `image-tags` the D89 one. `thumbnails` counts Generated (green), Skipped and
+ * Errors (red). Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
+ * the generic descriptor: title-based copy and no tiles or outcomes, so it never shows another kind's zeros (S1 review
+ * M6, S2 review M3). `viewOf(job)` keeps only the groups the job itself counts, so a hold (no groups) has none either.
+ *
+ * Progress is indeterminate while a job runs without a known total (`indeterminate`): the `<progress>` has no value
+ * and the pill shows no percentage, never a made-up 0%. A job shows Cancel only while it runs and the server can stop
+ * it (`canCancel`).
+ */
+import { noun, countOf } from './plural.mjs';
+
+// Grouped as the server writes its status lines ("8,240 of 19,622"), whatever the browser's locale.
+const number = value => value.toLocaleString('en-US');
+const counted = (job, group, word) => `${number(job.counters?.[group] ?? 0)} ${word}`;
+const errorsOf = job => `${number(job.counters?.errors ?? 0)} ${noun(job.counters?.errors ?? 0, 'error')}`;
+const whole = value => Number.isSafeInteger(value) && value >= 0;
+const tiles = rows => Object.freeze(rows.map(Object.freeze));
+const groups = (...names) => Object.freeze(new Set(names));
+
+/** "1,420 added". */
+export const addedOf = job => counted(job, 'added', 'added');
+/** "12 tagged" (D89). */
+export const taggedOf = job => counted(job, 'tagged', 'tagged');
+/** "3 generated" (D111). */
+export const generatedOf = job => counted(job, 'generated', 'generated');
+
+/** "2 output folders": what a scan or a thumbnail job walks. */
+function foldersOf(job) {
+    const folders = job.scope?.output_folders;
+    return whole(folders) ? countOf(folders, 'output folder') : '';
+}
+
+/** "4 images" (D89), grouped as the server writes its lines. */
+function imagesOf(job) {
+    const images = job.scope?.images;
+    return whole(images) ? `${number(images)} ${noun(images, 'image')}` : '';
+}
+
+const titleStarted = job => `${job.title} started.`;
+
+function titleFinished(job) {
+    if (job.state === 'cancelled') return `${job.title} was cancelled.`;
+    if (job.state === 'failed') return `${job.title} failed.`;
+    return `${job.title} finished.`;
+}
+
+/** "<Noun> finished · <line>", "<Noun> cancelled · <kept>", "<Noun> failed · <line>". */
+const namedFinish = (name, kept, line) => job => {
+    if (job.state === 'cancelled') return `${name(job)} cancelled · ${kept(job)}`;
+    return `${name(job)} ${job.state === 'failed' ? 'failed' : 'finished'} · ${line(job)}`;
+};
+
+const nothing = () => '';
+const GENERIC = Object.freeze({
+    pillVerb: null, startToast: titleStarted, finishToast: titleFinished, line: nothing, kept: nothing,
+    scope: foldersOf, tiles: tiles([]), outcomes: tiles([]), openable: groups(), log: 'Job log', cancelLabel: 'Cancel job',
+    cancel: 'Cancel job',
+});
+
+const scanLine = job => `${addedOf(job)} · ${errorsOf(job)}`;
+const tagLine = job => `${taggedOf(job)} · ${errorsOf(job)}`;
+const thumbnailLine = job => `${generatedOf(job)} · ${errorsOf(job)}`;
+// D85: an image tagging job says which of its two modes started.
+const IMAGE_TAG_START_TOASTS = Object.freeze({ add: 'Tagging started.', auto: 'Auto-tagging started.' });
+
+/** Every kind with a descriptor of its own. */
+export const KINDS = Object.freeze({
+    __proto__: null,
+    // D56: the scan's tiles and outcome list in the mockup's orders; what got added and what went wrong first.
+    scan: Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Scanning',
+        startToast: () => 'Scan started.',
+        finishToast: namedFinish(() => 'Scan', addedOf, scanLine),
+        line: scanLine,
+        kept: addedOf,
+        tiles: tiles([['added', 'Added to Library', 'added'], ['known', 'Already known', ''],
+            ['review', 'Needs review', 'warn'], ['no_metadata', 'No usable metadata', ''], ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['added', 'Added to Library'], ['review', 'Needs review'], ['errors', 'Errors'],
+            ['no_metadata', 'No usable metadata'], ['known', 'Already known']]),
+        openable: groups('added', 'known'),
+        log: 'Scan log',
+        cancelLabel: 'Cancel scan',
+        cancel: 'Cancel scan',
+    }),
+    // D89: Tagged (green), Unchanged, Skipped (warning) and Errors (red); Tagged and Unchanged rows open the viewer.
+    'image-tags': Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Tagging',
+        startToast: job => IMAGE_TAG_START_TOASTS[job.scope?.mode] ?? titleStarted(job),
+        finishToast: namedFinish(job => job.title, taggedOf, tagLine),
+        line: tagLine,
+        kept: taggedOf,
+        scope: imagesOf,
+        tiles: tiles([['tagged', 'Tagged', 'added'], ['unchanged', 'Unchanged', ''], ['skipped', 'Skipped', 'warn'],
+            ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['tagged', 'Tagged'], ['errors', 'Errors'], ['skipped', 'Skipped'], ['unchanged', 'Unchanged']]),
+        openable: groups('tagged', 'unchanged'),
+        log: 'Tagging log',
+        cancelLabel: 'Cancel tagging',
+        cancel: 'Cancel tagging',
+    }),
+    // D111: Generated (green), Skipped (already fresh) and Errors (red); a row with a preview opens the viewer.
+    thumbnails: Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Generating thumbnails',
+        finishToast: namedFinish(() => 'Thumbnails', generatedOf, thumbnailLine),
+        line: thumbnailLine,
+        kept: generatedOf,
+        tiles: tiles([['generated', 'Generated', 'added'], ['skipped', 'Skipped', ''], ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['generated', 'Generated'], ['errors', 'Errors'], ['skipped', 'Skipped']]),
+        openable: groups('generated', 'skipped'),
+    }),
+});
+
+/** The descriptor of a job `kind`; any kind without one gets the generic descriptor. */
+export function kindOf(kind) {
+    return (typeof kind === 'string' && KINDS[kind]) || GENERIC;
+}
+
+const countsOf = job => job.counters && typeof job.counters === 'object' ? job.counters : {};
+
+/**
+ * A legacy-page operation held on the registry (D112): not cancellable and counting no outcome groups. Whatever its
+ * kind (the gallery's thumbnail clear is a `thumbnails` hold), it reads as the generic job under its own title.
+ */
+export const held = job => job.cancellable === false && Object.keys(countsOf(job)).length === 0;
+
+/**
+ * The descriptor for one job: its kind's, keeping only the outcome groups the job counts; a held job's is the generic
+ * one.
+ */
+export function viewOf(job) {
+    if (held(job)) return GENERIC;
+    const view = kindOf(job.kind);
+    const counts = countsOf(job);
+    const has = ([group]) => Object.hasOwn(counts, group);
+    if (view.tiles.every(has) && view.outcomes.every(has)) return view;
+    return Object.freeze({ ...view, tiles: tiles(view.tiles.filter(has)), outcomes: tiles(view.outcomes.filter(has)),
+        openable: groups(...[...view.openable].filter(group => Object.hasOwn(counts, group))) });
+}
+
+/** A running job whose total the server has not reported (yet) has no percentage. */
+export function indeterminate(job) {
+    return job.state === 'running' && !(job.total > 0);
+}
+
+/** Set a `<progress>` to the job's: its value and "N%", or no value at all while indeterminate. */
+export function showProgress(node, job) {
+    if (indeterminate(job)) {
+        node.removeAttribute('value');
+        node.textContent = '';
+        return;
+    }
+    node.value = job.progress;
+    node.textContent = `${job.progress}%`;
+}
+
+/** Truth rule: Cancel only while the job runs and the server can stop it (never on a held legacy job). */
+export function canCancel(job) {
+    return job.state === 'running' && job.cancellable !== false;
+}
+
+/** The pill's text: "Scanning · 42% · 8,240 / 19,622"; the file counts once the total is known, no "%" before. */
+export function pillParts(job) {
+    const verb = viewOf(job).pillVerb ?? job.title;
+    const label = indeterminate(job) ? verb : `${verb} · ${job.progress}%`;
+    const files = job.total > 0 ? ` · ${number(job.processed)} / ${number(job.total)}` : '';
+    return { label, files, text: label + files };
+}
+
+/** The toast after this tab starts a job. */
+export const startToast = job => viewOf(job).startToast(job);
+/** The toast when a job ends. */
+export const finishToast = job => viewOf(job).finishToast(job);
+/** The counters as one line; '' for a kind without one. */
+export const outcomeLine = job => viewOf(job).line(job);

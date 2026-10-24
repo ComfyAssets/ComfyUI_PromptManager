@@ -140,9 +140,32 @@ test('thumbnail row reflects the status endpoint', async ({ page, request }) => 
     const layout = await openOverview(page);
     const row = layout.locator('.operation').filter({ has: page.getByRole('button', { name: 'Review thumbnails', exact: true }) });
     await expect(row.locator('h3')).toHaveText('3 missing thumbnails');
-    // Until the thumbnail review dialog (S5), Review thumbnails opens Sources.
+});
+
+test('Overview Review thumbnails opens the same dialog', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/unthumbnailed', { data: { count: 2 } })).toBeOK();
+    const plan = await serverJson(request, '/prompt_manager/images/thumbnails/plan?mode=missing&size=512&quality=medium');
+    const starts = [];
+    page.on('request', item => { if (item.method() === 'POST' && item.url().endsWith('/prompt_manager/jobs/thumbnails')) starts.push(item.postDataJSON()); });
+    const layout = await openOverview(page);
+    const row = layout.locator('.operation').filter({ has: page.getByRole('button', { name: 'Review thumbnails', exact: true }) });
+    await expect(row.locator('h3')).toHaveText('2 missing thumbnails');
     await row.getByRole('button', { name: 'Review thumbnails', exact: true }).click();
-    await expect(page).toHaveURL(`${workspace}#/system/sources`);
+    const review = page.locator('dialog#modal[open]');
+    await expect(review.locator('#modal-title')).toHaveText('Thumbnail maintenance');
+    await expect(page).toHaveURL(`${workspace}#/system/overview`);
+    await expect(review.locator('.field > label')).toHaveText(['Scope', 'Quality', 'Preview size limit']);
+    await expect(review.locator('#modal-body > p.small')).toHaveText(`2 previews to generate · ${number(plan.fresh)} already up to date.`);
+    // Escape closes it and focus returns to the row's button.
+    await page.keyboard.press('Escape');
+    await expect(review).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Review thumbnails', exact: true })).toBeFocused();
+    await row.getByRole('button', { name: 'Review thumbnails', exact: true }).click();
+    await review.getByRole('button', { name: 'Start', exact: true }).click();
+    await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+    expect(starts).toEqual([{ mode: 'missing', size: 512, quality: 'medium' }]);
+    const id = page.url().split('/').pop();
+    await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.state).toBe('finished');
 });
 
 test('the thumbnail row paints when its own status read answers', async ({ page, request }) => {

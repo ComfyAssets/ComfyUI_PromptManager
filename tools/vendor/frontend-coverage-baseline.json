@@ -42,10 +42,10 @@
     "statements": 98
   },
   "gallery.js": {
-    "lines": 41,
-    "branches": 63,
-    "functions": 44,
-    "statements": 41
+    "lines": 45,
+    "branches": 64,
+    "functions": 48,
+    "statements": 45
   },
   "html-escape.js": {
     "lines": 98,
@@ -161,6 +161,12 @@
     "functions": 98,
     "statements": 97
   },
+  "workspace/activity-kinds.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/activity-scan.mjs": {
     "lines": 96,
     "branches": 78,
@@ -175,7 +181,7 @@
   },
   "workspace/activity.mjs": {
     "lines": 96,
-    "branches": 88,
+    "branches": 91,
     "functions": 98,
     "statements": 96
   },
@@ -508,6 +514,12 @@
     "branches": 93,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/thumbnail-review.mjs": {
+    "lines": 96,
+    "branches": 93,
+    "functions": 98,
+    "statements": 96
   },
   "workspace/toast.mjs": {
     "lines": 98,

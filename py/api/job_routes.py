@@ -1,7 +1,8 @@
 """Session job routes (Activity): list, inspect, follow and cancel jobs.
 
 The registry itself is ``py/api/jobs.py``. The scan job's runner is in
-``py/api/admin.py``, the image tagging job's in ``py/api/image_tag_jobs.py``.
+``py/api/admin.py``, the image tagging job's in ``py/api/image_tag_jobs.py``
+and the thumbnail job's in ``py/api/thumbnail_jobs.py``.
 Every response leaves out absolute server paths: job rows already carry
 root-relative paths and public root labels.
 """
@@ -128,6 +129,10 @@ class JobRoutesMixin:
         @routes.post("/prompt_manager/jobs/image-tags")
         async def start_image_tag_job_route(request):
             return await self.start_image_tag_job(request)
+
+        @routes.post("/prompt_manager/jobs/thumbnails")
+        async def start_thumbnail_job_route(request):
+            return await self.start_thumbnail_job(request)
 
         @routes.get("/prompt_manager/jobs/{job_id}")
         async def job_detail_route(request):

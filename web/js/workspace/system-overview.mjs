@@ -7,6 +7,7 @@
  *   N issues / Incomplete); the review, backup, thumbnail and sources rows say what the server reports, and nothing
  *   reads 0 before the read answers: a load shows a status line, a failure an alert and Retry. The thumbnail row is
  *   its own read of `/images/thumbnails/status` (a walk of every source): "Checking thumbnails…" until it answers.
+ *   D99: its Review thumbnails opens the same "Thumbnail maintenance" dialog as Sources (thumbnail-review.mjs).
  * - D96: the Statistics dialog lists the real runs and average rating per category, then "Library totals".
  * - D95: the "Health report" lists every check the server ran, Missing files per image source, with a chip per real
  *   result and when it was checked. The check runs from Maintenance's notice ("Run health checks", D123) as a
@@ -20,6 +21,7 @@ import { closeWorkspaceDialog, openContentDialog } from './workspace-dialogs.mjs
 import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
 import { operationRow } from './system-controls.mjs';
+import { openThumbnailReview } from './thumbnail-review.mjs';
 
 export const OVERVIEW_URL = '/prompt_manager/system/overview';
 export const STATISTICS_URL = '/prompt_manager/system/statistics';
@@ -317,7 +319,7 @@ function surface(heading, rows) {
 }
 
 /** The Overview's nodes, and its thumbnail row (painted by its own read). */
-function overviewNodes(overview, { scope, navigate, openStatistics }) {
+function overviewNodes(overview, { scope, navigate, openStatistics, openThumbnails }) {
     const go = section => () => navigate(`#/system/${section}`);
     const review = operationRow({ scope, title: ambiguousTitle(overview.needs_review),
         description: Number.isSafeInteger(overview.needs_review?.pending)
@@ -325,12 +327,12 @@ function overviewNodes(overview, { scope, navigate, openStatistics }) {
         label: 'Review metadata', onClick: () => navigate('#/review') });
     const [sourcesTitle, sourcesDescription] = sourcesCopy(overview.sources);
     const thumbnails = operationRow({ scope, title: THUMBNAILS_LOADING, description: 'Generate only missing previews when necessary.',
-        label: 'Review thumbnails', onClick: go('sources') });
+        label: 'Review thumbnails', onClick: openThumbnails });
     const health = surface('Library health', [
         review,
         operationRow({ scope, title: 'Backup status', description: backupText(overview.backup), label: 'View backups',
             onClick: go('backups') }),
-        // Until the thumbnail review dialog (S5), Review thumbnails opens Sources, where thumbnail generation lives.
+        // D99: Review thumbnails opens the thumbnail dialog (the concept's row starts a sample job directly).
         thumbnails,
     ]);
     const preferences = surface('Workspace preferences', [
@@ -350,7 +352,7 @@ function overviewNodes(overview, { scope, navigate, openStatistics }) {
  * answer replaces in place (the concept's metrics and columns sit directly in `.settings-layout`). A read that a newer
  * one superseded, or one answering after the section left, paints nothing.
  */
-export function mountOverview(container, { api, scope, navigate = navigateTo, notify = showWorkspaceToast,
+export function mountOverview(container, { api, activity, scope, navigate = navigateTo, notify = showWorkspaceToast,
     latestOnly = window.ApiClient.latestOnly, STALE = window.ApiClient.STALE }) {
     const overviewRead = latestOnly({ lifetime: scope.signal });
     const statisticsRead = latestOnly({ lifetime: scope.signal });
@@ -392,7 +394,8 @@ export function mountOverview(container, { api, scope, navigate = navigateTo, no
         try {
             const overview = await overviewRead(signal => api.get(OVERVIEW_URL, { signal, cache: 'no-store' }));
             if (overview === STALE || scope.signal.aborted) return;
-            const { nodes, thumbnails } = overviewNodes(overview, { scope, navigate, openStatistics });
+            const { nodes, thumbnails } = overviewNodes(overview, { scope, navigate, openStatistics,
+                openThumbnails: trigger => openThumbnailReview({ api, store: activity, scope, trigger, navigate }) });
             thumbnailRow = thumbnails;
             sources = overview.sources;
             swap(nodes);
