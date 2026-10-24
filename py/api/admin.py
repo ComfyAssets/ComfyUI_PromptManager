@@ -776,7 +776,9 @@ class AdminRoutesMixin:
         for slot, root in enumerate(roots):
             for path in _collect_media_files([root], extensions):
                 try:
-                    stat = path.stat()
+                    # os.stat, not Path.stat: one stat call for every check
+                    # (Python 3.10's Path.stat bypasses a patched os.stat).
+                    stat = os.stat(path)
                 except OSError:
                     continue
                 key = _physical_file_key(path, stat)
