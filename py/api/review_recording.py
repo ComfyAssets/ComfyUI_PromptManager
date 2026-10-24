@@ -8,21 +8,25 @@ already. A file the fallback links, an exact pair the ingester stored and an
 already linked file are never queued. Neither is an ambiguous file with
 nothing to choose: fewer than two of its candidates carry a prompt
 (``utils.review_capture.reviewable``); the scan reports it unresolved ("could
-not be traced").
+not be traced") unless the inspection profile finds a choice in it.
+
+Only scans add items (maintainer ruling, 2026-10-23). The monitor's pass
+records nothing: it only removes the pending items of an output it linked.
 
 The queue heals itself: a pending item whose file is now linked (by the
 fallback, a later resolution or the monitor) is removed by the next scan
-that lists the file or by the monitor's next pass over it, and so is a
-pending item without a choice whose file is still ambiguous without one
-(``settle_untraced_review_items``). Only an undecided item goes
+that lists the file or by the monitor's next pass over it. The next scan
+also removes a pending item without a choice whose file is still ambiguous
+without one (``settle_untraced_review_items``), and an older version's
+item of bytes now untraced (``settle_stale_review_items``). Only an undecided item goes
 (``pending``, revision 0, no decision row); a decision is never deleted or
 changed (``settle_linked_review_items``).
 
 The scan records through ``_record_scanned_review`` (best effort: a failure
-is logged and counted); the monitor calls ``record_review_file`` from its
-worker thread after its own link. Both go through
-``utils.review_capture.record_ambiguous_file`` on the API's capture store.
-Nothing here links a file.
+is logged and counted), which goes through
+``utils.review_capture.record_ambiguous_file`` on the API's capture store;
+the monitor calls ``record_review_file`` from its worker thread after its
+own link. Nothing here links a file.
 
 Recording changes records, so it follows the registry's ``records``
 admission (#289). The scan records under its own ``records`` job. The
@@ -35,6 +39,7 @@ defer the recording (#249 S5 M7): a long rebuild no longer holds Needs review
 back for its whole run.
 """
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -50,9 +55,28 @@ QUEUED_OUTCOMES = ("recorded", "limited", "duplicate")
 NEW_OUTCOMES = ("recorded", "limited")
 
 try:
+    from ...utils import review_capture
     from ...utils.review_capture import record_ambiguous_file
 except ImportError:
+    from utils import review_capture
     from utils.review_capture import record_ambiguous_file
+
+# Untraced files remembered per process so a rescan of an unchanged file does
+# not run the inspection profile again (oldest forgotten first). A plain dict
+# of 16-byte digests (the locator, and its size, mtime_ns and item version):
+# measured at 8.6 MiB with 65,536 entries (tracemalloc, CPython 3.14).
+MAX_UNTRACED_MEMORY = 65_536
+
+
+def _digest(text: str) -> bytes:
+    data = text.encode("utf-8", "surrogatepass")
+    return hashlib.blake2b(data, digest_size=16).digest()
+
+
+def _memory_key(locator: str) -> bytes:
+    """A 16-byte digest of ``locator`` (the untraced memory's key)."""
+    return _digest(locator)
+
 
 # The scan log's reason for items that leave the queue with nothing to choose.
 NOTHING_TO_CHOOSE = "nothing to choose"
@@ -61,10 +85,15 @@ NOTHING_TO_CHOOSE = "nothing to choose"
 class ReviewRecordingMixin:
     """Record the scan's and the monitor's ambiguous files for Needs review."""
 
-    def _record_scanned_review(self, media_file, roots, review=None):
-        """Record one ambiguous, unlinked scanned file (logged and counted)."""
+    def _record_scanned_review(self, media_file, roots, review=None, scanned=None):
+        """Record one ambiguous, unlinked scanned file (logged and counted).
+
+        ``scanned`` is the scan's ``(metadata, inspection_resolution)``.
+        """
         try:
-            outcome = self._record_review_sync(media_file, roots, review)
+            outcome = self._record_review_sync(
+                media_file, roots, review, inspection=True, scanned=scanned
+            )
         except Exception:
             self.logger.warning(
                 f"{media_file.name} could not be added to Needs review",
@@ -80,9 +109,13 @@ class ReviewRecordingMixin:
         if outcome in QUEUED_OUTCOMES:
             review["queued"] += 1
 
-    def _record_review_sync(self, media_file, roots, review=None):
+    def _record_review_sync(
+        self, media_file, roots, review=None, inspection=False, scanned=None
+    ):
         """``record_ambiguous_file`` for a file under one of ``roots`` (blocking).
 
+        ``inspection`` (the scan only) lets a file without a choice under the
+        default profile be recorded from the inspection profile's choices.
         An ``untraced`` file (its captured bytes offer nothing to choose) also
         loses its pending items that offer nothing either.
         """
@@ -91,11 +124,133 @@ class ReviewRecordingMixin:
             return "skipped"
         root, index, relative, _spelled = located
         outcome = record_ambiguous_file(
-            self.db, self._capture_store(), Path(root), index, relative
+            self.db,
+            self._capture_store(),
+            Path(root),
+            index,
+            relative,
+            inspection=inspection,
+            scanned=scanned,
         )
         if outcome == "untraced":
             self._settle_untraced_reviews([media_file], roots, review)
         return outcome
+
+    def _untraced_scan_outcome(self, media_file, roots, canonical, review=None):
+        """The scan status of an unlinked file the default profile left
+        ambiguous without a choice (blocking).
+
+        ``ambiguous`` when the inspection profile offers a choice: the file is
+        recorded for review from that profile (never linked), or ``unchanged``
+        when a saved row links it already. Otherwise ``unresolved``, and its
+        pending items without a choice leave the queue. The profile runs at
+        most once per file state: not for bytes already queued (or decided)
+        at the file's current size and ``mtime_ns`` under the version that
+        its records depend on, and not again for a state it already found
+        untraced in this process.
+        """
+        try:
+            choice = self._inspection_choice(media_file, roots, canonical)
+        except Exception:
+            # One bad file never stops the scan: it stays "could not be traced".
+            self.logger.warning(
+                f"{media_file.name} could not be inspected for Needs review",
+                exc_info=True,
+            )
+            if review is not None:
+                review["errors"] += 1
+            return "unresolved"
+        if choice is None:
+            self._settle_untraced_reviews([media_file], roots, review)
+            self._settle_stale_reviews(media_file, roots, canonical, review)
+            return "unresolved"
+        if self._review_file_linked(media_file, roots):
+            return "unchanged"
+        self._record_scanned_review(media_file, roots, review, scanned=choice)
+        return "ambiguous"
+
+    def _inspection_choice(self, media_file, roots, canonical):
+        """``(canonical, resolution_or_None)`` when the file offers a choice.
+
+        The resolution is None when the file's current state is already in
+        the queue (so the profile did not run). None when it offers none.
+        """
+        if canonical is None:
+            return None
+        version = review_capture.inspection_review_version(canonical)
+        located = self._review_location(media_file, roots)
+        if version is None or located is None:
+            return None
+        locator = os.path.normcase(located[3])
+        try:
+            facts = os.lstat(located[3])
+        except OSError:
+            facts = None
+        state = None
+        if facts is not None:
+            state = _digest(f"{facts.st_size}:{facts.st_mtime_ns}:{version}")
+            if self.db.review_decided_at(
+                locator, facts.st_size, facts.st_mtime_ns
+            ) or self.db.review_fingerprint_queued(
+                locator, facts.st_size, facts.st_mtime_ns, version
+            ):
+                return canonical, None
+        memory = self._untraced_memory()
+        key = _memory_key(locator)
+        if state is not None and memory.get(key) == state:
+            return None
+        resolution = review_capture.inspection_choice(canonical)
+        if resolution is not None:
+            memory.pop(key, None)
+            return canonical, resolution
+        if state is not None:
+            memory.pop(key, None)  # re-inserted last: the newest state
+            memory[key] = state
+            while len(memory) > MAX_UNTRACED_MEMORY:
+                del memory[next(iter(memory))]
+        return None
+
+    def _settle_stale_reviews(self, media_file, roots, canonical, review=None):
+        """Remove the pending, undecided items of an untraced file's current
+        bytes recorded under another version (best effort, counted in
+        ``review["untraced"]``).
+
+        The current resolver and table offer nothing to choose in these
+        bytes, so an item of an older version would only refuse Apply.
+        """
+        located = self._review_location(media_file, roots)
+        if located is None or canonical is None:
+            return 0
+        # An unusable semantics table says nothing about the current
+        # versions; never let it retire items a working table recorded.
+        if review_capture.inspection_review_version(canonical) is None:
+            return 0
+        try:
+            facts = os.lstat(located[3])
+            removed = self.db.settle_stale_review_items(
+                os.path.normcase(located[3]),
+                facts.st_size,
+                facts.st_mtime_ns,
+                review_capture.item_versions(canonical),
+            )
+        except Exception:
+            self.logger.warning(
+                f"Stale Needs review items of {media_file.name} could not be "
+                "removed",
+                exc_info=True,
+            )
+            if review is not None:
+                review["errors"] += 1
+            return 0
+        if review is not None:
+            review["untraced"] += removed
+        return removed
+
+    def _untraced_memory(self):
+        memory = getattr(self, "_untraced_inspections", None)
+        if memory is None:
+            memory = self._untraced_inspections = {}
+        return memory
 
     @staticmethod
     def _review_location(media_file, roots, real_roots=None):
@@ -178,24 +333,19 @@ class ReviewRecordingMixin:
             review["untraced"] += removed
         return removed
 
-    def _fallback_links(self, metadata):
-        """True when the scan's legacy fallback would link these records."""
-        return bool(metadata.get("prompt")) and bool(self._graph_prompt_text(metadata))
-
     def record_review_file(self, image_path):
         """Apply the Needs review rule to one monitor output (its worker thread).
 
-        Maps ``image_path`` to the gallery root that lists it; a file under no
-        current root is ``skipped``. A linked file is never queued: its
-        pending items are removed and the answer is ``linked``. An unlinked
-        file the scan's fallback would link is ``skipped`` (the next scan
-        links it); any other file is recorded when it is ambiguous with a
-        choice, and is ``untraced`` (its pending items without a choice
-        removed) when it is ambiguous without one. While a
-        job runs that a ``records`` job may not run beside, other than
-        thumbnail work (``PREVIEW_ONLY_KINDS``), nothing is written and the
-        answer is ``deferred``. Errors propagate: the monitor logs
-        them and keeps its link.
+        Only scans add items (maintainer ruling, 2026-10-23): the monitor
+        only clears the items of outputs it links. Maps ``image_path`` to the
+        gallery root that lists it; a file under no current root is
+        ``skipped``. A linked file's pending items are removed and the answer
+        is ``linked``. Any other file is ``skipped``: nothing is captured or
+        recorded, and the next scan reads it. While a job runs that a
+        ``records`` job may not run beside, other than thumbnail work
+        (``PREVIEW_ONLY_KINDS``), nothing is written and the answer is
+        ``deferred``. Errors propagate: the monitor logs them and keeps its
+        link.
         """
         busy = self._jobs.blocker(
             REVIEW_RECORDING_KIND, admission="records", compatible=PREVIEW_ONLY_KINDS
@@ -215,9 +365,7 @@ class ReviewRecordingMixin:
         if self._review_file_linked(located, roots):
             self._settle_scanned_reviews([located], roots)
             return "linked"
-        if self._fallback_links(self._extract_comfyui_metadata(str(located))):
-            return "skipped"
-        return self._record_review_sync(located, roots)
+        return "skipped"
 
     @staticmethod
     def _log_review_items(job, review):

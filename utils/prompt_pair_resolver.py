@@ -44,6 +44,11 @@ _LOGGER = logging.getLogger("prompt_manager.prompt_pair_resolver")
 # otherwise; a pending item stays applicable while its chosen candidate is
 # still offered by the captured bytes.
 RESOLVER_VERSION = 1
+# The inspection profile's own version, folded into the version of Needs
+# review items recorded from that profile (with the profile's budgets and
+# the semantics table). Bump it when a change would make the inspection
+# profile resolve the same metadata otherwise, even if ingestion is unchanged.
+INSPECTION_RESOLVER_VERSION = 1
 
 
 @dataclass(frozen=True)

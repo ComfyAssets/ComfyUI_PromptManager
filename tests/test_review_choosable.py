@@ -202,7 +202,7 @@ class TestNothingToChooseIsNotQueued(ChoosableTestCase):
         self._roots()
         path = self._write("none.png", opaque_graph("cat", "dog"))
 
-        self.assertEqual(self.api.record_review_file(str(path)), "untraced")
+        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
         self.assertEqual(self._items(), [])
 
 
@@ -320,14 +320,18 @@ class TestUntracedItemsLeaveTheQueue(ChoosableTestCase):
         await self._scan("all")
         self.assertEqual(self._pending(), 0)
 
-    def test_monitor_removes_the_pending_item_of_an_untraced_output(self):
+    async def test_the_scan_not_the_monitor_removes_an_untraced_outputs_item(self):
+        """The monitor only clears items of outputs it links; the next scan
+        removes the item of an output that offers nothing to choose."""
         self._roots()
         path = self._write("none.png", opaque_graph("cat", "dog"))
         self._record_pre_fix("none.png")
         # A pre-fix item of other bytes keeps the stat shortcut out of the way.
         self._write("none.png", opaque_graph("a cow", "dog"))
 
-        self.assertEqual(self.api.record_review_file(str(path)), "untraced")
+        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
+        self.assertEqual(len(self._items()), 1)
+        await self._scan("all")
         self.assertEqual(self._items(), [])
 
 

@@ -355,7 +355,9 @@ class TestMonitorRule(OutcomeTestCase):
         self.assertEqual((self._items(), self._decisions()), before)
         self.assertEqual(self._pending(), 0)
 
-    async def test_record_review_file_applies_the_scan_rule(self):
+    async def test_record_review_file_only_clears_what_it_links(self):
+        """Only scans add items: the monitor's pass skips every unlinked file
+        and settles the items of a linked one."""
         self._roots()
         write_png(self.output_dir / "fallback.png", prompt=ambiguous_graph("a", "b"))
         write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
@@ -366,8 +368,8 @@ class TestMonitorRule(OutcomeTestCase):
         record = self.api.record_review_file
         self.assertEqual(record(str(self.output_dir / "fallback.png")), "skipped")
         self.assertEqual(record(str(linked)), "linked")
-        self.assertEqual(record(str(self.output_dir / "two.png")), "recorded")
-        self.assertEqual(len(self._items()), 1)
+        self.assertEqual(record(str(self.output_dir / "two.png")), "skipped")
+        self.assertEqual(self._items(), [])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+from pathlib import Path
 
 try:
     from tests.test_api_review import ReviewRoutesTestCase
@@ -86,11 +87,16 @@ class ReviewEventsTestCase(ReviewRoutesTestCase):
         return path
 
     async def _record_in_thread(self, path):
-        """Record as the monitor does: from a worker thread, not the loop."""
+        """Record as the scan does: from a worker thread, not the loop."""
+        from py.api.admin import _scan_roots
+
         self._roots()
+        roots = _scan_roots(self.api._get_all_output_dirs())
         outcomes = []
         thread = threading.Thread(
-            target=lambda: outcomes.append(self.api.record_review_file(str(path)))
+            target=lambda: outcomes.append(
+                self.api._record_review_sync(Path(str(path)), roots, inspection=True)
+            )
         )
         thread.start()
         await asyncio.get_running_loop().run_in_executor(None, thread.join)
@@ -98,7 +104,7 @@ class ReviewEventsTestCase(ReviewRoutesTestCase):
 
 
 class TestReviewEvents(ReviewEventsTestCase):
-    async def test_monitor_recording_sends_one_change(self):
+    async def test_scan_recording_sends_one_change(self):
         self._require_events()
         stream = await self._stream()
         self.assertEqual(await self._record_in_thread(self._queueable()), "recorded")
