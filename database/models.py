@@ -941,6 +941,10 @@ class PromptModel:
 
         Reclaims unused space and defragments the database file,
         improving query performance and reducing file size.
+
+        Raises:
+            Exception: whatever stopped VACUUM (logged first); the database is
+            then unchanged.
         """
         try:
             with closing(sqlite3.connect(self.db_path)) as conn:
@@ -948,6 +952,7 @@ class PromptModel:
                 conn.commit()
         except Exception as e:
             self.logger.error(f"Error vacuuming database: {e}")
+            raise
 
     def get_database_info(self) -> dict:
         """

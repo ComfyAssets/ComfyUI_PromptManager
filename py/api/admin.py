@@ -1112,8 +1112,10 @@ class AdminRoutesMixin:
                 db.cleanup_duplicates(), "duplicate prompts"
             ),
             "vacuum": vacuum,
+            # Only under sources that can be read now (never an unmounted drive).
             "cleanup_orphaned_images": lambda: count_result(
-                db.cleanup_missing_images(), "orphaned image records"
+                db.cleanup_missing_images(self._health_roots()),
+                "orphaned image records",
             ),
             "check_hash_duplicates": lambda: self._hash_duplicates_result(
                 db.check_hash_duplicates()

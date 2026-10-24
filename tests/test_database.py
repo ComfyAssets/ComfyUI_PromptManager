@@ -1374,13 +1374,17 @@ class TestModelHousekeeping(DatabaseTestCase):
         ):
             self.assertEqual(self.db.model.get_database_info(), {})
 
-    def test_vacuum_logs_errors_instead_of_raising(self):
+    def test_vacuum_logs_and_raises_its_failure(self):
+        # S6: a failed VACUUM is reported (legacy /maintenance success:false),
+        # never logged as done.
         self._save("x")
         self.db.model.vacuum_database()
         with patch(
             "database.models.sqlite3.connect", side_effect=sqlite3.OperationalError
         ):
-            self.db.model.vacuum_database()  # logged, not raised
+            with self.assertLogs("prompt_manager", "ERROR"):
+                with self.assertRaises(sqlite3.OperationalError):
+                    self.db.model.vacuum_database()
         self.assertEqual(len(self.db.search_prompts()), 1)
 
     def test_close_tolerates_a_connection_that_fails_to_close(self):

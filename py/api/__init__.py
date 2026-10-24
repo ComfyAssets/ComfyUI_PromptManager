@@ -13,6 +13,7 @@ Split into domain-specific mixins for maintainability:
 - ReviewRecordingMixin: Needs review recording for the scan and the monitor
 - ReviewEventsMixin: the Needs review change stream an open page re-reads on
 - SystemRoutesMixin: System health check, Overview and usage statistics
+- MaintenanceRoutesMixin: reviewed maintenance plans (preview, apply)
 """
 
 import asyncio
@@ -46,6 +47,8 @@ from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
 from .system import SystemRoutesMixin
+from .maintenance import MaintenanceRoutesMixin
+from .maintenance_plans import PlanStore
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
@@ -285,6 +288,7 @@ class PromptManagerAPI(
     ImageTagJobsMixin,
     ThumbnailJobsMixin,
     SystemRoutesMixin,
+    MaintenanceRoutesMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
@@ -348,6 +352,9 @@ class PromptManagerAPI(
         # (py/api/system.py).
         self._health_report = None
         self._db_generation = 0
+        # Reviewed maintenance plans under single-use tokens; a restart
+        # forgets them (py/api/maintenance.py).
+        self._maintenance_plans = PlanStore()
 
         # Run cleanup on initialization to remove any existing duplicates
         try:
@@ -508,6 +515,7 @@ class PromptManagerAPI(
         self._register_settings_routes(routes)
         self._register_job_routes(routes)
         self._register_system_routes(routes)
+        self._register_maintenance_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)

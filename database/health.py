@@ -189,6 +189,33 @@ def _image_owner(image_path, file_path, prefixes):
     return owner
 
 
+def readable_roots(roots):
+    """Whether each source can be read now (an unmounted drive cannot)."""
+    return [_readable(root) for root in roots]
+
+
+def link_states(rows, roots, readable):
+    """``(row, owner, state)`` for each image row ``(id, image_path, filename,
+    file_path)``: ``owner`` is the index of the source it lies under (None
+    outside every source) and ``state`` is ``missing``, ``present``,
+    ``unavailable`` (its source cannot be read, so the file is not looked at)
+    or ``outside``. ``readable`` is ``readable_roots(roots)``. The health
+    check's ``missing_files`` and the maintenance missing-link plan both
+    judge links this way, so their counts agree.
+    """
+    prefixes = [_root_prefix(root) for root in roots]
+    for row in rows:
+        owner = _image_owner(row[1], row[3], prefixes)
+        if owner is None:
+            yield row, None, "outside"
+        elif not readable[owner]:
+            yield row, owner, "unavailable"
+        elif os.path.exists(row[1]):
+            yield row, owner, "present"
+        else:
+            yield row, owner, "missing"
+
+
 def _unavailable_line(unavailable, *, partial):
     noun = "source is" if unavailable == 1 else "sources are"
     effect = "its files were" if unavailable == 1 else "their files were"
@@ -224,7 +251,7 @@ def _missing_files(conn, roots):
 
 def _check_files(rows, roots):
     """The ``missing_files`` result of the image *rows*, from the file system."""
-    readable = [_readable(root) for root in roots]
+    readable = readable_roots(roots)
     sources = [
         {
             "name": _source_name(root, index),
@@ -239,13 +266,12 @@ def _check_files(rows, roots):
             None, [_unavailable_line(unavailable, partial=False)], status="unavailable"
         )
         return {**result, "partial": False, "sources": sources}
-    prefixes = [_root_prefix(root) for root in roots]
     outside, missing = 0, []
-    for image_id, image_path, filename, file_path in rows:
-        owner = _image_owner(image_path, file_path, prefixes)
-        if owner is None:
+    for row, owner, state in link_states(rows, roots, readable):
+        if state == "outside":
             outside += 1
-        elif readable[owner] and not os.path.exists(image_path):
+        elif state == "missing":
+            image_id, image_path, filename, _file_path = row
             sources[owner]["count"] += 1
             if len(missing) < MAX_DETAIL:
                 name = filename or os.path.basename(image_path)

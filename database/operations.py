@@ -10,7 +10,7 @@ import os
 from typing import Optional, List, Dict, Any, Set, Tuple
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
-from .pairs import PairDependencyError, PairOperations
+from .pairs import PairDependencyError, PairOperations  # noqa: F401 (re-exported)
 from .library import LibraryOperations, titled
 from .image_favorites import ImageFavoriteOperations
 from .annotations import AnnotationOperations
@@ -20,10 +20,17 @@ from .saved_views import SavedViewOperations
 from .library_commands import LibraryCommandOperations
 from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
-from .execution_contexts import ExecutionContextOperations, LIVE_HINT_CTES
+from .execution_contexts import ExecutionContextOperations
 from .execution_outputs import ExecutionOutputOperations
 from .history_reads import HistoryReadOperations
 from .health import HealthOperations, iter_consistency_issues
+from .maintenance import (  # noqa: F401  (ORPHANED_PROMPTS_SQL is re-exported)
+    ORPHANED_PROMPTS_SQL,
+    _LINK_ROWS_SQL,
+    MaintenanceOperations,
+    _delete_ids,
+    _orphaned_ids,
+)
 
 # Import logging system
 try:
@@ -164,28 +171,6 @@ def _coerce_file_info(metadata: Any) -> tuple:
         _bounded_int(dimensions[1], MAX_IMAGE_DIMENSION),
         _known_image_format(file_info.get("format")),
     )
-
-
-# Exempt references: images, pairs, the __protected__ tag, Library parent
-# state, and live recorded-run hints (computed once, see LIVE_HINT_CTES).
-ORPHANED_PROMPTS_SQL = "WITH " + LIVE_HINT_CTES + """
-SELECT p.id FROM prompts p
-LEFT JOIN generated_images gi ON p.id = gi.prompt_id
-WHERE gi.prompt_id IS NULL
-AND NOT EXISTS (
-    SELECT 1 FROM prompt_pairs pp
-    WHERE pp.positive_prompt_id = p.id OR pp.negative_prompt_id = p.id
-)
-AND NOT EXISTS (
-    SELECT 1 FROM prompt_tags pt
-    JOIN tags t ON pt.tag_id = t.id
-    WHERE pt.prompt_id = p.id AND t.name = '__protected__'
-)
-AND NOT EXISTS (
-    SELECT 1 FROM prompt_library_state ls WHERE ls.prompt_id = p.id
-)
-AND p.id NOT IN (SELECT prompt_id FROM live_hint_prompts)
-"""
 
 
 # The scan's known set (#249 Activity-2): every image row, with its stored file
@@ -351,6 +336,7 @@ class PromptDatabase(
     ReviewDecisionOperations,
     SavedViewOperations,
     HealthOperations,
+    MaintenanceOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -1541,80 +1527,14 @@ class PromptDatabase(
         self.logger.info("Starting duplicate cleanup process with image preservation")
         try:
             with self._pair_transaction() as conn:
-                # Find duplicates by text content (case-insensitive)
-                # Note: Removed ORDER BY from GROUP_CONCAT for SQLite compatibility
-                # We'll sort the IDs manually after fetching
-                cursor = conn.execute("""
-                    SELECT LOWER(TRIM(text)) as normalized_text, COUNT(*) as count,
-                           GROUP_CONCAT(id) as ids,
-                           GROUP_CONCAT(created_at) as created_dates
-                    FROM prompts
-                    GROUP BY LOWER(TRIM(text))
-                    HAVING COUNT(*) > 1
-                """)
-
-                duplicates = cursor.fetchall()
-                self.logger.debug(
-                    f"Found {len(duplicates)} groups of duplicate prompts"
-                )
+                groups, _paired = self._duplicate_groups(conn)
+                self.logger.debug(f"Found {len(groups)} groups of duplicate prompts")
                 total_removed = 0
                 total_images_transferred = 0
-
-                for duplicate in duplicates:
-                    ids = duplicate["ids"].split(",")
-                    created_dates = duplicate["created_dates"].split(",")
-
-                    # Sort IDs by created_at date to keep the oldest
-                    id_date_pairs = list(zip(ids, created_dates))
-                    id_date_pairs.sort(key=lambda x: x[1])  # Sort by date
-                    sorted_ids = [int(pair[0]) for pair in id_date_pairs]
-
-                    try:
-                        self._ensure_prompts_unpaired(conn, sorted_ids)
-                    except PairDependencyError:
-                        continue
-
-                    # Keep the oldest one (first), merge and delete the rest
-                    primary_id = sorted_ids[0]  # Keep the oldest
-                    duplicate_ids = sorted_ids[1:]
-
-                    self.logger.debug(
-                        f"Merging duplicates: keeping {primary_id}, removing "
-                        f"{duplicate_ids}"
-                    )
-
-                    # Get primary prompt details
-                    cursor = conn.execute(
-                        "SELECT * FROM prompts WHERE id = ?", (primary_id,)
-                    )
-                    primary_prompt = cursor.fetchone()
-                    if not primary_prompt:
-                        continue
-
-                    # Collect and merge metadata from all duplicates
-                    merged_metadata = self._merge_duplicate_metadata(
-                        conn, primary_id, duplicate_ids
-                    )
-
-                    # Transfer all images from duplicates to primary prompt
-                    images_transferred = self._transfer_images_to_primary(
-                        conn, primary_id, duplicate_ids
-                    )
-                    total_images_transferred += images_transferred
-
-                    # Update primary prompt with merged metadata
-                    if merged_metadata:
-                        self._update_primary_with_merged_metadata(
-                            conn, primary_id, merged_metadata
-                        )
-
-                    # Delete duplicate prompts (images already transferred)
-                    for duplicate_id in duplicate_ids:
-                        conn.execute(
-                            "DELETE FROM prompts WHERE id = ?", (duplicate_id,)
-                        )
-                        total_removed += 1
-                        self.logger.debug(f"Removed duplicate prompt {duplicate_id}")
+                for sorted_ids in groups:
+                    removed, moved = self._merge_duplicate_group(conn, sorted_ids)
+                    total_removed += removed
+                    total_images_transferred += moved
 
                 conn.commit()
 
@@ -1879,13 +1799,30 @@ class PromptDatabase(
             conn.commit()
             return cursor.rowcount > 0
 
-    def cleanup_missing_images(self) -> int:
+    def cleanup_missing_images(self, roots=None) -> int:
         """
         Remove image records where the actual file no longer exists.
+
+        Args:
+            roots: The image sources links are judged under (the health
+                check's). When given, only a link under a source that can be
+                read now is removed: a link under an unavailable source (an
+                unmounted drive) or outside every source is kept. None keeps
+                the old rule: every link whose file does not exist.
 
         Returns:
             int: Number of orphaned records removed
         """
+        if roots is not None:
+            with self.model.get_connection() as conn:
+                rows = [tuple(row) for row in conn.execute(_LINK_ROWS_SQL)]
+            # Files are looked at before the write transaction starts.
+            ids = self._missing_link_ids(rows, [str(root) for root in roots])
+            if not ids:
+                return 0
+            with self._pair_transaction() as conn:
+                return _delete_ids(conn, "generated_images", ids)
+
         removed_count = 0
 
         with self.model.get_connection() as conn:
@@ -2567,16 +2504,12 @@ class PromptDatabase(
         Returns number of prompts removed.
         """
         with self._pair_transaction() as conn:
-            cursor = conn.execute(ORPHANED_PROMPTS_SQL)
-            orphaned = [row["id"] for row in cursor.fetchall()]
+            orphaned = _orphaned_ids(conn)
             if not orphaned:
                 return 0
-            placeholders = ",".join(["?"] * len(orphaned))
-            cursor = conn.execute(
-                f"DELETE FROM prompts WHERE id IN ({placeholders})", orphaned
-            )
+            removed = _delete_ids(conn, "prompts", orphaned)
             conn.commit()
-            return cursor.rowcount
+            return removed
 
     def check_consistency(self) -> List[str]:
         """Run consistency checks and return a list of issue descriptions.

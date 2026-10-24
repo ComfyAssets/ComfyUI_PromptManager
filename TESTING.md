@@ -2504,6 +2504,43 @@ npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspac
   --project chromium --project touch --project firefox --project webkit
 ```
 
+### Maintenance contract (#249 System S6)
+
+`POST /prompt_manager/maintenance/preview {operation, options:{}}` reviews one
+operation and answers a `Plan` (`py/api/maintenance.py`, `database/maintenance.py`):
+`duplicate_prompts` (legacy `cleanup_duplicates`: equal text ignoring case and outer
+spaces, the oldest prompt of each group kept; a group with a member in a saved pair is
+kept whole), `optimize` (VACUUM, with the database size, its free pages and the free
+space it needs), `unused_components` (legacy `prune_orphaned_prompts`; the #239
+protections are the predicates `ORPHANED_PROMPTS_SQL` is built from, so the plan's
+protected reasons are exactly the prune's rules) and `missing_links` (legacy
+`cleanup_orphaned_images`, judged as the health check's `missing_files` through
+`health.link_states`: only a link under a source that can be read now counts; one under
+an unavailable source or outside every source is protected). The operation enum is
+strict, `options` must be `{}` and the body is capped at 4 KiB. A preview meets the
+read-only standard above on its own `mode=ro` snapshot (`test_preview_writes_nothing`,
+per operation, plus the media bytes) and stats files after the snapshot ended. The
+plan lists at most 50 detail rows and no server path. Its fingerprint (the ids, text
+hashes, metadata, tags, Library state and pair refs of every prompt involved, or each
+link's row and source), its targets and the sources it judged stay in the server's
+`PlanStore` under a single-use `secrets.token_urlsafe(32)` token: 15 minutes, at most 8
+plans and 16 MiB of payload. A plan over that budget is refused with `too-large`, never
+truncated; a new plan drops the oldest ones, which then read as expired; a restart
+forgets them all. A plan is bound to the database it read: a restore during the preview
+answers `storage-changed`. Errors are coded (`invalid-request`, `too-large`,
+`storage-changed`, or a null code with "Failed to review maintenance") and carry no
+path or exception text.
+
+The legacy `POST /prompt_manager/maintenance` keeps its shape. Its `vacuum` result is
+`success:false` with the error when VACUUM fails (`vacuum_database` now raises after
+logging), and `cleanup_orphaned_images` removes only links under a source that can be
+read now (the health check's sources), never every link of an unmounted drive.
+`cleanup_missing_images()` without sources keeps the old rule for its other callers.
+Query plans on a fixture of 5,100 prompts, 8,000 images, 300 pairs and 200 recorded
+runs: every per-prompt protection and fingerprint read is an index search, the
+duplicate groups and the link rows are one scan each, and a delete batch (400 ids)
+searches by rowid with its cascades by index.
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no
