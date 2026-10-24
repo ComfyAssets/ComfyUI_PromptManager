@@ -727,6 +727,74 @@ class TestShutdown(AutoThumbnailCase):
 
 
 class TestHistorySharesTheAdmission(AutoThumbnailCase):
+    async def _shared_flight(self, name, is_video, first):
+        """Start the history route's or the serve route's flight (``first``),
+        let the other one join it, release, and return both answers."""
+        src = self.output_dir / name
+        if is_video:
+            src.write_bytes(b"AV1 stream no decoder here")
+        else:
+            make_png(src, size=(256, 256))
+        url = _entry(self.api, self.output_dir, name)["thumbnail_url"]
+        dst = self.output_dir / "thumbnails" / Path(url.split("?")[0]).name
+        calls = self._count_writes()
+        entered, release, _state = self._gate_writes()
+
+        def history():
+            return asyncio.ensure_future(self.api._admit_preview(src, dst, is_video))
+
+        def view():
+            return asyncio.ensure_future(self.client.get(url))
+
+        leader = history() if first == "history" else view()
+        await self._wait(entered)
+        follower = view() if first == "history" else history()
+        await self._waiting(2)
+        release.set()
+        answers = {first: await leader}
+        answers["view" if first == "history" else "history"] = await follower
+        self.assertEqual(len(calls), 1, "one flight, one write")
+        return answers, dst
+
+    async def test_a_view_joining_a_history_flight_gets_the_thumbnail(self):
+        answers, dst = await self._shared_flight("a.png", False, "history")
+        self.assertEqual(answers["history"], auto.READY)
+        resp = answers["view"]
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Content-Type"], "image/png")
+        self.assertEqual(await resp.read(), dst.read_bytes())
+
+    async def test_history_joining_a_view_flight_gets_the_outcome(self):
+        answers, dst = await self._shared_flight("b.png", False, "view")
+        self.assertEqual(answers["history"], auto.READY)
+        self.assertEqual(await answers["view"].read(), dst.read_bytes())
+
+    async def test_a_held_shared_flight_answers_each_route_in_its_own_type(self):
+        from py.api.jobs import RESTORE_JOB_KIND
+
+        make_png(self.output_dir / "c.png", size=(64, 64))
+        (self.output_dir / "c.mp4").write_bytes(b"AV1 stream no decoder here")
+        self._hold(RESTORE_JOB_KIND)
+        for name, is_video in (("c.png", False), ("c.mp4", True)):
+            with self.subTest(name=name):
+                src = self.output_dir / name
+                url = _entry(self.api, self.output_dir, name)["thumbnail_url"]
+                dst = self.output_dir / "thumbnails" / Path(url.split("?")[0]).name
+                history = asyncio.ensure_future(
+                    self.api._admit_preview(src, dst, is_video)
+                )
+                resp = await self.client.get(url)
+                self.assertEqual(await history, auto.DEFERRED)
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(resp.headers["Cache-Control"], "no-store")
+                body = await resp.read()
+                if is_video:
+                    self.assertEqual(resp.headers["Content-Type"], "image/jpeg")
+                    self.assertTrue(body.startswith(b"\xff\xd8"))
+                else:
+                    self.assertEqual(resp.headers["Content-Type"], "image/png")
+                    self.assertEqual(body, src.read_bytes())
+
     def test_history_and_serve_route_share_one_flight_key(self):
         root = self.output_dir
         preview = root / "thumbnails" / "sub" / "a_thumb.png"
@@ -827,6 +895,53 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
         self.api.queue_capture_thumbnail(str(path))
         await self._idle()
         self.assertFalse((self.output_dir / "thumbnails").exists())
+
+    async def test_a_worker_that_raises_never_blocks_the_next_one(self):
+        # A raising config read stops the worker; the next enqueue starts one.
+        thumbnailer = self.api._auto_thumbnails()
+        real_workers = thumbnailer._workers
+        failures = iter([RuntimeError("config unreadable")])
+
+        def workers():
+            failure = next(failures, None)
+            if failure is not None:
+                raise failure
+            return real_workers()
+
+        thumbnailer._workers = workers
+        first = make_png(self.output_dir / "first.png", size=(32, 32))
+        with self.assertLogs("prompt_manager.api", "WARNING"):
+            self.assertEqual(self.api.queue_capture_thumbnail(str(first)), "queued")
+            await self._idle()
+        self.assertFalse(thumbnailer._worker_running)
+        second = make_png(self.output_dir / "second.png", size=(32, 32))
+        self.assertEqual(self.api.queue_capture_thumbnail(str(second)), "queued")
+        await self._idle()
+        for name in ("first", "second"):
+            self.assertTrue(
+                (self.output_dir / "thumbnails" / f"{name}_thumb.png").is_file()
+            )
+
+    async def test_a_worker_that_cannot_start_is_started_by_the_next_enqueue(self):
+        thumbnailer = self.api._auto_thumbnails()
+        first = make_png(self.output_dir / "first.png", size=(32, 32))
+        with (
+            patch.object(
+                threading.Thread,
+                "start",
+                side_effect=RuntimeError("can't start new thread"),
+            ),
+            self.assertLogs("prompt_manager.api", "WARNING"),
+        ):
+            self.assertEqual(self.api.queue_capture_thumbnail(str(first)), "queued")
+        self.assertFalse(thumbnailer._worker_running)
+        second = make_png(self.output_dir / "second.png", size=(32, 32))
+        self.assertEqual(self.api.queue_capture_thumbnail(str(second)), "queued")
+        await self._idle()
+        for name in ("first", "second"):
+            self.assertTrue(
+                (self.output_dir / "thumbnails" / f"{name}_thumb.png").is_file()
+            )
 
     def test_queue_is_bounded(self):
         thumbnailer = auto.AutoThumbnailer(

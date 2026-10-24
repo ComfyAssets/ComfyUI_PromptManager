@@ -400,18 +400,44 @@ class AutoThumbnailer:
             self._queue.append((key, Path(src), Path(dst), bool(is_video)))
             self._busy = True
             if self._start_worker and not self._worker_running:
-                self._worker_running = True
-                worker = threading.Thread(
-                    target=self._run, name=WORKER_NAME, daemon=True
-                )
-                worker.pm_preview_token = _MODULE_TOKEN
-                worker.pm_preview_close = self.close
-                self._worker = worker
-                worker.start()
+                self._start_worker_locked()
             self._changed.notify_all()
         return True
 
+    def _start_worker_locked(self):
+        """Start the worker (lock held). A start that fails leaves the file
+        queued and the next enqueue tries again."""
+        worker = threading.Thread(target=self._run, name=WORKER_NAME, daemon=True)
+        worker.pm_preview_token = _MODULE_TOKEN
+        worker.pm_preview_close = self.close
+        self._worker_running = True
+        try:
+            worker.start()
+        except RuntimeError:
+            self._worker_running = False
+            self._busy = False
+            self._logger.warning(
+                "The automatic preview worker could not start; the next output "
+                "tries again",
+                exc_info=True,
+            )
+            return
+        self._worker = worker
+
     def _run(self):
+        try:
+            self._drain()
+        except Exception:
+            self._logger.warning("The automatic preview worker stopped", exc_info=True)
+        finally:
+            # Whatever ended the loop, the next enqueue starts a fresh worker.
+            with self._changed:
+                self._worker_running = False
+                self._busy = False
+                self._batch = 0
+                self._changed.notify_all()
+
+    def _drain(self):
         while True:
             with self._changed:
                 if self._closed or not self._queue:
@@ -630,29 +656,37 @@ class AutoThumbnailMixin:
         return video_placeholder_jpeg()
 
     async def _admit_preview(self, src, dst, is_video):
-        """Make one preview through the view admission (the history route)."""
-        root_parts = (Path(dst).name,)
+        """Make one preview through the view admission (the history route).
+
+        Shares the serve route's flight key; every flight answers the
+        ``ensure`` outcome (or None, or OVER), whichever route started it.
+        """
         return await self._preview_gate().run(
-            flight_key(Path(dst).parent, root_parts),
-            functools.partial(self._auto_thumbnails().ensure, src, dst, is_video),
+            flight_key(Path(dst).parent, (Path(dst).name,)),
+            functools.partial(self._ensure_view, src, dst, is_video),
             self._preview_pool(),
         )
+
+    def _ensure_view(self, src, dst, is_video):
+        """``ensure``, reporting a preview removed under us as busy."""
+        outcome = self._auto_thumbnails().ensure(src, dst, is_video)
+        if outcome == READY and not Path(dst).is_file():
+            return BUSY  # removed under us: the fallback this once
+        return outcome
 
     # ── on first view ─────────────────────────────────────────────────
 
     def _preview_on_demand(self, root, parts):
-        """``(outcome, src, dst, is_video)`` for a missing preview under
-        *root*, or None when no media file previews as *parts*."""
+        """The ``ensure`` outcome for the preview *parts* under *root*
+        (``deferred`` when its folder is linked out of the root), or None
+        when no media file previews as *parts*."""
         located = _thumbnail_source(root, parts)
         if located is None:
             return None
         src, dst, is_video = located
         if dst is None:
-            return DEFERRED, src, None, is_video
-        outcome = self._auto_thumbnails().ensure(src, dst, is_video)
-        if outcome == READY and not dst.is_file():
-            outcome = BUSY  # removed under us: the fallback this once
-        return outcome, src, dst, is_video
+            return DEFERRED
+        return self._ensure_view(src, dst, is_video)
 
     def _preview_response(self, outcome, src, dst, is_video):
         if outcome == READY and dst is not None:
@@ -669,7 +703,13 @@ class AutoThumbnailMixin:
 
     async def _serve_missing_thumbnail(self, output_dirs, filepath):
         """The made preview, or its fallback; None when *filepath* names no
-        preview of a media file in *output_dirs*."""
+        preview of a media file in *output_dirs*.
+
+        The flight answers only the outcome (a history flight may be the one
+        joined); the file it previews is derived here: the preview path is
+        the request's own, and a fallback looks its source up again on the
+        view pool (bounded by it, never the default executor).
+        """
         if _has_traversal(filepath) or not _is_preview_request(filepath):
             return None
         parts = tuple(filepath.split("/"))
@@ -677,17 +717,29 @@ class AutoThumbnailMixin:
         pool = self._preview_pool()
         for root in output_dirs:
             root = Path(root)
-            answer = await gate.run(
+            outcome = await gate.run(
                 flight_key(root, parts),
                 functools.partial(self._preview_on_demand, root, parts),
                 pool,
             )
-            if answer is OVER:
+            if outcome is None:
+                continue
+            if outcome is OVER:
                 # Past the cap: exact names only, no listing, no write.
                 quick = _quick_source(root, parts)
-                answer = None if quick is None else (BUSY, quick[0], None, quick[1])
-            if answer is not None:
-                return self._preview_response(*answer)
+                if quick is None:
+                    continue
+                return self._preview_response(BUSY, quick[0], None, quick[1])
+            dst = root.joinpath(*parts)
+            if outcome == READY:
+                return self._file_response(dst)
+            located = await gate.loop.run_in_executor(
+                pool, _thumbnail_source, root, parts
+            )
+            if located is None:
+                continue
+            src, _dst, is_video = located
+            return self._preview_response(outcome, src, None, is_video)
         return None
 
     # ── on capture ────────────────────────────────────────────────────
