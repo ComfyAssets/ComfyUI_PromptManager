@@ -13,6 +13,7 @@ Split into domain-specific mixins for maintainability:
 - ReviewRecordingMixin: Needs review recording for the scan and the monitor
 - ReviewEventsMixin: the Needs review change stream an open page re-reads on
 - SystemRoutesMixin: System health check, Overview and usage statistics
+- LibraryLocationRoutesMixin: where the library lives, Move library, Keep it here
 - MaintenanceRoutesMixin: reviewed maintenance plans (preview, apply)
 - WorkflowStorageRoutesMixin: store each workflow once, then Reclaim space
 - DuplicateFilesMixin: duplicate image files as find and removal jobs
@@ -49,6 +50,7 @@ from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
 from .system import SystemRoutesMixin
+from .library_location import LibraryLocationRoutesMixin
 from .maintenance import MaintenanceRoutesMixin
 from .workflow_storage import WorkflowStorageRoutesMixin
 from .duplicate_files import DuplicateFilesMixin
@@ -292,6 +294,7 @@ class PromptManagerAPI(
     ImageTagJobsMixin,
     ThumbnailJobsMixin,
     SystemRoutesMixin,
+    LibraryLocationRoutesMixin,
     MaintenanceRoutesMixin,
     WorkflowStorageRoutesMixin,
     DuplicateFilesMixin,
@@ -532,6 +535,7 @@ class PromptManagerAPI(
         self._register_settings_routes(routes)
         self._register_job_routes(routes)
         self._register_system_routes(routes)
+        self._register_library_location_routes(routes)
         self._register_maintenance_routes(routes)
         self._register_duplicate_routes(routes)
         self._register_logging_routes(routes)

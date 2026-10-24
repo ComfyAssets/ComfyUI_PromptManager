@@ -630,13 +630,41 @@ class PromptModel:
         for model in models:
             model.close_all()
 
+    @classmethod
+    def repoint_instances(cls, old_path: str, new_path: str) -> int:
+        """Point every model of ``old_path`` at ``new_path`` (Move library).
+
+        Each matching model's connections are closed and every thread opens
+        the new file on its next ``get_connection``. Closing a connection
+        another thread is using waits for its statement; a write waiting on
+        the mover's lock then fails instead of landing in the old file.
+        Returns how many models were repointed.
+        """
+        old_key = os.path.normcase(os.path.realpath(old_path))
+        with cls._instances_lock:
+            models = list(cls._instances)
+        with cls._init_lock:
+            cls._initialized_paths.add(os.path.normcase(os.path.realpath(new_path)))
+        moved = 0
+        for model in models:
+            if model._schema_key() == old_key:
+                model._close_connections(new_path)
+                moved += 1
+        return moved
+
     def close_all(self) -> None:
         """Close every thread's connection; they reopen lazily on next use.
 
         Needed before deleting the database file (Windows keeps open files
         locked) and by tests that ran queries through executor threads.
         """
+        self._close_connections()
+
+    def _close_connections(self, new_path: Optional[str] = None) -> None:
+        """Close every connection (optionally pointing the model elsewhere)."""
         with self._conn_lock:
+            if new_path is not None:
+                self.db_path = new_path
             connections = list(self._connections)
             self._connections.clear()
             self._generation += 1

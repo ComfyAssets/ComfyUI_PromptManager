@@ -66,9 +66,12 @@ _override: Optional["LibraryLocation"] = None
 class LibraryLocation:
     """Where the library is and why.
 
-    ``target_dir`` is where Move library would put it (None outside ComfyUI);
+    ``target_dir`` is where Move library would put it (None outside ComfyUI)
+    and ``target_source`` why (the environment folder or the default one);
     ``problem`` is a code for something the user should know (an invalid or
     empty ``PROMPT_MANAGER_DATA_DIR``, a move that did not finish).
+    ``config_explicit``: config.json is named by ``PROMPT_MANAGER_CONFIG_PATH``
+    (it is the user's and never moves).
     """
 
     source: str
@@ -77,6 +80,8 @@ class LibraryLocation:
     data_dir: str
     target_dir: Optional[str] = None
     problem: Optional[str] = None
+    target_source: Optional[str] = None
+    config_explicit: bool = False
 
     @property
     def movable(self) -> bool:
@@ -287,6 +292,7 @@ class _Decision:
     target_dir: Optional[str]
     problem: Optional[str]
     db_dir: Optional[str] = None  # when the database is not in data_dir
+    target_source: Optional[str] = None
 
 
 def _decide(environ, extension_root, folder_paths, gallery_roots) -> _Decision:
@@ -309,28 +315,35 @@ def _decide(environ, extension_root, folder_paths, gallery_roots) -> _Decision:
         if problem is None:
             env_dir = os.path.abspath(raw.strip())
     target = env_dir or default
+    target_source = SOURCE_ENVIRONMENT if env_dir else SOURCE_DEFAULT
+
+    def decision(data_dir, source, problem=None, db_dir=None):
+        return _Decision(
+            data_dir, source, target, problem, db_dir, target_source if target else None
+        )
+
     if env_dir is not None:
         state = _marker_state(env_dir)
         holds = os.path.isfile(os.path.join(env_dir, DATABASE_NAME))
         if state != MARKER_PENDING and (holds or not legacy_db):
-            return _Decision(env_dir, SOURCE_ENVIRONMENT, env_dir, None)
+            return decision(env_dir, SOURCE_ENVIRONMENT)
         problem = "move-unfinished" if state == MARKER_PENDING else "data-dir-empty"
-        return _Decision(extension_root, SOURCE_NODE_FOLDER, env_dir, problem)
+        return decision(extension_root, SOURCE_NODE_FOLDER, problem)
     if default is None:
-        return _Decision(extension_root, SOURCE_NODE_FOLDER, None, problem)
+        return decision(extension_root, SOURCE_NODE_FOLDER, problem)
     if _marker_state(default) == MARKER_MOVED and os.path.isfile(
         os.path.join(default, DATABASE_NAME)
     ):
-        return _Decision(default, SOURCE_DEFAULT, target, problem)
+        return decision(default, SOURCE_DEFAULT, problem)
     if legacy:
         if _marker_state(default) == MARKER_PENDING:
             problem = problem or "move-unfinished"
         if legacy_db:
-            return _Decision(extension_root, SOURCE_NODE_FOLDER, target, problem)
+            return decision(extension_root, SOURCE_NODE_FOLDER, problem)
         # Only a node-folder config.json: keep reading it, but a new database
         # never goes into the node folder.
-        return _Decision(extension_root, SOURCE_DEFAULT, target, problem, default)
-    return _Decision(default, SOURCE_DEFAULT, target, problem)
+        return decision(extension_root, SOURCE_DEFAULT, problem, default)
+    return decision(default, SOURCE_DEFAULT, problem)
 
 
 def config_location(
@@ -368,9 +381,12 @@ def resolve_library(
     environ = os.environ if environ is None else environ
     root = extension_root or EXTENSION_ROOT
     decision = _decide(environ, root, folder_paths, gallery_roots)
-    config_path = environ.get(CONFIG_PATH_ENV, "").strip() or os.path.join(
-        decision.data_dir, CONFIG_NAME
-    )
+    explicit_config = environ.get(CONFIG_PATH_ENV, "").strip()
+    config_path = explicit_config or os.path.join(decision.data_dir, CONFIG_NAME)
+    common = {
+        "target_source": decision.target_source,
+        "config_explicit": bool(explicit_config),
+    }
     if decision.source != SOURCE_ENVIRONMENT and is_explicit_db_setting(default_path):
         db_path = default_path.strip()
         if not os.path.isabs(db_path):
@@ -382,6 +398,7 @@ def resolve_library(
             decision.data_dir,
             decision.target_dir,
             decision.problem,
+            **common,
         )
     return LibraryLocation(
         decision.source,
@@ -390,6 +407,7 @@ def resolve_library(
         decision.data_dir,
         decision.target_dir,
         decision.problem,
+        **common,
     )
 
 

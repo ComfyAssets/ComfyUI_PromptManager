@@ -196,3 +196,14 @@ class ExecutionHistoryOperations:
             .fetchone()
         )
         return dict(row) if row is not None else None
+
+
+def rekey_history_restore(old_path: str, new_path: str) -> None:
+    """Move the observers of ``old_path`` to ``new_path`` (Move library)."""
+    old, new = _database_identity(old_path), _database_identity(new_path)
+    if old == new:
+        return
+    with _restore_lock:
+        observers = _restore_observers.pop(old, None)
+        if observers:
+            _restore_observers.setdefault(new, {}).update(observers)
