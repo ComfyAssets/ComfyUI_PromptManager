@@ -397,15 +397,20 @@ class TestQueueReads(ReviewRoutesTestCase):
         self._no_paths()
 
     async def test_queue_cards_use_the_images_listing_thumbnail(self):
-        # M10: a known thumbnail is the card's media, as on the Images page;
-        # without one the card falls back to the original.
+        # M10: the card's media is the Images listing's thumbnail. Without a
+        # preview yet it is still the thumbnail URL (made on first view, #249).
         self._require_routes()
         from py.api.images import _output_image_entry
 
         path = self._ambiguous("sub/f0.png")
         self._record(path)
         item = (await self._list())["items"][0]
-        self.assertIsNone(item["thumbnail_url"])
+        scope = item["target"]["root_scope"]
+        self.assertEqual(
+            item["thumbnail_url"],
+            "/prompt_manager/images/serve/thumbnails/sub/f0_thumb.png"
+            f"?root=0&root_scope={scope}",
+        )
         thumb = self.output_dir / "thumbnails" / "sub" / "f0_thumb.png"
         thumb.parent.mkdir(parents=True)
         write_png(thumb, prompt=ambiguous_graph("cat", "dog"), color=(1, 2, 3))

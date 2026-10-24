@@ -17,19 +17,29 @@ function el(tag, text, className) {
     return node;
 }
 
-/** The card's media: a video's first frame when it has no thumbnail, else the thumbnail or the image. */
+/** A video's own element (its first frame), for a video without a usable preview. */
+function videoMedia(image) {
+    const node = el('video');
+    node.src = window.ApiClient.resolveUrl(image.url);
+    node.muted = true; node.playsInline = true; node.preload = 'metadata';
+    return node;
+}
+
+/**
+ * The card's media: the thumbnail (a video's is its preview frame), else the image, else a video's own element.
+ * #249: a video whose preview cannot be loaded swaps back to its own element.
+ */
 export function cardMedia(image, lazy = false) {
     const { resolveUrl } = window.ApiClient;
-    const video = image.is_video && !image.thumbnail_url;
-    const node = el(video ? 'video' : 'img');
+    if (image.is_video && !image.thumbnail_url) return videoMedia(image);
+    const node = el('img');
     node.src = resolveUrl(image.thumbnail_url || image.url);
-    if (video) { node.muted = true; node.playsInline = true; node.preload = 'metadata'; }
-    else {
-        // The concept card image: alt is the card title, with the listing's intrinsic size when known.
-        node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';
-        if ([image.width, image.height].every(value => Number.isFinite(value) && value > 0)) {
-            node.width = image.width; node.height = image.height;
-        }
+    // replaceWith does nothing for a card no longer in the page.
+    if (image.is_video) node.addEventListener('error', () => node.replaceWith(videoMedia(image)), { once: true });
+    // The concept card image: alt is the card title, with the listing's intrinsic size when known.
+    node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';
+    if ([image.width, image.height].every(value => Number.isFinite(value) && value > 0)) {
+        node.width = image.width; node.height = image.height;
     }
     return node;
 }

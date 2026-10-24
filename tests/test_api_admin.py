@@ -79,6 +79,8 @@ class AdminAPITestCase(AioHTTPTestCase):
 
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
+        # The automatic preview worker writes into the temp tree: stop it first.
+        self.api.close_auto_thumbnails()
         GalleryConfig.MONITORING_DIRECTORIES = self._orig_gallery_dirs
         PromptManagerConfig.update_config(self._orig_pm_config)
         for key, value in self._orig_env.items():

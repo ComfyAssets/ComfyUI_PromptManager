@@ -79,6 +79,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # ``record_review_file``, wired at start-up): a linked output is
         # never queued and its pending items leave the queue. None: no pass.
         self.review_recorder: Optional[Callable[[str], str]] = None
+        # Queues a settled output's preview (the API's
+        # ``queue_capture_thumbnail``, wired at start-up; #249). It only
+        # queues: the preview is written on its own worker. None: no queue.
+        self.thumbnail_queue: Optional[Callable[[str], str]] = None
 
         # Read from GalleryConfig if available, otherwise use defaults
         try:
@@ -220,9 +224,29 @@ class ImageGenerationHandler(FileSystemEventHandler):
                     )
                 return
             self.process_new_image(image_path, prompt_snapshot=prompt_snapshot)
+            self._queue_thumbnail(image_path)
         finally:
             with self._pending_lock:
                 self._pending.pop(image_path, None)
+
+    def _queue_thumbnail(self, image_path: str) -> None:
+        """Queue a settled output's preview, best effort (linked or not).
+
+        A failure is logged, never raised: the preview is then made on its
+        first view.
+        """
+        queue_preview = getattr(self, "thumbnail_queue", None)
+        if queue_preview is None:
+            return
+        try:
+            outcome = queue_preview(image_path)
+        except Exception:
+            self.logger.warning(
+                f"Preview of {os.path.basename(image_path)} could not be queued",
+                exc_info=True,
+            )
+            return
+        self.logger.debug(f"Preview {outcome}: {os.path.basename(image_path)}")
 
     def wait_until_settled(self, image_path: str, stop=None) -> bool:
         """True once the file's size is non-zero and unchanged across two reads.
@@ -636,6 +660,16 @@ class ImageMonitor:
         self.monitored_directories = []
         self.logger = get_logger("prompt_manager.image_monitor")
         self.review_recorder: Optional[Callable[[str], str]] = None
+        self.thumbnail_queue: Optional[Callable[[str], str]] = None
+
+    def set_thumbnail_queue(
+        self, queue_preview: Optional[Callable[[str], str]]
+    ) -> None:
+        """Queue every settled output's preview through ``queue_preview``
+        (None stops it), on the running handler and every later one."""
+        self.thumbnail_queue = queue_preview
+        if self.handler is not None:
+            self.handler.thumbnail_queue = queue_preview
 
     def set_review_recorder(self, recorder: Optional[Callable[[str], str]]) -> None:
         """Record ambiguous outputs through ``recorder`` (None stops recording).
@@ -703,6 +737,7 @@ class ImageMonitor:
         # leaves the monitor stuck "already running" with nothing to stop.
         handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
         handler.review_recorder = self.review_recorder
+        handler.thumbnail_queue = self.thumbnail_queue
         observer = Observer()
         scheduled = []
         for output_dir in valid_directories:

@@ -386,6 +386,8 @@ def create_app(root: Path) -> web.Application:
     async def reset(request: web.Request) -> web.Response:
         nonlocal history_fixture
         request_holds.release()
+        # No preview queued by the last test may land in the new fixture.
+        await api._run_in_executor(api.close_auto_thumbnails)
         library_editor_commands.reset()
         data = await request.json() if request.can_read_body else {}
         if not isinstance(data, dict):

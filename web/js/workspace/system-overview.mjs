@@ -88,7 +88,9 @@ export function thumbnailTitle(status, sources) {
     const missing = status?.pending;
     if (!Number.isSafeInteger(missing) || sources?.effective === 0) return 'Thumbnail status unavailable';
     if (missing === 0) return 'No missing thumbnails';
-    return `${number(missing)} missing ${noun(missing, 'thumbnail')}`;
+    // #249: files whose automatic preview could not be made this session (they show the original).
+    const failed = Number.isSafeInteger(status.failed) && status.failed > 0 ? ` · ${number(status.failed)} failed` : '';
+    return `${number(missing)} missing ${noun(missing, 'thumbnail')}${failed}`;
 }
 
 const SOURCES_SHARED = 'Monitoring and enrichment share one source list.';

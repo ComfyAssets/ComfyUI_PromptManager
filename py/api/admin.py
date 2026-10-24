@@ -1504,6 +1504,9 @@ class AdminRoutesMixin:
             verb = "cancelled" if state == "cancelled" else "finished"
             job.log_line(f"Scan {verb} · {_plural(job.processed, 'file')} processed")
         job.finish(state)
+        if state == "finished":
+            # After the scan, so the guarded thumbnail job is admitted (#249).
+            await self._hand_off_scan_thumbnails(job, output_dirs)
 
     async def _stream_scan_job(self, request, job):
         """Stream ``job`` as SSE; stop quietly if the client goes away."""

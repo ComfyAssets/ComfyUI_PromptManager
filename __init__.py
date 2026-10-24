@@ -132,11 +132,18 @@ try:
     _review_api = globals().get("api")
     if _review_api is not None:
         _global_image_monitor.set_review_recorder(_review_api.record_review_file)
+        # Every settled output's preview is queued for the API's background
+        # worker (#249): the workspace never asks to generate thumbnails.
+        _global_image_monitor.set_thumbnail_queue(_review_api.queue_capture_thumbnail)
         _review_host = getattr(config.server_instance, "app", None)
         if _review_host is not None and hasattr(_review_host, "on_cleanup"):
 
-            async def _stop_review_recording(app, monitor=_global_image_monitor):
+            async def _stop_review_recording(
+                app, monitor=_global_image_monitor, api=_review_api
+            ):
                 monitor.set_review_recorder(None)
+                monitor.set_thumbnail_queue(None)
+                api.close_auto_thumbnails(final=True)
 
             _review_host.on_cleanup.insert(0, _stop_review_recording)
 

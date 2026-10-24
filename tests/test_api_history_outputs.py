@@ -401,7 +401,7 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(response.status, 400)
         await response.read()
 
-    async def test_media_ranges_head_and_existing_thumbnail_without_generation(self):
+    async def test_media_ranges_head_and_a_preview_made_on_first_view(self):
         path = self.output_dir / "clip.mp4"
         payload = bytes(range(256)) * 600
         path.write_bytes(payload)
@@ -430,9 +430,14 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(int(response.headers["Content-Length"]), len(payload))
         self.assertEqual(await response.read(), b"")
+        # A missing preview is made on first view (#249): an undecodable video
+        # gets the placeholder frame, never the whole file.
+        preview = self.output_dir / "thumbnails" / "clip_thumb.jpg"
         response = await self.current(descriptor["thumbnail_url"])
-        self.assertEqual(await response.read(), payload)
-        preview = make_png(self.output_dir / "thumbnails" / "clip_thumb.jpg")
+        self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+        self.assertEqual(await response.read(), preview.read_bytes())
+        self.assertLess(preview.stat().st_size, len(payload))
+        make_png(preview)
         response = await self.current(descriptor["thumbnail_url"])
         self.assertEqual(await response.read(), preview.read_bytes())
 
@@ -1110,6 +1115,73 @@ class HistoryOutputAPITests(ImageAPITestCase):
         alias.symlink_to(self.temp_dir, target_is_directory=True)
         response = await self.current(descriptor["thumbnail_url"])
         self.assert_error(response, await response.json(), 403, "not-authorized")
+
+    async def test_missing_preview_is_never_made_through_a_linked_out_folder(self):
+        original = make_png(self.output_dir / "image.png", size=(64, 64))
+        elsewhere = self.temp_dir / "elsewhere"
+        elsewhere.mkdir()
+        (self.output_dir / "thumbnails").symlink_to(elsewhere, target_is_directory=True)
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["thumbnail_url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), original.read_bytes())
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    async def test_missing_preview_is_never_made_through_a_linked_sub_folder(self):
+        # M6: every link segment of the preview's folder is checked.
+        original = make_png(self.output_dir / "sub" / "image.png", size=(64, 64))
+        elsewhere = self.temp_dir / "elsewhere"
+        elsewhere.mkdir()
+        (self.output_dir / "thumbnails").mkdir()
+        (self.output_dir / "thumbnails" / "sub").symlink_to(
+            elsewhere, target_is_directory=True
+        )
+        start = self.capture([self.ref(subfolder="sub")])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["thumbnail_url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), original.read_bytes())
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    async def test_a_video_preview_that_cannot_be_made_is_the_placeholder(self):
+        # I1: never the video bytes inside an <img>.
+        from py.api.jobs import RESTORE_JOB_KIND
+
+        (self.output_dir / "clip.webm").write_bytes(b"AV1 stream no decoder here")
+        start = self.capture([self.ref(filename="clip.webm")])
+        descriptor = await self.media(start)
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+
+        job = self.api._jobs.start(
+            RESTORE_JOB_KIND,
+            "restore",
+            admission="records",
+            cancellable=False,
+            runner=runner,
+        )
+        try:
+            response = await self.current(descriptor["thumbnail_url"])
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertTrue((await response.read()).startswith(b"\xff\xd8"))
+        finally:
+            gate.set()
+            await asyncio.wait_for(job.task, 5)
+        self.assertFalse((self.output_dir / "thumbnails").exists())
+
+    async def test_a_preview_that_cannot_be_made_serves_the_original(self):
+        broken = self.output_dir / "image.png"
+        broken.write_bytes(b"\x89PNG\r\n\x1a\n not an image")
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["thumbnail_url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), broken.read_bytes())
+        self.assertFalse((self.output_dir / "thumbnails" / "image_thumb.png").exists())
 
     async def test_disappearance_before_open_is_missing_and_closes_handle(
         self,
