@@ -161,18 +161,19 @@ def _is_preview_file(path):
         return False
 
 
-def _owned(root, rel_path, preferred):
-    rel_path = Path(rel_path)
-    stem = Path(root) / thumbnail_stem_rel(rel_path)
-    extensions = list(candidate_extensions(rel_path.suffix, preferred))
-    if rel_path.suffix != rel_path.suffix.lower() and owns(
-        rel_path.suffix, rel_path.suffix
+def owned_in_folder(folder, stem, source_extension, preferred=None):
+    """Yield the existing previews ``<folder>/<stem><ext>`` a source with
+    *source_extension* owns, in lookup order (regular files, no links; one
+    file found under two spellings on a case-insensitive disk once)."""
+    extensions = list(candidate_extensions(source_extension, preferred))
+    if source_extension != source_extension.lower() and owns(
+        source_extension, source_extension
     ):
         # An older release kept the source's own spelling (``b_thumb.JPG``).
-        extensions.append(rel_path.suffix)
+        extensions.append(source_extension)
     seen = set()
     for extension in extensions:
-        path = stem.with_name(stem.name + extension)
+        path = Path(folder) / (stem + extension)
         if not _is_preview_file(path):
             continue
         try:
@@ -184,6 +185,12 @@ def _owned(root, rel_path, preferred):
             continue  # the same file under another case (Windows, macOS)
         seen.add(identity)
         yield path
+
+
+def _owned(root, rel_path, preferred):
+    rel_path = Path(rel_path)
+    stem = Path(root) / thumbnail_stem_rel(rel_path)
+    return owned_in_folder(stem.parent, stem.name, rel_path.suffix, preferred)
 
 
 def owned_thumbnails(root, rel_path, preferred=None):

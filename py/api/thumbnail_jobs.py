@@ -10,8 +10,9 @@
   Its outcome groups are ``generated``, ``skipped`` (already fresh) and
   ``errors``.
 
-``mode`` is ``missing`` (previews that are absent or older than their file)
-or ``rebuild`` (every preview again, fresh ones too). Format, quality and
+``mode`` is ``missing`` (previews that are absent or older than their file),
+``rebuild`` (every preview again, fresh ones too) or ``convert`` (Convert
+outdated: previews in another format, see ``thumbnail_convert.py``). Format, quality and
 size limit are the server's thumbnail settings (``thumbnail_settings``,
 #317), read once when the job starts and shown in its scope; a ``size`` or
 ``quality`` an older client sends is ignored. Every preview is written next
@@ -49,12 +50,13 @@ from .images import (
 )
 from .job_routes import busy_response
 from .jobs import THUMBNAIL_GROUP_NAMES, THUMBNAILS_JOB_KIND, JobBusy
+from .thumbnail_convert import CONVERT_JOB_TITLE
 from .thumbnail_encode import writer_settings
 from .thumbnail_settings import ThumbnailSettings
 
 THUMBNAIL_JOB_TITLE = "Thumbnail generation"
-THUMBNAIL_MODES = ("missing", "rebuild")
-_OPTIONS_ERROR = 'mode must be "missing" or "rebuild"'
+THUMBNAIL_MODES = ("missing", "rebuild", "convert")
+_OPTIONS_ERROR = 'mode must be "missing", "rebuild" or "convert"'
 CANCELLED_ERROR = "Thumbnail generation was cancelled"
 CANCELLED_BEFORE_WRITING = "Cancelled before any preview was written"
 NOTHING_TO_PREVIEW = "No images or videos to preview"
@@ -187,14 +189,20 @@ class ThumbnailJobsMixin:
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
     def _start_thumbnail_job(self, options):
-        """Register the thumbnail job synchronously; raises JobBusy."""
+        """Register the thumbnail job synchronously; raises JobBusy.
+
+        ``convert`` runs Convert outdated (``thumbnail_convert.py``) under the
+        same kind, admission, cancel and groups.
+        """
+        convert = options.mode == "convert"
+        runner = self._run_convert_job if convert else self._run_thumbnail_job
         return self._jobs.start(
             THUMBNAILS_JOB_KIND,
-            THUMBNAIL_JOB_TITLE,
+            CONVERT_JOB_TITLE if convert else THUMBNAIL_JOB_TITLE,
             admission="guarded",
             cancellable=True,
             scope=options.scope(),
-            runner=functools.partial(self._run_thumbnail_job, options=options),
+            runner=functools.partial(runner, options=options),
             groups=THUMBNAIL_GROUP_NAMES,
         )
 
@@ -455,6 +463,8 @@ class ThumbnailJobsMixin:
         the way.
         """
         running = self._jobs.active(THUMBNAILS_JOB_KIND)
+        if running is not None and running.scope.get("mode") == "convert":
+            return None, False, running  # no legacy frames to follow (#317)
         if running is not None and running.cancellable:
             return running, False, None
         busy = self._jobs.blocker(THUMBNAILS_JOB_KIND, admission="guarded")

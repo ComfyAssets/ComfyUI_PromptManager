@@ -2134,6 +2134,7 @@ class ImageRoutesMixin:
         stop=None,
         guard=None,
         track=None,
+        placeholder=True,
     ):
         """Create one thumbnail (blocking). Never raises; returns a result dict.
 
@@ -2148,7 +2149,8 @@ class ImageRoutesMixin:
         ``track(process)`` is handed every encoder process (both for automatic
         previews, #249). An error result carries ``decode: True`` when the
         file itself cannot be decoded (an I/O error does not). A generated
-        result names the file written as ``path``.
+        result names the file written as ``path``. Without ``placeholder``
+        (Convert outdated) a video with no decodable frame fails instead.
         """
         result = {
             "file": src.name,
@@ -2174,6 +2176,7 @@ class ImageRoutesMixin:
                     keep_existing=rebuild,
                     guard=guard,
                     track=track,
+                    placeholder=placeholder,
                 )
                 if not made:
                     return {
@@ -2225,6 +2228,7 @@ class ImageRoutesMixin:
         *,
         guard=None,
         track=None,
+        placeholder=True,
     ):
         """Write a video's preview; returns the path written, or False.
 
@@ -2238,7 +2242,8 @@ class ImageRoutesMixin:
         preview propagates (``_generate_one`` names it), as do
         PreviewWriteHeld when ``guard()`` refuses the rename and
         EncoderClosed at shutdown. ``track(process)`` is handed the ffmpeg
-        process so a shutdown can kill it.
+        process so a shutdown can kill it. Without ``placeholder`` no
+        placeholder is written: the run fails when no frame decodes.
         """
         try:
             frame = self._opencv_frame(video_path, settings.size)
@@ -2258,7 +2263,7 @@ class ImageRoutesMixin:
                     f"Generated video thumbnail using {source}: {written}"
                 )
                 return written
-            if keep_existing and thumbnail_path.exists():
+            if not placeholder or (keep_existing and thumbnail_path.exists()):
                 self.logger.warning(
                     f"No frame decoded for {video_path.name}; keeping its preview"
                 )
