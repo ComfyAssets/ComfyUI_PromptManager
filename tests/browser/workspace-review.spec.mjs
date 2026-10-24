@@ -28,6 +28,17 @@ async function pending(request) {
 }
 const links = async request => (await (await request.get('/__test__/review/links')).json()).links;
 const streams = async request => (await (await request.get('/__test__/review/streams')).json());
+/**
+ * Wait until the server has dropped every stream a page closed. It notices a closed stream only when a write to it
+ * fails, and the close can reach it after any one write (WebKit under load): each poll sends one more change notice,
+ * which changes nothing in the queue, until the count is 0.
+ */
+async function closedStreamsDropped(request) {
+    await expect.poll(async () => {
+        await expect(await request.post('/__test__/review/notify')).toBeOK();
+        return (await streams(request)).streams;
+    }).toBe(0);
+}
 const apply = page => panel(page).getByRole('button', { name: 'Apply association', exact: true });
 const warning = page => panel(page).locator('.warning-note');
 /** The page with its first item's sampler paths loaded. */
@@ -444,9 +455,8 @@ test('a hidden tab closes its stream and a visible one reads only what changed m
     await open(page);
     await expect.poll(async () => (await streams(request)).streams).toBe(1);
     await setVisible(page, false);
-    // The server drops a closed stream at its next write: this scan addition is one.
     await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
-    await expect.poll(async () => (await streams(request)).streams).toBe(0);
+    await closedStreamsDropped(request);
     await expect(cards(page)).toHaveCount(1);
     expect(reads.filter(search => search === '?limit=40')).toHaveLength(1);
     // Visible again: the reopened stream's ready names a newer version, so the page reads once.
@@ -457,6 +467,30 @@ test('a hidden tab closes its stream and a visible one reads only what changed m
     await expect(cards(page)).toHaveCount(2);
     await expect(live(page)).toBeHidden();
     expect(reads.filter(search => search === '?limit=40')).toHaveLength(2);
+});
+
+test('a stream whose close reaches the server after a change is dropped at a later write', async ({ page, request }) => {
+    // The CI ordering made certain: the hidden page's close arrives only after the scan addition's change was
+    // written to its stream, so that write succeeds and a later one finds the stream closed.
+    await seed(request, 1);
+    await open(page);
+    await expect.poll(async () => (await streams(request)).streams).toBe(1);
+    await page.evaluate(() => {
+        const close = EventSource.prototype.close;
+        window.lateChanges = 0;
+        window.heldCloses = [];
+        EventSource.prototype.close = function () {
+            this.addEventListener('change', () => { window.lateChanges += 1; });
+            window.heldCloses.push(() => close.call(this));
+        };
+    });
+    await setVisible(page, false);
+    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
+    await expect.poll(() => page.evaluate(() => window.lateChanges)).toBe(1);
+    await page.evaluate(() => window.heldCloses.splice(0).forEach(close => close()));
+    expect((await streams(request)).streams).toBe(1);
+    await closedStreamsDropped(request);
+    await expect(cards(page)).toHaveCount(1);
 });
 
 test('a re-read refreshes a card whose media or target changed', async ({ page, request }) => {
@@ -549,8 +583,6 @@ test('teardown releases captures listeners and requests', async ({ page, request
     await expect(main(page).getByRole('heading', { level: 1 })).toHaveText('Tags & categories');
     await expect.poll(async () => (await streams(request)).captures).toBe(0);
     await route.abort().catch(() => {});
-    // The server drops a closed stream at its next write: a monitor addition is one.
-    await expect(await request.post('/__test__/review/add', { data: { kind: 'scan' } })).toBeOK();
-    await expect.poll(async () => (await streams(request)).streams).toBe(0);
+    await closedStreamsDropped(request);
     await expect.poll(() => inFlight.size).toBe(0);
 });
