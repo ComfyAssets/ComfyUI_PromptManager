@@ -970,6 +970,11 @@ MIT License - see LICENSE file for details.
 
 ## Changelog
 
+### Unreleased (Workflows stored once)
+
+- **🗜️ Smaller database**: each distinct workflow and prompt graph is stored once, compressed, instead of again for every image. Images recorded by this version use it from the first start; the maintenance job "Store each workflow once" rewrites the existing records and then reclaims the space. A 20,000-image test library went from 1.4 GB to 60 MB. The job always takes a verified backup first: the first time, `prompts.db.pre-workflow-storage_<date time>` beside the database, kept until you delete it; on later runs, a normal pooled safety backup. No image or video file is opened or changed.
+- **⚠️ Downgrading**: images recorded by this version (and, after the job, all images) are stored in the new form. An older Prompt Manager version still opens and even restores such a database, but shows those images without workflows or prompt graphs until you update again. To go back to an older version, stop ComfyUI, delete `prompts.db-wal` and `prompts.db-shm`, and copy the **earliest** `prompts.db.pre-workflow-storage_<date time>` over `prompts.db`, or, if the job never ran, a backup taken before this update (records added since that backup are lost). Otherwise stay on this version.
+
 ### v3.3.1 (Proxy Routing Fix)
 
 - **🌐 Proxy support**: the dashboard, gallery, tag page and metadata viewer now work when ComfyUI is reached through a proxy mount such as SwarmUI's `/ComfyBackendDirect/`. Scripts, images, API calls, progress streams and gallery folder filters stay under the mount, and the canvas node's buttons use ComfyUI's `fileURL()`. Direct ComfyUI URLs are unchanged. Thanks to @ghosttigerllc-bit ([#164](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/164))

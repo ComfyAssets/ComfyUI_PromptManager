@@ -2708,6 +2708,73 @@ runs: every per-prompt protection and fingerprint read is an index search, the
 duplicate groups and the link rows are one scan each, and a delete batch (400 ids)
 searches by rowid with its cascades by index.
 
+**Workflow storage** (`database/workflow_documents.py`, `database/workflow_storage.py`,
+`py/api/workflow_storage.py`; `tests/test_workflow_documents.py`,
+`tests/test_workflow_migration.py`, `tests/test_api_workflow_storage.py`). Each distinct
+workflow and prompt graph text is one `workflow_documents` row: `sha256` of its exact
+UTF-8 bytes (unique), `byte_length` and `data` = `zlib.compress` of those bytes. Image rows
+reference it through `workflow_document_id` / `prompt_document_id` (foreign keys, one
+index each). The text is stored and hashed exactly as written, never parsed and
+re-serialized. Two forms are readable forever: old (text inline, no id) and new (inline
+NULL, id set); inline text wins when both are present. Every reader goes through
+`read_stored_text` / `resolve_image_row` (image lists, image by id, prompt info for the
+inspector and metadata page, diagnostics, pair ingestion's comparison), which also drops
+the id keys so payloads keep their shape; a document that fails its length or hash check
+reads as unreadable (None), never as other text. Round trips are proven byte for byte
+over edge texts (spacing, key order, duplicate keys, number spellings, `NaN`/`Infinity`
+tokens, NUL, BOM, astral and combining characters, 500-deep nesting, a 1.2 MB+
+workflow, `""` and NULL) and seeded random text and workflows
+(`TestRoundTrip`). New writes (`link_image_to_prompt`, pair ingestion for scan, monitor
+and Needs review) store the new form. No trigger is installed (restore validators refuse
+them): a document goes in the transaction that drops its last reference (image and
+prompt deletes, missing-link cleanup, duplicate merges, duplicate-file link merges,
+ingestion updates: `TestGarbage`, `TestMoreGarbagePaths`), and startup, the migration's
+end and Reclaim space sweep anything a path missed. `verify_database_file` checks the
+table definition, the id columns, their foreign keys and indexes, the stored values and
+dangling ids (`TestSchemaErrors`); a pre-dedupe file is accepted and migrated on open
+and on restore. The `workflow_storage` maintenance plan counts the old-form records
+(one pass over record headers) and its apply starts "Store each workflow once"
+(`records`, cancellable): first, always and whatever `maintenance.safety_backup` says,
+a verified pre-migration backup named `<db>.pre-workflow-storage_<YYYYmmdd_HHMMSS_ffffff>`,
+outside the pruned `<db>.backup_*` pool and kept until the user removes it (the preview
+reports `backup.policy: "required"`; `test_the_backup_is_taken_even_with_the_policy_off`,
+`test_the_backup_is_outside_the_pool_never_pruned_and_restores`); then batches of at most
+200 rows, 16 MB of text or 0.5 s, each one `BEGIN IMMEDIATE` transaction found by a rowid
+range search and read one row at a time, followed by 0.15 s with the write lock free so
+a writer on another connection gets in (`test_a_writer_on_another_connection_gets_in_between_batches`).
+Each text is read back through the accessor before its row changes. Each row has its own
+savepoint: a row that cannot be rewritten (text SQLite cannot decode, a text that would
+not come back) stays inline, is listed in `errors` and named in the job's last line, and
+the rest go on, Reclaim space included (`TestRowErrors`); any other failure (a full disk,
+an I/O error, a malformed database, a bug) rolls the batch back whole and fails the job
+(`TestSystemErrorsFailTheBatch`, `TestSystemErrorsInTheJob`). With nothing to rewrite the
+plan says "Nothing to rewrite" and Apply answers 409 `nothing-to-do` with no backup; only
+the first apply keeps a `pre-workflow-storage` backup, and a later one (after a Cancel, a
+rerun) takes a pooled safety backup (`TestOneKeptBackup`). The job loop's pause is tested
+with a second-connection writer (`TestLiveLoopLetsWritersIn`). A reused document is decompressed and checked first and repaired from the text
+when damaged, and `verify_database_file` (restore and backup verification) reads every
+document and refuses a damaged one (`TestDamagedDocuments`). The legacy table rebuilds
+refuse a file that already has the document id columns (`TestRebuildGuards`).
+`tools/workflow_text_digests.py <db> <out>` writes the sha256 of every record's stored
+texts, so a `diff` of its output before and after the rewrite proves byte identity. It
+loads only `database/workflow_documents.py` (no package start-up, no log handler) and
+opens the database `mode=ro`, with `immutable=1` when no `-wal`/`-shm` exists, so it
+creates none (`TestDigestToolSideEffects`). A damaged document's verify reason names it
+and says what to do, and a backup that fails on it says so in the job line. A crash or Cancel leaves
+committed batches new form and the rest old form, and the next apply continues
+(`test_a_crash_mid_migration_leaves_every_row_readable_and_resumes`,
+`test_cancel_stops_after_the_current_batch_and_a_rerun_continues`). Values that are not
+text stay inline (protected). "Reclaim space" follows when every row was looked at
+(`exclusive`, not cancellable): a disk check for VACUUM's copies of the live pages,
+then sweep, VACUUM and `wal_checkpoint(TRUNCATE)`; when another job holds the registry it
+does not start and the finished migration names Optimize database. No image or video
+file is opened (`test_the_jobs_never_open_a_media_file` tracks every Python open under
+the output folder and compares bytes and mtimes). Memory stays bounded by one row plus
+the batch's distinct documents (`test_memory_stays_bounded_by_one_row`, tracemalloc).
+Restoring a deduped backup on a version before this one is not supported: that
+version's restore accepts the file and then reads rewritten images without their
+workflow (README changelog).
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no

@@ -25,6 +25,14 @@ from .execution_outputs import ExecutionOutputOperations
 from .history_reads import HistoryReadOperations
 from .health import HealthOperations, iter_consistency_issues
 from .duplicate_copies import DuplicateCopyOperations
+from .workflow_storage import WorkflowStorageOperations
+from .workflow_documents import (
+    DocumentReader,
+    documents_of_rows,
+    release_documents,
+    resolve_image_row,
+    stored_values,
+)
 from .maintenance import (  # noqa: F401  (ORPHANED_PROMPTS_SQL is re-exported)
     ORPHANED_PROMPTS_SQL,
     _LINK_ROWS_SQL,
@@ -339,6 +347,7 @@ class PromptDatabase(
     HealthOperations,
     MaintenanceOperations,
     DuplicateCopyOperations,
+    WorkflowStorageOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -776,10 +785,12 @@ class PromptDatabase(
         """
         with self._pair_transaction() as conn:
             self._ensure_prompts_unpaired(conn, [prompt_id])
+            documents = documents_of_rows(conn, "prompt_id", [prompt_id])
             # First delete related images to avoid foreign key constraint
             conn.execute(
                 "DELETE FROM generated_images WHERE prompt_id = ?", (prompt_id,)
             )
+            release_documents(conn, documents)
             # Then delete the prompt
             cursor = conn.execute("DELETE FROM prompts WHERE id = ?", (prompt_id,))
             conn.commit()
@@ -803,10 +814,12 @@ class PromptDatabase(
                 return 0
             self._ensure_prompts_unpaired(conn, ids)
             placeholders = ",".join("?" * len(ids))
+            documents = documents_of_rows(conn, "prompt_id", ids)
             conn.execute(
                 f"DELETE FROM generated_images WHERE prompt_id IN ({placeholders})",
                 ids,
             )
+            release_documents(conn, documents)
             conn.execute(
                 f"DELETE FROM prompt_tags WHERE prompt_id IN ({placeholders})",
                 ids,
@@ -1607,6 +1620,14 @@ class PromptDatabase(
                 filename = os.path.basename(image_path)
                 file_path = normalize_image_path(image_path)
                 file_size, width, height, image_format = _coerce_file_info(metadata)
+                # Each workflow and prompt graph is stored once (new form).
+                documents = stored_values(
+                    conn,
+                    {
+                        "workflow_data": dumps_strict(metadata.get("workflow", {})),
+                        "prompt_metadata": dumps_strict(metadata.get("prompt", {})),
+                    },
+                )
 
                 # INSERT OR IGNORE skips a file already linked to this prompt
                 # (same prompt_id + normalised full path)
@@ -1614,8 +1635,9 @@ class PromptDatabase(
                     """
                     INSERT OR IGNORE INTO generated_images
                     (prompt_id, image_path, filename, file_path, file_size, width,
-                     height, format, workflow_data, prompt_metadata, parameters)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     height, format, workflow_data, prompt_metadata, parameters,
+                     workflow_document_id, prompt_document_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         prompt_id_int,
@@ -1626,11 +1648,22 @@ class PromptDatabase(
                         width,
                         height,
                         image_format,
-                        dumps_strict(metadata.get("workflow", {})),
-                        dumps_strict(metadata.get("prompt", {})),
+                        documents["workflow_data"],
+                        documents["prompt_metadata"],
                         dumps_strict(metadata.get("parameters", {})),
+                        documents["workflow_document_id"],
+                        documents["prompt_document_id"],
                     ),
                 )
+                if cursor.rowcount == 0:
+                    # Already linked: a document made only for this row goes.
+                    release_documents(
+                        conn,
+                        (
+                            documents["workflow_document_id"],
+                            documents["prompt_document_id"],
+                        ),
+                    )
                 conn.commit()
 
                 if cursor.rowcount == 0:
@@ -1664,7 +1697,8 @@ class PromptDatabase(
                 """,
                 (prompt_id,),
             )
-            return [self._image_row_to_dict(row) for row in cursor.fetchall()]
+            reader = DocumentReader(conn)
+            return [self._image_row_to_dict(row, reader) for row in cursor]
 
     def get_recent_images(
         self, limit: int = 50, offset: int = 0
@@ -1690,7 +1724,8 @@ class PromptDatabase(
                 """,
                 (int(limit), max(0, int(offset))),
             )
-            return [self._image_row_to_dict(row) for row in cursor.fetchall()]
+            reader = DocumentReader(conn)
+            return [self._image_row_to_dict(row, reader) for row in cursor]
 
     def get_all_images(
         self,
@@ -1724,10 +1759,10 @@ class PromptDatabase(
 
         with self.model.get_connection() as conn:
             cursor = conn.execute(sql, params)
-            rows = cursor.fetchall()
+            reader = DocumentReader(conn)
             result = []
-            for row in rows:
-                data = self._image_row_to_dict(row)
+            for row in cursor:
+                data = self._image_row_to_dict(row, reader)
                 if row["_prompt_tags_list"]:
                     data["prompt_tags"] = row["_prompt_tags_list"].split("|||")
                 else:
@@ -1765,7 +1800,8 @@ class PromptDatabase(
                     max(0, int(offset)),
                 ),
             )
-            return [self._image_row_to_dict(row) for row in cursor.fetchall()]
+            reader = DocumentReader(conn)
+            return [self._image_row_to_dict(row, reader) for row in cursor]
 
     def get_image_by_id(self, image_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -1782,7 +1818,7 @@ class PromptDatabase(
                 "SELECT * FROM generated_images WHERE id = ?", (image_id,)
             )
             row = cursor.fetchone()
-            return self._image_row_to_dict(row) if row else None
+            return self._image_row_to_dict(row, DocumentReader(conn)) if row else None
 
     def delete_image(self, image_id: int) -> bool:
         """
@@ -1795,9 +1831,11 @@ class PromptDatabase(
             bool: True if deletion was successful
         """
         with self.model.get_connection() as conn:
+            documents = documents_of_rows(conn, "id", [image_id])
             cursor = conn.execute(
                 "DELETE FROM generated_images WHERE id = ?", (image_id,)
             )
+            release_documents(conn, documents)
             conn.commit()
             return cursor.rowcount > 0
 
@@ -1831,12 +1869,16 @@ class PromptDatabase(
             cursor = conn.execute("SELECT id, image_path FROM generated_images")
             images = cursor.fetchall()
 
-            for image in images:
-                if not os.path.exists(image["image_path"]):
-                    conn.execute(
-                        "DELETE FROM generated_images WHERE id = ?", (image["id"],)
-                    )
-                    removed_count += 1
+            removed = [
+                image["id"]
+                for image in images
+                if not os.path.exists(image["image_path"])
+            ]
+            documents = documents_of_rows(conn, "id", removed)
+            for image_id in removed:
+                conn.execute("DELETE FROM generated_images WHERE id = ?", (image_id,))
+                removed_count += 1
+            release_documents(conn, documents)
 
             conn.commit()
 
@@ -2127,11 +2169,13 @@ class PromptDatabase(
         count = 0
         with self._pair_transaction() as conn:
             self._ensure_prompts_unpaired(conn, prompt_ids)
+            documents = documents_of_rows(conn, "prompt_id", prompt_ids)
             for pid in prompt_ids:
                 conn.execute("DELETE FROM generated_images WHERE prompt_id = ?", (pid,))
                 cursor = conn.execute("DELETE FROM prompts WHERE id = ?", (pid,))
                 if cursor.rowcount > 0:
                     count += 1
+            release_documents(conn, documents)
             conn.commit()
         return count
 
@@ -2205,7 +2249,8 @@ class PromptDatabase(
             cursor = conn.execute(
                 """SELECT gi.prompt_id, p.text, p.category, p.rating, p.notes,
                           gi.workflow_data, gi.prompt_metadata, gi.generation_time,
-                          gi.parameters, gi.id, gi.image_path, gi.file_path
+                          gi.parameters, gi.id, gi.image_path, gi.file_path,
+                          gi.workflow_document_id, gi.prompt_document_id
                    FROM generated_images gi
                    JOIN prompts p ON gi.prompt_id = p.id
                    WHERE gi.image_path = ? OR gi.file_path = ?
@@ -2285,12 +2330,21 @@ class PromptDatabase(
                         "text_source": source,
                     }
             tags = self._get_prompt_tags(conn, row[0])
+            texts = resolve_image_row(DocumentReader(conn), row)
             try:
-                workflow = json.loads(row[5]) if row[5] else None
+                workflow = (
+                    json.loads(texts["workflow_data"])
+                    if texts["workflow_data"]
+                    else None
+                )
             except (json.JSONDecodeError, TypeError):
                 workflow = None
             try:
-                prompt_meta = json.loads(row[6]) if row[6] else None
+                prompt_meta = (
+                    json.loads(texts["prompt_metadata"])
+                    if texts["prompt_metadata"]
+                    else None
+                )
             except (json.JSONDecodeError, TypeError):
                 prompt_meta = None
             return {
@@ -2540,17 +2594,20 @@ class PromptDatabase(
         with self.model.get_connection() as conn:
             return list(iter_consistency_issues(conn))
 
-    def _image_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+    def _image_row_to_dict(
+        self, row: sqlite3.Row, reader: DocumentReader
+    ) -> Dict[str, Any]:
         """
         Convert an image database row to a dictionary with parsed JSON fields.
 
         Args:
             row: SQLite row object
+            reader: The workflow document reader of the row's connection
 
         Returns:
             Dictionary representation of the row
         """
-        data = dict(row)
+        data = resolve_image_row(reader, row)
 
         # Parse JSON fields
         for field in ["workflow_data", "prompt_metadata", "parameters"]:

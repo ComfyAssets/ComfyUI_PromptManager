@@ -42,12 +42,15 @@ from pathlib import Path
 from .execution_contexts import LIVE_HINT_CTES
 from .health import BATCH_ROWS, link_states, readable_roots, readonly_uri
 from .pairs import PairDependencyError
+from .workflow_documents import documents_of_rows, release_documents
 
 MAINTENANCE_OPERATIONS = (
     "duplicate_prompts",
     "optimize",
     "unused_components",
     "missing_links",
+    # Applied as its own batched job (database/workflow_storage.py).
+    "workflow_storage",
 )
 MAX_DETAILS = 50  # detail rows a plan lists
 MAX_RESULT_ROWS = 200  # changed records an apply describes (the job lists 200)
@@ -260,16 +263,24 @@ def _orphaned_ids(conn):
 
 
 def _delete_ids(conn, table, ids):
-    """Delete ``table`` rows by id in batches; returns the rows removed."""
+    """Delete ``table`` rows by id in batches; returns the rows removed.
+
+    The workflow documents only those rows referenced go with them (a
+    prompt's images go by cascade), in the same transaction.
+    """
     if table not in ("prompts", "generated_images"):
         raise ValueError(f"Unsupported table {table!r}")
     removed = 0
     for batch in _batches(ids):
+        documents = documents_of_rows(
+            conn, "id" if table == "generated_images" else "prompt_id", batch
+        )
         cursor = conn.execute(
             f"DELETE FROM {table} WHERE id IN ({_marks(batch)})",  # nosec B608
             batch,
         )
         removed += cursor.rowcount
+        release_documents(conn, documents)
     return removed
 
 
@@ -379,10 +390,13 @@ class MaintenanceOperations:
                 conn, primary_id, merged_metadata, strict=strict
             )
         removed = 0
+        # Images the lenient merge could not move go with their prompt.
+        documents = documents_of_rows(conn, "prompt_id", duplicate_ids)
         for duplicate_id in duplicate_ids:
             conn.execute("DELETE FROM prompts WHERE id = ?", (duplicate_id,))
             removed += 1
             self.logger.debug(f"Removed duplicate prompt {duplicate_id}")
+        release_documents(conn, documents)
         return removed, moved
 
     @staticmethod
@@ -408,6 +422,8 @@ class MaintenanceOperations:
         roots = [str(root) for root in roots]
         if operation == "optimize":
             return self._plan_optimize()
+        if operation == "workflow_storage":
+            return self._plan_workflow_storage()
         if operation == "missing_links":
             rows = _read_snapshot(self.model.db_path, self._link_rows)
             return self._plan_missing_links(rows, roots)
@@ -656,7 +672,7 @@ class MaintenanceOperations:
         records changed and up to ``MAX_RESULT_ROWS`` descriptions of them
         (``{prompt_id[, kept_id]}`` or ``{image_path}``).
         """
-        if operation not in MAINTENANCE_OPERATIONS:
+        if operation not in MAINTENANCE_OPERATIONS or operation == "workflow_storage":
             raise ValueError(f"Unknown maintenance operation {operation!r}")
         if operation == "optimize":
             # VACUUM cannot run in a transaction; the plan binds the database.

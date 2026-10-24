@@ -99,11 +99,16 @@ class StrictRows:
     """Assertions over the rows a write left behind."""
 
     def image_rows(self, db):
+        """The stored texts, read through the one workflow document accessor."""
+        from database.workflow_documents import DocumentReader, resolve_image_row
+
         with db.model.get_connection() as conn:
+            reader = DocumentReader(conn)
             return [
-                dict(row)
+                resolve_image_row(reader, row)
                 for row in conn.execute(
-                    "SELECT prompt_id, workflow_data, prompt_metadata, parameters "
+                    "SELECT prompt_id, workflow_data, prompt_metadata, parameters, "
+                    "workflow_document_id, prompt_document_id "
                     "FROM generated_images ORDER BY id"
                 )
             ]
