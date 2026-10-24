@@ -132,8 +132,9 @@ class DuplicateCopyOperations:
 
         ``move``: ``removed`` and ``kept`` (the spellings each file is linked
         by), ``targets`` (``{removed spelling: kept spelling}``, the spelling
-        a moved record takes; else ``kept_path``), ``favorite`` (``(root key,
-        removed key, kept root key, kept key)`` or None), ``removed_locator``,
+        a moved record takes; else ``kept_path``), ``favorites`` (``(root key,
+        removed key, kept root key, kept key)`` per listed root holding the
+        file), ``removed_locator``,
         ``kept_locator``, ``sha256`` and the kept copy's ``kept_size`` and
         ``kept_mtime_ns``. Returns ``{moved, merged, favorites, tags,
         review}``.
@@ -167,8 +168,8 @@ class DuplicateCopyOperations:
                         ),
                     )
                     counts["moved"] += 1
-            if move.get("favorite"):
-                counts["favorites"] = _move_favorite(conn, *move["favorite"])
+            for favorite in move.get("favorites", ()):
+                counts["favorites"] += _move_favorite(conn, *favorite)
             counts["tags"] = self._move_copy_tags(conn, move)
             for (item_id,) in conn.execute(
                 _PENDING_OF_LOCATOR, (move["removed_locator"],)

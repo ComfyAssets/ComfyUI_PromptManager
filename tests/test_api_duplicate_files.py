@@ -110,8 +110,12 @@ class DuplicateFilesTestCase(ApplyTestCase):
         return job, group
 
     @staticmethod
-    def keep_of(group, path):
-        [entry] = [f for f in group["files"] if f["path"] == path]
+    def keep_of(group, path, root_index=None):
+        [entry] = [
+            f
+            for f in group["files"]
+            if f["path"] == path and root_index in (None, f["root_index"])
+        ]
         return {
             "group_id": group["group_id"],
             "root_index": entry["root_index"],

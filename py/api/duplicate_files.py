@@ -58,6 +58,8 @@ from .duplicate_review import (  # noqa: F401 (CHANGED, OUTSIDE_SOURCE: public)
     KEEPER_CHANGED,
     KEPT_COPY,
     LOCKED_FILE,
+    MAYBE_SAME_FILE,
+    NO_FILE_ID_ROW,
     NOT_ATTEMPTED,
     OUTSIDE_SOURCE,
     RECORDS_FAILED,
@@ -77,6 +79,7 @@ from .duplicate_review import (  # noqa: F401 (CHANGED, OUTSIDE_SOURCE: public)
     file_problem,
     human_bytes,
 )
+from .duplicate_spellings import Spellings
 from .images import _favorite_relative_key, _favorite_root_key, _output_image_entry
 from .job_routes import busy_response
 from .jobs import (
@@ -458,7 +461,7 @@ class DuplicateFilesMixin:
                 elif record["root_index"] is None:
                     problem = OUTSIDE_SOURCE
                 else:
-                    problem = _bound_problem(record, group, keeper["abs"])
+                    problem = _bound_problem(record, group, keeper)
                 if problem:
                     protected[problem] = protected.get(problem, 0) + 1
                     continue
@@ -472,7 +475,7 @@ class DuplicateFilesMixin:
             records = db.count_copy_records(
                 {
                     t["abs"]: {
-                        "spellings": _file_spellings(spellings, t["root"], t["rel"]),
+                        "spellings": list(spellings.of(t["abs"]).values()),
                         "locator": t["locator"],
                         "sha256": t["hash"],
                     }
@@ -487,15 +490,17 @@ class DuplicateFilesMixin:
         }
 
     def _source_spellings(self):
-        """``{source identity: [spellings]}`` the monitor and config use (blocking).
+        """The folder spellings records may name files by (blocking).
 
-        The search walks each source's real path, while the image monitor
-        links a file under the folder it watches: the configured spelling,
-        ComfyUI's output folder or a symlink to it. Each absolute candidate
-        is listed under the identity (``normcase(realpath)``) it resolves to.
+        The search walks each source's real path, while a record names a file
+        as it was seen when written: under the folder the image monitor
+        watches, the configured spelling, ComfyUI's output folder, a symlink
+        to it, or a parent of a source added later. ``Spellings`` matches
+        them to each file by containment (``py/api/duplicate_spellings.py``).
         """
         from ..config import GalleryConfig
 
+        listed = [os.path.abspath(str(d)) for d in self._get_all_output_dirs()]
         candidates = list(self._monitored_directories())
         candidates += list(GalleryConfig.MONITORING_DIRECTORIES)
         try:
@@ -505,15 +510,10 @@ class DuplicateFilesMixin:
         except Exception:  # nosec B110 - outside ComfyUI there is none
             pass
         candidates.append(self._find_comfyui_output_dir())
-        spellings = {}
-        for candidate in candidates:
-            if not candidate or not os.path.isabs(str(candidate)):
-                continue
-            spelled = os.path.abspath(str(candidate))
-            listed = spellings.setdefault(_identity(spelled), [])
-            if spelled not in listed:
-                listed.append(spelled)
-        return spellings
+        folders = [
+            os.path.abspath(str(c)) for c in candidates if c and os.path.isabs(str(c))
+        ]
+        return Spellings(folders + listed, listed)
 
     def _target(self, group, record, keeper):
         return {
@@ -673,13 +673,22 @@ class DuplicateFilesMixin:
             target["size"],
             hasher,
             keeper=target["keeper_abs"],
+            keeper_root=target["keeper_root"],
         )
         if problem:
             return "kept", problem, None
         try:
-            counts = db.move_copy_records(
-                self._copy_move(target, keepers[group_id], spellings)
-            )
+            # Held open until the unlink: on Windows, deleting the kept copy
+            # itself through another path then fails instead of removing it.
+            hold = open(target["keeper_abs"], "rb")
+        except OSError:
+            return "kept", KEEPER, None
+        with hold:
+            return self._move_then_unlink(db, target, keepers[group_id], spellings)
+
+    def _move_then_unlink(self, db, target, kept_stat, spellings):
+        try:
+            counts = db.move_copy_records(self._copy_move(target, kept_stat, spellings))
         except Exception:
             self.logger.exception(f"Could not move the records of {target['rel']}")
             return "error", RECORDS_FAILED, None
@@ -706,29 +715,40 @@ class DuplicateFilesMixin:
 
     @staticmethod
     def _copy_move(target, kept_stat, spellings):
-        """What ``move_copy_records`` moves for one removal."""
-        removed = _file_spellings(spellings, target["root"], target["rel"])
-        kept = _file_spellings(spellings, target["keeper_root"], target["keeper_rel"])
-        same_source = _identity(target["root"]) == _identity(target["keeper_root"])
-        native_rel = target["rel"].replace("/", os.sep)
-        native_kept = target["keeper_rel"].replace("/", os.sep)
-        targets = {}
-        for spelled in removed:
-            prefix = spelled[: len(spelled) - len(native_rel)]
-            targets[spelled] = (
-                prefix + native_kept if same_source else target["keeper_abs"]
+        """What ``move_copy_records`` moves for one removal.
+
+        A record found under a folder spelling moves to the kept copy under
+        the same spelling when that folder holds it too, else to its real
+        path. Its favorite moves under every listed root holding the file.
+        """
+        removed = spellings.of(target["abs"])
+        kept = spellings.of(target["keeper_abs"])
+        targets = {
+            spelled: kept.get(folder, target["keeper_abs"])
+            for folder, spelled in removed.items()
+        }
+        kept_favorites = spellings.favorites(target["keeper_abs"])
+        favorites = []
+        for root, relative in spellings.favorites(target["abs"]).items():
+            kept_root, kept_rel = (
+                (root, kept_favorites[root])
+                if root in kept_favorites
+                else (target["keeper_root"], target["keeper_rel"])
+            )
+            favorites.append(
+                (
+                    _favorite_root_key(root),
+                    _favorite_relative_key(relative),
+                    _favorite_root_key(kept_root),
+                    _favorite_relative_key(kept_rel),
+                )
             )
         return {
-            "removed": removed,
-            "kept": kept,
+            "removed": list(removed.values()),
+            "kept": list(kept.values()),
             "targets": targets,
             "kept_path": target["keeper_abs"],
-            "favorite": (
-                _favorite_root_key(target["root"]),
-                _favorite_relative_key(target["rel"]),
-                _favorite_root_key(target["keeper_root"]),
-                _favorite_relative_key(target["keeper_rel"]),
-            ),
+            "favorites": favorites,
             "removed_locator": target["locator"],
             "kept_locator": target["keeper_locator"],
             "sha256": target["hash"],
@@ -738,7 +758,10 @@ class DuplicateFilesMixin:
 
 
 def _bound_problem(record, group, keeper=None):
-    """``file_problem`` without reading the file: size, mtime and inode."""
+    """``file_problem`` without reading the file: size, mtime and inode.
+
+    ``keeper`` is the kept copy's record, never offered as a copy of itself.
+    """
     return file_problem(
         record["abs"],
         record["root"],
@@ -747,7 +770,8 @@ def _bound_problem(record, group, keeper=None):
         hash_check=False,
         mtime_ns=record.get("mtime_ns"),
         inode=record.get("inode"),
-        keeper=keeper,
+        keeper=keeper["abs"] if keeper else None,
+        keeper_root=keeper["root"] if keeper else None,
     )
 
 
@@ -766,10 +790,3 @@ def _kept_copy_state(target, hasher):
         return os.stat(target["keeper_abs"])
     except OSError:
         return None
-
-
-def _file_spellings(spellings, root, rel):
-    """Every path one file is linked by: its real path, then each spelling."""
-    native = rel.replace("/", os.sep)
-    roots = [root] + spellings.get(_identity(root), [])
-    return list(dict.fromkeys(os.path.join(spelled, native) for spelled in roots))

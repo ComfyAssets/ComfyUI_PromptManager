@@ -31,7 +31,20 @@ GONE = "gone"
 UNREADABLE = "unreadable"
 KEEPER = "keeper"
 SAME = "same"
+MAYBE_SAME = "maybe-same"
+NO_FILE_ID = "no-file-id"
+# Two mounts of one share may round mtimes differently (SMB keeps 100 ns,
+# FAT 2 s): within this, equal sizes on another device may be one file.
+MOUNT_MTIME_SLACK_NS = 2_000_000_000
 PROTECTED_REASONS = {
+    MAYBE_SAME: (
+        "file may be the same file reached through another mount or share",
+        "files may be the same file reached through another mount or share",
+    ),
+    NO_FILE_ID: (
+        "file: can't confirm this is a separate file on this drive",
+        "files: can't confirm these are separate files on this drive",
+    ),
     SAME: (
         "file is the same file as its kept copy",
         "files are the same file as their kept copy",
@@ -56,7 +69,13 @@ PROTECTED_REASONS = {
 CHANGED = "The file changed since the review; it was kept."
 KEEPER_CHANGED = "The kept copy changed or is gone; this file was kept."
 SAME_FILE = "This is the same file as its kept copy; it was kept."
+MAYBE_SAME_FILE = (
+    "May be the same file reached through another mount or share; it was kept."
+)
+NO_FILE_ID_ROW = "Can't confirm this is a separate file on this drive; it was kept."
 ROW_DETAILS = {
+    MAYBE_SAME: MAYBE_SAME_FILE,
+    NO_FILE_ID: NO_FILE_ID_ROW,
     SAME: SAME_FILE,
     OUTSIDE_SOURCE: "The file is no longer inside its source; it was kept.",
     LINK: "The file is now a link, not a regular file; it was kept.",
@@ -65,8 +84,12 @@ ROW_DETAILS = {
     UNREADABLE: "The file could not be read; it was kept.",
     KEEPER: KEEPER_CHANGED,
 }
-LOCKED_FILE = "The file is open in another program or read-only; it was not deleted."
-DELETE_FAILED = "The file could not be deleted."
+# An unlink fails only after the file's records moved to its kept copy.
+LOCKED_FILE = (
+    "The file is open in another program or read-only; it was not deleted, "
+    "and its links now name the kept copy."
+)
+DELETE_FAILED = "The file could not be deleted; its links now name the kept copy."
 NOT_ATTEMPTED = "Not attempted: the job stopped after an error."
 KEPT_COPY = "Kept copy"
 SOURCES_CHANGED = (
@@ -119,6 +142,7 @@ def file_problem(
     mtime_ns=None,
     inode=None,
     keeper=None,
+    keeper_root=None,
 ):
     """Why ``path`` may not be treated as a copy in ``root``, or None (blocking).
 
@@ -126,8 +150,9 @@ def file_problem(
     normalized path must lie below the normalized root, outside
     ``thumbnails``, with a media extension. Only then is the file looked at:
     a regular file, not a link, whose resolved path is still inside the
-    resolved root and that is not ``keeper`` itself (``os.path.samestat``: a
-    hardlink, or one file reached through two spellings), of ``size`` bytes.
+    resolved root and that is not ``keeper`` itself (``keeper_problem``: a
+    hardlink, one file reached through two spellings or two mounts, or a
+    volume that cannot tell files apart), of ``size`` bytes.
     ``mtime_ns`` and ``inode`` (``[st_dev, st_ino]``), when given, bind it to
     what the search saw; ``hash_check`` compares its content hash with
     ``digest`` (the removal job, right before an unlink). Every handle is
@@ -158,8 +183,10 @@ def file_problem(
     try:
         if not _lexically_inside(_canonical_path(path), [_canonical_path(root)]):
             return OUTSIDE_SOURCE  # a linked folder on the way
-        if keeper is not None and os.path.samestat(info, os.stat(keeper)):
-            return SAME
+        if keeper is not None:
+            same = keeper_problem(path, root, info, keeper, keeper_root)
+            if same:
+                return same
         if info.st_size != size:
             return CHANGED_CONTENT
         if mtime_ns is not None and info.st_mtime_ns != mtime_ns:
@@ -173,6 +200,48 @@ def file_problem(
     except OSError:
         return UNREADABLE
     return None
+
+
+def keeper_problem(path, root, info, keeper, keeper_root=None):
+    """Why ``path`` (its ``lstat`` is ``info``) may be ``keeper`` itself, or None.
+
+    - ``NO_FILE_ID``: a volume reports no file id (``st_ino`` 0), so the two
+      cannot be told apart;
+    - ``SAME``: ``os.path.samestat`` (a hardlink, or one file reached through
+      two spellings of one mount);
+    - ``MAYBE_SAME``: another device, the same size, mtimes within
+      ``MOUNT_MTIME_SLACK_NS``, and the same ``st_ino`` (NFS and SMB report
+      the server's file id) or the same path within their sources (one share
+      mounted twice, a FUSE pool over a listed disk). Protect, never guess:
+      a true copy on another disk at the same relative path is kept too.
+
+    Raises OSError when the kept copy cannot be read (the caller's GONE or
+    UNREADABLE).
+    """
+    kept = os.stat(keeper)
+    if not info.st_ino or not kept.st_ino:
+        return NO_FILE_ID
+    if os.path.samestat(info, kept):
+        return SAME
+    if info.st_dev == kept.st_dev or info.st_size != kept.st_size:
+        return None
+    if abs(info.st_mtime_ns - kept.st_mtime_ns) > MOUNT_MTIME_SLACK_NS:
+        return None
+    if info.st_ino == kept.st_ino:
+        return MAYBE_SAME
+    if keeper_root is not None and _relative_key(path, root) == _relative_key(
+        keeper, keeper_root
+    ):
+        return MAYBE_SAME
+    return None
+
+
+def _relative_key(path, root):
+    try:
+        relative = os.path.relpath(str(path), str(root))
+    except ValueError:  # another drive (Windows)
+        return None
+    return os.path.normcase(relative).replace("\\", "/")
 
 
 @dataclass

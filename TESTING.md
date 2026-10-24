@@ -2609,7 +2609,15 @@ find lists a physical file once, by `(st_dev, st_ino)`: a source listed twice un
 spellings, a symlinked source inside another one and a hardlink are one file, never a
 copy of themselves (`test_a_folder_listed_twice_never_loses_its_only_copy`,
 `test_a_symlinked_source_inside_another_is_one_file`,
-`test_a_hardlink_is_never_a_copy_to_remove`). The server holds the groups (content
+`test_a_hardlink_is_never_a_copy_to_remove`). One file reached through two mounts is
+protected, never guessed at: a removal on another `st_dev` than its kept copy, with the
+same size and mtimes within 2 s, is kept as "may be the same file reached through another
+mount or share" when its `st_ino` is equal or its path within its source is the same
+(NFS and SMB, a loopback mount, a FUSE pool: `TestAnotherMount`). Some true copies on
+another disk are therefore never offered. A volume that reports no file id protects
+every pair ("Can't confirm this is a separate file on this drive"). The job checks both
+again right before each unlink and holds the kept copy open meanwhile, so on Windows
+deleting the kept copy itself through another path fails instead. The server holds the groups (content
 hash, root-relative paths, source index, size, mtime and inode) for the last three
 finds; `GET /prompt_manager/maintenance/duplicates/{job_id}?offset&limit` pages
 them ten at a time (`not-found` 404, `job-running` or `no-groups` 409). The preview
@@ -2636,14 +2644,19 @@ move leaves the file and its records alone: no row ever names a deleted file
 (`test_a_failure_between_two_files_leaves_no_row_on_a_deleted_file`). The status line
 counts the files removed and not removed. A changed file is kept (`test_changed_content_skips_file`); the
 first failed unlink stops the job, a locked or read-only file with "The file is open in
-another program or read-only; it was not deleted." and never the OS text, and the
+another program or read-only; it was not deleted, and its links now name the kept copy."
+and never the OS text, and the
 files after it are listed as not attempted (`test_partial_failure_reports_each_path`).
 Records move for the reviewed files only (`database/duplicate_copies.py`): each image
-record, looked up under every spelling of its source (the real path, the configured and
-monitored folders and ComfyUI's output folder that resolve to it:
-`test_links_under_a_symlinked_source_spelling_move`), moves to the kept copy under the
-same spelling, or, when its prompt already links the kept copy, hands its saved-pair
-links to that record and is deleted; a favorite moves with it
+record, looked up under every spelling of the file by containment
+(`py/api/duplicate_spellings.py`: each configured, monitored, ComfyUI output or listed
+folder whose `os.stat` identity is a folder above the file, plus the path below it, so a
+parent spelling of a nested source and a case variant match:
+`test_links_under_a_symlinked_source_spelling_move`,
+`test_a_parent_spelling_of_a_nested_source`), moves to the kept copy under the same
+spelling, or, when its prompt already links the kept copy, hands its saved-pair
+links to that record and is deleted; a favorite under any listed root that holds the
+file moves with it (`test_nested_sources_subfolder_first_with_a_parent_favorite`)
 (`test_db_links_reconciled_only_for_removed_files`); the copy's image tags join the kept
 copy's as their union; and its pending Needs review items (still `pending` at revision
 0 with no decision row) are settled (`test_tags_move_as_a_union_and_pending_items_settle`).
