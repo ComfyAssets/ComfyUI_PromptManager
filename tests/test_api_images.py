@@ -497,7 +497,8 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         self.assertNotIn("_generate_one", calls)
         self.assertIn("_plan_gallery_thumbnails", calls)
 
-    async def test_capped_run_reports_remaining_and_the_next_run_finishes(self):
+    async def test_a_run_past_the_batch_cap_goes_on_to_the_end(self):
+        # The cap bounds one batch; the run plans again and finishes (#317).
         for name in ("a", "b", "c"):
             make_png(self.output_dir / f"{name}.png", size=(64, 64))
 
@@ -510,18 +511,19 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         )
 
         names = [e for e, _ in first]
-        self.assertEqual(names.count("progress"), 2)  # only pending files are work
+        self.assertEqual(names.count("progress"), 3)  # only pending files are work
+        self.assertEqual(dict(first)["start"]["total_images"], 3)
+        self.assertEqual(
+            [d["total_images"] for e, d in first if e == "progress"], [3] * 3
+        )
         done = dict(first)["complete"]
-        self.assertEqual(done["count"], 2)
-        self.assertEqual(done["remaining"], 1)
-        self.assertEqual(done["total_images"], 3)
-        self.assertIn("1 more", done["message"])
-        done = dict(second)["complete"]
-        self.assertEqual(done["count"], 1)
-        self.assertEqual(done["skipped"], 2)
+        self.assertEqual(done["count"], 3)
         self.assertEqual(done["remaining"], 0)
         self.assertEqual(done["total_images"], 3)
         self.assertNotIn("more", done["message"])
+        done = dict(second)["complete"]
+        self.assertEqual(done["count"], 0)
+        self.assertEqual(done["skipped"], 3)
 
     async def test_blocking_endpoint_reports_remaining(self):
         for name in ("a", "b", "c"):
@@ -2105,10 +2107,13 @@ class TestThumbnailStartupStatus(ThumbnailTestCase):
         make_png(second / "b.png")
         self.api._get_all_output_dirs = lambda: [self.output_dir, second]
         with patch.object(images_module, "MAX_THUMBNAIL_FILES", 1):
+            plan = self.api._plan_gallery_thumbnails([self.output_dir, second])
             response = await self.client.post(self.PROGRESS_URL)
             data = dict(parse_sse(await response.text()))["complete"]
-        self.assertEqual(data["count"], 1)
-        self.assertEqual(data["remaining"], 1)
+        # One batch holds one file across both roots; the run goes on (#317).
+        self.assertEqual((len(plan["targets"]), plan["remaining"]), (1, 1))
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["remaining"], 0)
         self.assertEqual(data["total_images"], 2)
 
     async def test_equal_timestamps_do_not_regenerate_existing_thumbnails(self):

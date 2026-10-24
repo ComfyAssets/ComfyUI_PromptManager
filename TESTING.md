@@ -2164,7 +2164,7 @@ changed." and Retry, never an empty list.
 
 Thumbnail generation is an Activity job (S5, `py/api/thumbnail_jobs.py`). `GET
 /prompt_manager/images/thumbnails/plan?mode=missing|rebuild|convert`
-counts the work (`targets`, `fresh`, `outdated`, `remaining` past the 10,000-file cap,
+counts the work (`targets`, `fresh`, `outdated`, `remaining` past the 10,000-file batch cap,
 the source labels, and the server's `format`, `quality` and `size` it writes with) and
 writes nothing; an unknown mode is a 400 `invalid-request` that starts nothing. `size`
 and `quality` an older client sends are ignored (#317). `POST /prompt_manager/jobs/thumbnails {mode}` starts the
@@ -2178,6 +2178,12 @@ previews take the same settings: the OpenCV frame, ffmpeg's frame (no OpenCV; a 
 stdout fitted inside the edge keeping its aspect ratio and never upscaled, `-vf
 scale='min(iw,E)':'min(ih,E)':force_original_aspect_ratio=decrease`) and the
 placeholder are encoded like an image's preview.
+MAX_THUMBNAIL_FILES (10,000) bounds one batch, not the job: after each batch the
+missing, rebuild and convert jobs plan again, leaving out every file a batch already
+worked on, and go on until nothing is left, the job is cancelled, or a batch made no
+progress (every file failed: the rest waits for the next run). Progress counts against
+the overall total and the final line reports every batch (`TestBatchesContinue`,
+`test_convert_goes_on_past_the_per_batch_cap`). The plan dialog counts all of it.
 `rebuild` writes fresh previews again, each through the same temp-file
 rename, so nothing is cleared first and a failed file keeps its old preview (a video
 whose frame cannot be decoded keeps its preview instead of getting the placeholder);
@@ -2185,7 +2191,7 @@ originals are only read (`tests/test_thumbnail_jobs.py`). Cancel is also checked
 file during the planning walk: a job cancelled there stops the walk at the next file,
 publishes no `start` frame and ends "Cancelled before any preview was written". Every
 exit sets a final status line: "N previews written · M errors" (plus "· R more on the
-next run" past the cap), "No previews to generate · N already up to date" (or "No
+next run" when a batch made no progress), "No previews to generate · N already up to date" (or "No
 images or videos to preview"), "Cancelled · N previews written", or the failure; a job
 with nothing to do never reads "Processing file 0 of 0" (`test_every_exit_sets_a_truthful_final_status_line`,
 and "a finished thumbnail job with nothing to do says so" in `workspace-activity.spec.mjs`).
@@ -2485,8 +2491,8 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   maintenance") with production copy. A `p.small[role=status]` line before the actions
   says what the server's read-only plan (`GET /images/thumbnails/plan`) counts for the
   chosen scope: "N previews to generate · M already up to date." or, for Rebuild all,
-  "Every preview is regenerated: N files.", with "· R more on the next run" past the
-  per-run cap; "Counting previews…" while it is read and "The previews could not be
+  "Every preview is regenerated: N files.", N counting the files past the per-batch
+  cap too (#317); "Counting previews…" while it is read and "The previews could not be
   counted." when the read fails (Start still starts). Each scope is read once per
   dialog, since size and quality change no count. The primary is "Start" (the
   concept's "Simulate thumbnail job"). Overview's Review thumbnails opens the same

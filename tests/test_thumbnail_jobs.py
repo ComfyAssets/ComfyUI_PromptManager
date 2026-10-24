@@ -687,6 +687,113 @@ LEGACY_KEYS = {
 }
 
 
+class TestBatchesContinue(ThumbnailJobCase):
+    """MAX_THUMBNAIL_FILES bounds one batch, not the job: after each batch
+    the job plans again and goes on until nothing is left, it is cancelled,
+    or a batch makes no progress (files that fail every time are never
+    planned again)."""
+
+    def _sources(self, count, broken=False):
+        for i in range(count):
+            path = self.output_dir / f"s{i}.png"
+            if broken:
+                path.write_bytes(b"\x89PNG broken")
+            else:
+                make_png(path, size=(32, 32))
+
+    async def test_one_job_makes_every_preview_past_the_cap(self):
+        self._sources(8)
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 3):
+            status, body = await self._start(mode="missing")
+            self.assertEqual(status, 202)
+            job = await self._finished(body["job"]["id"])
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(job.counters["generated"], 8)
+        for i in range(8):
+            self.assertTrue(self._thumb_path(f"s{i}").is_file(), i)
+        summary = job.summary()
+        self.assertEqual((summary["total"], summary["processed"]), (8, 8))
+        self.assertEqual(summary["progress"], 100)
+        self.assertEqual(job.status_line, "8 previews written")
+
+    async def test_rebuild_goes_through_every_file_once(self):
+        self._sources(5)
+        calls = []
+        real = self.api._generate_batch
+
+        def counting(batch, *args, **kwargs):
+            calls.extend(src.name for src, _dst, _video in batch)
+            return real(batch, *args, **kwargs)
+
+        self.api._generate_batch = counting
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 2):
+            _, body = await self._start(mode="rebuild")
+            job = await self._finished(body["job"]["id"])
+        self.assertEqual(sorted(calls), [f"s{i}.png" for i in range(5)])
+        self.assertEqual(job.counters["generated"], 5)
+
+    async def test_cancel_between_batches_stops_the_job(self):
+        self._sources(8)
+        real = self.api._plan_gallery_thumbnails
+        plans = []
+        job_ids = []
+
+        def cancelling(*args, **kwargs):
+            plans.append(1)
+            if len(plans) == 2:
+                self.assertTrue(self.api._jobs.cancel(job_ids[0]))
+            return real(*args, **kwargs)
+
+        self.api._plan_gallery_thumbnails = cancelling
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 3):
+            _, body = await self._start(mode="missing")
+            job_ids.append(body["job"]["id"])
+            job = await self._finished(job_ids[0])
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(job.counters["generated"], 3)
+        self.assertEqual(len(plans), 2)
+
+    async def test_a_batch_where_everything_fails_stops(self):
+        self._sources(8, broken=True)
+        plans = []
+        real = self.api._plan_gallery_thumbnails
+
+        def counting(*args, **kwargs):
+            plans.append(1)
+            return real(*args, **kwargs)
+
+        self.api._plan_gallery_thumbnails = counting
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 3):
+            _, body = await self._start(mode="missing")
+            job = await asyncio.wait_for(self._finished(body["job"]["id"]), 10)
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(len(plans), 1, "no second plan after a batch with no progress")
+        self.assertEqual(job.counters["errors"], 3)
+        self.assertIn("5 more on the next run", job.status_line)
+
+    async def test_failed_files_are_never_planned_again(self):
+        # One bad file per batch still lets the job go on, without retrying it.
+        for i in range(6):
+            path = self.output_dir / f"m{i}.png"
+            if i in (0, 3):
+                path.write_bytes(b"\x89PNG broken")
+            else:
+                make_png(path, size=(32, 32))
+        seen = []
+        real = self.api._generate_batch
+
+        def counting(batch, *args, **kwargs):
+            seen.extend(src.name for src, _dst, _video in batch)
+            return real(batch, *args, **kwargs)
+
+        self.api._generate_batch = counting
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 2):
+            _, body = await self._start(mode="missing")
+            job = await self._finished(body["job"]["id"])
+        self.assertEqual(sorted(seen), sorted(f"m{i}.png" for i in range(6)))
+        self.assertEqual((job.counters["generated"], job.counters["errors"]), (4, 2))
+
+
 class TestLegacyStreamOnTheJob(ThumbnailJobCase):
     async def test_legacy_progress_events_unchanged_on_success(self):
         make_png(self.output_dir / "a.png", size=(400, 400))

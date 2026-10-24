@@ -167,21 +167,14 @@ class ThumbnailConvertMixin:
         job.log_line(
             f"Conversion started · {folders} · to {options.settings.describe()}"
         )
-        plan = await self._run_in_executor(
-            self._plan_gallery_thumbnails,
-            output_dirs,
-            "convert",
-            stop=lambda: job.cancelled,
-            settings=options.settings,
-        )
+        plan = await self._plan_conversion(job, options, output_dirs)
         if job.cancelled:
             return self._end_conversion(job, 0, CANCELLED_BEFORE_CONVERTING)
-        targets = plan["targets"]
-        if not targets:
+        if not plan["targets"]:
             job.update(progress=100, status_line=NOTHING_OUTDATED)
             job.log_line(f"Conversion finished · {NOTHING_OUTDATED.lower()}")
             return "finished"
-        totals = await self._convert_targets(job, options, targets, output_dirs)
+        totals, left = await self._convert_in_batches(job, options, plan, output_dirs)
         self.invalidate_gallery_cache()
         if totals["stopped"]:
             job.update(status_line=FORMAT_CHANGED.format(converted=totals["converted"]))
@@ -196,7 +189,7 @@ class ThumbnailConvertMixin:
                 totals["converted"],
                 f"Cancelled · {_plural(totals['converted'], 'preview')} converted",
             )
-        line = _finished_line(totals, plan["remaining"])
+        line = _finished_line(totals, left)
         job.update(progress=100, status_line=line)
         job.log_line(f"Conversion finished · {line}")
         self.logger.info(f"Thumbnail conversion: {line}")
@@ -210,18 +203,59 @@ class ThumbnailConvertMixin:
         )
         return "cancelled"
 
-    async def _convert_targets(self, job, options, targets, output_dirs):
-        """Convert *targets* in worker batches of preview groups, recording
-        each file."""
-        roots = _scan_roots(output_dirs)
-        total = len(targets)
-        groups = _group_targets(targets)
-        job.update(total=total, status_line=_scan_status_line(0, total, 0, 0))
+    async def _plan_conversion(self, job, options, output_dirs, exclude=None):
+        """One batch's plan (at most MAX_THUMBNAIL_FILES targets), off-loop."""
+        return await self._run_in_executor(
+            self._plan_gallery_thumbnails,
+            output_dirs,
+            "convert",
+            stop=lambda: job.cancelled,
+            settings=options.settings,
+            exclude=exclude,
+        )
+
+    async def _convert_in_batches(self, job, options, plan, output_dirs):
+        """Convert ``plan``, then plan again after each batch until nothing
+        is left, the job is cancelled or stopped, or a batch converted
+        nothing (files that fail are never planned again). Returns
+        ``(totals across batches, files left)``."""
         totals = {"converted": 0, "failed": 0, "before": 0, "after": 0}
         totals["stopped"] = False
-        start = time.monotonic()
+        run = {
+            "index": 0,
+            "batches": 0,
+            "total": len(plan["targets"]) + plan["remaining"],
+        }
+        run["start"] = time.monotonic()
+        job.update(
+            total=run["total"], status_line=_scan_status_line(0, run["total"], 0, 0)
+        )
+        attempted = set()
+        while True:
+            before = totals["converted"]
+            await self._convert_targets(
+                job, options, plan["targets"], output_dirs, totals, run
+            )
+            attempted.update(src for src, _dst, _video in plan["targets"])
+            stop = job.cancelled or totals["stopped"]
+            if stop or not plan["remaining"] or totals["converted"] == before:
+                return totals, plan["remaining"]
+            plan = await self._plan_conversion(
+                job, options, output_dirs, exclude=attempted
+            )
+            if job.cancelled:
+                return totals, 0
+            run["total"] = run["index"] + len(plan["targets"]) + plan["remaining"]
+            job.update(total=run["total"])
+            if not plan["targets"]:
+                return totals, plan["remaining"]
+
+    async def _convert_targets(self, job, options, targets, output_dirs, totals, run):
+        """Convert one batch's *targets* in worker batches of preview groups,
+        recording each file against the job's overall ``run`` counters."""
+        roots = _scan_roots(output_dirs)
+        groups = _group_targets(targets)
         batch_size = _thumbnail_batch_size(_worker_threads())
-        index = batches = 0
         for batch_start in range(0, len(groups), batch_size):
             if job.cancelled or totals["stopped"]:
                 break
@@ -235,17 +269,20 @@ class ThumbnailConvertMixin:
                         totals["stopped"] = True
                     if result["action"] in ("cancelled", "stopped"):
                         continue
-                    index += 1
+                    run["index"] += 1
+                    index, total = run["index"], max(run["total"], run["index"])
                     self._record_conversion(job, src, result, roots, totals)
                     job.update(processed=index, progress=index * 100 // total)
-            batches += 1
+            run["batches"] += 1
             job.update(
                 status_line=_scan_status_line(
-                    index, total, batches, time.monotonic() - start
+                    run["index"],
+                    run["total"],
+                    run["batches"],
+                    time.monotonic() - run["start"],
                 )
             )
             await asyncio.sleep(0)  # let other requests run between batches
-        return totals
 
     @staticmethod
     def _record_conversion(job, src, result, roots, totals):

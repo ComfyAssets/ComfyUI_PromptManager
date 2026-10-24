@@ -25,10 +25,10 @@ test('D131: the dialog names the server thumbnail settings instead of its own qu
     }
 });
 
-test('Convert outdated says how many previews in an older format it converts (#317)', async () => {
+test('Convert outdated says how many previews in an older format it converts, past the per-batch cap too (#317)', async () => {
     const { planText } = await reviewModule;
     assert.equal(planText({ mode: 'convert', targets: 17500, fresh: 2000, outdated: 17500, remaining: 7500 }),
-        '17,500 previews in an older format to convert · 7,500 more on the next run.');
+        '25,000 previews in an older format to convert.');
     assert.equal(planText({ mode: 'convert', targets: 1, fresh: 0, outdated: 1, remaining: 0 }), '1 preview in an older format to convert.');
     assert.equal(planText({ mode: 'convert', targets: 0, fresh: 9, outdated: 0, remaining: 0 }), 'No previews in an older format.');
 });
@@ -39,7 +39,7 @@ test('the plan line counts what a missing-only run generates and what is already
     assert.equal(planText({ mode: 'missing', targets: 1, fresh: 1, remaining: 0 }), '1 preview to generate · 1 already up to date.');
     assert.equal(planText({ mode: 'missing', targets: 0, fresh: 0, remaining: 0 }), '0 previews to generate · 0 already up to date.');
     assert.equal(planText({ mode: 'missing', targets: 10000, fresh: 5, remaining: 2500 }),
-        '10,000 previews to generate · 5 already up to date · 2,500 more on the next run.');
+        '12,500 previews to generate · 5 already up to date.');
 });
 
 test('Rebuild all says every preview is regenerated (D99)', async () => {
@@ -47,7 +47,7 @@ test('Rebuild all says every preview is regenerated (D99)', async () => {
     assert.equal(planText({ mode: 'rebuild', targets: 42, fresh: 30, remaining: 0 }), 'Every preview is regenerated: 42 files.');
     assert.equal(planText({ mode: 'rebuild', targets: 1, fresh: 1, remaining: 0 }), 'Every preview is regenerated: 1 file.');
     assert.equal(planText({ mode: 'rebuild', targets: 10000, fresh: 9000, remaining: 3 }),
-        'Every preview is regenerated: 10,000 files · 3 more on the next run.');
+        'Every preview is regenerated: 10,003 files.');
 });
 
 test('an answer without counts is a failed plan, never zeros', async () => {

@@ -253,41 +253,83 @@ class ThumbnailJobsMixin:
                 {"phase": "scanning", "message": "Scanning for images and videos..."},
             )
         )
-        plan = await self._run_in_executor(
-            self._plan_gallery_thumbnails,
-            output_dirs,
-            options.mode,
-            stop=lambda: job.cancelled,
-            settings=options.settings,
-        )
+        plan = await self._plan_thumbnail_batch(job, options, output_dirs)
         if job.cancelled:  # M2: stopped during the walk, before any start frame
             return self._end_cancelled(job, 0, CANCELLED_BEFORE_WRITING)
         roots = _scan_roots(output_dirs)
         self._record_fresh(job, plan, roots)
-        stats, start = await self._generate_thumbnail_targets(job, options, plan, roots)
+        stats, start, left, attempted = await self._generate_in_batches(
+            job, options, plan, roots, output_dirs
+        )
         self.invalidate_gallery_cache()
         generated = _plural(stats["generated"], "preview")
         if job.cancelled:
             return self._end_cancelled(
                 job, stats["generated"], f"Cancelled · {generated} written"
             )
+        overall = {"targets": attempted, "skipped": plan["skipped"], "remaining": left}
         payload = _thumbnail_complete_payload(
-            len(plan["targets"]) + plan["skipped"] + plan["remaining"],
+            len(attempted) + plan["skipped"] + left,
             stats,
             start,
-            remaining=plan["remaining"],
-            processed=len(plan["targets"]),
+            remaining=left,
+            processed=len(attempted),
         )
-        job.update(progress=100, status_line=_finished_line(plan, stats))
-        if plan["remaining"]:
-            job.log_line(
-                f"{plan['remaining']:,} more previews are left for the next run"
-            )
+        job.update(progress=100, status_line=_finished_line(overall, stats))
+        if left:
+            job.log_line(f"{left:,} more previews are left for the next run")
         errors = _plural(len(stats["errors"]), "error")
         job.log_line(f"Thumbnails finished · {generated} written · {errors}")
         self.logger.info(payload["message"])
         job.publish(_frame("complete", payload))
         return "finished"
+
+    async def _plan_thumbnail_batch(self, job, options, output_dirs, exclude=None):
+        """One batch's plan (at most MAX_THUMBNAIL_FILES targets), off-loop."""
+        return await self._run_in_executor(
+            self._plan_gallery_thumbnails,
+            output_dirs,
+            options.mode,
+            stop=lambda: job.cancelled,
+            settings=options.settings,
+            exclude=exclude,
+        )
+
+    async def _generate_in_batches(self, job, options, plan, roots, output_dirs):
+        """Work through ``plan``, then plan again after each batch until
+        nothing is left, the job is cancelled, or a batch made no progress
+        (every file failed: they are not planned again, and the rest waits
+        for the next run). Files worked on are never planned twice. Returns
+        ``(stats, start, files left, files worked on)``; progress counts
+        against the overall total."""
+        run = {
+            "index": 0,
+            "batches": 0,
+            "total": len(plan["targets"]) + plan["remaining"],
+        }
+        stats = _new_thumbnail_stats()
+        stats["skipped"] = plan["skipped"]
+        start = time.monotonic()
+        self._publish_thumbnail_start(job, plan, run["total"])
+        attempted = set()
+        while True:
+            before = stats["generated"] + stats["skipped"]
+            await self._generate_thumbnail_targets(
+                job, options, plan, roots, stats, run, start
+            )
+            attempted.update(src for src, _dst, _video in plan["targets"])
+            progressed = stats["generated"] + stats["skipped"] > before
+            if job.cancelled or not plan["remaining"] or not progressed:
+                return stats, start, plan["remaining"], attempted
+            plan = await self._plan_thumbnail_batch(
+                job, options, output_dirs, exclude=attempted
+            )
+            if job.cancelled:
+                return stats, start, 0, attempted
+            run["total"] = run["index"] + len(plan["targets"]) + plan["remaining"]
+            job.update(total=run["total"])
+            if not plan["targets"]:
+                return stats, start, plan["remaining"], attempted
 
     @staticmethod
     def _end_cancelled(job, generated, status_line):
@@ -316,10 +358,10 @@ class ThumbnailJobsMixin:
         if plan["skipped"]:
             job.log_line(f"= {plan['skipped']:,} previews already up to date")
 
-    async def _generate_thumbnail_targets(self, job, options, plan, roots):
-        """Generate ``plan``'s targets in worker batches, publishing each file."""
+    @staticmethod
+    def _publish_thumbnail_start(job, plan, total):
+        """The legacy stream's start frame, with the job's overall total."""
         targets = plan["targets"]
-        total = len(targets)
         video_count = sum(1 for _, _, is_video in targets if is_video)
         message = (
             f"Found {total - video_count} images and {video_count} videos to process"
@@ -335,7 +377,7 @@ class ThumbnailJobsMixin:
                 {
                     "total_images": total,
                     "skipped": plan["skipped"],
-                    "remaining": plan["remaining"],
+                    "remaining": 0,
                     "phase": "processing",
                     "image_count": total - video_count,
                     "video_count": video_count,
@@ -343,17 +385,19 @@ class ThumbnailJobsMixin:
                 },
             )
         )
-        stats = _new_thumbnail_stats()
-        stats["skipped"] = plan["skipped"]
-        start = time.monotonic()
+
+    async def _generate_thumbnail_targets(
+        self, job, options, plan, roots, stats, run, start
+    ):
+        """Generate one batch (``plan``'s targets) in worker batches,
+        publishing each file against the job's overall ``run`` counters."""
+        targets = plan["targets"]
         batch_size = _thumbnail_batch_size(_worker_threads())
         generate = {
             "rebuild": options.rebuild,
             "stop": lambda: job.cancelled,
         }
-        index = 0
-        batches = 0
-        for batch_start in range(0, total, batch_size):
+        for batch_start in range(0, len(targets), batch_size):
             if job.cancelled:
                 break
             batch = targets[batch_start : batch_start + batch_size]
@@ -363,7 +407,8 @@ class ThumbnailJobsMixin:
             for (src, _dst, _video), result in zip(batch, results):
                 if result["action"] == "cancelled":
                     continue
-                index += 1
+                run["index"] += 1
+                index, total = run["index"], max(run["total"], run["index"])
                 _record_thumbnail_result(stats, result)
                 self._record_thumbnail_outcome(job, src, result, roots)
                 job.update(processed=index, progress=index * 100 // total)
@@ -380,14 +425,13 @@ class ThumbnailJobsMixin:
                         _thumbnail_progress_payload(index, total, stats, result, start),
                     )
                 )
-            batches += 1
+            run["batches"] += 1
             job.update(
                 status_line=_scan_status_line(
-                    index, total, batches, time.monotonic() - start
+                    run["index"], run["total"], run["batches"], time.monotonic() - start
                 )
             )
             await asyncio.sleep(0)  # let other requests run between batches
-        return stats, start
 
     @staticmethod
     def _record_thumbnail_outcome(job, src, result, roots):

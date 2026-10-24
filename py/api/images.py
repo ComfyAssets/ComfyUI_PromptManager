@@ -1991,12 +1991,15 @@ class ImageRoutesMixin:
         mode: str = "missing",
         stop=None,
         settings=None,
+        exclude=None,
     ) -> dict:
-        """Plan every gallery root with one shared per-run generation cap.
+        """Plan every gallery root with one shared per-batch generation cap.
 
         See ``_plan_thumbnails``; ``fresh_files`` keeps at most
         MAX_FRESH_LISTED files across the roots. ``stop()`` true ends the walk
         at the next file (a cancelled job); the partial plan is returned.
+        *exclude* (a set of source paths) leaves files a job already worked
+        on out of a later batch's plan.
         """
         settings = writer_settings(settings)
         combined = {key: 0 for key in _PLAN_COUNTS}
@@ -2006,7 +2009,12 @@ class ImageRoutesMixin:
                 break
             root = Path(root)
             plan = self._plan_thumbnails(
-                root, root / "thumbnails", mode=mode, stop=stop, settings=settings
+                root,
+                root / "thumbnails",
+                mode=mode,
+                stop=stop,
+                settings=settings,
+                exclude=exclude,
             )
             available = max(0, MAX_THUMBNAIL_FILES - len(combined["targets"]))
             combined["targets"].extend(plan["targets"][:available])
@@ -2054,7 +2062,13 @@ class ImageRoutesMixin:
             )
 
     def _plan_thumbnails(
-        self, output_path, thumbnails_dir, mode="missing", stop=None, settings=None
+        self,
+        output_path,
+        thumbnails_dir,
+        mode="missing",
+        stop=None,
+        settings=None,
+        exclude=None,
     ):
         """Decide which media files need a preview (blocking walk).
 
@@ -2071,9 +2085,10 @@ class ImageRoutesMixin:
         ``fresh_files`` lists the first MAX_FRESH_LISTED fresh files. The walk
         is bounded like the gallery listing (MAX_SCAN_DEPTH, MAX_GALLERY_FILES,
         no symlinks), each preview folder is listed once, and at most
-        MAX_THUMBNAIL_FILES targets are queued per run; ``remaining`` counts
-        the targets beyond that cap. ``stop()`` true ends the walk before the
-        next file.
+        MAX_THUMBNAIL_FILES targets are queued per batch (a job plans again
+        after each batch); ``remaining`` counts the targets beyond that cap.
+        Sources in *exclude* (worked on by an earlier batch) are left out.
+        ``stop()`` true ends the walk before the next file.
         """
         settings = writer_settings(settings)
         output_path = Path(output_path)
@@ -2084,6 +2099,8 @@ class ImageRoutesMixin:
         for src in _iter_media_files(output_path, MAX_GALLERY_FILES):
             if stop is not None and stop():
                 break
+            if exclude and src in exclude:
+                continue
             rel_no_ext = src.relative_to(output_path).with_suffix("")
             stem = f"{rel_no_ext.name}{thumbnail_settings.THUMB_SUFFIX}"
             dst = thumbnails_dir / rel_no_ext.parent / (stem + settings.extension)
@@ -2109,8 +2126,8 @@ class ImageRoutesMixin:
             plan["targets"].append((src, dst, is_video))
         if plan["remaining"]:
             self.logger.warning(
-                f"Thumbnail run capped at {MAX_THUMBNAIL_FILES} new files; "
-                f"{plan['remaining']} more will be generated on the next run"
+                f"Thumbnail batch capped at {MAX_THUMBNAIL_FILES} files; "
+                f"{plan['remaining']} more are left for the next batch"
             )
         return plan
 

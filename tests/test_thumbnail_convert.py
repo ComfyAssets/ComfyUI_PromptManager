@@ -410,6 +410,19 @@ class TestConvertOutdated(ConvertCase):
             self.assertTrue(tc._same_file(a, self.output_dir / "." / "a_thumb.jpg"))
         self.assertFalse(tc._same_file(a, self.output_dir / "gone.jpg"))
 
+    async def test_convert_goes_on_past_the_per_batch_cap(self):
+        import py.api.images as images_module
+
+        olds = [self._legacy(f"c{i}") for i in range(8)]
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 3):
+            _, job = await self._convert()
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(job.counters["generated"], 8)
+        self.assertFalse(any(old.exists() for old in olds))
+        self.assertEqual(job.summary()["total"], 8)
+        self.assertRegex(job.status_line, r"^8 converted · 0 failed · ")
+        self.assertNotIn("next run", job.status_line)
+
     def test_byte_sizes_are_readable(self):
         from py.api.thumbnail_convert import readable_bytes
 

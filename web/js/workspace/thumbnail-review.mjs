@@ -11,8 +11,8 @@
  *   ("Previews are written as WebP · quality 80 · 512 px. …").
  * - D99: a `p.small[role=status]` line before the actions says what the server's plan counts for the chosen scope
  *   (`GET /images/thumbnails/plan?mode=`, read-only): "N previews to generate · M already up to date.", for a rebuild
- *   "Every preview is regenerated: N files.", for a conversion "N previews in an older format to convert.", plus
- *   "· R more on the next run" past the per-run cap. Each scope is read once per dialog. The primary is "Start" (the
+ *   "Every preview is regenerated: N files.", for a conversion "N previews in an older format to convert.". N counts
+ *   the files past the per-batch cap too: the job plans again after each batch (#317). Each scope is read once per dialog. The primary is "Start" (the
  *   concept's "Simulate thumbnail job"): it closes the dialog and starts the job through the Activity store, which
  *   toasts that it started; the job opens in Activity, where its progress lives. A start refused because another job
  *   holds the slot toasts the D57 busy link toast and stays.
@@ -50,13 +50,14 @@ export function planText(plan) {
     if (!plan || !MODES.has(plan.mode) || ![plan.targets, plan.fresh, plan.remaining].every(isCount)) {
         return PLAN_FAILED;
     }
-    const more = plan.remaining ? ` · ${count(plan.remaining)} more on the next run` : '';
-    if (plan.mode === 'rebuild') return `Every preview is regenerated: ${count(plan.targets)} ${noun(plan.targets, 'file')}${more}.`;
+    // #317: the cap bounds one batch, not the job, which plans again until nothing is left: the line counts it all.
+    const work = plan.targets + plan.remaining;
+    if (plan.mode === 'rebuild') return `Every preview is regenerated: ${count(work)} ${noun(work, 'file')}.`;
     if (plan.mode === 'convert') {
-        if (!plan.targets && !plan.remaining) return 'No previews in an older format.';
-        return `${count(plan.targets)} ${noun(plan.targets, 'preview')} in an older format to convert${more}.`;
+        if (!work) return 'No previews in an older format.';
+        return `${count(work)} ${noun(work, 'preview')} in an older format to convert.`;
     }
-    return `${count(plan.targets)} ${noun(plan.targets, 'preview')} to generate · ${count(plan.fresh)} already up to date${more}.`;
+    return `${count(work)} ${noun(work, 'preview')} to generate · ${count(plan.fresh)} already up to date.`;
 }
 
 /**
