@@ -295,6 +295,47 @@ class _Decision:
     target_source: Optional[str] = None
 
 
+def _configured_sources(module, environ, extension_root, default, raw_env):
+    """The image sources every config.json this resolver might read lists.
+
+    ``config_location`` runs before any config.json is loaded, so it cannot be
+    handed the configured sources; both it and ``resolve_library`` read them
+    here, from each candidate file (the explicit one, the environment
+    folder's, the node folder's and the default folder's), so the two always
+    judge ``PROMPT_MANAGER_DATA_DIR`` alike. Relative sources are taken from
+    ComfyUI's base folder, as the gallery resolves them.
+    """
+    candidates = [environ.get(CONFIG_PATH_ENV, "").strip()]
+    if raw_env and os.path.isabs(raw_env):
+        candidates.append(os.path.join(raw_env, CONFIG_NAME))
+    candidates.append(os.path.join(extension_root, CONFIG_NAME))
+    if default:
+        candidates.append(os.path.join(default, CONFIG_NAME))
+    base = getattr(module, "base_path", None) if module is not None else None
+    sources = []
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            directories = data["gallery"]["monitoring"]["directories"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if not isinstance(directories, list):
+            continue
+        for directory in directories:
+            if not isinstance(directory, str) or not directory.strip():
+                continue
+            directory = directory.strip()
+            if not os.path.isabs(directory):
+                if not base:
+                    continue
+                directory = os.path.join(str(base), directory)
+            sources.append(directory)
+    return sources
+
+
 def _decide(environ, extension_root, folder_paths, gallery_roots) -> _Decision:
     """Which folder holds the library (before an explicit database path)."""
     module = _folder_paths(folder_paths)
@@ -306,11 +347,14 @@ def _decide(environ, extension_root, folder_paths, gallery_roots) -> _Decision:
     env_dir = None
     raw = environ.get(DATA_DIR_ENV, "")
     if raw.strip():
+        sources = list(gallery_roots or ()) + _configured_sources(
+            module, environ, extension_root, default, raw.strip()
+        )
         problem = data_dir_problem(
             raw.strip(),
             folder_paths=module,
             environ=environ,
-            gallery_roots=gallery_roots,
+            gallery_roots=sources,
         )
         if problem is None:
             env_dir = os.path.abspath(raw.strip())

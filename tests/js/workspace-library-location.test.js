@@ -8,6 +8,7 @@ const locationModule = import('../../web/js/workspace/library-location.mjs');
 const NODE_FOLDER = Object.freeze({
     path: 'custom_nodes/ComfyUI_PromptManager/prompts.db', source: 'node_folder', movable: true, keep: false, offer: true,
     target: 'user/__promptmanager', problem: null, size_bytes: 1_700_000_000,
+    target_source: 'default', config_moves: true,
 });
 
 function scope() {
@@ -44,6 +45,19 @@ test('the row says where the library is and why, the choice and any problem', as
     assert.match(locationDescription({ ...NODE_FOLDER, problem: 'data-dir-empty' }), /PROMPT_MANAGER_DATA_DIR has no library yet/);
     assert.match(locationDescription({ path: 'prompts.db', source: 'environment', movable: false }), /PROMPT_MANAGER_DATA_DIR names/);
     assert.match(locationDescription({ path: 'prompts.db', source: 'config', movable: false }), /config\.json/);
+});
+
+test('the notice and the review name the actual target and what moves', async () => {
+    const { bannerText, reviewGrid, locationDescription } = await locationModule;
+    assert.match(bannerText(NODE_FOLDER), /Move it to ComfyUI's user folder: it is copied/);
+    assert.match(bannerText({ ...NODE_FOLDER, target_source: 'environment' }),
+        /Move it to the folder PROMPT_MANAGER_DATA_DIR names: it is copied/);
+    assert.match(bannerText(null), /ComfyUI's user folder/);
+    assert.equal(reviewGrid({ ...NODE_FOLDER, config_moves: false })[3][1],
+        'The database backups (config.json stays where PROMPT_MANAGER_CONFIG_PATH names it)');
+    assert.equal(reviewGrid({ ...NODE_FOLDER, config_moves: true })[3][1], 'config.json and the database backups');
+    assert.match(locationDescription({ path: 'custom_nodes/pm/data/my.db', source: 'config', movable: false,
+        problem: 'inside-node-folder' }), /inside the node folder, where an update or reinstall deletes it/);
 });
 
 test('only a well-formed location is shown', async () => {

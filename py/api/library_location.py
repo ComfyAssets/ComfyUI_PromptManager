@@ -139,6 +139,9 @@ class LibraryLocationRoutesMixin:
             pass
         return {
             "path": self._public_path(location.db_path),
+            # Where Move library would put it, and whether config.json goes too.
+            "target_source": location.target_source if location.movable else None,
+            "config_moves": location.movable and not location.config_explicit,
             "source": location.source,
             "movable": location.movable,
             "keep": keep,
@@ -146,9 +149,33 @@ class LibraryLocationRoutesMixin:
             "target": (
                 self._public_path(location.target_dir) if location.movable else None
             ),
-            "problem": location.problem,
+            "problem": location.problem or self._node_folder_risk(location),
             "size_bytes": size,
         }
+
+    # The node folder (tests point it at a temp tree).
+    _extension_root = ll.EXTENSION_ROOT
+
+    def _node_folder_risk(self, location):
+        """``inside-node-folder`` for a library that stays in the node folder.
+
+        A configured database path, or a config.json the resolver still reads
+        from the node folder, is deleted with the node by a reinstall, and
+        it is never offered a move.
+        """
+        if location.source == ll.SOURCE_NODE_FOLDER:
+            return None
+        paths = [location.db_path] + (
+            [] if location.config_explicit else [location.config_path]
+        )
+        root = self._extension_root
+        for path in paths:
+            parent = os.path.dirname(os.path.abspath(path))
+            if ll.same_folder(parent, root) or os.path.normcase(
+                os.path.realpath(parent)
+            ).startswith(os.path.normcase(os.path.realpath(root)) + os.sep):
+                return "inside-node-folder"
+        return None
 
     def _library_payload(self):
         return self._location_payload(self._live_location())
@@ -201,12 +228,26 @@ class LibraryLocationRoutesMixin:
             return busy_response(busy)
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
-    def _switch_library(self, old_db, location):
-        """Point the process and this API at the moved library (blocking)."""
-        lm.switch_process(old_db, location)
-        # Plans, health reports and history reads described the old file.
+    def _after_library_switch(self):
+        """Forget what described the old file (best effort, after the switch).
+
+        Plans, the health report and the history read fence named the old
+        file; the fence is closed before it is dropped.
+        """
         self._database_replaced()
-        self._history_read_fence = None
+        fence, self._history_read_fence = self._history_read_fence, None
+        if fence is not None:
+            fence.close()
+
+    def finish_interrupted_library_move(self):
+        """Startup: rename old files a crash left after a move (blocking)."""
+        try:
+            location = self._library_resolver()
+            if _same_file(location.db_path, self.db.model.db_path):
+                return lm.finish_interrupted_move(location)
+        except Exception:
+            self.logger.exception("Could not finish an interrupted library move")
+        return []
 
     async def _run_library_move(self, job):
         from ..config_store import _COMMIT_LOCK
@@ -229,15 +270,16 @@ class LibraryLocationRoutesMixin:
                 functools.partial(
                     lm.move_library,
                     plan,
-                    switch=self._switch_library,
+                    after_switch=self._after_library_switch,
                     config_lock=_COMMIT_LOCK,
                     progress=progress,
                 )
             )
         except lm.MoveFailed as failed:
             self.logger.error(f"Move library failed: {failed.code}")
-            tail = "" if failed.code == "switch-failed" else f" {STILL_THERE}"
-            return self._fail_library_move(job, failed.code, failed.message + tail)
+            return self._fail_library_move(
+                job, failed.code, f"{failed.message} {STILL_THERE}"
+            )
         except Exception:
             self.logger.exception("Move library failed")
             return self._fail_library_move(job, None, f"{NOT_MOVED} {STILL_THERE}")

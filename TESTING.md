@@ -2851,7 +2851,9 @@ workflow (README changelog).
 database), the logs (`utils/logging_config.py`) and the LoRA image cache
 (`py/lora_utils.py`). Order: a valid `PROMPT_MANAGER_DATA_DIR` (absolute, never inside
 ComfyUI's output, input or temp folder, a public user folder, an extra gallery root or
-a gallery source; an invalid one is ignored and reported as a problem code), used when
+an image source listed in any config.json the resolver may read; `config_location` and
+`resolve_library` read those sources the same way, so config.json and the database
+never split; an invalid one is ignored and reported as a problem code), used when
 it holds a library or no node-folder library exists; an explicit
 `database.default_path` other than `prompts.db` (relative to the node folder, as
 before) and `PROMPT_MANAGER_CONFIG_PATH`, honoured as before; ComfyUI's
@@ -2894,6 +2896,42 @@ path (`tests/test_api_library_location.py`). The real-host `library-location.spe
 (execution suite, its own fresh host on an OS-chosen port, no configuration) proves a new
 install creates `user/__promptmanager/prompts.db` and its logs, adds nothing but byte
 code to the node folder, and that `/userdata` serves none of it.
+
+The switch runs while the copy is write-locked too (a guard transaction on it), so a
+switch that fails at any point (the resolver, part of the models, the observers) is
+undone whole: every model points at the old file again, the copy and its marker are
+removed, and the move fails "… Nothing was moved." (`TestFailedSwitchIsUndone`). What
+follows a complete switch (dropping plans, the health report, the history read fence,
+which is closed first) is best effort: logged, never a failed move. A thread that
+opens a connection while the model is being repointed keeps it only if the model's
+generation did not change meanwhile (`PromptModel.get_connection`).
+
+Writes racing the switch: a background write that was waiting on the old file's lock
+when the switch closed its connection fails, and run counting (`count_runs`,
+`count_pair_runs`) and the image monitor's link (`ImageGenerationHandler.
+link_image_to_prompt`) run it once more through `PromptDatabase.survive_library_switch`
+when the model's generation changed during the attempt; the retry opens the new
+library (`TestBackgroundWritesSurviveTheSwitch`, including a real UPDATE blocked on the
+lock that lands in the new file). Any other failure is not retried. Known limit: that
+blocked writer, and the mover with it, waits out the writer's busy timeout (30 s)
+before its connection closes: SQLite holds the connection's mutex during the busy
+wait, so neither a close nor `Connection.interrupt()` ends it sooner (measured), and
+another thread cannot shorten the timeout of a connection in use. Other writes are
+unaffected: threads that ask for a connection after the switch get the new file.
+Writes from the HTTP routes (a prompt saved in the dashboard at that moment) are not
+retried and report their error.
+
+A restart after a crash between the switch and the rename finishes the rename: the
+marker names the old `prompts.db` and `config.json` (`from`, `config_from`), and the API
+renames them `*.moved-to-<folder>` at startup when they are still there under their
+own names, never deleting them and leaving a file still in use alone
+(`TestRestartFinishesTheRename`). A second ComfyUI process using the same node folder
+(two installs sharing one custom_nodes folder) is not switched: it keeps writing to the
+old file, renamed or not, and those writes are not in the moved library; a rename while
+it has the file open is refused as `old-in-use`. The Overview flags a library that stays
+in the node folder through an explicit `database.default_path` or a node-folder
+config.json (`inside-node-folder`: a reinstall deletes it, CivitAI key included); it is
+not offered a move.
 
 Windows: every connection to the old file is closed before its rename (the source
 snapshot connection, every model's connections, the checkpoint connection); temp files

@@ -315,6 +315,49 @@ class TestDataDirValidation(_Case):
         self.assertEqual(relative.problem, "data-dir-not-absolute")
 
 
+class TestOneRuleForConfigAndDatabase(_Case):
+    """M1: config.json and the database never split over PROMPT_MANAGER_DATA_DIR."""
+
+    def test_a_source_listed_only_in_a_config_file_rules_out_the_folder_for_both(self):
+        source = os.path.join(self.base, "gallery")
+        os.makedirs(source)
+        _touch(
+            os.path.join(self.ext, "config.json"),
+            json.dumps({"gallery": {"monitoring": {"directories": [source]}}}).encode(),
+        )
+        environ = {ll.DATA_DIR_ENV: os.path.join(source, "pm")}
+        location = self.resolve(environ=environ)
+        config_path, data_dir = self.config_location(environ=environ)
+        self.assertEqual(location.problem, "data-dir-served")
+        self.assertEqual(
+            (location.config_path, location.data_dir), (config_path, data_dir)
+        )
+        self.assertNotEqual(location.source, ll.SOURCE_ENVIRONMENT)
+
+    def test_a_relative_source_is_taken_from_comfyui(self):
+        self.fp.base_path = self.comfy
+        os.makedirs(os.path.join(self.comfy, "pictures"))
+        _touch(
+            os.path.join(self.ext, "config.json"),
+            json.dumps(
+                {"gallery": {"monitoring": {"directories": ["pictures"]}}}
+            ).encode(),
+        )
+        environ = {ll.DATA_DIR_ENV: os.path.join(self.comfy, "pictures", "pm")}
+        self.assertEqual(self.resolve(environ=environ).problem, "data-dir-served")
+        self.assertEqual(self.config_location(environ=environ)[1], self.ext)
+
+    def test_unreadable_or_odd_config_files_add_no_source(self):
+        for payload in (
+            b"{not json",
+            b"[]",
+            json.dumps({"gallery": {"monitoring": {"directories": "x"}}}).encode(),
+        ):
+            _touch(os.path.join(self.ext, "config.json"), payload)
+            environ = {ll.DATA_DIR_ENV: os.path.join(self.base, "pm-data")}
+            self.assertIsNone(self.resolve(environ=environ).problem)
+
+
 class TestSameFolder(_Case):
     def test_same_folder_follows_links_and_case(self):
         self.assertTrue(ll.same_folder(self.ext, self.ext + os.sep))

@@ -379,6 +379,10 @@ class PromptManagerAPI(
         except Exception as e:
             self.logger.warning(f"Could not sweep interrupted backup copies: {e}")
 
+        # A crash between Move library's switch and its rename left the old
+        # node-folder files under their own names (#249 S6b): rename them now.
+        self.finish_interrupted_library_move()
+
         # Run cleanup on initialization to remove any existing duplicates
         try:
             removed = self.db.cleanup_duplicates()

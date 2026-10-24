@@ -101,8 +101,8 @@ def escape_like(term: str) -> str:
     )
 
 
-def _configured_library():
-    """``(database.default_path, gallery roots)`` from config, or ``(None, [])``.
+def _configured_default_path():
+    """config.json's ``database.default_path``, or None.
 
     The package-qualified config wins over a standalone ``py.config`` (a
     custom-node package uses its own configuration).
@@ -113,28 +113,17 @@ def _configured_library():
         except ImportError:
             from py.config import PromptManagerConfig
     except Exception:
-        return None, []
-    roots = []
-    try:
-        try:
-            from ..py.config import GalleryConfig
-        except ImportError:
-            from py.config import GalleryConfig
-        directories = list(GalleryConfig.MONITORING_DIRECTORIES or [])
-    except Exception:
-        directories = []
-    for directory in directories:
-        try:
-            roots.append(GalleryConfig.resolve_gallery_root(directory))
-        except Exception:
-            continue
-    return getattr(PromptManagerConfig, "DEFAULT_DB_PATH", None), roots
+        return None
+    return getattr(PromptManagerConfig, "DEFAULT_DB_PATH", None)
 
 
 def resolve_library_location():
-    """Where the library lives now (``utils.library_location``, #249 S6b)."""
-    default_path, roots = _configured_library()
-    return library_location.resolve_library(default_path, gallery_roots=roots)
+    """Where the library lives now (``utils.library_location``, #249 S6b).
+
+    The image sources that rule out a ``PROMPT_MANAGER_DATA_DIR`` are read by
+    the resolver itself, exactly as ``config_location`` reads them.
+    """
+    return library_location.resolve_library(_configured_default_path())
 
 
 def _resolve_db_path(db_path: Optional[str] = None) -> str:
@@ -393,6 +382,25 @@ class PromptDatabase(
         self.logger.debug(f"Initializing database operations with path: {db_path}")
         self.model = PromptModel(db_path)
         self.logger.debug("Database operations initialized successfully")
+
+    def survive_library_switch(self, write):
+        """Run ``write()``; once more if it failed while the library moved.
+
+        A background write (run counting, the image monitor) that was waiting
+        on the old file when Move library switched fails when its connection
+        is closed. When the model's generation changed during the attempt,
+        the write runs again on a fresh connection, which is the new library;
+        any other failure is raised as it was. ``write`` must open its own
+        transaction (every PromptDatabase method does).
+        """
+        generation = self.model.generation
+        try:
+            return write()
+        except Exception:
+            if self.model.generation == generation:
+                raise
+            self.logger.info("Running a write again on the moved library")
+            return write()
 
     def close(self) -> None:
         """Close the calling thread's database connection (see PromptModel.close)."""

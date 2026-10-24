@@ -89,6 +89,8 @@ class TestLocationRoute(LibraryAPITestCase):
                 "target": "user/__promptmanager",
                 "problem": None,
                 "size_bytes": os.path.getsize(self.api.db.model.db_path),
+                "target_source": "default",
+                "config_moves": True,
             },
         )
 
@@ -121,6 +123,52 @@ class TestLocationRoute(LibraryAPITestCase):
         self.assertFalse(location["movable"])
         refused = await self.json("POST", URL + "/move", 400)
         self.assertEqual(refused["code"], "not-movable")
+
+
+class TestLocationDetails(LibraryAPITestCase):
+    async def test_the_target_and_what_moves_follow_the_environment(self):
+        data = os.path.join(self.tmpdir, "pm-data")
+        self.environ = {
+            ll.DATA_DIR_ENV: data,
+            ll.CONFIG_PATH_ENV: os.path.join(self.tmpdir, "mine.json"),
+        }
+        location = (await self.json("GET", URL))["location"]
+        self.assertEqual(location["target_source"], "environment")
+        self.assertFalse(location["config_moves"])
+        self.assertEqual(location["problem"], "data-dir-empty")
+
+    async def test_a_configured_library_inside_the_node_folder_is_flagged(self):
+        self.api._library_resolver = lambda: ll.LibraryLocation(
+            ll.SOURCE_CONFIG,
+            self.api.db.model.db_path,
+            os.path.join(self.ext, "config.json"),
+            self.ext,
+        )
+        self.api._extension_root = self.ext
+        location = (await self.json("GET", URL))["location"]
+        self.assertEqual(location["problem"], "inside-node-folder")
+        self.assertFalse(location["movable"])
+
+    async def test_a_startup_after_a_crash_finishes_the_rename(self):
+        target_db = os.path.join(self.target, "prompts.db")
+        os.makedirs(self.target)
+        with open(target_db, "wb") as handle:
+            handle.write(b"x")
+        lm.write_marker(self.target, ll.MARKER_MOVED, self.api.db.model.db_path)
+        old = self.api.db.model.db_path
+        self.api.db.model.close_all()
+        moved = ll.LibraryLocation(
+            ll.SOURCE_DEFAULT,
+            target_db,
+            os.path.join(self.target, "config.json"),
+            self.target,
+            self.target,
+        )
+        self.api._library_resolver = lambda: moved
+        with patch.object(self.api.db.model, "db_path", target_db):
+            renamed = self.api.finish_interrupted_library_move()
+        self.assertEqual(renamed, ["prompts.db.moved-to-__promptmanager"])
+        self.assertFalse(os.path.exists(old))
 
 
 class TestMoveRoute(LibraryAPITestCase):

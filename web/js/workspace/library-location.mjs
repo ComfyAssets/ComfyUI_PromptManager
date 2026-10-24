@@ -26,8 +26,18 @@ export const KEEP_URL = `${LIBRARY_URL}/keep`;
 export const MOVE_KIND = 'library_move';
 
 export const BANNER_TITLE = 'Your library is inside the node folder';
-export const BANNER_TEXT = 'Your library is stored inside the node folder, where an update or reinstall can delete it. '
-    + 'Move it to ComfyUI\'s user folder: it is copied and verified first, and nothing is deleted.';
+const BANNER_LEAD = 'Your library is stored inside the node folder, where an update or reinstall can delete it.';
+/** Where Move library puts it, by the server's `target_source`. */
+export const TARGET_TEXT = Object.freeze({
+    default: 'ComfyUI\'s user folder',
+    environment: 'the folder PROMPT_MANAGER_DATA_DIR names',
+});
+/** The notice's sentence: it names the actual target. */
+export function bannerText(location) {
+    const target = TARGET_TEXT[location?.target_source] ?? TARGET_TEXT.default;
+    return `${BANNER_LEAD} Move it to ${target}: it is copied and verified first, and nothing is deleted.`;
+}
+export const BANNER_TEXT = bannerText({ target_source: 'default' });
 export const KEEP_LABEL = 'Keep it here';
 export const MOVE_LABEL = 'Move library';
 export const ROW_TITLE = 'Library location';
@@ -48,6 +58,8 @@ export const PROBLEM_TEXT = Object.freeze({
     'data-dir-served': 'PROMPT_MANAGER_DATA_DIR names a folder whose files are served over the web, so it was ignored.',
     'data-dir-empty': 'PROMPT_MANAGER_DATA_DIR has no library yet; Move library puts this one there.',
     'move-unfinished': 'An earlier move did not finish; this library is still the one in use.',
+    'inside-node-folder': 'It is inside the node folder, where an update or reinstall deletes it, config.json and its '
+        + 'CivitAI key included. Set database.default_path or PROMPT_MANAGER_DATA_DIR to a folder outside it.',
 });
 
 const number = value => Number(value).toLocaleString('en-US');
@@ -81,7 +93,9 @@ export function reviewGrid(location) {
         ['From', location.path],
         ['To', `${location.target}/prompts.db`],
         ['Size', sizeText(location.size_bytes)],
-        ['Moves with it', 'config.json and the database backups'],
+        ['Moves with it', location.config_moves === false
+            ? 'The database backups (config.json stays where PROMPT_MANAGER_CONFIG_PATH names it)'
+            : 'config.json and the database backups'],
         ['Old files', 'Renamed *.moved-to-…, never deleted'],
     ];
 }
@@ -175,10 +189,10 @@ export function locationRow(location, { api, activity, scope, notify = showWorks
 }
 
 /** D129: the concept's `.notice` for a node-folder library: Keep it here and Move library. */
-export function libraryNotice({ scope, onKeep, onMove }) {
+export function libraryNotice({ scope, location = null, onKeep, onMove }) {
     const notice = el('div', undefined, 'notice');
     const text = el('div');
-    text.append(el('h2', BANNER_TITLE), el('p', BANNER_TEXT));
+    text.append(el('h2', BANNER_TITLE), el('p', bannerText(location)));
     const keep = createButton(KEEP_LABEL);
     const move = createButton(MOVE_LABEL, 'ca-primary');
     scope.listen(keep, 'click', () => onKeep(keep));
@@ -214,7 +228,7 @@ export function mountLibraryBanner(container, { api, activity, scope, notify = s
         container.replaceChildren();
         container.hidden = !(isLocation(location) && location.offer === true);
         if (container.hidden) return;
-        container.append(libraryNotice({ scope,
+        container.append(libraryNotice({ scope, location,
             onKeep: async button => {
                 button.setAttribute('aria-disabled', 'true');
                 const saved = await keepLibrary({ api, scope, notify });
