@@ -143,6 +143,18 @@ def _query(request: web.Request) -> None:
         raise ValueError("Duplicate history query parameter")
 
 
+def _jxl_flag(request: web.Request) -> bool:
+    """The cover's ``jxl`` flag (#317): ``1`` when the workspace decoded a
+    JPEG XL image (a browser may not list ``image/jxl`` in Accept), ``0`` or
+    absent otherwise; anything else is a bad request."""
+    value = request.query.get("jxl")
+    if value is None:
+        return False
+    if value not in ("0", "1"):
+        raise ValueError("Invalid jxl flag")
+    return value == "1"
+
+
 def _page_limit(request: web.Request) -> int:
     limit = _decimal(request.query.get("limit", "40"), minimum=1)
     if limit > 100:
@@ -795,7 +807,7 @@ class HistoryRoutesMixin:
             media_options = {
                 "ensure_preview": lambda *preview: needed.append(preview),
                 "placeholder": self._video_placeholder_bytes(),
-                "accepts_jxl": accepts_jxl(request),
+                "accepts_jxl": _jxl_flag(request) or accepts_jxl(request),
             }
         prepared = await execute()
         if needed:

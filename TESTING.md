@@ -2360,8 +2360,10 @@ Thumbnail format and settings (#317, `py/api/thumbnail_settings.py`,
   preview `<img>` that fails to load falls back to the original (the legacy gallery
   already does). A video whose preview it cannot show keeps its own element (Images) or
   its "Video preview" label (Library), never a broken image. History's cover URL names
-  no format, so the server serves a `.jxl` preview only when the request's `Accept`
-  lists `image/jxl`; otherwise the file's preview in another format, else the original
+  no format, so the server serves a `.jxl` preview only when the URL carries `jxl=1`
+  (added by the workspace where its probe decoded JPEG XL: Firefox may not list it in
+  Accept; any value but `0` or `1` is a 400) or the request's `Accept` lists
+  `image/jxl`; otherwise the file's preview in another format, else the original
   image or a video's placeholder. Appearance says when this browser cannot show JPEG XL thumbnails.
 
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per

@@ -1238,6 +1238,36 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(response.headers["Content-Type"], "image/jxl")
         self.assertEqual(body, jxl.read_bytes())
 
+    async def test_the_jxl_flag_selects_the_jxl_cover_without_accept(self):
+        # M3 follow-up: a browser that decodes JPEG XL but does not list it in
+        # Accept (Firefox) says so with jxl=1 on the cover URL.
+        make_png(self.output_dir / "image.png")
+        folder = self.output_dir / "thumbnails"
+        folder.mkdir(exist_ok=True)
+        jxl = folder / "image_thumb.jxl"
+        jxl.write_bytes(b"\xff\x0a jxl preview")
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        from py.api import thumbnail_encode
+        from py.config import PromptManagerConfig
+
+        with (
+            patch.object(PromptManagerConfig, "THUMBNAIL_FORMAT", "jxl"),
+            patch.object(thumbnail_encode, "detect_jxl_encoder", return_value="cjxl"),
+        ):
+            url = descriptor["thumbnail_url"]
+            response = await self.current(url + "&jxl=1", headers={"Accept": "*/*"})
+            self.assertEqual(response.headers["Content-Type"], "image/jxl")
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            self.assertEqual(await response.read(), jxl.read_bytes())
+            response = await self.current(url + "&jxl=0", headers={"Accept": "*/*"})
+            self.assertEqual(response.headers["Content-Type"], "image/png")
+            await response.read()
+            for bad in ("&jxl=true", "&jxl=", "&jxl=1&jxl=1", "&jxl=2"):
+                response = await self.current(url + bad)
+                self.assertEqual(response.status, 400, bad)
+                await response.read()
+
     async def test_a_video_jxl_cover_is_the_placeholder_without_jxl_support(self):
         (self.output_dir / "clip.webm").write_bytes(b"AV1 stream no decoder here")
         response, body, _jxl = await self._jxl_cover("clip.webm", "image/*,*/*")
