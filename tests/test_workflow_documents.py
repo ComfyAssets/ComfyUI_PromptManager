@@ -11,6 +11,7 @@ reads both forms, and gives back the exact text that was stored.
 import json
 import os
 import random
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -134,9 +135,7 @@ class DocumentsTestCase(unittest.TestCase):
         PromptModel.close_all_instances()
         PromptModel.reset_schema_cache()
         assert_closed(self, self.tmpdir)
-        for name in os.listdir(self.tmpdir):
-            os.unlink(os.path.join(self.tmpdir, name))
-        os.rmdir(self.tmpdir)
+        shutil.rmtree(self.tmpdir)
 
     def conn(self):
         return self.db.model.get_connection()

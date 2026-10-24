@@ -1,0 +1,321 @@
+"""The workflow storage migration and Reclaim space (#249 S6 carry-over).
+
+``migrate_workflow_storage`` rewrites old-form image rows (workflow and
+prompt graph text inline) to the new form (a ``workflow_documents`` id,
+``database/workflow_documents.py``) in batches:
+
+- each batch is one ``BEGIN IMMEDIATE`` transaction over at most
+  ``BATCH_ROWS`` rows or about ``BATCH_BYTES`` of text, found by a rowid
+  range search (``NEXT_IDS_SQL``) and read one row at a time, so memory is
+  bounded by one row plus the batch's distinct documents;
+- each text is stored (or its document reused) and read back through the
+  one accessor before its row changes; a text that would not come back
+  identical fails the batch (``DocumentMismatch``) and rolls it back whole;
+- a value that is not text (or is over ``MAX_DOCUMENT_BYTES``) stays inline
+  and is counted as protected.
+
+A crash or a stop between batches leaves committed batches in the new form
+and the rest in the old form; both read the same, and a rerun continues
+from the first old-form row. Only database rows change: no image or video
+file is opened.
+
+``reclaim_space`` is the VACUUM afterwards: it sweeps unreferenced
+documents, rebuilds the file and checkpoints the WAL with TRUNCATE, so the
+freed pages go back to the disk.
+"""
+
+import os
+import sqlite3
+from contextlib import closing
+
+from .workflow_documents import (
+    TEXT_COLUMNS,
+    DocumentMismatch,
+    read_stored_text,
+    release_documents,
+    storable,
+    store_text,
+    sweep_documents,
+)
+
+OPERATION = "workflow_storage"
+BATCH_ROWS = 200
+BATCH_BYTES = 16 * 2**20  # characters of text rewritten per transaction
+
+# typeof() reads a column's type from the record header: no overflow page.
+NEXT_IDS_SQL = (
+    "SELECT id FROM generated_images WHERE id>? AND "
+    "(typeof(workflow_data)!='null' OR typeof(prompt_metadata)!='null') "
+    "ORDER BY id LIMIT ?"
+)
+ROW_SQL = (
+    "SELECT workflow_data, prompt_metadata, workflow_document_id, "
+    "prompt_document_id FROM generated_images WHERE id=?"
+)
+UPDATE_SQL = (
+    "UPDATE generated_images SET {assignments} WHERE id=?"  # columns are constants
+)
+# One pass over the record headers: rows with inline text, and inline
+# values that are not text (they stay inline).
+INLINE_COUNTS_SQL = (
+    "SELECT "
+    "SUM(typeof(workflow_data)='text' OR typeof(prompt_metadata)='text'), "
+    "SUM(typeof(workflow_data) NOT IN ('null','text')) "
+    "+ SUM(typeof(prompt_metadata) NOT IN ('null','text')) "
+    "FROM generated_images"
+)
+# octet_length() (SQLite 3.43+) reads no overflow page either.
+INLINE_BYTES_SQL = (
+    "SELECT SUM(octet_length(workflow_data)), SUM(octet_length(prompt_metadata)) "
+    "FROM generated_images"
+)
+
+QUERY_PLAN_STATEMENTS = {
+    "next old-form rows": (NEXT_IDS_SQL, (0, BATCH_ROWS)),
+    "one row": (ROW_SQL, (1,)),
+}
+
+
+def _rewrite_row(conn, image_id, row, verified):
+    """Store the row's inline texts as documents; returns (changed, protected, size).
+
+    ``verified`` maps document ids already read back in this batch to their
+    text, so a document shared by many rows is decompressed once.
+    """
+    changes, replaced = {}, []
+    protected = size = 0
+    for index, (column, reference) in enumerate(TEXT_COLUMNS):
+        value, current = row[index], row[index + len(TEXT_COLUMNS)]
+        if value is None:
+            continue
+        if not storable(value):
+            protected += 1
+            continue
+        document_id = store_text(conn, value)
+        if document_id not in verified:
+            verified[document_id] = read_stored_text(conn, None, document_id)
+        if verified[document_id] != value:
+            raise DocumentMismatch(f"Image {image_id}: {column} would change")
+        changes[column], changes[reference] = None, document_id
+        if current is not None and current != document_id:
+            replaced.append(current)
+        size += len(value)
+    if changes:
+        assignments = ",".join(f"{key}=?" for key in changes)
+        conn.execute(
+            UPDATE_SQL.format(assignments=assignments),
+            [*changes.values(), image_id],
+        )
+    release_documents(conn, replaced)
+    return bool(changes), protected, size
+
+
+def migrate_batch(conn, after_id, max_rows=BATCH_ROWS, max_bytes=BATCH_BYTES):
+    """Rewrite the next batch after ``after_id`` in one transaction.
+
+    Returns ``{last_id, rows, protected, done}``: the last row looked at,
+    rows rewritten, inline values kept (not text) and whether there was
+    nothing left to look at.
+    """
+    if conn.in_transaction:
+        raise RuntimeError("The migration needs its own transaction")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        ids = [row[0] for row in conn.execute(NEXT_IDS_SQL, (after_id, max_rows))]
+        result = {"last_id": after_id, "rows": 0, "protected": 0, "done": not ids}
+        verified, size = {}, 0
+        for image_id in ids:
+            row = conn.execute(ROW_SQL, (image_id,)).fetchone()
+            changed, protected, row_size = _rewrite_row(conn, image_id, row, verified)
+            result["rows"] += int(changed)
+            result["protected"] += protected
+            result["last_id"] = image_id
+            size += row_size
+            if size >= max_bytes:
+                break
+        conn.commit()
+        return result
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _file_bytes(db_path):
+    return sum(
+        os.path.getsize(path)
+        for path in (db_path, db_path + "-wal")
+        if os.path.exists(path)
+    )
+
+
+class WorkflowStorageOperations:
+    """PromptDatabase mixin: the workflow storage migration and Reclaim space."""
+
+    def migrate_workflow_storage(
+        self,
+        *,
+        on_batch=None,
+        should_stop=None,
+        max_rows=BATCH_ROWS,
+        max_bytes=BATCH_BYTES,
+    ) -> dict:
+        """Rewrite every old-form row, batch by batch (blocking).
+
+        ``on_batch(progress)`` runs after each committed batch with the
+        running totals ``{rows, protected, batches, last_id}``;
+        ``should_stop()`` is asked before each batch. Returns ``{rows,
+        protected, batches, stopped, documents_removed}``. Unreferenced
+        documents are swept once every row was looked at.
+        """
+        conn = self.model.get_connection()
+        totals = {"rows": 0, "protected": 0, "batches": 0, "last_id": 0}
+        stopped = False
+        while True:
+            if should_stop is not None and should_stop():
+                stopped = True
+                break
+            batch = migrate_batch(conn, totals["last_id"], max_rows, max_bytes)
+            if batch["done"]:
+                break
+            totals["rows"] += batch["rows"]
+            totals["protected"] += batch["protected"]
+            totals["batches"] += 1
+            totals["last_id"] = batch["last_id"]
+            if on_batch is not None:
+                on_batch(dict(totals))
+        removed = 0
+        if not stopped:
+            with conn:
+                removed = sweep_documents(conn)
+        return {
+            "rows": totals["rows"],
+            "protected": totals["protected"],
+            "batches": totals["batches"],
+            "stopped": stopped,
+            "documents_removed": removed,
+        }
+
+    def workflow_storage_counts(self, conn) -> dict:
+        """``{rows, protected, documents, inline_bytes}`` on ``conn`` (reads only).
+
+        ``inline_bytes`` is None where SQLite has no ``octet_length``.
+        """
+        rows, protected = conn.execute(INLINE_COUNTS_SQL).fetchone()
+        documents = conn.execute("SELECT COUNT(*) FROM workflow_documents").fetchone()
+        inline_bytes = None
+        if sqlite3.sqlite_version_info >= (3, 43, 0):
+            row = conn.execute(INLINE_BYTES_SQL).fetchone()
+            inline_bytes = sum(value or 0 for value in row)
+        return {
+            "rows": rows or 0,
+            "protected": protected or 0,
+            "documents": documents[0],
+            "inline_bytes": inline_bytes,
+        }
+
+    def reclaim_space(self) -> dict:
+        """Sweep, VACUUM and truncate the WAL (blocking); file bytes before/after.
+
+        The caller holds the registry's ``exclusive`` slot. Raises whatever
+        stopped VACUUM; the database is then unchanged.
+        """
+        db_path = self.model.db_path
+        conn = self.model.get_connection()
+        with conn:
+            removed = sweep_documents(conn)
+        before = _file_bytes(db_path)
+        self.model.vacuum_database()
+        with closing(sqlite3.connect(db_path)) as checkpoint:
+            busy = checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        return {
+            "before_bytes": before,
+            "after_bytes": _file_bytes(db_path),
+            "documents_removed": removed,
+            "checkpoint_busy": bool(busy),
+        }
+
+    # ── preview ───────────────────────────────────────────────────────
+
+    def _plan_workflow_storage(self):
+        """The reviewed plan of the migration (one read-only snapshot)."""
+        from .maintenance import (
+            MaintenanceDraft,
+            _Fingerprint,
+            _megabytes,
+            _plural,
+            _read_snapshot,
+        )
+
+        def read(conn):
+            sizes = [
+                conn.execute(f"PRAGMA {name}").fetchone()[0]
+                for name in ("page_size", "page_count", "freelist_count")
+            ]
+            return sizes, self.workflow_storage_counts(conn)
+
+        (page_size, page_count, free_pages), counts = _read_snapshot(
+            self.model.db_path, read
+        )
+        size = page_size * page_count
+        details = [
+            {
+                "label": "Database file",
+                "detail": f"{_megabytes(size)}, of which "
+                f"{_megabytes(free_pages * page_size)} is free pages",
+            },
+            {
+                "label": "Image records",
+                "detail": f"{_plural(counts['rows'], 'record')} keep their workflow "
+                "or prompt graph inline; each distinct text is stored once, "
+                "compressed",
+            },
+        ]
+        if counts["inline_bytes"] is not None:
+            details.append(
+                {
+                    "label": "Inline text",
+                    "detail": f"{_megabytes(counts['inline_bytes'])} now",
+                }
+            )
+        if counts["documents"]:
+            details.append(
+                {
+                    "label": "Already stored once",
+                    "detail": _plural(counts["documents"], "workflow document"),
+                }
+            )
+        details += [
+            {"label": "Reclaim space", "detail": RECLAIM_NOTE},
+            {"label": "Older versions", "detail": OLDER_VERSIONS_NOTE},
+        ]
+        protected = counts["protected"]
+        return MaintenanceDraft(
+            operation=OPERATION,
+            fingerprint=_Fingerprint(OPERATION).hexdigest(),
+            targets=[],
+            scope={
+                "count": counts["rows"],
+                "label": _plural(counts["rows"], "image record") + " to rewrite",
+            },
+            protected={
+                "count": protected,
+                "reasons": (
+                    [f"{_plural(protected, 'stored value')} not text; kept as is"]
+                    if protected
+                    else []
+                ),
+            },
+            media={"deletes_files": False, "label": MEDIA_NOTE},
+            details=details,
+        )
+
+
+MEDIA_NOTE = "No image or video file is opened or changed; only the database."
+RECLAIM_NOTE = (
+    "When every record is rewritten, Reclaim space runs alone to give the freed "
+    "space back to the disk (VACUUM). The database is locked while it runs."
+)
+OLDER_VERSIONS_NOTE = (
+    "An older Prompt Manager version shows rewritten images without their "
+    "workflow. Restoring the safety backup brings back the old form."
+)

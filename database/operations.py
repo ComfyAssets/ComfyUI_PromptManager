@@ -25,6 +25,7 @@ from .execution_outputs import ExecutionOutputOperations
 from .history_reads import HistoryReadOperations
 from .health import HealthOperations, iter_consistency_issues
 from .duplicate_copies import DuplicateCopyOperations
+from .workflow_storage import WorkflowStorageOperations
 from .workflow_documents import (
     DocumentReader,
     documents_of_rows,
@@ -346,6 +347,7 @@ class PromptDatabase(
     HealthOperations,
     MaintenanceOperations,
     DuplicateCopyOperations,
+    WorkflowStorageOperations,
 ):
     """Database operations class for managing prompts."""
 

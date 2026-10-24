@@ -49,6 +49,8 @@ MAINTENANCE_OPERATIONS = (
     "optimize",
     "unused_components",
     "missing_links",
+    # Applied as its own batched job (database/workflow_storage.py).
+    "workflow_storage",
 )
 MAX_DETAILS = 50  # detail rows a plan lists
 MAX_RESULT_ROWS = 200  # changed records an apply describes (the job lists 200)
@@ -420,6 +422,8 @@ class MaintenanceOperations:
         roots = [str(root) for root in roots]
         if operation == "optimize":
             return self._plan_optimize()
+        if operation == "workflow_storage":
+            return self._plan_workflow_storage()
         if operation == "missing_links":
             rows = _read_snapshot(self.model.db_path, self._link_rows)
             return self._plan_missing_links(rows, roots)
@@ -668,7 +672,7 @@ class MaintenanceOperations:
         records changed and up to ``MAX_RESULT_ROWS`` descriptions of them
         (``{prompt_id[, kept_id]}`` or ``{image_path}``).
         """
-        if operation not in MAINTENANCE_OPERATIONS:
+        if operation not in MAINTENANCE_OPERATIONS or operation == "workflow_storage":
             raise ValueError(f"Unknown maintenance operation {operation!r}")
         if operation == "optimize":
             # VACUUM cannot run in a transaction; the plan binds the database.
