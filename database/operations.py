@@ -24,6 +24,7 @@ from .execution_contexts import ExecutionContextOperations
 from .execution_outputs import ExecutionOutputOperations
 from .history_reads import HistoryReadOperations
 from .health import HealthOperations, iter_consistency_issues
+from .duplicate_copies import DuplicateCopyOperations
 from .maintenance import (  # noqa: F401  (ORPHANED_PROMPTS_SQL is re-exported)
     ORPHANED_PROMPTS_SQL,
     _LINK_ROWS_SQL,
@@ -337,6 +338,7 @@ class PromptDatabase(
     SavedViewOperations,
     HealthOperations,
     MaintenanceOperations,
+    DuplicateCopyOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -1860,7 +1862,11 @@ class PromptDatabase(
             return obj
 
     def _merge_duplicate_metadata(
-        self, conn: sqlite3.Connection, primary_id: int, duplicate_ids: List[int]
+        self,
+        conn: sqlite3.Connection,
+        primary_id: int,
+        duplicate_ids: List[int],
+        strict: bool = False,
     ) -> Dict[str, Any]:
         """
         Merge metadata from duplicate prompts, prioritizing non-empty values.
@@ -1920,11 +1926,17 @@ class PromptDatabase(
             return merged
 
         except Exception as e:
+            if strict:  # a reviewed apply rolls back instead
+                raise
             self.logger.error(f"Error merging metadata: {e}", exc_info=True)
             return {}
 
     def _transfer_images_to_primary(
-        self, conn: sqlite3.Connection, primary_id: int, duplicate_ids: List[int]
+        self,
+        conn: sqlite3.Connection,
+        primary_id: int,
+        duplicate_ids: List[int],
+        strict: bool = False,
     ) -> int:
         """
         Transfer all images from duplicate prompts to the primary prompt.
@@ -1956,11 +1968,17 @@ class PromptDatabase(
             return transferred_count
 
         except Exception as e:
+            if strict:  # a reviewed apply rolls back instead
+                raise
             self.logger.error(f"Error transferring images: {e}", exc_info=True)
             return 0
 
     def _update_primary_with_merged_metadata(
-        self, conn: sqlite3.Connection, primary_id: int, merged_metadata: Dict[str, Any]
+        self,
+        conn: sqlite3.Connection,
+        primary_id: int,
+        merged_metadata: Dict[str, Any],
+        strict: bool = False,
     ) -> None:
         """
         Update the primary prompt with merged metadata.
@@ -1991,6 +2009,8 @@ class PromptDatabase(
             )
 
         except Exception as e:
+            if strict:  # a reviewed apply rolls back instead
+                raise
             self.logger.error(
                 f"Error updating primary prompt metadata: {e}", exc_info=True
             )

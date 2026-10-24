@@ -2519,7 +2519,7 @@ protected reasons are exactly the prune's rules) and `missing_links` (legacy
 `health.link_states`: only a link under a source that can be read now counts; one under
 an unavailable source or outside every source is protected). The operation enum is
 strict, `options` must be `{}` and the body is capped at 4 KiB (512 KiB for
-`duplicate_files`, below). A preview meets the
+`duplicate_files`: 1 MiB, below). A preview meets the
 read-only standard above on its own `mode=ro` snapshot (`test_preview_writes_nothing`,
 per operation, plus the media bytes) and stats files after the snapshot ended. The
 plan lists at most 50 detail rows and no server path. Its fingerprint (the ids, text
@@ -2576,7 +2576,23 @@ pool. Each plan reports `backup.expected_bytes` (the backup's size, `page_count 
 page_size`, or null with the policy off) and `disk: {free_bytes, required_bytes,
 sufficient}` for the database folder: the backup needs its size there, and Optimize
 needs the database's size twice (the WAL beside it and SQLite's temporary copy, added
-up when the temporary folder is on the same disk), each plus a 16 MiB margin. Apply
+up when the temporary folder is on the same disk), each plus a 16 MiB margin. The
+temporary folder is the one SQLite really uses (`sqlite_temp_dir`): on Unix
+`SQLITE_TMPDIR`, `TMPDIR`, then the first writable of `/var/tmp`, `/usr/tmp` and
+`/tmp` (not Python's `tempfile` order, which picks a RAM-backed `/tmp` on many Linux
+systems); on Windows `TMP`, `TEMP`, then `USERPROFILE`. Whether a backup is taken is
+decided once, when Apply measured the disk, and handed to the job. Apply looks at the
+token again with no await before it starts the job, so a token used or expired during
+the measurement answers its code, never a 500. A backup is put in place with
+`os.link` (atomic, refuses an existing name; reserve-and-replace where a filesystem
+has no hard links), and startup removes the `.pm-safety-*.tmp` copies an interrupted
+backup left. Optimize runs alone: its job has the `exclusive` admission class (refused
+beside any job, and every job is refused while it runs), and its plan says the database
+is locked while VACUUM runs and that run counts or captures waiting longer than the
+30-second busy timeout are not recorded. The duplicate prompt merge is strict inside
+the apply: a group whose copies link one image twice, or whose removed copy has its own
+Library title, is protected in the plan, and any merge error rolls the transaction back
+(`MergeConflict`); the legacy cleanup keeps its lenient behaviour. Apply
 measures again before it starts a job and refuses a short disk up front with 507
 `insufficient-space` and a truthful message ("Not enough free disk space: the safety
 backup needs about … in the database folder and … is free. Nothing was changed."); no
@@ -2589,31 +2605,49 @@ job starts and the token stays usable
 find: kind `duplicates`, "Find duplicate image files", admission `read`, cancellable,
 group `groups_found`, over every effective source (the legacy scan's
 `_hash_media_groups`: no symlinks, no `thumbnails`, bounded, each file once). The
-server holds the groups (content hash, root-relative paths, source index) for the last
-three finds; `GET /prompt_manager/maintenance/duplicates/{job_id}?offset&limit` pages
+find lists a physical file once, by `(st_dev, st_ino)`: a source listed twice under two
+spellings, a symlinked source inside another one and a hardlink are one file, never a
+copy of themselves (`test_a_folder_listed_twice_never_loses_its_only_copy`,
+`test_a_symlinked_source_inside_another_is_one_file`,
+`test_a_hardlink_is_never_a_copy_to_remove`). The server holds the groups (content
+hash, root-relative paths, source index, size, mtime and inode) for the last three
+finds; `GET /prompt_manager/maintenance/duplicates/{job_id}?offset&limit` pages
 them ten at a time (`not-found` 404, `job-running` or `no-groups` 409). The preview
 `{operation:"duplicate_files", options:{job_id, keep:[{group_id, root_index, path}]}}`
-(body cap 512 KiB, at most 5,000 keep entries) removes, in each group named, every copy
+(body cap 1 MiB, at most 2,000 keep entries; `test_the_keep_limit_fits_the_body_cap`) removes, in each group named, every copy
 not kept; a keeper that is not in its group is `invalid-request`, and a source no longer
 listed at its index is `sources-changed`. Every keeper and removal is checked with
 `file_problem`: containment as text first, with no filesystem access (inside its
 source, not under `thumbnails`, a media extension), then `lstat` (a link or any
-non-regular file is refused), the resolved path still inside the resolved source, the
-same size and the same sha256. A removal that fails, or whose kept copies all fail, is
+non-regular file is refused), the resolved path still inside the resolved source, not
+the kept copy itself (`os.path.samestat`), and the size, mtime and inode the find saw.
+The preview reads no file; the removal job hashes each file and its kept copy again
+right before the unlink (`test_preview_reads_no_file_and_spots_a_touched_one`). A removal that fails, or whose kept copies all fail, is
 protected with its reason. The plan names each removal, its kept copy and how many
 database links move, says the safety backup covers the database and not the files,
 and writes nothing. Apply runs `duplicate_cleanup` (records, not cancellable, groups
 `removed`, `kept`, `errors`): sources unchanged, the promised safety backup, then per
-file the kept copy and the file are checked again and the file is removed (every hash
-handle closed first: `test_handles_closed_before_unlink`), with its thumbnail (a
-video's `.jpg` too). A changed file is kept (`test_changed_content_skips_file`); the
+file the kept copy and the file are checked again (hashes included, and never the same
+file), the file's records move to the kept copy in one short `BEGIN IMMEDIATE`
+transaction, and only then is the file removed (every hash handle closed first:
+`test_handles_closed_before_unlink`), with its thumbnail (a video's `.jpg` too). A crash
+or a failed unlink therefore leaves the records on the identical kept copy, and a failed
+move leaves the file and its records alone: no row ever names a deleted file
+(`test_a_failure_between_two_files_leaves_no_row_on_a_deleted_file`). The status line
+counts the files removed and not removed. A changed file is kept (`test_changed_content_skips_file`); the
 first failed unlink stops the job, a locked or read-only file with "The file is open in
 another program or read-only; it was not deleted." and never the OS text, and the
 files after it are listed as not attempted (`test_partial_failure_reports_each_path`).
-Only the files actually removed have their links moved: each image record moves to the
-kept copy, or, when its prompt already links the kept copy, hands its saved-pair links
-to that record and is deleted; a favorite moves with it
-(`test_db_links_reconciled_only_for_removed_files`). The find refuses while a removal
+Records move for the reviewed files only (`database/duplicate_copies.py`): each image
+record, looked up under every spelling of its source (the real path, the configured and
+monitored folders and ComfyUI's output folder that resolve to it:
+`test_links_under_a_symlinked_source_spelling_move`), moves to the kept copy under the
+same spelling, or, when its prompt already links the kept copy, hands its saved-pair
+links to that record and is deleted; a favorite moves with it
+(`test_db_links_reconciled_only_for_removed_files`); the copy's image tags join the kept
+copy's as their union; and its pending Needs review items (still `pending` at revision
+0 with no decision row) are settled (`test_tags_move_as_a_union_and_pending_items_settle`).
+The plan states each of these. The find refuses while a removal
 runs and the removal while a find runs.
 
 The legacy gallery routes keep their shapes on the same kinds: `/scan_duplicates`

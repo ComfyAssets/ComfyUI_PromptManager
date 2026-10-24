@@ -41,7 +41,6 @@ from pathlib import Path
 
 from .execution_contexts import LIVE_HINT_CTES
 from .health import BATCH_ROWS, link_states, readable_roots, readonly_uri
-from .models import normalize_image_path
 from .pairs import PairDependencyError
 
 MAINTENANCE_OPERATIONS = (
@@ -142,8 +141,31 @@ LINKS_ONLY = "Database links only; no image file is deleted."
 UNUSED_DETAIL = "No image, saved pair, Library state or recorded run uses it"
 
 
+# Why a duplicate group is kept whole (``_duplicate_conflict``).
+CONFLICT_REASONS = {
+    "collision": ("group links one image twice", "groups link one image twice"),
+    "title": (
+        "group has its own Library title",
+        "groups have their own Library titles",
+    ),
+}
+CONFLICT_DETAILS = {
+    "collision": "Kept: two copies link the same image",
+    "title": "Kept: a copy has its own Library title",
+}
+OPTIMIZE_LOCK_NOTE = (
+    "Runs alone: the database is locked while it runs, and on a large library "
+    "this takes a while. Prompt runs counted and images captured meanwhile "
+    "wait up to 30 seconds each; anything that waits longer is not recorded."
+)
+
+
 class PlanChanged(Exception):
     """What a plan was reviewed on changed before it was applied."""
+
+
+class MergeConflict(Exception):
+    """A strict duplicate merge would drop an image link or a Library title."""
 
 
 @dataclass
@@ -300,9 +322,44 @@ class MaintenanceOperations:
             groups.append(sorted_ids)
         return groups, paired
 
-    def _merge_duplicate_group(self, conn, sorted_ids):
-        """Keep the oldest prompt of a group; returns (removed, images moved)."""
+    @staticmethod
+    def _duplicate_conflict(conn, sorted_ids):
+        """Why merging the group would lose something, or None.
+
+        ``collision``: two members link the same file, so moving the images
+        to the oldest prompt would hit ``UNIQUE(prompt_id, file_path)``.
+        ``title``: a member that would be deleted has its own Library title.
+        """
+        marks = _marks(sorted_ids)
+        collision = conn.execute(
+            "SELECT 1 FROM generated_images WHERE prompt_id IN "  # nosec B608
+            f"({marks}) AND file_path IS NOT NULL GROUP BY file_path "
+            "HAVING COUNT(DISTINCT prompt_id) > 1 LIMIT 1",
+            sorted_ids,
+        ).fetchone()
+        if collision:
+            return "collision"
+        duplicates = sorted_ids[1:]
+        titled = conn.execute(
+            "SELECT 1 FROM prompt_library_state WHERE prompt_id IN "  # nosec B608
+            f"({_marks(duplicates)}) AND trim(coalesce(title, '')) != '' LIMIT 1",
+            duplicates,
+        ).fetchone()
+        return "title" if titled else None
+
+    def _merge_duplicate_group(self, conn, sorted_ids, strict=False):
+        """Keep the oldest prompt of a group; returns (removed, images moved).
+
+        ``strict`` (the reviewed apply): a merge that would drop an image
+        link or a Library title raises MergeConflict, and every helper error
+        propagates, so the transaction rolls back. The legacy cleanup keeps
+        its old, lenient behaviour.
+        """
         primary_id, duplicate_ids = sorted_ids[0], sorted_ids[1:]
+        if strict:
+            conflict = self._duplicate_conflict(conn, sorted_ids)
+            if conflict:
+                raise MergeConflict(conflict)
         self.logger.debug(
             f"Merging duplicates: keeping {primary_id}, removing {duplicate_ids}"
         )
@@ -312,11 +369,15 @@ class MaintenanceOperations:
         if not primary:
             return 0, 0
         merged_metadata = self._merge_duplicate_metadata(
-            conn, primary_id, duplicate_ids
+            conn, primary_id, duplicate_ids, strict=strict
         )
-        moved = self._transfer_images_to_primary(conn, primary_id, duplicate_ids)
+        moved = self._transfer_images_to_primary(
+            conn, primary_id, duplicate_ids, strict=strict
+        )
         if merged_metadata:
-            self._update_primary_with_merged_metadata(conn, primary_id, merged_metadata)
+            self._update_primary_with_merged_metadata(
+                conn, primary_id, merged_metadata, strict=strict
+            )
         removed = 0
         for duplicate_id in duplicate_ids:
             conn.execute("DELETE FROM prompts WHERE id = ?", (duplicate_id,))
@@ -366,29 +427,53 @@ class MaintenanceOperations:
         return rows
 
     def _duplicates_fingerprint(self, conn):
-        groups, paired = self._duplicate_groups(conn)
+        """``(groups, paired, conflicted, fingerprint)`` of the duplicate merge.
+
+        ``conflicted`` holds ``(ids, reason)`` of the groups a merge would
+        lose an image link or a Library title in (``_duplicate_conflict``);
+        the plan protects them.
+        """
+        candidates, paired = self._duplicate_groups(conn)
+        groups, conflicted = [], []
+        for ids in candidates:
+            reason = self._duplicate_conflict(conn, ids)
+            if reason:
+                conflicted.append((ids, reason))
+            else:
+                groups.append(ids)
         fingerprint = _Fingerprint("duplicate_prompts")
-        fingerprint.add({"groups": groups, "paired": paired})
+        fingerprint.add({"groups": groups, "paired": paired, "conflicted": conflicted})
         _add_prompt_state(fingerprint, conn, [i for group in groups for i in group])
-        return groups, paired, fingerprint.hexdigest()
+        return groups, paired, conflicted, fingerprint.hexdigest()
 
     def _plan_duplicate_prompts(self, conn):
-        groups, paired, fingerprint = self._duplicates_fingerprint(conn)
+        groups, paired, conflicted, fingerprint = self._duplicates_fingerprint(conn)
         removed = sum(len(group) - 1 for group in groups)
-        texts = _texts(conn, [group[0] for group in (groups + paired)])
-        details = [
-            {
-                "label": _excerpt(texts.get(group[0])),
-                "detail": f"Keeps the oldest of {len(group)} copies",
-            }
-            for group in groups
-        ] + [
-            {
-                "label": _excerpt(texts.get(group[0])),
-                "detail": "Kept: belongs to a saved pair",
-            }
-            for group in paired
-        ]
+        held = [ids for ids, _reason in conflicted]
+        texts = _texts(conn, [group[0] for group in (groups + paired + held)])
+        details = (
+            [
+                {
+                    "label": _excerpt(texts.get(group[0])),
+                    "detail": f"Keeps the oldest of {len(group)} copies",
+                }
+                for group in groups
+            ]
+            + [
+                {
+                    "label": _excerpt(texts.get(group[0])),
+                    "detail": "Kept: belongs to a saved pair",
+                }
+                for group in paired
+            ]
+            + [
+                {
+                    "label": _excerpt(texts.get(ids[0])),
+                    "detail": CONFLICT_DETAILS[reason],
+                }
+                for ids, reason in conflicted
+            ]
+        )
         if groups:
             label = (
                 f"{_plural(removed, 'duplicate prompt')} in "
@@ -401,13 +486,17 @@ class MaintenanceOperations:
             reasons.append("1 group belongs to a saved pair")
         elif paired:
             reasons.append(f"{len(paired):,} groups belong to saved pairs")
+        for reason, (one, many) in CONFLICT_REASONS.items():
+            count = sum(1 for _ids, why in conflicted if why == reason)
+            if count:
+                reasons.append(f"{count:,} {one if count == 1 else many}")
         return MaintenanceDraft(
             operation="duplicate_prompts",
             fingerprint=fingerprint,
             targets=groups,
             scope={"count": removed, "label": label},
             protected={
-                "count": sum(len(group) for group in paired),
+                "count": sum(len(group) for group in paired + held),
                 "reasons": reasons,
             },
             media={"deletes_files": False, "label": NO_FILES_DELETED},
@@ -544,9 +633,14 @@ class MaintenanceOperations:
                     "can be reclaimed",
                 },
                 {
+                    "label": "Lock",
+                    "detail": OPTIMIZE_LOCK_NOTE,
+                },
+                {
                     "label": "Free space needed",
-                    "detail": f"About {_megabytes(size)} in the database folder; "
-                    f"{_megabytes(free)} available",
+                    "detail": f"About {_megabytes(size)} beside the database and "
+                    f"{_megabytes(size)} in SQLite's temporary folder; "
+                    f"{_megabytes(free)} available beside the database",
                 },
             ],
         )
@@ -579,12 +673,12 @@ class MaintenanceOperations:
             return appliers[operation](conn, fingerprint, targets, roots)
 
     def _apply_duplicate_prompts(self, conn, fingerprint, targets, _roots):
-        groups, _paired, current = self._duplicates_fingerprint(conn)
+        groups, _paired, _conflicted, current = self._duplicates_fingerprint(conn)
         if current != fingerprint or groups != targets:
             raise PlanChanged("duplicate_prompts")
         changed, rows = 0, []
         for sorted_ids in groups:
-            removed, _moved = self._merge_duplicate_group(conn, sorted_ids)
+            removed, _moved = self._merge_duplicate_group(conn, sorted_ids, strict=True)
             changed += removed
             rows.extend(
                 {"prompt_id": duplicate_id, "kept_id": sorted_ids[0]}
@@ -628,107 +722,3 @@ class MaintenanceOperations:
             "changed": changed,
             "rows": [{"image_path": row[1]} for row in rows[:MAX_RESULT_ROWS]],
         }
-
-    # ── duplicate image files (py/api/duplicate_files.py) ────────────
-
-    def count_file_links(self, file_paths) -> dict:
-        """``{path: n}``: the image records linking each file (one snapshot).
-
-        A record links a file by its normalized ``file_path``, or, in rows
-        that predate that column, by ``image_path``.
-        """
-
-        def read(conn):
-            return {
-                path: sum(
-                    1
-                    for _row in _file_link_rows(conn, normalize_image_path(path), path)
-                )
-                for path in file_paths
-            }
-
-        return _read_snapshot(self.model.db_path, read)
-
-    def move_file_links(self, moves, favorites=()) -> dict:
-        """Point the links of removed duplicate files at their kept copy.
-
-        ``moves`` is ``[(removed path, kept path)]`` for files that were
-        removed; nothing else is touched. Each image record of a removed file
-        moves to the kept copy, unless its prompt already links the kept copy:
-        then its saved-pair links join that record and it is deleted.
-        ``favorites`` is ``[(root key, removed key, kept root key, kept key)]``:
-        a removed file's favorite moves to the kept copy. One ``BEGIN
-        IMMEDIATE`` transaction. Returns ``{moved, merged, favorites}``.
-        """
-        counts = {"moved": 0, "merged": 0, "favorites": 0}
-        with self._pair_transaction() as conn:
-            for removed, kept in moves:
-                kept_key = normalize_image_path(kept)
-                rows = list(
-                    _file_link_rows(conn, normalize_image_path(removed), removed)
-                )
-                for image_id, prompt_id in rows:
-                    existing = conn.execute(KEEPER_LINK_SQL, (prompt_id, kept_key))
-                    existing = existing.fetchone()
-                    if existing is not None:
-                        conn.execute(MOVE_PAIR_LINKS_SQL, (existing[0], image_id))
-                        conn.execute(DELETE_LINK_SQL, (image_id,))
-                        counts["merged"] += 1
-                        continue
-                    conn.execute(
-                        MOVE_LINK_SQL,
-                        (kept, os.path.basename(kept), kept_key, image_id),
-                    )
-                    counts["moved"] += 1
-            for root_key, removed_key, kept_root, kept_key in favorites:
-                row = conn.execute(FAVORITE_SQL, (root_key, removed_key)).fetchone()
-                if row is None:
-                    continue
-                conn.execute(INSERT_FAVORITE_SQL, (kept_root, kept_key, row[0]))
-                conn.execute(DELETE_FAVORITE_SQL, (root_key, removed_key))
-                counts["favorites"] += 1
-        return counts
-
-
-# Link reconciliation of removed duplicate files: every statement is an
-# index SEARCH (idx_image_file_path, idx_image_path, the (prompt_id,
-# file_path) unique index, idx_image_prompt_pairs_image, the favorites key).
-LINKS_BY_FILE_SQL = "SELECT id, prompt_id FROM generated_images WHERE file_path = ?"
-LEGACY_LINKS_SQL = (
-    "SELECT id, prompt_id FROM generated_images "
-    "WHERE image_path = ? AND file_path IS NULL"
-)
-KEEPER_LINK_SQL = (
-    "SELECT id FROM generated_images WHERE prompt_id = ? AND file_path = ?"
-)
-MOVE_PAIR_LINKS_SQL = (
-    "UPDATE OR IGNORE image_prompt_pairs SET image_id = ? WHERE image_id = ?"
-)
-MOVE_LINK_SQL = (
-    "UPDATE generated_images SET image_path = ?, filename = ?, file_path = ? "
-    "WHERE id = ?"
-)
-DELETE_LINK_SQL = "DELETE FROM generated_images WHERE id = ?"
-FAVORITE_SQL = (
-    "SELECT created_at FROM image_favorites WHERE root_key = ? AND relative_path = ?"
-)
-INSERT_FAVORITE_SQL = "INSERT OR IGNORE INTO image_favorites VALUES (?, ?, ?)"
-DELETE_FAVORITE_SQL = (
-    "DELETE FROM image_favorites WHERE root_key = ? AND relative_path = ?"
-)
-FILE_LINK_SQL = (
-    LINKS_BY_FILE_SQL,
-    LEGACY_LINKS_SQL,
-    KEEPER_LINK_SQL,
-    MOVE_PAIR_LINKS_SQL,
-    MOVE_LINK_SQL,
-    DELETE_LINK_SQL,
-    FAVORITE_SQL,
-    DELETE_FAVORITE_SQL,
-)
-
-
-def _file_link_rows(conn, file_key, raw_path):
-    """``(id, prompt_id)`` of the image records linking one file."""
-    yield from (tuple(row) for row in conn.execute(LINKS_BY_FILE_SQL, (file_key,)))
-    yield from (tuple(row) for row in conn.execute(LEGACY_LINKS_SQL, (raw_path,)))

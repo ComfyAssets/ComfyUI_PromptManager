@@ -66,7 +66,7 @@ except ImportError:
 
 PREVIEW_BODY_MAX = 4096
 # Duplicate-file previews carry the reviewed keepers (py/api/duplicate_files.py).
-DUPLICATE_PREVIEW_BODY_MAX = 512 * 1024
+DUPLICATE_PREVIEW_BODY_MAX = 1024 * 1024
 DUPLICATE_FILES = "duplicate_files"
 PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES,)
 # Room left over beyond what a step writes, so a disk is never filled to 0.
@@ -112,6 +112,36 @@ def _device(path):
         return path
 
 
+def sqlite_temp_dir(environ=None, *, windows=None, usable=None):
+    """The folder SQLite builds its temporary files in (VACUUM's copy).
+
+    Mirrors SQLite's own search, which differs from ``tempfile``'s. On Unix
+    (``unixTempFileDir``): ``SQLITE_TMPDIR``, ``TMPDIR``, then ``/var/tmp``,
+    ``/usr/tmp`` and ``/tmp``, the first that is a writable directory, else
+    the current directory. On Windows (``GetTempPathW``): ``TMP``, ``TEMP``,
+    then ``USERPROFILE``, else the current directory.
+    """
+    environ = os.environ if environ is None else environ
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        for name in ("TMP", "TEMP", "USERPROFILE"):
+            if environ.get(name):
+                return environ[name]
+        return os.path.abspath(".")
+    if usable is None:
+
+        def usable(path):
+            return os.path.isdir(path) and os.access(path, os.W_OK | os.X_OK)
+
+    candidates = [environ.get("SQLITE_TMPDIR"), environ.get("TMPDIR")]
+    candidates += ["/var/tmp", "/usr/tmp", "/tmp"]
+    for candidate in candidates:
+        if candidate and usable(candidate):
+            return candidate
+    return os.path.abspath(".")
+
+
 def database_bytes(db_path):
     """The size a safety backup of the database will be (blocking).
 
@@ -135,8 +165,9 @@ def disk_plan(db_path, *, backup, vacuum):
 
     ``backup``: the safety backup, one database-sized file beside the
     database. ``vacuum``: VACUUM writes the rebuilt database through the WAL
-    beside it and builds it in a temporary copy in the temporary folder
-    (SQLite's documentation: up to twice the database in free space). Needs
+    beside it and builds it in a temporary copy in SQLite's temporary folder
+    (``sqlite_temp_dir``; SQLite's documentation: up to twice the database
+    in free space). Needs
     on one device add up. Returns ``(public, short)``: ``public`` is
     ``{free_bytes, required_bytes, sufficient}`` for the database folder,
     ``short`` None or ``(place, what, required, free)`` of the first place
@@ -151,7 +182,7 @@ def disk_plan(db_path, *, backup, vacuum):
         needs.append(("database folder", folder, size, "the safety backup"))
     if vacuum:
         needs.append(("database folder", folder, size, "Optimize"))
-        needs.append(("temporary folder", tempfile.gettempdir(), size, "Optimize"))
+        needs.append(("temporary folder", sqlite_temp_dir(), size, "Optimize"))
     devices = {}
     for place, path, needed, what in needs:
         entry = devices.setdefault(_device(path), {"place": place, "path": path})
@@ -210,9 +241,7 @@ def _remove_quietly(*paths):
 
 def _reserve_backup_name(db_path):
     """Create and return an unused ``<db>.backup_<stamp>[_n]`` (O_EXCL)."""
-    base = f"{db_path}.backup_{_now().strftime('%Y%m%d_%H%M%S_%f')}"
-    for attempt in range(_NAME_ATTEMPTS):
-        candidate = base if attempt == 0 else f"{base}_{attempt}"
+    for candidate in _backup_names(db_path):
         try:
             fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -220,6 +249,66 @@ def _reserve_backup_name(db_path):
         os.close(fd)
         return candidate
     raise SafetyBackupFailed("No free backup name")
+
+
+def _backup_names(db_path):
+    base = f"{db_path}.backup_{_now().strftime('%Y%m%d_%H%M%S_%f')}"
+    for attempt in range(_NAME_ATTEMPTS):
+        yield base if attempt == 0 else f"{base}_{attempt}"
+
+
+def _place_backup(temp, db_path):
+    """Give the verified ``temp`` its unique backup name; return that path.
+
+    ``os.link`` is atomic and refuses an existing name, so no empty or half
+    file ever carries a backup name, even across a crash. A filesystem
+    without hard links falls back to reserving the name (``O_EXCL``) and
+    ``os.replace``. The temp file is removed by the caller.
+    """
+    for candidate in _backup_names(db_path):
+        try:
+            os.link(temp, candidate)
+        except FileExistsError:
+            continue
+        except (OSError, NotImplementedError):
+            break  # no hard links here
+        else:
+            return candidate
+    else:
+        raise SafetyBackupFailed("No free backup name")
+    final = _reserve_backup_name(db_path)
+    try:
+        os.replace(temp, final)
+    except OSError:
+        _remove_quietly(final)
+        raise
+    return final
+
+
+SAFETY_TEMP_PREFIX = ".pm-safety-"
+
+
+def sweep_safety_temps(db_path):
+    """Remove the temp copies an interrupted safety backup left (blocking).
+
+    Called once at startup, before any job can take a backup. Returns the
+    names removed.
+    """
+    folder = os.path.dirname(os.path.abspath(db_path))
+    removed = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return removed
+    for name in names:
+        if not (name.startswith(SAFETY_TEMP_PREFIX) and ".tmp" in name):
+            continue
+        try:
+            os.remove(os.path.join(folder, name))
+            removed.append(name)
+        except OSError:
+            continue
+    return removed
 
 
 def _standalone(path):
@@ -250,7 +339,7 @@ def take_safety_backup(model):
     """
     db_path = os.path.abspath(model.db_path)
     fd, temp = tempfile.mkstemp(
-        dir=os.path.dirname(db_path), prefix=".pm-safety-", suffix=".tmp"
+        dir=os.path.dirname(db_path), prefix=SAFETY_TEMP_PREFIX, suffix=".tmp"
     )
     os.close(fd)
     final = None
@@ -264,8 +353,7 @@ def take_safety_backup(model):
         _fsync(temp)
         if os.name != "nt":
             os.chmod(temp, 0o600)
-        final = _reserve_backup_name(db_path)
-        os.replace(temp, final)
+        final = _place_backup(temp, db_path)
         return os.path.basename(final)
     except OSError as exc:
         _remove_quietly(final)
@@ -445,21 +533,10 @@ class MaintenanceRoutesMixin:
         token = data.get("token")
         if not isinstance(token, str) or not 0 < len(token) <= MAX_TOKEN_LENGTH:
             return _invalid("token must be the plan's token")
+        plan, refused = self._peek_plan(token)
+        if refused is not None:
+            return refused
         store = self._maintenance_plans
-        try:
-            plan = store.peek(token)
-        except PlanUsed as used:
-            job = self._jobs.get(used.job_id)
-            return _failure(
-                "This plan was already applied.",
-                409,
-                "plan-used",
-                job={"id": used.job_id, "title": job.title if job else None},
-            )
-        except PlanExpired:
-            return _failure(
-                "This review expired. Review the plan again.", 410, "plan-expired"
-            )
         db = self.db
         if plan.db_identity != self._database_identity(db):
             store.discard(token)
@@ -482,36 +559,69 @@ class MaintenanceRoutesMixin:
         if short is not None:
             # Refused before any job starts: nothing fails halfway for space.
             return _failure(short_space_message(short), 507, "insufficient-space")
+        # The token may have been used, expired or dropped while the disk was
+        # measured: look again with no await before the job starts.
+        plan, refused = self._peek_plan(token)
+        if refused is not None:
+            return refused
         try:
             if plan.operation == DUPLICATE_FILES:
-                job = self._start_duplicate_cleanup(db, plan)
+                job = self._start_duplicate_cleanup(db, plan, backup)
             else:
                 job = self._jobs.start(
                     MAINTENANCE_JOB_KIND,
                     MAINTENANCE_TITLES[plan.operation],
-                    admission="records",
+                    # VACUUM rewrites the whole file under the write lock: it
+                    # runs alone, beside no other job of any class.
+                    admission=(
+                        "exclusive" if plan.operation == "optimize" else "records"
+                    ),
                     cancellable=False,
                     scope={"operation": plan.operation},
                     groups=MAINTENANCE_GROUPS,
-                    runner=lambda job: self._run_maintenance_plan(job, db, plan),
+                    runner=lambda job: self._run_maintenance_plan(
+                        job, db, plan, backup
+                    ),
                 )
         except JobBusy as busy:
             return busy_response(busy)  # the token stays usable
-        # Same loop turn as the start: the runner has not run yet.
+        # Same loop turn as the peek and the start: the runner has not run.
         store.consume(token, plan.operation, job_id=job.id)
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
+    def _peek_plan(self, token):
+        """``(plan, None)`` for a usable token, else ``(None, refusal)``."""
+        try:
+            return self._maintenance_plans.peek(token), None
+        except PlanUsed as used:
+            job = self._jobs.get(used.job_id)
+            return None, _failure(
+                "This plan was already applied.",
+                409,
+                "plan-used",
+                job={"id": used.job_id, "title": job.title if job else None},
+            )
+        except PlanExpired:
+            return None, _failure(
+                "This review expired. Review the plan again.", 410, "plan-expired"
+            )
+
     def _backup_promised(self, plan):
-        """A plan reviewed with the policy on keeps that promise; so does on now."""
+        """A plan reviewed with the policy on keeps that promise; so does on now.
+
+        Decided once, when the apply starts (the disk check measured it), and
+        handed to the job.
+        """
         return plan.payload["backup"] == "on" or self._safety_backup_policy() == "on"
 
-    async def _safety_backup_step(self, job, db, plan):
+    async def _safety_backup_step(self, job, db, backup_on):
         """``(ok, name)``: take the promised safety backup, or report none.
 
-        ``name`` is the backup's file name, or None when the policy is off.
-        A failed backup ends the job ``backup-failed`` (``ok`` False).
+        ``name`` is the backup's file name, or None when no backup was
+        promised. A failed backup ends the job ``backup-failed`` (``ok``
+        False).
         """
-        if not self._backup_promised(plan):
+        if not backup_on:
             job.log_line("No safety backup (the policy is off)")
             return True, None
         job.update(status_line="Taking a safety backup")
@@ -531,8 +641,8 @@ class MaintenanceRoutesMixin:
         if removed:
             job.log_line(f"Removed {len(removed)} older safety backups")
 
-    async def _run_maintenance_plan(self, job, db, plan):
-        ok, backup = await self._safety_backup_step(job, db, plan)
+    async def _run_maintenance_plan(self, job, db, plan, backup_on):
+        ok, backup = await self._safety_backup_step(job, db, backup_on)
         if not ok:
             return
         try:

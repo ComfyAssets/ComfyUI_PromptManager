@@ -126,6 +126,14 @@ class DuplicateFilesTestCase(ApplyTestCase):
         await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
         return plan, cleanup
 
+    async def until(self, predicate):
+        """Wait for a server-side state (a frame at a time), never a fixed timer."""
+        deadline = asyncio.get_running_loop().time() + WAIT
+        while not predicate():
+            if asyncio.get_running_loop().time() > deadline:
+                self.fail("the expected server state never appeared")
+            await asyncio.sleep(0)
+
     def gate_hashing(self):
         gate = threading.Event()
         calls = []
@@ -159,7 +167,8 @@ class TestFindJob(DuplicateFilesTestCase):
         self.assertEqual(summary["counters"], {"groups_found": 0})
         # The legacy gallery attaches to the same job, and its status says so.
         legacy = asyncio.ensure_future(self.client.request("POST", STREAM))
-        await asyncio.sleep(0.1)
+        job = self.api._jobs.get(summary["id"])
+        await self.until(lambda: job.subscriber_count > 0)
         status = await (await self.client.request("GET", STATUS)).json()
         self.assertTrue(status["running"])
         gate.set()
@@ -220,7 +229,8 @@ class TestFindJob(DuplicateFilesTestCase):
         response = await self.client.request("POST", FIND)
         job_id = (await response.json())["job"]["id"]
         stream = asyncio.ensure_future(self.client.request("POST", STREAM))
-        await asyncio.sleep(0.1)
+        found = self.api._jobs.get(job_id)
+        await self.until(lambda: found.subscriber_count > 0)
         cancel = await self.client.request(
             "POST", f"/prompt_manager/jobs/{job_id}/cancel"
         )
@@ -512,7 +522,11 @@ class TestCleanupJob(DuplicateFilesTestCase):
         self.assertEqual(cleanup.counters["removed"], 0)
         self.assertTrue((self.output_dir / "b.png").is_file())
         self.assertTrue((self.output_dir / "sub" / "c.png").is_file())
-        self.assertTrue(cleanup.status_line.startswith("Removed 0 duplicate files · "))
+        self.assertTrue(
+            cleanup.status_line.startswith(
+                "Removed 0 duplicate files, 2 not removed · "
+            )
+        )
         rows = {row["path"]: row["detail"] for row in cleanup.outcomes["kept"]}
         self.assertEqual(rows["b.png"], duplicate_files.KEEPER_CHANGED)
 
@@ -544,8 +558,8 @@ class TestCleanupJob(DuplicateFilesTestCase):
         )
         self.assertEqual(
             cleanup.status_line,
-            "Stopped after an error · Removed 1 duplicate file · Safety backup "
-            + self.backups()[0],
+            "Stopped after an error · Removed 1 duplicate file, 1 not removed · "
+            "Safety backup " + self.backups()[0],
         )
         report = json.dumps(cleanup.report())
         self.assertNotIn("Permission denied", report)
@@ -660,7 +674,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
             "Moved 2 database links to the kept copies", "\n".join(cleanup.log)
         )
 
-    async def test_a_failed_removal_keeps_its_links(self):
+    async def test_a_failed_removal_leaves_its_links_on_the_kept_copy(self):
         self.trio()
         prompt = self.save("Stays on c")
         self.api.db.link_image_to_prompt(prompt, str(self.output_dir / "sub" / "c.png"))
@@ -677,8 +691,10 @@ class TestCleanupJob(DuplicateFilesTestCase):
             body = await self.apply(plan["token"])
             cleanup = self.api._jobs.get(body["job"]["id"])
             await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        # Its records moved to the identical kept copy before the unlink failed.
         [image] = self.api.db.get_prompt_images(prompt)
-        self.assertTrue(image["image_path"].endswith("c.png"))
+        self.assertTrue(image["image_path"].endswith("a.png"))
+        self.assertTrue((self.output_dir / "sub" / "c.png").is_file())
 
     async def test_cleanup_and_find_exclude_each_other(self):
         self.trio()
@@ -772,7 +788,7 @@ class TestLegacyDuplicateRoutes(DuplicateFilesTestCase):
         legacy = asyncio.ensure_future(
             self.client.request("GET", "/prompt_manager/scan_duplicates")
         )
-        await asyncio.sleep(0.1)
+        await self.until(lambda: self.api._jobs.active("duplicates") is not None)
         [hold] = self.api._jobs.list()
         self.assertEqual(
             (hold.kind, hold.title, hold.admission, hold.cancellable),
@@ -942,14 +958,14 @@ class TestReviewHelpers(DuplicateFilesTestCase):
         self.assertEqual(self.backups(), [])
         self.assertTrue((self.output_dir / "b.png").is_file())
 
-    async def test_a_link_move_failure_is_reported(self):
+    async def test_a_records_move_failure_deletes_nothing(self):
         self.trio()
         job, group = await self.found_group()
         plan = await self.review(job.id, [self.keep_of(group, "a.png")])
         with (
             patch.object(
                 self.api.db,
-                "move_file_links",
+                "move_copy_records",
                 side_effect=sqlite3.OperationalError("x"),
             ),
             self.assertLogs("prompt_manager", "ERROR"),
@@ -959,6 +975,8 @@ class TestReviewHelpers(DuplicateFilesTestCase):
             await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
         self.assertEqual(cleanup.state, "failed")
         self.assertEqual(
-            cleanup.outcomes["errors"][-1]["detail"], duplicate_files.LINKS_FAILED
+            cleanup.outcomes["errors"][-1]["detail"], duplicate_files.RECORDS_FAILED
         )
-        self.assertEqual(cleanup.counters["removed"], 2)
+        self.assertEqual(cleanup.counters["removed"], 0)
+        self.assertTrue((self.output_dir / "b.png").is_file())
+        self.assertTrue((self.output_dir / "sub" / "c.png").is_file())

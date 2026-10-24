@@ -398,7 +398,7 @@ class TestPreviews(MaintenanceDatabaseCase):
         self.assertEqual(draft.scope, {"count": 1, "label": "The whole database"})
         self.assertEqual(
             [row["label"] for row in draft.details],
-            ["Database file", "Free pages", "Free space needed"],
+            ["Database file", "Free pages", "Lock", "Free space needed"],
         )
         self.assertNotIn(str(self.root), str(draft.public()))
 

@@ -360,6 +360,16 @@ class PromptManagerAPI(
         # forgets them (py/api/maintenance.py).
         self._maintenance_plans = PlanStore()
 
+        # A safety backup interrupted by a crash leaves its temp copy behind.
+        try:
+            from .maintenance import sweep_safety_temps
+
+            swept = sweep_safety_temps(self.db.model.db_path)
+            if swept:
+                self.logger.info(f"Removed {len(swept)} interrupted backup copies")
+        except Exception as e:
+            self.logger.warning(f"Could not sweep interrupted backup copies: {e}")
+
         # Run cleanup on initialization to remove any existing duplicates
         try:
             removed = self.db.cleanup_duplicates()

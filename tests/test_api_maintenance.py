@@ -588,10 +588,21 @@ class TestSafetyBackup(ApplyTestCase):
     async def test_a_failed_replace_leaves_no_file(self):
         from py.api import maintenance
 
-        with patch.object(maintenance.os, "replace", side_effect=OSError("busy")):
+        # A filesystem without hard links falls back to reserve-and-replace.
+        with (
+            patch.object(maintenance.os, "link", side_effect=OSError("no hard links")),
+            patch.object(maintenance.os, "replace", side_effect=OSError("busy")),
+        ):
             with self.assertRaises(maintenance.SafetyBackupFailed):
                 maintenance.take_safety_backup(self.api.db.model)
         self.assertEqual(self.backups(), [])
+        self.assertEqual(self.strays(), [])
+        with patch.object(maintenance.os, "link", side_effect=FileExistsError):
+            with self.assertRaises(maintenance.SafetyBackupFailed):
+                maintenance.take_safety_backup(self.api.db.model)
+        with patch.object(maintenance.os, "link", side_effect=OSError("no hard links")):
+            name = maintenance.take_safety_backup(self.api.db.model)
+        self.assertEqual(self.backups(), [name])
         self.assertEqual(self.strays(), [])
 
     async def test_a_backup_that_cannot_be_finished_leaves_no_file(self):
@@ -689,7 +700,11 @@ class TestBackupPoolAndDiskSpace(ApplyTestCase):
         from py.api import maintenance
 
         self.save("Orphan")
-        with patch.object(maintenance, "_free_bytes", return_value=10 * 2**30):
+        # SQLite's temporary folder on the database's disk: the needs add up.
+        with (
+            patch.object(maintenance, "_free_bytes", return_value=10 * 2**30),
+            patch.object(maintenance, "sqlite_temp_dir", return_value=self.tmpdir),
+        ):
             plan = await self.preview("unused_components")
             optimize = await self.preview("optimize")
         size = self.database_bytes()
@@ -846,3 +861,207 @@ if __name__ == "__main__":  # pragma: no cover
     import unittest
 
     unittest.main()
+
+
+class TestFinalReviewFixes(ApplyTestCase):
+    """PR #313 final review: I3, M1-M5."""
+
+    def duplicate_of(self, kept_text, copy_text):
+        kept = self.save(kept_text)
+        with self.api.db.model.get_connection() as conn:
+            copy = conn.execute(
+                "INSERT INTO prompts(text, created_at) VALUES(?, '2999-01-01')",
+                (copy_text,),
+            ).lastrowid
+        return kept, copy
+
+    def test_sqlite_temp_dir_follows_sqlite_search_order(self):
+        from py.api.maintenance import sqlite_temp_dir
+
+        def usable(*good):
+            return lambda path: path in good
+
+        posix = {"windows": False}
+        self.assertEqual(
+            sqlite_temp_dir({}, usable=usable("/var/tmp", "/tmp"), **posix), "/var/tmp"
+        )
+        self.assertEqual(
+            sqlite_temp_dir({}, usable=usable("/usr/tmp", "/tmp"), **posix), "/usr/tmp"
+        )
+        env = {"SQLITE_TMPDIR": "/fast", "TMPDIR": "/t"}
+        self.assertEqual(
+            sqlite_temp_dir(env, usable=usable("/fast", "/t", "/tmp"), **posix),
+            "/fast",
+        )
+        self.assertEqual(
+            sqlite_temp_dir(env, usable=usable("/t", "/tmp"), **posix), "/t"
+        )
+        self.assertEqual(
+            sqlite_temp_dir({}, usable=usable(), **posix), os.path.abspath(".")
+        )
+        windows = {"windows": True, "usable": usable()}
+        env = {"TMP": "C:\\a", "TEMP": "C:\\b", "USERPROFILE": "C:\\u"}
+        self.assertEqual(sqlite_temp_dir(env, **windows), "C:\\a")
+        self.assertEqual(sqlite_temp_dir({"TEMP": "C:\\b"}, **windows), "C:\\b")
+        self.assertEqual(sqlite_temp_dir({"USERPROFILE": "C:\\u"}, **windows), "C:\\u")
+
+    async def test_optimize_measures_sqlites_temp_folder(self):
+        from py.api import maintenance
+
+        measured = []
+
+        def free(path):
+            measured.append(path)
+            return 10 * 2**30
+
+        other = os.path.join(self.tmpdir, "sqlite-temp")
+        os.mkdir(other)
+        with (
+            patch.object(maintenance, "sqlite_temp_dir", return_value=other),
+            patch.object(maintenance, "_free_bytes", side_effect=free),
+            patch.object(
+                maintenance, "_device", side_effect=lambda path: path  # another disk
+            ),
+        ):
+            plan = await self.preview("optimize")
+        self.assertIn(other, measured)
+        size = self.database_bytes()
+        self.assertEqual(
+            plan["disk"]["required_bytes"], 2 * size + maintenance.DISK_MARGIN_BYTES
+        )
+
+    async def test_a_plan_used_during_the_disk_check_is_plan_used(self):
+        from py.api import maintenance
+
+        self.save("Orphan")
+        plan = await self.preview("unused_components")
+        real = maintenance.disk_plan
+
+        def racing(*args, **kwargs):
+            # A parallel apply consumed the token while this one measured.
+            self.api._maintenance_plans.consume(
+                plan["token"], "unused_components", job_id="f" * 32
+            )
+            return real(*args, **kwargs)
+
+        with patch.object(maintenance, "disk_plan", side_effect=racing):
+            reply = await self.apply(plan["token"], 409)
+        self.assertEqual(reply["code"], "plan-used")
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_the_backup_decision_is_frozen_when_the_job_starts(self):
+        PromptManagerConfig.SAFETY_BACKUP = False
+        self.save("Orphan")
+        plan = await self.preview("unused_components")
+        real = self.api._jobs.start
+
+        def start(*args, **kwargs):
+            job = real(*args, **kwargs)
+            PromptManagerConfig.SAFETY_BACKUP = True  # switched on meanwhile
+            return job
+
+        with patch.object(self.api._jobs, "start", side_effect=start):
+            body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(self.backups(), [])
+        self.assertTrue(job.status_line.endswith("No safety backup"))
+
+    async def test_startup_sweeps_interrupted_backup_copies(self):
+        stray = os.path.join(self.tmpdir, ".pm-safety-crashed.tmp")
+        with open(stray, "wb") as handle:
+            handle.write(b"half a backup")
+        PromptManagerAPI(db=self.api.db)
+        self.assertFalse(os.path.exists(stray))
+
+    async def test_a_backup_is_linked_into_place_without_a_reserved_name(self):
+        from py.api import maintenance
+
+        linked = []
+        real = os.link
+
+        def link(source, target):
+            linked.append(target)
+            return real(source, target)
+
+        with (
+            patch.object(maintenance.os, "link", side_effect=link),
+            patch.object(
+                maintenance, "_reserve_backup_name", side_effect=AssertionError
+            ),
+        ):
+            name = maintenance.take_safety_backup(self.api.db.model)
+        self.assertEqual([os.path.basename(p) for p in linked], [name])
+        self.assertEqual(self.strays(), [])
+
+    async def test_optimize_runs_alone_and_says_the_database_is_locked(self):
+        from py.api.jobs import JobBusy
+
+        plan = await self.preview("optimize")
+        self.assertIn(
+            "Runs alone: the database is locked while it runs",
+            " ".join(row["detail"] for row in plan["details"]),
+        )
+        gate = asyncio.Event()
+
+        async def held(job):
+            await gate.wait()
+
+        read = self.api._jobs.start(
+            "health", "Health check", admission="read", runner=held
+        )
+        busy = await self.apply(plan["token"], 409)
+        self.assertEqual(busy["running"]["id"], read.id)
+        gate.set()
+        await asyncio.wait_for(asyncio.shield(read.task), WAIT)
+        gate.clear()
+        body = await self.apply(plan["token"])
+        self.assertEqual(body["job"]["admission"], "exclusive")
+        with self.assertRaises(JobBusy):
+            self.api._jobs.start(
+                "health", "Health check", admission="read", runner=held
+            )
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+
+    async def test_a_link_collision_is_protected_not_swallowed(self):
+        kept, copy = self.duplicate_of("A cat", "A CAT")
+        path = os.path.join(str(self.output_dir), "both.png")
+        self.api.db.link_image_to_prompt(kept, path)
+        self.api.db.link_image_to_prompt(copy, path)
+        plan, _summary, job = await self.run_apply("duplicate_prompts")
+        self.assertEqual(plan["scope"]["count"], 0)
+        self.assertEqual(
+            plan["protected"]["reasons"], ["1 group links one image twice"]
+        )
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(copy))
+        self.assertEqual(len(self.api.db.get_prompt_images(copy)), 1)
+
+    async def test_a_duplicate_with_a_library_title_is_protected(self):
+        kept, copy = self.duplicate_of("A dog", "A DOG")
+        with self.api.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (copy, "My dog recipe"),
+            )
+        plan, _summary, _job = await self.run_apply("duplicate_prompts")
+        self.assertEqual(plan["scope"]["count"], 0)
+        self.assertEqual(
+            plan["protected"]["reasons"], ["1 group has its own Library title"]
+        )
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(copy))
+
+    def test_the_strict_merge_raises_instead_of_dropping_a_link(self):
+        from database.maintenance import MergeConflict
+
+        kept, copy = self.duplicate_of("A bird", "A BIRD")
+        path = os.path.join(str(self.output_dir), "bird.png")
+        self.api.db.link_image_to_prompt(kept, path)
+        self.api.db.link_image_to_prompt(copy, path)
+        with self.assertRaises(MergeConflict):
+            with self.api.db._pair_transaction() as conn:
+                self.api.db._merge_duplicate_group(conn, [kept, copy], strict=True)
+        self.assertEqual(len(self.api.db.get_prompt_images(copy)), 1)
+        # The legacy cleanup keeps its old behaviour (it logs and goes on).
+        with self.assertLogs("prompt_manager.database", "ERROR"):
+            self.assertEqual(self.api.db.cleanup_duplicates(), 1)

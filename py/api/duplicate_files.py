@@ -57,11 +57,12 @@ from .duplicate_review import (  # noqa: F401 (CHANGED, OUTSIDE_SOURCE: public)
     KEEPER,
     KEEPER_CHANGED,
     KEPT_COPY,
-    LINKS_FAILED,
     LOCKED_FILE,
     NOT_ATTEMPTED,
     OUTSIDE_SOURCE,
+    RECORDS_FAILED,
     ROW_DETAILS,
+    SAME_FILE,
     SOURCES_CHANGED,
     SOURCES_CHANGED_REVIEW,
     HeldFind,
@@ -88,9 +89,9 @@ from .jobs import (
 from .maintenance import DUPLICATE_FILES, _fail_job, _failure, _invalid, backup_note
 
 try:
-    from ...database.maintenance import FILE_LINK_SQL
+    from ...database.duplicate_copies import FILE_LINK_SQL
 except ImportError:
-    from database.maintenance import FILE_LINK_SQL
+    from database.duplicate_copies import FILE_LINK_SQL
 
 DUPLICATE_FIND_TITLE = "Find duplicate image files"
 DUPLICATE_CLEANUP_TITLE = "Remove duplicate image files"
@@ -432,10 +433,14 @@ class DuplicateFilesMixin:
         )
 
     def _review_duplicate_files(self, db, selection):
-        """Check every keeper and removal now (blocking); the plan's parts."""
+        """Check every keeper and removal now (blocking); the plan's parts.
+
+        No file is read: each copy is bound to what the search saw by its
+        size, mtime and inode, and never to its kept copy itself. The removal
+        job hashes each file again right before it unlinks it.
+        """
         listed = self._listed_sources()
         targets, kept, protected = [], [], {}
-        hasher = self._calculate_file_hash
         for group, keepers in selection.values():
             removals = [r for r in group["files"] if r not in keepers]
             for record in removals:
@@ -444,15 +449,7 @@ class DuplicateFilesMixin:
                 ):
                     raise SourcesChanged(record["root"])
             keeper = next(
-                (
-                    k
-                    for k in keepers
-                    if file_problem(
-                        k["abs"], k["root"], group["hash"], k["size"], hasher
-                    )
-                    is None
-                ),
-                None,
+                (k for k in keepers if _bound_problem(k, group) is None), None
             )
             reviewed = []
             for record in removals:
@@ -461,13 +458,7 @@ class DuplicateFilesMixin:
                 elif record["root_index"] is None:
                     problem = OUTSIDE_SOURCE
                 else:
-                    problem = file_problem(
-                        record["abs"],
-                        record["root"],
-                        group["hash"],
-                        record["size"],
-                        hasher,
-                    )
+                    problem = _bound_problem(record, group, keeper["abs"])
                 if problem:
                     protected[problem] = protected.get(problem, 0) + 1
                     continue
@@ -475,13 +466,54 @@ class DuplicateFilesMixin:
             if reviewed:
                 targets.extend(reviewed)
                 kept.append(self._copy_row(keeper, KEPT_COPY))
-        links = db.count_file_links([t["abs"] for t in targets]) if targets else {}
+        records = {}
+        if targets:
+            spellings = self._source_spellings()
+            records = db.count_copy_records(
+                {
+                    t["abs"]: {
+                        "spellings": _file_spellings(spellings, t["root"], t["rel"]),
+                        "locator": t["locator"],
+                        "sha256": t["hash"],
+                    }
+                    for t in targets
+                }
+            )
         return {
             "targets": targets,
             "kept": kept,
             "fingerprint": _fingerprint(targets),
-            "public": _public_plan(targets, protected, links),
+            "public": _public_plan(targets, protected, records),
         }
+
+    def _source_spellings(self):
+        """``{source identity: [spellings]}`` the monitor and config use (blocking).
+
+        The search walks each source's real path, while the image monitor
+        links a file under the folder it watches: the configured spelling,
+        ComfyUI's output folder or a symlink to it. Each absolute candidate
+        is listed under the identity (``normcase(realpath)``) it resolves to.
+        """
+        from ..config import GalleryConfig
+
+        candidates = list(self._monitored_directories())
+        candidates += list(GalleryConfig.MONITORING_DIRECTORIES)
+        try:
+            import folder_paths
+
+            candidates.append(folder_paths.get_output_directory())
+        except Exception:  # nosec B110 - outside ComfyUI there is none
+            pass
+        candidates.append(self._find_comfyui_output_dir())
+        spellings = {}
+        for candidate in candidates:
+            if not candidate or not os.path.isabs(str(candidate)):
+                continue
+            spelled = os.path.abspath(str(candidate))
+            listed = spellings.setdefault(_identity(spelled), [])
+            if spelled not in listed:
+                listed.append(spelled)
+        return spellings
 
     def _target(self, group, record, keeper):
         return {
@@ -497,6 +529,8 @@ class DuplicateFilesMixin:
             "keeper_rel": keeper["rel"],
             "keeper_root": keeper["root"],
             "keeper_size": keeper["size"],
+            "locator": os.path.normcase(record["abs"]),
+            "keeper_locator": os.path.normcase(keeper["abs"]),
         }
 
     def _copy_row(self, record, detail):
@@ -509,7 +543,7 @@ class DuplicateFilesMixin:
 
     # ── removal ───────────────────────────────────────────────────────
 
-    def _start_duplicate_cleanup(self, db, plan):
+    def _start_duplicate_cleanup(self, db, plan, backup_on):
         """Register the removal job for a reviewed plan (on the loop)."""
         find = self._jobs.active(DUPLICATES_JOB_KIND)
         if find is not None:
@@ -521,7 +555,7 @@ class DuplicateFilesMixin:
             cancellable=False,
             scope={"operation": DUPLICATE_FILES},
             groups=DUPLICATE_CLEANUP_GROUP_NAMES,
-            runner=lambda job: self._run_duplicate_cleanup(job, db, plan),
+            runner=lambda job: self._run_duplicate_cleanup(job, db, plan, backup_on),
         )
 
     def _sources_unchanged(self, targets):
@@ -530,12 +564,12 @@ class DuplicateFilesMixin:
             self._source_listed(listed, t["root_index"], t["root"]) for t in targets
         )
 
-    async def _run_duplicate_cleanup(self, job, db, plan):
+    async def _run_duplicate_cleanup(self, job, db, plan, backup_on):
         targets = plan.payload["targets"]
         unchanged = await self._run_in_executor(self._sources_unchanged, targets)
         if not unchanged:
             return _fail_job(job, "sources-changed", SOURCES_CHANGED)
-        ok, backup = await self._safety_backup_step(job, db, plan)
+        ok, backup = await self._safety_backup_step(job, db, backup_on)
         if not ok:
             return
         try:
@@ -549,36 +583,60 @@ class DuplicateFilesMixin:
         for row in plan.payload["kept"]:
             job.record("kept", row, f"= {row['root']}/{row['path']} · {KEPT_COPY}")
         job.update(total=len(targets), status_line="Removing duplicate files")
-        removed, failure, keepers = [], None, {}
+        spellings = await self._run_in_executor(self._source_spellings)
+        removed, failure, keepers = 0, None, {}
+        totals = dict.fromkeys(("moved", "merged", "favorites", "tags", "review"), 0)
         for done, target in enumerate(targets, start=1):
             if failure is not None:
                 self._record_target(job, "kept", target, NOT_ATTEMPTED)
                 continue
-            outcome, code = await self._run_in_executor(
-                self._remove_one_duplicate, target, keepers
+            outcome, detail, counts = await self._run_in_executor(
+                self._remove_one_duplicate, db, target, keepers, spellings
             )
+            for key, value in (counts or {}).items():
+                totals[key] += value
             if outcome == "removed":
-                removed.append(target)
-                detail = f"A copy of {target['keeper_rel']}"
-                self._record_target(job, "removed", target, detail, "-")
+                removed += 1
+                text = f"A copy of {target['keeper_rel']}"
+                self._record_target(job, "removed", target, text, "-")
             elif outcome == "kept":
-                self._record_target(job, "kept", target, ROW_DETAILS[code])
+                self._record_target(job, "kept", target, ROW_DETAILS[detail])
             else:
-                failure = code
-                self._record_target(job, "errors", target, code, "!")
+                failure = detail
+                self._record_target(job, "errors", target, detail, "!")
             job.update(processed=done, progress=int(done / len(targets) * 100))
-        links_ok = await self._move_links(job, db, removed)
         if removed:
             self.invalidate_gallery_cache()
-        line = f"Removed {_plural(len(removed), 'duplicate file')}"
+        self._log_moved_records(job, totals)
+        line = f"Removed {_plural(removed, 'duplicate file')}"
+        if removed < len(targets):
+            line += f", {len(targets) - removed:,} not removed"
         job.log_line(line)
-        if failure is not None or not links_ok:
-            line = "Stopped after an error · " + line if failure else line
-            job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
+        if failure is not None:
+            line = f"Stopped after an error · {line}"
+        job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
+        if failure is not None:
             job.publish({"type": "error", "code": "delete-failed", "message": line})
             job.finish("failed")
-            return
-        job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
+
+    @staticmethod
+    def _log_moved_records(job, totals):
+        links = totals["moved"] + totals["merged"]
+        if links:
+            job.log_line(f"Moved {_plural(links, 'database link')} to the kept copies")
+        if totals["favorites"]:
+            job.log_line(
+                f"Moved {_plural(totals['favorites'], 'favorite')} to the kept copies"
+            )
+        if totals["tags"]:
+            job.log_line(
+                f"Added {_plural(totals['tags'], 'image tag')} to the kept copies"
+            )
+        if totals["review"]:
+            job.log_line(
+                f"Settled {_plural(totals['review'], 'Needs review item')} "
+                "of removed copies"
+            )
 
     @staticmethod
     def _record_target(job, group, target, detail, mark="="):
@@ -592,73 +650,126 @@ class DuplicateFilesMixin:
             group, row, f"{mark} {target['root_label']}/{target['rel']} · {detail}"
         )
 
-    def _remove_one_duplicate(self, target, keepers):
-        """``(outcome, detail or code)`` for one reviewed removal (blocking).
+    def _remove_one_duplicate(self, db, target, keepers, spellings):
+        """``(outcome, detail, counts)`` for one reviewed removal (blocking).
 
-        ``keepers`` caches each group's kept-copy check for this job.
+        The kept copy (once per group; cached in ``keepers``) and the file
+        are checked again, hashes included, and the file must not be its kept
+        copy. Then the file's records move to the kept copy in one short
+        transaction, and only then is the file unlinked: a crash or a failed
+        unlink leaves its records on the identical kept copy, never on a
+        deleted file. A failed move leaves the file and its records alone.
         """
         hasher = self._calculate_file_hash
         group_id = target["group_id"]
         if group_id not in keepers:
-            keepers[group_id] = (
-                file_problem(
-                    target["keeper_abs"],
-                    target["keeper_root"],
-                    target["hash"],
-                    target["keeper_size"],
-                    hasher,
-                )
-                is None
-            )
-        if not keepers[group_id]:
-            return "kept", KEEPER
+            keepers[group_id] = _kept_copy_state(target, hasher)
+        if keepers[group_id] is None:
+            return "kept", KEEPER, None
         problem = file_problem(
-            target["abs"], target["root"], target["hash"], target["size"], hasher
+            target["abs"],
+            target["root"],
+            target["hash"],
+            target["size"],
+            hasher,
+            keeper=target["keeper_abs"],
         )
         if problem:
-            return "kept", problem
+            return "kept", problem, None
+        try:
+            counts = db.move_copy_records(
+                self._copy_move(target, keepers[group_id], spellings)
+            )
+        except Exception:
+            self.logger.exception(f"Could not move the records of {target['rel']}")
+            return "error", RECORDS_FAILED, None
         try:
             _unlink(target["abs"])
         except FileNotFoundError:
-            return "kept", GONE
+            return "removed", None, counts
         except PermissionError:
-            self.logger.warning(f"Duplicate file is locked: {target['rel']}")
-            return "error", LOCKED_FILE
+            self.logger.warning(
+                f"Duplicate file is locked: {target['rel']}; "
+                "its records now name the kept copy"
+            )
+            return "error", LOCKED_FILE, counts
         except OSError:
             self.logger.warning(
-                f"Could not delete duplicate file {target['rel']}", exc_info=True
+                f"Could not delete duplicate file {target['rel']}; "
+                "its records now name the kept copy",
+                exc_info=True,
             )
-            return "error", DELETE_FAILED
+            return "error", DELETE_FAILED, counts
         self.logger.info(f"Deleted duplicate file: {target['rel']}")
         _remove_thumbnail(Path(target["root"]), Path(target["rel"]), self.logger)
-        return "removed", None
+        return "removed", None, counts
 
-    async def _move_links(self, job, db, removed):
-        """Move the removed files' links to their kept copy; False on failure."""
-        if not removed:
-            return True
-        moves = [(t["abs"], t["keeper_abs"]) for t in removed]
-        favorites = [
-            (
-                _favorite_root_key(t["root"]),
-                _favorite_relative_key(t["rel"]),
-                _favorite_root_key(t["keeper_root"]),
-                _favorite_relative_key(t["keeper_rel"]),
+    @staticmethod
+    def _copy_move(target, kept_stat, spellings):
+        """What ``move_copy_records`` moves for one removal."""
+        removed = _file_spellings(spellings, target["root"], target["rel"])
+        kept = _file_spellings(spellings, target["keeper_root"], target["keeper_rel"])
+        same_source = _identity(target["root"]) == _identity(target["keeper_root"])
+        native_rel = target["rel"].replace("/", os.sep)
+        native_kept = target["keeper_rel"].replace("/", os.sep)
+        targets = {}
+        for spelled in removed:
+            prefix = spelled[: len(spelled) - len(native_rel)]
+            targets[spelled] = (
+                prefix + native_kept if same_source else target["keeper_abs"]
             )
-            for t in removed
-        ]
-        try:
-            counts = await self._run_in_executor(db.move_file_links, moves, favorites)
-        except Exception:
-            self.logger.exception("Moving duplicate file links failed")
-            job.record(
-                "errors", {"path": "", "detail": LINKS_FAILED}, f"! {LINKS_FAILED}"
-            )
-            return False
-        links = counts["moved"] + counts["merged"]
-        job.log_line(f"Moved {_plural(links, 'database link')} to the kept copies")
-        if counts["favorites"]:
-            job.log_line(
-                f"Moved {_plural(counts['favorites'], 'favorite')} to the kept copies"
-            )
-        return True
+        return {
+            "removed": removed,
+            "kept": kept,
+            "targets": targets,
+            "kept_path": target["keeper_abs"],
+            "favorite": (
+                _favorite_root_key(target["root"]),
+                _favorite_relative_key(target["rel"]),
+                _favorite_root_key(target["keeper_root"]),
+                _favorite_relative_key(target["keeper_rel"]),
+            ),
+            "removed_locator": target["locator"],
+            "kept_locator": target["keeper_locator"],
+            "sha256": target["hash"],
+            "kept_size": kept_stat.st_size,
+            "kept_mtime_ns": kept_stat.st_mtime_ns,
+        }
+
+
+def _bound_problem(record, group, keeper=None):
+    """``file_problem`` without reading the file: size, mtime and inode."""
+    return file_problem(
+        record["abs"],
+        record["root"],
+        group["hash"],
+        record["size"],
+        hash_check=False,
+        mtime_ns=record.get("mtime_ns"),
+        inode=record.get("inode"),
+        keeper=keeper,
+    )
+
+
+def _kept_copy_state(target, hasher):
+    """The kept copy's ``os.stat`` when it is still the reviewed bytes, else None."""
+    problem = file_problem(
+        target["keeper_abs"],
+        target["keeper_root"],
+        target["hash"],
+        target["keeper_size"],
+        hasher,
+    )
+    if problem:
+        return None
+    try:
+        return os.stat(target["keeper_abs"])
+    except OSError:
+        return None
+
+
+def _file_spellings(spellings, root, rel):
+    """Every path one file is linked by: its real path, then each spelling."""
+    native = rel.replace("/", os.sep)
+    roots = [root] + spellings.get(_identity(root), [])
+    return list(dict.fromkeys(os.path.join(spelled, native) for spelled in roots))

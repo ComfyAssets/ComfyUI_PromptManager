@@ -135,6 +135,17 @@ def _collect_media_files(output_dirs, extensions):
     return found
 
 
+def _physical_file_key(path, stat):
+    """What tells two physical files apart: ``(st_dev, st_ino)``.
+
+    A filesystem that reports no inode (``st_ino`` 0, some network or FAT
+    volumes on Windows) falls back to the resolved, case-folded path.
+    """
+    if stat.st_ino:
+        return ("inode", stat.st_dev, stat.st_ino)
+    return ("path", os.path.normcase(os.path.realpath(str(path))))
+
+
 def _thumbnail_rel_path(rel_path, thumbnail_ext):
     """Relative path of the thumbnail the gallery would generate for ``rel_path``."""
     return f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb{thumbnail_ext}"
@@ -743,13 +754,18 @@ class AdminRoutesMixin:
         """Content-identical media files under ``roots`` (blocking).
 
         Each root is walked as ``_collect_media_files`` walks (no symlinks,
-        no ``thumbnails``, bounded); a file is listed once, under the first
-        root that holds it, and at most MAX_SCAN_FILES files are read. Files
+        no ``thumbnails``, bounded). A physical file is listed once, under
+        the first root that holds it: files are told apart by ``(st_dev,
+        st_ino)``, so a source listed twice under two spellings (a symlink, a
+        bind mount, a case variant), a source inside another one or a
+        hardlink is one file, never a copy of itself. At most MAX_SCAN_FILES
+        files are read. Files
         are hashed on ``PromptManagerConfig.WORKER_THREADS`` threads;
         ``progress(done, total)`` is called from those threads about every
         percent and once at the end, and ``stop()`` true skips the files not
         yet read. Returns ``[{hash, size, files:[{slot, abs, rel, size,
-        mtime}]}]`` for every hash shared by two or more files, ``slot``
+        mtime, mtime_ns, inode}]}]`` for every hash shared by two or more
+        files (``inode`` is ``[st_dev, st_ino]``), ``slot``
         being the root's place in ``roots`` and the files oldest first.
         """
         from ..config import PromptManagerConfig
@@ -759,10 +775,16 @@ class AdminRoutesMixin:
         seen = set()
         for slot, root in enumerate(roots):
             for path in _collect_media_files([root], extensions):
-                key = os.path.normcase(str(path))
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                key = _physical_file_key(path, stat)
                 if key not in seen:
                     seen.add(key)
-                    media_files.append((slot, root, path))
+                    media_files.append((slot, root, path, stat))
+                if len(media_files) >= MAX_SCAN_FILES:
+                    break
         media_files = media_files[:MAX_SCAN_FILES]
         total = len(media_files)
         self.logger.info(f"Found {total} media files to analyze")
@@ -771,17 +793,18 @@ class AdminRoutesMixin:
         lock = threading.Lock()
 
         def describe(item):
-            slot, root, media_path = item
+            slot, root, media_path, stat = item
             info = None
             if stop is None or not stop():
                 try:
-                    stat = media_path.stat()
                     info = {
                         "slot": slot,
                         "abs": str(media_path),
                         "rel": Path(os.path.relpath(str(media_path), root)).as_posix(),
                         "size": stat.st_size,
                         "mtime": stat.st_mtime,
+                        "mtime_ns": stat.st_mtime_ns,
+                        "inode": [stat.st_dev, stat.st_ino],
                         "hash": self._calculate_file_hash(media_path),
                     }
                 except Exception as e:

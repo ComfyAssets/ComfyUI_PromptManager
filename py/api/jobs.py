@@ -19,7 +19,11 @@ ones. One job of a kind runs at a time, and each job has an admission class
 - ``guarded`` must not overlap record changes but may overlap other guarded
   work (thumbnail generation and clearing, later backup). It is refused while
   a ``records`` job runs.
-- ``read`` only reads; it is refused only by a running job of its own kind.
+- ``read`` only reads; it is refused only by a running job of its own kind
+  or an ``exclusive`` one.
+- ``exclusive`` runs alone (Optimize's VACUUM, which rewrites the whole
+  database under the write lock): it is refused while any job runs, and every
+  job is refused while it runs.
 
 A short legacy-page operation takes a ``hold``: a running, non-cancellable
 job that lasts as long as the request, so the Activity page lists it and a
@@ -75,12 +79,14 @@ IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
 # Thumbnail generation (#249 System S5): previews written, already fresh, failed.
 THUMBNAIL_GROUP_NAMES = ("generated", "skipped", "errors")
 
-ADMISSIONS = ("read", "guarded", "records")
+ADMISSIONS = ("read", "guarded", "records", "exclusive")
 # What each admission class is refused beside (besides its own kind).
+# ``exclusive`` (Optimize's VACUUM) runs alone: beside no job of any class.
 _REFUSED_BESIDE = {
-    "read": frozenset(),
-    "guarded": frozenset({"records"}),
-    "records": frozenset({"records", "guarded"}),
+    "read": frozenset({"exclusive"}),
+    "guarded": frozenset({"records", "exclusive"}),
+    "records": frozenset({"records", "guarded", "exclusive"}),
+    "exclusive": frozenset(ADMISSIONS),
 }
 
 # Kinds of the legacy-page operations that hold the registry (D80; titles in
