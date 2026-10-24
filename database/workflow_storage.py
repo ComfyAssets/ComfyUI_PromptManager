@@ -12,7 +12,12 @@ prompt graph text inline) to the new form (a ``workflow_documents`` id,
   one accessor before its row changes; a text that would not come back
   identical fails the batch (``DocumentMismatch``) and rolls it back whole;
 - a value that is not text (or is over ``MAX_DOCUMENT_BYTES``) stays inline
-  and is counted as protected.
+  and is counted as protected;
+- each row runs in its own savepoint: one that cannot be rewritten (text
+  SQLite cannot decode, a text that would not come back) stays inline and
+  is listed, and the rest of the batch goes on;
+- a batch ends after ``BATCH_SECONDS``, and the write lock is then left
+  free for ``BATCH_PAUSE``, so other writers are never starved.
 
 A crash or a stop between batches leaves committed batches in the new form
 and the rest in the old form; both read the same, and a rerun continues
@@ -24,8 +29,10 @@ documents, rebuilds the file and checkpoints the WAL with TRUNCATE, so the
 freed pages go back to the disk.
 """
 
+import logging
 import os
 import sqlite3
+import time
 from contextlib import closing
 
 from .workflow_documents import (
@@ -41,6 +48,18 @@ from .workflow_documents import (
 OPERATION = "workflow_storage"
 BATCH_ROWS = 200
 BATCH_BYTES = 16 * 2**20  # characters of text rewritten per transaction
+# A batch holds the write lock: it ends after this long, and the loop then
+# leaves the lock free for BATCH_PAUSE, longer than SQLite's longest busy
+# poll (100 ms), so the image monitor and the run counting get in between.
+BATCH_SECONDS = 0.5
+BATCH_PAUSE = 0.15
+# What one row's rewrite may raise without failing its batch: the row stays
+# inline and is reported (text SQLite cannot decode, a text that would not
+# come back identical).
+ROW_ERRORS = (sqlite3.Error, DocumentMismatch, UnicodeError, ValueError, TypeError)
+
+logger = logging.getLogger("prompt_manager.database.workflow_storage")
+_clock = time.monotonic
 
 # typeof() reads a column's type from the record header: no overflow page.
 NEXT_IDS_SQL = (
@@ -76,11 +95,12 @@ QUERY_PLAN_STATEMENTS = {
 }
 
 
-def _rewrite_row(conn, image_id, row, verified):
+def _rewrite_row(conn, image_id, row, verified, checked):
     """Store the row's inline texts as documents; returns (changed, protected, size).
 
     ``verified`` maps document ids already read back in this batch to their
-    text, so a document shared by many rows is decompressed once.
+    text, and ``checked`` holds the reused ids ``store_text`` already
+    checked, so a document shared by many rows is decompressed once.
     """
     changes, replaced = {}, []
     protected = size = 0
@@ -91,7 +111,7 @@ def _rewrite_row(conn, image_id, row, verified):
         if not storable(value):
             protected += 1
             continue
-        document_id = store_text(conn, value)
+        document_id = store_text(conn, value, checked)
         if document_id not in verified:
             verified[document_id] = read_stored_text(conn, None, document_id)
         if verified[document_id] != value:
@@ -110,28 +130,60 @@ def _rewrite_row(conn, image_id, row, verified):
     return bool(changes), protected, size
 
 
-def migrate_batch(conn, after_id, max_rows=BATCH_ROWS, max_bytes=BATCH_BYTES):
+def migrate_batch(
+    conn,
+    after_id,
+    max_rows=BATCH_ROWS,
+    max_bytes=BATCH_BYTES,
+    max_seconds=BATCH_SECONDS,
+):
     """Rewrite the next batch after ``after_id`` in one transaction.
 
-    Returns ``{last_id, rows, protected, done}``: the last row looked at,
-    rows rewritten, inline values kept (not text) and whether there was
-    nothing left to look at.
+    The batch ends after ``max_rows`` rows, about ``max_bytes`` of text or
+    ``max_seconds``, whichever comes first. Each row runs in its own
+    savepoint: a row that cannot be rewritten (``ROW_ERRORS``) is rolled
+    back alone, stays inline and is listed in ``errors``; anything else rolls
+    the whole batch back and propagates. Returns ``{last_id, rows,
+    protected, errors, done}``: the last row looked at, rows rewritten,
+    inline values kept (not text), the ids kept by an error and whether
+    there was nothing left to look at.
     """
     if conn.in_transaction:
         raise RuntimeError("The migration needs its own transaction")
+    started = _clock()
     conn.execute("BEGIN IMMEDIATE")
     try:
         ids = [row[0] for row in conn.execute(NEXT_IDS_SQL, (after_id, max_rows))]
-        result = {"last_id": after_id, "rows": 0, "protected": 0, "done": not ids}
-        verified, size = {}, 0
+        result = {
+            "last_id": after_id,
+            "rows": 0,
+            "protected": 0,
+            "errors": [],
+            "done": not ids,
+        }
+        verified, checked, size = {}, set(), 0
         for image_id in ids:
-            row = conn.execute(ROW_SQL, (image_id,)).fetchone()
-            changed, protected, row_size = _rewrite_row(conn, image_id, row, verified)
+            conn.execute("SAVEPOINT workflow_row")
+            try:
+                row = conn.execute(ROW_SQL, (image_id,)).fetchone()
+                changed, protected, row_size = _rewrite_row(
+                    conn, image_id, row, verified, checked
+                )
+            except ROW_ERRORS as error:
+                conn.execute("ROLLBACK TO workflow_row")
+                conn.execute("RELEASE workflow_row")
+                verified.clear()  # the row's documents were rolled back too
+                checked.clear()
+                logger.warning(f"Image record {image_id} kept inline: {error}")
+                result["errors"].append(image_id)
+                changed, protected, row_size = False, 0, 0
+            else:
+                conn.execute("RELEASE workflow_row")
             result["rows"] += int(changed)
             result["protected"] += protected
             result["last_id"] = image_id
             size += row_size
-            if size >= max_bytes:
+            if size >= max_bytes or _clock() - started >= max_seconds:
                 break
         conn.commit()
         return result
@@ -163,11 +215,14 @@ class WorkflowStorageOperations:
 
         ``on_batch(progress)`` runs after each committed batch with the
         running totals ``{rows, protected, batches, last_id}``;
-        ``should_stop()`` is asked before each batch. Returns ``{rows,
-        protected, batches, stopped, documents_removed}``. Unreferenced
+        ``should_stop()`` is asked before each batch. Each committed batch is
+        followed by ``BATCH_PAUSE`` with the write lock free. Returns
+        ``{rows, protected, batches, stopped, errors, documents_removed}``
+        (``errors``: the ids of rows kept inline by an error). Unreferenced
         documents are swept once every row was looked at.
         """
         totals = {"rows": 0, "protected": 0, "batches": 0, "last_id": 0}
+        errors = []
         stopped = False
         while True:
             if should_stop is not None and should_stop():
@@ -176,6 +231,8 @@ class WorkflowStorageOperations:
             batch = self.migrate_workflow_batch(totals["last_id"], max_rows, max_bytes)
             if batch["done"]:
                 break
+            time.sleep(BATCH_PAUSE)  # leave the write lock to other writers
+            errors += batch["errors"]
             totals["rows"] += batch["rows"]
             totals["protected"] += batch["protected"]
             totals["batches"] += 1
@@ -188,6 +245,7 @@ class WorkflowStorageOperations:
             "protected": totals["protected"],
             "batches": totals["batches"],
             "stopped": stopped,
+            "errors": errors,
             "documents_removed": removed,
         }
 
@@ -296,7 +354,14 @@ class WorkflowStorageOperations:
                     "detail": _plural(counts["documents"], "workflow document"),
                 }
             )
+        name = os.path.basename(self.model.db_path)
         details += [
+            {
+                "label": "Backup",
+                "detail": BACKUP_NOTE.format(
+                    name=f"{name}.pre-workflow-storage_<date and time>"
+                ),
+            },
             {"label": "Reclaim space", "detail": RECLAIM_NOTE},
             {"label": "Older versions", "detail": OLDER_VERSIONS_NOTE},
         ]
@@ -327,7 +392,11 @@ RECLAIM_NOTE = (
     "When every record is rewritten, Reclaim space runs alone to give the freed "
     "space back to the disk (VACUUM). The database is locked while it runs."
 )
+BACKUP_NOTE = (
+    "Always taken first, whatever the safety backup setting: {name} beside "
+    "the database, verified, and kept until you remove it (it is never pruned)."
+)
 OLDER_VERSIONS_NOTE = (
     "An older Prompt Manager version shows rewritten images without their "
-    "workflow. Restoring the safety backup brings back the old form."
+    "workflow. Restoring the pre-migration backup brings back the old form."
 )

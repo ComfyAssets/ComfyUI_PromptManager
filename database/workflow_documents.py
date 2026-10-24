@@ -74,7 +74,11 @@ _UNREFERENCED = (
     "AND NOT EXISTS (SELECT 1 FROM generated_images g "
     "WHERE g.prompt_document_id=workflow_documents.id)"
 )
-LOOKUP_SQL = "SELECT id, byte_length FROM workflow_documents WHERE sha256=?"
+LOOKUP_SQL = (
+    "SELECT id, sha256, byte_length, data FROM workflow_documents WHERE sha256=?"
+)
+REPAIR_SQL = "UPDATE workflow_documents SET byte_length=?, data=? WHERE id=?"
+ALL_DOCUMENTS_SQL = "SELECT sha256, byte_length, data, id FROM workflow_documents"
 READ_SQL = "SELECT sha256, byte_length, data FROM workflow_documents WHERE id=?"
 INSERT_SQL = (
     "INSERT INTO workflow_documents (sha256, byte_length, data) VALUES (?, ?, ?)"
@@ -168,8 +172,16 @@ def _value_error(conn: sqlite3.Connection):
     return None
 
 
+def _damaged_document(conn: sqlite3.Connection) -> bool:
+    """Whether a document fails its length or hash check (one row at a time)."""
+    for row in conn.execute(ALL_DOCUMENTS_SQL):
+        if _decode(row[:3], row[3], quiet=True) is None:
+            return True
+    return False
+
+
 def workflow_documents_schema_error(
-    conn: sqlite3.Connection, *, allow_missing: bool = True
+    conn: sqlite3.Connection, *, allow_missing: bool = True, documents: bool = False
 ) -> Optional[str]:
     """Reject an unsupported document schema or invalid stored values (reads only).
 
@@ -199,7 +211,11 @@ def workflow_documents_schema_error(
     # The exact definition fixes the columns, their types and constraints.
     if _compact(tables[0]) != _compact(_DDL):
         return "Workflow documents have an invalid table definition"
-    return _reference_error(conn, columns) or _value_error(conn)
+    error = _reference_error(conn, columns) or _value_error(conn)
+    if error is None and documents and _damaged_document(conn):
+        # Restore and backup verification only: every document is read.
+        return "Workflow documents contain a damaged document"
+    return error
 
 
 def migrate_workflow_documents(conn: sqlite3.Connection) -> None:
@@ -250,15 +266,21 @@ def storable(text: Any) -> bool:
     return len(text.encode("utf-8")) <= MAX_DOCUMENT_BYTES
 
 
-def store_text(conn: sqlite3.Connection, text: Optional[str]) -> Optional[int]:
+def store_text(
+    conn: sqlite3.Connection, text: Optional[str], verified: Optional[set] = None
+) -> Optional[int]:
     """The id of the document holding exactly ``text``; None for None.
 
-    Reuses the document with the same hash and length, or inserts a new one
-    whose compressed bytes were checked to decompress to ``text``'s bytes.
-    Opens a write transaction first when none is open, so a concurrent
-    ``release_documents`` cannot remove a reused document before the caller
-    references it. Raises DocumentMismatch, TypeError for a non-text value
-    and ValueError for a text over MAX_DOCUMENT_BYTES.
+    Reuses the document with the same hash, or inserts a new one whose
+    compressed bytes were checked to decompress to ``text``'s bytes. A reused
+    document is decompressed and checked first; a damaged one (a restored
+    file's corruption under a valid hash) is repaired from ``text``, whose
+    hash is its key, so every row that references it reads right again.
+    ``verified``, when given, holds the ids already checked (a migration
+    batch), which are then not read again. Opens a write transaction first
+    when none is open, so a concurrent ``release_documents`` cannot remove a
+    reused document before the caller references it. Raises TypeError for a
+    non-text value and ValueError for a text over MAX_DOCUMENT_BYTES.
     """
     if text is None:
         return None
@@ -271,14 +293,21 @@ def store_text(conn: sqlite3.Connection, text: Optional[str]) -> Optional[int]:
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
     row = conn.execute(LOOKUP_SQL, (digest,)).fetchone()
-    if row is not None:
-        if row[1] != len(raw):
-            raise DocumentMismatch("A stored document has another length")
+    if row is not None and verified is not None and row[0] in verified:
         return row[0]
     data = zlib.compress(raw, COMPRESSION_LEVEL)
     if zlib.decompress(data) != raw:  # pragma: no cover - zlib is exact
         raise DocumentMismatch("Compression did not round-trip")
-    return conn.execute(INSERT_SQL, (digest, len(raw), data)).lastrowid
+    if row is None:
+        document_id = conn.execute(INSERT_SQL, (digest, len(raw), data)).lastrowid
+    else:
+        document_id = row[0]
+        if _decode(row[1:], document_id, quiet=True) != text:
+            logger.warning(f"Workflow document {document_id} was damaged; repaired")
+            conn.execute(REPAIR_SQL, (len(raw), data, document_id))
+    if verified is not None:
+        verified.add(document_id)
+    return document_id
 
 
 def stored_values(
@@ -304,7 +333,8 @@ def stored_values(
 # ── read ──────────────────────────────────────────────────────────────
 
 
-def _decode(row, document_id) -> Optional[str]:
+def _decode(row, document_id, quiet=False) -> Optional[str]:
+    """``(sha256, byte_length, data)`` as checked text, or None (logged)."""
     if row is None:
         logger.warning(f"Workflow document {document_id} is missing")
         return None
@@ -320,7 +350,8 @@ def _decode(row, document_id) -> Optional[str]:
             raise ValueError("hash differs")
         return raw.decode("utf-8")
     except (zlib.error, ValueError, TypeError) as error:
-        logger.warning(f"Workflow document {document_id} is unreadable: {error}")
+        if not quiet:
+            logger.warning(f"Workflow document {document_id} is unreadable: {error}")
         return None
 
 

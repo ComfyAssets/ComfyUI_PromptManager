@@ -135,11 +135,11 @@ class TestMigration(MigrationTestCase):
         real = wd.store_text
         calls = []
 
-        def crashing(conn, text):
+        def crashing(conn, text, *args):
             calls.append(text)
             if len(calls) == 23:
                 raise RuntimeError("power cut")
-            return real(conn, text)
+            return real(conn, text, *args)
 
         with patch.object(ws, "store_text", side_effect=crashing):
             with self.assertRaises(RuntimeError):
@@ -163,13 +163,14 @@ class TestMigration(MigrationTestCase):
         self.assertEqual(self.inline_ids(), set(expected))
         self.assertEqual(self.document_count(), 0)
 
-    def test_a_document_that_reads_back_differently_fails_the_batch(self):
+    def test_a_document_that_reads_back_differently_keeps_its_row(self):
         _prompt_id, expected = self.library(count=6)
         with patch.object(ws, "read_stored_text", return_value="something else"):
-            with self.assertRaises(wd.DocumentMismatch):
-                self.migrate(max_rows=50)
+            result = self.migrate(max_rows=50)
+        self.assertEqual(result["errors"], sorted(expected))
         self.assertEqual(self.inline_ids(), set(expected))
         self.assertEqual(self.texts(), expected)
+        self.assertEqual(self.document_count(), 0)
 
     def test_stop_between_batches_then_continue(self):
         _prompt_id, expected = self.library(count=30)

@@ -517,9 +517,9 @@ class TestEdgeErrors(DocumentsTestCase):
                 "UPDATE workflow_documents SET byte_length=5 WHERE id=?",
                 (document_id,),
             )
-        with self.assertRaises(wd.DocumentMismatch):
-            wd.store_text(conn, "abc")
-        conn.rollback()
+        with conn, self.assertLogs(wd.logger, "WARNING"):  # repaired from the text
+            self.assertEqual(wd.store_text(conn, "abc"), document_id)
+        self.assertEqual(wd.read_stored_text(conn, None, document_id), "abc")
         for length in (-1, 2, 4):
             with conn:
                 conn.execute(

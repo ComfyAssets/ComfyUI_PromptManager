@@ -25,9 +25,12 @@ from .review_schema import (
 )
 from .saved_views import migrate_saved_views, saved_views_schema_error
 from .workflow_documents import (
+    DOCUMENT_ID_COLUMNS,
     migrate_workflow_documents,
     workflow_documents_schema_error,
 )
+
+
 from .execution_history_schema import (
     history_schema_error,
     migrate_execution_history,
@@ -52,6 +55,19 @@ ISO_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%f+00:00"
 
 MAX_PAIR_PROVENANCE_LENGTH = 4_000_000
 MAX_PAIR_PROVENANCE_DEPTH = 64
+
+
+def _refuse_rebuild_with_documents(columns) -> None:
+    """The legacy generated_images rebuilds copy a fixed column list.
+
+    A file that needs one (``prompt_id`` TEXT, no ``file_path``) but already
+    has the workflow document ids would lose them, so it is refused.
+    """
+    if any(column in columns for column in DOCUMENT_ID_COLUMNS):
+        raise sqlite3.DatabaseError(
+            "This database needs an old image table rebuild but already has "
+            "workflow document references; the rebuild would drop them"
+        )
 
 
 def pair_provenance_error(encoded: object) -> Optional[str]:
@@ -717,6 +733,7 @@ class PromptModel:
             columns = {column[1]: column[2] for column in cursor.fetchall()}
             if columns.get("prompt_id") != "TEXT":
                 return
+            _refuse_rebuild_with_documents(columns)
 
             self.logger.info("Migrating foreign key types: prompt_id TEXT -> INTEGER")
             with self._table_rebuild(conn):
@@ -882,6 +899,7 @@ class PromptModel:
             }
             if "file_path" in columns:
                 return
+            _refuse_rebuild_with_documents(columns)
 
             self.logger.info("Migrating database: image uniqueness by full path")
             with self._table_rebuild(conn):
@@ -1124,7 +1142,7 @@ class PromptModel:
             if review_error:
                 return False, review_error
             documents_error = workflow_documents_schema_error(
-                conn, allow_missing=not require_library_state
+                conn, allow_missing=not require_library_state, documents=True
             )
             if documents_error:
                 return False, documents_error
