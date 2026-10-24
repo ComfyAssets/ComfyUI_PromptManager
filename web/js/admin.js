@@ -297,6 +297,7 @@
                         this.loadTags(),
                         this.loadRecentPrompts(),
                         this.loadSettings(),
+                        this.loadLibraryLocation(),
                     ]);
                 } catch (error) {
                     this.showNotification("Failed to load initial data", "error");
@@ -342,6 +343,29 @@
                 this.pageLifetime = new AbortController();
                 // Search and page loads share one guard: whichever list request is newest wins
                 this.listRequest = ApiClient.latestOnly({ lifetime: this.pageLifetime.signal });
+            }
+
+            /** #249 S6b: one line under the statistics saying where the library lives and why. */
+            async loadLibraryLocation() {
+                const { signal } = this.pageLifetime;
+                if (signal.aborted) return;
+                const line = document.getElementById("libraryLocation");
+                const reasons = {
+                    default: "ComfyUI's user folder",
+                    environment: "set by PROMPT_MANAGER_DATA_DIR",
+                    config: "set in config.json",
+                    node_folder: "the node folder, where an update or reinstall can delete it; move it from the workspace's System page",
+                };
+                try {
+                    const response = await ApiClient.fetchUrl("/prompt_manager/system/library", { signal });
+                    const data = response.ok ? await response.json() : null;
+                    const location = data && data.location;
+                    if (!line || !location || typeof location.path !== "string") return;
+                    line.textContent = `Library: ${location.path} (${reasons[location.source] || location.source})`;
+                    line.hidden = false;
+                } catch (error) {
+                    if (!signal.aborted) console.error("Library location error:", error);
+                }
             }
 
             async loadStatistics() {

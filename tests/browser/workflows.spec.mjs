@@ -19,6 +19,13 @@ test.afterEach(async ({ page, browserName }) => {
     expect(page.workflowErrors).toEqual([]);
 });
 
+// #249 S6b: the legacy admin page says where the library lives (the fixture's database is configured explicitly).
+test('the admin page names the library location', async ({ page }) => {
+    await page.goto('/prompt_manager/admin');
+    await expect(page.locator('#libraryLocation')).toHaveText('Library: browser.db (set in config.json)');
+    await expect(page.locator('#totalPrompts')).not.toHaveText('-');
+});
+
 test('actual gallery form saves a prompt that the admin page can edit and reload', async ({ page, request }) => {
     await page.goto('/prompt_manager/gallery');
     await page.locator('#addPromptBtn').click();
