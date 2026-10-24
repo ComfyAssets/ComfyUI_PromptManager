@@ -2499,10 +2499,214 @@ node --test tests/js/workspace-system-state.test.js tests/js/workspace-system-co
   tests/js/workspace-inspection-state.test.js tests/js/workspace-images-state.test.js \
   tests/js/workspace-system-sources.test.js tests/js/workspace-thumbnail-review.test.js
 python3 -m unittest tests.test_settings_sources tests.test_scan_scope -v
+python3 -m unittest tests.test_maintenance_plans tests.test_api_maintenance -v
 npm run --prefix tools/vendor test:workflows -- system-concept.spec.mjs workspace-system.spec.mjs \
   workspace-system-sources.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
+
+### Maintenance contract (#249 System S6)
+
+`POST /prompt_manager/maintenance/preview {operation, options:{}}` reviews one
+operation and answers a `Plan` (`py/api/maintenance.py`, `database/maintenance.py`):
+`duplicate_prompts` (legacy `cleanup_duplicates`: equal text ignoring case and outer
+spaces, the oldest prompt of each group kept; a group with a member in a saved pair is
+kept whole), `optimize` (VACUUM, with the database size, its free pages and the free
+space it needs), `unused_components` (legacy `prune_orphaned_prompts`; the #239
+protections are the predicates `ORPHANED_PROMPTS_SQL` is built from, so the plan's
+protected reasons are exactly the prune's rules) and `missing_links` (legacy
+`cleanup_orphaned_images`, judged as the health check's `missing_files` through
+`health.link_states`: only a link under a source that can be read now counts; one under
+an unavailable source or outside every source is protected). The operation enum is
+strict, `options` must be `{}` and the body is capped at 4 KiB (512 KiB for
+`duplicate_files`: 1 MiB, below). A preview meets the
+read-only standard above on its own `mode=ro` snapshot (`test_preview_writes_nothing`,
+per operation, plus the media bytes) and stats files after the snapshot ended. The
+plan lists at most 50 detail rows and no server path. Its fingerprint (the ids, text
+hashes, metadata, tags, Library state and pair refs of every prompt involved, or each
+link's row and source), its targets and the sources it judged stay in the server's
+`PlanStore` under a single-use `secrets.token_urlsafe(32)` token: 15 minutes, at most 8
+plans and 16 MiB of payload. A plan over that budget is refused with `too-large`, never
+truncated; a new plan drops the oldest ones, which then read as expired; a restart
+forgets them all. A plan is bound to the database it read: a restore during the preview
+answers `storage-changed`. Errors are coded (`invalid-request`, `too-large`,
+`storage-changed`, or a null code with "Failed to review maintenance") and carry no
+path or exception text.
+
+`POST /prompt_manager/maintenance/apply {token}` starts the reviewed plan as an
+Activity job (202 `{job}`): kind `maintenance`, titled after the concept's row
+("Duplicate prompt text", "Optimize database", "Unused prompt components", "Missing-file
+links"), admission `records` (it never runs beside a scan, restore, LoRA import or other
+record-changing job, legacy-page holds included: `test_apply_refused_while_restore_runs`),
+not cancellable, with the groups `changed`, `protected` and `errors`. The token is consumed
+on the loop turn the job starts, so a second apply answers 409 `plan-used` with that job;
+a refused start (`busy`) keeps it. Other errors: `invalid-request`, `plan-expired` (410:
+unknown, expired, or forgotten after a restart) and `storage-changed` (409: a restore
+replaced the database since the review; the plan is dropped). The job:
+
+1. takes a safety backup when the plan was reviewed with the policy on or the policy is
+   on now (`maintenance.safety_backup` in `config.json`, default `true`; GET/POST
+   `/prompt_manager/settings` field `safety_backup` with the revision). The copy is made
+   with SQLite's backup API into a temp file beside the database, switched to a
+   rollback journal (so a later read-only open leaves no `-wal`/`-shm` beside it),
+   verified with `verify_database_file`, fsynced, made `0o600` on POSIX and only then
+   renamed with `os.replace` onto `<db>.backup_<YYYYmmdd_HHMMSS_ffffff>`, reserved with
+   `O_EXCL` (`_1`, `_2`… when a coarse clock repeats a stamp:
+   `test_backup_names_unique_within_one_second`). A backup file on disk is therefore
+   always a verified one. Any failure removes what it wrote and ends the job
+   `backup-failed` before anything is changed (`test_backup_failure_aborts_before_write`);
+2. applies the plan: inside `BEGIN IMMEDIATE` the fingerprint is computed again on the
+   write connection and a difference ends the job `plan-changed` with nothing written
+   (`test_apply_rejects_changed_target`; a missing link whose file is back or whose source
+   went away is never removed). The targets are deleted in batches of 400 ids in that one
+   transaction. Missing-file links remove database rows only; every media file's bytes
+   are unchanged (`test_missing_links_never_deletes_files`). VACUUM runs outside a
+   transaction and binds to its database only;
+3. counts the changed and protected records (outcome rows hold root-relative paths or
+   prompt ids only), logs the backup by its file name, and prunes safety backups to the
+   newest 10. With no backup the log and the status line say "No safety backup".
+
+The legacy restore (`POST /prompt_manager/restore`) takes a backup of any size the disks
+have room for, so a real library's safety backup restores: the upload, its staged copy
+and the swap (the upload twice in the temporary folder, once more plus the current
+database beside the database, added up on one disk, each with the 16 MiB margin) must
+fit, under a 64 GiB ceiling (`restore_max_bytes`). A request whose Content-Length does
+not fit is refused before anything is written, one without is refused as soon as its
+running size does not, both with 507 `insufficient-space` and "Not enough free disk
+space to restore a 1.6 GB backup; there is room for about …. Nothing was changed."
+(no path); past the ceiling it is the legacy 400 "File too large" with code `too-large`.
+The upload streams with `read_chunk`, which aiohttp's `client_max_size` (ComfyUI's
+`--max-upload-size`, 100 MB by default) does not cap, and its temp file is closed and
+removed on every path (`TestLargeRestores`, a 150 MB backup under a 100 MB app limit).
+
+Safety backups and restore backups are one pool: every `<db>.backup_*` file beside the
+database counts toward the same `MAX_SAFETY_BACKUPS` (10), whichever wrote it, and the
+pool is pruned after every backup a job took, also when the apply then failed
+(`test_safety_backups_share_the_restore_pool`,
+`test_the_pool_is_pruned_when_the_apply_fails_after_the_backup`). The legacy
+`GET /backup` download writes no file beside the database, so it adds nothing to the
+pool. Each plan reports `backup.expected_bytes` (the backup's size, `page_count *
+page_size`, or null with the policy off) and `disk: {free_bytes, required_bytes,
+sufficient}` for the database folder: the backup needs its size there, and Optimize
+needs the database's size twice (the WAL beside it and SQLite's temporary copy, added
+up when the temporary folder is on the same disk), each plus a 16 MiB margin. The
+temporary folder is the one SQLite really uses (`sqlite_temp_dir`): on Unix
+`SQLITE_TMPDIR`, `TMPDIR`, then the first writable of `/var/tmp`, `/usr/tmp` and
+`/tmp` (not Python's `tempfile` order, which picks a RAM-backed `/tmp` on many Linux
+systems); on Windows `TMP`, `TEMP`, then `USERPROFILE`. Whether a backup is taken is
+decided once, when Apply measured the disk, and handed to the job. Apply looks at the
+token again with no await before it starts the job, so a token used or expired during
+the measurement answers its code, never a 500. A backup is put in place with
+`os.link` (atomic, refuses an existing name; reserve-and-replace where a filesystem
+has no hard links), and startup removes the `.pm-safety-*.tmp` copies an interrupted
+backup left. Optimize runs alone: its job has the `exclusive` admission class (refused
+beside any job, and every job is refused while it runs), and its plan says the database
+is locked while VACUUM runs and that run counts or captures waiting longer than the
+30-second busy timeout are not recorded. The duplicate prompt merge is strict inside
+the apply: a group whose copies link one image twice, or whose removed copy has its own
+Library title, is protected in the plan, and any merge error rolls the transaction back
+(`MergeConflict`); the legacy cleanup keeps its lenient behaviour. Apply
+measures again before it starts a job and refuses a short disk up front with 507
+`insufficient-space` and a truthful message ("Not enough free disk space: the safety
+backup needs about … in the database folder and … is free. Nothing was changed."); no
+job starts and the token stays usable
+(`test_apply_refuses_up_front_when_the_backup_does_not_fit`,
+`test_apply_refuses_up_front_when_vacuum_does_not_fit`).
+
+**Duplicate image files** (`py/api/duplicate_files.py`, `py/api/duplicate_review.py`;
+`tests/test_api_duplicate_files.py`). `POST /prompt_manager/jobs/duplicates` starts the
+find: kind `duplicates`, "Find duplicate image files", admission `read`, cancellable,
+group `groups_found`, over every effective source (the legacy scan's
+`_hash_media_groups`: no symlinks, no `thumbnails`, bounded, each file once). The
+find lists a physical file once, by `(st_dev, st_ino)`: a source listed twice under two
+spellings, a symlinked source inside another one and a hardlink are one file, never a
+copy of themselves (`test_a_folder_listed_twice_never_loses_its_only_copy`,
+`test_a_symlinked_source_inside_another_is_one_file`,
+`test_a_hardlink_is_never_a_copy_to_remove`). One file reached through two mounts is
+protected, never guessed at: a removal on another `st_dev` than its kept copy, with the
+same size and mtimes within 2 s, is kept as "may be the same file reached through another
+mount or share" when its `st_ino` is equal or its path within its source is the same, or
+one ends with the other on a whole folder name (sources listed at different depths:
+`test_a_deeper_source_on_another_mount_is_protected`)
+(NFS and SMB, a loopback mount, a FUSE pool: `TestAnotherMount`). Some true copies on
+another disk are therefore never offered. A volume that reports no file id protects
+every pair ("Can't confirm this is a separate file on this drive"). The job checks both
+before each file's records move, holds the kept copy open, and right before the unlink
+checks again that the held kept copy is still the file at its path (`fstat` of the held
+handle against `os.stat` of the path) and that the guard still holds; otherwise the file
+is kept, its records move back to it, and it counts as not removed
+(`test_a_kept_copy_deleted_during_the_move_keeps_the_file`). On Windows the hold also
+makes deleting the kept copy itself through another path fail. The server holds the groups (content
+hash, root-relative paths, source index, size, mtime and inode) for the last three
+finds; `GET /prompt_manager/maintenance/duplicates/{job_id}?offset&limit` pages
+them ten at a time (`not-found` 404, `job-running` or `no-groups` 409). The preview
+`{operation:"duplicate_files", options:{job_id, keep:[{group_id, root_index, path}]}}`
+(body cap 1 MiB, at most 2,000 keep entries; `test_the_keep_limit_fits_the_body_cap`) removes, in each group named, every copy
+not kept; a keeper that is not in its group is `invalid-request`, and a source no longer
+listed at its index is `sources-changed`. Every keeper and removal is checked with
+`file_problem`: containment as text first, with no filesystem access (inside its
+source, not under `thumbnails`, a media extension), then `lstat` (a link or any
+non-regular file is refused), the resolved path still inside the resolved source, not
+the kept copy itself (`os.path.samestat`), and the size, mtime and inode the find saw.
+The preview reads no file; the removal job hashes each file and its kept copy again
+right before the unlink (`test_preview_reads_no_file_and_spots_a_touched_one`). A removal that fails, or whose kept copies all fail, is
+protected with its reason. The plan names each removal, its kept copy and how many
+database links move, says the safety backup covers the database and not the files,
+and writes nothing. Apply runs `duplicate_cleanup` (records, not cancellable, groups
+`removed`, `kept`, `errors`): sources unchanged, the promised safety backup, then per
+file the kept copy and the file are checked again (hashes included, and never the same
+file), the file's records move to the kept copy in one short `BEGIN IMMEDIATE`
+transaction, and only then is the file removed (every hash handle closed first:
+`test_handles_closed_before_unlink`), with its thumbnail (a video's `.jpg` too). A crash
+or a failed unlink therefore leaves the records on the identical kept copy, and a failed
+move leaves the file and its records alone: no row ever names a deleted file
+(`test_a_failure_between_two_files_leaves_no_row_on_a_deleted_file`). The status line
+counts the files removed and not removed. A changed file is kept (`test_changed_content_skips_file`); the
+first failed unlink stops the job, a locked or read-only file with "The file is open in
+another program or read-only; it was not deleted, and its links now name the kept copy."
+and never the OS text, and the
+files after it are listed as not attempted (`test_partial_failure_reports_each_path`).
+Records move for the reviewed files only (`database/duplicate_copies.py`): each image
+record, looked up under every spelling of the file by containment
+(`py/api/duplicate_spellings.py`: each configured, monitored, ComfyUI output or listed
+folder whose `os.stat` identity is a folder above the file, plus the path below it, so a
+parent spelling of a nested source and a case variant match:
+`test_links_under_a_symlinked_source_spelling_move`,
+`test_a_parent_spelling_of_a_nested_source`), moves to the kept copy under the same
+spelling, or, when its prompt already links the kept copy, hands its saved-pair
+links to that record and is deleted; a favorite under any listed root that holds the
+file moves with it (`test_nested_sources_subfolder_first_with_a_parent_favorite`)
+(`test_db_links_reconciled_only_for_removed_files`); the copy's image tags join the kept
+copy's as their union; and its pending Needs review items (still `pending` at revision
+0 with no decision row) are settled (`test_tags_move_as_a_union_and_pending_items_settle`).
+The plan states each of these. The find refuses while a removal
+runs and the removal while a find runs.
+
+The legacy gallery routes keep their shapes on the same kinds: `/scan_duplicates`
+holds `duplicates` (read, "Find duplicate image files (gallery page)"),
+`/scan_duplicates/stream` starts the find over the gallery's output folder or attaches
+to a running one that covers it (409 otherwise), `/scan_duplicates/status` reports the
+latest find, and `/delete_duplicate_images` holds `duplicate_cleanup` (records) and is
+refused while a find runs (`test_legacy_delete_duplicates_unchanged`). The link
+statements are index searches (`test_link_queries_use_the_path_indexes`; the fixture
+check is in the PR). Windows: the hash reads close before `os.remove`; a sharing
+violation is a `PermissionError` answered with the coded message (native on the
+Windows runners, `test_locked_file_gives_a_coded_message`).
+
+A failure the job cannot name ends it "Maintenance failed; nothing was changed." with a
+null code and no exception text. Windows: every connection the backup and the previews
+open is closed before the temp copy is renamed or removed, and the suites' teardown
+asserts no handle under the temp root is still open.
+
+The legacy `POST /prompt_manager/maintenance` keeps its shape. Its `vacuum` result is
+`success:false` with the error when VACUUM fails (`vacuum_database` now raises after
+logging), and `cleanup_orphaned_images` removes only links under a source that can be
+read now (the health check's sources), never every link of an unmounted drive.
+`cleanup_missing_images()` without sources keeps the old rule for its other callers.
+Query plans on a fixture of 5,100 prompts, 8,000 images, 300 pairs and 200 recorded
+runs: every per-prompt protection and fingerprint read is an index search, the
+duplicate groups and the link rows are one scan each, and a delete batch (400 ids)
+searches by rowid with its cascades by index.
 
 ## Workspace data fields for the concept pages (#249)
 

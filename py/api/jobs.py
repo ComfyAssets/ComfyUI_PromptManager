@@ -19,7 +19,11 @@ ones. One job of a kind runs at a time, and each job has an admission class
 - ``guarded`` must not overlap record changes but may overlap other guarded
   work (thumbnail generation and clearing, later backup). It is refused while
   a ``records`` job runs.
-- ``read`` only reads; it is refused only by a running job of its own kind.
+- ``read`` only reads; it is refused only by a running job of its own kind
+  or an ``exclusive`` one.
+- ``exclusive`` runs alone (Optimize's VACUUM, which rewrites the whole
+  database under the write lock): it is refused while any job runs, and every
+  job is refused while it runs.
 
 A short legacy-page operation takes a ``hold``: a running, non-cancellable
 job that lasts as long as the request, so the Activity page lists it and a
@@ -75,12 +79,14 @@ IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
 # Thumbnail generation (#249 System S5): previews written, already fresh, failed.
 THUMBNAIL_GROUP_NAMES = ("generated", "skipped", "errors")
 
-ADMISSIONS = ("read", "guarded", "records")
+ADMISSIONS = ("read", "guarded", "records", "exclusive")
 # What each admission class is refused beside (besides its own kind).
+# ``exclusive`` (Optimize's VACUUM) runs alone: beside no job of any class.
 _REFUSED_BESIDE = {
-    "read": frozenset(),
-    "guarded": frozenset({"records"}),
-    "records": frozenset({"records", "guarded"}),
+    "read": frozenset({"exclusive"}),
+    "guarded": frozenset({"records", "exclusive"}),
+    "records": frozenset({"records", "guarded", "exclusive"}),
+    "exclusive": frozenset(ADMISSIONS),
 }
 
 # Kinds of the legacy-page operations that hold the registry (D80; titles in
@@ -91,6 +97,11 @@ DUPLICATE_CLEANUP_JOB_KIND = "duplicate_cleanup"
 THUMBNAILS_JOB_KIND = "thumbnails"
 LORA_IMPORT_JOB_KIND = "lora_import"
 AUTOTAG_BATCH_JOB_KIND = "autotag"
+# Duplicate image files (#249 System S6, py/api/duplicate_files.py): the
+# find is a cancellable ``read`` job; the reviewed removal is ``records``.
+DUPLICATES_JOB_KIND = "duplicates"
+DUPLICATE_GROUP_NAMES = ("groups_found",)
+DUPLICATE_CLEANUP_GROUP_NAMES = ("removed", "kept", "errors")
 # The System health check (py/api/system.py): a read-only ``read`` job with
 # no file outcomes, so it may run beside a scan.
 HEALTH_JOB_KIND = "health"

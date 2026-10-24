@@ -24,9 +24,9 @@ from .jobs import (
     SCAN_GROUPS,
     SCAN_SCOPES,
     DUPLICATE_CLEANUP_JOB_KIND,
+    DUPLICATES_JOB_KIND,
     MAINTENANCE_JOB_KIND,
     RESTORE_JOB_KIND,
-    Job,
     JobBusy,
 )
 
@@ -69,7 +69,9 @@ except ImportError:
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff")
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv")
 SCAN_BATCH_SIZE = 50  # Files per executor call during the output scan
-MAX_SAFETY_BACKUPS = 10  # '<db>.backup_*' files kept next to the live database
+# '<db>.backup_*' files kept next to the live database: one pool for the
+# restore backups and the maintenance safety backups (py/api/maintenance.py).
+MAX_SAFETY_BACKUPS = 10
 MAX_SCAN_FILES = 50_000  # Upper bound on media files one scan will look at
 SCAN_COUNT_KEYS = (
     "processed",
@@ -90,6 +92,7 @@ MAX_SCAN_DEPTH = 12  # Directory levels below an output root that are scanned
 # the common single-f TIFF spelling. Anything else inside the output
 # directory (databases, scripts, notes) is never a "duplicate image".
 DELETABLE_MEDIA_EXTENSIONS = frozenset(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + (".tif",))
+DUPLICATE_FIND_LEGACY_TITLE = "Find duplicate image files (gallery page)"
 
 
 def _collect_media_files(output_dirs, extensions):
@@ -132,9 +135,50 @@ def _collect_media_files(output_dirs, extensions):
     return found
 
 
+def _physical_file_key(path, stat):
+    """What tells two physical files apart: ``(st_dev, st_ino)``.
+
+    A filesystem that reports no inode (``st_ino`` 0, some network or FAT
+    volumes on Windows) falls back to the resolved, case-folded path.
+    """
+    if stat.st_ino:
+        return ("inode", stat.st_dev, stat.st_ino)
+    return ("path", os.path.normcase(os.path.realpath(str(path))))
+
+
 def _thumbnail_rel_path(rel_path, thumbnail_ext):
     """Relative path of the thumbnail the gallery would generate for ``rel_path``."""
     return f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb{thumbnail_ext}"
+
+
+def _media_thumbnail_rel_path(rel_path):
+    """The thumbnail of a media file: a video's preview is a ``.jpg``."""
+    extension = rel_path.suffix.lower()
+    return _thumbnail_rel_path(
+        rel_path, ".jpg" if extension in VIDEO_EXTENSIONS else rel_path.suffix
+    )
+
+
+def _remove_thumbnail(output_path, rel_path, logger=None):
+    """Remove the thumbnail of ``rel_path`` under ``output_path``, if any.
+
+    Shared by the legacy duplicate delete and the reviewed removal job. A
+    thumbnail that is a link, or one that cannot be removed, is left alone
+    (a stale preview never fails a removal). Returns whether one was removed.
+    """
+    output_path = Path(output_path)
+    thumbnail_path = output_path / _media_thumbnail_rel_path(Path(rel_path))
+    try:
+        if thumbnail_path.is_symlink() or not thumbnail_path.is_file():
+            return False
+        os.remove(thumbnail_path)
+    except OSError as e:
+        if logger is not None:
+            logger.warning(f"Could not delete thumbnail for {rel_path}: {e}")
+        return False
+    if logger is not None:
+        logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
+    return True
 
 
 async def _read_json(request):
@@ -561,12 +605,21 @@ class AdminRoutesMixin:
     LONG_JOB_DUPLICATES = "duplicates"
 
     async def scan_duplicates_endpoint(self, request):
-        """Scan for duplicate images without removing them (single flight)."""
-        job = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
-        if job is None:
-            return self._long_job_busy_response("Duplicate scan")
-        async with job:
-            return await self._scan_duplicates(request)
+        """Scan for duplicate images without removing them.
+
+        Holds the ``duplicates`` kind on the registry (a ``read`` hold, so it
+        is listed in Activity), so it is single flight with every duplicate
+        find, and it is refused while a duplicate removal runs.
+        """
+        cleanup = self._jobs.active(DUPLICATE_CLEANUP_JOB_KIND)
+        if cleanup is not None:
+            return self._long_job_busy_response(cleanup.title)
+        return await self._run_held(
+            DUPLICATES_JOB_KIND,
+            DUPLICATE_FIND_LEGACY_TITLE,
+            "read",
+            functools.partial(self._scan_duplicates, request),
+        )
 
     async def _scan_duplicates(self, request):
         try:
@@ -588,24 +641,29 @@ class AdminRoutesMixin:
             )
 
     async def scan_duplicates_stream(self, request):
-        """Run the duplicate scan as a background job and stream its progress.
+        """Stream a duplicate find to the legacy gallery (its event shapes).
 
-        A request while a scan is running attaches to it. The job holds the
-        duplicates lock, so a delete is refused (409) until it finishes.
+        Starts the registry's ``duplicates`` job over the gallery's output
+        folder, or attaches to the running one when it covers that folder
+        (one started in the workspace, for instance). A held legacy scan, a
+        find that does not cover the folder or a running removal answers the
+        legacy 409. The job outlives the request.
         """
-        job = self._duplicate_job
-        if job is None or job.finished:
-            guard = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
-            if guard is None:
-                return self._long_job_busy_response("Duplicate scan or delete")
-            job = Job("duplicates", "Duplicate scan")
-            self._duplicate_job = job
-            job.task = asyncio.ensure_future(self._run_duplicate_job(job, guard))
+        job = self._jobs.active(DUPLICATES_JOB_KIND)
+        if job is None:
+            try:
+                job = self._start_duplicate_find(origin="gallery")
+            except JobBusy as busy:
+                return self._long_job_busy_response(busy.running.title)
+        else:
+            legacy_dir = await self._run_in_executor(self._find_comfyui_output_dir)
+            if not self._find_covers(job, legacy_dir):
+                return self._long_job_busy_response(job.title)
         return await self._stream_scan_job(request, job)
 
     async def scan_duplicates_status(self, request):
-        """Whether a duplicate scan is running, and its latest event."""
-        job = self._duplicate_job
+        """Whether a duplicate find is running, and its latest legacy event."""
+        job = self._latest_duplicate_find()
         return web.json_response(
             {
                 "success": True,
@@ -613,62 +671,6 @@ class AdminRoutesMixin:
                 "last_event": job.last_event if job else None,
             }
         )
-
-    async def _run_duplicate_job(self, job, guard):
-        loop = asyncio.get_running_loop()
-        counts = {"processed": 0}
-
-        def report(done, total):
-            # Called from worker threads; hand the event to the loop.
-            counts["processed"] = done
-            pct = int(done / total * 100) if total else 100
-            loop.call_soon_threadsafe(
-                job.publish,
-                {
-                    "type": "progress",
-                    "progress": pct,
-                    "status": f"Hashing file {done}/{total}...",
-                    "processed": done,
-                    "found": 0,
-                },
-            )
-
-        try:
-            async with guard:
-                job.publish(
-                    {
-                        "type": "progress",
-                        "progress": 0,
-                        "status": "Collecting media files...",
-                        "processed": 0,
-                        "found": 0,
-                    }
-                )
-                output_dir = await self._run_in_executor(self._find_comfyui_output_dir)
-                groups = await self._run_in_executor(
-                    self._find_duplicate_images_sync, output_dir, report
-                )
-                job.publish(
-                    {
-                        "type": "complete",
-                        "processed": counts["processed"],
-                        "found": len(groups),
-                        "duplicates": groups,
-                        "message": f"Found {len(groups)} groups of duplicate images",
-                    }
-                )
-        except Exception:
-            self.logger.exception("Duplicate scan error")
-            job.publish(
-                {
-                    "type": "error",
-                    "message": (
-                        "An internal error occurred. Check server logs for details."
-                    ),
-                }
-            )
-        finally:
-            job.finish()
 
     async def cleanup_duplicates_endpoint(self, request):
         """Cleanup duplicate prompts endpoint (holds the registry: records)."""
@@ -706,31 +708,109 @@ class AdminRoutesMixin:
     def _find_duplicate_images_sync(self, output_dir, progress=None):
         """Group media files under ``output_dir`` by content hash (blocking).
 
-        Files are hashed on ``PromptManagerConfig.WORKER_THREADS`` threads.
-        ``progress(done, total)`` is called from those threads about every
-        percent and once at the end.
+        The legacy response shape over ``_hash_media_groups``, which the
+        workspace's duplicate find shares.
         """
-        from ..config import PromptManagerConfig
-
         if not output_dir or not os.path.isdir(output_dir):
             self.logger.warning("ComfyUI output directory not found")
             return []
+        groups = self._hash_media_groups([os.path.abspath(output_dir)], progress)
+        duplicates = self._legacy_duplicate_groups(groups, output_dir)
+        self.logger.info(f"Found {len(duplicates)} groups of duplicate images")
+        return duplicates
 
-        output_path = Path(output_dir)
+    def _legacy_duplicate_groups(self, groups, output_dir):
+        """``_hash_media_groups`` groups as the legacy gallery reads them.
+
+        Only the files under ``output_dir`` count (paths are relative to it);
+        a group needs two of them. A file that vanished since it was hashed
+        is left out.
+        """
+        output_path = Path(os.path.abspath(output_dir))
+        base = os.path.normcase(str(output_path)).rstrip("\\/") + os.sep
+        duplicates = []
+        for group in groups:
+            images = []
+            for record in group["files"]:
+                if not os.path.normcase(record["abs"]).startswith(base):
+                    continue
+                try:
+                    images.append(
+                        self._describe_media_file(
+                            Path(record["abs"]), output_path, file_hash=group["hash"]
+                        )
+                    )
+                except (OSError, ValueError) as e:
+                    self.logger.error(
+                        f"Error describing {Path(record['abs']).name}: {e}"
+                    )
+            if len(images) > 1:
+                duplicates.append(
+                    {"hash": group["hash"], "images": images, "count": len(images)}
+                )
+        return duplicates
+
+    def _hash_media_groups(self, roots, progress=None, stop=None):
+        """Content-identical media files under ``roots`` (blocking).
+
+        Each root is walked as ``_collect_media_files`` walks (no symlinks,
+        no ``thumbnails``, bounded). A physical file is listed once, under
+        the first root that holds it: files are told apart by ``(st_dev,
+        st_ino)``, so a source listed twice under two spellings (a symlink, a
+        bind mount, a case variant), a source inside another one or a
+        hardlink is one file, never a copy of itself. At most MAX_SCAN_FILES
+        files are read. Files
+        are hashed on ``PromptManagerConfig.WORKER_THREADS`` threads;
+        ``progress(done, total)`` is called from those threads about every
+        percent and once at the end, and ``stop()`` true skips the files not
+        yet read. Returns ``[{hash, size, files:[{slot, abs, rel, size,
+        mtime, mtime_ns, inode}]}]`` for every hash shared by two or more
+        files (``inode`` is ``[st_dev, st_ino]``), ``slot``
+        being the root's place in ``roots`` and the files oldest first.
+        """
+        from ..config import PromptManagerConfig
+
         extensions = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
-        media_files = _collect_media_files([output_path], extensions)
+        media_files = []
+        seen = set()
+        for slot, root in enumerate(roots):
+            for path in _collect_media_files([root], extensions):
+                try:
+                    # os.stat, not Path.stat: one stat call for every check
+                    # (Python 3.10's Path.stat bypasses a patched os.stat).
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                key = _physical_file_key(path, stat)
+                if key not in seen:
+                    seen.add(key)
+                    media_files.append((slot, root, path, stat))
+                if len(media_files) >= MAX_SCAN_FILES:
+                    break
+        media_files = media_files[:MAX_SCAN_FILES]
         total = len(media_files)
         self.logger.info(f"Found {total} media files to analyze")
         step = max(1, total // 100)
         counter = {"done": 0}
         lock = threading.Lock()
 
-        def describe(media_path):
-            try:
-                info = self._describe_media_file(media_path, output_path)
-            except Exception as e:
-                self.logger.error(f"Error processing file {media_path.name}: {e}")
-                info = None
+        def describe(item):
+            slot, root, media_path, stat = item
+            info = None
+            if stop is None or not stop():
+                try:
+                    info = {
+                        "slot": slot,
+                        "abs": str(media_path),
+                        "rel": Path(os.path.relpath(str(media_path), root)).as_posix(),
+                        "size": stat.st_size,
+                        "mtime": stat.st_mtime,
+                        "mtime_ns": stat.st_mtime_ns,
+                        "inode": [stat.st_dev, stat.st_ino],
+                        "hash": self._calculate_file_hash(media_path),
+                    }
+                except Exception as e:
+                    self.logger.error(f"Error processing file {media_path.name}: {e}")
             with lock:
                 counter["done"] += 1
                 done = counter["done"]
@@ -744,24 +824,22 @@ class AdminRoutesMixin:
 
         infos = map_parallel(describe, media_files, PromptManagerConfig.WORKER_THREADS)
 
-        file_hashes = {}
+        by_hash = {}
         for info in infos:
             if info is not None:
-                file_hashes.setdefault(info["hash"], []).append(info)
-
-        duplicates = []
-        for file_hash, images in file_hashes.items():
-            if len(images) > 1:
-                images.sort(key=lambda x: x["modified_time"])
-                duplicates.append(
-                    {"hash": file_hash, "images": images, "count": len(images)}
+                by_hash.setdefault(info.pop("hash"), []).append(info)
+        groups = []
+        for file_hash, files in by_hash.items():
+            if len(files) > 1:
+                files.sort(key=lambda record: (record["mtime"], record["abs"]))
+                groups.append(
+                    {"hash": file_hash, "size": files[0]["size"], "files": files}
                 )
+        return groups
 
-        self.logger.info(f"Found {len(duplicates)} groups of duplicate images")
-        return duplicates
-
-    def _describe_media_file(self, media_path, output_path):
-        """Hash one media file and describe it for the duplicates response."""
+    def _describe_media_file(self, media_path, output_path, file_hash=None):
+        """Describe one media file for the duplicates response (hashing it
+        unless ``file_hash`` is given)."""
         stat = media_path.stat()
         rel_path = media_path.relative_to(output_path)
         extension = media_path.suffix.lower()
@@ -782,7 +860,7 @@ class AdminRoutesMixin:
             "extension": extension,
             "media_type": "video" if is_video else "image",
             "is_video": is_video,
-            "hash": self._calculate_file_hash(media_path),
+            "hash": file_hash or self._calculate_file_hash(media_path),
         }
 
     def _calculate_file_hash(self, file_path):
@@ -796,9 +874,9 @@ class AdminRoutesMixin:
     async def delete_duplicate_images_endpoint(self, request):
         """Delete duplicate image files from disk.
 
-        Single flight with the duplicate scan, and a records hold on the
-        registry, so no scan, restore or tagging job runs meanwhile. A body
-        without paths is refused before the hold (it is no job).
+        Refused while a duplicate find runs, and a records hold on the
+        registry, so no scan, restore, removal or tagging job runs meanwhile.
+        A body without paths is refused before the hold (it is no job).
         """
         data, error_response = await _read_json(request)
         if error_response is not None:
@@ -809,20 +887,14 @@ class AdminRoutesMixin:
                 {"success": False, "error": "No image paths provided"},
                 status=400,
             )
-        guard = self._acquire_long_job(self.LONG_JOB_DUPLICATES)
-        if guard is None:
-            return self._long_job_busy_response("Duplicate scan or delete")
-
-        async def delete():
-            # No await since the check above: the lock is still free.
-            async with guard:
-                return await self._delete_duplicate_images(image_paths)
-
+        find = self._jobs.active(DUPLICATES_JOB_KIND)
+        if find is not None:
+            return self._long_job_busy_response(find.title)
         return await self._run_held(
             DUPLICATE_CLEANUP_JOB_KIND,
             "Duplicate image delete (gallery page)",
             "records",
-            delete,
+            functools.partial(self._delete_duplicate_images, image_paths),
         )
 
     async def _delete_duplicate_images(self, image_paths):
@@ -902,14 +974,7 @@ class AdminRoutesMixin:
 
         os.remove(file_path)
         self.logger.info(f"Deleted duplicate image: {image_path}")
-
-        thumbnail_path = output_path / _thumbnail_rel_path(rel_path, file_path.suffix)
-        try:
-            if thumbnail_path.exists():
-                os.remove(thumbnail_path)
-                self.logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
-        except OSError as e:
-            self.logger.warning(f"Could not delete thumbnail for {image_path}: {e}")
+        _remove_thumbnail(output_path.resolve(), rel_path, self.logger)
         return None
 
     async def get_statistics(self, request):
@@ -1112,8 +1177,10 @@ class AdminRoutesMixin:
                 db.cleanup_duplicates(), "duplicate prompts"
             ),
             "vacuum": vacuum,
+            # Only under sources that can be read now (never an unmounted drive).
             "cleanup_orphaned_images": lambda: count_result(
-                db.cleanup_missing_images(), "orphaned image records"
+                db.cleanup_missing_images(self._health_roots()),
+                "orphaned image records",
             ),
             "check_hash_duplicates": lambda: self._hash_duplicates_result(
                 db.check_hash_duplicates()
@@ -1207,7 +1274,11 @@ class AdminRoutesMixin:
     async def restore_database(self, request):
         """Restore the prompts database from an uploaded SQLite file.
 
-        The upload is streamed to a temp file (capped at restore_max_bytes),
+        The upload is streamed to a temp file. Free disk space decides how
+        large it may be (``maintenance.restore_room``), under a 64 GiB ceiling
+        (``restore_max_bytes``): a request whose Content-Length does not fit
+        is refused before anything is written, and one without is refused as
+        soon as its running size does not. The file is
         verified with PromptModel.verify_database_file and only then copied
         over the live database, which is backed up first. The whole request
         holds the registry (records): it is refused while a scan or another
@@ -1220,10 +1291,44 @@ class AdminRoutesMixin:
             lambda: self._restore_database(request),
         )
 
+    def _restore_refusal(self, size, ceiling, room, *, known):
+        """``400 too-large`` past the ceiling, else ``507 insufficient-space``."""
+        from .maintenance import restore_space_message
+
+        if size > ceiling:
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "too-large",
+                    "error": (
+                        "File too large. Maximum size is "
+                        f"{ceiling // (1024 * 1024)}MB"
+                    ),
+                },
+                status=400,
+            )
+        return web.json_response(
+            {
+                "success": False,
+                "code": "insufficient-space",
+                "error": restore_space_message(size, room, known=known),
+            },
+            status=507,
+        )
+
     async def _restore_database(self, request):
-        max_bytes = getattr(self, "restore_max_bytes", 100 * 1024 * 1024)
+        from .maintenance import RESTORE_MAX_BYTES, restore_room
+
+        ceiling = getattr(self, "restore_max_bytes", RESTORE_MAX_BYTES)
         temp_path = None
         try:
+            # Free disk space decides how large a backup may be (#313): the
+            # upload, its staged copy and the swap must all fit.
+            room = await self._run_in_executor(restore_room, self.db.model.db_path)
+            max_bytes = min(ceiling, room)
+            length = request.content_length
+            if length is not None and length > max_bytes:
+                return self._restore_refusal(length, ceiling, room, known=True)
             reader = await request.multipart()
             field = await reader.next()
 
@@ -1249,16 +1354,7 @@ class AdminRoutesMixin:
                         break
                     size += len(chunk)
                     if size > max_bytes:
-                        return web.json_response(
-                            {
-                                "success": False,
-                                "error": (
-                                    "File too large. Maximum size is "
-                                    f"{max_bytes // (1024 * 1024)}MB"
-                                ),
-                            },
-                            status=400,
-                        )
+                        return self._restore_refusal(size, ceiling, room, known=False)
                     out.write(chunk)
 
             if size == 0:

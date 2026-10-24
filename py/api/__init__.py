@@ -13,6 +13,8 @@ Split into domain-specific mixins for maintainability:
 - ReviewRecordingMixin: Needs review recording for the scan and the monitor
 - ReviewEventsMixin: the Needs review change stream an open page re-reads on
 - SystemRoutesMixin: System health check, Overview and usage statistics
+- MaintenanceRoutesMixin: reviewed maintenance plans (preview, apply)
+- DuplicateFilesMixin: duplicate image files as find and removal jobs
 """
 
 import asyncio
@@ -46,6 +48,9 @@ from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
 from .system import SystemRoutesMixin
+from .maintenance import MaintenanceRoutesMixin
+from .duplicate_files import DuplicateFilesMixin
+from .maintenance_plans import PlanStore
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
@@ -285,6 +290,8 @@ class PromptManagerAPI(
     ImageTagJobsMixin,
     ThumbnailJobsMixin,
     SystemRoutesMixin,
+    MaintenanceRoutesMixin,
+    DuplicateFilesMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
@@ -341,13 +348,27 @@ class PromptManagerAPI(
         self._jobs = JobRegistry(self.logger)
         # The latest metadata scan job (also in self._jobs), if one was started.
         self._scan_job = None
-        # The current duplicate scan (a py/api/jobs.Job outside the registry).
-        self._duplicate_job = None
+        # Duplicate-file finds by job id, with the groups each one holds for
+        # review (py/api/duplicate_files.py); the last few only.
+        self._duplicate_finds = {}
         # The last System health report this session and the database
         # generation it describes, bumped when a restore replaces self.db
         # (py/api/system.py).
         self._health_report = None
         self._db_generation = 0
+        # Reviewed maintenance plans under single-use tokens; a restart
+        # forgets them (py/api/maintenance.py).
+        self._maintenance_plans = PlanStore()
+
+        # A safety backup interrupted by a crash leaves its temp copy behind.
+        try:
+            from .maintenance import sweep_safety_temps
+
+            swept = sweep_safety_temps(self.db.model.db_path)
+            if swept:
+                self.logger.info(f"Removed {len(swept)} interrupted backup copies")
+        except Exception as e:
+            self.logger.warning(f"Could not sweep interrupted backup copies: {e}")
 
         # Run cleanup on initialization to remove any existing duplicates
         try:
@@ -508,6 +529,8 @@ class PromptManagerAPI(
         self._register_settings_routes(routes)
         self._register_job_routes(routes)
         self._register_system_routes(routes)
+        self._register_maintenance_routes(routes)
+        self._register_duplicate_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)

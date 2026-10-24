@@ -63,7 +63,7 @@ class TestAdmissionClasses(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_admission_names_and_explicit_read(self):
-        self.assertEqual(ADMISSIONS, ("read", "guarded", "records"))
+        self.assertEqual(ADMISSIONS, ("read", "guarded", "records", "exclusive"))
         registry = JobRegistry()
         job = registry.start(
             "report", "Report", admission="read", scope={}, runner=_noop
@@ -72,7 +72,7 @@ class TestAdmissionClasses(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.admission, "read")
         self.assertFalse(job.record_changing)
         with self.assertRaises(ValueError):
-            registry.start("x", "X", admission="exclusive", scope={}, runner=_noop)
+            registry.start("x", "X", admission="bogus", scope={}, runner=_noop)
         with self.assertRaises(ValueError):
             registry.start(
                 "x",
