@@ -18,6 +18,8 @@ Blocking: each lookup stats the file's folders once (cached).
 import os
 from pathlib import Path
 
+from .images import _favorite_relative_key, _favorite_root_key
+
 
 def _identity(path):
     try:
@@ -86,3 +88,46 @@ class Spellings:
             if inside is not None:
                 held[root] = Path(os.path.relpath(path, inside)).as_posix()
         return held
+
+
+def copy_move(target, kept_stat, spellings):
+    """What ``move_copy_records`` moves for one removal.
+
+    A record found under a folder spelling moves to the kept copy under
+    the same spelling when that folder holds it too, else to its real
+    path. Its favorite moves under every listed root holding the file.
+    """
+    removed = spellings.of(target["abs"])
+    kept = spellings.of(target["keeper_abs"])
+    targets = {
+        spelled: kept.get(folder, target["keeper_abs"])
+        for folder, spelled in removed.items()
+    }
+    kept_favorites = spellings.favorites(target["keeper_abs"])
+    favorites = []
+    for root, relative in spellings.favorites(target["abs"]).items():
+        kept_root, kept_rel = (
+            (root, kept_favorites[root])
+            if root in kept_favorites
+            else (target["keeper_root"], target["keeper_rel"])
+        )
+        favorites.append(
+            (
+                _favorite_root_key(root),
+                _favorite_relative_key(relative),
+                _favorite_root_key(kept_root),
+                _favorite_relative_key(kept_rel),
+            )
+        )
+    return {
+        "removed": list(removed.values()),
+        "kept": list(kept.values()),
+        "targets": targets,
+        "kept_path": target["keeper_abs"],
+        "favorites": favorites,
+        "removed_locator": target["locator"],
+        "kept_locator": target["keeper_locator"],
+        "sha256": target["hash"],
+        "kept_size": kept_stat.st_size,
+        "kept_mtime_ns": kept_stat.st_mtime_ns,
+    }

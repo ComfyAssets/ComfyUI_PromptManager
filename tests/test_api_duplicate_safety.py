@@ -474,3 +474,72 @@ class TestLockedRowSaysWhereLinksAre(SafetyTestCase):
         self.assertIn(
             "its links now name the kept copy", cleanup.outcomes["errors"][0]["detail"]
         )
+
+
+class TestRound3(SafetyTestCase):
+    """Re-review 2: n1 (sources at different depths) and n2 (the kept copy
+    must still be the held file right before the unlink)."""
+
+    MAYBE = TestAnotherMount.MAYBE
+
+    def setUp(self):
+        super().setUp()
+        self.real_lstat, self.real_stat = os.lstat, os.stat
+
+    mount = TestAnotherMount.mount
+    review_with = TestAnotherMount.review_with
+
+    async def test_a_deeper_source_on_another_mount_is_protected(self):
+        # The reviewer's probe: ComfyUI/output -> /mnt/pool/output and
+        # /mnt/disk1/output/2024 as an extra root, FUSE-style inodes.
+        _keeper, other, patches = self.mount("x.png", "2024/x.png", ino="other")
+        _job, _group, plan = await self.review_with(patches, "2024/x.png")
+        self.assertEqual(plan["protected"]["reasons"], [self.MAYBE])
+        self.assertTrue(other.is_file())
+
+    async def test_a_shallower_source_on_another_mount_is_protected(self):
+        _keeper, _other, patches = self.mount("2024/x.png", "x.png", ino="other")
+        _job, _group, plan = await self.review_with(patches, "x.png")
+        self.assertEqual(plan["protected"]["reasons"], [self.MAYBE])
+
+    async def test_only_whole_folder_names_match(self):
+        _keeper, _other, patches = self.mount("photo-x.png", "x.png", ino="other")
+        _job, _group, plan = await self.review_with(patches, "x.png")
+        self.assertEqual(plan["scope"]["count"], 1)
+
+    async def removal_while_the_keeper_goes(self, change):
+        self.write("a.png", b"same", mtime=1)
+        self.write("b.png", b"same", mtime=2)
+        prompt = self.save("On b")
+        self.api.db.link_image_to_prompt(prompt, str(self.output_dir / "b.png"))
+        job, group = await self.found_group()
+        plan = await self.review(job.id, [self.keep_of(group, "a.png")])
+        real = self.api.db.move_copy_records
+
+        def move(*args, **kwargs):
+            counts = real(*args, **kwargs)
+            if args[0]["kept_path"].endswith("a.png"):
+                change(self.output_dir / "a.png")
+            return counts
+
+        with patch.object(self.api.db, "move_copy_records", side_effect=move):
+            cleanup = await self.apply_plan(plan)
+        self.assertTrue((self.output_dir / "b.png").is_file())
+        self.assertEqual(cleanup.counters["removed"], 0)
+        rows = {row["path"]: row["detail"] for row in cleanup.outcomes["kept"]}
+        self.assertEqual(rows["b.png"], duplicate_files.KEEPER_WENT)
+        self.assertEqual(self.linked_files(), [])
+        [image] = self.api.db.get_prompt_images(prompt)
+        self.assertEqual(os.path.basename(image["image_path"]), "b.png")
+        self.assertIn("1 not removed", cleanup.status_line)
+
+    async def test_a_kept_copy_deleted_during_the_move_keeps_the_file(self):
+        await self.removal_while_the_keeper_goes(lambda path: path.unlink())
+
+    async def test_a_kept_copy_replaced_during_the_move_keeps_the_file(self):
+        def replace(path):
+            spare = path.with_name("spare.tmp")
+            spare.write_bytes(b"other bytes")
+            os.replace(spare, path)
+
+        await self.removal_while_the_keeper_goes(replace)

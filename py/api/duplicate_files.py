@@ -56,6 +56,8 @@ from .duplicate_review import (  # noqa: F401 (CHANGED, OUTSIDE_SOURCE: public)
     GONE,
     KEEPER,
     KEEPER_CHANGED,
+    KEEPER_GONE,
+    KEEPER_WENT,
     KEPT_COPY,
     LOCKED_FILE,
     MAYBE_SAME_FILE,
@@ -78,9 +80,10 @@ from .duplicate_review import (  # noqa: F401 (CHANGED, OUTSIDE_SOURCE: public)
     _select,
     file_problem,
     human_bytes,
+    still_kept,
 )
-from .duplicate_spellings import Spellings
-from .images import _favorite_relative_key, _favorite_root_key, _output_image_entry
+from .duplicate_spellings import Spellings, copy_move
+from .images import _favorite_root_key, _output_image_entry
 from .job_routes import busy_response
 from .jobs import (
     DUPLICATE_CLEANUP_GROUP_NAMES,
@@ -684,14 +687,20 @@ class DuplicateFilesMixin:
         except OSError:
             return "kept", KEEPER, None
         with hold:
-            return self._move_then_unlink(db, target, keepers[group_id], spellings)
+            return self._move_then_unlink(
+                db, target, keepers[group_id], spellings, hold
+            )
 
-    def _move_then_unlink(self, db, target, kept_stat, spellings):
+    def _move_then_unlink(self, db, target, kept_stat, spellings, hold):
         try:
-            counts = db.move_copy_records(self._copy_move(target, kept_stat, spellings))
+            counts = db.move_copy_records(copy_move(target, kept_stat, spellings))
         except Exception:
             self.logger.exception(f"Could not move the records of {target['rel']}")
             return "error", RECORDS_FAILED, None
+        if not still_kept(target, hold):
+            # The kept copy went away or changed while the records moved:
+            # keep this file and give its records back to it.
+            return "kept", KEEPER_GONE, self._move_back(db, target, spellings)
         try:
             _unlink(target["abs"])
         except FileNotFoundError:
@@ -713,48 +722,26 @@ class DuplicateFilesMixin:
         _remove_thumbnail(Path(target["root"]), Path(target["rel"]), self.logger)
         return "removed", None, counts
 
-    @staticmethod
-    def _copy_move(target, kept_stat, spellings):
-        """What ``move_copy_records`` moves for one removal.
-
-        A record found under a folder spelling moves to the kept copy under
-        the same spelling when that folder holds it too, else to its real
-        path. Its favorite moves under every listed root holding the file.
-        """
-        removed = spellings.of(target["abs"])
-        kept = spellings.of(target["keeper_abs"])
-        targets = {
-            spelled: kept.get(folder, target["keeper_abs"])
-            for folder, spelled in removed.items()
+    def _move_back(self, db, target, spellings):
+        """Give the kept copy's records to the file that stays (blocking)."""
+        swapped = {
+            **target,
+            "abs": target["keeper_abs"],
+            "root": target["keeper_root"],
+            "rel": target["keeper_rel"],
+            "locator": target["keeper_locator"],
+            "keeper_abs": target["abs"],
+            "keeper_root": target["root"],
+            "keeper_rel": target["rel"],
+            "keeper_locator": target["locator"],
         }
-        kept_favorites = spellings.favorites(target["keeper_abs"])
-        favorites = []
-        for root, relative in spellings.favorites(target["abs"]).items():
-            kept_root, kept_rel = (
-                (root, kept_favorites[root])
-                if root in kept_favorites
-                else (target["keeper_root"], target["keeper_rel"])
+        try:
+            return db.move_copy_records(
+                copy_move(swapped, os.stat(target["abs"]), spellings)
             )
-            favorites.append(
-                (
-                    _favorite_root_key(root),
-                    _favorite_relative_key(relative),
-                    _favorite_root_key(kept_root),
-                    _favorite_relative_key(kept_rel),
-                )
-            )
-        return {
-            "removed": list(removed.values()),
-            "kept": list(kept.values()),
-            "targets": targets,
-            "kept_path": target["keeper_abs"],
-            "favorites": favorites,
-            "removed_locator": target["locator"],
-            "kept_locator": target["keeper_locator"],
-            "sha256": target["hash"],
-            "kept_size": kept_stat.st_size,
-            "kept_mtime_ns": kept_stat.st_mtime_ns,
-        }
+        except Exception:
+            self.logger.exception(f"Could not give the records back to {target['rel']}")
+            return None
 
 
 def _bound_problem(record, group, keeper=None):

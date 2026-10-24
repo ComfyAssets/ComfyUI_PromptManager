@@ -73,7 +73,13 @@ MAYBE_SAME_FILE = (
     "May be the same file reached through another mount or share; it was kept."
 )
 NO_FILE_ID_ROW = "Can't confirm this is a separate file on this drive; it was kept."
+KEEPER_GONE = "keeper-gone"
+KEEPER_WENT = (
+    "The kept copy changed or went away during the removal; this file was kept "
+    "and its links stay with it."
+)
 ROW_DETAILS = {
+    KEEPER_GONE: None,  # filled below
     MAYBE_SAME: MAYBE_SAME_FILE,
     NO_FILE_ID: NO_FILE_ID_ROW,
     SAME: SAME_FILE,
@@ -106,6 +112,29 @@ FIND_CANCELLED = "Duplicate scan cancelled"
 
 class SourcesChanged(Exception):
     """A source a review or removal names is no longer listed at its index."""
+
+
+ROW_DETAILS[KEEPER_GONE] = KEEPER_WENT
+
+
+def still_kept(target, hold):
+    """Right before an unlink: the held kept copy is still the file at its
+    path, and the file is still not the kept copy itself (``keeper_problem``).
+    """
+    try:
+        if not os.path.samestat(os.fstat(hold.fileno()), os.stat(target["keeper_abs"])):
+            return False
+        info = os.lstat(target["abs"])
+        problem = keeper_problem(
+            target["abs"],
+            target["root"],
+            info,
+            target["keeper_abs"],
+            target["keeper_root"],
+        )
+        return problem is None
+    except OSError:
+        return False
 
 
 def _plural(count, one, many=None):
@@ -211,9 +240,11 @@ def keeper_problem(path, root, info, keeper, keeper_root=None):
       two spellings of one mount);
     - ``MAYBE_SAME``: another device, the same size, mtimes within
       ``MOUNT_MTIME_SLACK_NS``, and the same ``st_ino`` (NFS and SMB report
-      the server's file id) or the same path within their sources (one share
-      mounted twice, a FUSE pool over a listed disk). Protect, never guess:
-      a true copy on another disk at the same relative path is kept too.
+      the server's file id) or the same path within their sources, or one
+      ending with the other on a folder name (one share mounted twice, a
+      FUSE pool over a listed disk, sources listed at different depths).
+      Protect, never guess: a true copy on another disk at the same relative
+      path is kept too.
 
     Raises OSError when the kept copy cannot be read (the caller's GONE or
     UNREADABLE).
@@ -229,11 +260,22 @@ def keeper_problem(path, root, info, keeper, keeper_root=None):
         return None
     if info.st_ino == kept.st_ino:
         return MAYBE_SAME
-    if keeper_root is not None and _relative_key(path, root) == _relative_key(
-        keeper, keeper_root
+    if keeper_root is not None and _same_tail(
+        _relative_key(path, root), _relative_key(keeper, keeper_root)
     ):
         return MAYBE_SAME
     return None
+
+
+def _same_tail(one, other):
+    """Whether one relative path is the other, or ends with it on a folder name.
+
+    Two mounts of one tree may be listed at different depths (``2024/x.png``
+    in one source, ``x.png`` in the other); ``ax.png`` never matches ``x.png``.
+    """
+    if one is None or other is None:
+        return False
+    return one == other or one.endswith("/" + other) or other.endswith("/" + one)
 
 
 def _relative_key(path, root):

@@ -2612,12 +2612,18 @@ copy of themselves (`test_a_folder_listed_twice_never_loses_its_only_copy`,
 `test_a_hardlink_is_never_a_copy_to_remove`). One file reached through two mounts is
 protected, never guessed at: a removal on another `st_dev` than its kept copy, with the
 same size and mtimes within 2 s, is kept as "may be the same file reached through another
-mount or share" when its `st_ino` is equal or its path within its source is the same
+mount or share" when its `st_ino` is equal or its path within its source is the same, or
+one ends with the other on a whole folder name (sources listed at different depths:
+`test_a_deeper_source_on_another_mount_is_protected`)
 (NFS and SMB, a loopback mount, a FUSE pool: `TestAnotherMount`). Some true copies on
 another disk are therefore never offered. A volume that reports no file id protects
 every pair ("Can't confirm this is a separate file on this drive"). The job checks both
-again right before each unlink and holds the kept copy open meanwhile, so on Windows
-deleting the kept copy itself through another path fails instead. The server holds the groups (content
+before each file's records move, holds the kept copy open, and right before the unlink
+checks again that the held kept copy is still the file at its path (`fstat` of the held
+handle against `os.stat` of the path) and that the guard still holds; otherwise the file
+is kept, its records move back to it, and it counts as not removed
+(`test_a_kept_copy_deleted_during_the_move_keeps_the_file`). On Windows the hold also
+makes deleting the kept copy itself through another path fail. The server holds the groups (content
 hash, root-relative paths, source index, size, mtime and inode) for the last three
 finds; `GET /prompt_manager/maintenance/duplicates/{job_id}?offset&limit` pages
 them ten at a time (`not-found` 404, `job-running` or `no-groups` 409). The preview
