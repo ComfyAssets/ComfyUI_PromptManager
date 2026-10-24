@@ -518,6 +518,22 @@ class TestTableVersion(InspectionTestCase):
         (row,) = job["outcomes"]["review"]
         self.assertIn("could not be traced", row["detail"])
 
+    async def test_an_unusable_table_keeps_existing_items_on_rescan(self):
+        self._require_routes()
+        self._roots()
+        self._write()
+        await self._scan()
+        (item,) = self._items()
+
+        unusable = inspection_semantics.SemanticsError("bad table")
+        with (
+            patch.object(inspection_semantics, "get_semantics", side_effect=unusable),
+            patch.object(review_capture, "get_semantics", side_effect=unusable),
+        ):
+            await self._scan("all")
+
+        self.assertEqual([i["id"] for i in self._items()], [item["id"]])
+
 
 class TestVersionChanges(InspectionTestCase):
     """A version change never leaves two pending items for one file."""

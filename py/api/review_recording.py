@@ -221,6 +221,10 @@ class ReviewRecordingMixin:
         located = self._review_location(media_file, roots)
         if located is None or canonical is None:
             return 0
+        # An unusable semantics table says nothing about the current
+        # versions; never let it retire items a working table recorded.
+        if review_capture.inspection_review_version(canonical) is None:
+            return 0
         try:
             facts = os.lstat(located[3])
             removed = self.db.settle_stale_review_items(
