@@ -895,3 +895,20 @@ test('cache off never rereads a selection whose source changed, and refresh neve
     assert.equal(deferred.state.deferred, true);
     deferred.dispose();
 });
+
+test('record carries the listing thumbnail as its preview, never another file (#249)', () => {
+    const toRecord = contract('toInspectionRecord'), entry = image();
+    const thumb = `/prompt_manager/images/serve/thumbnails/folder/a%20%23%25_thumb.png?root=0&root_scope=${scopeA}`;
+    assert.deepEqual(toRecord(envelope(entry), { ...entry, thumbnail_url: thumb }, extractGenerationFacts).preview, { url: thumb });
+    const versioned = `/prompt_manager/images/serve/thumbnails/folder/a%20%23%25_thumb.png?v=12&root=0&root_scope=${scopeA}`;
+    assert.deepEqual(toRecord(envelope(entry), { ...entry, thumbnail_url: versioned }, extractGenerationFacts).preview, { url: versioned });
+    // No thumbnail, or one naming another file, root or origin: no preview (the cover keeps the original).
+    for (const thumbnail_url of [undefined, null, '', thumb.replace('a%20%23%25_thumb', 'b_thumb'), thumb.replace('root=0', 'root=1'),
+        thumb.replace(scopeA, scopeB), `https://other.test${thumb}`, thumb.replace('thumbnails/', ''), `${thumb}#x`]) {
+        assert.equal(toRecord(envelope(entry), { ...entry, thumbnail_url }, extractGenerationFacts).preview, null, String(thumbnail_url));
+    }
+    const video = { root_index: 0, path: 'clip.MP4', filename: 'clip.MP4', url: `/prompt_manager/images/serve/clip.MP4?root=0&root_scope=${scopeA}`, root_scope: scopeA,
+        thumbnail_url: `/prompt_manager/images/serve/thumbnails/clip_thumb.jpg?root=0&root_scope=${scopeA}` };
+    const data = envelope(video); data.file = { ...data.file, media_type: 'video', extension: '.mp4', format: 'MP4' };
+    assert.deepEqual(toRecord(data, video, extractGenerationFacts).preview, { url: video.thumbnail_url });
+});

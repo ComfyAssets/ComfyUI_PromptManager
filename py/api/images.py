@@ -110,6 +110,8 @@ def _card_header(path: Path) -> tuple:
 
 # The legacy gallery page's thumbnail generation, as Activity lists it (D80).
 THUMBNAIL_GENERATION_TITLE = "Thumbnail generation (gallery page)"
+# Its clear: automatic previews are not written while it runs.
+THUMBNAIL_CLEAR_TITLE = "Thumbnail clear (gallery page)"
 
 
 class _CardFacts(NamedTuple):
@@ -710,20 +712,37 @@ def _iter_media_files(output_path, max_files):
             yield root_path / name
 
 
-def media_thumbnail_url(output_path, rel_path, root_index, *, root_scope=None):
-    """The Images listing's thumbnail URL for *rel_path* under *output_path*,
-    or None when no thumbnail exists (one blocking stat). The Needs review
-    queue cards use the same URL (#249 F, M10)."""
+def media_thumbnail_rel(rel_path):
+    """``thumbnails/<rel>_thumb<ext>`` (POSIX) for the media file *rel_path*.
+
+    The extension is lower case, and a video's preview is a ``.jpg``: the
+    name every thumbnail writer (the plan, the job, automatic previews) uses.
+    """
     rel_path = Path(rel_path)
     extension = rel_path.suffix.lower()
-    thumb_rel = (
+    return (
         f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb"
         f"{'.jpg' if extension in VIDEO_EXTENSIONS else extension}"
     )
+
+
+def media_thumbnail_url(output_path, rel_path, root_index, *, root_scope=None):
+    """The Images listing's thumbnail URL for *rel_path* under *output_path*
+    (one blocking stat). The Needs review queue cards and the Library use the
+    same URL (#249 F, M10).
+
+    An existing preview's URL carries its mtime as ``v=``. A missing one is
+    still listed (without ``v=``): the serve route makes it on first view and
+    falls back to the original when it cannot (py/api/thumbnail_auto.py), so
+    no card ever loads the full file because its preview was not made yet.
+    """
+    thumb_rel = media_thumbnail_rel(rel_path)
     thumbnail_url = thumbnail_url_for(thumb_rel, Path(output_path) / thumb_rel)
     if thumbnail_url is None:
-        return None
-    thumbnail_url += f"&root={root_index}"
+        quoted = urllib.parse.quote(thumb_rel, safe="/")
+        thumbnail_url = f"/prompt_manager/images/serve/{quoted}?root={root_index}"
+    else:
+        thumbnail_url += f"&root={root_index}"
     if root_scope is not None:
         thumbnail_url += f"&root_scope={root_scope}"
     return thumbnail_url
@@ -1682,6 +1701,11 @@ class ImageRoutesMixin:
                 if image_path.is_file():
                     return self._file_response(image_path)
 
+            # A listed preview that was not made yet is made now (#249).
+            preview = await self._serve_missing_thumbnail(output_dirs, filepath)
+            if preview is not None:
+                return preview
+
             # ComfyUI's cache middleware would otherwise let browsers cache this
             # miss for an hour, hiding a thumbnail generated a moment later.
             return web.json_response(
@@ -1909,6 +1933,8 @@ class ImageRoutesMixin:
                     "total_images": pending + plan["skipped"],
                     "pending": pending,
                     "ready": plan["skipped"],
+                    # Files whose automatic preview failed this session (#249).
+                    "failed": self._auto_thumbnail_failures(),
                     "collection_id": hashlib.sha256(collection.encode()).hexdigest()[
                         :16
                     ],
@@ -2218,7 +2244,7 @@ class ImageRoutesMixin:
         """
         return await self._run_held(
             THUMBNAILS_JOB_KIND,
-            "Thumbnail clear (gallery page)",
+            THUMBNAIL_CLEAR_TITLE,
             "guarded",
             self._clear_thumbnails,
         )

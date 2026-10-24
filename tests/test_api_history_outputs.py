@@ -401,7 +401,7 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(response.status, 400)
         await response.read()
 
-    async def test_media_ranges_head_and_existing_thumbnail_without_generation(self):
+    async def test_media_ranges_head_and_a_preview_made_on_first_view(self):
         path = self.output_dir / "clip.mp4"
         payload = bytes(range(256)) * 600
         path.write_bytes(payload)
@@ -430,9 +430,14 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(int(response.headers["Content-Length"]), len(payload))
         self.assertEqual(await response.read(), b"")
+        # A missing preview is made on first view (#249): an undecodable video
+        # gets the placeholder frame, never the whole file.
+        preview = self.output_dir / "thumbnails" / "clip_thumb.jpg"
         response = await self.current(descriptor["thumbnail_url"])
-        self.assertEqual(await response.read(), payload)
-        preview = make_png(self.output_dir / "thumbnails" / "clip_thumb.jpg")
+        self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+        self.assertEqual(await response.read(), preview.read_bytes())
+        self.assertLess(preview.stat().st_size, len(payload))
+        make_png(preview)
         response = await self.current(descriptor["thumbnail_url"])
         self.assertEqual(await response.read(), preview.read_bytes())
 

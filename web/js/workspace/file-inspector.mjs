@@ -318,10 +318,13 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         });
         return button;
     }
-    /** The concept's plain cover; the card image opens the viewer (D19). Video keeps its own element. */
+    /**
+     * The concept's plain cover; the card image opens the viewer (D19). #249: it is the file's preview (a video's
+     * is a JPEG frame) whenever the listing gave one; without one the original, and a video keeps its own element.
+     */
     function cover(record) {
-        const {file} = record, video = file?.media_type === 'video';
-        const node = el(video ? 'video' : 'img', undefined, 'detail-cover'); node.src = record.download.url;
+        const {file} = record, preview = record.preview?.url, video = !preview && file?.media_type === 'video';
+        const node = el(video ? 'video' : 'img', undefined, 'detail-cover'); node.src = preview || record.download.url;
         if (video) {
             node.muted = true; node.playsInline = true; node.preload = 'metadata';
             contentScope.cleanup(() => {node.pause(); node.removeAttribute('src'); node.load();});

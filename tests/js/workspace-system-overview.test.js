@@ -253,3 +253,11 @@ test('waiting stops when its signal aborts', async () => {
     gone.abort(new Error('already'));
     await assert.rejects(waitForJob(fakeActivity(), JOB, { signal: gone.signal }), { message: 'already' });
 });
+
+test('the thumbnail row counts previews that could not be made (#249)', async () => {
+    const { thumbnailTitle } = await overviewModule;
+    assert.equal(thumbnailTitle({ pending: 12, failed: 2 }), '12 missing thumbnails · 2 failed');
+    assert.equal(thumbnailTitle({ pending: 1, failed: 1 }), '1 missing thumbnail · 1 failed');
+    assert.equal(thumbnailTitle({ pending: 0, failed: 0 }), 'No missing thumbnails');
+    assert.equal(thumbnailTitle({ pending: 3, failed: 'x' }), '3 missing thumbnails');
+});

@@ -68,6 +68,39 @@ function downloadFor(image, required) {
     }
 }
 
+// The server's video extensions (py/api/inspection_service.py VIDEO_EXTENSIONS): their preview is a JPEG.
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.avi', '.mov', '.mkv', '.m4v', '.wmv']);
+
+/** `thumbnails/<path>_thumb<ext>` for a listed file, as the server names its preview (images.media_thumbnail_rel). */
+function previewPath(path) {
+    const slash = path.lastIndexOf('/'), dot = path.lastIndexOf('.');
+    const cut = dot > slash ? dot : path.length, extension = path.slice(cut).toLowerCase();
+    return `thumbnails/${path.slice(0, cut)}_thumb${VIDEO_EXTENSIONS.has(extension) ? '.jpg' : extension}`;
+}
+
+/**
+ * #249: the listing's thumbnail of `image` as `{url}` for the inspector's cover, or null. Only the same-origin
+ * serve URL of this file's own preview under the same root and source scope is used; anything else keeps the
+ * original (a missing preview is made by the server on first view).
+ */
+function previewFor(image) {
+    try {
+        if (typeof image.thumbnail_url !== 'string' || !image.thumbnail_url) return null;
+        const location = globalThis.location || globalThis.window?.location;
+        const reference = new URL(location?.href || 'http://localhost/');
+        const resolveUrl = globalThis.window?.ApiClient?.resolveUrl || globalThis.ApiClient?.resolveUrl || (url => url);
+        const value = resolveUrl(image.thumbnail_url), url = new URL(value, reference);
+        const expected = new URL(resolveUrl(`/prompt_manager/images/serve/${previewPath(image.path).split('/').map(encodeURIComponent).join('/')}`), reference);
+        const scope = descriptorScope(image);
+        if (url.origin !== reference.origin || url.username || url.password || url.hash || url.pathname !== expected.pathname ||
+            url.searchParams.getAll('root').length !== 1 || url.searchParams.get('root') !== String(image.root_index) ||
+            url.searchParams.getAll('root_scope').length > 1 || (scope !== null && url.searchParams.get('root_scope') !== scope)) return null;
+        return { url: value };
+    } catch {
+        return null;
+    }
+}
+
 export function originalMediaDownload(image) {
     validateIdentity(image);
     return downloadFor(image, true);
@@ -284,16 +317,18 @@ export function toInspectionRecord(result, image, extractFacts = globalThis.Comf
     if (!legacy && result.inspection_version !== 1) throw new TypeError('Unsupported inspection version');
     if (!legacy && result.success !== true) throw new TypeError('Invalid inspection success status');
     if ((!legacy || result.image !== undefined) && (!object(result.image) || result.image.root_index !== image.root_index || result.image.path !== image.path || result.image.filename !== image.path.split('/').at(-1))) throw new TypeError('Mismatched inspection identity');
-    return projectInspectionPayload(result,
+    const record = projectInspectionPayload(result,
         { kind: 'rooted-file', key: imageKey(image), root_index: image.root_index, path: image.path, root_scope: scope },
         downloadFor(image, !legacy || scope !== null), extractFacts, legacy, parser);
+    record.preview = record.download ? previewFor(image) : null;
+    return record;
 }
 
 /** Shared bounded payload projection; adapters validate identity before entering here. */
 export function projectInspectionPayload(result, identity, download, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts, legacy = false, parser = comfyMetadata()) {
     const record = {
         identity, file: null, prompts: promptsFor(result.prompts), library: null, metadata: null,
-        generation: unavailableFacts(), historyTarget: null, download, imageTags: null,
+        generation: unavailableFacts(), historyTarget: null, download, imageTags: null, preview: null,
     };
     if (legacy) return record;
     record.imageTags = imageTagsFor(result.image_tags);

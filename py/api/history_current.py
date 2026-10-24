@@ -310,8 +310,18 @@ class _OpenedCurrentMedia:
 
 
 def _prepare_current_media(
-    resolved: ResolvedCurrentCandidate, scope: CurrentOutputScope, *, thumbnail: bool
+    resolved: ResolvedCurrentCandidate,
+    scope: CurrentOutputScope,
+    *,
+    thumbnail: bool,
+    ensure_preview=None,
 ) -> _OpenedCurrentMedia:
+    """Open the current file, or its preview for ``thumbnail``.
+
+    A missing preview is made through ``ensure_preview(src, dst, is_video)``
+    (the API's bounded, single-flight automatic preview, #249) when given;
+    when it cannot be made the original is opened, as before.
+    """
     target = resolved.canonical_target
     if thumbnail:
         relative = target.relative_to(resolved.gallery_root)
@@ -328,7 +338,18 @@ def _prepare_current_media(
         try:
             preview.stat()
         except FileNotFoundError:
-            pass
+            # Never written through a preview folder linked out of the root.
+            if (
+                ensure_preview is not None
+                and _canonical(resolved.gallery_root / "thumbnails").is_relative_to(
+                    _canonical(resolved.gallery_root)
+                )
+                and ensure_preview(
+                    target, preview, target.suffix.lower() in VIDEO_EXTENSIONS
+                )
+                == "ready"
+            ):
+                target = _canonical(preview)
         else:
             target = _canonical(preview)
     handle = _open_current_target(target, resolved.namespace, scope)

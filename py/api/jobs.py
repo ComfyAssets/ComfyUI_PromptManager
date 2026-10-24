@@ -515,6 +515,12 @@ class JobRegistry:
     def get(self, job_id):
         return self._jobs.get(job_id)
 
+    def running(self):
+        """The running jobs, oldest first (a snapshot, safe off the event loop)."""
+        jobs = [job for job in tuple(self._jobs.values()) if job.running]
+        jobs.sort(key=lambda job: job._started_seq)
+        return jobs
+
     def active(self, kind):
         """The running job of ``kind``, or None (safe off the event loop)."""
         for job in tuple(self._jobs.values()):

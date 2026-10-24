@@ -734,7 +734,10 @@ class HistoryRoutesMixin:
                         raise HistoryReadError(422, "response-limit") from None
                 else:
                     prepared = _prepare_current_media(
-                        resolved, scope, thumbnail=kind == "thumbnail"
+                        resolved,
+                        scope,
+                        thumbnail=kind == "thumbnail",
+                        ensure_preview=self._history_preview,
                     )
                 _check_current(scope, self, fence, epoch, generation)
                 return prepared

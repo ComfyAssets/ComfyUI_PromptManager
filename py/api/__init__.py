@@ -9,6 +9,7 @@ Split into domain-specific mixins for maintainability:
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 - ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
 - ThumbnailJobsMixin: thumbnail plan, thumbnail job and the gallery stream on it
+- AutoThumbnailMixin: previews made on first view, on capture and after a scan
 - ReviewRoutesMixin: the Needs review queue, item detail and decisions
 - ReviewRecordingMixin: Needs review recording for the scan and the monitor
 - ReviewEventsMixin: the Needs review change stream an open page re-reads on
@@ -47,6 +48,7 @@ from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
+from .thumbnail_auto import AutoThumbnailMixin
 from .system import SystemRoutesMixin
 from .maintenance import MaintenanceRoutesMixin
 from .duplicate_files import DuplicateFilesMixin
@@ -289,6 +291,7 @@ class PromptManagerAPI(
     JobRoutesMixin,
     ImageTagJobsMixin,
     ThumbnailJobsMixin,
+    AutoThumbnailMixin,
     SystemRoutesMixin,
     MaintenanceRoutesMixin,
     DuplicateFilesMixin,
