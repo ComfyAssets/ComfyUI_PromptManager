@@ -38,6 +38,11 @@ from typing import Dict, Any
 
 from .logging_config import get_logger
 
+try:
+    from ..database.workflow_documents import DocumentReader, resolve_image_row
+except ImportError:  # loaded as a top-level ``utils`` package
+    from database.workflow_documents import DocumentReader, resolve_image_row
+
 
 class GalleryDiagnostics:
     """Diagnostics for the gallery system.
@@ -221,7 +226,8 @@ class GalleryDiagnostics:
                     ORDER BY gi.generation_time DESC
                     LIMIT 5
                 """)
-                recent_images = [dict(row) for row in cursor.fetchall()]
+                reader = DocumentReader(conn)
+                recent_images = [resolve_image_row(reader, row) for row in cursor]
 
                 self.logger.info(f"   [TIME] Recent images: {len(recent_images)}")
                 for img in recent_images:

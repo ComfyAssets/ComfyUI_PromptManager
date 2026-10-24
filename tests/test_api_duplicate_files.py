@@ -654,11 +654,20 @@ class TestCleanupJob(DuplicateFilesTestCase):
         db.link_image_to_prompt(moved, str(self.output_dir / "b.png"))
         db.link_image_to_prompt(moved, str(self.output_dir / "d.png"))
         db.link_image_to_prompt(merged, str(self.output_dir / "a.png"))
-        db.link_image_to_prompt(merged, str(self.output_dir / "sub" / "c.png"))
+        db.link_image_to_prompt(
+            merged,
+            str(self.output_dir / "sub" / "c.png"),
+            {"workflow": {"only": "c"}, "prompt": {"only": "c"}},
+        )
         db.set_image_favorite(
             duplicate_files.favorite_root_key(self.output_dir), "b.png"
         )
         plan, cleanup = await self.remove_all_but("a.png")
+        # The merged link's own workflow document went with it (#249 S6 dedupe).
+        documents = db.model.get_connection().execute(
+            "SELECT COUNT(*) FROM workflow_documents"
+        )
+        self.assertEqual(documents.fetchone()[0], 1)  # the shared "{}"
         self.assertEqual(
             plan["details"][0]["detail"],
             "output · a copy of a.png · 1 database link moves to the kept copy",
