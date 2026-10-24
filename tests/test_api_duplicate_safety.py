@@ -515,15 +515,28 @@ class TestRound3(SafetyTestCase):
         job, group = await self.found_group()
         plan = await self.review(job.id, [self.keep_of(group, "a.png")])
         real = self.api.db.move_copy_records
+        refused = []
 
         def move(*args, **kwargs):
             counts = real(*args, **kwargs)
             if args[0]["kept_path"].endswith("a.png"):
-                change(self.output_dir / "a.png")
+                try:
+                    change(self.output_dir / "a.png")
+                except PermissionError:
+                    # Windows: the job holds the kept copy open (no
+                    # FILE_SHARE_DELETE), so it cannot be deleted or replaced.
+                    if os.name != "nt":
+                        raise
+                    refused.append(True)
             return counts
 
         with patch.object(self.api.db, "move_copy_records", side_effect=move):
             cleanup = await self.apply_plan(plan)
+        if refused:  # pragma: no cover - native Windows
+            self.assertEqual((self.output_dir / "a.png").read_bytes(), b"same")
+            self.assertEqual(cleanup.counters["removed"], 1)
+            self.assertEqual(self.linked_files(), [])
+            return
         self.assertTrue((self.output_dir / "b.png").is_file())
         self.assertEqual(cleanup.counters["removed"], 0)
         rows = {row["path"]: row["detail"] for row in cleanup.outcomes["kept"]}
