@@ -482,6 +482,8 @@ function mapAppearanceConcept(reference, settings) {
         control: { ...toggleRow.control, id, checked } }));
     return {
         ...reference,
+        // #317: the server's thumbnail settings follow in their own surface ("Thumbnails", README: retained in Appearance).
+        layout: [reference.layout[0], 'section.surface', ...reference.layout.slice(1)],
         // D97: two added toggles and the "Reset display defaults" operation close the surface.
         surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.setting-row', 'div.operation'] },
         rows: [...reference.rows.map(row => row.control?.id === 'timeout'
@@ -530,7 +532,8 @@ test('appearance comparison detects mutations', async ({ page, request }) => {
     // Unmapped, the concept differs only where D97 and the real timeout are recorded.
     expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
         .filter((path, index, all) => all.indexOf(path) === index).sort())
-        .toEqual(['operations.0', 'operations.length', 'rows.11', 'rows.12', 'rows.13', 'rows.length', 'surface.tree'].sort());
+        .toEqual(['layout.1', 'layout.2', 'layout.length', 'operations.0', 'operations.length', 'rows.11', 'rows.12', 'rows.13',
+            'rows.length', 'surface.tree'].sort());
     const measure = () => page.evaluate(measureAppearance, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
     // A removed row.
@@ -842,13 +845,16 @@ function measureThumbnailReview() {
 
 /**
  * D99: the planned counts line (`p.small[role=status]`) before the actions, from the server's plan for the chosen
- * options, and the primary "Start" (the concept's "Simulate thumbnail job").
+ * options, and the primary "Start" (the concept's "Simulate thumbnail job"). D131 (#317): the Quality and Preview size
+ * limit fields give way to a second `p.small` naming the server's thumbnail settings, and Scope gains "Convert
+ * outdated (removes older formats)".
  */
 function mapThumbnailConcept(reference, plan) {
     const [cancel, start] = reference.actions.buttons;
-    const tree = [...reference.tree];
-    tree.splice(tree.indexOf('div.dialog-actions'), 0, 'p.small');
-    return { ...reference, tree,
+    const [scope] = reference.fields;
+    const tree = ['div.field', 'p.small', 'p.small', 'div.dialog-actions'];
+    const fields = [{ ...scope, control: { ...scope.control, options: [...scope.control.options, 'Convert outdated (removes older formats)'] } }];
+    return { ...reference, tree, fields,
         plan: { ...reference.plan, role: 'status',
             text: `${number(plan.targets)} ${plan.targets === 1 ? 'preview' : 'previews'} to generate · ${number(plan.fresh)} already up to date.` },
         actions: { ...reference.actions, buttons: [cancel, { ...start, text: 'Start' }] } };
@@ -874,12 +880,12 @@ async function productionThumbnailReview(page, theme, entry) {
         await page.locator('#workspace-main').getByRole('button', { name: 'Review thumbnails', exact: true }).click();
     }
     await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Thumbnail maintenance');
-    await expect(page.locator('dialog#modal[open] #modal-body > p.small')).toHaveText(/ already up to date\.$/);
+    await expect(page.locator('dialog#modal[open] #modal-body > p.small').first()).toHaveText(/ already up to date\.$/);
     await page.mouse.move(0, 0);
     return page.evaluate(measureThumbnailReview);
 }
 
-const thumbnailPlan = request => serverJson(request, '/prompt_manager/images/thumbnails/plan?mode=missing&size=512&quality=medium');
+const thumbnailPlan = request => serverJson(request, '/prompt_manager/images/thumbnails/plan?mode=missing');
 
 for (const entry of ['sources', 'overview']) for (const theme of THEMES) for (const [width, height] of SIZES) {
     test(`thumbnail dialog matches the concept from ${entry} ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
@@ -902,22 +908,24 @@ test('thumbnail dialog comparison detects mutations', async ({ page, request }) 
     const expected = mapThumbnailConcept(concept, plan);
     const production = await productionThumbnailReview(page, 'dark', 'sources');
     expect(diffInventory(expected, production)).toEqual([]);
-    // Unmapped, the concept differs only where D99 is recorded.
-    expect(diffInventory(concept, production).map(item => item.path).sort())
-        .toEqual(['actions.buttons.1.text', 'plan.role', 'plan.text', 'tree.3', 'tree.4', 'tree.length']);
+    // Unmapped, the concept differs only where D99 and D131 are recorded.
+    expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
+        .filter((path, index, all) => all.indexOf(path) === index).sort())
+        .toEqual(['actions.buttons', 'fields.0', 'fields.1', 'fields.2', 'fields.length', 'plan.role', 'plan.text', 'tree.1', 'tree.2']
+            .sort());
     const paths = async () => diffInventory(expected, await page.evaluate(measureThumbnailReview)).map(item => item.path);
     // A changed option label, a swapped option order, a swapped action order and a changed style.
-    await page.evaluate(() => { document.querySelector('#thumb-quality option').textContent = 'Medium'; });
-    expect(await paths()).toEqual(['fields.1.control.options.0']);
-    await page.evaluate(() => { document.querySelector('#thumb-quality option').textContent = 'Medium · optimized'; });
+    await page.evaluate(() => { document.querySelector('#thumb-mode option').textContent = 'Missing only'; });
+    expect(await paths()).toEqual(['fields.0.control.options.0']);
+    await page.evaluate(() => { document.querySelector('#thumb-mode option').textContent = 'Missing thumbnails only'; });
     await page.evaluate(() => { const select = document.querySelector('#thumb-mode'); select.prepend(select.lastElementChild); });
     expect(await paths()).toEqual(expect.arrayContaining(['fields.0.control.options.0', 'fields.0.control.options.1']));
-    await page.evaluate(() => { const select = document.querySelector('#thumb-mode'); select.prepend(select.lastElementChild); select.selectedIndex = 0; });
+    await page.evaluate(() => { const select = document.querySelector('#thumb-mode'); select.append(select.firstElementChild); select.selectedIndex = 0; });
     await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
     expect(await paths()).toEqual(expect.arrayContaining(['actions.buttons.0.text', 'actions.buttons.1.text']));
     await page.evaluate(() => { const actions = document.querySelector('dialog#modal[open] .dialog-actions'); actions.prepend(actions.lastElementChild); });
-    const undoStyle = await mutate(page, { css: 'dialog#modal #thumb-limit { border-color: rgb(255, 0, 0); } dialog#modal #modal-body > p.small { color: rgb(255, 0, 0); }' });
-    expect(await paths()).toEqual(expect.arrayContaining(['fields.2.control.borderTopColor', 'plan.color']));
+    const undoStyle = await mutate(page, { css: 'dialog#modal #thumb-mode { border-color: rgb(255, 0, 0); } dialog#modal #modal-body > p.small { color: rgb(255, 0, 0); }' });
+    expect(await paths()).toEqual(expect.arrayContaining(['fields.0.control.borderTopColor', 'plan.color']));
     await undoStyle();
     expect(diffInventory(expected, await page.evaluate(measureThumbnailReview))).toEqual([]);
 });

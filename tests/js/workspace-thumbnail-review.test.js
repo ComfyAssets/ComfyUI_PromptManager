@@ -1,35 +1,36 @@
 // System › thumbnail review (#249 System S5 Task 14): the concept's "Thumbnail maintenance" dialog (app.js 1433–1437,
-// `thumbnail-review`) on the thumbnail job (S5 Task 12). Pure parts: the option values the job takes, the preview size
-// check, the Image loading quality preselection (Q3), the D99 plan line and the start outcome.
+// `thumbnail-review`) on the thumbnail job (S5 Task 12). Pure parts: the scopes the job takes (Convert outdated, #317),
+// the D131 settings line that replaced its quality and size fields, the D99 plan line and the start outcome.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const reviewModule = import('../../web/js/workspace/thumbnail-review.mjs');
 
-test('the concept options map to the job values in the concept order', async () => {
-    const { SCOPE_OPTIONS, QUALITY_OPTIONS, SIZE_LIMIT } = await reviewModule;
-    assert.deepEqual(SCOPE_OPTIONS, [['missing', 'Missing thumbnails only'], ['rebuild', 'Rebuild all (explicit opt-in)']]);
-    assert.deepEqual(QUALITY_OPTIONS, [['medium', 'Medium · optimized'], ['high', 'High · original'], ['low', 'Low · fastest']]);
-    assert.deepEqual(SIZE_LIMIT, { min: 128, max: 2048, value: 512 });
+test('the scopes map to the job modes; Convert outdated is the explicit third (#317)', async () => {
+    const { SCOPE_OPTIONS } = await reviewModule;
+    assert.deepEqual(SCOPE_OPTIONS, [['missing', 'Missing thumbnails only'], ['rebuild', 'Rebuild all (explicit opt-in)'],
+        ['convert', 'Convert outdated (removes older formats)']]);
 });
 
-test('size outside 128–2048 reports validity: only whole pixels in range are a size', async () => {
-    const { previewSize } = await reviewModule;
-    assert.equal(previewSize('512'), 512);
-    assert.equal(previewSize('128'), 128);
-    assert.equal(previewSize('2048'), 2048);
-    for (const text of ['', ' ', '127', '2049', '4096', '512.5', '-512', 'abc', '1e3', '0x200']) {
-        assert.equal(previewSize(text), null, text);
+test('D131: the dialog names the server thumbnail settings instead of its own quality and size fields', async () => {
+    const { settingsText, SETTINGS_UNKNOWN } = await reviewModule;
+    assert.equal(settingsText({ format: 'webp', quality: 80, size: 512 }),
+        'Previews are written as WebP · quality 80 · 512 px. Change this in System › Appearance.');
+    assert.equal(settingsText({ format: 'jxl', quality: 90, size: 1024 }),
+        'Previews are written as JPEG XL · quality 90 · 1,024 px. Change this in System › Appearance.');
+    assert.equal(settingsText({ format: 'jpeg', quality: 5, size: 128 }),
+        'Previews are written as JPEG · quality 5 · 128 px. Change this in System › Appearance.');
+    for (const plan of [null, {}, { format: 'png', quality: 80, size: 512 }, { format: 'webp', quality: '80', size: 512 }]) {
+        assert.equal(settingsText(plan), SETTINGS_UNKNOWN);
     }
 });
 
-test('Image loading quality preselects the dialog quality (Q3); anything else is Medium', async () => {
-    const { preselectedQuality } = await reviewModule;
-    assert.equal(preselectedQuality('low'), 'low');
-    assert.equal(preselectedQuality('high'), 'high');
-    assert.equal(preselectedQuality('medium'), 'medium');
-    assert.equal(preselectedQuality(undefined), 'medium');
-    assert.equal(preselectedQuality('original'), 'medium');
+test('Convert outdated says how many previews in an older format it converts (#317)', async () => {
+    const { planText } = await reviewModule;
+    assert.equal(planText({ mode: 'convert', targets: 17500, fresh: 2000, outdated: 17500, remaining: 7500 }),
+        '17,500 previews in an older format to convert · 7,500 more on the next run.');
+    assert.equal(planText({ mode: 'convert', targets: 1, fresh: 0, outdated: 1, remaining: 0 }), '1 preview in an older format to convert.');
+    assert.equal(planText({ mode: 'convert', targets: 0, fresh: 9, outdated: 0, remaining: 0 }), 'No previews in an older format.');
 });
 
 test('the plan line counts what a missing-only run generates and what is already up to date (D99)', async () => {
@@ -64,9 +65,9 @@ test('Start starts the thumbnail job with the chosen options and opens it in Act
     const calls = [];
     const navigated = [];
     const store = { start: async (kind, body) => { calls.push([kind, body]); return { job: { id: 'a'.repeat(32) } }; } };
-    await startThumbnails({ store, scope: scopeOf(), options: { mode: 'rebuild', size: 1024, quality: 'high' },
+    await startThumbnails({ store, scope: scopeOf(), options: { mode: 'convert' },
         navigate: hash => navigated.push(hash), notify: () => assert.fail('no toast of its own') });
-    assert.deepEqual(calls, [['thumbnails', { mode: 'rebuild', size: 1024, quality: 'high' }]]);
+    assert.deepEqual(calls, [['thumbnails', { mode: 'convert' }]]);
     assert.deepEqual(navigated, [`#/activity/${'a'.repeat(32)}`]);
 });
 
@@ -74,7 +75,7 @@ test('a refused start shows the busy link toast and stays', async () => {
     const { startThumbnails } = await reviewModule;
     const toasts = [];
     const store = { start: async () => ({ busy: { id: 'b'.repeat(32), title: 'Scan for metadata' } }) };
-    await startThumbnails({ store, scope: scopeOf(), options: { mode: 'missing', size: 512, quality: 'medium' },
+    await startThumbnails({ store, scope: scopeOf(), options: { mode: 'missing' },
         navigate: () => assert.fail('stays'), notify: message => toasts.push(message) });
     assert.deepEqual(toasts, [['Another job is running: ', { text: 'Scan for metadata', href: `#/activity/${'b'.repeat(32)}` }, '.']]);
 });
@@ -83,11 +84,11 @@ test('a failed start says so; a start after the section left says nothing', asyn
     const { startThumbnails, START_FAILED } = await reviewModule;
     const toasts = [];
     const store = { start: async () => { throw new Error('offline'); } };
-    await startThumbnails({ store, scope: scopeOf(), options: { mode: 'missing', size: 512, quality: 'medium' },
+    await startThumbnails({ store, scope: scopeOf(), options: { mode: 'missing' },
         navigate: () => assert.fail('stays'), notify: message => toasts.push(message) });
     assert.deepEqual(toasts, [START_FAILED]);
     const gone = new AbortController();
     gone.abort();
-    await startThumbnails({ store, scope: { signal: gone.signal }, options: { mode: 'missing', size: 512, quality: 'medium' },
+    await startThumbnails({ store, scope: { signal: gone.signal }, options: { mode: 'missing' },
         navigate: () => assert.fail('stays'), notify: () => assert.fail('silent') });
 });

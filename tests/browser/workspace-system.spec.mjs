@@ -235,7 +235,7 @@ test('thumbnail row reflects the status endpoint', async ({ page, request }) => 
 
 test('Overview Review thumbnails opens the same dialog', async ({ page, request }) => {
     await expect(await request.post('/__test__/system/unthumbnailed', { data: { count: 2 } })).toBeOK();
-    const plan = await serverJson(request, '/prompt_manager/images/thumbnails/plan?mode=missing&size=512&quality=medium');
+    const plan = await serverJson(request, '/prompt_manager/images/thumbnails/plan?mode=missing');
     const starts = [];
     page.on('request', item => { if (item.method() === 'POST' && item.url().endsWith('/prompt_manager/jobs/thumbnails')) starts.push(item.postDataJSON()); });
     const layout = await openOverview(page);
@@ -245,8 +245,8 @@ test('Overview Review thumbnails opens the same dialog', async ({ page, request 
     const review = page.locator('dialog#modal[open]');
     await expect(review.locator('#modal-title')).toHaveText('Thumbnail maintenance');
     await expect(page).toHaveURL(`${workspace}#/system/overview`);
-    await expect(review.locator('.field > label')).toHaveText(['Scope', 'Quality', 'Preview size limit']);
-    await expect(review.locator('#modal-body > p.small')).toHaveText(`2 previews to generate · ${number(plan.fresh)} already up to date.`);
+    await expect(review.locator('.field > label')).toHaveText(['Scope']);
+    await expect(review.locator('#modal-body > p.small').first()).toHaveText(`2 previews to generate · ${number(plan.fresh)} already up to date.`);
     // Escape closes it and focus returns to the row's button.
     await page.keyboard.press('Escape');
     await expect(review).toHaveCount(0);
@@ -254,9 +254,59 @@ test('Overview Review thumbnails opens the same dialog', async ({ page, request 
     await row.getByRole('button', { name: 'Review thumbnails', exact: true }).click();
     await review.getByRole('button', { name: 'Start', exact: true }).click();
     await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
-    expect(starts).toEqual([{ mode: 'missing', size: 512, quality: 'medium' }]);
+    expect(starts).toEqual([{ mode: 'missing' }]);
     const id = page.url().split('/').pop();
     await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.state).toBe('finished');
+});
+
+test('the thumbnail row counts outdated previews and offers Convert outdated (#317)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/legacy-previews', { data: { count: 2 } })).toBeOK();
+    const layout = await openOverview(page);
+    const row = layout.locator('.operation').filter({ has: page.getByRole('button', { name: 'Review thumbnails', exact: true }) });
+    await expect(row.locator('h3')).toHaveText('No missing thumbnails · 2 outdated');
+    await expect(row.locator('.row-actions > button')).toHaveText(['Review thumbnails', 'Convert outdated']);
+    await row.getByRole('button', { name: 'Convert outdated', exact: true }).click();
+    const review = page.locator('dialog#modal[open]');
+    await expect(review.locator('#modal-title')).toHaveText('Thumbnail maintenance');
+    // It opens on the Convert outdated scope; nothing starts until Start.
+    await expect(review.locator('#thumb-mode')).toHaveValue('convert');
+    await expect(review.locator('#modal-body > p.small').first()).toHaveText('2 previews in an older format to convert.');
+    expect((await serverJson(request, '/prompt_manager/jobs')).jobs).toEqual([]);
+    await page.keyboard.press('Escape');
+    await expect(row.getByRole('button', { name: 'Convert outdated', exact: true })).toBeFocused();
+});
+
+test('Appearance › Thumbnails saves the server thumbnail settings and never converts by itself (#317)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/jxl-encoder', { data: { available: false } })).toBeOK();
+    await expect(await request.post('/__test__/system/legacy-previews', { data: { count: 1 } })).toBeOK();
+    await page.goto(`${workspace}#/system/appearance`);
+    const surface = page.locator('#workspace-main .settings-layout > section.surface').nth(1);
+    await expect(surface.locator(':scope > h2')).toHaveText('Thumbnails');
+    await expect(surface.locator('.setting-row label')).toHaveText(['Thumbnail format', 'Thumbnail quality', 'Thumbnail size limit']);
+    const format = surface.locator('#thumbnail-format');
+    await expect(format).toBeEnabled();
+    await expect(format).toHaveValue('webp');
+    await expect(surface.locator('#thumbnail-quality')).toHaveValue('80');
+    await expect(surface.locator('#thumbnail-edge')).toHaveValue('512');
+    // D130: JPEG XL is offered only with an encoder; without one the row says why, in the server's words.
+    await expect(format.locator('option[value="jxl"]')).toBeDisabled();
+    await expect(surface.locator('.setting-row').first().locator('p.small').first()).toContainText('No JPEG XL encoder found.');
+    await format.selectOption('jpeg');
+    await surface.locator('#thumbnail-quality').fill('65');
+    await surface.locator('#thumbnail-quality').dispatchEvent('change');
+    await page.getByRole('button', { name: 'Save preferences', exact: true }).click();
+    await expect(page.locator('#settings-status')).toHaveText('Saved to the server configuration.');
+    const { settings } = await serverJson(request, '/prompt_manager/settings');
+    expect([settings.thumbnail_format, settings.thumbnail_quality, settings.thumbnail_edge]).toEqual(['jpeg', 65, 512]);
+    // Changing the format converts nothing: the row says so and the old preview is still listed.
+    await expect(surface.locator('.operation p')).toHaveText('Format saved. Existing previews keep their old format until you convert them.');
+    expect((await serverJson(request, '/prompt_manager/jobs')).jobs).toEqual([]);
+    expect((await serverJson(request, '/prompt_manager/images/thumbnails/status')).outdated).toBeGreaterThan(0);
+    // With an encoder JPEG XL can be chosen.
+    await expect(await request.post('/__test__/system/jxl-encoder', { data: { available: true } })).toBeOK();
+    await page.reload();
+    await expect(page.locator('#workspace-main #thumbnail-format option[value="jxl"]')).toBeEnabled();
+    await expect(page.locator('#workspace-main #thumbnail-format')).toHaveValue('jpeg');
 });
 
 test('the thumbnail row paints when its own status read answers', async ({ page, request }) => {
@@ -383,7 +433,7 @@ const panel = page => page.getByRole('complementary', { name: 'Selected image de
 
 async function openAppearance(page) {
     await page.goto(`${workspace}#/system/appearance`);
-    await expect(page.locator('#workspace-main .settings-layout > section.surface > h2')).toHaveText('Browsing & display');
+    await expect(page.locator('#workspace-main .settings-layout > section.surface > h2').first()).toHaveText('Browsing & display');
     // The host rows are enabled once the server settings answered.
     await expect(page.locator('#timeout')).toBeEnabled();
 }
@@ -669,7 +719,7 @@ test('a change another tab saved while System was closed is a conflict on return
     await other.close();
     // Back in System: the draft is kept and flagged, and nothing was written over the other tab's value.
     await page.evaluate(() => { location.hash = '#/system/appearance'; });
-    await expect(page.locator('#workspace-main .settings-layout > section.surface > h2')).toHaveText('Browsing & display');
+    await expect(page.locator('#workspace-main .settings-layout > section.surface > h2').first()).toHaveText('Browsing & display');
     await expect(statusOf(page)).toHaveText('Settings changed elsewhere. Reload this section to see them.');
     await expect(page.locator('#density')).toHaveAttribute('aria-invalid', 'true');
     await expect(page.locator('#density')).toHaveValue('compact');

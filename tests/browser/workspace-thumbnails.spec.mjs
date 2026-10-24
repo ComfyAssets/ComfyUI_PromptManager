@@ -133,3 +133,38 @@ test('an image listed without a preview (a nested thumbnails folder) shows its o
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every(item => !item.preview)).toBe(true);
 });
+
+test('a JPEG XL thumbnail this browser cannot show loads the original; one it can show is used (#317)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset')).toBeOK();
+    await expect(await request.post('/__test__/system/reset')).toBeOK();
+    try {
+        await expect(await request.post('/__test__/system/jxl-encoder', { data: { available: true } })).toBeOK();
+        const saved = await request.post('/prompt_manager/settings', { data: { thumbnail_format: 'jxl' } });
+        await expect(saved).toBeOK();
+        await expect(await request.post('/__test__/system/unthumbnailed', { data: { count: 1 } })).toBeOK();
+        const listing = await (await request.get('/prompt_manager/images/output?limit=40')).json();
+        const fresh = listing.images.find(image => image.path === 'unthumbnailed/plain_001.png');
+        expect(fresh.thumbnail_url).toMatch(/\/thumbnails\/unthumbnailed\/plain_001_thumb\.jxl\?root=0/);
+        await page.goto(images);
+        // What this browser does with JPEG XL, decided the way the workspace decides it (an embedded probe).
+        const decodes = await page.evaluate(() => new Promise(resolve => {
+            const probe = new Image();
+            probe.onload = () => resolve(true);
+            probe.onerror = () => resolve(false);
+            probe.src = 'data:image/jxl;base64,/woAkAEAE4gCALQAtZ8gAAAVKqOMG7yc6/nyQ4fFtI3rDG21bWEJY7O9MEhIOGwY4s3xwRCTShIA';
+        }));
+        const card = cards(page).filter({ hasText: 'plain_001.png' });
+        const media = card.locator('.media-art > .image-open > img');
+        // A browser without JPEG XL shows the original; one with it shows the preview, or the original when the
+        // preview cannot be made here (no real encoder in the test server): never a broken image.
+        if (!decodes) await expect(media).toHaveAttribute('src', /\/unthumbnailed\/plain_001\.png\?root=0/);
+        await expect.poll(() => media.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+        // The inspector cover follows the same rule.
+        await card.getByRole('button', { name: 'Inspect plain_001.png', exact: true }).click();
+        const cover = details(page).locator('img.detail-cover');
+        if (!decodes) await expect(cover).toHaveAttribute('src', /\/unthumbnailed\/plain_001\.png\?/);
+        await expect.poll(() => cover.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+    } finally {
+        await request.post('/__test__/system/reset');
+    }
+});
