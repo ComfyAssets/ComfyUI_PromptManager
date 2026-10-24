@@ -6,7 +6,7 @@ if (host.href !== 'http://127.0.0.1:8196/') throw new Error('Execution tests req
 
 export default defineConfig({
     testDir: '../../tests/comfyui',
-    testMatch: ['execution-history.spec.mjs', 'execution-outputs.spec.mjs'],
+    testMatch: ['execution-history.spec.mjs', 'execution-outputs.spec.mjs', 'library-location.spec.mjs'],
     outputDir: './test-results/executions/cases',
     timeout: 60000,
     workers: 1,

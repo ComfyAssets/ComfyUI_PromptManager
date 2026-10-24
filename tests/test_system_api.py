@@ -277,6 +277,7 @@ class TestOverviewRoute(SystemAPITestCase):
                 "backup",
                 "needs_review",
                 "sources",
+                "location",
             },
         )
 

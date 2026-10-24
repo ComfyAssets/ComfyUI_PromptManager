@@ -751,9 +751,34 @@ ComfyUI_PromptManager/
 
 ## Configuration
 
+### Where your library lives
+
+New installs keep the library (`prompts.db`, `config.json` with the CivitAI key, the
+database backups and the logs) in ComfyUI's system user folder
+`ComfyUI/user/__promptmanager/`. An update, a reinstall or ComfyUI-Manager replacing
+the node folder no longer touches it, and ComfyUI's `/userdata` web API does not
+serve `__` system folders. Thumbnails stay in `output/thumbnails`.
+
+- **Upgrading from an earlier version:** your library stays where it is, in the node
+  folder, until you move it; nothing is moved on its own. The workspace shows a notice
+  above every page and System › Overview a "Library location" row. **Move library**
+  copies the database with SQLite's backup API, verifies the copy (integrity check, every
+  workflow document, the same rows in every table), copies `config.json` and the backups,
+  switches to the new folder without a restart and only then renames the old files
+  `prompts.db.moved-to-__promptmanager` and `config.json.moved-to-__promptmanager` (never
+  deleted; the old backups stay too). If anything fails, the library stays in the node
+  folder, unchanged. **Keep it here** stops the notice; the Overview row stays. Take a
+  backup first (System › Backup & export or the dashboard's Backup) as with any change.
+- **Your own folder:** set `PROMPT_MANAGER_DATA_DIR` to an absolute folder outside
+  ComfyUI's output, input and temp folders and your image sources. If it is empty and a
+  node-folder library exists, that library stays in use until you move it there.
+- **An explicit `database.default_path`** in `config.json` and `PROMPT_MANAGER_CONFIG_PATH`
+  keep working as before (described below); such a library is not offered a move.
+
 ### Database Settings
 
-You can customize the database path by creating a `config.json` file in the extension root:
+You can customize the database path by creating a `config.json` file in the library's
+folder (the node folder for a library that was not moved):
 
 ```json
 {
@@ -969,6 +994,10 @@ MIT License - see LICENSE file for details.
 - **📊 Visual Analytics**: Charts and graphs for prompt effectiveness analysis
 
 ## Changelog
+
+### Unreleased (Library location)
+
+- **📁 Library outside the node folder**: new installs keep `prompts.db`, `config.json`, the database backups and the logs in `ComfyUI/user/__promptmanager/`, where an update or reinstall of the node cannot delete them and ComfyUI's `/userdata` API does not reach. An existing library stays in the node folder until you press **Move library** (a verified copy, then a live switch; the old files are renamed `*.moved-to-__promptmanager`, never deleted) or **Keep it here**. `PROMPT_MANAGER_DATA_DIR` names your own folder. After moving, restart ComfyUI once so the logs follow. Going back to an older version after a move: an older version does not look in `user/__promptmanager`, so stop ComfyUI and copy `user/__promptmanager/prompts.db` (with its `-wal` file, if one is left) and `config.json` into the node folder; the `*.moved-to-__promptmanager` files are the library as it was at the move, without later changes.
 
 ### Unreleased (Workflows stored once)
 

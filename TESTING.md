@@ -2115,10 +2115,11 @@ Sources & scans (`system-sources.mjs`, S4) is the concept's "sources" body on th
 server's sources. `GET /prompt_manager/settings` reports them (public paths only):
 `sources.configured` (each `gallery_root_paths` entry with `valid`, `code` and the
 server's `reason`), `sources.effective` (what is scanned and served, with its
-`root_index` and `watch`: `watching` only when the image monitor's observer is alive,
+`root_index`, `watch` (`watching` only when the image monitor's observer is alive,
 scheduled that folder and monitoring is on, `stopping` when it still watches it but
 monitoring was switched off, `manual` when monitoring is off or no monitor runs, else
-`restart_pending`), `sources.auto_detected`, `monitor` and `settings.monitoring_enabled`.
+`restart_pending`) and `in_comfyui` (its public path is relative to the ComfyUI base)),
+`sources.auto_detected`, `monitor` and `settings.monitoring_enabled`.
 `POST /prompt_manager/settings/validate-source {path}` checks one folder and writes
 nothing. Every caller (validate-source, the settings save, config.json at load) refuses
 a source through the same checks (`sources.source_problem`): its form first, then
@@ -2310,7 +2311,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D113; D121–D128 assigned):
+Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D113; D121–D129 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2385,9 +2386,12 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   saved yet" with Remove only until Save; a configured source the server cannot use
   reads "<path> · <server reason>" with Remove only. A line under the list says when the
   list is not the whole story: "No source is configured. After saving, ComfyUI’s output
-  folder is used." (the last one removed), "No source is configured; ComfyUI’s output
-  folder is used." and "No configured source is available; ComfyUI’s output folder is
-  used." (auto-detected rows, listed without Remove). "restart pending" is the third
+  folder is used." (the last one removed) and "No configured source is available;
+  ComfyUI’s output folder is used." (every configured source unusable). Auto-detected
+  rows are listed without Remove and say they are the default on the row itself:
+  "ComfyUI/output · watching · default" ("ComfyUI/" only when `in_comfyui`; their scan
+  still sends the server's public path), with no line under the list when nothing is
+  configured. "restart pending" is the third
   watch state. The operation "Refresh files" ("Read every source again to find files
   added or removed outside ComfyUI.", button "Refresh") closes the surface: it calls the
   legacy gallery's `/gallery/rescan` and toasts "Files refreshed. N files in M output
@@ -2458,6 +2462,20 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   `Watch for new outputs saves monitoring_enabled; a restart applies it` and `a save
   refused for one unusable source names it and marks its row`
   (workspace-system-sources.spec) and the system-state and system-sources node tests.
+- **D129** (library location, S6b): the concept shows neither where the library lives
+  nor a way to move it. System › Overview's "Library health" gains a "Library location"
+  `.operation` row after Backup status, in that row's own markup: "<path> · <why>",
+  plus "You chose to keep it here." and any `PROMPT_MANAGER_DATA_DIR` problem, with
+  "Move library" for a node-folder library and "Details" (a `dl.meta-grid` dialog)
+  otherwise. While a node-folder library is offered (`location.offer`), the shell shows
+  the concept's `.notice` (the Sources notice's markup: `div > h2 + p`, then
+  `.row-actions` with "Keep it here" and the `ca-primary` "Move library") in
+  `#library-banner` above `main`, in main's own width and padding, with no bottom margin
+  (main's padding spaces it); `workspace.css` carries the `/* D129 */` rules. Move
+  library opens the shared review (From, To, Size, Moves with it, Old files). Pinned by
+  `system shell and overview match the concept` (the mapping inserts the row) and
+  `library notice matches the concept notice` with its mutation check
+  (system-concept.spec), and the D129 tests of workspace-system.spec.
 - **D124** (inspector): with "Load metadata on selection" off, the Images panel and
   the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
   button instead of reading the file. The concept has no such state, so no concept
@@ -2828,6 +2846,116 @@ the batch's distinct documents (`test_memory_stays_bounded_by_one_row`, tracemal
 Restoring a deduped backup on a version before this one is not supported: that
 version's restore accepts the file and then reads rewritten images without their
 workflow (README changelog).
+
+### Library location contract (#249 System S6b)
+
+`utils/library_location.py` is the one resolver of every data path: the database
+(`database/operations.py` `_resolve_db_path`, diagnostics), config.json
+(`PromptManagerConfig.get_config_path`, so the `ConfigStore`), the backups (beside the
+database), the logs (`utils/logging_config.py`) and the LoRA image cache
+(`py/lora_utils.py`). Order: a valid `PROMPT_MANAGER_DATA_DIR` (absolute, never inside
+ComfyUI's output, input or temp folder, a public user folder, an extra gallery root or
+an image source listed in any config.json the resolver may read; `config_location` and
+`resolve_library` read those sources the same way, so config.json and the database
+never split; an invalid one is ignored and reported as a problem code), used when
+it holds a library or no node-folder library exists; an explicit
+`database.default_path` other than `prompts.db` (relative to the node folder, as
+before) and `PROMPT_MANAGER_CONFIG_PATH`, honoured as before; ComfyUI's
+`user/__promptmanager` (`folder_paths.get_system_user_directory("promptmanager")`, or
+`get_user_directory()/__promptmanager`) once its marker `library-location.json` says
+`moved`; a node-folder `prompts.db` that was not moved; else `user/__promptmanager`
+(new installs; outside ComfyUI the node folder). An empty environment folder never
+replaces a node-folder library (`data-dir-empty`). Nothing is moved or copied at
+startup (`tests/test_library_location.py`, `tests/test_library_location_wiring.py`).
+
+`POST /prompt_manager/system/library/move` (`py/api/library_location.py`,
+`database/library_move.py`) starts "Move library": kind `library_move`, admission
+`exclusive`, not cancellable. Refusals answer before any job: 400 `not-movable`,
+`same-folder`, `target-invalid`; 409 `target-has-library`, `target-conflict`, `busy`;
+507 `insufficient-space` (the free space of the target's volume, for the database, its
+backups and config.json plus 16 MiB). The job copies with SQLite's backup API from one
+read transaction (counts, document digest and `data_version` of that snapshot) into a
+`.pm-move-*` temp file in the target folder (`journal_mode=DELETE`, fsync, 0600),
+verifies it (`verify_database_file`, every workflow document, the same rows in every
+table, the same documents), copies every `prompts.db.backup_*` and
+`prompts.db.pre-workflow-storage_*` (times kept, size and SHA-256 checked), then, under
+the old file's `BEGIN IMMEDIATE` and the config lock, rechecks `data_version` (a write
+meanwhile copies again, up to three times, then `library-busy`), copies config.json
+(0600, checked), writes the marker `pending`, gives every file its final name with
+`os.replace` inside the target folder (a different drive is a copy, never a rename),
+writes the marker `moved` and switches the process (`switch_process`: the resolver's
+override, `PromptModel.repoint_instances` closes every connection of every model of the
+old file and points it at the new one, the review and history observers are re-keyed,
+the API's plans and health report are dropped). Only then are the old `prompts.db` and
+`config.json` renamed `*.moved-to-<folder>` after a `wal_checkpoint(TRUNCATE)`; a file
+still open elsewhere is left in place and named (`old-in-use`, `old-locked`); the old
+backups stay. A failure before the marker says `moved` removes everything it wrote and
+leaves the old library in use, untouched (`TestFailures`); a crash leaves the old
+library in use (no or a `pending` marker; the next move replaces its own leftovers) or
+the new one (`moved`) (`TestCrashWindows`). `GET /prompt_manager/system/library` and the
+Overview's `location` give `{path, source, movable, keep, offer, target, problem,
+size_bytes}` with paths relative to ComfyUI; a path in the node folder reads through
+the node folder's own unresolved place in custom_nodes (`custom_nodes/promptmanager/
+prompts.db` even when that folder is a symlink to a checkout outside ComfyUI; never
+absolute, never `..`, else the shared public path, which sources and jobs keep using
+unchanged); `POST .../keep {keep}` persists
+`library.keep_in_node_folder` through the `ConfigStore`. Errors are coded and name no
+path (`tests/test_api_library_location.py`). The real-host `library-location.spec.mjs`
+(execution suite, its own fresh host on an OS-chosen port, no configuration) proves a new
+install creates `user/__promptmanager/prompts.db` and its logs, adds nothing but byte
+code to the node folder, and that `/userdata` serves none of it.
+
+The switch runs while the copy is write-locked too (a guard transaction on it), so a
+switch that fails at any point (the resolver, part of the models, the observers) is
+undone whole: every model points at the old file again, the copy and its marker are
+removed, the old file's connections the partial switch detached are closed (the models
+reopen it on next use), and the move fails "… Nothing was moved."
+(`TestFailedSwitchIsUndone`). A failed switch can stall up to the 30 s busy timeout when
+a writer is blocked on the copy's guard lock; this is not a deadlock, and the writer
+then retries on the old file. What
+follows a complete switch (dropping plans, the health report, the history read fence,
+which is closed first) is best effort: logged, never a failed move. A thread that
+opens a connection while the model is being repointed keeps it only if the model's
+generation did not change meanwhile (`PromptModel.get_connection`).
+
+Writes racing the switch: a background write that was waiting on the old file's lock
+when the switch closed its connection fails, and run counting (`count_runs`,
+`count_pair_runs`) and the image monitor's link (`ImageGenerationHandler.
+link_image_to_prompt`: the resolved-pair ingest and the fallback or recent-prompt link)
+run it once more through `PromptDatabase.survive_library_switch` when the model's
+generation changed during the attempt; the retry opens the new library. The monitor
+links through `PromptDatabase.link_image_to_prompt_or_raise`, which raises database
+errors (`link_image_to_prompt` keeps its log-and-return-0 contract for other callers);
+each attempt is one transaction, so a failed attempt rolls back and a committed one
+does not retry, and the image is linked once. `TestBackgroundWritesSurviveTheSwitch`
+races a real UPDATE (run counting) and a real fallback image link against the lock and
+asserts each lands in the new file only. Any other failure is not retried. Known limit: that
+blocked writer, and the mover with it, waits out the writer's busy timeout (30 s)
+before its connection closes: SQLite holds the connection's mutex during the busy
+wait, so neither a close nor `Connection.interrupt()` ends it sooner (measured), and
+another thread cannot shorten the timeout of a connection in use. Other writes are
+unaffected: threads that ask for a connection after the switch get the new file.
+Writes from the HTTP routes (a prompt saved in the dashboard at that moment) are not
+retried and report their error.
+
+A restart after a crash between the switch and the rename finishes the rename: the
+marker names the old `prompts.db` and `config.json` (`from`, `config_from`), and the API
+renames them `*.moved-to-<folder>` at startup when they are still there under their
+own names, never deleting them and leaving a file still in use alone
+(`TestRestartFinishesTheRename`). A second ComfyUI process using the same node folder
+(two installs sharing one custom_nodes folder) is not switched: it keeps writing to the
+old file, renamed or not, and those writes are not in the moved library; a rename while
+it has the file open is refused as `old-in-use`. The Overview flags a library that stays
+in the node folder through an explicit `database.default_path` or a node-folder
+config.json (`inside-node-folder`: a reinstall deletes it, CivitAI key included); it is
+not offered a move.
+
+Windows: every connection to the old file is closed before its rename (the source
+snapshot connection, every model's connections, the checkpoint connection); temp files
+are closed before `os.replace`; renames stay inside one folder; folder identity compares
+`(st_dev, st_ino)` and `normcase(realpath)`, so case variants and links of a served
+folder are refused. The browser test server closes its own log handlers before its temp
+root (which now holds the logs) is removed.
 
 ## Workspace data fields for the concept pages (#249)
 

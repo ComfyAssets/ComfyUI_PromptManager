@@ -18,7 +18,9 @@
  *   starts the thumbnail Activity job.
  *
  * D98: per-source Remove; an added source reads "not saved yet" until Save; the line under the list says when
- * ComfyUI's output folder is used instead; "restart pending" for a source the running monitor does not watch yet; the
+ * ComfyUI's output folder is used instead of configured sources or after an unsaved removal of the last one; with no
+ * source configured, ComfyUI's output folder is the row "ComfyUI/output · watching · default" (`in_comfyui`: its public
+ * path is relative to the ComfyUI base) and its scan keeps the server's public path; "restart pending" for a source the running monitor does not watch yet; the
  * "Refresh files" operation (`/gallery/rescan`) closes the surface. D127: the add dialog's field is "Folder path",
  * starts empty and says the server's reason in place; its action is "Add", and Enter adds too.
  * D128: "watching until restart" for a source the running monitor still watches after monitoring was switched off;
@@ -46,11 +48,13 @@ export const WATCH_COPY = Object.freeze({ watching: 'watching', stopping: 'watch
 // The states whose observer runs now: their scan only has to catch up on changes.
 const WATCHED = new Set(['watching', 'stopping']);
 const NOT_SAVED = 'not saved yet';
+// An auto-detected source (ComfyUI's output folder) says it is the default on its own row.
+const DEFAULT_SOURCE = 'default';
+const COMFYUI_PREFIX = 'ComfyUI/';
 export const DUPLICATE_SOURCE = 'same folder as another source';
 /** D98: the line under the source list when it does not say everything by itself. */
 export const NOTES = Object.freeze({
     removedAll: 'No source is configured. After saving, ComfyUI’s output folder is used.',
-    autoDetected: 'No source is configured; ComfyUI’s output folder is used.',
     fallback: 'No configured source is available; ComfyUI’s output folder is used.',
     none: 'No source is available.',
 });
@@ -95,8 +99,11 @@ const folderName = path => path.split('/').filter(Boolean).at(-1) ?? path;
 
 function effectiveRow(source, remove) {
     const watched = WATCHED.has(source.watch);
-    return { key: remove ?? `auto:${source.root_index}`, title: source.label,
-        description: `${source.path} · ${WATCH_COPY[source.watch] ?? WATCH_COPY.manual}`,
+    const auto = remove === null;
+    // The default row reads from ComfyUI's own folder ("ComfyUI/output") when its public path is relative to the base.
+    const shown = auto && source.in_comfyui === true ? `${COMFYUI_PREFIX}${source.path}` : source.path;
+    const parts = [shown, WATCH_COPY[source.watch] ?? WATCH_COPY.manual, ...(auto ? [DEFAULT_SOURCE] : [])];
+    return { key: remove ?? `auto:${source.root_index}`, title: source.label, description: parts.join(' · '),
         scan: { label: watched ? 'Scan changes' : 'Scan folder', root: source.root_index, path: source.path }, remove };
 }
 
@@ -124,7 +131,7 @@ export function sourceRows({ sources, saved, current, labels = addedLabels }) {
     if (dirty) return { rows, note: roots.length ? null : NOTES.removedAll };
     if (sources.auto_detected) {
         rows.push(...effective.map(source => effectiveRow(source, null)));
-        return { rows, note: configured.length ? NOTES.fallback : NOTES.autoDetected };
+        return { rows, note: configured.length ? NOTES.fallback : null };
     }
     return { rows, note: rows.length ? null : NOTES.none };
 }

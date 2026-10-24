@@ -68,6 +68,8 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     expect(await rowsOf(layout, 'Library health')).toEqual([
         ['0 ambiguous image links', 'Review metadata before assigning a positive / negative pair.', 'Review metadata'],
         ['Backup status', 'No retained backup record.', 'View backups'],
+        // D129: the fixture's database is configured explicitly, so it reads as config.json's choice and does not move.
+        ['Library location', 'browser.db · The database path set in config.json.', 'Details'],
         ['No missing thumbnails', 'Generate only missing previews when necessary.', 'Review thumbnails'],
     ]);
     expect(await rowsOf(layout, 'Workspace preferences')).toEqual([
@@ -76,6 +78,95 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
         ['Statistics', 'Runs and ratings by category, with library totals.', 'Explore'],
     ]);
     expect(writes).toEqual([]);
+});
+
+// D129 (#249 S6b): where the library lives. The hook makes the fixture's database read as a node-folder library; its
+// Move library is a stand-in that touches no file (workspace_system_fixture.py).
+const banner = page => page.locator('#library-banner');
+const LIBRARY_URL = '/prompt_manager/system/library';
+
+test('a node-folder library is offered a move above every page; Keep it here stops the offer', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/library', { data: { state: 'node_folder' } })).toBeOK();
+    await page.goto(`${workspace}#/images`);
+    await expect(banner(page).locator('.notice h2')).toHaveText('Your library is inside the node folder');
+    await expect(banner(page).locator('.notice p')).toHaveText(/^Your library is stored inside the node folder, where an update or reinstall can delete it\./);
+    await expect(banner(page).locator('.notice .row-actions button')).toHaveText(['Keep it here', 'Move library']);
+    await expect(banner(page).getByRole('button', { name: 'Move library', exact: true })).toHaveClass(/ca-primary/);
+    await page.goto(`${workspace}#/library`);
+    await expect(banner(page).locator('.notice')).toBeVisible();
+    await banner(page).getByRole('button', { name: 'Keep it here', exact: true }).click();
+    await expect(banner(page)).toBeHidden();
+    const { location } = await serverJson(request, LIBRARY_URL);
+    expect([location.keep, location.offer, location.movable]).toEqual([true, false, true]);
+    await page.reload();
+    const layout = await openOverview(page);
+    await expect(banner(page)).toBeHidden();
+    const row = layout.locator('.operation').filter({ hasText: 'Library location' });
+    await expect(row.locator('p')).toHaveText('browser.db · The node folder, where an update or reinstall can delete it. '
+        + 'You chose to keep it here.');
+    // The row stays: the move is still one press away.
+    await expect(row.locator('.row-actions button')).toHaveText('Move library');
+});
+
+test('Move library is reviewed, runs as an Activity job and ends the offer', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/library', { data: { state: 'node_folder' } })).toBeOK();
+    const layout = await openOverview(page);
+    const row = layout.locator('.operation').filter({ hasText: 'Library location' });
+    await expect(row.locator('p')).toHaveText('browser.db · The node folder, where an update or reinstall can delete it.');
+    const move = banner(page).getByRole('button', { name: 'Move library', exact: true });
+    await move.click();
+    const dialog = page.locator('dialog#modal[open]');
+    await expect(dialog.locator('#modal-title')).toHaveText('Move library');
+    expect(await dialog.locator('dl.meta-grid > div').evaluateAll(items => items.map(item =>
+        [item.querySelector('dt').textContent, item.querySelector('dd').textContent]))).toEqual([
+        ['From', 'browser.db'], ['To', 'user/__promptmanager/prompts.db'], ['Size', expect.stringMatching(/ (KB|MB)$/)],
+        ['Moves with it', 'config.json and the database backups'], ['Old files', 'Renamed *.moved-to-…, never deleted'],
+    ]);
+    await expect(dialog.locator('.dialog-actions button')).toHaveText(['Cancel', 'Move library']);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.locator('dialog#modal[open]')).toHaveCount(0);
+    await expect(move).toBeFocused();
+    await row.getByRole('button', { name: 'Move library', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Move library', exact: true }).click();
+    await expect(page).toHaveURL(/#\/activity\/[^/]+$/);
+    await expect(page.locator('#workspace-main')).toContainText(
+        /Moved the library to user\/__promptmanager: \d+ prompts? and 0 images verified\. The old files were renamed browser\.db\.moved-to-__promptmanager; nothing was deleted\./);
+    // The offer ends with the job; the Overview says where the library lives now.
+    await expect(banner(page)).toBeHidden();
+    const after = await openOverview(page);
+    await expect(after.locator('.operation').filter({ hasText: 'Library location' }).locator('p'))
+        .toHaveText('browser.db · ComfyUI\'s user folder, which updates and reinstalls of the node leave alone.');
+});
+
+test('a move that fails says so and keeps the offer; a refused start says why', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/library', { data: { state: 'failing' } })).toBeOK();
+    await page.goto(`${workspace}#/images`);
+    await banner(page).getByRole('button', { name: 'Move library', exact: true }).click();
+    await page.locator('dialog#modal[open]').getByRole('button', { name: 'Move library', exact: true }).click();
+    await expect(page).toHaveURL(/#\/activity\/[^/]+$/);
+    await expect(page.locator('#workspace-main')).toContainText(
+        'The copy did not pass verification. Nothing was moved. The library is still in the node folder, unchanged.');
+    await expect(banner(page).locator('.notice')).toBeVisible();
+    await expect(await request.post('/__test__/system/fail', { data: { path: `${LIBRARY_URL}/move` } })).toBeOK();
+    await banner(page).getByRole('button', { name: 'Move library', exact: true }).click();
+    await page.locator('dialog#modal[open]').getByRole('button', { name: 'Move library', exact: true }).click();
+    await expect(page.locator('#workspace-toast')).toHaveText('Move library could not start. Try again.');
+});
+
+test('a library that does not move shows its details', async ({ page }) => {
+    const layout = await openOverview(page);
+    await expect(banner(page)).toBeHidden();
+    const details = layout.locator('.operation').filter({ hasText: 'Library location' }).getByRole('button', { name: 'Details', exact: true });
+    await details.click();
+    const dialog = page.locator('dialog#modal[open]');
+    await expect(dialog.locator('#modal-title')).toHaveText('Library location');
+    expect(await dialog.locator('dl.meta-grid > div').evaluateAll(items => items.map(item =>
+        [item.querySelector('dt').textContent, item.querySelector('dd').textContent.replace(/[\d.,]+ (KB|MB)$/, 'N')]))).toEqual([
+        ['Database', 'browser.db'], ['Why here', 'The database path set in config.json'],
+        ['Beside it', 'config.json, the database backups and the logs'], ['Size', 'N'],
+    ]);
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(details).toBeFocused();
 });
 
 test('Run health checks opens Health report and updates metric 4', async ({ page, request }) => {

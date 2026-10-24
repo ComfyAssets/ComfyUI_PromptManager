@@ -62,3 +62,14 @@ def notify_review_change(db_path: str) -> None:
             callback()
         except Exception:
             _logger.warning("Needs review change observer failed", exc_info=True)
+
+
+def rekey_review_changes(old_path: str, new_path: str) -> None:
+    """Move the observers of ``old_path`` to ``new_path`` (Move library)."""
+    old, new = _identity(old_path), _identity(new_path)
+    if old == new:
+        return
+    with _lock:
+        observers = _observers.pop(old, None)
+        if observers:
+            _observers.setdefault(new, {}).update(observers)

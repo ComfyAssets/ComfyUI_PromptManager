@@ -18,6 +18,8 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
+from . import library_location
+
 
 class _OwnedRotatingFileHandler(logging.handlers.RotatingFileHandler):
     """Keep a retired owned sink closed when an in-flight record resumes."""
@@ -65,8 +67,12 @@ class PromptManagerLogger:
             return
 
         self._initialized = True
-        self.log_dir = Path(__file__).parent.parent / "logs"
-        self.log_dir.mkdir(exist_ok=True)
+        # The library's data folder (#249 S6b): the node folder for a library
+        # that was not moved, else ComfyUI's user/__promptmanager.
+        self.log_dir = Path(
+            library_location.logs_dir(extension_root=str(Path(__file__).parent.parent))
+        )
+        library_location.ensure_private_dir(str(self.log_dir))
 
         # Configuration
         self.config = {

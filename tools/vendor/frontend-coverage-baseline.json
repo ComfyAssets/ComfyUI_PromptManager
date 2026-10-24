@@ -335,6 +335,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/library-location.mjs": {
+    "lines": 94,
+    "branches": 91,
+    "functions": 92,
+    "statements": 94
+  },
   "workspace/library-state.mjs": {
     "lines": 98,
     "branches": 95,

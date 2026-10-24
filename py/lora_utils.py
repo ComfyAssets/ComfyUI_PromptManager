@@ -567,10 +567,21 @@ def download_civitai_images(
 
 
 def get_lora_image_cache_dir() -> Path:
-    """Get the directory used to cache downloaded LoRA example images."""
-    # Store in the extension's own directory
+    """Get the directory used to cache downloaded LoRA example images.
+
+    ``<data folder>/data/lora_images`` (``utils.library_location``): the node
+    folder for a library that was not moved, else ComfyUI's
+    ``user/__promptmanager``.
+    """
+    try:
+        from ..utils import library_location
+    except ImportError:
+        from utils import library_location
+
     ext_root = Path(__file__).resolve().parent.parent
-    cache = ext_root / "data" / "lora_images"
+    cache = Path(
+        library_location.cache_dir("lora_images", extension_root=str(ext_root))
+    )
     cache.mkdir(parents=True, exist_ok=True)
     return cache
 

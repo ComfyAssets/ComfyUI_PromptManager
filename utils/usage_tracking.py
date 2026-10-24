@@ -187,6 +187,19 @@ def find_pair_id(db: Any, positive: str, negative: str) -> Optional[int]:
     return row["id"] if row else None
 
 
+def survive_switch(db: Any, write: Callable[[], Any]) -> Any:
+    """``write()`` through ``db.survive_library_switch`` when the database has it.
+
+    A write that was waiting on the old file when Move library switched runs
+    again on the new library instead of being lost (#249 S6b). Stand-in
+    databases without the method (tests) just run ``write()``.
+    """
+    survive = getattr(type(db), "survive_library_switch", None)
+    if survive is None:
+        return write()
+    return survive(db, write)
+
+
 def count_pair_runs(
     runs: List[Tuple[str, str, str]],
     db: Any,
@@ -194,20 +207,28 @@ def count_pair_runs(
 ) -> None:
     """Count existing recipes at dequeue and defer new recipes until first save."""
     for key, positive, negative in runs:
-        pair_id = find_pair_id(db, positive, negative)
-        if pair_id:
-            db.record_prompt_pair_use(pair_id)
-        else:
+
+        def count(positive=positive, negative=negative):
+            pair_id = find_pair_id(db, positive, negative)
+            if pair_id:
+                db.record_prompt_pair_use(pair_id)
+            return bool(pair_id)
+
+        if not survive_switch(db, count):
             pending.add(key)
 
 
 def count_runs(runs: List[Run], db: Any, pending: PendingFirstUse) -> None:
     """Record one use per prompt in the database; remember the rest for first save."""
     for prompt_hash, _text in runs:
-        existing = db.get_prompt_by_hash(prompt_hash)
-        if existing:
-            db.record_prompt_use(existing["id"])
-        else:
+
+        def count(prompt_hash=prompt_hash):
+            existing = db.get_prompt_by_hash(prompt_hash)
+            if existing:
+                db.record_prompt_use(existing["id"])
+            return bool(existing)
+
+        if not survive_switch(db, count):
             pending.add(prompt_hash)
 
 

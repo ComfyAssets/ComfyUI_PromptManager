@@ -150,7 +150,15 @@ class TestSourceStatus(SourcesTestCase):
         )
         self.assertEqual(
             data["sources"]["effective"],
-            [{"label": "a", "path": "output/a", "root_index": 0, "watch": "manual"}],
+            [
+                {
+                    "label": "a",
+                    "path": "output/a",
+                    "root_index": 0,
+                    "watch": "manual",
+                    "in_comfyui": True,
+                }
+            ],
         )
         self.assertFalse(data["sources"]["auto_detected"])
         # The legacy keys are unchanged.
@@ -183,9 +191,20 @@ class TestSourceStatus(SourcesTestCase):
                     "path": "output",
                     "root_index": 0,
                     "watch": "manual",
+                    "in_comfyui": True,
                 }
             ],
         )
+
+    def test_a_source_outside_comfyui_is_not_marked_in_comfyui(self):
+        # Sources & scans prefixes "ComfyUI/" only to a path relative to the
+        # ComfyUI base; a folder outside it is shown by its own name.
+        from py.api import sources
+
+        self.assertTrue(sources.in_comfyui_base(str(self.a)))
+        self.assertTrue(sources.in_comfyui_base(str(self.comfy_dir)))
+        self.assertFalse(sources.in_comfyui_base(self.tmpdir))
+        self.assertFalse(sources.in_comfyui_base(os.path.join(self.tmpdir, "Renders")))
 
     async def test_watching_requires_live_observer_with_root(self):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.a), self._root(self.b)]
