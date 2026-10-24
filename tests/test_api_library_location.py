@@ -36,7 +36,8 @@ URL = "/prompt_manager/system/library"
 class LibraryAPITestCase(AdminAPITestCase):
     async def get_application(self):
         app = await super().get_application()
-        self.ext = os.path.join(str(self.comfy_dir), "custom_nodes", "PM")
+        # Lower case: a public path is case-folded on Windows (normcase).
+        self.ext = os.path.join(str(self.comfy_dir), "custom_nodes", "pm")
         os.makedirs(self.ext)
         self.user = os.path.join(str(self.comfy_dir), "user")
         os.makedirs(self.user)
@@ -80,7 +81,7 @@ class TestLocationRoute(LibraryAPITestCase):
         self.assertEqual(
             body["location"],
             {
-                "path": "custom_nodes/PM/prompts.db",
+                "path": "custom_nodes/pm/prompts.db",
                 "source": "node_folder",
                 "movable": True,
                 "keep": False,
