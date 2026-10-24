@@ -359,7 +359,10 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         with patch.object(auto.os, "scandir", counting):
             resp = await self.client.get(f"{SERVE}thumbnails/Shot_thumb.png?root=0")
         self.assertEqual(resp.status, 200)
-        self.assertEqual(len(listings), 1)
+        # A case-insensitive filesystem (macOS, Windows) finds it by its exact
+        # name; a case-sensitive one lists the folder once.
+        found_by_name = (self.output_dir / "Shot.png").exists()
+        self.assertEqual(len(listings), 0 if found_by_name else 1)
         self.assertTrue((self.output_dir / "thumbnails" / "Shot_thumb.png").is_file())
 
     async def test_broken_file_falls_back_to_the_original_and_is_remembered(self):
@@ -649,44 +652,59 @@ class TestWriteSafety(AutoThumbnailCase):
 
 
 class TestShutdown(AutoThumbnailCase):
-    def _worker_threads(self):
-        return [
-            t
-            for t in threading.enumerate()
-            if t.name == auto.WORKER_NAME and t.is_alive()
-        ]
-
     async def test_no_thread_remains_after_cleanup_and_capture_cannot_restart(self):
         path = make_png(self.output_dir / "a.png", size=(64, 64))
         self.assertEqual(self.api.queue_capture_thumbnail(str(path)), "queued")
+        thumbnailer = self.api._auto_thumbnails()
+        worker = thumbnailer._worker
         await self._idle()
+        make_png(self.output_dir / "viewed.png", size=(64, 64))
         resp = await self.client.get(
-            _entry(self.api, self.output_dir, "a.png")["thumbnail_url"]
+            _entry(self.api, self.output_dir, "viewed.png")["thumbnail_url"]
         )
         await resp.read()
         pool_threads = list(self.api._preview_pool_threads())
+        self.assertTrue(pool_threads)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, lambda: self.api.close_auto_thumbnails(final=True)
         )
-        for thread in pool_threads:
+        for thread in [worker, *pool_threads]:
             await loop.run_in_executor(None, thread.join, WAIT)
-        self.assertEqual(self._worker_threads(), [])
-        self.assertFalse(any(t.is_alive() for t in pool_threads))
+            self.assertFalse(thread.is_alive(), thread.name)
         other = make_png(self.output_dir / "b.png", size=(64, 64))
         self.assertEqual(self.api.queue_capture_thumbnail(str(other)), "skipped")
-        self.assertEqual(self._worker_threads(), [])
+        restarted = self.api._auto_thumbnailer
+        self.assertTrue(restarted is None or restarted._worker is None)
 
-    async def test_a_reload_stops_the_old_worker(self):
+    async def test_an_idle_worker_leaves(self):
         path = make_png(self.output_dir / "a.png", size=(64, 64))
         self.api.queue_capture_thumbnail(str(path))
+        worker = self.api._auto_thumbnails()._worker
         await self._idle()
-        (old,) = self._worker_threads()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, worker.join, WAIT)
+        self.assertFalse(worker.is_alive())
+        # The next output starts a fresh worker.
+        other = make_png(self.output_dir / "b.png", size=(64, 64))
+        self.assertEqual(self.api.queue_capture_thumbnail(str(other)), "queued")
+        await self._idle()
+        self.assertTrue((self.output_dir / "thumbnails" / "b_thumb.png").is_file())
+
+    async def test_a_reload_stops_the_old_worker(self):
+        entered, release, _state = self._gate_writes()
+        path = make_png(self.output_dir / "a.png", size=(64, 64))
+        self.api.queue_capture_thumbnail(str(path))
+        await self._wait(entered)
+        old = self.api._auto_thumbnails()._worker
         old.pm_preview_token = object()  # as the module before a reload left it
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, auto._stop_stale_workers)
+        stopping = loop.run_in_executor(None, auto._stop_stale_workers)
+        release.set()
+        await stopping
         await loop.run_in_executor(None, old.join, WAIT)
         self.assertFalse(old.is_alive())
+        self.assertTrue(self.api._auto_thumbnails().closed)
 
     async def test_close_kills_ffmpeg_and_logs_a_join_that_timed_out(self):
         from unittest.mock import MagicMock

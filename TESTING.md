@@ -2275,7 +2275,8 @@ workspace never asks; previews are a cache the server keeps:
   `exclusive` job runs (`_auto_thumbnail_blocker`), checked when a write starts (after
   its slot) and again just before its rename.
 - Shutdown is bounded and logged: the worker stops at a file boundary, ffmpeg is
-  killed, the view pool shuts down, and after the app's cleanup a late monitor event
+  killed, an idle worker leaves (the next output starts a fresh one), the view pool
+  shuts down, and after the app's cleanup a late monitor event
   starts nothing. A package reload stops the workers the previous import left.
 - Cards and strips load previews only: Images in every layout and size, Library cards,
   Needs review cards and the inspector's cover (a video's cover is its preview frame).

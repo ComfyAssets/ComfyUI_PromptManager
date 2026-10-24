@@ -290,6 +290,9 @@ class AutoThumbnailer:
         self._queued = set()
         self._processes = []
         self._worker = None
+        # True from a worker's start until it leaves (under the lock), so an
+        # idle worker can exit and the next enqueue starts a fresh one.
+        self._worker_running = False
         self._closed = False
         self._busy = False
         self._batch = 0
@@ -396,9 +399,8 @@ class AutoThumbnailer:
             self._queued.add(key)
             self._queue.append((key, Path(src), Path(dst), bool(is_video)))
             self._busy = True
-            if self._start_worker and (
-                self._worker is None or not self._worker.is_alive()
-            ):
+            if self._start_worker and not self._worker_running:
+                self._worker_running = True
                 worker = threading.Thread(
                     target=self._run, name=WORKER_NAME, daemon=True
                 )
@@ -412,12 +414,10 @@ class AutoThumbnailer:
     def _run(self):
         while True:
             with self._changed:
-                while not self._queue and not self._closed:
+                if self._closed or not self._queue:
+                    # Idle or closed: leave, so no thread outlives its work.
                     self._busy = False
-                    self._changed.notify_all()
-                    self._changed.wait()
-                if self._closed:
-                    self._busy = False
+                    self._worker_running = False
                     self._changed.notify_all()
                     return
                 take = min(len(self._queue), max(1, int(self._workers() or 1)))
