@@ -22,6 +22,7 @@ import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
 import { operationRow } from './system-controls.mjs';
 import { openThumbnailReview } from './thumbnail-review.mjs';
+import { isLocation, locationRow, onMoveEnded } from './library-location.mjs';
 
 export const OVERVIEW_URL = '/prompt_manager/system/overview';
 export const STATISTICS_URL = '/prompt_manager/system/statistics';
@@ -319,7 +320,7 @@ function surface(heading, rows) {
 }
 
 /** The Overview's nodes, and its thumbnail row (painted by its own read). */
-function overviewNodes(overview, { scope, navigate, openStatistics, openThumbnails }) {
+function overviewNodes(overview, { api, activity, notify, scope, navigate, openStatistics, openThumbnails }) {
     const go = section => () => navigate(`#/system/${section}`);
     const review = operationRow({ scope, title: ambiguousTitle(overview.needs_review),
         description: Number.isSafeInteger(overview.needs_review?.pending)
@@ -332,6 +333,9 @@ function overviewNodes(overview, { scope, navigate, openStatistics, openThumbnai
         review,
         operationRow({ scope, title: 'Backup status', description: backupText(overview.backup), label: 'View backups',
             onClick: go('backups') }),
+        // D129: where the library lives and why; Move library when it is in the node folder.
+        ...(isLocation(overview.location)
+            ? [locationRow(overview.location, { api, activity, scope, notify, navigate })] : []),
         // D99: Review thumbnails opens the thumbnail dialog (the concept's row starts a sample job directly).
         thumbnails,
     ]);
@@ -394,7 +398,7 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
         try {
             const overview = await overviewRead(signal => api.get(OVERVIEW_URL, { signal, cache: 'no-store' }));
             if (overview === STALE || scope.signal.aborted) return;
-            const { nodes, thumbnails } = overviewNodes(overview, { scope, navigate, openStatistics,
+            const { nodes, thumbnails } = overviewNodes(overview, { api, activity, notify, scope, navigate, openStatistics,
                 openThumbnails: trigger => openThumbnailReview({ api, store: activity, scope, trigger, navigate }) });
             thumbnailRow = thumbnails;
             sources = overview.sources;
@@ -427,6 +431,8 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
         paintThumbnails();
     }
     const first = swap(loading());
+    // D129: a finished Move library changes where the library lives.
+    scope.cleanup(onMoveEnded(activity, load));
     load();
     loadThumbnails();
     return first;

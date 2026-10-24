@@ -414,3 +414,9 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
    field) beside their label, as the concept's own radio rows (s1160 `.compare-item label`). */
 .field[role="radiogroup"] > label { display: flex; align-items: center; gap: 8px; /* D90 */ }
 .field[role="radiogroup"] input[type="radio"] { width: auto; margin: 0; /* D90 */ }
+/* D129: the library-location notice sits above every page, in main's own padding and width, so its `.notice` lines
+   up with the page below; main's top padding then spaces it from the page. */
+.library-banner { max-width: 1900px; margin: auto; padding: 30px 30px 0; /* D129 */ }
+.library-banner > .notice { margin-bottom: 0; /* D129 */ }
+@media (max-width: 1250px) { .library-banner { padding: 24px 24px 0; /* D129 */ } }
+@media (max-width: 700px) { .library-banner { padding: 20px 14px 0; /* D129 */ } }

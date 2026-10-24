@@ -18,6 +18,7 @@ import { mountInspect } from './inspect.mjs';
 import { mountReview } from './review.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
+import { mountLibraryBanner } from './library-location.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -75,6 +76,8 @@ function mountWorkspace() {
     const activity = createActivityStore({ api, scope, connect: url => new EventSource(resolveUrl(url)) });
     mountActivityTopbar({ store: activity, scope });
     activity.load();
+    // D129: a node-folder library is offered a move (or "Keep it here") above every page.
+    mountLibraryBanner(document.getElementById('library-banner'), { api, activity, scope });
     const sidebar = document.querySelector('aside.sidebar');
     // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`.
     const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}` : route.id;
