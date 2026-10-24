@@ -341,7 +341,8 @@ class TestStrayTemps(TempCase):
             self._touch(".c_thumb.part-x-2.webp"),
             self._touch(".young_thumb.part-7-8.webp", age=0),
         ]
-        own = self._touch(f".mine_thumb.part-{os.getpid()}-9.webp")
+        # A temp of this process written since it started may be in use.
+        own = self._touch(f".mine_thumb.part-{os.getpid()}-9.webp", age=0)
         count, size = te.sweep_stray_temps(self.tmp, min_age=60)
         self.assertEqual((count, size), (3, 30))
         for path in strays:
@@ -363,6 +364,17 @@ class TestStrayTemps(TempCase):
         if link is not None:
             self.assertTrue(link.is_symlink())
 
+    def test_an_own_pid_temp_older_than_this_process_is_swept(self):
+        # Re-review N3: under stable PIDs (Docker) the previous run's crash
+        # leftovers carry this process's PID; they predate its start.
+        before = te.PROCESS_STARTED - 3600
+        stale = self._touch(f".old_thumb.part-{os.getpid()}-9.webp")
+        os.utime(stale, (before, before))
+        live = self._touch(f".new_thumb.part-{os.getpid()}-9.webp", age=0)
+        self.assertEqual(te.sweep_stray_temps(self.tmp, min_age=60)[0], 1)
+        self.assertFalse(stale.exists())
+        self.assertTrue(live.exists())
+
     def test_a_missing_folder_sweeps_nothing(self):
         self.assertEqual(te.sweep_stray_temps(self.tmp / "none"), (0, 0))
 
@@ -373,9 +385,10 @@ class TestEncoderVanishes(TempCase):
     availability Appearance reads is refreshed."""
 
     def test_a_missing_binary_falls_back_to_webp_and_refreshes(self):
-        found = iter(["cjxl", None])
+        found = iter(["cjxl", None, None])
         with (
             patch.object(te, "_detect", side_effect=lambda: next(found)),
+            patch.object(te.shutil, "which", return_value=None),
             patch.object(te, "run_encoder", side_effect=FileNotFoundError("cjxl")),
             self.assertLogs("prompt_manager.thumbnails", logging.WARNING),
         ):
@@ -405,6 +418,11 @@ class TestEncoderVanishes(TempCase):
 
         with (
             patch.object(te, "_detect", side_effect=lambda: next(found)),
+            patch.object(
+                te.shutil,
+                "which",
+                side_effect=lambda name: None if name == "cjxl" else name,
+            ),
             patch.object(te, "run_encoder", side_effect=fake),
             patch.object(te, "_pillow_decodes_jxl", return_value=False),
         ):
@@ -417,10 +435,13 @@ class TestEncoderVanishes(TempCase):
         self.assertEqual(used, ["cjxl", "ffmpeg"])
         self.assertEqual(self._leftovers(), [])
 
-    def test_the_same_encoder_failing_again_raises(self):
+    def test_a_failure_with_the_encoder_present_does_not_detect_again(self):
+        # Re-review N2: one bad file never runs a probe (which may time out
+        # under load and turn JPEG XL off).
         failed = subprocess.CompletedProcess([], 1, b"", b"bad input")
         with (
             patch.object(te, "_detect", return_value="cjxl") as detect,
+            patch.object(te.shutil, "which", return_value="/usr/bin/cjxl"),
             patch.object(te, "run_encoder", return_value=failed),
         ):
             with self.assertRaises(te.EncoderFailed):
@@ -429,7 +450,29 @@ class TestEncoderVanishes(TempCase):
                     self.tmp / "x_thumb.jxl",
                     ThumbnailSettings("jxl", 80, 64),
                 )
-        self.assertEqual(detect.call_count, 2, "detected again once")
+        self.assertEqual(detect.call_count, 1, "no second probe")
+
+    def test_no_encoder_found_is_checked_again_on_the_settings_read(self):
+        # Re-review N2: a probe that found nothing (a timeout) recovers.
+        found = iter([None, "cjxl"])
+        with patch.object(te, "_detect", side_effect=lambda: next(found)):
+            self.assertIsNone(te.detect_jxl_encoder())
+            self.assertEqual(te.encoder_status()["jxl"]["encoder"], "cjxl")
+            self.assertEqual(te.detect_jxl_encoder(), "cjxl")
+
+    def test_no_encoder_found_is_checked_again_after_a_while(self):
+        found = iter([None, "ffmpeg"])
+        clock = [1000.0]
+        with (
+            patch.object(te, "_detect", side_effect=lambda: next(found)) as detect,
+            patch.object(te.time, "monotonic", side_effect=lambda: clock[0]),
+        ):
+            self.assertIsNone(te.detect_jxl_encoder())
+            self.assertIsNone(te.detect_jxl_encoder(), "cached within the TTL")
+            clock[0] += te.MISSING_ENCODER_TTL + 1
+            self.assertEqual(te.detect_jxl_encoder(), "ffmpeg")
+            self.assertEqual(te.detect_jxl_encoder(), "ffmpeg")
+        self.assertEqual(detect.call_count, 2)
 
 
 class TestEncoderProcesses(TempCase):

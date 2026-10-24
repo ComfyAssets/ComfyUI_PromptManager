@@ -361,6 +361,55 @@ class TestConvertOutdated(ConvertCase):
         self.assertTrue(self._thumb_path("f3", ".jpg").exists(), "the new format stays")
         self.assertEqual(sum(1 for p in olds if p.exists()), 3)
 
+    async def test_the_new_preview_is_never_removed_as_an_old_one(self):
+        # Re-review N1: on a case-insensitive disk x_thumb.JPG (an old
+        # spelling) can be the x_thumb.jpg just written. A hard link stands
+        # in for that second name of one file.
+        PromptManagerConfig.update_config(
+            {"thumbnails": {"format": "jpeg", "quality": 80, "edge": 512}}
+        )
+        src = self.output_dir / "x.jpg"
+        Image.new("RGB", (64, 64), (200, 10, 10)).save(src, "JPEG")
+        alias = self._thumb_path("x", ".JPG")
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (16, 16)).save(alias, "JPEG")
+        later = src.stat().st_mtime + 5
+        os.utime(alias, (later, later))
+        real = self.api._generate_one
+
+        def same_file(source, dst, *args, **kwargs):
+            made = real(source, dst, *args, **kwargs)
+            os.remove(alias)
+            os.link(made["path"], alias)
+            return made
+
+        self.api._generate_one = same_file
+        _, job = await self._convert()
+        self.assertTrue(self._thumb_path("x", ".jpg").exists())
+        self.assertTrue(alias.exists(), "the new preview's other name is kept")
+        self.assertEqual(job.counters["errors"], 0)
+
+    def test_same_file_falls_back_to_the_path_without_inode_numbers(self):
+        from py.api import thumbnail_convert as tc
+
+        a = self.output_dir / "a_thumb.jpg"
+        b = self.output_dir / "b_thumb.jpg"
+        for path in (a, b):
+            path.write_bytes(b"x")
+        real_stat = os.stat
+
+        def no_inode(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            return os.stat_result(
+                (result.st_mode, 0, result.st_dev) + tuple(result)[3:]
+            )
+
+        with patch.object(tc.os, "stat", side_effect=no_inode):
+            self.assertFalse(tc._same_file(a, b))
+            self.assertTrue(tc._same_file(a, a))
+            self.assertTrue(tc._same_file(a, self.output_dir / "." / "a_thumb.jpg"))
+        self.assertFalse(tc._same_file(a, self.output_dir / "gone.jpg"))
+
     def test_byte_sizes_are_readable(self):
         from py.api.thumbnail_convert import readable_bytes
 

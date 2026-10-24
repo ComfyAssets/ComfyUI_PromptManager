@@ -2315,14 +2315,18 @@ Thumbnail format and settings (#317, `py/api/thumbnail_settings.py`,
   signature) and renamed over the preview; a failure keeps the old file. ffmpeg writes
   with `-update 1`, so a `%` in a name is never a sequence pattern, and reads a video as
   `file:<path>`. Temp files a crash left (`.<stem>.part-<pid>-<thread><ext>`) are
-  removed by the clear and, when older than two minutes, by a sweep at startup.
+  removed by the clear and, when older than two minutes, by a sweep at startup (which
+  also removes one carrying its own PID that predates the process: containers reuse
+  PIDs).
 - JPEG XL needs no new dependency: Pillow (natively or with `pillow_jxl`, imported when
   installed), else ffmpeg with `libjxl`, else `cjxl`, detected once. Quality maps to
   libjxl's distance (`0.1 + (100 − q) × 0.09` from 30 up: q80 → 1.9, q85 → 1.45; never
   lossless). Without an encoder, saving `jxl` is a 400 `jxl-unavailable` with the
-  reason. An encoder that fails makes that write detect again once: another encoder
-  found is used, none at all writes the file as WebP (logged once) and refreshes the
-  availability Appearance reads; if JPEG XL has no encoder, previews are written as WebP
+  reason. An encoder that fails because its binary or module is gone makes that write
+  detect again once: another encoder found is used, none at all writes the file as WebP
+  (logged once) and refreshes the availability Appearance reads; any other failure
+  raises without a probe. "No encoder" is probed again on the settings read, on a
+  `jxl` save and after 60 s, so one slow probe never disables JPEG XL until a restart; if JPEG XL has no encoder, previews are written as WebP
   and count as the format written. Encoder processes (and ffmpeg's frames) are tracked,
   bounded by a 30 s timeout and killed at the app's cleanup, after which none starts.
 - A preview in another format than the one written now is *outdated*.
@@ -2334,7 +2338,8 @@ Thumbnail format and settings (#317, `py/api/thumbnail_settings.py`,
   frame fails instead of getting the placeholder; a current preview it keeps must
   decode), then removes that file's old-format previews (regular files in its
   `thumbnails/` folder that the source owns, the source still present; one already gone
-  counts as removed). Files sharing a preview name are converted once, as a group, from
+  counts as removed, and a path that is the new preview under another spelling is never
+  removed). Files sharing a preview name are converted once, as a group, from
   the first source above, and each file's bytes count once. A failure keeps the old
   preview; orphans (source gone) and links are never touched. While it runs, a change of
   the thumbnail format, quality or size limit is a 409 `busy` naming it, and should the

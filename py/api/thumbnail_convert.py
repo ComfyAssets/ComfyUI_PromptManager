@@ -110,6 +110,22 @@ def _group_targets(targets):
     return ordered
 
 
+def _same_file(a, b):
+    """Whether *a* and *b* name one file (re-review N1: on a case-insensitive
+    disk ``x_thumb.JPG`` is the ``x_thumb.jpg`` just written). Without inode
+    numbers (st_ino 0 on some SMB/FAT mounts) the resolved, normcased paths
+    are compared."""
+    try:
+        first, second = os.stat(a), os.stat(b)
+    except OSError:
+        return False
+    if first.st_ino and second.st_ino:
+        return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(
+        os.path.realpath(b)
+    )
+
+
 def _format_changed(settings):
     """Whether previews are written in another format than *settings* now."""
     return writer_settings().extension != settings.extension
@@ -297,6 +313,7 @@ class ThumbnailConvertMixin:
                 return {"action": "error", "error": SOURCE_GONE}
             if _format_changed(settings):
                 return {"action": "stopped"}
+            old = [(path, size) for path, size in old if not _same_file(path, dst)]
             removed, kept = self._remove_old_previews(old)
             if kept:
                 return {"action": "error", "error": OLD_NOT_REMOVED}

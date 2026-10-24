@@ -13,6 +13,7 @@ checks one path and writes nothing.
 """
 
 import contextlib
+import functools
 import os
 
 from aiohttp import web
@@ -311,7 +312,9 @@ class SettingsRoutesMixin:
             if updates.get("THUMBNAIL_FORMAT") == "jxl":
                 # #317: JPEG XL only with an encoder (a cached probe).
                 encoder = await self._run_in_executor(
-                    thumbnail_encode.detect_jxl_encoder
+                    functools.partial(
+                        thumbnail_encode.detect_jxl_encoder, recheck_missing=True
+                    )
                 )
                 if encoder is None:
                     return web.json_response(

@@ -20,10 +20,13 @@ Quality maps to a JPEG XL distance with libjxl's own
 (q80 → d1.9, q85 → d1.45, q90 → d1.0), the quadratic below 30, and q100 →
 d0.1 (a preview is never lossless). Pillow's plugin applies the same mapping
 inside libjxl. Detection is cached (``detect_jxl_encoder(refresh=True)``
-probes again). An encoder that fails (its binary gone, or a non-zero exit)
-makes one write detect again: another encoder found is used for that file,
-none at all writes it as WebP (logged once) and refreshes what Appearance
-reads (``encoder_status``). The same encoder found again raises.
+probes again); "none found" is probed again on the settings read
+(``encoder_status``) and after MISSING_ENCODER_TTL, so one slow probe never
+turns JPEG XL off until a restart. An encoder that fails because its binary
+or module is gone makes that write detect again: another encoder found is
+used for that file, none at all writes it as WebP (logged once) and
+refreshes what Appearance reads. Any other failure (one bad file) raises
+without a probe.
 
 Encoder processes (and ffmpeg's video frames, images.py) go through
 ``run_encoder``: tracked, bounded by a timeout, and killed by
@@ -108,6 +111,9 @@ def replace_unless_held(tmp, dst, guard=None):
 _TEMP_NAME = re.compile(r"^\..+\.(?:part|src)-(\d+)-\d+\.[A-Za-z0-9]+$")
 # A temp at least this old (seconds) outlived its write: no encode runs longer.
 STRAY_TEMP_AGE = 4 * ENCODE_TIMEOUT
+# When this process started (this module's import): a temp carrying its PID
+# that is older was left by an earlier run with the same PID (containers).
+PROCESS_STARTED = time.time()
 
 
 def sweep_stray_temps(folder, min_age=None):
@@ -116,8 +122,9 @@ def sweep_stray_temps(folder, min_age=None):
 
     Only ``temp_sibling`` names are touched, never a link. With *min_age*
     (seconds, the startup sweep) a temp younger than that, or one this
-    process may still be writing, is left; ``min_age=0`` (the clear, which
-    holds every preview write) removes them all.
+    process wrote since it started (it may still be writing it), is left;
+    ``min_age=0`` (the clear, which holds every preview write) removes them
+    all.
     """
     min_age = STRAY_TEMP_AGE if min_age is None else min_age
     now = time.time()
@@ -133,7 +140,10 @@ def sweep_stray_temps(folder, min_age=None):
                 stat = path.lstat()
                 if path.is_symlink() or not path.is_file():
                     continue
-                if min_age and (match.group(1) == own or now - stat.st_mtime < min_age):
+                if min_age and (
+                    now - stat.st_mtime < min_age
+                    or (match.group(1) == own and stat.st_mtime >= PROCESS_STARTED)
+                ):
                     continue
                 path.unlink()
             except OSError as exc:
@@ -229,6 +239,9 @@ def reset_encoders():
 _UNSET = object()
 _detect_lock = threading.Lock()
 _detected = _UNSET
+_detected_at = 0.0
+# Seconds after which "no JPEG XL encoder" is probed again.
+MISSING_ENCODER_TTL = 60
 _fallback_logged = False
 
 
@@ -290,18 +303,34 @@ def _detect():
     return None
 
 
-def detect_jxl_encoder(refresh=False):
-    """``pillow``, ``ffmpeg``, ``cjxl`` or None (cached; blocking on a probe)."""
-    global _detected
+def detect_jxl_encoder(refresh=False, recheck_missing=False):
+    """``pillow``, ``ffmpeg``, ``cjxl`` or None (cached; blocking on a probe).
+
+    A cached None is probed again with *recheck_missing* or once it is older
+    than MISSING_ENCODER_TTL."""
+    global _detected, _detected_at
     with _detect_lock:
-        if refresh or _detected is _UNSET:
+        now = time.monotonic()
+        stale_missing = _detected is None and (
+            recheck_missing or now - _detected_at >= MISSING_ENCODER_TTL
+        )
+        if refresh or _detected is _UNSET or stale_missing:
             _detected = _detect()
+            _detected_at = now
         return _detected
 
 
+def _encoder_gone(encoder):
+    """Whether *encoder*'s binary or module is no longer there."""
+    if encoder == "pillow":
+        return not _pillow_can_save_jxl()
+    return shutil.which(encoder) is None
+
+
 def encoder_status():
-    """Which formats can be written now (``GET /prompt_manager/settings``)."""
-    encoder = detect_jxl_encoder()
+    """Which formats can be written now (``GET /prompt_manager/settings``;
+    a "none found" is probed again here)."""
+    encoder = detect_jxl_encoder(recheck_missing=True)
     return {
         "webp": {"available": True},
         "jpeg": {"available": True},
@@ -367,13 +396,16 @@ class _EncoderGone(RuntimeError):
 
 
 def _write_jxl(img, tmp, settings, track):
-    """Encode with the detected encoder; one that fails makes the write
-    detect again once (another one is used, none raises _EncoderGone)."""
+    """Encode with the detected encoder. One that failed because it is gone
+    makes the write detect again once (another one is used, none raises
+    _EncoderGone); any other failure raises without a probe."""
     encoder = detect_jxl_encoder()
     try:
         _encode_jxl(encoder, img, tmp, settings, track)
         return
     except (OSError, EncoderFailed) as exc:
+        if encoder is not None and not _encoder_gone(encoder):
+            raise
         again = detect_jxl_encoder(refresh=True)
         if again is None:
             raise _EncoderGone(str(exc)) from exc
