@@ -27,7 +27,7 @@ from . import thumbnail_encode
 from . import thumbnail_settings
 from .admin import _current_image_monitor
 from .job_routes import busy_response
-from .jobs import JobBusy
+from .jobs import THUMBNAILS_JOB_KIND, JobBusy
 
 try:
     from ...utils.validators import validate_result_timeout, validate_worker_threads
@@ -47,6 +47,8 @@ _SETTINGS_FILE_KEYS = {
     "THUMBNAIL_QUALITY": ("thumbnails", "quality"),
     "THUMBNAIL_EDGE": ("thumbnails", "edge"),
 }
+# The thumbnail settings a running Convert outdated job fixes (#317).
+_THUMBNAIL_SETTINGS = ("THUMBNAIL_FORMAT", "THUMBNAIL_QUALITY", "THUMBNAIL_EDGE")
 # Attributes that live on GalleryConfig; the others on PromptManagerConfig.
 _GALLERY_SETTINGS = frozenset({"MONITORING_ENABLED"})
 SOURCE_CHANGE_JOB_KIND = "source_change"
@@ -321,6 +323,10 @@ class SettingsRoutesMixin:
                         status=400,
                     )
 
+            refused = self._thumbnail_change_refused(updates)
+            if refused is not None:
+                return refused
+
             # Off the loop: an accepted root is resolved (filesystem access).
             new_roots, error = await self._run_in_executor(
                 self._parse_gallery_roots, data
@@ -379,6 +385,33 @@ class SettingsRoutesMixin:
                 {"success": False, "error": "Failed to save settings"},
                 status=500,
             )
+
+    def _thumbnail_change_refused(self, updates):
+        """409 ``busy`` for a thumbnail format, quality or size change while
+        Convert outdated runs (review I4): the job converts to the settings
+        it started with, and a change under it would make it remove previews
+        in the newly chosen format. Unchanged values pass."""
+        from ..config import PromptManagerConfig
+
+        changed = any(
+            key in updates and updates[key] != getattr(PromptManagerConfig, key)
+            for key in _THUMBNAIL_SETTINGS
+        )
+        job = self._jobs.active(THUMBNAILS_JOB_KIND) if changed else None
+        if job is None or job.scope.get("mode") != "convert":
+            return None
+        return web.json_response(
+            {
+                "success": False,
+                "code": "busy",
+                "error": (
+                    f"{job.title} is running. Change the thumbnail settings "
+                    "when it finishes, or cancel it first."
+                ),
+                "running": {"id": job.id, "title": job.title},
+            },
+            status=409,
+        )
 
     def _publish_settings(self, updates, new_roots):
         """Install committed settings at runtime (inside the config commit).

@@ -56,3 +56,16 @@ test('a video whose preview fails still swaps back to its own element', () => wi
     assert.equal(holder.children[0].tagName, 'video');
     assert.equal(holder.children[0].src, 'http://host/serve/c.mp4?root=0');
 }));
+
+test('a video with a JPEG XL thumbnail keeps its own element where JPEG XL cannot be shown (review M2)', async () => {
+    support.resetJxlSupport();
+    await support.detectJxlSupport({ createImage: () => ({ set src(_) { queueMicrotask(() => this.onerror()); } }) });
+    const dom = mountedDom();
+    dom.win.ApiClient = { resolveUrl: url => `http://host${url}` };
+    try {
+        const node = cardMedia(image('/serve/thumbnails/c_thumb.jxl?root=0',
+            { path: 'c.mp4', filename: 'c.mp4', url: '/serve/c.mp4?root=0', is_video: true }));
+        assert.equal(node.tagName, 'video');
+        assert.equal(node.src, 'http://host/serve/c.mp4?root=0');
+    } finally { support.resetJxlSupport(); dom.restore(); }
+});

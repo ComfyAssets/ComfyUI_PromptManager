@@ -15,7 +15,7 @@ import {pageHeading} from './heading.mjs';
 import {mountToolbar} from './toolbar.mjs';
 import {libraryFilters,libraryViewState} from './saved-views.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
-import {fallBackToOriginal,thumbnailSource} from './thumbnail-support.mjs';
+import {fallBackToOriginal,replaceOnError,showsThumbnail,thumbnailSource} from './thumbnail-support.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -214,10 +214,12 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const art=el('div',undefined,'card-art');art.setAttribute('aria-hidden','true');
             const previews=item.previews || [];
             for(const image of previews.slice(0,2)) {
-                if(image.is_video && !image.thumbnail_url) art.append(el('span','Video preview','small'));
+                // #317: a video with no preview, or one this browser cannot show (JPEG XL), keeps its label.
+                if(!showsThumbnail(image)) art.append(el('span','Video preview','small'));
                 else {
-                    // #317: a JPEG XL preview this browser cannot show, or one that fails, loads the original.
-                    const img=el('img');img.src=window.ApiClient.resolveUrl(thumbnailSource(image));if(!image.is_video) fallBackToOriginal(img,window.ApiClient.resolveUrl(image.url));img.alt='';img.loading='lazy';img.decoding='async';img.width=image.width || 800;img.height=image.height || 600;art.append(img);
+                    // #317: an image's JPEG XL preview this browser cannot show, or one that fails, loads the original;
+                    // a video's preview that fails becomes its label, never a broken image.
+                    const img=el('img');img.src=window.ApiClient.resolveUrl(thumbnailSource(image));if(image.is_video) replaceOnError(img,()=>el('span','Video preview','small'));else fallBackToOriginal(img,window.ApiClient.resolveUrl(image.url));img.alt='';img.loading='lazy';img.decoding='async';img.width=image.width || 800;img.height=image.height || 600;art.append(img);
                 }
             }
             if(!previews.length) art.append(el('span','No available image previews','small'));

@@ -29,6 +29,7 @@ from .thumbnail_encode import (
     PreviewWriteHeld,
     replace_unless_held,
     run_encoder,
+    sweep_stray_temps,
     temp_sibling,
     thumbnail_frame,
     writer_settings,
@@ -453,7 +454,7 @@ def _preview_state(src, folder, stem, settings, folders):
         names[key]
         for key in (
             os.path.normcase(stem + extension)
-            for extension in thumbnail_settings.candidate_extensions(
+            for extension in thumbnail_settings.owned_extensions(
                 src.suffix, settings.extension
             )
             if extension != settings.extension
@@ -798,6 +799,15 @@ def media_thumbnail_rel(rel_path, settings=None):
     return thumbnail_settings.thumbnail_rel(rel_path, settings.extension)
 
 
+def existing_media_thumbnail(output_path, rel_path):
+    """The existing preview *rel_path* owns that a listing or cover shows
+    (the format written now first, then older ones), or None. The Images
+    listing and History's cover use this one lookup (review M5)."""
+    return thumbnail_settings.existing_thumbnail(
+        output_path, rel_path, writer_settings().extension
+    )
+
+
 def media_thumbnail(output_path, rel_path, root_index, *, root_scope=None):
     """``(thumbnail_url, ready)`` for *rel_path* under *output_path* (a few
     blocking stats). The Images listing, the Needs review queue cards and the
@@ -815,17 +825,14 @@ def media_thumbnail(output_path, rel_path, root_index, *, root_scope=None):
     rel_path = Path(rel_path)
     if "thumbnails" in rel_path.parts[:-1]:
         return None, False
-    settings = writer_settings()
-    existing = thumbnail_settings.existing_thumbnail(
-        output_path, rel_path, settings.extension
-    )
+    existing = existing_media_thumbnail(output_path, rel_path)
     thumbnail_url = None
     if existing is not None:
         thumb_rel = thumbnail_settings.thumbnail_stem_rel(rel_path) + existing.suffix
         thumbnail_url = thumbnail_url_for(thumb_rel, existing)
     ready = thumbnail_url is not None
     if thumbnail_url is None:
-        thumb_rel = media_thumbnail_rel(rel_path, settings)
+        thumb_rel = media_thumbnail_rel(rel_path)
         quoted = urllib.parse.quote(thumb_rel, safe="/")
         thumbnail_url = f"/prompt_manager/images/serve/{quoted}?root={root_index}"
     else:
@@ -2329,7 +2336,8 @@ class ImageRoutesMixin:
             "-v",
             "error",
             "-i",
-            str(video_path),
+            # Read as a file, never as a protocol URL (review M6).
+            f"file:{video_path}",
             "-ss",
             "00:00:01",
             "-vframes",
@@ -2426,6 +2434,25 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(exc)}, status=500
             )
 
+    def sweep_thumbnail_temps(self):
+        """Remove the old temp files crashed preview writes left in every
+        root's ``thumbnails/`` folder (blocking; run at startup on its own
+        thread). Returns how many went."""
+        removed = 0
+        try:
+            output_dirs = self._get_all_output_dirs()
+        except Exception as exc:
+            self.logger.debug(f"No roots to sweep for preview temp files: {exc}")
+            return 0
+        for output_path in output_dirs:
+            folder = Path(output_path) / "thumbnails"
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+            removed += sweep_stray_temps(folder)[0]
+        if removed:
+            self.logger.info(f"Removed {removed} interrupted preview temp files")
+        return removed
+
     def _clear_gallery_thumbnails_sync(
         self, output_dirs: list[Path]
     ) -> tuple[int, int]:
@@ -2453,6 +2480,11 @@ class ImageRoutesMixin:
         cleared_count = 0
         cleared_size = 0
         for thumbnails_dir in directories:
+            # Temp files a crashed write left (review I1): the clear holds
+            # every preview write, so none is in use.
+            temps, temp_bytes = sweep_stray_temps(thumbnails_dir, min_age=0)
+            cleared_count += temps
+            cleared_size += temp_bytes
             for root, _dirs, files in os.walk(thumbnails_dir):
                 for name in files:
                     path = Path(root) / name

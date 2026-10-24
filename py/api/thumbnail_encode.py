@@ -20,8 +20,10 @@ Quality maps to a JPEG XL distance with libjxl's own
 (q80 → d1.9, q85 → d1.45, q90 → d1.0), the quadratic below 30, and q100 →
 d0.1 (a preview is never lossless). Pillow's plugin applies the same mapping
 inside libjxl. Detection is cached (``detect_jxl_encoder(refresh=True)``
-probes again). If JPEG XL is configured but no encoder is left at write
-time, that file is written as WebP and the fallback is logged once.
+probes again). An encoder that fails (its binary gone, or a non-zero exit)
+makes one write detect again: another encoder found is used for that file,
+none at all writes it as WebP (logged once) and refreshes what Appearance
+reads (``encoder_status``). The same encoder found again raises.
 
 Encoder processes (and ffmpeg's video frames, images.py) go through
 ``run_encoder``: tracked, bounded by a timeout, and killed by
@@ -31,9 +33,11 @@ Encoder processes (and ffmpeg's video frames, images.py) go through
 import importlib
 import io
 import os
+import re
 import shutil
 import subprocess  # nosec B404 - fixed argv lists, never a shell
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -98,6 +102,46 @@ def replace_unless_held(tmp, dst, guard=None):
     if guard is not None and not guard():
         raise PreviewWriteHeld(PREVIEW_HELD)
     os.replace(tmp, dst)
+
+
+# ``temp_sibling``'s names: ``.<stem>.<tag>-<pid>-<thread id><ext>``.
+_TEMP_NAME = re.compile(r"^\..+\.(?:part|src)-(\d+)-\d+\.[A-Za-z0-9]+$")
+# A temp at least this old (seconds) outlived its write: no encode runs longer.
+STRAY_TEMP_AGE = 4 * ENCODE_TIMEOUT
+
+
+def sweep_stray_temps(folder, min_age=None):
+    """Remove the temp files a crashed write left under *folder* (a preview
+    folder, walked without following links); returns ``(count, bytes)``.
+
+    Only ``temp_sibling`` names are touched, never a link. With *min_age*
+    (seconds, the startup sweep) a temp younger than that, or one this
+    process may still be writing, is left; ``min_age=0`` (the clear, which
+    holds every preview write) removes them all.
+    """
+    min_age = STRAY_TEMP_AGE if min_age is None else min_age
+    now = time.time()
+    own = str(os.getpid())
+    count = size = 0
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            match = _TEMP_NAME.match(name)
+            if match is None:
+                continue
+            path = Path(root) / name
+            try:
+                stat = path.lstat()
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if min_age and (match.group(1) == own or now - stat.st_mtime < min_age):
+                    continue
+                path.unlink()
+            except OSError as exc:
+                logger.debug(f"Could not remove stray temp {name}: {exc}")
+                continue
+            count += 1
+            size += stat.st_size
+    return count, size
 
 
 def _unlink_quietly(path):
@@ -318,8 +362,29 @@ def _check(done, tmp, name):
         raise EncoderFailed(f"{name} could not encode the preview: {detail.strip()}")
 
 
+class _EncoderGone(RuntimeError):
+    """No JPEG XL encoder is left: this file is written as WebP."""
+
+
 def _write_jxl(img, tmp, settings, track):
+    """Encode with the detected encoder; one that fails makes the write
+    detect again once (another one is used, none raises _EncoderGone)."""
     encoder = detect_jxl_encoder()
+    try:
+        _encode_jxl(encoder, img, tmp, settings, track)
+        return
+    except (OSError, EncoderFailed) as exc:
+        again = detect_jxl_encoder(refresh=True)
+        if again is None:
+            raise _EncoderGone(str(exc)) from exc
+        if again == encoder:
+            raise
+        logger.info(f"JPEG XL encoder {encoder} failed; using {again}")
+    _unlink_quietly(tmp)
+    _encode_jxl(again, img, tmp, settings, track)
+
+
+def _encode_jxl(encoder, img, tmp, settings, track):
     distance = f"{jxl_distance(settings.quality):.2f}"
     if encoder == "pillow":
         img.save(
@@ -334,7 +399,8 @@ def _write_jxl(img, tmp, settings, track):
         cmd = [
             "ffmpeg", "-v", "error", "-f", "png_pipe", "-i", "-",
             "-frames:v", "1", "-c:v", "libjxl", "-distance", distance,
-            "-effort", str(JXL_EFFORT), "-f", "image2", "-y", str(tmp),
+            "-effort", str(JXL_EFFORT), "-f", "image2", "-update", "1",
+            "-y", str(tmp),
         ]  # fmt: skip
         _check(run_encoder(cmd, input=_png_bytes(img), track=track), tmp, "ffmpeg")
         return
@@ -407,6 +473,15 @@ def write_thumbnail(frame, dst, settings, *, guard=None, track=None):
     if fmt == "jxl" and detect_jxl_encoder() is None:
         _jxl_fallback()
         fmt, dst = "webp", dst.with_suffix(".webp")
+    try:
+        return _write_verified(frame, dst, fmt, settings, guard, track)
+    except _EncoderGone:
+        _jxl_fallback()
+        dst = dst.with_suffix(".webp")
+        return _write_verified(frame, dst, "webp", settings, guard, track)
+
+
+def _write_verified(frame, dst, fmt, settings, guard, track):
     tmp = temp_sibling(dst)
     try:
         _WRITERS[fmt](frame, tmp, settings, track)

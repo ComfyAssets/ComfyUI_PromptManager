@@ -124,6 +124,19 @@ def thumbnail_rel(rel_path, extension=None):
     return thumbnail_stem_rel(rel_path) + (extension or current().extension)
 
 
+# Ruling R2: files sharing a stem share one preview, made from the first
+# source in this order: these images, then videos (by extension name).
+IMAGE_SOURCE_ORDER = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def source_rank(source_extension):
+    """Sort key of a source extension in R2's order (images first)."""
+    extension = source_extension.lower()
+    if extension in IMAGE_SOURCE_ORDER:
+        return (0, IMAGE_SOURCE_ORDER.index(extension), extension)
+    return (1, 0, extension)
+
+
 def owns(thumb_extension, source_extension):
     """Whether a ``_thumb<thumb_extension>`` preview can belong to a source
     with *source_extension* (ruling R4)."""
@@ -154,6 +167,18 @@ def candidate_extensions(source_extension, preferred=None):
     return tuple(seen)
 
 
+def owned_extensions(source_extension, preferred=None):
+    """``candidate_extensions`` plus the other spellings an older release
+    may have given a legacy preview (review M1): the source's own
+    (``X_thumb.JPG`` for ``X.JPG``) and the upper-case legacy one."""
+    extensions = list(candidate_extensions(source_extension, preferred))
+    legacy = _legacy_extension(source_extension)
+    for spelling in (source_extension, legacy.upper()):
+        if spelling not in extensions and owns(spelling, source_extension):
+            extensions.append(spelling)
+    return tuple(extensions)
+
+
 def _is_preview_file(path):
     try:
         return not path.is_symlink() and path.is_file()
@@ -165,14 +190,8 @@ def owned_in_folder(folder, stem, source_extension, preferred=None):
     """Yield the existing previews ``<folder>/<stem><ext>`` a source with
     *source_extension* owns, in lookup order (regular files, no links; one
     file found under two spellings on a case-insensitive disk once)."""
-    extensions = list(candidate_extensions(source_extension, preferred))
-    if source_extension != source_extension.lower() and owns(
-        source_extension, source_extension
-    ):
-        # An older release kept the source's own spelling (``b_thumb.JPG``).
-        extensions.append(source_extension)
     seen = set()
-    for extension in extensions:
+    for extension in owned_extensions(source_extension, preferred):
         path = Path(folder) / (stem + extension)
         if not _is_preview_file(path):
             continue

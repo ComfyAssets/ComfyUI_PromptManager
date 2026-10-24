@@ -2301,21 +2301,28 @@ Thumbnail format and settings (#317, `py/api/thumbnail_settings.py`,
 - Names: `thumbnails/<stem>_thumb.webp|.jxl|.jpg` for images and videos alike. Every
   lookup (listings, duplicates, enrichment, the autotag scan, the history route) takes
   the first existing preview the file owns, the configured format first: an older
-  release's `_thumb.png` (or `.jpeg`, `.gif`, the source's own spelling) keeps showing
-  until it is converted. Two files with one stem in a folder share one preview name
-  (images first). A request for an older name answers the current preview. Previews
+  release's `_thumb.png` (or `.jpeg`, `.gif`, the source's own spelling or the
+  upper-case one) keeps showing, and counts as outdated, until it is converted. History's
+  cover uses the same lookup as the Images listing. Two files with one stem in a folder
+  share one preview name, made from the first source in `.png`, `.jpg`, `.jpeg`,
+  `.webp`, `.gif`, then videos. A request for an older name answers the current preview. Previews
   are served with an explicit `image/webp` / `image/jxl` type (the platform's mimetypes
   table may not know them) and the same cache headers; `.jxl` is served from
   `thumbnails/` only.
 - Every preview is written by `write_thumbnail`: the first frame (animated sources give
   a still), RGB, fitted inside the edge, encoded into a hidden temp sibling that is
   closed, verified to decode (a JPEG XL file Pillow cannot read is checked by its
-  signature) and renamed over the preview; a failure keeps the old file.
+  signature) and renamed over the preview; a failure keeps the old file. ffmpeg writes
+  with `-update 1`, so a `%` in a name is never a sequence pattern, and reads a video as
+  `file:<path>`. Temp files a crash left (`.<stem>.part-<pid>-<thread><ext>`) are
+  removed by the clear and, when older than two minutes, by a sweep at startup.
 - JPEG XL needs no new dependency: Pillow (natively or with `pillow_jxl`, imported when
   installed), else ffmpeg with `libjxl`, else `cjxl`, detected once. Quality maps to
   libjxl's distance (`0.1 + (100 − q) × 0.09` from 30 up: q80 → 1.9, q85 → 1.45; never
   lossless). Without an encoder, saving `jxl` is a 400 `jxl-unavailable` with the
-  reason; if the encoder disappears later, previews are written as WebP (logged once)
+  reason. An encoder that fails makes that write detect again once: another encoder
+  found is used, none at all writes the file as WebP (logged once) and refreshes the
+  availability Appearance reads; if JPEG XL has no encoder, previews are written as WebP
   and count as the format written. Encoder processes (and ffmpeg's frames) are tracked,
   bounded by a 30 s timeout and killed at the app's cleanup, after which none starts.
 - A preview in another format than the one written now is *outdated*.
@@ -2324,10 +2331,16 @@ Thumbnail format and settings (#317, `py/api/thumbnail_settings.py`,
   (`POST /jobs/thumbnails {mode: "convert"}`, "Convert outdated thumbnails") runs under
   the thumbnail job's kind, guarded admission, worker threads and cancel: for each
   outdated file it writes the new preview from the source (a video with no decodable
-  frame fails instead of getting the placeholder), then removes that file's old-format
-  previews (regular files in its `thumbnails/` folder that the source owns, the source
-  still present). A failure keeps the old preview; orphans (source gone) and links are
-  never touched. Its final line is "N converted · F failed · <before> → <after>"
+  frame fails instead of getting the placeholder; a current preview it keeps must
+  decode), then removes that file's old-format previews (regular files in its
+  `thumbnails/` folder that the source owns, the source still present; one already gone
+  counts as removed). Files sharing a preview name are converted once, as a group, from
+  the first source above, and each file's bytes count once. A failure keeps the old
+  preview; orphans (source gone) and links are never touched. While it runs, a change of
+  the thumbnail format, quality or size limit is a 409 `busy` naming it, and should the
+  format still change underneath, the job stops at the next file without removing
+  anything ("Stopped: the thumbnail format changed …"). Its final line is "N converted · F
+  failed · <before> → <after>"
   (`tests/test_thumbnail_convert.py`, "Convert outdated replaces older-format previews"
   in `workspace-system-sources.spec.mjs`). Nothing converts by itself: Appearance's
   format change only makes previews outdated.
@@ -2340,7 +2353,11 @@ Thumbnail format and settings (#317, `py/api/thumbnail_settings.py`,
 - The workspace decodes a 1×1 embedded JPEG XL once (`thumbnail-support.mjs`); where it
   fails, cards and the inspector cover load the original for a `.jxl` preview, and any
   preview `<img>` that fails to load falls back to the original (the legacy gallery
-  already does). Appearance says when this browser cannot show JPEG XL thumbnails.
+  already does). A video whose preview it cannot show keeps its own element (Images) or
+  its "Video preview" label (Library), never a broken image. History's cover URL names
+  no format, so the server serves a `.jxl` preview only when the request's `Accept`
+  lists `image/jxl`; otherwise the file's preview in another format, else the original
+  image or a video's placeholder. Appearance says when this browser cannot show JPEG XL thumbnails.
 
 Overview (`system-overview.mjs`) reads `GET /prompt_manager/system/overview` once per
 visit through `latestOnly()` on the section scope; a late answer after the section left

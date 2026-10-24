@@ -617,6 +617,8 @@ class TestThumbnailJob(ThumbnailJobCase):
             "scale='min(iw,320)':'min(ih,320)':force_original_aspect_ratio=decrease",
         )
         self.assertEqual(cmd[-5:], ["-f", "image2pipe", "-vcodec", "png", "-"])
+        # Review M6: the input is always read as a file, never a protocol URL.
+        self.assertTrue(cmd[cmd.index("-i") + 1].startswith("file:"))
         with Image.open(self._thumb_path("clip")) as thumb:
             self.assertEqual((thumb.format, thumb.size), ("WEBP", (320, 180)))
 

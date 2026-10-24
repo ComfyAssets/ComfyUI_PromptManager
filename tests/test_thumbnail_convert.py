@@ -268,6 +268,99 @@ class TestConvertOutdated(ConvertCase):
         self.assertEqual(job.counters["errors"], 1)
         self.assertTrue(old.exists(), "a source gone mid-run makes an orphan")
 
+    async def test_same_stem_sources_convert_once_and_count_bytes_once(self):
+        # Review I2 / R2: x.png and x.jpg share x_thumb.webp. The pair is
+        # converted once, from the image first in the source order (.png),
+        # and every removed file's bytes count once.
+        original = PromptManagerConfig.WORKER_THREADS
+        PromptManagerConfig.WORKER_THREADS = 2
+        self.addCleanup(setattr, PromptManagerConfig, "WORKER_THREADS", original)
+        from py.api.thumbnail_convert import readable_bytes
+
+        png = self.output_dir / "x.png"
+        Image.new("RGB", (300, 300), (220, 20, 20)).save(png)
+        jpg = self.output_dir / "x.jpg"
+        Image.new("RGB", (300, 300), (20, 20, 220)).save(jpg)
+        old_png = big_png(self._thumb_path("x", ".png"), size=(200, 200))
+        old_jpg = self._thumb_path("x", ".jpg")
+        Image.effect_noise((200, 200), 40).convert("RGB").save(old_jpg, "JPEG")
+        later = max(png.stat().st_mtime, jpg.stat().st_mtime) + 5
+        for path in (old_png, old_jpg):
+            os.utime(path, (later, later))
+        before = old_png.stat().st_size + old_jpg.stat().st_size
+
+        _, job = await self._convert()
+
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(
+            (job.counters["generated"], job.counters["errors"]), (2, 0), job.log
+        )
+        new = self._thumb_path("x")
+        self.assertFalse(old_png.exists() or old_jpg.exists())
+        with Image.open(new) as img:
+            red, _green, blue = img.convert("RGB").getpixel((5, 5))
+        self.assertGreater(red, blue, "the image first in the source order wins")
+        self.assertEqual(
+            job.status_line,
+            f"2 converted · 0 failed · {readable_bytes(before)} → "
+            f"{readable_bytes(new.stat().st_size)}",
+        )
+
+    async def test_an_old_preview_already_gone_counts_as_removed(self):
+        old = self._legacy("g")
+        real = self.api._generate_one
+
+        def remove_first(src, *args, **kwargs):
+            os.remove(old)
+            return real(src, *args, **kwargs)
+
+        self.api._generate_one = remove_first
+        _, job = await self._convert()
+        self.assertEqual((job.counters["generated"], job.counters["errors"]), (1, 0))
+        self.assertRegex(job.status_line, r"^1 converted · 0 failed · 0 B → ")
+
+    async def test_a_current_preview_that_does_not_decode_is_written_again(self):
+        # Review M4: a kept current preview is decoded before old ones go.
+        old = self._legacy("m")
+        current = self._thumb_path("m")
+        current.write_bytes(b"RIFF not a webp")
+        later = old.stat().st_mtime + 5
+        os.utime(current, (later, later))
+        _, job = await self._convert()
+        self.assertEqual((job.counters["generated"], job.counters["errors"]), (1, 0))
+        with Image.open(current) as img:
+            self.assertEqual(img.format, "WEBP")
+        self.assertFalse(old.exists())
+
+    async def test_a_format_change_underneath_stops_the_job(self):
+        # Review I4 (defense in depth): the job never removes previews in a
+        # format chosen after it started.
+        original = PromptManagerConfig.WORKER_THREADS
+        PromptManagerConfig.WORKER_THREADS = 1
+        self.addCleanup(setattr, PromptManagerConfig, "WORKER_THREADS", original)
+        olds = [self._legacy(f"f{i}") for i in range(4)]
+        real = self.api._convert_one
+        calls = []
+
+        def switching(*args, **kwargs):
+            result = real(*args, **kwargs)
+            calls.append(result)
+            if len(calls) == 1:
+                PromptManagerConfig.update_config(
+                    {"thumbnails": {"format": "jpeg", "quality": 80, "edge": 512}}
+                )
+                jpeg = self._thumb_path("f3", ".jpg")
+                Image.new("RGB", (16, 16)).save(jpeg, "JPEG")
+            return result
+
+        self.api._convert_one = switching
+        _, job = await self._convert()
+        self.assertEqual(job.state, "cancelled")
+        self.assertIn("format changed", job.status_line)
+        self.assertEqual(job.counters["generated"], 1)
+        self.assertTrue(self._thumb_path("f3", ".jpg").exists(), "the new format stays")
+        self.assertEqual(sum(1 for p in olds if p.exists()), 3)
+
     def test_byte_sizes_are_readable(self):
         from py.api.thumbnail_convert import readable_bytes
 

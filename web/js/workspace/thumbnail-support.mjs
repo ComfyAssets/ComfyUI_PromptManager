@@ -8,6 +8,9 @@
  *   original when the thumbnail is JPEG XL and this browser cannot decode it. While the answer is unknown the
  *   thumbnail is tried; `fallBackToOriginal` then catches a failure.
  * - `fallBackToOriginal(img, url)`: a thumbnail `<img>` that fails to load shows the original instead (once).
+ * - `showsThumbnail(image)`: false for a video whose thumbnail is missing or one this browser cannot show (its URL
+ *   would be the video itself): the card keeps the video's own element or label, never a broken image.
+ * - `replaceOnError(img, next)`: a video thumbnail `<img>` that fails to load is replaced by `next()` (once).
  */
 
 // A 1×1 JPEG XL image (cjxl -d 1), decoded once to learn whether this browser shows JPEG XL.
@@ -58,6 +61,20 @@ export function thumbnailSource(image, supported = answer) {
     if (typeof thumbnail !== 'string' || !thumbnail) return image?.url;
     if (supported === false && isJxlUrl(thumbnail)) return image.url;
     return thumbnail;
+}
+
+/** Whether a card shows `image`'s thumbnail (always for an image: its original at worst). */
+export function showsThumbnail(image, supported = answer) {
+    if (!image?.is_video) return true;
+    const source = thumbnailSource(image, supported);
+    return Boolean(source) && source !== image.url;
+}
+
+/** A video thumbnail `<img>` that fails to load is replaced by `next()`, once (`listen` as in fallBackToOriginal). */
+export function replaceOnError(node, next, listen = null) {
+    const swap = () => node.replaceWith(next());
+    if (listen) listen(node, 'error', swap, { once: true });
+    else node.addEventListener('error', swap, { once: true });
 }
 
 /**

@@ -72,3 +72,30 @@ test('a thumbnail that fails to load falls back to the original once', () => {
     listen[0][2]();
     assert.equal(scoped.src, '/serve/b.png');
 });
+
+test('a video card shows its thumbnail only when this browser can show it (review M2)', () => {
+    const video = { is_video: true, url: '/serve/c.mp4?root=0', thumbnail_url: '/serve/thumbnails/c_thumb.jxl?root=0' };
+    assert.equal(support.showsThumbnail(video, false), false, 'JPEG XL unsupported: the video keeps its own element');
+    assert.equal(support.showsThumbnail(video, true), true);
+    assert.equal(support.showsThumbnail(video, undefined), true, 'unknown: try it, the error swaps');
+    assert.equal(support.showsThumbnail({ ...video, thumbnail_url: '/serve/thumbnails/c_thumb.webp' }, false), true);
+    assert.equal(support.showsThumbnail({ ...video, thumbnail_url: null }, true), false);
+    assert.equal(support.showsThumbnail({ url: '/serve/a.png', thumbnail_url: '/serve/thumbnails/a_thumb.jxl' }, false), true,
+        'an image always shows something: its original');
+});
+
+test('a video thumbnail that fails to load is replaced once, never left broken', () => {
+    const listeners = {};
+    let replaced = null;
+    const node = { addEventListener(type, handler, options) { listeners[type] = { handler, options }; },
+        replaceWith(next) { replaced = next; } };
+    support.replaceOnError(node, () => 'label');
+    assert.equal(listeners.error.options.once, true);
+    listeners.error.handler();
+    assert.equal(replaced, 'label');
+    const listen = [];
+    support.replaceOnError(node, () => 'other', (...args) => listen.push(args));
+    assert.equal(listen[0][1], 'error');
+    listen[0][2]();
+    assert.equal(replaced, 'other');
+});

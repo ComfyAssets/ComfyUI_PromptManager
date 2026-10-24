@@ -336,6 +336,50 @@ class TestPlanStatusAndJobs(FormatCase):
         self.assertTrue((self.output_dir / "k.png").exists())
 
 
+class TestReviewFixes(FormatCase):
+    async def test_a_legacy_preview_in_another_case_is_outdated(self):
+        # Review M1: X.JPG's older X_thumb.JPG, and y.png's y_thumb.PNG.
+        upper = self.output_dir / "X.JPG"
+        Image.new("RGB", (64, 64)).save(upper, "JPEG")
+        make_png(self.output_dir / "y.png")
+        for name in ("X_thumb.JPG", "y_thumb.PNG"):
+            legacy = self.output_dir / "thumbnails" / name
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (32, 32)).save(legacy, "PNG" if "PNG" in name else "JPEG")
+        body = await (await self.client.get(STATUS)).json()
+        self.assertEqual((body["outdated"], body["pending"]), (2, 0))
+        resp = await self.client.post(JOB, json={"mode": "convert"})
+        job = await self._finished((await resp.json())["job"]["id"])
+        self.assertEqual(job.counters["generated"], 2, job.log)
+        names = sorted(os.listdir(self.output_dir / "thumbnails"))
+        self.assertEqual(names, ["X_thumb.webp", "y_thumb.webp"])
+
+    async def test_clear_also_removes_stray_temp_files(self):
+        make_png(self.output_dir / "k.png")
+        make_png(self._thumb("k"))
+        folder = self.output_dir / "thumbnails"
+        for name in (".k_thumb.part-1-2.webp", ".501one.part-3-4.jxl"):
+            (folder / name).write_bytes(b"partial")
+        keep = folder / "notes.txt"
+        keep.write_bytes(b"x")
+        resp = await self.client.post("/prompt_manager/images/clear-thumbnails")
+        self.assertEqual((await resp.json())["cleared_files"], 3)
+        self.assertEqual(os.listdir(folder), ["notes.txt"])
+
+    def test_the_startup_sweep_removes_only_old_temp_files(self):
+        folder = self.output_dir / "thumbnails" / "sub"
+        folder.mkdir(parents=True)
+        old = folder / ".a_thumb.part-1-2.webp"
+        young = folder / ".b_thumb.part-1-2.webp"
+        for path in (old, young):
+            path.write_bytes(b"partial")
+        when = old.stat().st_mtime - 3600
+        os.utime(old, (when, when))
+        self.assertEqual(self.api.sweep_thumbnail_temps(), 1)
+        self.assertFalse(old.exists())
+        self.assertTrue(young.exists())
+
+
 class TestRemoval(FormatCase):
     def test_removing_a_source_removes_its_previews_in_every_format(self):
         make_png(self.output_dir / "r.png")

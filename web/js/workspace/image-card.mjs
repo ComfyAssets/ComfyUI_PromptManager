@@ -9,7 +9,7 @@ import { cardTitle, cardSubtitle, imageKey, mediaRatio } from './images-state.mj
 import { createWorkspaceIcon } from './icons.mjs';
 import { createTagButton } from './image-tagging.mjs';
 import { paintStar } from './images-favorites.mjs';
-import { fallBackToOriginal, thumbnailSource } from './thumbnail-support.mjs';
+import { fallBackToOriginal, replaceOnError, showsThumbnail, thumbnailSource } from './thumbnail-support.mjs';
 
 function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -33,11 +33,11 @@ function videoMedia(image) {
  */
 export function cardMedia(image, lazy = false) {
     const { resolveUrl } = window.ApiClient;
-    if (image.is_video && !image.thumbnail_url) return videoMedia(image);
+    if (!showsThumbnail(image)) return videoMedia(image);
     const node = el('img');
     node.src = resolveUrl(thumbnailSource(image));
     // replaceWith does nothing for a card no longer in the page.
-    if (image.is_video) node.addEventListener('error', () => node.replaceWith(videoMedia(image)), { once: true });
+    if (image.is_video) replaceOnError(node, () => videoMedia(image));
     else fallBackToOriginal(node, resolveUrl(image.url));
     // The concept card image: alt is the card title, with the listing's intrinsic size when known.
     node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';

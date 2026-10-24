@@ -1424,6 +1424,71 @@ class TestThumbnailSettings(AdminAPITestCase):
         self.assertEqual(self._read_config()["thumbnails"]["format"], "jxl")
         self.assertEqual(PromptManagerConfig.THUMBNAIL_FORMAT, "jxl")
 
+    async def _running_job(self, mode):
+        from py.api.jobs import THUMBNAILS_JOB_KIND
+        from py.api.thumbnail_convert import CONVERT_JOB_TITLE
+
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+            job.finish("finished")
+
+        job = self.api._jobs.start(
+            THUMBNAILS_JOB_KIND,
+            CONVERT_JOB_TITLE if mode == "convert" else "Thumbnail generation",
+            admission="guarded",
+            scope={"mode": mode},
+            runner=runner,
+        )
+
+        async def release():
+            gate.set()
+            await asyncio.wait_for(job.task, 5)
+
+        self.addAsyncCleanup(release)
+        return job
+
+    async def test_thumbnail_changes_wait_for_a_running_conversion(self):
+        # Review I4: a convert job's format is fixed; changing the format,
+        # quality or size limit under it is refused with the job named.
+        PromptManagerConfig.update_config(
+            {"thumbnails": {"format": "webp", "quality": 80, "edge": 512}}
+        )
+        job = await self._running_job("convert")
+        for change in (
+            {"thumbnail_format": "jpeg"},
+            {"thumbnail_quality": 70},
+            {"thumbnail_edge": 300},
+        ):
+            resp = await self.client.request("POST", self.URL, json=change)
+            body = await resp.json()
+            self.assertEqual(resp.status, 409, change)
+            self.assertEqual(body["code"], "busy")
+            self.assertEqual(body["running"]["id"], job.id)
+            self.assertIn("Convert outdated thumbnails", body["error"])
+            self.assertIn("thumbnail", body["error"].lower())
+        self.assertEqual(
+            (
+                PromptManagerConfig.THUMBNAIL_FORMAT,
+                PromptManagerConfig.THUMBNAIL_QUALITY,
+                PromptManagerConfig.THUMBNAIL_EDGE,
+            ),
+            ("webp", 80, 512),
+        )
+        # The same values, or other settings, still save.
+        resp = await self.client.request(
+            "POST", self.URL, json={"thumbnail_format": "webp", "thumbnail_quality": 80}
+        )
+        self.assertEqual(resp.status, 200)
+
+    async def test_a_missing_previews_job_does_not_block_thumbnail_changes(self):
+        await self._running_job("missing")
+        resp = await self.client.request(
+            "POST", self.URL, json={"thumbnail_format": "jpeg"}
+        )
+        self.assertEqual(resp.status, 200)
+
 
 class TestDiagnostics(AdminAPITestCase):
 

@@ -97,9 +97,7 @@ except ImportError:  # tests import the package top-level
 PLACEHOLDER_SIZE = (thumbnail_settings.DEFAULT_EDGE, thumbnail_settings.DEFAULT_EDGE)
 PLACEHOLDER_QUALITY = 85
 # Source extensions in the order a shared preview name looks for them (R2).
-_SOURCE_ORDER = (".png", ".jpg", ".jpeg", ".webp", ".gif") + tuple(
-    sorted(VIDEO_EXTENSIONS)
-)
+_SOURCE_ORDER = thumbnail_settings.IMAGE_SOURCE_ORDER + tuple(sorted(VIDEO_EXTENSIONS))
 # Previews views may write at once (the size of the view pool).
 ON_DEMAND_LIMIT = 3
 # View requests that may wait on the gate; one more gets its fallback at once.

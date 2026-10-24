@@ -277,6 +277,161 @@ class TestWrite(TempCase):
                 te.verify_thumbnail(path, "jxl")
 
 
+class TestFfmpegNames(TempCase):
+    """Review I1: ffmpeg's image2 muxer reads ``%d`` in an output name as a
+    sequence pattern; ``-update 1`` keeps the temp name literal."""
+
+    def test_the_ffmpeg_command_writes_one_literal_file(self):
+        seen = []
+
+        def fake(cmd, **kwargs):
+            seen.append(cmd)
+            Path(cmd[-1]).write_bytes(JXL_CODESTREAM + b"\x00" * 8)
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        with (
+            patch.object(te, "detect_jxl_encoder", return_value="ffmpeg"),
+            patch.object(te, "run_encoder", side_effect=fake),
+            patch.object(te, "_pillow_decodes_jxl", return_value=False),
+        ):
+            te.write_thumbnail(
+                Image.new("RGB", (8, 8)),
+                self.tmp / "a_thumb.jxl",
+                ThumbnailSettings("jxl", 80, 64),
+            )
+        cmd = seen[0]
+        self.assertEqual(cmd[cmd.index("-update") + 1], "1")
+        self.assertLess(cmd.index("-update"), len(cmd) - 1)
+
+    @unittest.skipUnless(_ffmpeg_has_libjxl(), "ffmpeg without libjxl")
+    def test_a_percent_in_the_name_is_written_under_that_name(self):
+        dst = self.tmp / "50%done_thumb.jxl"
+        with patch.object(te, "detect_jxl_encoder", return_value="ffmpeg"):
+            written = te.write_thumbnail(
+                Image.new("RGB", (32, 32), (10, 200, 10)),
+                dst,
+                ThumbnailSettings("jxl", 80, 64),
+            )
+        self.assertEqual(written, dst)
+        self.assertTrue(dst.is_file())
+        self.assertEqual(self._leftovers(), [], "no stray sequence-named temp")
+
+
+class TestStrayTemps(TempCase):
+    """Review I1: a temp left by a crash (or the old ``%`` bug) is swept."""
+
+    def _touch(self, name, age=3600):
+        path = self.tmp / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 10)
+        when = path.stat().st_mtime - age
+        os.utime(path, (when, when))
+        return path
+
+    def test_only_old_temp_siblings_are_removed(self):
+        strays = [
+            self._touch(".a_thumb.part-12-34.webp"),
+            self._touch(".501one.part-1-2.jxl"),
+            self._touch("sub/.b_thumb.src-5-6.png"),
+        ]
+        kept = [
+            self._touch("a_thumb.webp"),
+            self._touch(".hidden"),
+            self._touch("notes.part-1-2.webp"),
+            self._touch(".c_thumb.part-x-2.webp"),
+            self._touch(".young_thumb.part-7-8.webp", age=0),
+        ]
+        own = self._touch(f".mine_thumb.part-{os.getpid()}-9.webp")
+        count, size = te.sweep_stray_temps(self.tmp, min_age=60)
+        self.assertEqual((count, size), (3, 30))
+        for path in strays:
+            self.assertFalse(path.exists(), path.name)
+        for path in kept + [own]:
+            self.assertTrue(path.exists(), path.name)
+
+    def test_without_an_age_every_temp_goes_but_links_stay(self):
+        stray = self._touch(".a_thumb.part-1-2.webp", age=0)
+        own = self._touch(f".mine_thumb.part-{os.getpid()}-9.webp", age=0)
+        target = self._touch("target.bin")
+        link = self.tmp / ".l_thumb.part-1-2.webp"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            link = None
+        self.assertEqual(te.sweep_stray_temps(self.tmp, min_age=0)[0], 2)
+        self.assertFalse(stray.exists() or own.exists())
+        if link is not None:
+            self.assertTrue(link.is_symlink())
+
+    def test_a_missing_folder_sweeps_nothing(self):
+        self.assertEqual(te.sweep_stray_temps(self.tmp / "none"), (0, 0))
+
+
+class TestEncoderVanishes(TempCase):
+    """Review I3: an encoder that disappears after detection is detected
+    again once; with none left, that file is written as WebP and the
+    availability Appearance reads is refreshed."""
+
+    def test_a_missing_binary_falls_back_to_webp_and_refreshes(self):
+        found = iter(["cjxl", None])
+        with (
+            patch.object(te, "_detect", side_effect=lambda: next(found)),
+            patch.object(te, "run_encoder", side_effect=FileNotFoundError("cjxl")),
+            self.assertLogs("prompt_manager.thumbnails", logging.WARNING),
+        ):
+            self.assertTrue(te.encoder_status()["jxl"]["available"])
+            written = te.write_thumbnail(
+                Image.new("RGB", (16, 16)),
+                self.tmp / "v_thumb.jxl",
+                ThumbnailSettings("jxl", 80, 64),
+            )
+            status = te.encoder_status()["jxl"]
+        self.assertEqual(written.name, "v_thumb.webp")
+        with Image.open(written) as img:
+            self.assertEqual(img.format, "WEBP")
+        self.assertEqual((status["available"], status["encoder"]), (False, None))
+        self.assertEqual(self._leftovers(), [])
+
+    def test_another_encoder_found_again_is_used(self):
+        found = iter(["cjxl", "ffmpeg"])
+        used = []
+
+        def fake(cmd, **kwargs):
+            used.append(cmd[0])
+            if cmd[0] == "cjxl":
+                raise FileNotFoundError("cjxl")
+            Path(cmd[-1]).write_bytes(JXL_CODESTREAM + b"\x00" * 8)
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        with (
+            patch.object(te, "_detect", side_effect=lambda: next(found)),
+            patch.object(te, "run_encoder", side_effect=fake),
+            patch.object(te, "_pillow_decodes_jxl", return_value=False),
+        ):
+            written = te.write_thumbnail(
+                Image.new("RGB", (16, 16)),
+                self.tmp / "w_thumb.jxl",
+                ThumbnailSettings("jxl", 80, 64),
+            )
+        self.assertEqual(written.name, "w_thumb.jxl")
+        self.assertEqual(used, ["cjxl", "ffmpeg"])
+        self.assertEqual(self._leftovers(), [])
+
+    def test_the_same_encoder_failing_again_raises(self):
+        failed = subprocess.CompletedProcess([], 1, b"", b"bad input")
+        with (
+            patch.object(te, "_detect", return_value="cjxl") as detect,
+            patch.object(te, "run_encoder", return_value=failed),
+        ):
+            with self.assertRaises(te.EncoderFailed):
+                te.write_thumbnail(
+                    Image.new("RGB", (16, 16)),
+                    self.tmp / "x_thumb.jxl",
+                    ThumbnailSettings("jxl", 80, 64),
+                )
+        self.assertEqual(detect.call_count, 2, "detected again once")
+
+
 class TestEncoderProcesses(TempCase):
     SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
 

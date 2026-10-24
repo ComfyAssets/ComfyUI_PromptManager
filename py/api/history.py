@@ -20,6 +20,7 @@ from .history_current import (
     _OpenedCurrentMedia,
     _current_media_response,
     _prepare_current_media,
+    accepts_jxl,
     _reauthorize_current_target,
     candidate_locator,
     resolve_current_candidate,
@@ -794,6 +795,7 @@ class HistoryRoutesMixin:
             media_options = {
                 "ensure_preview": lambda *preview: needed.append(preview),
                 "placeholder": self._video_placeholder_bytes(),
+                "accepts_jxl": accepts_jxl(request),
             }
         prepared = await execute()
         if needed:
