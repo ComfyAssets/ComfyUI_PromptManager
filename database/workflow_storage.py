@@ -167,14 +167,13 @@ class WorkflowStorageOperations:
         protected, batches, stopped, documents_removed}``. Unreferenced
         documents are swept once every row was looked at.
         """
-        conn = self.model.get_connection()
         totals = {"rows": 0, "protected": 0, "batches": 0, "last_id": 0}
         stopped = False
         while True:
             if should_stop is not None and should_stop():
                 stopped = True
                 break
-            batch = migrate_batch(conn, totals["last_id"], max_rows, max_bytes)
+            batch = self.migrate_workflow_batch(totals["last_id"], max_rows, max_bytes)
             if batch["done"]:
                 break
             totals["rows"] += batch["rows"]
@@ -183,10 +182,7 @@ class WorkflowStorageOperations:
             totals["last_id"] = batch["last_id"]
             if on_batch is not None:
                 on_batch(dict(totals))
-        removed = 0
-        if not stopped:
-            with conn:
-                removed = sweep_documents(conn)
+        removed = 0 if stopped else self.sweep_workflow_documents()
         return {
             "rows": totals["rows"],
             "protected": totals["protected"],
@@ -194,6 +190,24 @@ class WorkflowStorageOperations:
             "stopped": stopped,
             "documents_removed": removed,
         }
+
+    def migrate_workflow_batch(
+        self, after_id, max_rows=BATCH_ROWS, max_bytes=BATCH_BYTES
+    ) -> dict:
+        """One batch on the calling thread's connection (``migrate_batch``)."""
+        return migrate_batch(self.model.get_connection(), after_id, max_rows, max_bytes)
+
+    def sweep_workflow_documents(self) -> int:
+        """Remove every document no image row references (one transaction)."""
+        conn = self.model.get_connection()
+        with conn:
+            return sweep_documents(conn)
+
+    def workflow_storage_status(self) -> dict:
+        """``workflow_storage_counts`` on one read-only snapshot (blocking)."""
+        from .maintenance import _read_snapshot
+
+        return _read_snapshot(self.model.db_path, self.workflow_storage_counts)
 
     def workflow_storage_counts(self, conn) -> dict:
         """``{rows, protected, documents, inline_bytes}`` on ``conn`` (reads only).
@@ -220,9 +234,7 @@ class WorkflowStorageOperations:
         stopped VACUUM; the database is then unchanged.
         """
         db_path = self.model.db_path
-        conn = self.model.get_connection()
-        with conn:
-            removed = sweep_documents(conn)
+        removed = self.sweep_workflow_documents()
         before = _file_bytes(db_path)
         self.model.vacuum_database()
         with closing(sqlite3.connect(db_path)) as checkpoint:

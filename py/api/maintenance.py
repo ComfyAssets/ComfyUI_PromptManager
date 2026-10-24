@@ -68,6 +68,7 @@ PREVIEW_BODY_MAX = 4096
 # Duplicate-file previews carry the reviewed keepers (py/api/duplicate_files.py).
 DUPLICATE_PREVIEW_BODY_MAX = 1024 * 1024
 DUPLICATE_FILES = "duplicate_files"
+WORKFLOW_STORAGE = "workflow_storage"  # applied by py/api/workflow_storage.py
 PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES,)
 # Room left over beyond what a step writes, so a disk is never filled to 0.
 DISK_MARGIN_BYTES = 16 * 2**20
@@ -77,6 +78,7 @@ MAINTENANCE_TITLES = {
     "optimize": "Optimize database",
     "unused_components": "Unused prompt components",
     "missing_links": "Missing-file links",
+    "workflow_storage": "Store each workflow once",
 }
 _OPERATION_ERROR = "operation must be one of: " + ", ".join(PREVIEW_OPERATIONS)
 MAINTENANCE_GROUPS = ("changed", "protected", "errors")
@@ -160,7 +162,7 @@ def _megabytes(size):
     return f"{size / 2**20:,.1f} MB"
 
 
-def disk_plan(db_path, *, backup, vacuum):
+def disk_plan(db_path, *, backup, vacuum, vacuum_bytes=None):
     """Whether the disk has room for an apply's writes (blocking).
 
     ``backup``: the safety backup, one database-sized file beside the
@@ -168,7 +170,9 @@ def disk_plan(db_path, *, backup, vacuum):
     beside it and builds it in a temporary copy in SQLite's temporary folder
     (``sqlite_temp_dir``; SQLite's documentation: up to twice the database
     in free space). Needs
-    on one device add up. Returns ``(public, short)``: ``public`` is
+    on one device add up. ``vacuum_bytes``, when given, is what VACUUM
+    copies (the live pages, for Reclaim space) instead of the whole file.
+    Returns ``(public, short)``: ``public`` is
     ``{free_bytes, required_bytes, sufficient}`` for the database folder,
     ``short`` None or ``(place, what, required, free)`` of the first place
     that is short, and ``size`` the database's size (0 when nothing is
@@ -181,8 +185,10 @@ def disk_plan(db_path, *, backup, vacuum):
     if backup:
         needs.append(("database folder", folder, size, "the safety backup"))
     if vacuum:
-        needs.append(("database folder", folder, size, "Optimize"))
-        needs.append(("temporary folder", sqlite_temp_dir(), size, "Optimize"))
+        copy = size if vacuum_bytes is None else vacuum_bytes
+        what = "Optimize" if vacuum_bytes is None else "Reclaim space"
+        needs.append(("database folder", folder, copy, what))
+        needs.append(("temporary folder", sqlite_temp_dir(), copy, what))
     devices = {}
     for place, path, needed, what in needs:
         entry = devices.setdefault(_device(path), {"place": place, "path": path})
@@ -567,6 +573,8 @@ class MaintenanceRoutesMixin:
         try:
             if plan.operation == DUPLICATE_FILES:
                 job = self._start_duplicate_cleanup(db, plan, backup)
+            elif plan.operation == WORKFLOW_STORAGE:
+                job = self._start_workflow_storage(db, backup)
             else:
                 job = self._jobs.start(
                     MAINTENANCE_JOB_KIND,

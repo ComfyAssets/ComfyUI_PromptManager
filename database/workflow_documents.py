@@ -66,12 +66,6 @@ _DDL = (
     "byte_length INTEGER NOT NULL, data BLOB NOT NULL)"
 )
 _AUTOINDEX = f"sqlite_autoindex_{TABLE}_1"
-_COLUMNS = (
-    ("id", "INTEGER", 0, 1),
-    ("sha256", "BLOB", 1, 0),
-    ("byte_length", "INTEGER", 1, 0),
-    ("data", "BLOB", 1, 0),
-)
 _REFERENCE_TYPE = f"INTEGER REFERENCES {TABLE}(id)"
 
 _UNREFERENCED = (
@@ -202,14 +196,9 @@ def workflow_documents_schema_error(
     others = {(kind, name, sql) for kind, name, sql in objects if kind != "table"}
     if len(tables) != 1 or others != {("index", _AUTOINDEX, None)}:
         return "Workflow documents name is reserved by an unsupported schema object"
+    # The exact definition fixes the columns, their types and constraints.
     if _compact(tables[0]) != _compact(_DDL):
         return "Workflow documents have an invalid table definition"
-    shape = tuple(
-        (row[1], str(row[2]).upper(), row[3], row[5])
-        for row in conn.execute(f"PRAGMA table_info({TABLE})")
-    )
-    if shape != _COLUMNS:
-        return "Workflow documents have invalid columns"
     return _reference_error(conn, columns) or _value_error(conn)
 
 

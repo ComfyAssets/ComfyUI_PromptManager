@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 import zlib
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -400,6 +401,152 @@ class TestSchema(DocumentsTestCase):
                 ok, reason = PromptModel.verify_database_file(copy)
                 self.assertFalse(ok)
                 self.assertIn("orkflow", reason)
+
+
+class TestSchemaErrors(unittest.TestCase):
+    """Each way a restored file's document schema can be wrong is named."""
+
+    IMAGES = (
+        "CREATE TABLE generated_images (id INTEGER PRIMARY KEY, "
+        "workflow_data TEXT, prompt_metadata TEXT{extra})"
+    )
+    TABLE = (
+        "CREATE TABLE workflow_documents (id INTEGER PRIMARY KEY, sha256 BLOB NOT "
+        "NULL UNIQUE, byte_length INTEGER NOT NULL, data BLOB NOT NULL{extra})"
+    )
+    REFS = (
+        ", workflow_document_id {kind}, prompt_document_id "
+        "INTEGER REFERENCES workflow_documents(id)"
+    )
+    GOOD_REF = "INTEGER REFERENCES workflow_documents(id)"
+
+    def schema(self, images_extra="", table_extra="", indexes=True, table=True):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute(self.IMAGES.format(extra=images_extra))
+        if table:
+            conn.execute(self.TABLE.format(extra=table_extra))
+        if indexes and images_extra:
+            for column, index in wd.INDEXES.items():
+                conn.execute(f"CREATE INDEX {index} ON generated_images({column})")
+        return conn
+
+    def test_each_error_is_named(self):
+        refs = self.REFS.format(kind=self.GOOD_REF)
+        cases = {
+            "Missing workflow document schema": self.schema(table=False),
+            "Incomplete workflow document schema": self.schema(),
+            "Workflow documents have an invalid table definition": self.schema(
+                refs, table_extra=", extra TEXT"
+            ),
+            "Workflow document references have an invalid column": self.schema(
+                self.REFS.format(kind="TEXT REFERENCES workflow_documents(id)")
+            ),
+            "Workflow document references have invalid foreign keys": self.schema(
+                self.REFS.format(kind="INTEGER")
+            ),
+            "Workflow document references are missing their index": self.schema(
+                refs, indexes=False
+            ),
+        }
+        for message, conn in cases.items():
+            with self.subTest(message=message):
+                self.assertEqual(
+                    wd.workflow_documents_schema_error(conn, allow_missing=False),
+                    message,
+                )
+        self.assertIsNone(wd.workflow_documents_schema_error(self.schema(table=False)))
+        self.assertIsNone(
+            wd.workflow_documents_schema_error(self.schema(refs), allow_missing=False)
+        )
+
+    def test_an_index_on_another_table_is_not_the_index(self):
+        conn = self.schema(self.REFS.format(kind=self.GOOD_REF), indexes=False)
+        conn.execute("CREATE TABLE other (workflow_document_id INTEGER)")
+        conn.execute(
+            "CREATE INDEX idx_image_workflow_document ON other(workflow_document_id)"
+        )
+        self.assertEqual(
+            wd.workflow_documents_schema_error(conn),
+            "Workflow document references are missing their index",
+        )
+
+    def test_migrate_refuses_a_bad_schema_and_leaves_it_alone(self):
+        conn = self.schema(table_extra="")  # the table without the columns
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "Incomplete"):
+            wd.migrate_workflow_documents(conn)
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(generated_images)")
+        }
+        self.assertNotIn("workflow_document_id", columns)
+
+    def test_migrate_validates_what_it_installed(self):
+        conn = self.schema(table=False)
+        with patch.object(
+            wd,
+            "workflow_documents_schema_error",
+            side_effect=[None, "Workflow documents broke"],
+        ):
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "broke"):
+                wd.migrate_workflow_documents(conn)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        self.assertNotIn("workflow_documents", tables)
+
+
+class TestEdgeErrors(DocumentsTestCase):
+    def test_store_refuses_values_that_cannot_be_documents(self):
+        conn = self.conn()
+        with self.assertRaises(TypeError):
+            wd.store_text(conn, b"bytes")
+        with patch.object(wd, "MAX_DOCUMENT_BYTES", 8):
+            with self.assertRaises(ValueError):
+                wd.store_text(conn, "123456789")
+            self.assertFalse(wd.storable("12345678é"))
+            self.assertTrue(wd.storable("1234567"))
+            self.assertEqual(
+                wd.stored_values(conn, {"workflow_data": "123456789"}),
+                {"workflow_data": "123456789", "workflow_document_id": None},
+            )
+        conn.rollback()
+
+    def test_a_hash_match_with_another_length_is_a_mismatch(self):
+        document_id = self.store("abc")
+        conn = self.conn()
+        with conn:
+            conn.execute(
+                "UPDATE workflow_documents SET byte_length=5 WHERE id=?",
+                (document_id,),
+            )
+        with self.assertRaises(wd.DocumentMismatch):
+            wd.store_text(conn, "abc")
+        conn.rollback()
+        for length in (-1, 2, 4):
+            with conn:
+                conn.execute(
+                    "UPDATE workflow_documents SET byte_length=? WHERE id=?",
+                    (length, document_id),
+                )
+            with self.subTest(length=length), self.assertLogs(wd.logger, "WARNING"):
+                self.assertIsNone(wd.read_stored_text(conn, None, document_id))
+
+    def test_the_reader_memo_is_bounded(self):
+        ids = [self.store(f"text {index}") for index in range(40)]
+        reader = wd.DocumentReader(self.conn())
+        for index, document_id in enumerate(ids):
+            self.assertEqual(reader.text(None, document_id), f"text {index}")
+        self.assertEqual(len(reader._memo), wd.DocumentReader.MEMO)
+
+    def test_a_row_without_text_columns_is_left_alone(self):
+        reader = wd.DocumentReader(self.conn())
+        self.assertEqual(wd.resolve_image_row(reader, {"id": 1}), {"id": 1})
+        self.assertEqual(
+            wd.resolve_image_row(reader, {"workflow_document_id": None}),
+            {"workflow_data": None},
+        )
+
+    def test_documents_of_rows_takes_only_known_columns(self):
+        with self.assertRaises(ValueError):
+            wd.documents_of_rows(self.conn(), "image_path", ["x"])
 
 
 class TestWritersStoreNewForm(DocumentsTestCase):

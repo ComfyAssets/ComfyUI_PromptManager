@@ -14,6 +14,7 @@ Split into domain-specific mixins for maintainability:
 - ReviewEventsMixin: the Needs review change stream an open page re-reads on
 - SystemRoutesMixin: System health check, Overview and usage statistics
 - MaintenanceRoutesMixin: reviewed maintenance plans (preview, apply)
+- WorkflowStorageRoutesMixin: store each workflow once, then Reclaim space
 - DuplicateFilesMixin: duplicate image files as find and removal jobs
 """
 
@@ -49,6 +50,7 @@ from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
 from .system import SystemRoutesMixin
 from .maintenance import MaintenanceRoutesMixin
+from .workflow_storage import WorkflowStorageRoutesMixin
 from .duplicate_files import DuplicateFilesMixin
 from .maintenance_plans import PlanStore
 from .jobs import JobRegistry
@@ -291,6 +293,7 @@ class PromptManagerAPI(
     ThumbnailJobsMixin,
     SystemRoutesMixin,
     MaintenanceRoutesMixin,
+    WorkflowStorageRoutesMixin,
     DuplicateFilesMixin,
     LoggingRoutesMixin,
     AutotagRoutesMixin,
