@@ -143,7 +143,7 @@ try:
             ):
                 monitor.set_review_recorder(None)
                 monitor.set_thumbnail_queue(None)
-                api.close_auto_thumbnails()
+                api.close_auto_thumbnails(final=True)
 
             _review_host.on_cleanup.insert(0, _stop_review_recording)
 

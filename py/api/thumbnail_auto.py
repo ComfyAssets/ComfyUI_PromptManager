@@ -2,21 +2,25 @@
 
 The approved mock has no repeated global thumbnail prompt
 (``docs/concepts/workspace/README.md``), so the workspace never asks. Every
-listing gives an image or video a thumbnail URL (``media_thumbnail_url``),
-and the previews behind those URLs are made here, in three ways:
+listing gives an image or video a thumbnail URL (``media_thumbnail``), and the
+previews behind those URLs are made here, in three ways:
 
 - **On first view.** ``GET /prompt_manager/images/serve/thumbnails/<rel>_thumb
-  <ext>`` for a preview that does not exist yet maps it back to its media file
-  under the same root (text containment first, then a regular file inside the
-  root, never through a link), makes the preview and serves it. At most
-  ``ON_DEMAND_LIMIT`` views write at once and one flight runs per file: a
-  second view of a preview being made waits for it. When the preview cannot be
-  made the original is served (``Cache-Control: no-store``) with its own
-  content type. A file that cannot be decoded is remembered for this session
-  (keyed by its path, size and mtime) so it is not tried again on every view,
-  and counted for the System Overview (``failed`` in
-  ``/images/thumbnails/status``). A preview another program holds open
-  (Windows) is not remembered: the next view tries again.
+  <ext>`` for a preview that does not exist yet is admitted on the event loop
+  (``_PreviewGate``): at most ``ON_DEMAND_LIMIT`` previews are written at once,
+  on this API's own small pool (never the default executor), one flight runs
+  per file, and the requests waiting are capped (``MAX_WAITING``); past the
+  cap a request gets its fallback at once. Inside the admission the preview is
+  mapped back to its media file under the same root (the request text is
+  checked first: no traversal, drive, UNC or empty segment; then a regular
+  file inside the root, never through a link), made and served. When it
+  cannot be made an image's original is served and a video's placeholder
+  frame, both ``Cache-Control: no-store``: a video is never sent to an
+  ``<img>``. A file that cannot be decoded is remembered for this session
+  (keyed by its path, size and mtime) and counted for the System Overview
+  (``failed`` in ``/images/thumbnails/status``); I/O errors and a preview
+  another program holds open (Windows) are not remembered. The recorded
+  history's thumbnail route goes through the same admission and flight key.
 - **On capture.** The image monitor hands every new output it settles to
   ``queue_capture_thumbnail``, which queues its preview for one background
   worker thread (``AutoThumbnailer``). Each wake takes at most Worker threads
@@ -38,14 +42,23 @@ touch the database, like the thumbnail job, so they run beside a scan, image
 tagging and the Needs review recording (S5 M7). They are not written while a
 job runs that replaces the database or removes media and previews: a restore,
 a duplicate removal, a sources change, the gallery's thumbnail clear or an
-``exclusive`` job (``_auto_thumbnail_blocker``). A view then gets the original
-and a queued file is left for its first view.
+``exclusive`` job (``_auto_thumbnail_blocker``). The holds are checked when a
+write starts (after its slot) and again just before its rename.
+
+Shutdown: ``close_auto_thumbnails`` stops the worker at a file boundary,
+kills a running ffmpeg, waits a bounded time (and logs when the wait ran
+out) and shuts the view pool down; after the app's cleanup
+(``final=True``) nothing starts a worker again. Importing this module again
+(a package reload) stops the workers the previous import left.
 """
 
 import asyncio
 import collections
+import functools
+import io
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from aiohttp import web
@@ -53,14 +66,13 @@ from aiohttp import web
 from .images import (
     GALLERY_IMAGE_EXTENSIONS,
     MEDIA_EXTENSIONS,
-    PREVIEW_IN_USE,
-    PREVIEW_NOT_WRITABLE,
     THUMBNAIL_CLEAR_TITLE,
     THUMBNAIL_ENCODINGS,
     VIDEO_EXTENSIONS,
     _has_traversal,
     _is_within,
     _thumbnail_is_fresh,
+    _video_placeholder_image,
     _worker_threads,
     media_thumbnail_rel,
 )
@@ -81,11 +93,14 @@ except ImportError:  # tests import the package top-level
 AUTO_THUMBNAIL_EDGE = DEFAULT_THUMBNAIL_EDGE
 AUTO_THUMBNAIL_SIZE = (AUTO_THUMBNAIL_EDGE, AUTO_THUMBNAIL_EDGE)
 AUTO_THUMBNAIL_ENCODING = THUMBNAIL_ENCODINGS["medium"]
-# Views that may write a preview at the same time; more wait for a slot.
+# Previews views may write at once (the size of the view pool).
 ON_DEMAND_LIMIT = 3
-# How long a view waits for a slot or another view's flight before it is
-# answered with the original (the next view tries again).
-ON_DEMAND_WAIT_SECONDS = 20
+# View requests that may wait on the gate; one more gets its fallback at once.
+MAX_WAITING = 64
+# How long a pool thread waits for the capture worker's flight of the same file.
+FLIGHT_WAIT_SECONDS = 20
+# How long close() waits for the worker's batch in hand (ffmpeg's own limit).
+CLOSE_WAIT_SECONDS = 30
 # Files the capture worker holds; more are made on their first view.
 MAX_QUEUED = 10_000
 # Undecodable files remembered per session (oldest forgotten first).
@@ -97,12 +112,14 @@ SCAN_THUMBNAIL_JOB_THRESHOLD = 200
 AUTO_REFUSED_KINDS = frozenset(
     {RESTORE_JOB_KIND, DUPLICATE_CLEANUP_JOB_KIND, SOURCE_CHANGE_JOB_KIND}
 )
+WORKER_NAME = "PromptManagerThumbnailWorker"
+POOL_PREFIX = "pm-preview"
+# Identifies this import's workers: a reload stops the ones it did not start.
+_MODULE_TOKEN = object()
 
 READY, FAILED, BUSY, DEFERRED = "ready", "failed", "busy", "deferred"
-# _generate_one errors that say nothing about the file: not remembered.
-_TRANSIENT_ERRORS = frozenset(
-    {PREVIEW_IN_USE, PREVIEW_NOT_WRITABLE, "File no longer exists"}
-)
+# What the gate answers a request past MAX_WAITING.
+OVER = object()
 
 
 def _fingerprint(src):
@@ -114,10 +131,40 @@ def _fingerprint(src):
     return (os.path.normcase(str(src)), stat.st_size, stat.st_mtime_ns)
 
 
+def flight_key(root, rel_parts):
+    """The single-flight key of ``root/rel_parts``: its folder resolved, case
+    folded. The serve route, the history route and the worker share it."""
+    path = Path(root).joinpath(*rel_parts)
+    return os.path.normcase(os.path.join(os.path.realpath(path.parent), path.name))
+
+
+def _dst_key(dst):
+    return flight_key(Path(dst).parent, (Path(dst).name,))
+
+
+@functools.lru_cache(maxsize=1)
+def video_placeholder_jpeg():
+    """The placeholder frame as JPEG bytes (a video whose preview is missing)."""
+    buffer = io.BytesIO()
+    _video_placeholder_image(AUTO_THUMBNAIL_SIZE).save(
+        buffer, "JPEG", **AUTO_THUMBNAIL_ENCODING
+    )
+    return buffer.getvalue()
+
+
 def _is_preview_request(filepath):
-    """Text check only: ``thumbnails/<...>/<name>_thumb<lower-case ext>``."""
-    parts = filepath.replace("\\", "/").split("/")
-    if len(parts) < 2 or parts[0] != "thumbnails" or "thumbnails" in parts[1:-1]:
+    """Text check only: ``thumbnails/<...>/<name>_thumb<lower-case ext>``.
+
+    Refuses, as text and before any path is joined, what a joined path could
+    take as an anchor: a backslash, a drive or stream colon, and empty, ``.``
+    or ``..`` segments (so a leading ``/`` and ``//server/share`` too).
+    """
+    if "\\" in filepath or ":" in filepath:
+        return False
+    parts = filepath.split("/")
+    if len(parts) < 2 or parts[0] != "thumbnails":
+        return False
+    if any(part in ("", ".", "..") for part in parts) or "thumbnails" in parts[1:-1]:
         return False
     stem, extension = os.path.splitext(parts[-1])
     return (
@@ -136,36 +183,53 @@ def _regular_file(path):
         return False
 
 
-def _thumbnail_source(root, filepath):
-    """``(src, dst, is_video)`` for the preview *filepath* under *root*, or None.
+def _candidates(parts):
+    """``(folder parts, base, extensions)`` of a checked preview request."""
+    stem, extension = os.path.splitext(parts[-1])
+    wanted = [extension] + (sorted(VIDEO_EXTENSIONS) if extension == ".jpg" else [])
+    return parts[1:-1], stem[: -len("_thumb")], wanted
 
-    *filepath* passed ``_is_preview_request`` and the serve route's traversal
-    check. The source has the preview's name without ``_thumb`` and an
-    extension that previews as the requested one (any case); a ``.jpg`` may
-    also be a video's. It must be a regular file inside *root*. ``dst`` is
-    None when the ``thumbnails`` folder lies outside *root* (a link): the
-    original is then served and nothing is written there.
+
+def _quick_source(root, parts):
+    """``(src, is_video)`` by exact name only (no folder listing), or None."""
+    root = Path(root)
+    folder_parts, base, wanted = _candidates(parts)
+    folder = root.joinpath(*folder_parts)
+    for extension in wanted:
+        for name in (base + extension, base + extension.upper()):
+            path = folder / name
+            if _regular_file(path) and _is_within(path, root):
+                return path, extension in VIDEO_EXTENSIONS
+    return None
+
+
+def _thumbnail_source(root, parts):
+    """``(src, dst, is_video)`` for the preview *parts* under *root*, or None.
+
+    *parts* passed ``_is_preview_request``. The source has the preview's name
+    without ``_thumb`` and an extension that previews as the requested one
+    (any case: exact names first, then one listing of the folder); a ``.jpg``
+    may also be a video's. It must be a regular file inside *root*. ``dst``
+    is None when the preview's folder resolves outside ``root/thumbnails`` (a
+    link): nothing is written there.
     """
     root = Path(root)
-    parts = filepath.replace("\\", "/").split("/")
-    folder = root.joinpath(*parts[1:-1])
-    stem, extension = os.path.splitext(parts[-1])
-    base = stem[: -len("_thumb")]
-    wanted = [extension] + (sorted(VIDEO_EXTENSIONS) if extension == ".jpg" else [])
-    names = [base + ext for ext in wanted] + [base + ext.upper() for ext in wanted]
-    found = next((folder / n for n in names if _regular_file(folder / n)), None)
-    if found is None:
-        found = _scan_folder(folder, base, set(wanted))
-    if found is None or not _is_within(found, root):
-        return None
-    rel = Path(*parts[1:-1], found.name)
+    folder_parts, base, wanted = _candidates(parts)
+    quick = _quick_source(root, parts)
+    if quick is not None:
+        found = quick[0]
+    else:
+        found = _scan_folder(root.joinpath(*folder_parts), base, set(wanted))
+        if found is None or not _is_within(found, root):
+            return None
+    rel = Path(*folder_parts, found.name)
     dst = root / media_thumbnail_rel(rel)
     if dst != root.joinpath(*parts):
         return None
     if not _is_within(root / "thumbnails", root) or not _is_within(
         dst, root / "thumbnails"
     ):
-        dst = None  # a preview folder linked elsewhere is never written
+        dst = None
     return found, dst, found.suffix.lower() in VIDEO_EXTENSIONS
 
 
@@ -184,13 +248,23 @@ def _scan_folder(folder, base, extensions):
     return None
 
 
-class AutoThumbnailer:
-    """Single-flight preview writes for views, and the capture worker.
+def _stop_stale_workers():
+    """Stop capture workers a previous import of this module started."""
+    for thread in threading.enumerate():
+        token = getattr(thread, "pm_preview_token", None)
+        close = getattr(thread, "pm_preview_close", None)
+        if token is not None and token is not _MODULE_TOKEN and close is not None:
+            close()
 
-    ``generate(src, dst, is_video)`` writes one preview and returns
-    ``_generate_one``'s result dict; ``may_write()`` says whether automatic
-    previews may be written now. Thread-safe: views call ``ensure`` on the
-    executor, the monitor calls ``enqueue`` from its own thread.
+
+class AutoThumbnailer:
+    """Single-flight preview writes and the capture worker (thread-safe).
+
+    ``generate(src, dst, is_video, *, stop, guard, track)`` writes one
+    preview and returns ``_generate_one``'s result dict; ``may_write()``
+    says whether automatic previews may be written now. Views call
+    ``ensure`` on the view pool, the monitor calls ``enqueue`` from its
+    thread.
     """
 
     def __init__(
@@ -200,7 +274,6 @@ class AutoThumbnailer:
         logger,
         *,
         workers=_worker_threads,
-        on_demand_limit=ON_DEMAND_LIMIT,
         max_queued=MAX_QUEUED,
         start_worker=True,
     ):
@@ -212,85 +285,93 @@ class AutoThumbnailer:
         self._start_worker = start_worker
         self._changed = threading.Condition()
         self._inflight = {}
-        self._followers = 0
-        self._slot_waiters = 0
-        self._batch = 0
         self._failures = collections.OrderedDict()
-        self._slots = threading.BoundedSemaphore(on_demand_limit)
         self._queue = collections.deque()
         self._queued = set()
+        self._processes = []
         self._worker = None
         self._closed = False
         self._busy = False
-
-    # ── views ─────────────────────────────────────────────────────────
+        self._batch = 0
 
     @property
     def failure_count(self):
         with self._changed:
             return len(self._failures)
 
-    def ensure(self, src, dst, is_video, *, on_demand=True):
+    @property
+    def closed(self):
+        return self._closed
+
+    def _allowed(self):
+        return not self._closed and self._may_write()
+
+    def _track(self, process):
+        """Keep an ffmpeg process so close() can kill it."""
+        with self._changed:
+            self._processes = [p for p in self._processes if p.poll() is None]
+            self._processes.append(process)
+            closed = self._closed
+        if closed:
+            process.kill()
+
+    # ── one preview ───────────────────────────────────────────────────
+
+    def ensure(self, src, dst, is_video):
         """Make *dst* for *src* unless it is fresh; returns the outcome.
 
         ``ready`` (the preview is there), ``failed`` (the file cannot be
-        previewed, remembered), ``busy`` (no slot in time, a transient write
-        error, or another flight that did not finish) or ``deferred`` (a hold
-        refuses automatic writes). Blocking: call it off the event loop.
+        decoded, remembered), ``busy`` (an I/O error, the file is gone, or
+        another flight did not finish) or ``deferred`` (a hold refuses
+        automatic writes, checked when the write starts and before its
+        rename). Blocking: call it off the event loop.
         """
         if _thumbnail_is_fresh(src, dst):
             return READY
         fingerprint = _fingerprint(src)
         if fingerprint is None:
             return BUSY
-        key = os.path.normcase(str(dst))
+        key = _dst_key(dst)
         with self._changed:
             if fingerprint in self._failures:
                 return FAILED
             flight = self._inflight.get(key)
             if flight is None:
                 self._inflight[key] = done = threading.Event()
-            else:
-                self._followers += 1
-                self._changed.notify_all()
         if flight is not None:
-            try:
-                flight.wait(ON_DEMAND_WAIT_SECONDS)
-            finally:
-                with self._changed:
-                    self._followers -= 1
-            return self._settled(src, dst, fingerprint)
+            flight.wait(FLIGHT_WAIT_SECONDS)
+            if _thumbnail_is_fresh(src, dst):
+                return READY
+            with self._changed:
+                return FAILED if fingerprint in self._failures else BUSY
         try:
-            return self._lead(src, dst, is_video, fingerprint, on_demand)
+            return self._lead(src, dst, is_video, fingerprint)
         finally:
             with self._changed:
                 self._inflight.pop(key, None)
                 self._changed.notify_all()
             done.set()
 
-    def _settled(self, src, dst, fingerprint):
+    def _lead(self, src, dst, is_video, fingerprint):
+        if not self._allowed():
+            return DEFERRED
         if _thumbnail_is_fresh(src, dst):
             return READY
-        with self._changed:
-            return FAILED if fingerprint in self._failures else BUSY
-
-    def _lead(self, src, dst, is_video, fingerprint, on_demand):
-        if not self._may_write():
-            return DEFERRED
-        if on_demand and not self._take_slot():
-            return BUSY
-        try:
-            if _thumbnail_is_fresh(src, dst):
-                return READY
-            result = self._generate(src, dst, is_video)
-        finally:
-            if on_demand:
-                self._slots.release()
+        result = self._generate(
+            src,
+            dst,
+            is_video,
+            stop=lambda: self._closed,
+            guard=self._allowed,
+            track=self._track,
+        )
         if result.get("action") in ("generated", "skipped"):
             return READY
+        if result.get("held"):
+            return DEFERRED
+        if not result.get("decode"):
+            return BUSY  # an I/O error says nothing about the file
         error = result.get("error") or "failed"
-        if error in _TRANSIENT_ERRORS:
-            return BUSY
         with self._changed:
             self._failures[fingerprint] = error
             while len(self._failures) > MAX_FAILURES_REMEMBERED:
@@ -301,24 +382,12 @@ class AutoThumbnailer:
         )
         return FAILED
 
-    def _take_slot(self):
-        if self._slots.acquire(blocking=False):
-            return True
-        with self._changed:
-            self._slot_waiters += 1
-            self._changed.notify_all()
-        try:
-            return self._slots.acquire(timeout=ON_DEMAND_WAIT_SECONDS)
-        finally:
-            with self._changed:
-                self._slot_waiters -= 1
-
     # ── the capture worker ────────────────────────────────────────────
 
     def enqueue(self, src, dst, is_video):
         """Queue *dst*'s preview for the worker; False when already queued,
         full or closed. Never blocks on a write."""
-        key = os.path.normcase(str(dst))
+        key = _dst_key(dst)
         with self._changed:
             if self._closed or key in self._queued:
                 return False
@@ -330,12 +399,13 @@ class AutoThumbnailer:
             if self._start_worker and (
                 self._worker is None or not self._worker.is_alive()
             ):
-                self._worker = threading.Thread(
-                    target=self._run,
-                    name="PromptManagerThumbnailWorker",
-                    daemon=True,
+                worker = threading.Thread(
+                    target=self._run, name=WORKER_NAME, daemon=True
                 )
-                self._worker.start()
+                worker.pm_preview_token = _MODULE_TOKEN
+                worker.pm_preview_close = self.close
+                self._worker = worker
+                worker.start()
             self._changed.notify_all()
         return True
 
@@ -365,22 +435,36 @@ class AutoThumbnailer:
     def _write_queued(self, item):
         _key, src, dst, is_video = item
         try:
-            self.ensure(src, dst, is_video, on_demand=False)
+            self.ensure(src, dst, is_video)
         except Exception:  # one file never stops the worker
             self._logger.warning(
                 f"Automatic preview failed for {src.name}", exc_info=True
             )
 
     def close(self):
-        """Stop the worker after its current batch; queued files are dropped."""
+        """Stop the worker at its next file boundary (queued files are
+        dropped), kill a running ffmpeg and wait up to CLOSE_WAIT_SECONDS;
+        a worker still running after that is logged."""
         with self._changed:
             self._closed = True
             self._queue.clear()
             self._queued.clear()
+            processes, self._processes = self._processes, []
             self._changed.notify_all()
             worker = self._worker
-        if worker is not None and worker is not threading.current_thread():
-            worker.join(ON_DEMAND_WAIT_SECONDS)
+        for process in processes:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        if worker is None or worker is threading.current_thread():
+            return
+        worker.join(CLOSE_WAIT_SECONDS)
+        if worker.is_alive():
+            self._logger.warning(
+                "The automatic preview worker is still running after "
+                f"{CLOSE_WAIT_SECONDS} s; it stops at its next file"
+            )
 
     # ── waits (tests and shutdown; never timers) ──────────────────────
 
@@ -392,54 +476,124 @@ class AutoThumbnailer:
         """True once the worker has nothing queued or in hand."""
         return self._wait_for(lambda: not self._busy, timeout)
 
-    def wait_followers(self, count, timeout=None):
-        """True once *count* views wait on another view's flight."""
-        return self._wait_for(lambda: self._followers >= count, timeout)
-
-    def wait_slot_waiters(self, count, timeout=None):
-        """True once *count* views wait for a write slot."""
-        return self._wait_for(lambda: self._slot_waiters >= count, timeout)
-
     def wait_batch(self, size, timeout=None):
         """True once the worker holds a batch of *size* files."""
         return self._wait_for(lambda: self._batch == size, timeout)
+
+
+class _PreviewGate:
+    """Admission of view requests on the event loop (#249 I2).
+
+    Waiters are coroutines: at most ``limit`` previews are written at once
+    on the view pool, one flight runs per key, and past ``MAX_WAITING``
+    waiting requests ``run`` answers ``OVER`` at once.
+    """
+
+    def __init__(self, limit, logger):
+        self.loop = asyncio.get_running_loop()
+        self._slots = asyncio.Semaphore(limit)
+        self._flights = {}
+        self._tasks = set()
+        self._logger = logger
+        self._tick = asyncio.Event()
+        self.waiting = 0
+
+    def _changed(self):
+        tick, self._tick = self._tick, asyncio.Event()
+        tick.set()
+
+    async def settled(self, predicate):
+        """Return once ``predicate()`` holds (re-checked at each change)."""
+        while not predicate():
+            await self._tick.wait()
+
+    async def run(self, key, work, pool):
+        """``work()``'s answer for *key* (shared by every request of the
+        flight), None when it raised, or OVER past the cap."""
+        if self.waiting >= MAX_WAITING:
+            return OVER
+        flight = self._flights.get(key)
+        if flight is None:
+            flight = self.loop.create_future()
+            self._flights[key] = flight
+            task = self.loop.create_task(self._lead(key, flight, work, pool))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        self.waiting += 1
+        self._changed()
+        try:
+            return await asyncio.shield(flight)
+        finally:
+            self.waiting -= 1
+            self._changed()
+
+    async def _lead(self, key, flight, work, pool):
+        result = None
+        try:
+            async with self._slots:
+                result = await self.loop.run_in_executor(pool, work)
+        except Exception:
+            self._logger.warning("Automatic preview failed", exc_info=True)
+        finally:
+            self._flights.pop(key, None)
+            if not flight.done():
+                flight.set_result(result)
 
 
 class AutoThumbnailMixin:
     """Automatic previews on the API: views, the monitor's queue, scans."""
 
     _auto_thumbnailer = None
+    _auto_thumbnails_shut = False
+    _preview_gate_obj = None
+    _preview_pool_obj = None
     _auto_thumbnailer_lock = threading.Lock()
 
     def _auto_thumbnails(self):
-        """This API's AutoThumbnailer, created on first use."""
+        """This API's AutoThumbnailer, created on first use (no worker after
+        the app's cleanup)."""
         with AutoThumbnailMixin._auto_thumbnailer_lock:
             if self._auto_thumbnailer is None:
                 self._auto_thumbnailer = AutoThumbnailer(
                     self._write_auto_thumbnail,
                     lambda: self._auto_thumbnail_blocker() is None,
                     self.logger,
+                    start_worker=not self._auto_thumbnails_shut,
                 )
             return self._auto_thumbnailer
 
-    def close_auto_thumbnails(self):
-        """Stop the capture worker and forget it (shutdown, a test's reset).
+    def close_auto_thumbnails(self, final=False):
+        """Stop the capture worker and the view pool, and forget them.
 
-        Waits for the batch in hand, so nothing writes into the output tree
-        after it returns; the next use starts a fresh one.
+        Bounded (see AutoThumbnailer.close). ``final`` (the app's cleanup)
+        also keeps a late monitor event from starting a worker again; a
+        test reset passes False and the next use starts fresh ones.
         """
         with AutoThumbnailMixin._auto_thumbnailer_lock:
+            if final:
+                self._auto_thumbnails_shut = True
             thumbnailer, self._auto_thumbnailer = self._auto_thumbnailer, None
+            pool, self._preview_pool_obj = self._preview_pool_obj, None
+            self._preview_gate_obj = None
         if thumbnailer is not None:
             thumbnailer.close()
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _auto_thumbnail_failures(self):
         thumbnailer = self._auto_thumbnailer
         return 0 if thumbnailer is None else thumbnailer.failure_count
 
-    def _write_auto_thumbnail(self, src, dst, is_video):
+    def _write_auto_thumbnail(self, src, dst, is_video, *, stop, guard, track):
         return self._generate_one(
-            src, dst, AUTO_THUMBNAIL_SIZE, is_video, encoding=AUTO_THUMBNAIL_ENCODING
+            src,
+            dst,
+            AUTO_THUMBNAIL_SIZE,
+            is_video,
+            encoding=AUTO_THUMBNAIL_ENCODING,
+            stop=stop,
+            guard=guard,
+            track=track,
         )
 
     def _auto_thumbnail_blocker(self):
@@ -451,42 +605,89 @@ class AutoThumbnailMixin:
                 return job
         return None
 
-    def _history_preview(self, src, dst, is_video):
-        """A recorded run's missing preview, made like a view's (blocking)."""
-        return self._auto_thumbnails().ensure(Path(src), Path(dst), is_video)
+    # ── the view admission ────────────────────────────────────────────
+
+    def _preview_gate(self):
+        """The gate of the running loop (a new loop gets a new one)."""
+        gate = self._preview_gate_obj
+        if gate is None or gate.loop is not asyncio.get_running_loop():
+            gate = self._preview_gate_obj = _PreviewGate(ON_DEMAND_LIMIT, self.logger)
+        return gate
+
+    def _preview_pool(self):
+        with AutoThumbnailMixin._auto_thumbnailer_lock:
+            if self._preview_pool_obj is None:
+                self._preview_pool_obj = ThreadPoolExecutor(
+                    ON_DEMAND_LIMIT, thread_name_prefix=POOL_PREFIX
+                )
+            return self._preview_pool_obj
+
+    def _preview_pool_threads(self):
+        pool = self._preview_pool_obj
+        return [] if pool is None else list(getattr(pool, "_threads", ()))
+
+    def _video_placeholder_bytes(self):
+        return video_placeholder_jpeg()
+
+    async def _admit_preview(self, src, dst, is_video):
+        """Make one preview through the view admission (the history route)."""
+        root_parts = (Path(dst).name,)
+        return await self._preview_gate().run(
+            flight_key(Path(dst).parent, root_parts),
+            functools.partial(self._auto_thumbnails().ensure, src, dst, is_video),
+            self._preview_pool(),
+        )
 
     # ── on first view ─────────────────────────────────────────────────
 
-    def _preview_on_demand(self, root, filepath):
-        """``(outcome, src, dst)`` for a missing preview under *root*, or None."""
-        located = _thumbnail_source(root, filepath)
+    def _preview_on_demand(self, root, parts):
+        """``(outcome, src, dst, is_video)`` for a missing preview under
+        *root*, or None when no media file previews as *parts*."""
+        located = _thumbnail_source(root, parts)
         if located is None:
             return None
         src, dst, is_video = located
         if dst is None:
-            return DEFERRED, src, dst
+            return DEFERRED, src, None, is_video
         outcome = self._auto_thumbnails().ensure(src, dst, is_video)
         if outcome == READY and not dst.is_file():
-            outcome = BUSY  # removed under us: show the original this once
-        return outcome, src, dst
+            outcome = BUSY  # removed under us: the fallback this once
+        return outcome, src, dst, is_video
+
+    def _preview_response(self, outcome, src, dst, is_video):
+        if outcome == READY and dst is not None:
+            return self._file_response(dst)
+        if is_video:
+            return web.Response(
+                body=video_placeholder_jpeg(),
+                content_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
+        response = web.FileResponse(src)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     async def _serve_missing_thumbnail(self, output_dirs, filepath):
-        """The made preview, or the original when it cannot be made; None
-        when *filepath* names no preview of a media file in *output_dirs*."""
+        """The made preview, or its fallback; None when *filepath* names no
+        preview of a media file in *output_dirs*."""
         if _has_traversal(filepath) or not _is_preview_request(filepath):
             return None
+        parts = tuple(filepath.split("/"))
+        gate = self._preview_gate()
+        pool = self._preview_pool()
         for root in output_dirs:
-            answer = await self._run_in_executor(
-                self._preview_on_demand, Path(root), filepath
+            root = Path(root)
+            answer = await gate.run(
+                flight_key(root, parts),
+                functools.partial(self._preview_on_demand, root, parts),
+                pool,
             )
-            if answer is None:
-                continue
-            outcome, src, dst = answer
-            if outcome == READY:
-                return self._file_response(dst)
-            response = web.FileResponse(src)
-            response.headers["Cache-Control"] = "no-store"
-            return response
+            if answer is OVER:
+                # Past the cap: exact names only, no listing, no write.
+                quick = _quick_source(root, parts)
+                answer = None if quick is None else (BUSY, quick[0], None, quick[1])
+            if answer is not None:
+                return self._preview_response(*answer)
         return None
 
     # ── on capture ────────────────────────────────────────────────────
@@ -495,9 +696,12 @@ class AutoThumbnailMixin:
         """Queue the preview of a new output (the monitor's thread).
 
         Returns ``queued``, ``fresh`` (its preview is current) or ``skipped``
-        (not a media file under a current root, a link, a preview itself, or
-        already queued). Never writes on the caller's thread.
+        (not a media file under a current root, a link, a preview itself,
+        already queued, or after the app's cleanup). Never writes on the
+        caller's thread.
         """
+        if self._auto_thumbnails_shut:
+            return "skipped"
         located = self._capture_target(image_path)
         if located is None:
             return "skipped"
@@ -521,9 +725,11 @@ class AutoThumbnailMixin:
             rel = Path(os.path.relpath(path, root))
             if "thumbnails" in rel.parts[:-1]:
                 return None
-            if not _is_within(root / "thumbnails", root):
-                return None
             dst = root / media_thumbnail_rel(rel)
+            if not _is_within(root / "thumbnails", root) or not _is_within(
+                dst, root / "thumbnails"
+            ):
+                return None
             return path, dst, path.suffix.lower() in VIDEO_EXTENSIONS
         return None
 
@@ -579,3 +785,7 @@ class AutoThumbnailMixin:
         except Exception:
             self.logger.warning("Previews after the scan failed", exc_info=True)
             return None
+
+
+# A package reload re-runs this module: stop the workers the old one left.
+_stop_stale_workers()

@@ -488,7 +488,8 @@
                     const index = from + offset;
                     // Use thumbnail for display if available, fallback to original
                     const displayUrl = image.thumbnail_url || image.url;
-                    const hasThumb = !!image.thumbnail_url;
+                    // The listing names a preview URL for every file (made on view, #249); the dot means the file exists.
+                    const hasThumb = typeof image.thumbnail_ready === 'boolean' ? image.thumbnail_ready : !!image.thumbnail_url;
                     const isVideo = image.is_video || false;
                     const mediaType = image.media_type || 'image';
                     
@@ -551,7 +552,8 @@
                     const index = from + offset;
                     // Use thumbnail for display if available, fallback to original
                     const displayUrl = image.thumbnail_url || image.url;
-                    const hasThumb = !!image.thumbnail_url;
+                    // The listing names a preview URL for every file (made on view, #249); the dot means the file exists.
+                    const hasThumb = typeof image.thumbnail_ready === 'boolean' ? image.thumbnail_ready : !!image.thumbnail_url;
                     const isVideo = image.is_video || false;
                     const mediaType = image.media_type || 'image';
                     

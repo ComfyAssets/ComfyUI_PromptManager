@@ -323,16 +323,20 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
      * is a JPEG frame) whenever the listing gave one; without one the original, and a video keeps its own element.
      */
     function cover(record) {
-        const {file} = record, preview = record.preview?.url, video = !preview && file?.media_type === 'video';
-        const node = el(video ? 'video' : 'img', undefined, 'detail-cover'); node.src = preview || record.download.url;
-        if (video) {
-            node.muted = true; node.playsInline = true; node.preload = 'metadata';
-            contentScope.cleanup(() => {node.pause(); node.removeAttribute('src'); node.load();});
-        } else {
-            node.alt = ''; node.decoding = 'async';
-            if (file?.width && file?.height) {node.width = file.width; node.height = file.height;}
-            contentScope.cleanup(() => node.removeAttribute('src'));
-        }
+        const {file} = record, preview = record.preview?.url, isVideo = file?.media_type === 'video';
+        if (isVideo && !preview) return videoCover(record);
+        const node = el('img', undefined, 'detail-cover'); node.src = preview || record.download.url;
+        node.alt = ''; node.decoding = 'async';
+        if (file?.width && file?.height) {node.width = file.width; node.height = file.height;}
+        contentScope.cleanup(() => node.removeAttribute('src'));
+        // #249: a video whose preview cannot be loaded swaps back to its own element.
+        if (isVideo) contentScope.listen(node, 'error', () => { if (node.isConnected) node.replaceWith(videoCover(record)); }, {once:true});
+        return node;
+    }
+    function videoCover(record) {
+        const node = el('video', undefined, 'detail-cover'); node.src = record.download.url;
+        node.muted = true; node.playsInline = true; node.preload = 'metadata';
+        contentScope.cleanup(() => {node.pause(); node.removeAttribute('src'); node.load();});
         return node;
     }
     /** "File & provenance": the file facts, the D21 prompt evidence, the occurrence and the saved association (D66 for a local file). */

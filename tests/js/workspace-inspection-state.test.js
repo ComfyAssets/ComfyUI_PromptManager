@@ -912,3 +912,13 @@ test('record carries the listing thumbnail as its preview, never another file (#
     const data = envelope(video); data.file = { ...data.file, media_type: 'video', extension: '.mp4', format: 'MP4' };
     assert.deepEqual(toRecord(data, video, extractGenerationFacts).preview, { url: video.thumbnail_url });
 });
+
+test("names the server quotes (parentheses, '!*') still match their original and preview (#249 M11)", () => {
+    const toRecord = contract('toInspectionRecord');
+    const entry = { root_index: 0, path: "folder/a (1)!'*.png", filename: "a (1)!'*.png", root_scope: scopeA,
+        url: `/prompt_manager/images/serve/folder/a%20%281%29%21%27%2A.png?root=0&root_scope=${scopeA}`,
+        thumbnail_url: `/prompt_manager/images/serve/thumbnails/folder/a%20%281%29%21%27%2A_thumb.png?root=0&root_scope=${scopeA}` };
+    const record = toRecord(envelope(entry), entry, extractGenerationFacts);
+    assert.equal(record.download.url, entry.url);
+    assert.deepEqual(record.preview, { url: entry.thumbnail_url });
+});

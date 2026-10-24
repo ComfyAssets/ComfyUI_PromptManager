@@ -44,6 +44,9 @@ export function inspectPath(image) {
     return `/prompt_manager/images/inspect/${image.path.split('/').map(encodeURIComponent).join('/')}?${query}`;
 }
 
+/** One path segment as the server quotes it (Python `quote(..., safe="/")` also escapes `!'()*`, #249 M11). */
+const quoteSegment = segment => encodeURIComponent(segment).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+
 function downloadFor(image, required) {
     try {
         if (typeof image.url !== 'string' || !image.url) throw new TypeError('Missing original media URL');
@@ -55,7 +58,7 @@ function downloadFor(image, required) {
         const sameOrigin = 'Origin' in globalThis ?
             globalThis.Origin.from(url).isSameOrigin(globalThis.Origin.from(reference)) :
             url.origin !== 'null' && url.origin === reference.origin;
-        const expected = new URL(resolveUrl(`/prompt_manager/images/serve/${image.path.split('/').map(encodeURIComponent).join('/')}`), reference);
+        const expected = new URL(resolveUrl(`/prompt_manager/images/serve/${image.path.split('/').map(quoteSegment).join('/')}`), reference);
         const scope = descriptorScope(image);
         if (!sameOrigin || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash ||
             url.pathname !== expected.pathname || url.searchParams.getAll('root').length !== 1 || url.searchParams.get('root') !== String(image.root_index) ||
@@ -90,7 +93,7 @@ function previewFor(image) {
         const reference = new URL(location?.href || 'http://localhost/');
         const resolveUrl = globalThis.window?.ApiClient?.resolveUrl || globalThis.ApiClient?.resolveUrl || (url => url);
         const value = resolveUrl(image.thumbnail_url), url = new URL(value, reference);
-        const expected = new URL(resolveUrl(`/prompt_manager/images/serve/${previewPath(image.path).split('/').map(encodeURIComponent).join('/')}`), reference);
+        const expected = new URL(resolveUrl(`/prompt_manager/images/serve/${previewPath(image.path).split('/').map(quoteSegment).join('/')}`), reference);
         const scope = descriptorScope(image);
         if (url.origin !== reference.origin || url.username || url.password || url.hash || url.pathname !== expected.pathname ||
             url.searchParams.getAll('root').length !== 1 || url.searchParams.get('root') !== String(image.root_index) ||

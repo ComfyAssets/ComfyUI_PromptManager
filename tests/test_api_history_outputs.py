@@ -1128,6 +1128,51 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(await response.read(), original.read_bytes())
         self.assertEqual(os.listdir(elsewhere), [])
 
+    async def test_missing_preview_is_never_made_through_a_linked_sub_folder(self):
+        # M6: every link segment of the preview's folder is checked.
+        original = make_png(self.output_dir / "sub" / "image.png", size=(64, 64))
+        elsewhere = self.temp_dir / "elsewhere"
+        elsewhere.mkdir()
+        (self.output_dir / "thumbnails").mkdir()
+        (self.output_dir / "thumbnails" / "sub").symlink_to(
+            elsewhere, target_is_directory=True
+        )
+        start = self.capture([self.ref(subfolder="sub")])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["thumbnail_url"])
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), original.read_bytes())
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    async def test_a_video_preview_that_cannot_be_made_is_the_placeholder(self):
+        # I1: never the video bytes inside an <img>.
+        from py.api.jobs import RESTORE_JOB_KIND
+
+        (self.output_dir / "clip.webm").write_bytes(b"AV1 stream no decoder here")
+        start = self.capture([self.ref(filename="clip.webm")])
+        descriptor = await self.media(start)
+        gate = asyncio.Event()
+
+        async def runner(job):
+            await gate.wait()
+
+        job = self.api._jobs.start(
+            RESTORE_JOB_KIND,
+            "restore",
+            admission="records",
+            cancellable=False,
+            runner=runner,
+        )
+        try:
+            response = await self.current(descriptor["thumbnail_url"])
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertTrue((await response.read()).startswith(b"\xff\xd8"))
+        finally:
+            gate.set()
+            await asyncio.wait_for(job.task, 5)
+        self.assertFalse((self.output_dir / "thumbnails").exists())
+
     async def test_a_preview_that_cannot_be_made_serves_the_original(self):
         broken = self.output_dir / "image.png"
         broken.write_bytes(b"\x89PNG\r\n\x1a\n not an image")

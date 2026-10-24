@@ -62,28 +62,52 @@ class AutoThumbnailCase(ThumbnailTestCase):
         return calls
 
     def _gate_writes(self):
-        """Hold every preview write until released: (entered, release, active)."""
+        """Hold every preview write until released: (entered, release, state).
+
+        ``state`` counts the writers in hand (``active``), their ``peak`` and
+        the ``threads`` they ran on; ``state["changed"]`` is notified at each
+        change, so a test waits for a writer's own state (never a timer).
+        """
         entered = threading.Event()
         release = threading.Event()
-        state = {"active": 0, "peak": 0}
-        lock = threading.Lock()
+        changed = threading.Condition()
+        state = {"active": 0, "peak": 0, "threads": set(), "changed": changed}
         original = self.api._generate_one
 
         def gated(*args, **kwargs):
-            with lock:
+            with changed:
                 state["active"] += 1
                 state["peak"] = max(state["peak"], state["active"])
+                state["threads"].add(threading.current_thread().name)
+                changed.notify_all()
             entered.set()
             try:
                 release.wait(WAIT)
                 return original(*args, **kwargs)
             finally:
-                with lock:
+                with changed:
                     state["active"] -= 1
+                    changed.notify_all()
 
         self.api._generate_one = gated
         self.addCleanup(release.set)
         return entered, release, state
+
+    async def _writers(self, state, count):
+        """Wait until exactly ``count`` writers are in hand."""
+        changed = state["changed"]
+
+        def wait():
+            with changed:
+                return changed.wait_for(lambda: state["active"] == count, WAIT)
+
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, wait))
+
+    async def _waiting(self, count):
+        """Wait until ``count`` view requests wait on the preview gate."""
+        gate = self.api._preview_gate()
+        await asyncio.wait_for(gate.settled(lambda: gate.waiting >= count), WAIT)
 
     async def _wait(self, event):
         loop = asyncio.get_running_loop()
@@ -129,6 +153,24 @@ class TestListingsAlwaysCarryAThumbnailUrl(AutoThumbnailCase):
         self.assertEqual(
             entry["thumbnail_url"], f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
         )
+
+    def test_listing_says_whether_the_preview_file_exists(self):
+        # M9: the legacy gallery's dot reads thumbnail_ready.
+        make_png(self.output_dir / "a.png", size=(64, 64))
+        self.assertIs(
+            _entry(self.api, self.output_dir, "a.png")["thumbnail_ready"], False
+        )
+        make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        self.assertIs(
+            _entry(self.api, self.output_dir, "a.png")["thumbnail_ready"], True
+        )
+
+    def test_media_inside_a_nested_thumbnails_folder_keeps_its_original(self):
+        # M10: such a file is never previewed; its card shows the original.
+        make_png(self.output_dir / "project" / "thumbnails" / "x.png", size=(64, 64))
+        entry = _entry(self.api, self.output_dir, "project/thumbnails/x.png")
+        self.assertIsNone(entry["thumbnail_url"])
+        self.assertIs(entry["thumbnail_ready"], False)
 
     def test_existing_preview_keeps_its_mtime_version(self):
         make_png(self.output_dir / "a.png", size=(64, 64))
@@ -194,12 +236,8 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         first = asyncio.ensure_future(self.client.get(url))
         await self._wait(entered)
         others = [asyncio.ensure_future(self.client.get(url)) for _ in range(4)]
-        # Every follower is waiting on the leader's flight before it is released.
-        thumbnailer = self.api._auto_thumbnails()
-        loop = asyncio.get_running_loop()
-        self.assertTrue(
-            await loop.run_in_executor(None, thumbnailer.wait_followers, 4, WAIT)
-        )
+        # Every follower waits on the leader's flight before it is released.
+        await self._waiting(5)
         release.set()
         responses = [await first] + [await task for task in others]
 
@@ -217,18 +255,112 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
             )
             for n in names
         ]
-        await self._wait(entered)
-        thumbnailer = self.api._auto_thumbnails()
-        loop = asyncio.get_running_loop()
-        # The extra requests queue for a slot instead of writing beside them.
-        self.assertTrue(
-            await loop.run_in_executor(None, thumbnailer.wait_slot_waiters, 2, WAIT)
-        )
+        # M8: the third writer's own state, then the two queued requests.
+        await self._writers(state, auto.ON_DEMAND_LIMIT)
+        await self._waiting(len(names))
         self.assertEqual(state["active"], auto.ON_DEMAND_LIMIT)
         release.set()
         responses = [await task for task in tasks]
         self.assertEqual([r.status for r in responses], [200] * len(names))
         self.assertLessEqual(state["peak"], auto.ON_DEMAND_LIMIT)
+
+    async def test_a_burst_never_holds_default_executor_threads(self):
+        # I2: waits are coroutines and writes run on the preview pool, so a
+        # burst of distinct missing previews leaves every other route free.
+        names = [f"b{i}.png" for i in range(auto.ON_DEMAND_LIMIT + 4)]
+        for name in names:
+            make_png(self.output_dir / name, size=(64, 64))
+        entered, release, state = self._gate_writes()
+        default_calls = []
+        original = self.api._run_in_executor
+
+        async def spy(func, *args, **kwargs):
+            default_calls.append(getattr(func, "__name__", repr(func)))
+            return await original(func, *args, **kwargs)
+
+        self.api._run_in_executor = spy
+        tasks = [
+            asyncio.ensure_future(
+                self.client.get(_entry(self.api, self.output_dir, n)["thumbnail_url"])
+            )
+            for n in names
+        ]
+        await self._writers(state, auto.ON_DEMAND_LIMIT)
+        await self._waiting(len(names))
+        self.assertEqual(default_calls, [], "no view waits on a default thread")
+        self.assertTrue(all(name.startswith("pm-preview") for name in state["threads"]))
+        status = await self.client.get("/prompt_manager/images/thumbnails/status")
+        self.assertEqual(status.status, 200, "another route answers meanwhile")
+        await status.read()
+        release.set()
+        responses = [await task for task in tasks]
+        self.assertEqual([r.status for r in responses], [200] * len(names))
+        for name in names:
+            stem = name[:-4]
+            self.assertTrue(
+                (self.output_dir / "thumbnails" / f"{stem}_thumb.png").is_file()
+            )
+
+    async def test_requests_beyond_the_cap_get_the_fallback_at_once(self):
+        names = [f"c{i}.png" for i in range(auto.ON_DEMAND_LIMIT)]
+        for name in names + ["late.png"]:
+            make_png(self.output_dir / name, size=(64, 64))
+        (self.output_dir / "late.mp4").write_bytes(b"not a video")
+        entered, release, state = self._gate_writes()
+        listings = []
+        real_scandir = auto.os.scandir
+
+        def counting(path):
+            listings.append(str(path))
+            return real_scandir(path)
+
+        with (
+            patch.object(auto, "MAX_WAITING", auto.ON_DEMAND_LIMIT),
+            patch.object(auto.os, "scandir", counting),
+        ):
+            tasks = [
+                asyncio.ensure_future(
+                    self.client.get(
+                        _entry(self.api, self.output_dir, n)["thumbnail_url"]
+                    )
+                )
+                for n in names
+            ]
+            await self._writers(state, auto.ON_DEMAND_LIMIT)
+            image = await self.client.get(f"{SERVE}thumbnails/late_thumb.png?root=0")
+            self.assertEqual(image.status, 200)
+            self.assertEqual(image.headers["Cache-Control"], "no-store")
+            self.assertEqual(
+                await image.read(), (self.output_dir / "late.png").read_bytes()
+            )
+            video = await self.client.get(f"{SERVE}thumbnails/late_thumb.jpg?root=0")
+            self.assertEqual(video.status, 200)
+            self.assertEqual(video.headers["Content-Type"], "image/jpeg")
+            self.assertEqual(video.headers["Cache-Control"], "no-store")
+            await video.read()
+            missing = await self.client.get(f"{SERVE}thumbnails/Nope_thumb.png?root=0")
+            self.assertEqual(missing.status, 404)
+            # M2: no folder is listed for a request the cap turned away.
+            self.assertEqual(listings, [])
+            release.set()
+            responses = [await task for task in tasks]
+        self.assertEqual([r.status for r in responses], [200] * len(names))
+        self.assertFalse((self.output_dir / "thumbnails" / "late_thumb.png").exists())
+
+    async def test_mixed_case_folder_listing_runs_once_inside_admission(self):
+        make_png(self.output_dir / "Shot.Png", size=(64, 64))
+        listings = []
+        real_scandir = auto.os.scandir
+
+        def counting(path):
+            listings.append(str(path))
+            return real_scandir(path)
+
+        with patch.object(auto.os, "scandir", counting):
+            resp = await self.client.get(f"{SERVE}thumbnails/Shot_thumb.png?root=0")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(len(listings), 1)
+        self.assertTrue((self.output_dir / "thumbnails" / "Shot_thumb.png").is_file())
 
     async def test_broken_file_falls_back_to_the_original_and_is_remembered(self):
         broken = self.output_dir / "broken.png"
@@ -285,6 +417,39 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         text = await resp.text()
         self.assertNotIn(str(self.output_dir), text)
         self.assertFalse((self.output_dir / "thumbnails").exists())
+
+    def test_drive_unc_and_absolute_segments_are_refused_as_text(self):
+        # M1: a drive or UNC segment would reset the anchor of a joined path.
+        for path in (
+            "thumbnails/D:/x_thumb.png",
+            "thumbnails/D:x_thumb.png",
+            "thumbnails/\\\\server\\share/x_thumb.png",
+            "thumbnails//server/share/x_thumb.png",
+            "/thumbnails/x_thumb.png",
+            "thumbnails/a/./x_thumb.png",
+            "thumbnails/C:\\Users\\x_thumb.png",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(auto._is_preview_request(path))
+
+    async def test_refused_segments_never_reach_the_filesystem(self):
+        with (
+            patch.object(auto, "_thumbnail_source") as source,
+            patch.object(auto, "_quick_source") as quick,
+            patch.object(auto.os, "stat") as stat,
+        ):
+            for path in (
+                "thumbnails/D:/x_thumb.png",
+                "thumbnails/\\\\server\\share/x_thumb.png",
+                "/thumbnails/x_thumb.png",
+            ):
+                answer = await self.api._serve_missing_thumbnail(
+                    [self.output_dir], path
+                )
+                self.assertIsNone(answer)
+            source.assert_not_called()
+            quick.assert_not_called()
+            stat.assert_not_called()
 
     async def test_traversal_is_refused_before_any_filesystem_access(self):
         with patch.object(auto, "_thumbnail_source") as source:
@@ -372,6 +537,188 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         )
         self.assertEqual(resp.status, 200)
         self.assertFalse((self.output_dir / "thumbnails").exists())
+
+
+class TestVideoPreviewsNeverFallBackToTheVideo(AutoThumbnailCase):
+    """I1: a video preview that cannot be made is the placeholder frame."""
+
+    def _video(self, name="clip.webm"):
+        path = self.output_dir / name
+        path.write_bytes(b"AV1 stream no decoder here")
+        return path
+
+    async def _assert_placeholder(self, url):
+        resp = await self.client.get(url)
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Content-Type"], "image/jpeg")
+        body = await resp.read()
+        self.assertTrue(body.startswith(b"\xff\xd8"))
+        return resp
+
+    async def test_opencv_that_cannot_open_the_file_falls_through_to_a_frame(self):
+        from unittest.mock import MagicMock
+
+        self._video()
+        cv2 = MagicMock()
+        cv2.VideoCapture.return_value.isOpened.return_value = False
+        with patch.dict(sys.modules, {"cv2": cv2}):
+            await self._assert_placeholder(f"{SERVE}thumbnails/clip_thumb.jpg?root=0")
+        self.assertTrue((self.output_dir / "thumbnails" / "clip_thumb.jpg").is_file())
+
+    async def test_a_held_video_preview_is_the_placeholder_and_writes_nothing(self):
+        from py.api.jobs import RESTORE_JOB_KIND
+
+        self._video()
+        self._hold(RESTORE_JOB_KIND)
+        resp = await self._assert_placeholder(
+            f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
+        )
+        self.assertEqual(resp.headers["Cache-Control"], "no-store")
+        self.assertFalse((self.output_dir / "thumbnails").exists())
+
+    async def test_a_linked_out_folder_gives_a_video_the_placeholder(self):
+        self._video()
+        elsewhere = Path(self._output_tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        self._make_symlink(elsewhere, self.output_dir / "thumbnails")
+        resp = await self._assert_placeholder(
+            f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
+        )
+        self.assertEqual(resp.headers["Cache-Control"], "no-store")
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    async def test_a_failed_video_preview_is_the_placeholder(self):
+        self._video()
+        with patch.object(self.api, "_generate_video_thumbnail", return_value=False):
+            resp = await self._assert_placeholder(
+                f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
+            )
+        self.assertEqual(resp.headers["Cache-Control"], "no-store")
+
+
+class TestWriteSafety(AutoThumbnailCase):
+    async def test_a_hold_that_starts_while_waiting_for_a_slot_stops_the_write(self):
+        # M3: the holds are checked again once the slot is taken.
+        from py.api.jobs import RESTORE_JOB_KIND
+
+        names = [f"h{i}.png" for i in range(auto.ON_DEMAND_LIMIT + 1)]
+        for name in names:
+            make_png(self.output_dir / name, size=(64, 64))
+        calls = self._count_writes()
+        entered, release, state = self._gate_writes()
+        tasks = [
+            asyncio.ensure_future(
+                self.client.get(_entry(self.api, self.output_dir, n)["thumbnail_url"])
+            )
+            for n in names
+        ]
+        await self._writers(state, auto.ON_DEMAND_LIMIT)
+        await self._waiting(len(names))
+        self._hold(RESTORE_JOB_KIND)
+        release.set()
+        responses = [await task for task in tasks]
+        self.assertEqual([r.status for r in responses], [200] * len(names))
+        self.assertEqual(len(calls), auto.ON_DEMAND_LIMIT, "the late one never wrote")
+        # ... and once more before the rename: the gated writers wrote nothing.
+        thumbs = self.output_dir / "thumbnails"
+        self.assertEqual(sorted(os.listdir(thumbs)) if thumbs.exists() else [], [])
+
+    async def test_disk_errors_are_not_remembered_but_decode_errors_are(self):
+        # M4: only a file that cannot be decoded is remembered.
+        import errno
+
+        make_png(self.output_dir / "full.png", size=(64, 64))
+        url = _entry(self.api, self.output_dir, "full.png")["thumbnail_url"]
+        with patch.object(
+            images_module,
+            "_write_image_thumbnail",
+            side_effect=OSError(errno.ENOSPC, "No space left on device"),
+        ):
+            resp = await self.client.get(url)
+            self.assertEqual(resp.status, 200)
+            await resp.read()
+        self.assertEqual(self.api._auto_thumbnails().failure_count, 0)
+        truncated = self.output_dir / "cut.png"
+        data = make_png(self.output_dir / "whole.png", size=(256, 256)).read_bytes()
+        truncated.write_bytes(data[: len(data) // 2])
+        resp = await self.client.get(
+            _entry(self.api, self.output_dir, "cut.png")["thumbnail_url"]
+        )
+        self.assertEqual(await resp.read(), truncated.read_bytes())
+        self.assertEqual(self.api._auto_thumbnails().failure_count, 1)
+
+
+class TestShutdown(AutoThumbnailCase):
+    def _worker_threads(self):
+        return [
+            t
+            for t in threading.enumerate()
+            if t.name == auto.WORKER_NAME and t.is_alive()
+        ]
+
+    async def test_no_thread_remains_after_cleanup_and_capture_cannot_restart(self):
+        path = make_png(self.output_dir / "a.png", size=(64, 64))
+        self.assertEqual(self.api.queue_capture_thumbnail(str(path)), "queued")
+        await self._idle()
+        resp = await self.client.get(
+            _entry(self.api, self.output_dir, "a.png")["thumbnail_url"]
+        )
+        await resp.read()
+        pool_threads = list(self.api._preview_pool_threads())
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, lambda: self.api.close_auto_thumbnails(final=True)
+        )
+        for thread in pool_threads:
+            await loop.run_in_executor(None, thread.join, WAIT)
+        self.assertEqual(self._worker_threads(), [])
+        self.assertFalse(any(t.is_alive() for t in pool_threads))
+        other = make_png(self.output_dir / "b.png", size=(64, 64))
+        self.assertEqual(self.api.queue_capture_thumbnail(str(other)), "skipped")
+        self.assertEqual(self._worker_threads(), [])
+
+    async def test_a_reload_stops_the_old_worker(self):
+        path = make_png(self.output_dir / "a.png", size=(64, 64))
+        self.api.queue_capture_thumbnail(str(path))
+        await self._idle()
+        (old,) = self._worker_threads()
+        old.pm_preview_token = object()  # as the module before a reload left it
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, auto._stop_stale_workers)
+        await loop.run_in_executor(None, old.join, WAIT)
+        self.assertFalse(old.is_alive())
+
+    async def test_close_kills_ffmpeg_and_logs_a_join_that_timed_out(self):
+        from unittest.mock import MagicMock
+
+        entered, release, _state = self._gate_writes()
+        path = make_png(self.output_dir / "a.png", size=(64, 64))
+        self.api.queue_capture_thumbnail(str(path))
+        await self._wait(entered)
+        thumbnailer = self.api._auto_thumbnails()
+        process = MagicMock()
+        thumbnailer._track(process)
+        with (
+            patch.object(auto, "CLOSE_WAIT_SECONDS", 0),
+            self.assertLogs("prompt_manager.api", "WARNING") as logs,
+        ):
+            self.api.close_auto_thumbnails()
+        process.kill.assert_called_once()
+        self.assertIn("still running", "\n".join(logs.output))
+        release.set()
+
+
+class TestHistorySharesTheAdmission(AutoThumbnailCase):
+    def test_history_and_serve_route_share_one_flight_key(self):
+        root = self.output_dir
+        preview = root / "thumbnails" / "sub" / "a_thumb.png"
+        self.assertEqual(
+            auto.flight_key(root, ("thumbnails", "sub", "a_thumb.png")),
+            auto.flight_key(
+                Path(os.path.normcase(os.path.realpath(root))),
+                preview.relative_to(root).parts,
+            ),
+        )
 
 
 class TestThumbnailOnCapture(AutoThumbnailCase):

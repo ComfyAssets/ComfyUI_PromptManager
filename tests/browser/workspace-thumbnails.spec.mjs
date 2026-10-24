@@ -104,3 +104,15 @@ test('Library cards and the shared gallery request previews only', async ({ page
     expect(seen.length).toBeGreaterThan(0);
     expect(originals(seen)).toEqual([]);
 });
+
+test('a video whose preview cannot be loaded swaps back to its own element', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
+    await page.route(url => url.pathname.endsWith('/thumbnails/clip_thumb.jpg'), route => route.fulfill({ status: 404, body: '' }));
+    await page.goto(images);
+    const card = cards(page).filter({ hasText: 'clip.webm' });
+    await expect(card.locator('.media-art > .image-open > video')).toHaveCount(1);
+    await expect(card.locator('.media-art > .image-open > img')).toHaveCount(0);
+    await card.getByRole('button', { name: 'Inspect clip.webm', exact: true }).click();
+    await expect(details(page).locator('video.detail-cover')).toHaveCount(1);
+    await expect(details(page).locator('img.detail-cover')).toHaveCount(0);
+});

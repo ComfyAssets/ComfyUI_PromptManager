@@ -1567,39 +1567,65 @@ class TestVideoThumbnailFallbacks(ImageRouteCoverageCase):
         with Image.open(self.thumb) as img:
             self.assertEqual(img.format, "JPEG")
 
-    def test_cv2_cannot_open_or_read(self):
-        with patch.dict(sys.modules, {"cv2": self._fake_cv2(opened=False)}):
-            closed = self.api._generate_video_thumbnail(
-                self.video, self.thumb, self.SIZE
-            )
-        with patch.dict(sys.modules, {"cv2": self._fake_cv2(read_ok=False)}):
-            unread = self.api._generate_video_thumbnail(
-                self.video, self.thumb, self.SIZE
-            )
-        self.assertEqual((closed, unread), (False, False))
+    def test_cv2_cannot_open_or_read_falls_through_to_ffmpeg_then_placeholder(self):
+        # #249 I1: an OpenCV that cannot decode the clip (AV1) no longer ends
+        # the run; ffmpeg and then the placeholder are tried.
+        for fake in (self._fake_cv2(opened=False), self._fake_cv2(read_ok=False)):
+            self.thumb.unlink(missing_ok=True)
+            with (
+                patch.dict(sys.modules, {"cv2": fake}),
+                patch("subprocess.Popen", side_effect=FileNotFoundError("ffmpeg")),
+            ):
+                ok = self.api._generate_video_thumbnail(
+                    self.video, self.thumb, self.SIZE
+                )
+            self.assertTrue(ok)
+            with Image.open(self.thumb) as img:
+                self.assertEqual((img.format, img.size), ("JPEG", self.SIZE))
 
     def test_cv2_crash_is_contained(self):
         cv2 = MagicMock()
         cv2.VideoCapture.side_effect = RuntimeError("driver crash")
-        with patch.dict(sys.modules, {"cv2": cv2}):
+        with (
+            patch.dict(sys.modules, {"cv2": cv2}),
+            patch("subprocess.Popen", side_effect=FileNotFoundError("ffmpeg")),
+        ):
             ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
+        self.assertTrue(ok, "the placeholder is written")
+
+    def test_cv2_failure_keeps_an_existing_preview_on_rebuild(self):
+        make_png(self.thumb)
+        before = self.thumb.read_bytes()
+        with (
+            patch.dict(sys.modules, {"cv2": self._fake_cv2(opened=False)}),
+            patch("subprocess.Popen", side_effect=FileNotFoundError("ffmpeg")),
+        ):
+            ok = self.api._generate_video_thumbnail(
+                self.video, self.thumb, self.SIZE, keep_existing=True
+            )
         self.assertFalse(ok)
+        self.assertEqual(self.thumb.read_bytes(), before)
 
     def test_ffmpeg_absent_yields_placeholder(self):
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.run", side_effect=FileNotFoundError("ffmpeg")),
+            patch("subprocess.Popen", side_effect=FileNotFoundError("ffmpeg")),
         ):
             ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
         self.assertTrue(ok)
         with Image.open(self.thumb) as img:
             self.assertEqual(img.size, self.SIZE)
 
+    @staticmethod
+    def _process(returncode, stderr=""):
+        process = MagicMock(returncode=returncode)
+        process.communicate.return_value = ("", stderr)
+        return process
+
     def test_ffmpeg_failure_yields_placeholder(self):
-        failed = MagicMock(returncode=1, stderr="no stream")
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.run", return_value=failed),
+            patch("subprocess.Popen", return_value=self._process(1, "no stream")),
         ):
             ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
         self.assertTrue(ok)
@@ -1608,16 +1634,41 @@ class TestVideoThumbnailFallbacks(ImageRouteCoverageCase):
     def test_ffmpeg_success(self):
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)) as run,
+            patch("subprocess.Popen", return_value=self._process(0)) as run,
         ):
             ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
         self.assertTrue(ok)
         self.assertEqual(run.call_args.args[0][0], "ffmpeg")
 
+    def test_ffmpeg_is_tracked_and_a_hold_before_the_rename_writes_nothing(self):
+        tracked = []
+
+        def writing(cmd, **kwargs):
+            Path(cmd[-1]).write_bytes(b"\xff\xd8 frame")
+            return self._process(0)
+
+        with (
+            patch.dict(sys.modules, {"cv2": None}),
+            patch("subprocess.Popen", side_effect=writing),
+        ):
+            with self.assertRaises(images_module.PreviewWriteHeld):
+                self.api._generate_video_thumbnail(
+                    self.video,
+                    self.thumb,
+                    self.SIZE,
+                    guard=lambda: False,
+                    track=tracked.append,
+                )
+        self.assertEqual(len(tracked), 1)
+        self.assertFalse(self.thumb.exists())
+        self.assertEqual(
+            [p.name for p in self.thumb.parent.iterdir() if "part" in p.name], []
+        )
+
     def test_placeholder_failure_returns_false(self):
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.run", side_effect=FileNotFoundError),
+            patch("subprocess.Popen", side_effect=FileNotFoundError),
             patch.object(
                 images_module.Image, "new", side_effect=RuntimeError("no PIL")
             ),
