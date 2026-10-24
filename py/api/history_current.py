@@ -15,7 +15,9 @@ from typing import BinaryIO
 
 from aiohttp import web
 
+from . import thumbnail_settings
 from .images import _canonical, _public_path, SERVABLE_EXTENSIONS, VIDEO_EXTENSIONS
+from .images import media_thumbnail_rel
 
 try:
     from ...utils.execution_outputs import (
@@ -338,15 +340,11 @@ def _prepare_current_media(
     if thumbnail:
         relative = target.relative_to(resolved.gallery_root)
         is_video = target.suffix.lower() in VIDEO_EXTENSIONS
-        extension = ".jpg" if is_video else target.suffix.lower()
-        preview = (
-            resolved.gallery_root
-            / "thumbnails"
-            / f"{relative.with_suffix('').as_posix()}_thumb{extension}"
-        )
-        try:
-            preview.stat()
-        except FileNotFoundError:
+        # #317: any preview the file owns (the current format first); a
+        # missing one is made under the current format's name.
+        preview = thumbnail_settings.existing_thumbnail(resolved.gallery_root, relative)
+        if preview is None:
+            preview = resolved.gallery_root / media_thumbnail_rel(relative)
             if ensure_preview is not None and _preview_writable(
                 resolved.gallery_root, preview
             ):
@@ -362,7 +360,9 @@ def _prepare_current_media(
         return _OpenedCurrentMedia(
             handle,
             os.fstat(handle.fileno()).st_size,
-            mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            thumbnail_settings.content_type(target)
+            or mimetypes.guess_type(target.name)[0]
+            or "application/octet-stream",
         )
     except BaseException:
         handle.close()

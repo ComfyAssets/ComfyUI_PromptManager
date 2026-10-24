@@ -355,7 +355,12 @@ def create_app(root: Path) -> web.Application:
                 with Image.new("RGB", (64, 64), (100, 80, 120)) as image:
                     image.save(root / "output" / name, pnginfo=info)
                 os.utime(root / "output" / name, (time.time() - 100, time.time() - 100))
-        api._generate_gallery_thumbnails_sync(api._get_all_output_dirs(), (150, 150))
+        from py.api.thumbnail_settings import ThumbnailSettings
+
+        # 150 px previews in the default format (#317 thumbnail settings).
+        api._generate_gallery_thumbnails_sync(
+            api._get_all_output_dirs(), ThumbnailSettings("webp", 80, 150)
+        )
         if include_video:
             # Seed after thumbnail generation to exercise a real unthumbnailed video.
             video = root / "output" / "clip.webm"

@@ -33,7 +33,8 @@ from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from database.operations import PromptDatabase  # noqa: E402
-import py.api.images as images_module  # noqa: E402
+import py.api.images as images_module
+from py.api.thumbnail_settings import ThumbnailSettings  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 from py.api.prompts import MAX_PAGE_LIMIT  # noqa: E402
 from py.config import GalleryConfig  # noqa: E402
@@ -397,7 +398,7 @@ class ThumbnailTestCase(ImageAPITestCase):
         self.api._run_in_executor = spy
         return calls
 
-    def _thumb_path(self, name, suffix=".png"):
+    def _thumb_path(self, name, suffix=".webp"):
         return self.output_dir / "thumbnails" / f"{name}_thumb{suffix}"
 
 
@@ -588,14 +589,15 @@ class TestThumbnailProgressStream(ThumbnailTestCase):
         events = parse_sse(await resp.text())
         self.assertEqual(events[-1][0], "error")
 
-    async def test_unknown_quality_falls_back_to_medium(self):
-        make_png(self.output_dir / "one.png", size=(400, 400))
+    async def test_any_quality_preset_uses_the_server_size_limit(self):
+        # #317 R3: the server's thumbnail settings size every preview.
+        make_png(self.output_dir / "one.png", size=(1000, 1000))
 
         resp = await self.client.request("POST", f"{self.PROGRESS_URL}?quality=huge")
         await resp.text()
 
         with Image.open(self._thumb_path("one")) as thumb:
-            self.assertEqual(max(thumb.size), 300)
+            self.assertEqual(max(thumb.size), 512)
 
 
 class TestGenerateThumbnailsPost(ThumbnailTestCase):
@@ -910,7 +912,8 @@ class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
         make_png(self.output_dir / "a.png", size=(64, 64))
         thumbs = self.output_dir / "thumbnails"
         thumbs.mkdir()
-        dst = thumbs / "a_thumb.png"
+        dst = thumbs / "a_thumb.webp"
+        settings = ThumbnailSettings("webp", 80, 32)
 
         def crash_mid_write(self_img, fp, *args, **kwargs):
             # Simulates an interrupted encoder: bytes on disk, then failure.
@@ -920,14 +923,14 @@ class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
         with patch.object(Image.Image, "save", crash_mid_write):
             with self.assertRaises(OSError):
                 images_module._write_image_thumbnail(
-                    self.output_dir / "a.png", dst, (32, 32)
+                    self.output_dir / "a.png", dst, settings
                 )
         self.assertFalse(dst.exists(), "a half-written thumbnail was left in place")
         self.assertEqual(os.listdir(thumbs), [])
 
-        images_module._write_image_thumbnail(self.output_dir / "a.png", dst, (32, 32))
+        images_module._write_image_thumbnail(self.output_dir / "a.png", dst, settings)
         self.assertTrue(dst.is_file())
-        self.assertEqual(os.listdir(thumbs), ["a_thumb.png"])
+        self.assertEqual(os.listdir(thumbs), ["a_thumb.webp"])
 
     def test_thumbnail_url_is_versioned_by_its_mtime(self):
         import os
@@ -935,7 +938,9 @@ class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
 
         make_png(self.output_dir / "a.png", size=(64, 64))
         self.api._generate_thumbnails_sync(
-            self.output_dir, self.output_dir / "thumbnails", (32, 32)
+            self.output_dir,
+            self.output_dir / "thumbnails",
+            ThumbnailSettings("webp", 80, 32),
         )
         thumb = self._thumb_path("a")
 
@@ -944,7 +949,7 @@ class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
         )
         self.assertRegex(
             entry["thumbnail_url"],
-            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.png\?v=\d+&root=0$",
+            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.webp\?v=\d+&root=0$",
         )
         first = int(re.search(r"v=(\d+)", entry["thumbnail_url"]).group(1))
         self.assertEqual(first, int(thumb.stat().st_mtime))
@@ -960,7 +965,9 @@ class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
     async def test_versioned_thumbnail_url_is_served(self):
         make_png(self.output_dir / "a.png", size=(64, 64))
         self.api._generate_thumbnails_sync(
-            self.output_dir, self.output_dir / "thumbnails", (32, 32)
+            self.output_dir,
+            self.output_dir / "thumbnails",
+            ThumbnailSettings("webp", 80, 32),
         )
         entry = images_module._output_image_entry(
             self.output_dir / "a.png", self.output_dir, 0
@@ -969,7 +976,7 @@ class TestThumbnailFilesAreNeverSeenHalfWritten(ThumbnailTestCase):
         resp = await self.client.request("GET", entry["thumbnail_url"])
 
         self.assertEqual(resp.status, 200)
-        self.assertEqual(resp.headers["Content-Type"], "image/png")
+        self.assertEqual(resp.headers["Content-Type"], "image/webp")
 
     async def test_missing_image_404_is_not_cacheable(self):
         resp = await self.client.request(
@@ -1024,7 +1031,9 @@ class TestMediaScanCaps(ImageAPITestCase):
         for name in ("a", "b", "c"):
             make_png(self.output_dir / f"{name}.png")
         self.api._generate_thumbnails_sync(
-            self.output_dir, self.output_dir / "thumbnails", (64, 64)
+            self.output_dir,
+            self.output_dir / "thumbnails",
+            ThumbnailSettings("webp", 80, 64),
         )
         for name in ("d", "e", "f"):
             make_png(self.output_dir / f"{name}.png")
@@ -1082,11 +1091,6 @@ class TestMediaScanCaps(ImageAPITestCase):
             )
 
         self.assertEqual(targets, [])
-
-    def test_thumbnail_size_ignores_non_string_quality(self):
-        self.assertEqual(self.api._thumbnail_size({"w": 99999}), (300, 300))
-        self.assertEqual(self.api._thumbnail_size(None), (300, 300))
-        self.assertEqual(self.api._thumbnail_size("low"), (150, 150))
 
 
 class TestJsonBodyCaps(ImageAPITestCase):
@@ -1458,7 +1462,7 @@ class TestGalleryListing(ImageRouteCoverageCase):
 
 class TestThumbnailUnits(ImageRouteCoverageCase):
 
-    SIZE = (64, 64)
+    SIZE = ThumbnailSettings("webp", 80, 64)
 
     def test_generate_one_reports_vanished_source(self):
         result = self.api._generate_one(
@@ -1471,11 +1475,9 @@ class TestThumbnailUnits(ImageRouteCoverageCase):
         src = self.output_dir / "clip.mp4"
         src.write_bytes(b"\x00")
         with patch.object(self.api, "_generate_video_thumbnail", return_value=True):
-            ok = self.api._generate_one(src, self._dst("clip", ".jpg"), self.SIZE, True)
+            ok = self.api._generate_one(src, self._dst("clip"), self.SIZE, True)
         with patch.object(self.api, "_generate_video_thumbnail", return_value=False):
-            bad = self.api._generate_one(
-                src, self._dst("clip", ".jpg"), self.SIZE, True
-            )
+            bad = self.api._generate_one(src, self._dst("clip"), self.SIZE, True)
         self.assertEqual((ok["action"], ok["type"]), ("generated", "video"))
         self.assertEqual(bad["action"], "error")
 
@@ -1498,7 +1500,7 @@ class TestThumbnailUnits(ImageRouteCoverageCase):
         )
         self.assertEqual(result["count"], 2)
         self.assertTrue(self._dst("alpha").is_file())
-        self.assertTrue(self._dst("photo", ".jpg").is_file())
+        self.assertTrue(self._dst("photo").is_file())
 
     async def test_emit_sse_swallows_write_errors(self):
         response = MagicMock()
@@ -1521,14 +1523,15 @@ class TestThumbnailUnits(ImageRouteCoverageCase):
         )
         self.assertEqual(status, 500)
 
-    def _dst(self, name, suffix=".png"):
+    def _dst(self, name, suffix=".webp"):
         return self.output_dir / "thumbnails" / f"{name}_thumb{suffix}"
 
 
 class TestVideoThumbnailFallbacks(ImageRouteCoverageCase):
     """_generate_video_thumbnail degrades: cv2 -> ffmpeg -> placeholder."""
 
-    SIZE = (48, 48)
+    # JPEG keeps these checks format-specific; #317 settings carry the edge.
+    SIZE = ThumbnailSettings("jpeg", 85, 48)
 
     @property
     def video(self):
@@ -1581,7 +1584,7 @@ class TestVideoThumbnailFallbacks(ImageRouteCoverageCase):
                 )
             self.assertTrue(ok)
             with Image.open(self.thumb) as img:
-                self.assertEqual((img.format, img.size), ("JPEG", self.SIZE))
+                self.assertEqual((img.format, img.size), ("JPEG", self.SIZE.size))
 
     def test_cv2_crash_is_contained(self):
         cv2 = MagicMock()
@@ -1614,18 +1617,26 @@ class TestVideoThumbnailFallbacks(ImageRouteCoverageCase):
             ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
         self.assertTrue(ok)
         with Image.open(self.thumb) as img:
-            self.assertEqual(img.size, self.SIZE)
+            self.assertEqual(img.size, self.SIZE.size)
 
     @staticmethod
-    def _process(returncode, stderr=""):
+    def _process(returncode, stderr=b"", stdout=b""):
         process = MagicMock(returncode=returncode)
-        process.communicate.return_value = ("", stderr)
+        process.communicate.return_value = (stdout, stderr)
         return process
+
+    @staticmethod
+    def _png_frame(size=(96, 64)):
+        import io
+
+        buffer = io.BytesIO()
+        Image.new("RGB", size, (200, 0, 0)).save(buffer, "PNG")
+        return buffer.getvalue()
 
     def test_ffmpeg_failure_yields_placeholder(self):
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.Popen", return_value=self._process(1, "no stream")),
+            patch("subprocess.Popen", return_value=self._process(1, b"no stream")),
         ):
             ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
         self.assertTrue(ok)
@@ -1634,18 +1645,23 @@ class TestVideoThumbnailFallbacks(ImageRouteCoverageCase):
     def test_ffmpeg_success(self):
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.Popen", return_value=self._process(0)) as run,
+            patch(
+                "subprocess.Popen",
+                return_value=self._process(0, stdout=self._png_frame()),
+            ) as run,
         ):
             ok = self.api._generate_video_thumbnail(self.video, self.thumb, self.SIZE)
         self.assertTrue(ok)
         self.assertEqual(run.call_args.args[0][0], "ffmpeg")
+        with Image.open(self.thumb) as img:
+            # ffmpeg's frame (a PNG on stdout) fitted inside the edge (#317).
+            self.assertEqual((img.format, img.size), ("JPEG", (48, 32)))
 
     def test_ffmpeg_is_tracked_and_a_hold_before_the_rename_writes_nothing(self):
         tracked = []
 
         def writing(cmd, **kwargs):
-            Path(cmd[-1]).write_bytes(b"\xff\xd8 frame")
-            return self._process(0)
+            return self._process(0, stdout=self._png_frame())
 
         with (
             patch.dict(sys.modules, {"cv2": None}),
@@ -2061,7 +2077,7 @@ class TestThumbnailStartupStatus(ThumbnailTestCase):
         ):
             with self.subTest(route=route):
                 for root in (self.output_dir, second):
-                    for thumb in (root / "thumbnails").glob("*_thumb.png"):
+                    for thumb in (root / "thumbnails").glob("*_thumb.webp"):
                         thumb.unlink()
                 response = await self.client.post(route, json={})
                 if route == self.PROGRESS_URL:
@@ -2069,7 +2085,7 @@ class TestThumbnailStartupStatus(ThumbnailTestCase):
                 else:
                     data = await response.json()
                 self.assertEqual(data["count"], 2)
-                self.assertTrue((second / "thumbnails" / "b_thumb.png").exists())
+                self.assertTrue((second / "thumbnails" / "b_thumb.webp").exists())
                 status = await (await self.client.get(self.STATUS_URL)).json()
                 self.assertEqual(status["pending"], 0)
                 self.assertEqual(status["total_images"], 2)
@@ -2121,7 +2137,7 @@ class TestGalleryRootIdentity(ThumbnailTestCase):
             root = roots[image["root_index"]]
             for key, path in (
                 ("url", root / "same.png"),
-                ("thumbnail_url", root / "thumbnails" / "same_thumb.png"),
+                ("thumbnail_url", root / "thumbnails" / "same_thumb.webp"),
             ):
                 response = await self.client.get(image[key])
                 self.assertEqual(response.status, 200)

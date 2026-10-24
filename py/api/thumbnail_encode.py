@@ -34,9 +34,12 @@ import os
 import shutil
 import subprocess  # nosec B404 - fixed argv lists, never a shell
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
+
+from . import thumbnail_settings
 
 try:
     from ...utils.logging_config import get_logger
@@ -381,6 +384,17 @@ def _jxl_fallback():
             "JPEG XL is the thumbnail format but no JPEG XL encoder is available "
             "any more; previews are written as WebP until one is installed"
         )
+
+
+def writer_settings(settings=None):
+    """The settings a preview is written with now: the configured ones, but
+    WebP while JPEG XL has no encoder (logged once). Its extension names the
+    file, so "outdated" means a preview this server would not write now."""
+    settings = settings or thumbnail_settings.current()
+    if settings.format == "jxl" and detect_jxl_encoder() is None:
+        _jxl_fallback()
+        return replace(settings, format="webp")
+    return settings
 
 
 def write_thumbnail(frame, dst, settings, *, guard=None, track=None):

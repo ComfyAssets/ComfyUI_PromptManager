@@ -164,10 +164,26 @@ def _is_preview_file(path):
 def _owned(root, rel_path, preferred):
     rel_path = Path(rel_path)
     stem = Path(root) / thumbnail_stem_rel(rel_path)
-    for extension in candidate_extensions(rel_path.suffix, preferred):
+    extensions = list(candidate_extensions(rel_path.suffix, preferred))
+    if rel_path.suffix != rel_path.suffix.lower() and owns(
+        rel_path.suffix, rel_path.suffix
+    ):
+        # An older release kept the source's own spelling (``b_thumb.JPG``).
+        extensions.append(rel_path.suffix)
+    seen = set()
+    for extension in extensions:
         path = stem.with_name(stem.name + extension)
-        if _is_preview_file(path):
-            yield path
+        if not _is_preview_file(path):
+            continue
+        try:
+            stat = path.stat()
+            identity = (stat.st_dev, stat.st_ino) if stat.st_ino else str(path)
+        except OSError:
+            continue
+        if identity in seen:
+            continue  # the same file under another case (Windows, macOS)
+        seen.add(identity)
+        yield path
 
 
 def owned_thumbnails(root, rel_path, preferred=None):

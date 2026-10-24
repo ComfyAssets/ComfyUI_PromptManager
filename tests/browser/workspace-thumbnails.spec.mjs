@@ -44,7 +44,7 @@ test('a page of the Images grid requests previews, never originals, in every lay
     const listing = await (await request.get('/prompt_manager/images/output?limit=40')).json();
     const fresh = listing.images.filter(image => image.path.startsWith('unthumbnailed/'));
     expect(fresh).toHaveLength(6);
-    for (const image of fresh) expect(image.thumbnail_url).toMatch(/\/thumbnails\/unthumbnailed\/plain_\d{3}_thumb\.png\?root=0/);
+    for (const image of fresh) expect(image.thumbnail_url).toMatch(/\/thumbnails\/unthumbnailed\/plain_\d{3}_thumb\.webp\?root=0/);
     const seen = recordMedia(page);
     await page.goto(images);
     await expect(cards(page)).toHaveCount(8);
@@ -73,7 +73,7 @@ test('the inspector cover is the preview and only the media viewer loads the ori
     const card = cards(page).filter({ hasText: 'plain_001.png' });
     await card.getByRole('button', { name: 'Inspect plain_001.png', exact: true }).click();
     const cover = details(page).locator('img.detail-cover');
-    await expect(cover).toHaveAttribute('src', /\/thumbnails\/unthumbnailed\/plain_001_thumb\.png\?/);
+    await expect(cover).toHaveAttribute('src', /\/thumbnails\/unthumbnailed\/plain_001_thumb\.webp\?/);
     await settled(page);
     await cover.evaluate(image => image.decode().catch(() => {}));
     expect(originals(seen)).toEqual([]);
@@ -88,7 +88,7 @@ test('a video card shows its preview frame instead of loading the video', async 
     const seen = recordMedia(page);
     await page.goto(images);
     const card = cards(page).filter({ hasText: 'clip.webm' });
-    await expect(card.locator('.media-art > .image-open > img')).toHaveAttribute('src', /\/thumbnails\/clip_thumb\.jpg\?/);
+    await expect(card.locator('.media-art > .image-open > img')).toHaveAttribute('src', /\/thumbnails\/clip_thumb\.webp\?/);
     await expect(card.locator('video')).toHaveCount(0);
     await settled(page);
     expect(originals(seen)).toEqual([]);
@@ -107,7 +107,7 @@ test('Library cards and the shared gallery request previews only', async ({ page
 
 test('a video whose preview cannot be loaded swaps back to its own element', async ({ page, request }) => {
     await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
-    await page.route(url => url.pathname.endsWith('/thumbnails/clip_thumb.jpg'), route => route.fulfill({ status: 404, body: '' }));
+    await page.route(url => url.pathname.endsWith('/thumbnails/clip_thumb.webp'), route => route.fulfill({ status: 404, body: '' }));
     await page.goto(images);
     const card = cards(page).filter({ hasText: 'clip.webm' });
     await expect(card.locator('.media-art > .image-open > video')).toHaveCount(1);

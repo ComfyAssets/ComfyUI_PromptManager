@@ -431,10 +431,11 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(int(response.headers["Content-Length"]), len(payload))
         self.assertEqual(await response.read(), b"")
         # A missing preview is made on first view (#249): an undecodable video
-        # gets the placeholder frame, never the whole file.
-        preview = self.output_dir / "thumbnails" / "clip_thumb.jpg"
+        # gets the placeholder frame, never the whole file, written in the
+        # thumbnail format (#317, WebP by default).
+        preview = self.output_dir / "thumbnails" / "clip_thumb.webp"
         response = await self.current(descriptor["thumbnail_url"])
-        self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+        self.assertEqual(response.headers["Content-Type"], "image/webp")
         self.assertEqual(await response.read(), preview.read_bytes())
         self.assertLess(preview.stat().st_size, len(payload))
         make_png(preview)

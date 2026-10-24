@@ -1,29 +1,31 @@
-"""Thumbnail generation as an Activity job (#249 System S5, Task 12).
+"""Thumbnail generation as an Activity job (#249 System S5, Task 12; #317).
 
-- ``GET /prompt_manager/images/thumbnails/plan?mode=&size=&quality=`` counts
-  what a run would do over every gallery root and writes nothing:
-  ``{success, targets, fresh, remaining, roots, mode, size, quality}``.
-- ``POST /prompt_manager/jobs/thumbnails {mode, size, quality}`` starts the
-  ``thumbnails`` job (202 ``{job}``). Its admission class is ``guarded``: it
-  never runs beside a record-changing job, and one thumbnail job runs at a
-  time. It stops at a file boundary when cancelled, keeping the previews it
-  wrote. Its outcome groups are ``generated``, ``skipped`` (already fresh)
-  and ``errors``.
+- ``GET /prompt_manager/images/thumbnails/plan?mode=`` counts what a run
+  would do over every gallery root and writes nothing: ``{success, targets,
+  fresh, outdated, remaining, roots, mode, format, quality, size}``.
+- ``POST /prompt_manager/jobs/thumbnails {mode}`` starts the ``thumbnails``
+  job (202 ``{job}``). Its admission class is ``guarded``: it never runs
+  beside a record-changing job, and one thumbnail job runs at a time. It
+  stops at a file boundary when cancelled, keeping the previews it wrote.
+  Its outcome groups are ``generated``, ``skipped`` (already fresh) and
+  ``errors``.
 
 ``mode`` is ``missing`` (previews that are absent or older than their file)
-or ``rebuild`` (every preview again, fresh ones too). ``size`` is the
-preview's longest edge, 128 to 2048 pixels. ``quality`` picks the encoder
-settings (``THUMBNAIL_ENCODINGS``). Every preview is written next to the old
-one and renamed over it, so nothing is cleared first and a failure keeps the
-old preview; originals are only read.
+or ``rebuild`` (every preview again, fresh ones too). Format, quality and
+size limit are the server's thumbnail settings (``thumbnail_settings``,
+#317), read once when the job starts and shown in its scope; a ``size`` or
+``quality`` an older client sends is ignored. Every preview is written next
+to the old one, verified and renamed over it, so nothing is cleared first and
+a failure keeps the old preview; originals are only read.
 
 The legacy gallery stream ``POST /images/generate-thumbnails/progress``
-starts this job (its quality preset still sizes the previews) or attaches to
-the running one. Its first frame, ``job {id, started}``, names that job and
-whether this stream started it (the gallery cancels by that id, and only a
-job it started); then come the job's legacy ``status``/``start``/
-``progress``/``file_error``/``complete`` frames. A client that goes away no
-longer stops the work: the job outlives the request, as a scan does.
+starts this job (missing previews, the server's settings; its ``quality``
+preset is ignored, #317 R3) or attaches to the running one. Its first frame,
+``job {id, started}``, names that job and whether this stream started it (the
+gallery cancels by that id, and only a job it started); then come the job's
+legacy ``status``/``start``/``progress``/``file_error``/``complete`` frames. A
+client that goes away no longer stops the work: the job outlives the request,
+as a scan does.
 """
 
 import asyncio
@@ -36,7 +38,6 @@ from aiohttp import web
 
 from .admin import _plural, _scan_location, _scan_roots, _scan_status_line
 from .images import (
-    THUMBNAIL_ENCODINGS,
     _BodyTooLarge,
     _new_thumbnail_stats,
     _read_json_body,
@@ -48,24 +49,12 @@ from .images import (
 )
 from .job_routes import busy_response
 from .jobs import THUMBNAIL_GROUP_NAMES, THUMBNAILS_JOB_KIND, JobBusy
+from .thumbnail_encode import writer_settings
+from .thumbnail_settings import ThumbnailSettings
 
 THUMBNAIL_JOB_TITLE = "Thumbnail generation"
 THUMBNAIL_MODES = ("missing", "rebuild")
-THUMBNAIL_QUALITIES = tuple(THUMBNAIL_ENCODINGS)
-MIN_THUMBNAIL_EDGE = 128
-MAX_THUMBNAIL_EDGE = 2048
-# The concept's "Preview size limit" default.
-DEFAULT_THUMBNAIL_EDGE = 512
-DEFAULT_THUMBNAIL_OPTIONS = {
-    "mode": "missing",
-    "size": DEFAULT_THUMBNAIL_EDGE,
-    "quality": "medium",
-}
-_OPTIONS_ERROR = (
-    'mode must be "missing" or "rebuild", quality "low", "medium" or "high", '
-    f"and size a whole number of pixels from {MIN_THUMBNAIL_EDGE} "
-    f"to {MAX_THUMBNAIL_EDGE}"
-)
+_OPTIONS_ERROR = 'mode must be "missing" or "rebuild"'
 CANCELLED_ERROR = "Thumbnail generation was cancelled"
 CANCELLED_BEFORE_WRITING = "Cancelled before any preview was written"
 NOTHING_TO_PREVIEW = "No images or videos to preview"
@@ -80,56 +69,35 @@ _LOG_PREFIXES = {"generated": "+", "errors": "!"}
 
 @dataclass(frozen=True)
 class ThumbnailOptions:
-    """One run's choices: the mode, the preview's longest edge and quality."""
+    """One run's choices: the mode and the thumbnail settings it writes with."""
 
     mode: str
-    edge: int
-    quality: str
-
-    @property
-    def size(self):
-        return (self.edge, self.edge)
-
-    @property
-    def encoding(self):
-        return THUMBNAIL_ENCODINGS[self.quality]
+    settings: ThumbnailSettings
 
     @property
     def rebuild(self):
         return self.mode == "rebuild"
 
     def scope(self):
-        return {"mode": self.mode, "size": self.edge, "quality": self.quality}
-
-
-def _edge(value, *, from_query):
-    """The preview edge as an int, or None when it is not one in range."""
-    if from_query and isinstance(value, str):
-        if not value.isascii() or not value.isdigit() or len(value) > 5:
-            return None
-        value = int(value)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value if MIN_THUMBNAIL_EDGE <= value <= MAX_THUMBNAIL_EDGE else None
+        return {
+            "mode": self.mode,
+            "format": self.settings.format,
+            "quality": self.settings.quality,
+            "size": self.settings.edge,
+        }
 
 
 def thumbnail_options(raw, *, from_query=False):
     """``(ThumbnailOptions, None)`` from a body or query, or ``(None, message)``.
 
-    Absent fields take ``DEFAULT_THUMBNAIL_OPTIONS``. Query values are
-    strings, so a query ``size`` may be decimal digits; a JSON ``size`` must
-    be an int.
+    An absent mode is ``missing``; the settings are the server's now.
     """
     if not isinstance(raw, dict) and not hasattr(raw, "get"):
         return None, _OPTIONS_ERROR
-    mode = raw.get("mode", DEFAULT_THUMBNAIL_OPTIONS["mode"])
-    quality = raw.get("quality", DEFAULT_THUMBNAIL_OPTIONS["quality"])
-    edge = _edge(raw.get("size", DEFAULT_THUMBNAIL_EDGE), from_query=from_query)
-    if mode not in THUMBNAIL_MODES or quality not in THUMBNAIL_QUALITIES:
+    mode = raw.get("mode", "missing")
+    if mode not in THUMBNAIL_MODES:
         return None, _OPTIONS_ERROR
-    if edge is None:
-        return None, _OPTIONS_ERROR
-    return ThumbnailOptions(mode, edge, quality), None
+    return ThumbnailOptions(mode, writer_settings()), None
 
 
 def _invalid(message):
@@ -168,7 +136,10 @@ class ThumbnailJobsMixin:
         try:
             output_dirs = await self._run_in_executor(self._get_all_output_dirs)
             plan = await self._run_in_executor(
-                self._plan_gallery_thumbnails, output_dirs, rebuild=options.rebuild
+                self._plan_gallery_thumbnails,
+                output_dirs,
+                options.mode,
+                settings=options.settings,
             )
         except Exception:
             self.logger.exception("Thumbnail plan failed")
@@ -185,6 +156,7 @@ class ThumbnailJobsMixin:
                 "success": True,
                 "targets": len(plan["targets"]),
                 "fresh": plan["fresh"],
+                "outdated": plan["outdated"],
                 "remaining": plan["remaining"],
                 "roots": [self._public_path(root) for root in output_dirs],
                 **options.scope(),
@@ -265,7 +237,7 @@ class ThumbnailJobsMixin:
         job.update(status_line=f"Looking for media files in {folders}")
         job.log_line(
             f"Thumbnails started · {folders} · {_MODE_LOG[options.mode]} · "
-            f"{options.edge} px · {options.quality}"
+            f"{options.settings.describe()}"
         )
         job.publish(
             _frame(
@@ -276,8 +248,9 @@ class ThumbnailJobsMixin:
         plan = await self._run_in_executor(
             self._plan_gallery_thumbnails,
             output_dirs,
-            rebuild=options.rebuild,
+            options.mode,
             stop=lambda: job.cancelled,
+            settings=options.settings,
         )
         if job.cancelled:  # M2: stopped during the walk, before any start frame
             return self._end_cancelled(job, 0, CANCELLED_BEFORE_WRITING)
@@ -367,7 +340,6 @@ class ThumbnailJobsMixin:
         start = time.monotonic()
         batch_size = _thumbnail_batch_size(_worker_threads())
         generate = {
-            "encoding": options.encoding,
             "rebuild": options.rebuild,
             "stop": lambda: job.cancelled,
         }
@@ -378,7 +350,7 @@ class ThumbnailJobsMixin:
                 break
             batch = targets[batch_start : batch_start + batch_size]
             results = await self._run_in_executor(
-                self._generate_batch, batch, options.size, **generate
+                self._generate_batch, batch, options.settings, **generate
             )
             for (src, _dst, _video), result in zip(batch, results):
                 if result["action"] == "cancelled":
@@ -430,14 +402,13 @@ class ThumbnailJobsMixin:
     async def generate_thumbnails_with_progress(self, request):
         """The gallery's thumbnail stream (POST, server-sent events).
 
-        Starts the thumbnail job with the gallery's quality preset as the
-        preview size (missing previews, medium encoding, as before), or
-        attaches to the running thumbnail job, and streams its frames. A
+        Starts the thumbnail job (missing previews with the server's
+        thumbnail settings; the gallery's ``quality`` preset is ignored, R3),
+        or attaches to the running thumbnail job, and streams its frames. A
         legacy hold (the blocking generate or clear) or a record-changing
         job refuses it with the stream's error frame. The job goes on when
         the client goes away.
         """
-        thumbnail_size = self._thumbnail_size(request.query.get("quality", "medium"))
         response = web.StreamResponse(
             status=200,
             headers={
@@ -449,7 +420,7 @@ class ThumbnailJobsMixin:
         await response.prepare(request)
         # M3: read the registry after the last await, so a job that started
         # while the headers went out is attached to, not refused.
-        job, started, busy = self._legacy_stream_job(thumbnail_size)
+        job, started, busy = self._legacy_stream_job()
         if busy is not None:
             message = f"{busy.title} already running"
             await self._emit_sse(
@@ -476,12 +447,12 @@ class ThumbnailJobsMixin:
             await events.aclose()
         return response
 
-    def _legacy_stream_job(self, thumbnail_size):
+    def _legacy_stream_job(self):
         """``(job, started, busy)`` for the legacy stream, synchronously.
 
-        Attaches to the running cancellable thumbnail job, or starts one with
-        the gallery's preset as the size (missing previews, medium encoding,
-        as the gallery always wrote), or names the job in the way.
+        Attaches to the running cancellable thumbnail job, or starts one for
+        the missing previews with the server's settings, or names the job in
+        the way.
         """
         running = self._jobs.active(THUMBNAILS_JOB_KIND)
         if running is not None and running.cancellable:
@@ -490,5 +461,5 @@ class ThumbnailJobsMixin:
         if busy is not None:
             return None, False, busy
         # blocker() said free and nothing awaited since, so the start is admitted.
-        options = ThumbnailOptions("missing", thumbnail_size[0], "medium")
+        options = ThumbnailOptions("missing", writer_settings())
         return self._start_thumbnail_job(options), True, None

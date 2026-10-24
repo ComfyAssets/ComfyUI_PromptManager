@@ -913,6 +913,26 @@ test('record carries the listing thumbnail as its preview, never another file (#
     assert.deepEqual(toRecord(data, video, extractGenerationFacts).preview, { url: video.thumbnail_url });
 });
 
+test('the preview may be any thumbnail format the file owns (#317)', () => {
+    const toRecord = contract('toInspectionRecord'), entry = image();
+    const base = '/prompt_manager/images/serve/thumbnails/folder/a%20%23%25_thumb';
+    for (const extension of ['.webp', '.jxl', '.jpg', '.png']) {
+        const thumbnail_url = `${base}${extension}?v=3&root=0&root_scope=${scopeA}`;
+        assert.deepEqual(toRecord(envelope(entry), { ...entry, thumbnail_url }, extractGenerationFacts).preview, { url: thumbnail_url }, extension);
+    }
+    // Not a thumbnail format, upper case, no extension, or a legacy name another file owns: no preview.
+    for (const extension of ['.txt', '.WEBP', '', '.gif', '.jpeg', '.webp.png']) {
+        const thumbnail_url = `${base}${extension}?root=0&root_scope=${scopeA}`;
+        assert.equal(toRecord(envelope(entry), { ...entry, thumbnail_url }, extractGenerationFacts).preview, null, extension);
+    }
+    const video = { root_index: 0, path: 'clip.MP4', filename: 'clip.MP4', url: `/prompt_manager/images/serve/clip.MP4?root=0&root_scope=${scopeA}`, root_scope: scopeA };
+    const data = envelope(video); data.file = { ...data.file, media_type: 'video', extension: '.mp4', format: 'MP4' };
+    for (const [extension, owned] of [['.webp', true], ['.jxl', true], ['.jpg', true], ['.png', false]]) {
+        const thumbnail_url = `/prompt_manager/images/serve/thumbnails/clip_thumb${extension}?root=0&root_scope=${scopeA}`;
+        assert.deepEqual(toRecord(data, { ...video, thumbnail_url }, extractGenerationFacts).preview, owned ? { url: thumbnail_url } : null, extension);
+    }
+});
+
 test("names the server quotes (parentheses, '!*') still match their original and preview (#249 M11)", () => {
     const toRecord = contract('toInspectionRecord');
     const entry = { root_index: 0, path: "folder/a (1)!'*.png", filename: "a (1)!'*.png", root_scope: scopeA,
