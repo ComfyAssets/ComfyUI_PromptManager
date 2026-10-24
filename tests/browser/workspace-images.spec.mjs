@@ -398,18 +398,20 @@ test('preview uses actual Viewer.js and cleans up when closing or leaving Images
 test('real video media has a usable card and native playback cleans up on close and navigation', async ({ page, request }) => {
     await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
     const media = await (await request.get('/prompt_manager/images/output?limit=40')).json();
-    expect(media.images.find(image => image.filename === 'clip.webm').thumbnail_url).toBeNull();
+    // #249: a video with no preview yet still lists its preview URL; the server makes the frame on first view.
+    expect(media.images.find(image => image.filename === 'clip.webm').thumbnail_url).toMatch(/\/thumbnails\/clip_thumb\.jpg\?root=0/);
     await page.goto(workspace);
     await refine(page, { Media: 'video' });
     await expect(cards(page)).toHaveCount(1);
     const card = cards(page).first();
     await expect(card).toHaveAttribute('data-image-key', '0:clip.webm');
-    await expect(card.locator('img')).toHaveCount(0);
     await expect(card.getByRole('button', { name: 'Open clip.webm', exact: true })).toBeVisible();
-    // Legacy video art inside the concept card; D11 names the video's own extension.
-    await expect(card.locator('.media-art > .image-open > video')).toHaveCount(1);
+    // The card shows the preview frame, never the video itself; D11 names the video's own extension.
+    await expect(card.locator('video')).toHaveCount(0);
+    await expect(card.locator('.media-art > .image-open > img')).toHaveCount(1);
     await expect(card.locator('.media-info p')).toHaveText(/(?:^|· )WEBM$/);
-    expect(await card.locator('video').evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThan(20);
+    await expect.poll(() => card.locator('img').evaluate(node => node.complete && node.naturalHeight > 0)).toBe(true);
+    expect(await card.locator('img').evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThan(20);
     await card.getByRole('button', { name: 'Open clip.webm', exact: true }).click();
     const video = page.locator('dialog[open] video');
     await expect(video).toBeVisible();
@@ -713,16 +715,45 @@ test('selected layout stays blue with readable text on hover in either theme', a
     }
 });
 
-test('refresh releases the previous inspector video source', async ({ page, request }) => {
+test('refresh releases the previous inspector cover source', async ({ page, request }) => {
     await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
     await page.goto(workspace);
     const card = cards(page).filter({ hasText: 'clip.webm' });
     await card.getByRole('button', { name: 'Inspect clip.webm', exact: true }).click();
+    // #249: a video's cover is its preview frame, not the video.
+    const cover = details(page).locator('img.detail-cover');
+    await expect(cover).toHaveAttribute('src', /\/thumbnails\/clip_thumb\.jpg\?/);
+    await expect(details(page).locator('video')).toHaveCount(0);
+    await cover.evaluate(element => { window.__oldInspectorCover = element; });
+    await rescan(page);
+    await expect.poll(() => page.evaluate(() => !window.__oldInspectorCover.isConnected)).toBe(true);
+    expect(await page.evaluate(() => window.__oldInspectorCover.getAttribute('src'))).toBeNull();
+});
+
+/** A listing that names no preview for its videos (the fallback a card and the cover keep for one). */
+async function videosWithoutPreview(page) {
+    await page.route(url => url.pathname === '/prompt_manager/images/output', async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        if (Array.isArray(body.images)) body.images = body.images.map(image => image.is_video ? { ...image, thumbnail_url: null } : image);
+        await route.fulfill({ response, json: body });
+    });
+}
+
+test('a video listed without a preview keeps its own element, released on refresh', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
+    await videosWithoutPreview(page);
+    await page.goto(workspace);
+    const card = cards(page).filter({ hasText: 'clip.webm' });
+    await expect(card.locator('.media-art > .image-open > video')).toHaveCount(1);
+    await expect(card.locator('img')).toHaveCount(0);
+    await card.getByRole('button', { name: 'Inspect clip.webm', exact: true }).click();
     await expect(details(page).locator('video')).toBeVisible();
     await details(page).locator('video').evaluate(element => { window.__oldInspectorVideo = element; });
+    await card.locator('video').evaluate(element => { window.__oldCardVideo = element; });
     await rescan(page);
-    await expect.poll(() => page.evaluate(() => !window.__oldInspectorVideo.isConnected)).toBe(true);
-    expect(await page.evaluate(() => window.__oldInspectorVideo.getAttribute('src'))).toBeNull();
+    await expect.poll(() => page.evaluate(() => !window.__oldInspectorVideo.isConnected && !window.__oldCardVideo.isConnected)).toBe(true);
+    expect(await page.evaluate(() => [window.__oldInspectorVideo.getAttribute('src'), window.__oldCardVideo.getAttribute('src')])).toEqual([null, null]);
 });
 
 test('Import Rescan rescans cached files and preserves the collection when rescan fails', async ({ page, request }) => {

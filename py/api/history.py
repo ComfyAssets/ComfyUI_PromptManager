@@ -734,7 +734,10 @@ class HistoryRoutesMixin:
                         raise HistoryReadError(422, "response-limit") from None
                 else:
                     prepared = _prepare_current_media(
-                        resolved, scope, thumbnail=kind == "thumbnail"
+                        resolved,
+                        scope,
+                        thumbnail=kind == "thumbnail",
+                        **media_options,
                     )
                 _check_current(scope, self, fence, epoch, generation)
                 return prepared
@@ -761,25 +764,44 @@ class HistoryRoutesMixin:
                     _check_current(scope, self, fence, epoch, generation)
                 raise
 
-        pending = asyncio.create_task(self._run_in_executor(project))
-        try:
-            prepared = await asyncio.shield(pending)
-        except asyncio.CancelledError:
-            pending.add_done_callback(_close_prepared_result)
-            raise
-        except (
-            HistoryReadError,
-            HistoryEpochChanged,
-            sqlite3.Error,
-            OSError,
-            ValueError,
-        ):
-            raise
-        except Exception as error:
-            self.logger.warning(
-                "Current history media unavailable (%s)", type(error).__name__
-            )
-            raise _current_unavailable("temporary_unavailable") from None
+        async def execute():
+            pending = asyncio.create_task(self._run_in_executor(project))
+            try:
+                return await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                pending.add_done_callback(_close_prepared_result)
+                raise
+            except (
+                HistoryReadError,
+                HistoryEpochChanged,
+                sqlite3.Error,
+                OSError,
+                ValueError,
+            ):
+                raise
+            except Exception as error:
+                self.logger.warning(
+                    "Current history media unavailable (%s)", type(error).__name__
+                )
+                raise _current_unavailable("temporary_unavailable") from None
+
+        # A missing preview (#249) is noted on the first read, made through
+        # the serve route's admission and single flight, then read again. A
+        # video whose preview cannot be made is the placeholder frame.
+        needed = []
+        media_options = {}
+        if kind == "thumbnail":
+            media_options = {
+                "ensure_preview": lambda *preview: needed.append(preview),
+                "placeholder": self._video_placeholder_bytes(),
+            }
+        prepared = await execute()
+        if needed:
+            if not isinstance(prepared, bytes):
+                prepared.close()
+            await self._admit_preview(*needed[0])
+            media_options["ensure_preview"] = None
+            prepared = await execute()
         if isinstance(prepared, bytes):
             return _success_response(prepared)
         return await _current_media_response(request, prepared)

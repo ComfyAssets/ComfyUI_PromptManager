@@ -110,6 +110,8 @@ def _card_header(path: Path) -> tuple:
 
 # The legacy gallery page's thumbnail generation, as Activity lists it (D80).
 THUMBNAIL_GENERATION_TITLE = "Thumbnail generation (gallery page)"
+# Its clear: automatic previews are not written while it runs.
+THUMBNAIL_CLEAR_TITLE = "Thumbnail clear (gallery page)"
 
 
 class _CardFacts(NamedTuple):
@@ -261,13 +263,32 @@ def _temp_sibling(dst):
     return dst.with_name(f".{dst.stem}.part-{token}{dst.suffix}")
 
 
-def _atomic_save(img, dst, fmt=None, **save_kwargs):
+class PreviewWriteHeld(Exception):
+    """A preview write stopped before its rename: ``guard()`` said no (#249)."""
+
+
+# The result error of a write held before its rename (never remembered).
+PREVIEW_HELD = "Preview writes are held while another job runs"
+
+
+def _replace_unless_held(tmp, dst, guard=None):
+    """Rename *tmp* over *dst*, unless ``guard()`` is false (PreviewWriteHeld)."""
+    if guard is not None and not guard():
+        raise PreviewWriteHeld(PREVIEW_HELD)
+    os.replace(tmp, dst)
+
+
+def _atomic_save(img, dst, fmt=None, *, guard=None, **save_kwargs):
     """Save a PIL image to *dst* without a partially written file ever being
-    visible at that path: write a temp sibling, then rename over it."""
+    visible at that path: write a temp sibling, then rename over it.
+
+    ``guard()`` (automatic previews) is asked again just before the rename;
+    false leaves *dst* untouched and raises PreviewWriteHeld.
+    """
     tmp = _temp_sibling(dst)
     try:
         img.save(tmp, fmt, **save_kwargs)
-        os.replace(tmp, dst)
+        _replace_unless_held(tmp, dst, guard)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -305,11 +326,11 @@ def _ffmpeg_qscale(encoding):
     return str(_FFMPEG_QSCALE.get(encoding["quality"], 4))
 
 
-def _write_image_thumbnail(src, dst, thumbnail_size, encoding=None):
+def _write_image_thumbnail(src, dst, thumbnail_size, encoding=None, guard=None):
     """Resize *src* into *dst* (blocking PIL work), atomically.
 
     ``encoding`` is one of THUMBNAIL_ENCODINGS (medium when None); a PNG
-    preview keeps only its ``optimize`` flag.
+    preview keeps only its ``optimize`` flag. ``guard`` see _atomic_save.
     """
     encoding = encoding or DEFAULT_THUMBNAIL_ENCODING
     with Image.open(src) as img:
@@ -319,7 +340,50 @@ def _write_image_thumbnail(src, dst, thumbnail_size, encoding=None):
         save_kwargs = dict(encoding)
         if dst.suffix.lower() == ".png":
             save_kwargs = {"optimize": encoding["optimize"]}
-        _atomic_save(img, dst, **save_kwargs)
+        _atomic_save(img, dst, guard=guard, **save_kwargs)
+
+
+def _video_placeholder_image(thumbnail_size):
+    """The placeholder frame for a video no decoder could read: a play mark."""
+    from PIL import ImageDraw, ImageFont
+
+    img = Image.new("RGB", thumbnail_size, color=(50, 50, 50))
+    draw = ImageDraw.Draw(img)
+    center_x, center_y = thumbnail_size[0] // 2, thumbnail_size[1] // 2
+    triangle_size = min(thumbnail_size) // 4
+    points = [
+        (center_x - triangle_size // 2, center_y - triangle_size // 2),
+        (center_x - triangle_size // 2, center_y + triangle_size // 2),
+        (center_x + triangle_size // 2, center_y),
+    ]
+    draw.polygon(points, fill=(255, 255, 255))
+    try:
+        font = ImageFont.load_default()
+        text = "VIDEO"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        draw.text(
+            (center_x - text_width // 2, center_y + triangle_size // 2 + 10),
+            text,
+            fill=(255, 255, 255),
+            font=font,
+        )
+    except (OSError, AttributeError):
+        pass
+    return img
+
+
+def _is_decode_error(exc):
+    """True when *exc* says the file itself cannot be decoded (#249 M4).
+
+    Pillow's decoder errors are OSErrors without an errno; a real I/O error
+    (disk full, a share gone) carries one and is worth another try.
+    """
+    if isinstance(exc, (UnidentifiedImageError, Image.DecompressionBombError)):
+        return True
+    if isinstance(exc, SyntaxError):
+        return True
+    return isinstance(exc, OSError) and exc.errno is None
 
 
 def _new_thumbnail_stats():
@@ -710,23 +774,51 @@ def _iter_media_files(output_path, max_files):
             yield root_path / name
 
 
-def media_thumbnail_url(output_path, rel_path, root_index, *, root_scope=None):
-    """The Images listing's thumbnail URL for *rel_path* under *output_path*,
-    or None when no thumbnail exists (one blocking stat). The Needs review
-    queue cards use the same URL (#249 F, M10)."""
+def media_thumbnail_rel(rel_path):
+    """``thumbnails/<rel>_thumb<ext>`` (POSIX) for the media file *rel_path*.
+
+    The extension is lower case, and a video's preview is a ``.jpg``: the
+    name every thumbnail writer (the plan, the job, automatic previews) uses.
+    """
     rel_path = Path(rel_path)
     extension = rel_path.suffix.lower()
-    thumb_rel = (
+    return (
         f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb"
         f"{'.jpg' if extension in VIDEO_EXTENSIONS else extension}"
     )
+
+
+def media_thumbnail(output_path, rel_path, root_index, *, root_scope=None):
+    """``(thumbnail_url, ready)`` for *rel_path* under *output_path* (one
+    blocking stat). The Images listing, the Needs review queue cards and the
+    Library use the same URL (#249 F, M10).
+
+    An existing preview's URL carries its mtime as ``v=`` and ``ready`` is
+    True. A missing one is still listed (without ``v=``): the serve route
+    makes it on first view and falls back when it cannot
+    (py/api/thumbnail_auto.py), so no card loads the full file because its
+    preview was not made yet. Media inside a nested ``thumbnails`` folder is
+    never previewed: ``(None, False)``, and its card shows the original.
+    """
+    rel_path = Path(rel_path)
+    if "thumbnails" in rel_path.parts[:-1]:
+        return None, False
+    thumb_rel = media_thumbnail_rel(rel_path)
     thumbnail_url = thumbnail_url_for(thumb_rel, Path(output_path) / thumb_rel)
+    ready = thumbnail_url is not None
     if thumbnail_url is None:
-        return None
-    thumbnail_url += f"&root={root_index}"
+        quoted = urllib.parse.quote(thumb_rel, safe="/")
+        thumbnail_url = f"/prompt_manager/images/serve/{quoted}?root={root_index}"
+    else:
+        thumbnail_url += f"&root={root_index}"
     if root_scope is not None:
         thumbnail_url += f"&root_scope={root_scope}"
-    return thumbnail_url
+    return thumbnail_url, ready
+
+
+def media_thumbnail_url(output_path, rel_path, root_index, *, root_scope=None):
+    """The thumbnail URL of ``media_thumbnail`` (None for nested previews)."""
+    return media_thumbnail(output_path, rel_path, root_index, root_scope=root_scope)[0]
 
 
 def _output_image_entry(
@@ -744,7 +836,7 @@ def _output_image_entry(
     extension = media_path.suffix.lower()
     is_video = extension in VIDEO_EXTENSIONS
 
-    thumbnail_url = media_thumbnail_url(
+    thumbnail_url, thumbnail_ready = media_thumbnail(
         output_path, rel_path, root_index, root_scope=root_scope
     )
     encoded_path = urllib.parse.quote(rel_path.as_posix(), safe="/")
@@ -763,6 +855,8 @@ def _output_image_entry(
         "root_index": root_index,
         "url": url,
         "thumbnail_url": thumbnail_url,
+        # Whether the preview file exists yet (the legacy gallery's dot, #249).
+        "thumbnail_ready": thumbnail_ready,
         "size": stat.st_size,
         "modified_time": stat.st_mtime,
         "extension": extension,
@@ -1682,6 +1776,11 @@ class ImageRoutesMixin:
                 if image_path.is_file():
                     return self._file_response(image_path)
 
+            # A listed preview that was not made yet is made now (#249).
+            preview = await self._serve_missing_thumbnail(output_dirs, filepath)
+            if preview is not None:
+                return preview
+
             # ComfyUI's cache middleware would otherwise let browsers cache this
             # miss for an hour, hiding a thumbnail generated a moment later.
             return web.json_response(
@@ -1909,6 +2008,8 @@ class ImageRoutesMixin:
                     "total_images": pending + plan["skipped"],
                     "pending": pending,
                     "ready": plan["skipped"],
+                    # Files whose automatic preview failed this session (#249).
+                    "failed": self._auto_thumbnail_failures(),
                     "collection_id": hashlib.sha256(collection.encode()).hexdigest()[
                         :16
                     ],
@@ -2003,6 +2104,8 @@ class ImageRoutesMixin:
         encoding=None,
         rebuild=False,
         stop=None,
+        guard=None,
+        track=None,
     ):
         """Create one thumbnail (blocking). Never raises; returns a result dict.
 
@@ -2010,7 +2113,11 @@ class ImageRoutesMixin:
         and touches nothing (a job's file boundary). ``rebuild`` writes a
         fresh preview again and never replaces an existing video preview with
         the placeholder. Every write is atomic, so a failure keeps the old
-        preview.
+        preview. ``guard()`` false just before the rename gives ``action:
+        "error"`` with ``held: True`` and writes nothing; ``track(process)``
+        is handed the ffmpeg process (both for automatic previews, #249). An
+        error result carries ``decode: True`` when the file itself cannot be
+        decoded (an I/O error does not).
         """
         result = {
             "file": src.name,
@@ -2027,22 +2134,43 @@ class ImageRoutesMixin:
             dst.parent.mkdir(parents=True, exist_ok=True)
             if is_video:
                 made = self._generate_video_thumbnail(
-                    src, dst, thumbnail_size, encoding, keep_existing=rebuild
+                    src,
+                    dst,
+                    thumbnail_size,
+                    encoding,
+                    keep_existing=rebuild,
+                    guard=guard,
+                    track=track,
                 )
                 if not made:
-                    return {**result, "action": "error", "error": "Video decode failed"}
+                    return {
+                        **result,
+                        "action": "error",
+                        "error": "Video decode failed",
+                        "decode": True,
+                    }
             else:
-                _write_image_thumbnail(src, dst, thumbnail_size, encoding)
+                _write_image_thumbnail(src, dst, thumbnail_size, encoding, guard)
             return {**result, "action": "generated"}
+        except PreviewWriteHeld:
+            return {**result, "action": "error", "error": PREVIEW_HELD, "held": True}
         except UnidentifiedImageError:
-            return {**result, "action": "error", "error": "Not a valid image file"}
+            return {
+                **result,
+                "action": "error",
+                "error": "Not a valid image file",
+                "decode": True,
+            }
         except PermissionError as e:
             message = _preview_write_error(e)
             self.logger.warning(f"Thumbnail failed for {src.name}: {message}")
             return {**result, "action": "error", "error": message}
         except Exception as e:
             self.logger.warning(f"Thumbnail failed for {src.name}", exc_info=True)
-            return {**result, "action": "error", "error": _safe_error(e)}
+            failed = {**result, "action": "error", "error": _safe_error(e)}
+            if _is_decode_error(e):
+                failed["decode"] = True
+            return failed
 
     async def _emit_sse(self, response, event, data) -> bool:
         """Write one SSE frame. Returns False once the client has gone away."""
@@ -2061,153 +2189,147 @@ class ImageRoutesMixin:
         thumbnail_size,
         encoding=None,
         keep_existing=False,
+        *,
+        guard=None,
+        track=None,
     ):
         """Generate thumbnail from video file. Returns True if successful.
 
-        ``encoding`` is one of THUMBNAIL_ENCODINGS (medium when None); it
-        encodes the OpenCV frame, ffmpeg's frame (as ``-q:v``) and the
-        placeholder alike. Both decoders fit the frame inside
-        ``thumbnail_size`` keeping its aspect ratio. With ``keep_existing`` an
-        existing preview is kept, and the run fails, when no frame could be
-        decoded, rather than replaced by the placeholder. A PermissionError
-        while replacing the preview propagates (``_generate_one`` names it).
+        Tries OpenCV, then ffmpeg, then writes the placeholder frame: a
+        decoder that cannot open or read the clip (an AV1 file OpenCV was
+        built without) falls through to the next one (#249 I1). ``encoding``
+        is one of THUMBNAIL_ENCODINGS (medium when None); it encodes the
+        OpenCV frame, ffmpeg's frame (as ``-q:v``) and the placeholder alike.
+        Both decoders fit the frame inside ``thumbnail_size`` keeping its
+        aspect ratio. With ``keep_existing`` an existing preview is kept, and
+        the run fails, when no frame could be decoded, rather than replaced
+        by the placeholder. A PermissionError while replacing the preview
+        propagates (``_generate_one`` names it), as does PreviewWriteHeld
+        when ``guard()`` refuses the rename. ``track(process)`` is handed the
+        ffmpeg process so a shutdown can kill it.
         """
         encoding = encoding or DEFAULT_THUMBNAIL_ENCODING
         try:
-            # Try using OpenCV first (most reliable)
-            try:
-                import cv2
-
-                cap = cv2.VideoCapture(str(video_path))
-                if not cap.isOpened():
-                    return False
-
-                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                target_frame = max(1, int(frame_count * 0.1))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-
-                ret, frame = cap.read()
-                cap.release()
-
-                if not ret or frame is None:
-                    return False
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                img = Image.fromarray(frame_rgb)
-                img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
-                _atomic_save(img, thumbnail_path, "JPEG", **encoding)
+            frame = self._opencv_frame(video_path, thumbnail_size)
+            if frame is not None:
+                _atomic_save(frame, thumbnail_path, "JPEG", guard=guard, **encoding)
                 self.logger.debug(
                     f"Generated video thumbnail using OpenCV: {thumbnail_path}"
                 )
                 return True
-
-            except ImportError:
-                pass
-
-            # Fallback to ffmpeg
-            try:
-                import subprocess
-
-                tmp_path = _temp_sibling(thumbnail_path)
-                cmd = [
-                    "ffmpeg",
-                    "-i",
-                    str(video_path),
-                    "-ss",
-                    "00:00:01",
-                    "-vframes",
-                    "1",
-                    "-vf",
-                    f"scale={thumbnail_size[0]}:{thumbnail_size[1]}"
-                    ":force_original_aspect_ratio=decrease",
-                    "-q:v",
-                    _ffmpeg_qscale(encoding),
-                    "-y",
-                    str(tmp_path),
-                ]
-
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                if result.returncode == 0 and tmp_path.exists():
-                    os.replace(tmp_path, thumbnail_path)
-                    self.logger.debug(
-                        f"Generated video thumbnail using ffmpeg: {thumbnail_path}"
-                    )
-                    return True
-                else:
-                    self.logger.warning(
-                        f"ffmpeg failed for {video_path}: {result.stderr}"
-                    )
-
-            except (ImportError, subprocess.TimeoutExpired, FileNotFoundError):
-                pass
-            finally:
-                try:
-                    tmp_path.unlink()
-                except (NameError, OSError):
-                    pass
-
+            if self._ffmpeg_frame(
+                video_path, thumbnail_path, thumbnail_size, encoding, guard, track
+            ):
+                return True
             if keep_existing and thumbnail_path.exists():
                 self.logger.warning(
                     f"No frame decoded for {video_path.name}; keeping its preview"
                 )
                 return False
-
-            # Last resort: create a placeholder thumbnail
+            # Last resort: the placeholder frame.
             try:
-                from PIL import ImageDraw, ImageFont
-
-                img = Image.new("RGB", thumbnail_size, color=(50, 50, 50))
-                draw = ImageDraw.Draw(img)
-
-                center_x, center_y = thumbnail_size[0] // 2, thumbnail_size[1] // 2
-                triangle_size = min(thumbnail_size) // 4
-
-                points = [
-                    (center_x - triangle_size // 2, center_y - triangle_size // 2),
-                    (center_x - triangle_size // 2, center_y + triangle_size // 2),
-                    (center_x + triangle_size // 2, center_y),
-                ]
-                draw.polygon(points, fill=(255, 255, 255))
-
-                try:
-                    font = ImageFont.load_default()
-                    text = "VIDEO"
-                    bbox = draw.textbbox((0, 0), text, font=font)
-                    text_width = bbox[2] - bbox[0]
-                    draw.text(
-                        (
-                            center_x - text_width // 2,
-                            center_y + triangle_size // 2 + 10,
-                        ),
-                        text,
-                        fill=(255, 255, 255),
-                        font=font,
-                    )
-                except (OSError, AttributeError):
-                    pass
-
-                _atomic_save(img, thumbnail_path, "JPEG", **encoding)
+                img = _video_placeholder_image(thumbnail_size)
+                _atomic_save(img, thumbnail_path, "JPEG", guard=guard, **encoding)
                 self.logger.debug(
                     f"Generated placeholder video thumbnail: {thumbnail_path}"
                 )
                 return True
-
-            except PermissionError:
+            except (PermissionError, PreviewWriteHeld):
                 raise
             except Exception as e:
                 self.logger.warning(
                     f"Failed to create placeholder thumbnail for {video_path}: {e}"
                 )
                 return False
-
-        except PermissionError:
+        except (PermissionError, PreviewWriteHeld):
             raise
         except Exception as e:
             self.logger.error(
                 f"Video thumbnail generation failed for {video_path}: {e}"
             )
             return False
+
+    def _opencv_frame(self, video_path, thumbnail_size):
+        """A frame about 10% in, fitted to *thumbnail_size*, or None (no
+        OpenCV, or it could not open or read the clip)."""
+        try:
+            import cv2
+        except ImportError:
+            return None
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            try:
+                if not cap.isOpened():
+                    return None
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, max(1, int(frame_count * 0.1)))
+                ret, frame = cap.read()
+            finally:
+                cap.release()
+            if not ret or frame is None:
+                return None
+            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            img.thumbnail(thumbnail_size, Image.Resampling.LANCZOS)
+            return img
+        except Exception as e:
+            self.logger.debug(f"OpenCV could not read {video_path}: {e}")
+            return None
+
+    def _ffmpeg_frame(
+        self, video_path, thumbnail_path, thumbnail_size, encoding, guard, track
+    ):
+        """Write ffmpeg's frame at 1 s into *thumbnail_path*; True on success."""
+        import subprocess  # nosec B404 - fixed argv, no shell
+
+        tmp_path = _temp_sibling(thumbnail_path)
+        cmd = [
+            "ffmpeg",
+            "-i",
+            str(video_path),
+            "-ss",
+            "00:00:01",
+            "-vframes",
+            "1",
+            "-vf",
+            f"scale={thumbnail_size[0]}:{thumbnail_size[1]}"
+            ":force_original_aspect_ratio=decrease",
+            "-q:v",
+            _ffmpeg_qscale(encoding),
+            "-y",
+            str(tmp_path),
+        ]
+        try:
+            process = subprocess.Popen(  # nosec B603 B607 - fixed argv
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if track is not None:
+                track(process)
+            try:
+                _out, stderr = process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                return False
+            if process.returncode == 0 and tmp_path.exists():
+                _replace_unless_held(tmp_path, thumbnail_path, guard)
+                self.logger.debug(
+                    f"Generated video thumbnail using ffmpeg: {thumbnail_path}"
+                )
+                return True
+            self.logger.warning(f"ffmpeg failed for {video_path}: {stderr}")
+            return False
+        except (FileNotFoundError, OSError) as e:
+            if isinstance(e, PermissionError) and tmp_path.exists():
+                raise
+            return False
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
     async def clear_thumbnails(self, request: web.Request) -> web.Response:
         """Clear generated thumbnails across gallery roots, preserving originals.
@@ -2218,7 +2340,7 @@ class ImageRoutesMixin:
         """
         return await self._run_held(
             THUMBNAILS_JOB_KIND,
-            "Thumbnail clear (gallery page)",
+            THUMBNAIL_CLEAR_TITLE,
             "guarded",
             self._clear_thumbnails,
         )

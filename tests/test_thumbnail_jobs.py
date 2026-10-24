@@ -324,7 +324,7 @@ class TestThumbnailJob(ThumbnailJobCase):
         old = preview.read_bytes()
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.run", side_effect=FileNotFoundError("no ffmpeg")),
+            patch("subprocess.Popen", side_effect=FileNotFoundError("no ffmpeg")),
         ):
             _, body = await self._start(mode="rebuild")
             job = await self._finished(body["job"]["id"])
@@ -566,7 +566,7 @@ class TestThumbnailJob(ThumbnailJobCase):
 
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.run", side_effect=FileNotFoundError("no ffmpeg")),
+            patch("subprocess.Popen", side_effect=FileNotFoundError("no ffmpeg")),
             patch.object(images_module, "_atomic_save", refuse),
         ):
             _, body = await self._start()
@@ -594,12 +594,14 @@ class TestThumbnailJob(ThumbnailJobCase):
         def fake_ffmpeg(cmd, **_kwargs):
             commands.append(cmd)
             Path(cmd[-1]).write_bytes(b"jpeg")
-            return type("Done", (), {"returncode": 0, "stderr": ""})()
+            done = type("Done", (), {"returncode": 0})()
+            done.communicate = lambda timeout=None: ("", "")
+            return done
 
         for quality, qscale in (("high", "2"), ("medium", "4"), ("low", "8")):
             with (
                 patch.dict(sys.modules, {"cv2": None}),
-                patch("subprocess.run", side_effect=fake_ffmpeg),
+                patch("subprocess.Popen", side_effect=fake_ffmpeg),
             ):
                 _, body = await self._start(mode="rebuild", size=640, quality=quality)
                 job = await self._finished(body["job"]["id"])
@@ -618,12 +620,13 @@ class TestThumbnailJob(ThumbnailJobCase):
         real_save = images_module._atomic_save
 
         def recording(img, dst, fmt=None, **kwargs):
-            saved.append(kwargs)
+            # The encoder settings (guard is the automatic previews' hold check).
+            saved.append({k: v for k, v in kwargs.items() if k != "guard"})
             return real_save(img, dst, fmt, **kwargs)
 
         with (
             patch.dict(sys.modules, {"cv2": None}),
-            patch("subprocess.run", side_effect=FileNotFoundError("no ffmpeg")),
+            patch("subprocess.Popen", side_effect=FileNotFoundError("no ffmpeg")),
             patch.object(images_module, "_atomic_save", recording),
         ):
             _, body = await self._start(quality="low")

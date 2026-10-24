@@ -64,7 +64,10 @@ export function toHistoryInspectionRecord(result, target, extractFacts) {
     const path = [target.reference.subfolder, target.reference.filename].filter(Boolean).join('/');
     const identity = {kind:'reported-location', key:target.location_key, path:target.reference.path_style === 'windows' ? path.replaceAll('\\', '/') : path,
         occurrence:{...target.occurrence}, history_epoch:target.history_epoch, current_scope:target.current_scope, reference:{...target.reference}};
-    return projectInspectionPayload(result, identity, {url:urlFor(target, 'url', 'media'), filename:target.filename}, extractFacts);
+    const record = projectInspectionPayload(result, identity, {url:urlFor(target, 'url', 'media'), filename:target.filename}, extractFacts);
+    // #249: the inspector's cover is the recorded output's preview (made by the server on first view).
+    record.preview = {url:urlFor(target, 'thumbnail_url', 'thumbnail')};
+    return record;
 }
 export const reportedLocationAdapter = Object.freeze({
     validate,

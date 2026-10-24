@@ -131,6 +131,8 @@ class AutotagAPITestCase(AioHTTPTestCase):
 
     async def tearDownAsync(self):
         await super().tearDownAsync()  # closes the aiohttp test client
+        # The automatic preview worker writes into the temp tree: stop it first.
+        self.api.close_auto_thumbnails()
         self._service_patch.stop()
         if model_gate is not None:
             leaked = model_gate.holder()

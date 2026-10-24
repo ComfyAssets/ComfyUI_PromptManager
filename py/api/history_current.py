@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import errno
 import hashlib
 import hmac
+import io
 import json
 import mimetypes
 import os
@@ -309,17 +310,35 @@ class _OpenedCurrentMedia:
         self.handle.close()
 
 
+def _preview_writable(root: Path, preview: Path) -> bool:
+    """A preview may be written: ``thumbnails`` and every link segment of the
+    preview's folder resolve inside *root* (the serve route's rule, #249)."""
+    folder = root / "thumbnails"
+    return _canonical(folder).is_relative_to(_canonical(root)) and _canonical(
+        preview
+    ).is_relative_to(_canonical(folder))
+
+
 def _prepare_current_media(
-    resolved: ResolvedCurrentCandidate, scope: CurrentOutputScope, *, thumbnail: bool
+    resolved: ResolvedCurrentCandidate,
+    scope: CurrentOutputScope,
+    *,
+    thumbnail: bool,
+    ensure_preview=None,
+    placeholder: bytes | None = None,
 ) -> _OpenedCurrentMedia:
+    """Open the current file, or its preview for ``thumbnail``.
+
+    A missing preview that may be written is handed to
+    ``ensure_preview(src, dst, is_video)`` (the route makes it and reads
+    again, #249). Without one an image's original is opened and a video is
+    the ``placeholder`` JPEG, never the video inside an ``<img>``.
+    """
     target = resolved.canonical_target
     if thumbnail:
         relative = target.relative_to(resolved.gallery_root)
-        extension = (
-            ".jpg"
-            if target.suffix.lower() in VIDEO_EXTENSIONS
-            else target.suffix.lower()
-        )
+        is_video = target.suffix.lower() in VIDEO_EXTENSIONS
+        extension = ".jpg" if is_video else target.suffix.lower()
         preview = (
             resolved.gallery_root
             / "thumbnails"
@@ -328,7 +347,14 @@ def _prepare_current_media(
         try:
             preview.stat()
         except FileNotFoundError:
-            pass
+            if ensure_preview is not None and _preview_writable(
+                resolved.gallery_root, preview
+            ):
+                ensure_preview(target, preview, is_video)
+            if is_video and placeholder is not None:
+                return _OpenedCurrentMedia(
+                    io.BytesIO(placeholder), len(placeholder), "image/jpeg"
+                )
         else:
             target = _canonical(preview)
     handle = _open_current_target(target, resolved.namespace, scope)

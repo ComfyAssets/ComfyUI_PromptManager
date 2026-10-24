@@ -39,3 +39,4 @@ test('stale inspection echoes use the canonical recovery vocabulary and identity
         });
     }
 });
+test('the recorded output inspector cover is its preview, not the original (#249)',()=>{const a=adapter(),target=media('2',1);const record=a.toRecord(envelope(target),target,extractGenerationFacts);assert.deepEqual(record.preview,{url:target.thumbnail_url});assert.notEqual(record.preview.url,record.download.url);});
