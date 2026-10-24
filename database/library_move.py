@@ -438,8 +438,8 @@ def switch_process(old_db: str, location, detached: list) -> None:
     """Point this process at ``location``: resolver, every model, observers.
 
     Adds the old file's connections, detached and still open, to
-    ``detached`` as soon as they are detached, so the mover closes them
-    (``PromptModel.close_detached``) whether or not the rest succeeds.
+    ``detached`` as soon as they are detached, so the mover retires them
+    (``PromptModel.retire_detached``) whether or not the rest succeeds.
     """
     from .execution_history import rekey_history_restore
     from .review_changes import rekey_review_changes
@@ -474,6 +474,8 @@ class _Move:
         self.published: List[str] = []
         self.marker: Optional[str] = None
         self.moved = False
+        # Retired connections still in use; awaited once the locks are free.
+        self.retiring: list = []
 
     def temp(self, suffix: str) -> str:
         path = os.path.join(
@@ -704,7 +706,9 @@ def _switch_guarded(move: _Move, location) -> list:
 
     The copy's write lock keeps every repointed thread from writing to it
     until the switch is whole, so undoing a partial switch loses nothing.
-    Returns the old file's detached connections (still open).
+    Returns the old file's detached connections (still open). On failure
+    every detached connection is retired; those still in use are added to
+    ``move.retiring`` for the caller to await once the locks are released.
     """
     plan = move.plan
     guard = sqlite3.connect(
@@ -718,15 +722,19 @@ def _switch_guarded(move: _Move, location) -> list:
         except Exception as error:
             logger.exception("Library move: switching failed; undoing it")
             move.moved = False  # the copy and its marker are removed
+            # Retire, never wait, here: a connection still in use may be
+            # waiting on the very locks this thread holds.
             try:
-                PromptModel.close_detached(
-                    move.unswitch(plan.db_path, location.db_path), logger
+                move.retiring.extend(
+                    PromptModel.retire_detached(
+                        move.unswitch(plan.db_path, location.db_path), logger
+                    )
                 )
             except Exception:
                 logger.exception("Library move: undoing the switch failed")
             # The old file's connections a partial switch detached: the
             # models reopen it on next use, so close them now, not at GC.
-            PromptModel.close_detached(detached, logger)
+            move.retiring.extend(PromptModel.retire_detached(detached, logger))
             raise MoveFailed("switch-failed") from error
         move.checkpoint("switched")
         return detached
@@ -737,6 +745,20 @@ def _switch_guarded(move: _Move, location) -> list:
 
 
 def _copy_and_switch(move: _Move, location, attempts: int):
+    """Copy, then switch under both locks; retired connections are awaited.
+
+    A connection that was inside a statement when it was retired is closed
+    by its own thread once the statement ends, which may need the locks
+    released first; the old files are renamed (and a failed copy removed)
+    only after that, since Windows refuses to rename or delete an open file.
+    """
+    try:
+        return _copy_and_switch_locked(move, location, attempts)
+    finally:
+        PromptModel.await_detached(move.retiring, logger)
+
+
+def _copy_and_switch_locked(move: _Move, location, attempts: int):
     plan = move.plan
     for attempt in range(1, attempts + 1):
         source = sqlite3.connect(
@@ -756,9 +778,10 @@ def _copy_and_switch(move: _Move, location, attempts: int):
                     files = move.publish(temp_db, copies)
                     detached = _switch_guarded(move, location)
                 # Still holding the old file's lock: a write that was waiting
-                # on it fails when its connection closes (and runs again on
-                # the new library) instead of landing in the old file.
-                PromptModel.close_detached(detached, logger)
+                # on it is interrupted and cannot commit, so it fails (and
+                # runs again on the new library) instead of landing in the
+                # old file. Its own thread closes the connection.
+                move.retiring.extend(PromptModel.retire_detached(detached, logger))
             finally:
                 if source.in_transaction:
                     source.execute("ROLLBACK")

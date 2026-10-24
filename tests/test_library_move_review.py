@@ -7,6 +7,9 @@
   because Move library switched runs once more, on the new library; a write
   racing the switch on a real connection (a run count, an image link) lands
   in the new library only.
+- The switching thread never closes a connection another thread is inside
+  a statement on (a use-after-free in SQLite: "Windows fatal exception:
+  access violation"); it interrupts it and the owner closes it.
 - M2: the copy is verified through a file URI that survives ``#`` and ``%``.
 - M6: a restart after a crash between the switch and the rename renames the
   old files, never deletes them.
@@ -44,6 +47,39 @@ def _run_count(path, text):
     with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
         row = conn.execute("SELECT run_count FROM prompts WHERE text=?", (text,))
         return row.fetchone()[0]
+
+
+class _CrossThreadCloseProbe:
+    """Record every ``close()`` this thread calls on a connection in use elsewhere.
+
+    The writer marks its connection with ``using`` when its statement starts.
+    Closing that connection from the switching thread while the writer is
+    inside the statement frees memory SQLite is still using; on Windows the
+    process dies with an access violation, on Linux the writer sees garbage.
+    """
+
+    def __init__(self):
+        self.in_use = set()
+        self.violations = []
+
+    def using(self, conn):
+        self.in_use.add(conn)
+
+    def _profile(self, _frame, event, arg):
+        if event != "c_call" or getattr(arg, "__name__", "") != "close":
+            return
+        target = getattr(arg, "__self__", None)
+        if isinstance(target, sqlite3.Connection) and target in self.in_use:
+            self.violations.append(threading.current_thread().name)
+
+    @contextlib.contextmanager
+    def watching(self):
+        previous = sys.getprofile()
+        sys.setprofile(self._profile)
+        try:
+            yield self
+        finally:
+            sys.setprofile(previous)
 
 
 class TestFailedSwitchIsUndone(_MoveCase):
@@ -166,44 +202,46 @@ class TestBackgroundWritesSurviveTheSwitch(_MoveCase):
 
         self.db.model.close_all()
         image = os.path.join(self.comfy, "output", "late.png")
-        # A short busy timeout so the blocked writer gives up in seconds.
-        with mock.patch.object(models, "BUSY_TIMEOUT_SECONDS", 2):
-            writer_db = PromptDatabase(self.old_db)
-            handler = ImageGenerationHandler(writer_db, mock.MagicMock())
-            started = threading.Event()
-            outcome = {}
+        writer_db = PromptDatabase(self.old_db)
+        handler = ImageGenerationHandler(writer_db, mock.MagicMock())
+        started = threading.Event()
+        probe = _CrossThreadCloseProbe()
+        outcome = {}
 
-            def write():
-                conn = writer_db.model.get_connection()
-                conn.set_trace_callback(
-                    lambda sql: (
-                        started.set()
-                        if sql.lstrip().upper().startswith(("BEGIN", "INSERT"))
-                        else None
-                    )
-                )
-                try:
-                    # No metadata: the fallback link, not the resolved pair.
-                    handler.link_image_to_prompt(image, {"id": 1}, {})
-                    outcome["ok"] = True
-                except Exception as error:  # pragma: no cover - reported below
-                    outcome["error"] = error
-                finally:
-                    writer_db.model.close()
+        def write():
+            conn = writer_db.model.get_connection()
 
-            thread = threading.Thread(target=write)
+            def trace(sql):
+                if sql.lstrip().upper().startswith(("BEGIN", "INSERT")):
+                    probe.using(conn)
+                    started.set()
 
-            def checkpoint(step):
-                if step == "locked":
-                    # The old file is write-locked now: start the writer and
-                    # wait until its first write is running (it then waits on us).
-                    thread.start()
-                    self.assertTrue(started.wait(WAIT))
+            conn.set_trace_callback(trace)
+            try:
+                # No metadata: the fallback link, not the resolved pair.
+                handler.link_image_to_prompt(image, {"id": 1}, {})
+                outcome["ok"] = True
+            except Exception as error:  # pragma: no cover - reported below
+                outcome["error"] = error
+            finally:
+                writer_db.model.close()
 
-            self.move(checkpoint=checkpoint)
-            thread.join(WAIT)
+        thread = threading.Thread(target=write)
+
+        def checkpoint(step):
+            if step == "locked":
+                # The old file is write-locked now: start the writer and
+                # wait until its first write is running (it then waits on us).
+                thread.start()
+                self.assertTrue(started.wait(WAIT))
+
+        with probe.watching():
+            result = self.move(checkpoint=checkpoint)
+        thread.join(WAIT)
         self.assertFalse(thread.is_alive())
+        self.assertEqual(probe.violations, [])
         self.assertEqual(outcome, {"ok": True})
+        self.assertIsNone(result.retire_problem)
         moved = [
             row
             for row in _rows(self.new_db)["generated_images"]
@@ -229,45 +267,87 @@ class TestBackgroundWritesSurviveTheSwitch(_MoveCase):
         text = "a racing prompt"
         self.db.save_prompt(text, prompt_hash=generate_prompt_hash(text))
         self.db.model.close_all()
-        # A short busy timeout so the blocked writer gives up in seconds.
-        with mock.patch.object(models, "BUSY_TIMEOUT_SECONDS", 2):
-            writer_db = PromptDatabase(self.old_db)
-            started = threading.Event()
-            outcome = {}
+        writer_db = PromptDatabase(self.old_db)
+        thread, started, probe, outcome = self._racing_run_count(writer_db, text)
 
-            def write():
-                conn = writer_db.model.get_connection()
-                conn.set_trace_callback(
-                    lambda sql: started.set() if sql.startswith("UPDATE") else None
-                )
-                try:
-                    usage_tracking.count_runs(
-                        [(generate_prompt_hash(text), text)],
-                        writer_db,
-                        usage_tracking.PendingFirstUse(),
-                    )
-                    outcome["ok"] = True
-                except Exception as error:  # pragma: no cover - reported below
-                    outcome["error"] = error
-                finally:
-                    writer_db.model.close()
+        def checkpoint(step):
+            if step == "locked":
+                # The old file is write-locked now: start the writer and
+                # wait until its UPDATE is running (it then waits on us).
+                thread.start()
+                self.assertTrue(started.wait(WAIT))
 
-            thread = threading.Thread(target=write)
-
-            def checkpoint(step):
-                if step == "locked":
-                    # The old file is write-locked now: start the writer and
-                    # wait until its UPDATE is running (it then waits on us).
-                    thread.start()
-                    self.assertTrue(started.wait(WAIT))
-
-            self.move(checkpoint=checkpoint)
-            thread.join(WAIT)
+        with probe.watching():
+            result = self.move(checkpoint=checkpoint)
+        # The writer's old connection was closed before the old file was
+        # renamed: Windows refuses to rename an open file.
+        self.assertIsNone(result.retire_problem)
+        thread.join(WAIT)
         self.assertFalse(thread.is_alive())
+        self.assertEqual(probe.violations, [])
         self.assertEqual(outcome, {"ok": True})
         self.assertEqual(_run_count(self.new_db, text), 1)
         renamed = os.path.join(self.ext, "prompts.db.moved-to-__promptmanager")
         self.assertEqual(_run_count(renamed, text), 0)
+        assert_closed(self, renamed)
+
+    def test_a_write_racing_a_failed_switch_lands_in_the_old_library(self):
+        text = "a prompt racing a failed switch"
+        self.db.save_prompt(text, prompt_hash=generate_prompt_hash(text))
+        self.db.model.close_all()
+        writer_db = PromptDatabase(self.old_db)
+        thread, started, probe, outcome = self._racing_run_count(writer_db, text)
+
+        def checkpoint(step):
+            if step == "locked":
+                thread.start()
+                self.assertTrue(started.wait(WAIT))
+
+        def switch(old_db, location, detached):
+            lm.switch_process(old_db, location, detached)
+            raise RuntimeError("switch failed at its very end")
+
+        with probe.watching():
+            with self.assertRaises(lm.MoveFailed):
+                self.move(checkpoint=checkpoint, switch=switch)
+        # The copy was removed: no connection was left open on it.
+        self.assert_target_clean()
+        assert_closed(self, self.target)
+        thread.join(WAIT)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(probe.violations, [])
+        self.assertEqual(outcome, {"ok": True})
+        self.assertEqual(_run_count(self.old_db, text), 1)
+
+    @staticmethod
+    def _racing_run_count(writer_db, text):
+        """A run count whose UPDATE marks its connection in use for the probe."""
+        started = threading.Event()
+        probe = _CrossThreadCloseProbe()
+        outcome = {}
+
+        def write():
+            conn = writer_db.model.get_connection()
+
+            def trace(sql):
+                if sql.startswith("UPDATE"):
+                    probe.using(conn)
+                    started.set()
+
+            conn.set_trace_callback(trace)
+            try:
+                usage_tracking.count_runs(
+                    [(generate_prompt_hash(text), text)],
+                    writer_db,
+                    usage_tracking.PendingFirstUse(),
+                )
+                outcome["ok"] = True
+            except Exception as error:  # pragma: no cover - reported below
+                outcome["error"] = error
+            finally:
+                writer_db.model.close()
+
+        return threading.Thread(target=write), started, probe, outcome
 
 
 class TestVerifyUri(unittest.TestCase):
