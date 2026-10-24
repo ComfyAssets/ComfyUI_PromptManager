@@ -302,9 +302,7 @@ class TestDamagedDocuments(MigrationTestCase):
             with self.subTest(data=data):
                 ok, reason = PromptModel.verify_database_file(self.db_path)
                 self.assertFalse(ok)
-                self.assertEqual(
-                    reason, "Workflow documents contain a damaged document"
-                )
+                self.assertEqual(reason, wd.damaged_message(document_id))
 
     def test_a_damaged_document_is_repaired_before_it_is_reused(self):
         prompt_id = self.prompt()

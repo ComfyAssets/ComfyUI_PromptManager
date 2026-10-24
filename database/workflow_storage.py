@@ -46,6 +46,10 @@ from .workflow_documents import (
 )
 
 OPERATION = "workflow_storage"
+# The first apply's backup: ``<db>.pre-workflow-storage_<stamp>``, outside the
+# pruned ``<db>.backup_*`` pool. Only one is ever made; later applies take a
+# pooled safety backup.
+PRE_MIGRATION_LABEL = "pre-workflow-storage"
 BATCH_ROWS = 200
 BATCH_BYTES = 16 * 2**20  # characters of text rewritten per transaction
 # A batch holds the write lock: it ends after this long, and the loop then
@@ -53,10 +57,22 @@ BATCH_BYTES = 16 * 2**20  # characters of text rewritten per transaction
 # poll (100 ms), so the image monitor and the run counting get in between.
 BATCH_SECONDS = 0.5
 BATCH_PAUSE = 0.15
-# What one row's rewrite may raise without failing its batch: the row stays
-# inline and is reported (text SQLite cannot decode, a text that would not
-# come back identical).
-ROW_ERRORS = (sqlite3.Error, DocumentMismatch, UnicodeError, ValueError, TypeError)
+
+
+def _row_error(error) -> bool:
+    """Whether ``error`` is one row's own cause, which keeps only that row inline.
+
+    Text SQLite cannot decode for Python, and a text that would not come
+    back identical. Anything else (a full disk, an I/O error, a malformed
+    database, a bug) fails the whole batch. The decode error is matched by
+    its message: ``sqlite_errorcode`` needs Python 3.11.
+    """
+    if isinstance(error, (DocumentMismatch, UnicodeError)):
+        return True
+    return isinstance(error, sqlite3.OperationalError) and str(error).startswith(
+        "Could not decode"
+    )
+
 
 logger = logging.getLogger("prompt_manager.database.workflow_storage")
 _clock = time.monotonic
@@ -141,7 +157,7 @@ def migrate_batch(
 
     The batch ends after ``max_rows`` rows, about ``max_bytes`` of text or
     ``max_seconds``, whichever comes first. Each row runs in its own
-    savepoint: a row that cannot be rewritten (``ROW_ERRORS``) is rolled
+    savepoint: a row that cannot be rewritten (``_row_error``) is rolled
     back alone, stays inline and is listed in ``errors``; anything else rolls
     the whole batch back and propagates. Returns ``{last_id, rows,
     protected, errors, done}``: the last row looked at, rows rewritten,
@@ -169,7 +185,9 @@ def migrate_batch(
                 changed, protected, row_size = _rewrite_row(
                     conn, image_id, row, verified, checked
                 )
-            except ROW_ERRORS as error:
+            except Exception as error:
+                if not _row_error(error):
+                    raise
                 conn.execute("ROLLBACK TO workflow_row")
                 conn.execute("RELEASE workflow_row")
                 verified.clear()  # the row's documents were rolled back too
@@ -190,6 +208,22 @@ def migrate_batch(
     except BaseException:
         conn.rollback()
         raise
+
+
+def pre_migration_backups(db_path):
+    """The kept pre-migration backups beside ``db_path``, earliest first."""
+    db_path = os.path.abspath(db_path)
+    prefix = os.path.basename(db_path) + "." + PRE_MIGRATION_LABEL + "_"
+    folder = os.path.dirname(db_path)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    return sorted(
+        name
+        for name in names
+        if name.startswith(prefix) and os.path.isfile(os.path.join(folder, name))
+    )
 
 
 def _file_bytes(db_path):
@@ -340,6 +374,8 @@ class WorkflowStorageOperations:
                 "compressed",
             },
         ]
+        if not counts["rows"]:
+            details[1]["detail"] = NOTHING_TO_DO
         if counts["inline_bytes"] is not None:
             details.append(
                 {
@@ -355,13 +391,18 @@ class WorkflowStorageOperations:
                 }
             )
         name = os.path.basename(self.model.db_path)
+        kept = pre_migration_backups(self.model.db_path)
+        backup = (
+            POOLED_BACKUP_NOTE.format(
+                name=f"{name}.backup_<date and time>", kept=kept[0]
+            )
+            if kept
+            else BACKUP_NOTE.format(
+                name=f"{name}.{PRE_MIGRATION_LABEL}_<date and time>"
+            )
+        )
         details += [
-            {
-                "label": "Backup",
-                "detail": BACKUP_NOTE.format(
-                    name=f"{name}.pre-workflow-storage_<date and time>"
-                ),
-            },
+            {"label": "Backup", "detail": backup},
             {"label": "Reclaim space", "detail": RECLAIM_NOTE},
             {"label": "Older versions", "detail": OLDER_VERSIONS_NOTE},
         ]
@@ -372,7 +413,11 @@ class WorkflowStorageOperations:
             targets=[],
             scope={
                 "count": counts["rows"],
-                "label": _plural(counts["rows"], "image record") + " to rewrite",
+                "label": (
+                    _plural(counts["rows"], "image record") + " to rewrite"
+                    if counts["rows"]
+                    else "Nothing to rewrite"
+                ),
             },
             protected={
                 "count": protected,
@@ -396,7 +441,15 @@ BACKUP_NOTE = (
     "Always taken first, whatever the safety backup setting: {name} beside "
     "the database, verified, and kept until you remove it (it is never pruned)."
 )
+POOLED_BACKUP_NOTE = (
+    "A safety backup is taken first, whatever the safety backup setting: {name} "
+    "among the pooled backups; the pre-migration backup {kept} is already kept."
+)
+NOTHING_TO_DO = "Every image record already stores its workflow once."
 OLDER_VERSIONS_NOTE = (
-    "An older Prompt Manager version shows rewritten images without their "
-    "workflow. Restoring the pre-migration backup brings back the old form."
+    "This version stores the workflows of images it records in the new form, "
+    "whether or not this job runs, and this job rewrites the rest. An older "
+    "Prompt Manager version shows those images without their workflow until you "
+    "update again. The way back to an older version is the earliest "
+    "pre-workflow-storage backup."
 )

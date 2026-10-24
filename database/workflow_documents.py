@@ -172,12 +172,22 @@ def _value_error(conn: sqlite3.Connection):
     return None
 
 
-def _damaged_document(conn: sqlite3.Connection) -> bool:
-    """Whether a document fails its length or hash check (one row at a time)."""
+def damaged_message(document_id: int) -> str:
+    """The verify reason for a damaged document: which one, and what to do."""
+    return (
+        f"Workflow document {document_id} is damaged: its text no longer matches "
+        "its checksum, and the images that use it show no workflow. To fix it, "
+        "restore a backup from before the damage, or store a new image with the "
+        "same workflow (that repairs it)."
+    )
+
+
+def _damaged_document(conn: sqlite3.Connection) -> Optional[int]:
+    """The first document failing its length or hash check, or None."""
     for row in conn.execute(ALL_DOCUMENTS_SQL):
         if _decode(row[:3], row[3], quiet=True) is None:
-            return True
-    return False
+            return row[3]
+    return None
 
 
 def workflow_documents_schema_error(
@@ -212,9 +222,11 @@ def workflow_documents_schema_error(
     if _compact(tables[0]) != _compact(_DDL):
         return "Workflow documents have an invalid table definition"
     error = _reference_error(conn, columns) or _value_error(conn)
-    if error is None and documents and _damaged_document(conn):
+    if error is None and documents:
         # Restore and backup verification only: every document is read.
-        return "Workflow documents contain a damaged document"
+        damaged = _damaged_document(conn)
+        if damaged is not None:
+            return damaged_message(damaged)
     return error
 
 
