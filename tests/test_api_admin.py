@@ -1328,6 +1328,103 @@ class TestSettingsMisc(AdminAPITestCase):
         self.assertEqual(resp.status, 500)
 
 
+class TestThumbnailSettings(AdminAPITestCase):
+    """#317: thumbnail format, quality and size limit are server settings."""
+
+    URL = "/prompt_manager/settings"
+
+    def _encoder(self, name):
+        from py.api import thumbnail_encode
+
+        return patch.object(thumbnail_encode, "detect_jxl_encoder", return_value=name)
+
+    async def test_get_reports_the_settings_and_the_encoders(self):
+        PromptManagerConfig.update_config(
+            {"thumbnails": {"format": "webp", "quality": 80, "edge": 512}}
+        )
+        with self._encoder(None):
+            body = await (await self.client.request("GET", self.URL)).json()
+        settings = body["settings"]
+        self.assertEqual(
+            (
+                settings["thumbnail_format"],
+                settings["thumbnail_quality"],
+                settings["thumbnail_edge"],
+            ),
+            ("webp", 80, 512),
+        )
+        jxl = body["thumbnail_encoders"]["jxl"]
+        self.assertEqual((jxl["available"], jxl["encoder"]), (False, None))
+        self.assertIn("pillow-jxl-plugin", jxl["reason"])
+        with self._encoder("cjxl"):
+            body = await (await self.client.request("GET", self.URL)).json()
+        self.assertEqual(
+            body["thumbnail_encoders"]["jxl"],
+            {"available": True, "encoder": "cjxl", "reason": None},
+        )
+
+    async def test_save_commits_the_thumbnails_section(self):
+        self._write_config({"custom": {"keep": 1}})
+        resp = await self.client.request(
+            "POST",
+            self.URL,
+            json={
+                "thumbnail_format": "jpeg",
+                "thumbnail_quality": 60,
+                "thumbnail_edge": 300,
+            },
+        )
+        self.assertEqual(resp.status, 200)
+        saved = self._read_config()
+        self.assertEqual(
+            saved["thumbnails"], {"format": "jpeg", "quality": 60, "edge": 300}
+        )
+        self.assertEqual(saved["custom"], {"keep": 1})
+        self.assertEqual(
+            (
+                PromptManagerConfig.THUMBNAIL_FORMAT,
+                PromptManagerConfig.THUMBNAIL_QUALITY,
+                PromptManagerConfig.THUMBNAIL_EDGE,
+            ),
+            ("jpeg", 60, 300),
+        )
+
+    async def test_bad_values_are_refused_and_change_nothing(self):
+        before = PromptManagerConfig.get_config()["thumbnails"]
+        for payload in (
+            {"thumbnail_format": "png"},
+            {"thumbnail_quality": 0},
+            {"thumbnail_quality": "80"},
+            {"thumbnail_edge": 4096},
+            {"thumbnail_edge": True},
+        ):
+            resp = await self.client.request("POST", self.URL, json=payload)
+            self.assertEqual(resp.status, 400, payload)
+        self.assertEqual(PromptManagerConfig.get_config()["thumbnails"], before)
+        self.assertFalse(os.path.exists(self.config_path))
+
+    async def test_jpeg_xl_without_an_encoder_is_refused_with_a_code(self):
+        with self._encoder(None):
+            resp = await self.client.request(
+                "POST", self.URL, json={"thumbnail_format": "jxl", "result_timeout": 7}
+            )
+        body = await resp.json()
+        self.assertEqual((resp.status, body["code"]), (400, "jxl-unavailable"))
+        self.assertIn("pillow-jxl-plugin", body["error"])
+        self.assertNotEqual(PromptManagerConfig.THUMBNAIL_FORMAT, "jxl")
+        self.assertNotEqual(PromptManagerConfig.RESULT_TIMEOUT, 7)
+        self.assertFalse(os.path.exists(self.config_path))
+
+    async def test_jpeg_xl_with_an_encoder_is_saved(self):
+        with self._encoder("ffmpeg"):
+            resp = await self.client.request(
+                "POST", self.URL, json={"thumbnail_format": "jxl"}
+            )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._read_config()["thumbnails"]["format"], "jxl")
+        self.assertEqual(PromptManagerConfig.THUMBNAIL_FORMAT, "jxl")
+
+
 class TestDiagnostics(AdminAPITestCase):
 
     def _install_monitor(self, monitor):

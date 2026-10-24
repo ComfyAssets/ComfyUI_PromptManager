@@ -200,7 +200,6 @@ class GalleryConfig:
         AUTO_CLEANUP_MISSING_FILES (bool): Automatically remove missing file records
         MAX_IMAGE_AGE_DAYS (int): Maximum age in days before cleaning up images
         IMAGES_PER_PAGE (int): Number of images to display per page in web UI
-        THUMBNAIL_SIZE (int): Size in pixels for generated thumbnails
         ENABLE_SEARCH (bool): Enable search functionality in web interface
         ENABLE_METADATA_VIEW (bool): Enable metadata viewing for images
         MAX_CONCURRENT_PROCESSING (int): Maximum concurrent image processing tasks
@@ -225,7 +224,6 @@ class GalleryConfig:
 
     # Web interface settings
     IMAGES_PER_PAGE = 20
-    THUMBNAIL_SIZE = 256
     ENABLE_SEARCH = True
     ENABLE_METADATA_VIEW = True
 
@@ -265,7 +263,6 @@ class GalleryConfig:
             },
             "web_interface": {
                 "images_per_page": cls.IMAGES_PER_PAGE,
-                "thumbnail_size": cls.THUMBNAIL_SIZE,
                 "enable_search": cls.ENABLE_SEARCH,
                 "enable_metadata_view": cls.ENABLE_METADATA_VIEW,
             },
@@ -328,8 +325,6 @@ class GalleryConfig:
         web_interface = new_config.get("web_interface", {})
         if "images_per_page" in web_interface:
             cls.IMAGES_PER_PAGE = web_interface["images_per_page"]
-        if "thumbnail_size" in web_interface:
-            cls.THUMBNAIL_SIZE = web_interface["thumbnail_size"]
         if "enable_search" in web_interface:
             cls.ENABLE_SEARCH = web_interface["enable_search"]
         if "enable_metadata_view" in web_interface:
@@ -663,6 +658,15 @@ class PromptManagerConfig:
     # database first (System › Backup & export › Recovery policy, #249 S6).
     SAFETY_BACKUP = True
 
+    # Thumbnails (#317): every preview writer reads these through
+    # py/api/thumbnail_settings.py (System › Appearance). The legacy
+    # ``gallery.web_interface.thumbnail_size`` was never read and is ignored.
+    THUMBNAIL_FORMATS = ("webp", "jxl", "jpeg")
+    THUMBNAIL_FORMAT = "webp"
+    THUMBNAIL_QUALITY = 80
+    THUMBNAIL_EDGE = 512
+    THUMBNAIL_EDGE_RANGE = (128, 2048)
+
     @classmethod
     def max_worker_threads(cls) -> int:
         """Largest accepted worker-thread count: the detected core count."""
@@ -718,6 +722,11 @@ class PromptManagerConfig:
                 "worker_threads": cls.WORKER_THREADS,
             },
             "maintenance": {"safety_backup": cls.SAFETY_BACKUP},
+            "thumbnails": {
+                "format": cls.THUMBNAIL_FORMAT,
+                "quality": cls.THUMBNAIL_QUALITY,
+                "edge": cls.THUMBNAIL_EDGE,
+            },
             "gallery": GalleryConfig.get_config(),
             "integrations": IntegrationConfig.get_config(),
             "autotag": AutotagConfig.get_config(),
@@ -859,6 +868,8 @@ class PromptManagerConfig:
         ):
             cls.SAFETY_BACKUP = maintenance["safety_backup"]
 
+        cls._update_thumbnails(new_config.get("thumbnails"))
+
         # Update gallery config
         if "gallery" in new_config:
             GalleryConfig.update_config(new_config["gallery"])
@@ -869,6 +880,22 @@ class PromptManagerConfig:
 
         if "autotag" in new_config:
             AutotagConfig.update_config(new_config["autotag"])
+
+    @classmethod
+    def _update_thumbnails(cls, section: Any) -> None:
+        """Apply a ``thumbnails`` section; a hand-edited bad value is ignored."""
+        if not isinstance(section, dict):
+            return
+        fmt = section.get("format")
+        if fmt in cls.THUMBNAIL_FORMATS:
+            cls.THUMBNAIL_FORMAT = fmt
+        quality = section.get("quality")
+        if type(quality) is int and 1 <= quality <= 100:
+            cls.THUMBNAIL_QUALITY = quality
+        edge = section.get("edge")
+        low, high = cls.THUMBNAIL_EDGE_RANGE
+        if type(edge) is int and low <= edge <= high:
+            cls.THUMBNAIL_EDGE = edge
 
 
 # Load configuration on import
