@@ -87,6 +87,67 @@ def _same_file(first, second):
         )
 
 
+CUSTOM_NODES = "custom_nodes"
+
+
+def _inside(path, folder):
+    """``path`` relative to ``folder`` by text (normalised spellings), or None."""
+    child, parent = os.path.normcase(path), os.path.normcase(folder)
+    if child == parent:
+        return ""
+    prefix = parent.rstrip(os.sep) + os.sep
+    return path[len(prefix) :] if child.startswith(prefix) else None
+
+
+def _comfyui_custom_nodes():
+    """ComfyUI's custom_nodes folders as it lists them (unresolved), or []."""
+    try:
+        from ..config import _import_folder_paths
+
+        getter = getattr(_import_folder_paths(), "get_folder_paths", None)
+        folders = getter(CUSTOM_NODES) if getter else []
+        return [folder for folder in folders or [] if isinstance(folder, str)]
+    except Exception:
+        return []
+
+
+def node_folder_public_path(path, extension_root, custom_nodes):
+    """``custom_nodes/<node folder>/...`` for a path in the node folder, or None.
+
+    The node folder is matched at its own unresolved place in a custom_nodes
+    folder (one of ``custom_nodes``, or the parent of ``extension_root`` when
+    that is named custom_nodes), so a node folder that is a symlink to a
+    checkout outside ComfyUI still reads relative to ComfyUI. ``path`` may be
+    spelled through the link or resolved. Never absolute, never ``..``:
+    anything else is None and the caller uses ``_public_path``.
+    """
+    if not path or not extension_root:
+        return None
+    try:
+        root = os.path.normpath(os.path.abspath(extension_root))
+        name = os.path.basename(root)
+        folders = [os.path.normpath(os.path.abspath(f)) for f in custom_nodes]
+        parent = os.path.dirname(root)
+        if os.path.normcase(os.path.basename(parent)) == CUSTOM_NODES:
+            folders.append(parent)
+        spellings = [os.path.normpath(os.path.abspath(path))]
+        spellings.append(os.path.realpath(spellings[0]))
+    except (OSError, ValueError, TypeError):
+        return None
+    for folder in folders:
+        node = os.path.join(folder, name)
+        for spelling, node_spelling in zip(spellings, (node, os.path.realpath(node))):
+            rest = _inside(spelling, node_spelling)
+            if rest is None:
+                continue
+            parts = [os.path.basename(folder), name] + (
+                rest.split(os.sep) if rest else []
+            )
+            if all(part and part not in (".", "..") for part in parts):
+                return "/".join(parts)
+    return None
+
+
 class LibraryLocationRoutesMixin:
     """Mixin for the /prompt_manager/system/library endpoints."""
 
@@ -107,6 +168,16 @@ class LibraryLocationRoutesMixin:
             return await self.keep_library(request)
 
     # ── location ──────────────────────────────────────────────────────
+
+    def _library_public_path(self, path):
+        """The library's path for display: through the node folder's place in
+        custom_nodes when it is there (a symlinked node folder included), else
+        ``_public_path``. Only the library location uses this; sources and
+        jobs keep ``_public_path``, which their requests round-trip."""
+        shown = node_folder_public_path(
+            path, self._extension_root, _comfyui_custom_nodes()
+        )
+        return shown or self._public_path(path)
 
     def _live_location(self):
         """The resolved location, unless the live database is another file.
@@ -138,7 +209,7 @@ class LibraryLocationRoutesMixin:
         except OSError:
             pass
         return {
-            "path": self._public_path(location.db_path),
+            "path": self._library_public_path(location.db_path),
             # Where Move library would put it, and whether config.json goes too.
             "target_source": location.target_source if location.movable else None,
             "config_moves": location.movable and not location.config_explicit,
@@ -147,7 +218,9 @@ class LibraryLocationRoutesMixin:
             "keep": keep,
             "offer": location.movable and not keep,
             "target": (
-                self._public_path(location.target_dir) if location.movable else None
+                self._library_public_path(location.target_dir)
+                if location.movable
+                else None
             ),
             "problem": location.problem or self._node_folder_risk(location),
             "size_bytes": size,
@@ -264,7 +337,7 @@ class LibraryLocationRoutesMixin:
         job.update(status_line="Checking the new folder")
         try:
             plan = await self._run_in_executor(self._plan_library_move)
-            target = self._public_path(plan.target_dir)
+            target = self._library_public_path(plan.target_dir)
             job.log_line(f"Moving the library to {target}")
             result = await self._run_in_executor(
                 functools.partial(

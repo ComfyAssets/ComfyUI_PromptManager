@@ -72,19 +72,33 @@ test('removing the last entry states auto-detect (D98)', async () => {
     assert.equal(NOTES.removedAll, 'No source is configured. After saving, ComfyUI’s output folder is used.');
 });
 
-test('auto-detected sources are listed without Remove, with the line that says how they were chosen', async () => {
+test('auto-detected sources are listed without Remove and read as the default: "ComfyUI/<path> · <watch> · default"', async () => {
     const { sourceRows, NOTES } = await sourcesModule;
-    const auto = { configured: [], effective: [{ label: 'ComfyUI output', path: 'output', root_index: 0, watch: 'manual' }], auto_detected: true };
+    const auto = { configured: [], auto_detected: true,
+        effective: [{ label: 'ComfyUI output', path: 'output', root_index: 0, watch: 'watching', in_comfyui: true }] };
+    // The row says it is the default, so no line under the list repeats it; the scan keeps the server's public path.
     assert.deepEqual(sourceRows({ sources: auto, saved: [], current: [] }), { rows: [
-        { key: 'auto:0', title: 'ComfyUI output', description: 'output · manual scan', scan: { label: 'Scan folder', root: 0, path: 'output' },
-            remove: null },
-    ], note: NOTES.autoDetected });
-    // Every configured source unusable: ComfyUI's output folder is used instead.
+        { key: 'auto:0', title: 'ComfyUI output', description: 'ComfyUI/output · watching · default',
+            scan: { label: 'Scan changes', root: 0, path: 'output' }, remove: null },
+    ], note: null });
+    assert.equal('autoDetected' in NOTES, false);
+    // An output folder outside the ComfyUI base (--output-directory) is shown by its own name.
+    const outside = { ...auto, effective: [{ label: 'Renders', path: 'Renders', root_index: 0, watch: 'manual', in_comfyui: false }] };
+    assert.equal(sourceRows({ sources: outside, saved: [], current: [] }).rows[0].description, 'Renders · manual scan · default');
+    // Every configured source unusable: ComfyUI's output folder is used instead, and the line says why.
     const fallback = { ...auto, configured: [{ label: 'gone', path: 'gone', valid: false, code: 'not-found', reason: 'Gallery root does not exist' }] };
     const result = sourceRows({ sources: fallback, saved: ['gone'], current: ['gone'] });
-    assert.deepEqual(result.rows.map(row => [row.title, row.remove]), [['gone', 'gone'], ['ComfyUI output', null]]);
+    assert.deepEqual(result.rows.map(row => [row.title, row.description, row.remove]),
+        [['gone', 'gone · Gallery root does not exist', 'gone'], ['ComfyUI output', 'ComfyUI/output · watching · default', null]]);
     assert.equal(result.note, NOTES.fallback);
     assert.equal(sourceRows({ sources: { configured: [], effective: [], auto_detected: false }, saved: [], current: [] }).note, NOTES.none);
+});
+
+test('a configured source keeps its plain public path even inside ComfyUI', async () => {
+    const { sourceRows } = await sourcesModule;
+    const sources = { ...STATUS, effective: STATUS.effective.map(source => ({ ...source, in_comfyui: true })) };
+    const { rows } = sourceRows({ sources, saved: ['output', 'input'], current: ['output', 'input'] });
+    assert.deepEqual(rows.map(row => row.description), ['output · watching', 'input · manual scan']);
 });
 
 test('a path listed twice in the draft is one row', async () => {

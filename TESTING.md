@@ -2115,10 +2115,11 @@ Sources & scans (`system-sources.mjs`, S4) is the concept's "sources" body on th
 server's sources. `GET /prompt_manager/settings` reports them (public paths only):
 `sources.configured` (each `gallery_root_paths` entry with `valid`, `code` and the
 server's `reason`), `sources.effective` (what is scanned and served, with its
-`root_index` and `watch`: `watching` only when the image monitor's observer is alive,
+`root_index`, `watch` (`watching` only when the image monitor's observer is alive,
 scheduled that folder and monitoring is on, `stopping` when it still watches it but
 monitoring was switched off, `manual` when monitoring is off or no monitor runs, else
-`restart_pending`), `sources.auto_detected`, `monitor` and `settings.monitoring_enabled`.
+`restart_pending`) and `in_comfyui` (its public path is relative to the ComfyUI base)),
+`sources.auto_detected`, `monitor` and `settings.monitoring_enabled`.
 `POST /prompt_manager/settings/validate-source {path}` checks one folder and writes
 nothing. Every caller (validate-source, the settings save, config.json at load) refuses
 a source through the same checks (`sources.source_problem`): its form first, then
@@ -2385,9 +2386,12 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   saved yet" with Remove only until Save; a configured source the server cannot use
   reads "<path> · <server reason>" with Remove only. A line under the list says when the
   list is not the whole story: "No source is configured. After saving, ComfyUI’s output
-  folder is used." (the last one removed), "No source is configured; ComfyUI’s output
-  folder is used." and "No configured source is available; ComfyUI’s output folder is
-  used." (auto-detected rows, listed without Remove). "restart pending" is the third
+  folder is used." (the last one removed) and "No configured source is available;
+  ComfyUI’s output folder is used." (every configured source unusable). Auto-detected
+  rows are listed without Remove and say they are the default on the row itself:
+  "ComfyUI/output · watching · default" ("ComfyUI/" only when `in_comfyui`; their scan
+  still sends the server's public path), with no line under the list when nothing is
+  configured. "restart pending" is the third
   watch state. The operation "Refresh files" ("Read every source again to find files
   added or removed outside ComfyUI.", button "Refresh") closes the surface: it calls the
   legacy gallery's `/gallery/rescan` and toasts "Files refreshed. N files in M output
@@ -2890,7 +2894,11 @@ leaves the old library in use, untouched (`TestFailures`); a crash leaves the ol
 library in use (no or a `pending` marker; the next move replaces its own leftovers) or
 the new one (`moved`) (`TestCrashWindows`). `GET /prompt_manager/system/library` and the
 Overview's `location` give `{path, source, movable, keep, offer, target, problem,
-size_bytes}` with paths relative to ComfyUI; `POST .../keep {keep}` persists
+size_bytes}` with paths relative to ComfyUI; a path in the node folder reads through
+the node folder's own unresolved place in custom_nodes (`custom_nodes/promptmanager/
+prompts.db` even when that folder is a symlink to a checkout outside ComfyUI; never
+absolute, never `..`, else the shared public path, which sources and jobs keep using
+unchanged); `POST .../keep {keep}` persists
 `library.keep_in_node_folder` through the `ConfigStore`. Errors are coded and name no
 path (`tests/test_api_library_location.py`). The real-host `library-location.spec.mjs`
 (execution suite, its own fresh host on an OS-chosen port, no configuration) proves a new

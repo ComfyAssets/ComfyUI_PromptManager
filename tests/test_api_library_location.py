@@ -171,6 +171,105 @@ class TestLocationDetails(LibraryAPITestCase):
         self.assertFalse(os.path.exists(old))
 
 
+class TestLocationThroughASymlinkedNodeFolder(LibraryAPITestCase):
+    """custom_nodes/<name> is a symlink to a checkout outside ComfyUI.
+
+    The library location reads relative to ComfyUI through the node folder's
+    own (unresolved) place in custom_nodes, not as a bare file name; the
+    shared ``_public_path`` (sources, jobs) keeps resolving symlinks.
+    """
+
+    async def get_application(self):
+        app = await super().get_application()
+        self.real = os.path.join(self.tmpdir, "checkout", "ComfyUI_PromptManager")
+        os.makedirs(self.real)
+        self.link = os.path.join(str(self.comfy_dir), "custom_nodes", "promptmanager")
+        try:
+            os.symlink(self.real, self.link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks not permitted here: {exc}")
+        previous = self.api.db
+        self.api.db = PromptDatabase(os.path.join(self.link, "prompts.db"))
+        previous.close_all()
+        self.api.db.save_prompt("a library prompt")
+        self.api._library_resolver = lambda: ll.resolve_library(
+            None, environ=self.environ, extension_root=self.link, folder_paths=self.fp
+        )
+        self.api._extension_root = self.link
+        return app
+
+    async def test_location_names_the_node_folder_in_custom_nodes(self):
+        location = (await self.json("GET", URL))["location"]
+        self.assertEqual(location["source"], "node_folder")
+        self.assertEqual(location["path"], "custom_nodes/promptmanager/prompts.db")
+        self.assertEqual(location["target"], "user/__promptmanager")
+        overview = await self.json("GET", "/prompt_manager/system/overview")
+        self.assertEqual(
+            overview["location"]["path"], "custom_nodes/promptmanager/prompts.db"
+        )
+
+    async def test_a_resolved_spelling_of_the_database_reads_the_same(self):
+        from py.api import library_location as routes
+
+        resolved = os.path.join(os.path.realpath(self.real), "prompts.db")
+        self.assertEqual(
+            routes.node_folder_public_path(resolved, self.link, []),
+            "custom_nodes/promptmanager/prompts.db",
+        )
+
+    async def test_the_shared_public_path_is_unchanged(self):
+        self.assertEqual(
+            self.api._public_path(os.path.join(self.link, "prompts.db")), "prompts.db"
+        )
+
+
+class TestNodeFolderPublicPath(LibraryAPITestCase):
+    def display(self, path, root=None, custom_nodes=()):
+        from py.api import library_location as routes
+
+        return routes.node_folder_public_path(path, root or self.ext, custom_nodes)
+
+    async def test_a_plain_node_folder_reads_relative_to_custom_nodes(self):
+        self.assertEqual(
+            self.display(os.path.join(self.ext, "prompts.db")),
+            "custom_nodes/pm/prompts.db",
+        )
+        self.assertEqual(
+            self.display(os.path.join(self.ext, "data", "prompts.db")),
+            "custom_nodes/pm/data/prompts.db",
+        )
+
+    async def test_a_custom_nodes_entry_from_comfyui_names_the_folder(self):
+        nodes = os.path.join(self.tmpdir, "more_nodes")
+        root = os.path.join(nodes, "pm")
+        self.assertEqual(
+            self.display(os.path.join(root, "prompts.db"), root, [nodes]),
+            "more_nodes/pm/prompts.db",
+        )
+
+    async def test_anything_else_is_not_a_node_folder_path(self):
+        # Outside the node folder, a parent that is no custom_nodes folder, or
+        # a spelling that climbs out: the caller falls back to _public_path.
+        self.assertIsNone(self.display(os.path.join(self.user, "prompts.db")))
+        loose = os.path.join(self.tmpdir, "somewhere", "pm")
+        self.assertIsNone(self.display(os.path.join(loose, "prompts.db"), loose))
+        self.assertIsNone(self.display(os.path.join(self.ext, "..", "prompts.db")))
+        self.assertIsNone(self.display(""))
+        self.assertIsNone(self.display(None))
+
+    async def test_a_library_outside_the_node_folder_keeps_the_public_path(self):
+        self.api._library_resolver = lambda: ll.LibraryLocation(
+            ll.SOURCE_DEFAULT,
+            self.api.db.model.db_path,
+            os.path.join(self.target, "config.json"),
+            self.target,
+            self.target,
+        )
+        self.api._extension_root = os.path.join(self.tmpdir, "elsewhere")
+        location = (await self.json("GET", URL))["location"]
+        self.assertEqual(location["path"], "custom_nodes/pm/prompts.db")
+
+
 class TestMoveRoute(LibraryAPITestCase):
     async def test_move_runs_as_an_exclusive_job_and_switches_the_live_library(self):
         body = await self.json("POST", URL + "/move", 202)
