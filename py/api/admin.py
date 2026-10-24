@@ -1274,7 +1274,11 @@ class AdminRoutesMixin:
     async def restore_database(self, request):
         """Restore the prompts database from an uploaded SQLite file.
 
-        The upload is streamed to a temp file (capped at restore_max_bytes),
+        The upload is streamed to a temp file. Free disk space decides how
+        large it may be (``maintenance.restore_room``), under a 64 GiB ceiling
+        (``restore_max_bytes``): a request whose Content-Length does not fit
+        is refused before anything is written, and one without is refused as
+        soon as its running size does not. The file is
         verified with PromptModel.verify_database_file and only then copied
         over the live database, which is backed up first. The whole request
         holds the registry (records): it is refused while a scan or another
@@ -1287,10 +1291,44 @@ class AdminRoutesMixin:
             lambda: self._restore_database(request),
         )
 
+    def _restore_refusal(self, size, ceiling, room, *, known):
+        """``400 too-large`` past the ceiling, else ``507 insufficient-space``."""
+        from .maintenance import restore_space_message
+
+        if size > ceiling:
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "too-large",
+                    "error": (
+                        "File too large. Maximum size is "
+                        f"{ceiling // (1024 * 1024)}MB"
+                    ),
+                },
+                status=400,
+            )
+        return web.json_response(
+            {
+                "success": False,
+                "code": "insufficient-space",
+                "error": restore_space_message(size, room, known=known),
+            },
+            status=507,
+        )
+
     async def _restore_database(self, request):
-        max_bytes = getattr(self, "restore_max_bytes", 100 * 1024 * 1024)
+        from .maintenance import RESTORE_MAX_BYTES, restore_room
+
+        ceiling = getattr(self, "restore_max_bytes", RESTORE_MAX_BYTES)
         temp_path = None
         try:
+            # Free disk space decides how large a backup may be (#313): the
+            # upload, its staged copy and the swap must all fit.
+            room = await self._run_in_executor(restore_room, self.db.model.db_path)
+            max_bytes = min(ceiling, room)
+            length = request.content_length
+            if length is not None and length > max_bytes:
+                return self._restore_refusal(length, ceiling, room, known=True)
             reader = await request.multipart()
             field = await reader.next()
 
@@ -1316,16 +1354,7 @@ class AdminRoutesMixin:
                         break
                     size += len(chunk)
                     if size > max_bytes:
-                        return web.json_response(
-                            {
-                                "success": False,
-                                "error": (
-                                    "File too large. Maximum size is "
-                                    f"{max_bytes // (1024 * 1024)}MB"
-                                ),
-                            },
-                            status=400,
-                        )
+                        return self._restore_refusal(size, ceiling, room, known=False)
                     out.write(chunk)
 
             if size == 0:

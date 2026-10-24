@@ -2566,6 +2566,19 @@ replaced the database since the review; the plan is dropped). The job:
    prompt ids only), logs the backup by its file name, and prunes safety backups to the
    newest 10. With no backup the log and the status line say "No safety backup".
 
+The legacy restore (`POST /prompt_manager/restore`) takes a backup of any size the disks
+have room for, so a real library's safety backup restores: the upload, its staged copy
+and the swap (the upload twice in the temporary folder, once more plus the current
+database beside the database, added up on one disk, each with the 16 MiB margin) must
+fit, under a 64 GiB ceiling (`restore_max_bytes`). A request whose Content-Length does
+not fit is refused before anything is written, one without is refused as soon as its
+running size does not, both with 507 `insufficient-space` and "Not enough free disk
+space to restore a 1.6 GB backup; there is room for about …. Nothing was changed."
+(no path); past the ceiling it is the legacy 400 "File too large" with code `too-large`.
+The upload streams with `read_chunk`, which aiohttp's `client_max_size` (ComfyUI's
+`--max-upload-size`, 100 MB by default) does not cap, and its temp file is closed and
+removed on every path (`TestLargeRestores`, a 150 MB backup under a 100 MB app limit).
+
 Safety backups and restore backups are one pool: every `<db>.backup_*` file beside the
 database counts toward the same `MAX_SAFETY_BACKUPS` (10), whichever wrote it, and the
 pool is pruned after every backup a job took, also when the apply then failed
