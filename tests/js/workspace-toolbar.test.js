@@ -889,7 +889,7 @@ test('review dialog backup box keeps the dialog open and toasts the outcome', as
         assert.equal(action.getAttribute('aria-disabled'), 'true');
         // A second press while the copy downloads is ignored.
         action.click();
-        answer({ ok: true, blob: async () => new Blob(['db']), headers: { get: () => 'attachment; filename="prompts_backup_1.db"' } });
+        answer({ ok: true, blob: async () => new Blob(['db']), headers: { get: name => (name === 'Content-Disposition' ? 'attachment; filename="prompts_backup_1.db"' : null) } });
         await tick();
         assert.deepEqual(toasts, [BACKUP_DONE]);
         assert.equal(modal(dom).open, true);
@@ -927,6 +927,40 @@ test('the scan review is a thin openReviewDialog caller with its scope switch', 
         assert.equal(grid.children[1].children[1].textContent, 'All files');
         button(byId(dom, 'modal-body'), 'Start scan').click();
         assert.deepEqual(starts, [{ scope: 'all' }]);
+    } finally {
+        scope.dispose();
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
+test('a review dialog reports one dismissal for Cancel, ×, Escape, a replacing dialog and the page leaving, never after its primary (S9 M1)', async () => {
+    const { openReviewDialog, openContentDialog, closeWorkspaceDialog } = await dialogsModule;
+    const { createScope } = await coreModule;
+    const dom = fakeDOM();
+    const scope = createScope();
+    const dismissed = [];
+    const open = (name, primary = 'Restore') => openReviewDialog({ scope, title: 'Restore preview', grid: [['Integrity', 'Verified']],
+        cancelLabel: 'Cancel', primary: { label: primary, danger: true }, onStart() {}, onDismiss: () => dismissed.push(name) });
+    try {
+        open('cancel');
+        button(byId(dom, 'modal-body'), 'Cancel').click();
+        open('close');
+        byId(dom, 'modal-close').click();
+        open('escape');
+        modal(dom).dispatchEvent(new Event('cancel', { cancelable: true }));
+        open('replaced');
+        openContentDialog({ scope, title: 'Other', nodes: [] });
+        closeWorkspaceDialog();
+        open('started');
+        button(byId(dom, 'modal-body'), 'Restore').click();
+        await tick();
+        open('left');
+        scope.dispose();
+        await tick();
+        assert.deepEqual(dismissed, ['cancel', 'close', 'escape', 'replaced', 'left']);
+        assert.throws(() => openReviewDialog({ scope: createScope(), title: 'x', grid: [['a', 'b']], cancelLabel: 'Cancel',
+            primary: { label: 'Go' }, onStart() {}, onDismiss: 'no' }), TypeError);
     } finally {
         scope.dispose();
         closeWorkspaceDialog();

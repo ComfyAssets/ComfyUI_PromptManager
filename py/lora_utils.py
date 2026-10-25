@@ -8,6 +8,7 @@ return empty results rather than raising.
 """
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -420,20 +421,33 @@ def get_preview_image_from_metadata(
 
 _THUMB_MAX_SIZE = 512
 
+# CivitAI's own domains (#340: civitai.red and civitai.green serve the same
+# content as civitai.com).
+CIVITAI_DOMAINS = ("civitai.com", "civitai.red", "civitai.green")
 # Only these hosts may ever receive the CivitAI API key, and only over HTTPS.
 CIVITAI_HOSTS = frozenset(
-    {"civitai.com", "www.civitai.com", "api.civitai.com", "image.civitai.com"}
+    f"{prefix}{domain}"
+    for domain in CIVITAI_DOMAINS
+    for prefix in ("", "www.", "api.", "image.")
 )
 MAX_CIVITAI_DOWNLOAD_BYTES = 50 * 1024 * 1024
 _DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
 
 # A redirect is followed (#337: image.civitai.com now answers with a redirect
-# to blobs-b2.civitai.com) only over HTTPS to civitai.com or a subdomain of
-# it, at most this many hops, and never with the API key.
+# to blobs-b2.civitai.com) only over HTTPS to one of CIVITAI_DOMAINS or a
+# subdomain of one, at most this many hops, and never with the API key.
 MAX_CIVITAI_REDIRECTS = 3
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 _USER_AGENT = "ComfyUI-PromptManager/1.0"
+
+
+class _DownloadFailed(Exception):
+    """A download failed for the short, loggable ``reason`` it carries."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
@@ -467,10 +481,18 @@ def _loggable(url: str) -> str:
     return f"{parts.scheme}://{host}{parts.path}"
 
 
+def _on_civitai_domain(hostname: str) -> bool:
+    """True when ``hostname`` is one of CIVITAI_DOMAINS or a subdomain of one."""
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in CIVITAI_DOMAINS
+    )
+
+
 def is_civitai_redirect_target(url: str) -> bool:
-    """True when a redirect to ``url`` may be followed: HTTPS on civitai.com
-    or a subdomain of it, matched on the parsed host name, default port and
-    no credentials in the URL."""
+    """True when a redirect to ``url`` may be followed: HTTPS on one of
+    CIVITAI_DOMAINS or a subdomain of one, matched on the parsed host name,
+    default port and no credentials in the URL."""
     try:
         parts = urlsplit(url)
         port = parts.port
@@ -479,7 +501,7 @@ def is_civitai_redirect_target(url: str) -> bool:
     hostname = (parts.hostname or "").lower()
     return (
         parts.scheme == "https"
-        and (hostname == "civitai.com" or hostname.endswith(".civitai.com"))
+        and _on_civitai_domain(hostname)
         and parts.username is None
         and parts.password is None
         and port in (None, 443)
@@ -500,8 +522,9 @@ def _open_following_civitai_redirects(url: str, api_key: str):
     """Open ``url``, following only allowed CivitAI redirects (keyless).
 
     The first request carries the key; every redirected one carries the
-    User-Agent alone. Returns the open response, or None when a redirect is
-    refused or the hop limit is reached. Other HTTP errors propagate.
+    User-Agent alone. Returns the open response; raises ``_DownloadFailed``
+    when a redirect is refused or the hop limit is reached. Other HTTP
+    errors propagate.
     """
     headers = {"User-Agent": _USER_AGENT}
     if api_key:
@@ -517,20 +540,13 @@ def _open_following_civitai_redirects(url: str, api_key: str):
             if target is None:
                 raise
         if hop == MAX_CIVITAI_REDIRECTS:
-            logger.warning(
-                f"Refusing redirect past {MAX_CIVITAI_REDIRECTS} hops "
-                f"from {_loggable(url)}"
-            )
-            return None
+            raise _DownloadFailed(f"more than {MAX_CIVITAI_REDIRECTS} redirects")
         if not is_civitai_redirect_target(target):
-            logger.warning(
-                f"Refusing redirect from {_loggable(current)} to {_loggable(target)}"
-            )
-            return None
+            raise _DownloadFailed(f"redirect refused to {_loggable(target)}")
         logger.debug(f"Following redirect to {_loggable(target)}")
         current = target
         headers = {"User-Agent": _USER_AGENT}  # never the key across a redirect
-    return None  # pragma: no cover - the loop returns on its last hop
+    raise AssertionError("unreachable")  # pragma: no cover - loop ends above
 
 
 def is_civitai_url(url: str) -> bool:
@@ -573,40 +589,76 @@ def _read_capped(resp, cap: int) -> Optional[bytes]:
     return b"".join(chunks)
 
 
+def _network_reason(error: BaseException) -> str:
+    """A short reason for a failed request: a timeout or a network error."""
+    cause = getattr(error, "reason", error)  # URLError wraps the socket error
+    if isinstance(cause, TimeoutError):
+        return "timed out"
+    return f"network error: {cause}"
+
+
+def _fetch_civitai_body(url: str, api_key: str) -> bytes:
+    """The body behind ``url`` (redirects as allowed, size capped), or
+    ``_DownloadFailed`` with the reason it could not be fetched."""
+    try:
+        with _open_following_civitai_redirects(url, api_key) as resp:
+            raw = _read_capped(resp, MAX_CIVITAI_DOWNLOAD_BYTES)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise _DownloadFailed(f"HTTP {error.code}") from None
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+        raise _DownloadFailed(_network_reason(error)) from None
+    if raw is None:
+        cap = MAX_CIVITAI_DOWNLOAD_BYTES
+        size = f"{cap // (1024 * 1024)} MB" if cap >= 1024 * 1024 else f"{cap} byte"
+        raise _DownloadFailed(f"larger than the {size} cap")
+    return raw
+
+
+def _thumbnail(raw: bytes):
+    """``raw`` decoded and shrunk to an RGB thumbnail, or ``_DownloadFailed``."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(raw)) as img:
+            img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
+            return img.convert("RGB")
+    except Exception as error:  # PIL raises several types for bad data
+        raise _DownloadFailed(
+            f"image could not be decoded ({type(error).__name__})"
+        ) from None
+
+
 def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
     """Download a single CivitAI image, resize to thumbnail, save as JPEG.
 
     Refuses any URL that is not HTTPS on an allow-listed CivitAI host so the
     API key is never sent elsewhere, follows a redirect only as
     ``_open_following_civitai_redirects`` allows (without the key), and
-    refuses bodies larger than MAX_CIVITAI_DOWNLOAD_BYTES.
+    refuses bodies larger than MAX_CIVITAI_DOWNLOAD_BYTES. A failure logs
+    one warning with a short reason and the URL without query or
+    credentials (#340), and returns None.
     """
-    if not is_civitai_url(url):
-        logger.warning(f"Refusing non-CivitAI download URL: {_loggable(url)}")
-        return None
     try:
-        resp = _open_following_civitai_redirects(url, api_key)
-        if resp is None:
-            return None
-        with resp:
-            raw = _read_capped(resp, MAX_CIVITAI_DOWNLOAD_BYTES)
-        if raw is None:
-            logger.warning(f"Refusing oversized download: {_loggable(url)}")
-            return None
-
-        # Resize to thumbnail to save disk space
-        from io import BytesIO
-
-        from PIL import Image
-
-        with Image.open(BytesIO(raw)) as img:
-            img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
-            rgb = img.convert("RGB")
-        _save_atomically(rgb, local_path)
+        if not is_civitai_url(url):
+            raise _DownloadFailed("not an allowed CivitAI URL")
+        image = _thumbnail(_fetch_civitai_body(url, api_key))
+        try:
+            _save_atomically(image, local_path)
+        except OSError as error:
+            raise _DownloadFailed(
+                f"image could not be saved ({error.strerror or type(error).__name__})"
+            ) from None
+    except _DownloadFailed as failure:
+        reason = failure.reason
+    except Exception as error:  # best effort: an import never fails on one image
+        reason = f"unexpected {type(error).__name__}"
+    else:
         return str(local_path.resolve())
-    except Exception as e:
-        logger.debug(f"Failed to download {_loggable(url)}: {e}")
-        return None
+    logger.warning(f"CivitAI image download failed: {_loggable(url)}: {reason}")
+    return None
 
 
 _PART_PREFIX = ".pm-"

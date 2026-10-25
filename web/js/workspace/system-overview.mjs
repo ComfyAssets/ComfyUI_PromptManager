@@ -7,6 +7,7 @@
  *   N issues / Incomplete); the review, backup, thumbnail and sources rows say what the server reports, and nothing
  *   reads 0 before the read answers: a load shows a status line, a failure an alert and Retry. The thumbnail row is
  *   its own read of `/images/thumbnails/status` (a walk of every source): "Checking thumbnails…" until it answers.
+ *   S9: the Backup status row is its own read of `/backup/status`, worded as Backup & export's status line.
  *   D99: its Review thumbnails opens the same "Thumbnail maintenance" dialog as Sources (thumbnail-review.mjs).
  *   #317: it reads "N missing · M outdated · K failed"; while previews are outdated (another format than the
  *   configured one) a second button, "Convert outdated", opens that dialog on its Convert outdated scope (D131).
@@ -25,6 +26,7 @@ import { noun } from './plural.mjs';
 import { operationRow } from './system-controls.mjs';
 import { openThumbnailReview } from './thumbnail-review.mjs';
 import { isLocation, locationRow, onMoveEnded } from './library-location.mjs';
+import { STATUS_LOADING, STATUS_URL, backupStatusText } from './system-backups.mjs';
 
 export const OVERVIEW_URL = '/prompt_manager/system/overview';
 export const STATISTICS_URL = '/prompt_manager/system/statistics';
@@ -75,12 +77,6 @@ export function ambiguousTitle(needsReview) {
     return `${number(pending)} ambiguous image ${noun(pending, 'link')}`;
 }
 
-/** D93: the backup row; only a recorded, verified backup is ever named. */
-export function backupText(backup) {
-    if (!backup) return 'No retained backup record.';
-    const when = new Date(backup.verified_at ?? backup.created_at);
-    return Number.isNaN(when.getTime()) ? 'No retained backup record.' : `Last verified backup ${when.toLocaleString()}.`;
-}
 
 /**
  * D93: the thumbnail row's title from the `/images/thumbnails/status` answer: undefined while it is read, null when
@@ -366,10 +362,12 @@ function overviewNodes(overview, { api, activity, notify, scope, navigate, openS
     const [sourcesTitle, sourcesDescription] = sourcesCopy(overview.sources);
     const thumbnails = operationRow({ scope, title: THUMBNAILS_LOADING, description: 'Generate only missing previews when necessary.',
         label: 'Review thumbnails', onClick: openThumbnails });
+    const backupRow = operationRow({ scope, title: 'Backup status', description: STATUS_LOADING, label: 'View backups',
+        onClick: go('backups') });
     const health = surface('Library health', [
         review,
-        operationRow({ scope, title: 'Backup status', description: backupText(overview.backup), label: 'View backups',
-            onClick: go('backups') }),
+        // S9: what GET /backup/status reports, as Backup & export's status line says it (its own read).
+        backupRow,
         // D129: where the library lives and why; Move library when it is in the node folder.
         ...(isLocation(overview.location)
             ? [locationRow(overview.location, { api, activity, scope, notify, navigate })] : []),
@@ -385,7 +383,7 @@ function overviewNodes(overview, { api, activity, notify, scope, navigate, openS
     ]);
     const columns = el('div', undefined, 'two-col');
     columns.append(health, preferences);
-    return { nodes: [metricsNode(overview), columns], thumbnails };
+    return { nodes: [metricsNode(overview), columns], thumbnails, backup: backupRow };
 }
 
 /**
@@ -398,7 +396,14 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
     const overviewRead = latestOnly({ lifetime: scope.signal });
     const statisticsRead = latestOnly({ lifetime: scope.signal });
     const thumbnailsRead = latestOnly({ lifetime: scope.signal });
+    const backupRead = latestOnly({ lifetime: scope.signal });
     let shown = [];
+    // The backup status (undefined while read, null when it failed), painted into its row once both are there (S9).
+    let backupStatus;
+    let backupRow = null;
+    const paintBackup = () => {
+        if (backupRow) backupRow.querySelector('p').textContent = backupStatusText(backupStatus);
+    };
     // The thumbnail status (undefined while read, null when it failed), painted into the row whenever both are there.
     let thumbnailStatus;
     let thumbnailRow = null;
@@ -438,12 +443,14 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
         try {
             const overview = await overviewRead(signal => api.get(OVERVIEW_URL, { signal, cache: 'no-store' }));
             if (overview === STALE || scope.signal.aborted) return;
-            const { nodes, thumbnails } = overviewNodes(overview, { api, activity, notify, scope, navigate, openStatistics,
+            const { nodes, thumbnails, backup } = overviewNodes(overview, { api, activity, notify, scope, navigate, openStatistics,
                 openThumbnails: trigger => openThumbnailReview({ api, store: activity, scope, trigger, navigate }) });
             thumbnailRow = thumbnails;
+            backupRow = backup;
             sources = overview.sources;
             swap(nodes);
             paintThumbnails();
+            paintBackup();
         } catch (error) {
             if (scope.signal.aborted) return;
             const alert = el('p', LOAD_FAILED_TEXT);
@@ -453,6 +460,7 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
                 swap(loading());
                 load();
                 loadThumbnails();
+                loadBackup();
             });
             const panel = el('section', undefined, 'surface');
             panel.append(alert, retry);
@@ -470,10 +478,22 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
         thumbnailStatus = status ?? null;
         paintThumbnails();
     }
+    async function loadBackup() {
+        let status;
+        try {
+            status = await backupRead(signal => api.get(STATUS_URL, { signal, cache: 'no-store' }));
+        } catch (error) {
+            status = null;
+        }
+        if (status === STALE || scope.signal.aborted) return;
+        backupStatus = status ?? null;
+        paintBackup();
+    }
     const first = swap(loading());
     // D129: a finished Move library changes where the library lives.
     scope.cleanup(onMoveEnded(activity, load));
     load();
     loadThumbnails();
+    loadBackup();
     return first;
 }
