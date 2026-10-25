@@ -3155,7 +3155,10 @@ folders (`TestStaleDownloadSweep`). The legacy `POST /lora/scan` runs the same s
 event shape; a page that closes its connection stops staging before its next LoRA, and the
 scan keeps its records hold until staging has stopped, then ends `cancelled` in Activity
 (`test_a_disconnected_legacy_scan_stops_and_holds_until_it_stopped`) (`test_legacy_scan_events_unchanged_on_success`), holds
-the registry as "LoRA import (admin page)" and takes no safety backup. `POST /lora/enable`
+the registry as "LoRA import (admin page)" and takes no safety backup. Both imports are
+`records` jobs, so a restore (`exclusive`, #249 S8) is refused while one runs and they are
+refused while a restore runs; the review is a request lease ("LoRA import review"), refused
+(409 `busy`) during a restore, and a restore waits for it (`LoraImportRestoreTests`). `POST /lora/enable`
 accepts the optional `expected_revision`. LoraManager detection also searches every
 `custom_nodes` folder ComfyUI registers through `folder_paths` (#144), main folder first.
 

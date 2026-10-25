@@ -43,6 +43,8 @@ from database.category_import import EmptyReplacement
 from database.maintenance import PlanChanged
 from database.operations import PairDependencyError, PromptDatabase
 from py import lora_import, lora_utils
+from py.api.jobs import RESTORE_JOB_KIND
+from py.api.lora_import_routes import LORA_PREVIEW_LEASE
 from py.config import IntegrationConfig, PromptManagerConfig
 from utils.hashing import generate_prompt_hash
 
@@ -808,6 +810,68 @@ def _read(path):
 
 def _size(path):
     return os.path.getsize(path) if os.path.exists(path) else None
+
+
+class LoraImportRestoreTests(LoraImportAPITestCase):
+    """The import and a restore (#249 S8) never run beside each other."""
+
+    async def test_a_restore_is_refused_while_the_import_runs(self):
+        self._two_loras()
+        self.gate = threading.Event()
+        _plan, job = await self._apply_reviewed()
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, self.downloading.wait, 10))
+
+        resp = await self.client.request("POST", "/prompt_manager/restore")
+        body = json.loads(await resp.text())
+        self.assertEqual(resp.status, 409)
+        self.assertIn(lora_import.JOB_TITLE, body["error"])
+        # The workspace restore job is refused for the same running import.
+        blocker = self.api._jobs.blocker(RESTORE_JOB_KIND, admission="exclusive")
+        self.assertIs(blocker, job)
+
+        self.gate.set()
+        await job.task
+        self.assertEqual(job.state, "finished")
+
+    async def test_the_import_is_refused_while_a_restore_runs(self):
+        self._two_loras()
+        resp, plan = await self._post(PREVIEW)
+        self.assertEqual(resp.status, 200, plan)
+        before = _snapshot(self.api.db)
+        async with self.api._jobs.hold(
+            RESTORE_JOB_KIND, "Restore library", admission="exclusive"
+        ):
+            # A review reads the library: refused, not run beside the switch.
+            resp, body = await self._post(PREVIEW)
+            self.assertEqual(resp.status, 409, body)
+            self.assertEqual(body["code"], "busy")
+            self.assertEqual(body["running"]["title"], "Restore library")
+            resp, body = await self._post(APPLY, {"token": plan["token"]})
+            self.assertEqual(resp.status, 409, body)
+            self.assertEqual(body["code"], "busy")
+            # The admin page's scan says so in its own error event.
+            resp = await self.client.request("POST", SCAN)
+            events = self._sse(await resp.text())
+            self.assertEqual(events[-1]["type"], "error")
+            self.assertIn("Restore library", events[-1]["message"])
+        self.assertEqual(_snapshot(self.api.db), before)
+        self.assertIsNone(self.api._jobs.active("lora_import"))
+
+    async def test_a_running_review_holds_a_lease_a_restore_waits_for(self):
+        self._two_loras()
+        seen = []
+        real_preview = lora_import.preview
+
+        def preview(*args):
+            seen.append(self.api._jobs.leases)
+            return real_preview(*args)
+
+        with patch.object(lora_import, "preview", preview):
+            resp, plan = await self._post(PREVIEW)
+        self.assertEqual(resp.status, 200, plan)
+        self.assertEqual(seen, [{LORA_PREVIEW_LEASE: 1}])
+        self.assertEqual(self.api._jobs.leases, {})
 
 
 class LoraImportStageTests(unittest.TestCase):

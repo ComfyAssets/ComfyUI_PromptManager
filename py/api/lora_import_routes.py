@@ -54,6 +54,9 @@ except ImportError:  # pragma: no cover - flat test imports
     from database.pairs import PairDependencyError
 
 LORA_OPERATION = "lora_import"
+# The review reads the library: a request lease, so it is refused while a
+# restore runs and a restore waits for it before switching the file (S8).
+LORA_PREVIEW_LEASE = "LoRA import review"
 CATEGORY = lora_import.LORA_CATEGORY
 SOURCE_CHANGED = (
     "The LoRA metadata files changed since the review; nothing was changed. "
@@ -179,6 +182,13 @@ class LoraImportRoutesMixin:
     # ── preview ───────────────────────────────────────────────────────
 
     async def preview_lora_import(self, request):
+        try:
+            async with self._jobs.lease(LORA_PREVIEW_LEASE):
+                return await self._preview_lora_import(request)
+        except JobBusy as busy:
+            return busy_response(busy)
+
+    async def _preview_lora_import(self, request):
         data, error = await self._read_maintenance_body(request, ())
         if error is not None:
             return error
