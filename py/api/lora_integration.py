@@ -73,6 +73,13 @@ def _closed(request):
     return closed
 
 
+def _stopped(error) -> bool:
+    """Whether a legacy scan ended because its page closed the connection."""
+    from .. import lora_import
+
+    return isinstance(error, (ConnectionError, lora_import.ImportCancelled))
+
+
 class LoraIntegrationMixin:
     """Mixin providing LoraManager detection, scanning, and trigger word endpoints."""
 
@@ -357,8 +364,13 @@ class LoraIntegrationMixin:
                     await self._lora_scan_stream(
                         allowed, send_progress, disconnected=_closed(request)
                     )
+                except asyncio.CancelledError:
+                    # The server cancelled the handler when the page left.
+                    job.finish("cancelled")
+                    raise
                 except Exception as e:
-                    job.finish("failed")
+                    # A page that left stopped the scan; nothing failed (R2).
+                    job.finish("cancelled" if _stopped(e) else "failed")
                     await self._send_scan_failure(e, send_progress)
                 with contextlib.suppress(ConnectionError, RuntimeError):
                     await response.write_eof()
@@ -375,14 +387,13 @@ class LoraIntegrationMixin:
         import) are warnings in the admin page's own words; anything else is
         logged with its traceback.
         """
-        from .. import lora_import
         from .lora_import_routes import (
             EmptyReplacement,
             PairDependencyError,
             PlanChanged,
         )
 
-        if isinstance(error, (ConnectionError, lora_import.ImportCancelled)):
+        if _stopped(error):
             self.logger.info("LoRA scan stopped: the page closed its connection")
             return
         if isinstance(error, PlanChanged):
@@ -498,8 +509,18 @@ class LoraIntegrationMixin:
                 await report(*events.get_nowait())
         finally:
             stop.set()
-            with contextlib.suppress(Exception):
-                await asyncio.shield(staging)
+            # Staging must have stopped before the records hold is released,
+            # even when the handler is cancelled again while it waits (R3).
+            interrupted = False
+            while not staging.done():
+                try:
+                    await asyncio.shield(staging)
+                except asyncio.CancelledError:
+                    interrupted = True
+                except Exception:
+                    pass
+            if interrupted:
+                raise asyncio.CancelledError
         staged = await staging
         if not await self.lora_files_unchanged(lm_path, reviewed):
             raise LoraFilesChanged(_FILES_CHANGED)

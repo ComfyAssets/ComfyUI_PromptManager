@@ -524,21 +524,35 @@ def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
         return None
 
 
+_PART_PREFIX = ".pm-"
+_PART_SUFFIX = ".part"
+# A temp download older than this was left by a killed process, not a live one
+# (each download has a 10 s timeout).
+STALE_PART_SECONDS = 3600
+
+
 def _save_atomically(image, local_path: Path) -> None:
     """Write ``image`` as JPEG so ``local_path`` only ever names a whole file.
 
-    The image goes to a temp file in the same folder, which is closed before
-    ``os.replace`` puts it in place (Windows cannot replace an open file); a
-    failure removes the temp file. A reader (another import's cache check)
-    never sees a half-written image.
+    The image goes to a ``.pm-*.part`` file in the same folder, which is
+    closed before ``os.replace`` puts it in place (Windows cannot replace an
+    open file); a failure removes the temp file. A reader (another import's
+    cache check) never sees a half-written image. The temp file is opened
+    like ``img.save`` opens a file, so the image keeps the umask's mode.
     """
-    import tempfile
+    import secrets
 
-    fd, temp = tempfile.mkstemp(
-        dir=str(local_path.parent), prefix=".pm-", suffix=".part"
-    )
+    while True:
+        temp = local_path.parent / (
+            f"{_PART_PREFIX}{secrets.token_hex(8)}{_PART_SUFFIX}"
+        )
+        try:
+            handle = open(temp, "xb")
+        except FileExistsError:
+            continue
+        break
     try:
-        with os.fdopen(fd, "wb") as handle:
+        with handle:
             image.save(handle, "JPEG", quality=85)
         os.replace(temp, local_path)
     except BaseException:
@@ -547,6 +561,33 @@ def _save_atomically(image, local_path: Path) -> None:
         except OSError:
             pass
         raise
+
+
+def sweep_stale_downloads(cache_dir: Path) -> None:
+    """Remove ``.pm-*.part`` files a killed download left in the image cache.
+
+    Only that exact pattern, only in ``cache_dir`` and its LoRA folders, and
+    only once older than ``STALE_PART_SECONDS``; a file that cannot be read
+    or removed is left for a later import.
+    """
+    import time
+
+    cutoff = time.time() - STALE_PART_SECONDS
+    try:
+        folders = [cache_dir] + [p for p in cache_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return
+    for folder in folders:
+        try:
+            candidates = list(folder.glob(f"{_PART_PREFIX}*{_PART_SUFFIX}"))
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    os.remove(path)
+            except OSError:
+                logger.debug(f"Could not remove stale download {path}")
 
 
 def _civitai_cache_plan(

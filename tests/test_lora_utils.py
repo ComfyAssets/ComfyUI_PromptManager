@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import urllib.parse
@@ -575,6 +576,61 @@ class TestDownloadIsAtomic(unittest.TestCase):
             )
         self.assertIsNone(result)
         self.assertEqual(list(self.tmpdir.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_the_image_gets_the_permissions_a_plain_save_gives(self):
+        # S10 re-review N7: the cached JPEG honours the umask like img.save did.
+        previous = os.umask(0o022)
+        self.addCleanup(os.umask, previous)
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        with patch.object(lora_utils, "_open_url", opener):
+            lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o644)
+
+
+class TestStaleDownloadSweep(unittest.TestCase):
+    """S10 re-review N7: a killed download's ``.pm-*.part`` is swept later."""
+
+    def setUp(self):
+        self.cache = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.cache, True)
+        self.lora = self.cache / "my_lora"
+        self.lora.mkdir()
+
+    def _file(self, path, age_seconds):
+        path.write_bytes(b"x")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_only_old_temp_downloads_are_removed(self):
+        old = self._file(self.lora / ".pm-abc123.part", 2 * 3600)
+        old_top = self._file(self.cache / ".pm-top.part", 2 * 3600)
+        fresh = self._file(self.lora / ".pm-new.part", 60)
+        image = self._file(self.lora / "abc.jpg", 2 * 3600)
+        other = self._file(self.lora / "keep.part", 2 * 3600)
+        prefixed = self._file(self.lora / ".pm-keep.jpg", 2 * 3600)
+        deep = self.lora / "nested"
+        deep.mkdir()
+        nested = self._file(deep / ".pm-deep.part", 2 * 3600)
+
+        lora_utils.sweep_stale_downloads(self.cache)
+
+        self.assertFalse(old.exists())
+        self.assertFalse(old_top.exists())
+        for kept in (fresh, image, other, prefixed, nested):
+            self.assertTrue(kept.exists(), kept.name)
+
+    def test_a_missing_cache_is_fine(self):
+        lora_utils.sweep_stale_downloads(self.cache / "absent")
+
+    def test_a_file_that_cannot_be_removed_is_left(self):
+        old = self._file(self.lora / ".pm-abc.part", 2 * 3600)
+        with patch.object(lora_utils.os, "remove", side_effect=PermissionError):
+            lora_utils.sweep_stale_downloads(self.cache)
+        self.assertTrue(old.exists())
 
 
 class _FakeHTTPSHandler(urllib.request.HTTPSHandler):

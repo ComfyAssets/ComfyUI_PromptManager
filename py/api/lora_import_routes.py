@@ -135,6 +135,7 @@ class LoraImportRoutesMixin:
         from ..config import IntegrationConfig
 
         cache_dir = await self._run_in_executor(lora_utils.get_lora_image_cache_dir)
+        await self._run_in_executor(lora_utils.sweep_stale_downloads, cache_dir)
         loop = asyncio.get_running_loop()
 
         def report(index, record, staged):

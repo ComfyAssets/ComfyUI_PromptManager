@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -531,12 +532,30 @@ class LoraImportRouteTests(LoraImportAPITestCase):
                 break
             await asyncio.sleep(0.01)
         self.assertIsNone(self.api._jobs.active("lora_import"))
+        # R2 (re-review): the user left and nothing failed, so Activity says so.
+        job = next(j for j in self.api._jobs.list() if j.kind == "lora_import")
+        self.assertEqual(job.state, "cancelled")
         # Staging stopped at the next LoRA: no download runs after the hold.
         served = len(self.requests)
         self.assertLess(served, 4)
         await asyncio.sleep(0.1)
         self.assertEqual(len(self.requests), served)
         self.assertEqual(_snapshot(self.api.db), before)
+
+    async def test_an_import_sweeps_stale_temp_downloads_from_the_cache(self):
+        # N7 (re-review): a download killed mid-write leaves a .pm-*.part file;
+        # the next import removes it once it is an hour old.
+        self._two_loras()
+        stale = self.cache_dir / "old_lora" / ".pm-dead.part"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"x")
+        stamp = time.time() - 2 * 3600
+        os.utime(stale, (stamp, stamp))
+
+        resp = await self.client.request("POST", SCAN)
+        await resp.text()
+
+        self.assertFalse(stale.exists())
 
     async def test_legacy_scan_events_unchanged_on_success(self):
         self._two_loras()

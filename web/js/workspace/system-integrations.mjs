@@ -414,7 +414,9 @@ export function mountIntegrations(container, { api, activity, scope, drafts, cli
         pathInput.value = values.lora_path || values.lora_detected_path || '';
         setNote(triggers, cacheText(values));
         keyInput.disabled = unread;
-        keyNote.textContent = keyText(values, changes) ?? '';
+        // A live region: rewritten only when it says something new, so it is not re-announced on every edit.
+        const note = keyText(values, changes) ?? '';
+        if (keyNote.textContent !== note) keyNote.textContent = note;
         // D114: "Clear saved key" is offered only while a saved key would stay.
         if (values.lora_has_key === true && changes.clear_civitai_api_key !== true) key.children[0].append(keyActions);
         else {
@@ -434,8 +436,11 @@ export function mountIntegrations(container, { api, activity, scope, drafts, cli
     };
     scope.cleanup(drafts.subscribe(repaint));
     // A typed key is held only while its field shows it: leaving the section drops it, since the field comes back
-    // empty and a hidden key draft could not be seen or discarded (S10 review N4).
-    scope.cleanup(() => drafts.set('host', 'civitai_api_key', undefined));
+    // empty and a hidden key draft could not be seen or discarded (S10 review N4). Only a typed key: any set clears
+    // the last Save's outcome, which Sources still needs (S10 re-review R1).
+    scope.cleanup(() => {
+        if (drafts.changes('host').civitai_api_key !== undefined) drafts.set('host', 'civitai_api_key', undefined);
+    });
     repaint();
     return [comfy, surface];
 }

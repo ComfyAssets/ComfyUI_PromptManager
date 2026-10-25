@@ -2664,8 +2664,9 @@ Recorded deviations (plan D60–D70, D74, D75, D79–D82 renumbered D92–D102, 
   A `p.small#civitai-key-status[role=status]` (it also describes the field) says "A key
   is saved." / "No key saved." / "The new key replaces the saved one when you save." /
   "The saved key is removed when you save."; pressing "Clear saved key" keeps the
-  keyboard on the key field. A typed key is dropped when the section is left (the field
-  comes back empty). The field is `autocomplete=new-password`, so browsers never offer it
+  keyboard on the key field, and the line is rewritten only when its text changes. A typed
+  key is dropped when the section is left (the field comes back empty); leaving without one
+  keeps the last Save's outcome, so Sources still marks a refused source. The field is `autocomplete=new-password`, so browsers never offer it
   as a login; the concept's
   prototype warning is dropped. The LoRA rows save through the one Save row:
   `POST /lora/enable` with `expected_revision` (a config.json changed elsewhere is
@@ -3147,9 +3148,12 @@ imports changed meanwhile), `blocked-by-pairs`, `nothing-to-import`, `backup-fai
 whatever happened after. The tests change real files behind a held download
 (`test_files_changed_while_staging_fail_the_job`, removed and added files too). The
 replace binds the category, not one parameter per prompt, so SQLite's variable limit
-never caps a collection. The legacy `POST /lora/scan` runs the same stages under its SSE
+never caps a collection. Cached CivitAI images are written to a `.pm-*.part` file in the
+same folder and renamed into place, with the umask's mode as a plain save gives; each import
+first removes `.pm-*.part` files older than an hour from the image cache and its LoRA
+folders (`TestStaleDownloadSweep`). The legacy `POST /lora/scan` runs the same stages under its SSE
 event shape; a page that closes its connection stops staging before its next LoRA, and the
-scan keeps its records hold until staging has stopped
+scan keeps its records hold until staging has stopped, then ends `cancelled` in Activity
 (`test_a_disconnected_legacy_scan_stops_and_holds_until_it_stopped`) (`test_legacy_scan_events_unchanged_on_success`), holds
 the registry as "LoRA import (admin page)" and takes no safety backup. `POST /lora/enable`
 accepts the optional `expected_revision`. LoraManager detection also searches every

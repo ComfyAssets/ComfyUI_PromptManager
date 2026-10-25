@@ -218,6 +218,18 @@ test('key never prefilled; blank keeps; Clear saved key clears; saved through Sa
     await expect(field).toHaveValue('');
     await expect(key.locator('p.small')).toHaveText('A key is saved.');
     expect(statusBodies.join('')).not.toContain('sk-test-key');
+    // The announced line is rewritten only when its text changes, not on every edit elsewhere (S10 re-review N8).
+    await page.evaluate(() => {
+        window.__keyNoteWrites = 0;
+        new MutationObserver(records => { window.__keyNoteWrites += records.length; })
+            .observe(document.querySelector('#civitai-key-status'), { childList: true, characterData: true, subtree: true });
+    });
+    const triggers = settingOf(page, 'Automatically include trigger words').locator('input');
+    await triggers.check();
+    await expect(status(page)).toHaveText('Unsaved changes.');
+    await triggers.uncheck();
+    await expect(status(page)).toHaveText('No unsaved changes.');
+    expect(await page.evaluate(() => window.__keyNoteWrites)).toBe(0);
     // A blank field keeps the saved key: nothing to save.
     await field.fill('   ');
     await expect(status(page)).toHaveText('No unsaved changes.');
@@ -283,6 +295,29 @@ test('a save where only the LoRA part is written says so; the next save needs no
         await save(page).click();
         await expect(status(page)).toHaveText('Saved to the server configuration.');
         expect((await serverJson(request, '/prompt_manager/settings')).sources.configured.map(source => source.path)).toEqual(['output']);
+    });
+
+test('a partial save made from Integrations keeps its outcome when Sources opens (S10 re-review R1)',
+    async ({ page, request }) => {
+        await lora(request);
+        await expect(await request.post('/__test__/system/missing-source', { data: { inside: true } })).toBeOK();
+        await openIntegrations(page);
+        const nav = page.locator('#workspace-main .section-nav');
+        const sourceRow = title => layoutOf(page).locator('#source-list .operation').filter({ has: page.locator('h3', { hasText: title }) });
+        await nav.getByRole('button', { name: 'Sources & scans', exact: true }).click();
+        await expect(sourceRow('unplugged')).toBeVisible();
+        await expect(await request.post('/__test__/system/unplug')).toBeOK();
+        await sourceRow('ComfyUI input').getByRole('button', { name: 'Remove', exact: true }).click();
+        // Back in Integrations, a LoRA change, then Save from there.
+        await nav.getByRole('button', { name: 'Integrations', exact: true }).click();
+        await settingOf(page, 'Automatically include trigger words').locator('input').check();
+        await save(page).click();
+        const reason = "output/unplugged can't be used: Gallery root does not exist. Remove it or reconnect it, then save.";
+        await expect(status(page)).toHaveText(reason);
+        // Leaving Integrations (no key was typed) keeps the outcome: Sources shows the reason on the refused row.
+        await nav.getByRole('button', { name: 'Sources & scans', exact: true }).click();
+        await expect(sourceRow('unplugged')).toHaveAttribute('aria-invalid', 'true');
+        await expect(status(page)).toHaveText(reason);
     });
 
 test('Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107)',

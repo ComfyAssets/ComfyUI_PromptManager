@@ -71,7 +71,6 @@ function measureIntegrations(mainSelector) {
         // The concept's `.small` text (its Save row status); production's row notes use the same class.
         small: css(layout.querySelector('#settings-status'), 'fontSize', 'color'),
         note: note && css(note, 'fontSize', 'color'),
-        // Whether each select shows its whole chosen option (its text within the box, less the native arrow).
         // Whether each select is as wide as the browser lays out a copy holding only its chosen option, i.e. it shows
         // that option whole (the browser's own select sizing, arrow included).
         selectsFit: [...layout.querySelectorAll('.setting-row > select')].map(select => {
@@ -177,6 +176,16 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
         expect(production.pageScroll).toBe(false);
     });
 }
+
+// D106 below the concept's smallest size: on a 320px phone both selects still show their whole option, without page
+// scroll (S10 re-review N9).
+for (const theme of THEMES) test(`integrations selects fit at 320 wide ${theme}`, async ({ page, request }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await fakeLoraManager(request);
+    const production = await productionIntegrations(page, theme);
+    expect(production.selectsFit).toEqual([true, true]);
+    expect(production.pageScroll).toBe(false);
+});
 
 test('integrations comparison detects mutations', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
