@@ -15,6 +15,11 @@ from contextlib import closing
 from pathlib import Path
 from typing import Optional, Set, Tuple
 
+from .managed_connection import (
+    ManagedConnection,
+    await_closed,
+    retire_connections,
+)
 from .library_schema import library_schema_error, migrate_library_state
 from .image_favorites import image_favorites_schema_error, migrate_image_favorites
 from .annotation_schema import annotation_schema_error, migrate_annotation_state
@@ -615,10 +620,15 @@ class PromptModel:
             # meanwhile: otherwise it would write to the old file.
             with self._conn_lock:
                 path, generation = self.db_path, self._generation
-            # check_same_thread=False only so close_all can clean up other
-            # threads' connections; each connection is still used by one thread.
+            # check_same_thread=False only so close_all and Move library can
+            # retire other threads' connections; each connection is still
+            # used by one thread, and ManagedConnection never closes it under
+            # a running statement (see managed_connection).
             conn = sqlite3.connect(
-                path, check_same_thread=False, timeout=BUSY_TIMEOUT_SECONDS
+                path,
+                check_same_thread=False,
+                timeout=BUSY_TIMEOUT_SECONDS,
+                factory=ManagedConnection,
             )
             try:
                 conn.row_factory = sqlite3.Row
@@ -654,9 +664,9 @@ class PromptModel:
 
         Every thread opens the new file on its next ``get_connection``. The
         old connections are detached, not closed, and returned: the caller
-        closes them once nothing can block on the new file any more. Closing
-        a connection another thread is using waits for its statement; a write
-        waiting on the mover's lock then fails (and, through
+        retires them (``retire_detached``) while it still holds the old
+        file's write lock. A write waiting on that lock is then interrupted
+        and can never commit, so it fails (and, through
         ``PromptDatabase.survive_library_switch``, runs again on the new file).
         """
         old_key = os.path.normcase(os.path.realpath(old_path))
@@ -671,14 +681,31 @@ class PromptModel:
         return detached
 
     @staticmethod
-    def close_detached(connections, logger=None) -> None:
-        """Close connections ``repoint_instances`` detached."""
-        for conn in connections:
-            try:
-                conn.close()
-            except sqlite3.Error as e:
-                if logger is not None:
-                    logger.warning(f"Error closing database connection: {e}")
+    def retire_detached(connections, logger=None) -> list:
+        """Retire detached connections without waiting for their owners.
+
+        Idle ones close now. One whose owner thread is inside a statement is
+        never closed from here (that frees memory the owner is using: an
+        access violation on Windows); it is interrupted, refuses to commit and
+        is closed by its owner as the statement ends. Returns those still
+        open, for ``await_detached`` once no lock the owners wait on is held.
+        """
+        return retire_connections(connections, logger)
+
+    @staticmethod
+    def await_detached(connections, logger=None) -> bool:
+        """Wait until retired connections are closed; False if some are not."""
+        return await_closed(connections, BUSY_TIMEOUT_SECONDS, logger)
+
+    @staticmethod
+    def close_detached(connections, logger=None) -> bool:
+        """Retire connections ``repoint_instances`` detached and await them.
+
+        Do not call it while holding a lock their owners may wait on; retire
+        them there (``retire_detached``) and await them after releasing it.
+        """
+        pending = retire_connections(connections, logger)
+        return await_closed(pending, BUSY_TIMEOUT_SECONDS, logger)
 
     def close_all(self) -> None:
         """Close every thread's connection; they reopen lazily on next use.
@@ -714,10 +741,7 @@ class PromptModel:
         self._local.conn = None
         with self._conn_lock:
             self._connections.discard(conn)
-        try:
-            conn.close()
-        except sqlite3.Error as e:
-            self.logger.warning(f"Error closing database connection: {e}")
+        self.close_detached([conn], self.logger)
 
     def _migrate_workflow_name_removal(self, conn: sqlite3.Connection) -> None:
         """
@@ -1223,7 +1247,11 @@ class PromptModel:
             Path(src_path).resolve().as_uri() + "?mode=ro", uri=True
         )
         try:
-            source.backup(self.get_connection())
+            target = self.get_connection()
+            # The target is written under backup's step too: mark it in use
+            # so a concurrent close_all retires it instead of closing it.
+            with target.using():
+                source.backup(target)
         finally:
             source.close()
 
