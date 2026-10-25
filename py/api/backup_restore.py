@@ -90,9 +90,13 @@ REQUESTS_BUSY = (
     "Other requests are still reading the library; nothing was changed. "
     "Try again in a moment."
 )
+# S9 I1: the review goes back to the page that started the restore
+# (``scope.review_kept``), which opens it again with Restore and Discard; no
+# other place can start a kept review, so the line says where it is.
 REVIEW_KEPT = (
     "Other requests are still reading the library; nothing was changed. "
-    "The review is kept: start the restore again in a moment."
+    "The review was reopened in the page that started the restore: restore it "
+    "again there, or discard it."
 )
 VERIFY_HEADER = "X-PromptManager-Verify"
 SQLITE_HEADER = b"SQLite format 3\x00"
@@ -873,6 +877,7 @@ class BackupRestoreRoutesMixin:
                 if token is not None and self._restore_plans.give_back(token, held):
                     keep_stage = True
                     self._schedule_restore_expiry()
+                    job.scope["review_kept"] = True
                     return _fail_job(job, "busy", REVIEW_KEPT)
                 return _fail_job(job, "busy", REQUESTS_BUSY)
             job.update(status_line="Checking the library")

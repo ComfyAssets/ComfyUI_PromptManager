@@ -344,7 +344,7 @@ test('unknown kinds get the generic view without the scan tiles', async () => {
         ['no_metadata', 'No usable metadata'], ['known', 'Already known']]);
     assert.deepEqual([...scan.openable].sort(), ['added', 'known']);
     assert.deepEqual([scan.log, scan.cancel], ['Scan log', 'Cancel scan']);
-    for (const kind of ['restore', '', 'constructor', '__proto__']) {
+    for (const kind of ['backup', '', 'constructor', '__proto__']) {
         const view = jobView(kind);
         assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [[], [], []]);
         assert.deepEqual([view.log, view.cancel], ['Job log', 'Cancel job']);

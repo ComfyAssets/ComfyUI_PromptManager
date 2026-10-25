@@ -172,8 +172,8 @@ function mapOverviewConcept(reference, overview) {
         // D93: the real pending count; Review metadata opens Needs review (the concept's go-review).
         '3 ambiguous image links': row => ({ ...row,
             title: `${number(overview.needs_review.pending)} ambiguous image link${overview.needs_review.pending === 1 ? '' : 's'}` }),
-        // D93: no backup has been recorded (verified backups arrive with S8).
-        'Backup status': row => ({ ...row, description: 'No retained backup record.' }),
+        // D93 (S9): what GET /backup/status reports; the fixture has no backup yet.
+        'Backup status': row => ({ ...row, description: 'No backup recorded.' }),
         // D93: there is no paging, so the shared settings are grid and density.
         'One display configuration': row => ({ ...row, description: 'Grid and density settings are shared across views.' }),
         // D93: the real sources, not samples.
@@ -219,6 +219,9 @@ async function productionOverview(page, theme) {
     await expect(page.locator('#workspace-main .summary-metrics')).toBeVisible();
     // The thumbnail row is its own read (I2): compare once it answered.
     await expect(page.locator('#workspace-main .operation h3').filter({ hasText: 'thumbnails' })).toHaveText('No missing thumbnails');
+    // So is the backup row (S9).
+    await expect(page.locator('#workspace-main .operation').filter({ has: page.locator('h3', { hasText: 'Backup status' }) })
+        .locator('p')).toHaveText('No backup recorded.');
     await page.mouse.move(0, 0);
     return page.evaluate(measureSystem, '#workspace-main');
 }

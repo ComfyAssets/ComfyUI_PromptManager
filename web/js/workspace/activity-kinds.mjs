@@ -14,7 +14,8 @@
  * Errors (red). System S7: `maintenance` (a reviewed plan's apply) counts Changed, Protected and Errors and, when it
  * failed, ends with the server's reason; `duplicates` (the search) counts Groups found; `duplicate_cleanup` counts
  * Removed, Kept and Errors; S10: `lora_import` counts Imported, Linked to existing, Skipped, Images downloaded, Download
- * errors and Errors and, when it failed, ends with the server's reason (the previous imports were kept). Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
+ * errors and Errors and, when it failed, ends with the server's reason (the previous imports were kept); S9: `restore`
+ * ends with the server's line (what was restored, or why nothing changed). Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
  * the generic descriptor: title-based copy and no tiles or outcomes, so it never shows another kind's zeros (S1 review
  * M6, S2 review M3). `viewOf(job)` keeps only the groups the job itself counts, so a hold (no groups) has none either.
  *
@@ -189,6 +190,16 @@ export const KINDS = Object.freeze({
         outcomes: tiles([['removed', 'Removed'], ['errors', 'Errors'], ['kept', 'Kept']]),
         openable: groups('kept'),
         log: 'Cleanup log',
+    }),
+    // System S9: the reviewed database restore (exclusive, never cancellable, indeterminate); it ends with the server's
+    // line: what was restored, or why nothing was changed.
+    restore: Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Restoring the database',
+        finishToast: job => (job.status_line && job.state !== 'cancelled'
+            ? `${job.title} ${job.state === 'failed' ? 'failed' : 'finished'} · ${job.status_line}` : titleFinished(job)),
+        line: job => (job.state === 'running' ? '' : job.status_line || ''),
+        log: 'Restore log',
     }),
     // System S10: the reviewed LoRA reference import; cancellable only while it downloads (the server says when).
     lora_import: Object.freeze({

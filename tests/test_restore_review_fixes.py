@@ -205,12 +205,38 @@ class TestPreviewLease(RestoreTestCase):
             await lease.__aexit__(None, None, None)
         self.assertEqual(job.state, "failed")
         self.assertEqual(job.last_event["code"], "busy")
-        self.assertIn("review is kept", job.status_line)
+        # S9 I1: the page that started it reopens the kept review (Restore again
+        # or Discard); the flag tells it so, and the line says where the review
+        # is, never "start the restore again" from a place that cannot.
+        self.assertIs(job.scope.get("review_kept"), True)
+        self.assertEqual(job.status_line, backup_restore.REVIEW_KEPT)
+        self.assertIn("reopened in the page that started", job.status_line)
         self.assertEqual(len(self.stages()), 1)
         # The same review applies once the requests are done.
         job = await self.finish((await self.apply(body["token"]))["job"]["id"])
         self.assertEqual(job.state, "finished", job.log)
         self.assertEqual(_texts(self.db_path), ["restored"])
+
+    async def test_a_review_that_cannot_be_kept_is_not_flagged_kept(self):
+        self.save("live")
+        body = await self.preview(self.upload(["restored"]))
+        lease = self.api._jobs.lease("Stuck preview")
+        await lease.__aenter__()
+        try:
+            with (
+                patch.object(jobs, "LEASE_DRAIN_SECONDS", 0),
+                patch.object(
+                    backup_restore.RestorePlanStore, "give_back", lambda *_: False
+                ),
+            ):
+                started = await self.apply(body["token"])
+                job = await self.finish(started["job"]["id"])
+        finally:
+            await lease.__aexit__(None, None, None)
+        self.assertEqual(job.state, "failed")
+        self.assertNotIn("review_kept", job.scope)
+        self.assertEqual(job.status_line, backup_restore.REQUESTS_BUSY)
+        self.assertEqual(len(self.stages()), 0)
 
 
 class TestStoreOnTheLoop(RestoreTestCase):

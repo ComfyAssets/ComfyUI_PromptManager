@@ -12,6 +12,10 @@ import { navigateTo } from './state.mjs';
 
 export const BACKUP_URL = '/prompt_manager/backup';
 export const BACKUP_DONE = 'Database backup downloaded.';
+// S8 M5: a copy that failed a semantic check is still sent, with the reason in this header ('ok' otherwise).
+export const VERIFY_HEADER = 'X-PromptManager-Verify';
+/** The toast for a downloaded copy the server could not verify (S9). */
+export const backupUnverified = reason => `Database backup downloaded, but it did not pass verification: ${reason}`;
 export const BACKUP_FAILED = 'The database could not be backed up. Try again.';
 export const REPORT_DONE = 'Job report downloaded.';
 export const REPORT_FAILED = 'The report could not be downloaded. Try again.';
@@ -28,8 +32,8 @@ export function backupFilename(disposition, fallback = FALLBACK_NAME) {
     return match ? match[1] : fallback;
 }
 
-/** Save a fetched response through a temporary link, named by `filename`. */
-function saveResponse(blob, filename) {
+/** Save a fetched response through a temporary link, named by `filename` (also System's exports, S9). */
+export function saveResponse(blob, filename) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -40,14 +44,18 @@ function saveResponse(blob, filename) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Download the prompts database copy the legacy admin page also uses; toasts the outcome. */
+/**
+ * Download the prompts database copy the legacy admin page also uses; toasts the outcome, and says so when the server
+ * sent a copy it could not verify (S9).
+ */
 export async function downloadDatabaseBackup({ fetchUrl = window.ApiClient.fetchUrl, notify = showWorkspaceToast } = {}) {
     try {
         const response = await fetchUrl(BACKUP_URL);
         if (!response.ok) throw new Error(`Backup failed with ${response.status}`);
         const blob = await response.blob();
         saveResponse(blob, backupFilename(response.headers.get('Content-Disposition')));
-        notify(BACKUP_DONE);
+        const verify = response.headers.get(VERIFY_HEADER);
+        notify(verify && verify !== 'ok' ? backupUnverified(verify) : BACKUP_DONE);
         return true;
     } catch {
         notify(BACKUP_FAILED);

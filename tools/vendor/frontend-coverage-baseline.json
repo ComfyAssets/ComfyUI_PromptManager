@@ -1,7 +1,7 @@
 {
   "admin.js": {
     "lines": 32,
-    "branches": 58,
+    "branches": 61,
     "functions": 27,
     "statements": 32
   },
@@ -181,7 +181,7 @@
   },
   "workspace/activity-scan.mjs": {
     "lines": 96,
-    "branches": 78,
+    "branches": 87,
     "functions": 98,
     "statements": 96
   },
@@ -421,7 +421,7 @@
   },
   "workspace/maintenance-review.mjs": {
     "lines": 94,
-    "branches": 85,
+    "branches": 86,
     "functions": 90,
     "statements": 94
   },
@@ -502,6 +502,12 @@
     "branches": 93,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/system-backups.mjs": {
+    "lines": 95,
+    "branches": 88,
+    "functions": 94,
+    "statements": 95
   },
   "workspace/system-controls.mjs": {
     "lines": 98,
