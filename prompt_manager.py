@@ -238,6 +238,7 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
             except Exception as e:
                 # Log error but don't fail the encoding
                 self.logger.warning(f"Failed to save prompt to database: {e}")
+                self._mark_untracked(prompt, unique_id)
         else:
             self._skip_empty_prompt(prompt, unique_id)
 

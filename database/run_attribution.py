@@ -16,9 +16,12 @@ only when all of this holds:
 Anything else returns None: the caller leaves the file unlinked. Read-only.
 """
 
+import logging
 import os
 import sqlite3
-from typing import Any, Optional
+import threading
+import weakref
+from typing import Any, Callable, Iterable, List, Optional
 
 try:
     from ..utils.execution_outputs import snapshot_output_roots
@@ -120,3 +123,36 @@ def stored_run_prompt(
         return None
     (prompt_id,) = named
     return prompt_id if isinstance(prompt_id, int) else None
+
+
+_LOGGER = logging.getLogger("prompt_manager.run_attribution")
+_SEALED_LISTENERS: List[weakref.WeakMethod] = []
+_SEALED_LOCK = threading.Lock()
+
+
+def subscribe_outputs_sealed(method: Callable[[str, List[dict]], None]) -> None:
+    """Call bound ``method(run_id, references)`` after a run's outputs are recorded.
+
+    Held weakly: a listener that is garbage collected is dropped.
+    """
+    with _SEALED_LOCK:
+        _SEALED_LISTENERS.append(weakref.WeakMethod(method))
+
+
+def notify_outputs_sealed(run_id: str, references: Iterable[dict]) -> None:
+    """Tell listeners a run's output references were just committed.
+
+    A listener failure is logged and never reaches the history writer.
+    """
+    references = list(references)
+    with _SEALED_LOCK:
+        alive = [ref for ref in _SEALED_LISTENERS if ref() is not None]
+        _SEALED_LISTENERS[:] = alive
+        listeners = [ref() for ref in alive]
+    for listener in listeners:
+        if listener is None:
+            continue
+        try:
+            listener(run_id, references)
+        except Exception:
+            _LOGGER.warning("Output seal listener failed", exc_info=True)

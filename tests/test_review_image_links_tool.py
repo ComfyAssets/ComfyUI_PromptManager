@@ -17,6 +17,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from open_handles import assert_closed
 
 from database.operations import PromptDatabase
+from tests.test_api_images import ImageAPITestCase
 from tests.test_prompt_attribution import issue_graph, pair_evidence
 from tools import review_image_links as tool
 from utils.hashing import generate_prompt_hash
@@ -31,7 +32,7 @@ def png(path, prompt=None, evidence=None):
     Image.new("RGB", (4, 4)).save(path, pnginfo=info)
 
 
-class ReviewToolTests(unittest.TestCase):
+class ToolFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -81,12 +82,14 @@ class ReviewToolTests(unittest.TestCase):
         finally:
             db.close_all()
 
+
+class ReviewToolTests(ToolFixture):
     def test_dry_run_judges_and_changes_nothing(self):
         before = self.links()
         ids = f"{self.guessed[0]}-{self.gone}"
         code, out = self.run_tool("--ids", ids, "--json")
         self.assertEqual(code, 0)
-        verdicts = {v["image_id"]: v for v in json.loads(out.split("Dry run")[0])}
+        verdicts = {v["image_id"]: v for v in json.loads(out.split("--apply, for")[0])}
         for image_id in self.guessed:
             self.assertEqual(verdicts[image_id]["verdict"], "unlink")
             self.assertEqual(verdicts[image_id]["sources"], {})
@@ -114,7 +117,7 @@ class ReviewToolTests(unittest.TestCase):
             "--ids", named, "--prompt", str(self.coffee), "--apply"
         )
         self.assertEqual(code, 0)
-        self.assertIn("Applied: 1 relinked, 2 unlinked", out)
+        self.assertIn("Applied: 1 relinked, 2 unlinked, 0 skipped", out)
         links = self.links()
         self.assertNotIn(self.guessed[0], links)
         self.assertNotIn(self.guessed[1], links)
@@ -169,6 +172,83 @@ class ReviewToolTests(unittest.TestCase):
         finally:
             db.close_all()
         self.assertEqual(verdict["verdict"], "conflict")
+
+
+class ApplyGuardTests(ToolFixture):
+    """M6: unlink clears only the link, and only the link it was judged on."""
+
+    def test_unlink_skips_a_row_linked_elsewhere_since_the_review(self):
+        db = PromptDatabase(self.db_path)
+        try:
+            verdicts = tool.review(db, [self.guessed[0]], None, self.output)
+            self.assertEqual(verdicts[0]["verdict"], "unlink")
+            db.model.get_connection().execute(
+                "UPDATE generated_images SET prompt_id=? WHERE id=?",
+                (self.typed, self.guessed[0]),
+            )
+            db.model.get_connection().commit()
+            result = tool.apply(db, verdicts, [self.guessed[0]])
+        finally:
+            db.close_all()
+        self.assertEqual(result["unlinked"], 0)
+        self.assertEqual(self.links()[self.guessed[0]], self.typed)
+
+    def test_unlink_keeps_the_file_and_its_favorite(self):
+        path = os.path.join(self.output, "moss_00009_.png")
+        db = PromptDatabase(self.db_path)
+        try:
+            db.set_image_favorite("a" * 64, "moss_00009_.png")
+        finally:
+            db.close_all()
+        self.run_tool("--ids", str(self.guessed[0]), "--apply")
+        self.assertTrue(os.path.isfile(path))
+        db = PromptDatabase(self.db_path)
+        try:
+            self.assertEqual(db.get_root_favorites("a" * 64), {"moss_00009_.png"})
+            summary = db.get_image_link_summaries([path]).get(path) or {}
+        finally:
+            db.close_all()
+        self.assertNotEqual(summary.get("status"), "linked")
+
+    def test_dry_run_states_what_apply_does(self):
+        _code, out = self.run_tool("--ids", str(self.guessed[0]))
+        self.assertIn("removes only the image's link record", out)
+        self.assertIn("file stays on disk and in the gallery as unlinked", out)
+
+
+class GalleryAfterUnlinkTests(ImageAPITestCase):
+    """M6: after --apply the file is still listed, as an unlinked image."""
+
+    async def test_unlinked_file_stays_in_the_workspace_gallery(self):
+        db = self.api.db
+        prompt = db.save_prompt(
+            text="a woman holding a coffee cup",
+            prompt_hash=generate_prompt_hash("a woman holding a coffee cup"),
+        )
+        path = self.output_dir / "moss_00009_.png"
+        png(str(path), issue_graph(), pair_evidence())
+        image_id = db.link_image_to_prompt(prompt, str(path), metadata={})
+        out = io.StringIO()
+        tool.main(
+            [
+                db.model.db_path,
+                "--output-dir",
+                str(self.output_dir),
+                "--ids",
+                str(image_id),
+                "--apply",
+            ],
+            out=out,
+        )
+        self.assertIn("Applied: 0 relinked, 1 unlinked", out.getvalue())
+        response = await self.client.get(
+            "/prompt_manager/images/output", params={"mode": "workspace"}
+        )
+        self.assertEqual(response.status, 200)
+        images = {i["filename"]: i for i in (await response.json())["images"]}
+        self.assertIn("moss_00009_.png", images)
+        link = images["moss_00009_.png"].get("linked") or {}
+        self.assertNotEqual(link.get("status"), "linked")
 
 
 if __name__ == "__main__":

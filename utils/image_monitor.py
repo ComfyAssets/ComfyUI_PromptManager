@@ -28,7 +28,8 @@ import os
 import queue
 import time
 import threading
-from typing import Callable, Optional, Dict, Any, Tuple
+from collections import OrderedDict
+from typing import Callable, Optional, Dict, Any, List, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -42,16 +43,31 @@ from .usage_tracking import survive_switch
 
 try:
     from ..database.pair_ingestion import ingest_resolved_pair
-    from ..database.run_attribution import host_output_directory, stored_run_prompt
+    from ..database.run_attribution import (
+        host_output_directory,
+        stored_run_prompt,
+        subscribe_outputs_sealed,
+    )
 except ImportError:
     from database.pair_ingestion import ingest_resolved_pair
-    from database.run_attribution import host_output_directory, stored_run_prompt
+    from database.run_attribution import (
+        host_output_directory,
+        stored_run_prompt,
+        subscribe_outputs_sealed,
+    )
 
 # Upper bound on images waiting to be processed (a burst beyond this is skipped)
 MAX_PENDING_IMAGES = 1000
 # A file counts as fully written once its size is unchanged across two reads
 SETTLE_INTERVAL_SECONDS = 0.1
 SETTLE_ATTEMPTS = 20
+# Keyless images (no embedded API graph) left unlinked wait for their run's
+# recorded outputs for one history-only re-check (#342): at most this many,
+# each for at most this long.
+MAX_AWAITING_HISTORY = 1000
+AWAIT_HISTORY_SECONDS = 3600
+# ``schedule`` snapshot meaning "history-only re-check" (not a new image)
+HISTORY_ONLY = object()
 
 
 class ImageGenerationHandler(FileSystemEventHandler):
@@ -113,6 +129,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self._work: "queue.Queue[Optional[str]]" = queue.Queue()
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
+        # Keyless unlinked images awaiting their run's recorded outputs:
+        # normalized path -> (path, monotonic deadline), oldest first.
+        self._awaiting: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
+        self._awaiting_lock = threading.Lock()
+        self._sealed_subscribed = False
 
     def on_created(self, event):
         """Handle filesystem creation events.
@@ -180,6 +201,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
         and exits; the next ``schedule`` starts a fresh worker with its own
         queue. Safe to call repeatedly and before anything was scheduled.
         """
+        with self._awaiting_lock:
+            self._awaiting.clear()
         with self._pending_lock:
             self._pending.clear()
             worker, self._worker = self._worker, None
@@ -307,6 +330,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 appeared (``PromptTracker.keyed_snapshot``); None reads it now
         """
         try:
+            if prompt_snapshot is HISTORY_ONLY:
+                self._recheck_history(image_path)
+                return
             self.logger.info(f"Processing image: {image_path}")
 
             if not os.path.exists(image_path):
@@ -399,6 +425,16 @@ class ImageGenerationHandler(FileSystemEventHandler):
         """
         keys = image_run_keys(metadata)
         name = os.path.basename(image_path)
+        if not keys:
+            # No tracked run can be proven: history now, and once more after
+            # the run's outputs are recorded (``_on_outputs_sealed``)
+            self._await_history(image_path)
+            prompt_id = self._history_prompt(image_path)
+            if prompt_id is None:
+                return None
+            self._stop_awaiting(image_path)
+            self.logger.info(f"History match: prompt {prompt_id} for {name}")
+            return {"id": prompt_id, "from_history": True}
         if len(keys) == 1:
             (key,) = keys.values()
             if prompt_snapshot is None:
@@ -414,16 +450,103 @@ class ImageGenerationHandler(FileSystemEventHandler):
                         return None
                     self.logger.info(f"Queue match: prompt {queued['id']} for {name}")
                     return queued
-                if not context.get("placeholder") and run_id and count == 1:
+                if context.get("placeholder"):
+                    # Same rule as a popped placeholder: that run had no prompt
+                    self.logger.info(f"Latest run for {name} had no prompt text")
+                    return None
+                if run_id and count == 1:
                     self.logger.info(f"Run match: prompt {context['id']} for {name}")
                     return context
-        elif len(keys) > 1:
+        else:
             self.logger.debug(f"{len(keys)} positive prompt nodes for {name}")
         prompt_id = self._history_prompt(image_path)
         if prompt_id is None:
             return None
         self.logger.info(f"History match: prompt {prompt_id} for {name}")
         return {"id": prompt_id, "from_history": True}
+
+    @staticmethod
+    def _awaiting_key(image_path: str) -> str:
+        return os.path.normcase(os.path.abspath(image_path))
+
+    def _prune_awaiting(self) -> None:
+        """Drop expired and surplus entries (``_awaiting_lock`` held)."""
+        now = time.monotonic()
+        for key in [k for k, (_p, due) in self._awaiting.items() if due <= now]:
+            del self._awaiting[key]
+        while len(self._awaiting) > MAX_AWAITING_HISTORY:
+            self._awaiting.popitem(last=False)
+
+    def _await_history(self, image_path: str) -> None:
+        """Re-check ``image_path`` once, history only, when its run is sealed."""
+        if not self._sealed_subscribed:
+            subscribe_outputs_sealed(self._on_outputs_sealed)
+            self._sealed_subscribed = True
+        key = self._awaiting_key(image_path)
+        with self._awaiting_lock:
+            self._awaiting.pop(key, None)
+            self._awaiting[key] = (
+                image_path,
+                time.monotonic() + AWAIT_HISTORY_SECONDS,
+            )
+            self._prune_awaiting()
+
+    def _stop_awaiting(self, image_path: str) -> None:
+        with self._awaiting_lock:
+            self._awaiting.pop(self._awaiting_key(image_path), None)
+
+    def awaiting_history(self) -> List[str]:
+        """Normalized paths still waiting for their run's recorded outputs."""
+        with self._awaiting_lock:
+            self._prune_awaiting()
+            return list(self._awaiting)
+
+    def _on_outputs_sealed(self, run_id: str, references: List[dict]) -> None:
+        """A run's outputs were recorded: re-check its waiting images once.
+
+        Called on the history writer's thread, so it only schedules the work.
+        """
+        root = host_output_directory()
+        if not root:
+            return
+        due = []
+        with self._awaiting_lock:
+            self._prune_awaiting()
+            for reference in references:
+                if reference.get("folder_type") != "output":
+                    continue
+                key = self._awaiting_key(
+                    os.path.join(
+                        root, reference.get("subfolder", ""), reference["filename"]
+                    )
+                )
+                waiting = self._awaiting.pop(key, None)
+                if waiting is not None:
+                    due.append(waiting[0])
+        for image_path in due:
+            self.schedule(image_path, HISTORY_ONLY)
+
+    def _recheck_history(self, image_path: str) -> None:
+        """The one history-only re-check of a keyless image (#342)."""
+        name = os.path.basename(image_path)
+        if not os.path.exists(image_path):
+            return
+        prompt_id = self._history_prompt(image_path)
+        if prompt_id is None:
+            self.logger.info(
+                f"No certain prompt for {name} after its run ended; left unlinked"
+            )
+            return
+        self.logger.info(f"History match after its run ended: {prompt_id} for {name}")
+        try:
+            metadata = self.metadata_extractor.extract_metadata(image_path)
+        except Exception:
+            metadata = None
+        self.link_image_to_prompt(
+            image_path,
+            {"id": prompt_id, "from_history": True},
+            metadata or {"file_info": self.get_basic_file_info(image_path)},
+        )
 
     def _history_prompt(self, image_path: str) -> Optional[int]:
         """The stored prompt recorded history attributes to this file, if one."""

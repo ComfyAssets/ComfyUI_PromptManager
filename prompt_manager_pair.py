@@ -138,6 +138,8 @@ class PromptManagerPair(PromptManagerFocused):
                 )
             except Exception as error:
                 self.logger.warning(f"Could not save or track paired prompt: {error}")
+                if is_positive:
+                    self._mark_untracked(prompt, unique_id)
         try:
             self.comfyui_integration.register_prompt(
                 f"promptmanager_pair_{time.time_ns()}",

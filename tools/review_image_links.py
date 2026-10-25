@@ -21,8 +21,20 @@ connection) into a temporary folder and judged there, so the library is never
 written. ``--apply`` writes the ``relink`` and ``unlink`` verdicts of the
 selected images, after saving a backup beside the database
 (``<db>.pre-relink_<stamp>``). Only ids named on the command line are ever
-changed. A batch item linked through the monitor's queue (PromptSearchList)
-can't be proven after the fact and reads ``unlink``: review before applying.
+changed, and only while each is still linked to the prompt it was judged on.
+
+What ``--apply`` does (APPLY_EFFECTS below, printed by every run):
+
+- ``relink`` points the image's link record at the other prompt and drops its
+  pair links (they named the old positive).
+- ``unlink`` removes only the image's link record (its ``generated_images`` row
+  with the metadata snapshot stored in it, and its pair links). That is how the
+  app represents an unlinked image, exactly like a file the scan could not
+  attribute: the file stays on disk and in the gallery as unlinked, and its
+  favorite star and tags (kept by file, not by link) are untouched.
+
+A batch item linked through the monitor's queue (PromptSearchList) can't be
+proven after the fact and reads ``unlink``: review before applying.
 
     python3 tools/review_image_links.py <db> --output-dir <ComfyUI output> \\
         --ids 58005-58010
@@ -62,6 +74,15 @@ from utils.image_monitor import ImageGenerationHandler  # noqa: E402
 from utils.prompt_pair_resolver import resolve_prompt_pair  # noqa: E402
 
 VERDICTS = ("keep", "relink", "unlink", "conflict", "missing")
+APPLY_EFFECTS = (
+    "--apply, for ids named with --ids only, while each is still linked to the "
+    "prompt it was judged on:\n"
+    "  relink: points the image's link record at the other prompt and drops "
+    "its pair links;\n"
+    "  unlink: removes only the image's link record (its stored metadata "
+    "snapshot and pair links go with it); the file stays on disk and in the "
+    "gallery as unlinked, with its favorite and tags.\n"
+)
 # Ids per query (well under SQLite's bound-parameter limit)
 ID_BATCH = 500
 
@@ -174,15 +195,30 @@ def review(db, ids, prompt_id, output_dir):
 
 
 def apply(db, verdicts, ids):
-    """Write the relink/unlink verdicts of explicitly named ids; returns counts."""
+    """Write the relink/unlink verdicts of explicitly named ids; returns counts.
+
+    An image whose link changed since it was judged (now another prompt, or
+    gone) is skipped.
+    """
     allowed = set(ids)
-    relink = [
-        v for v in verdicts if v["verdict"] == "relink" and v["image_id"] in allowed
-    ]
-    unlink = [
-        v for v in verdicts if v["verdict"] == "unlink" and v["image_id"] in allowed
+    chosen = [
+        v
+        for v in verdicts
+        if v["verdict"] in ("relink", "unlink") and v["image_id"] in allowed
     ]
     with db._pair_transaction() as conn:
+        current = [
+            item
+            for item in chosen
+            if (
+                row := conn.execute(
+                    "SELECT prompt_id FROM generated_images WHERE id=?",
+                    (item["image_id"],),
+                ).fetchone()
+            )
+            and row[0] == item["linked_prompt"]
+        ]
+        relink = [item for item in current if item["verdict"] == "relink"]
         for item in relink:
             # A pair link records the old positive: it goes with the old link
             conn.execute(
@@ -192,8 +228,16 @@ def apply(db, verdicts, ids):
                 "UPDATE generated_images SET prompt_id=? WHERE id=? AND prompt_id=?",
                 (item["target"], item["image_id"], item["linked_prompt"]),
             )
-        removed = _delete_ids(conn, "generated_images", [v["image_id"] for v in unlink])
-    return {"relinked": len(relink), "unlinked": removed}
+        removed = _delete_ids(
+            conn,
+            "generated_images",
+            [item["image_id"] for item in current if item["verdict"] == "unlink"],
+        )
+    return {
+        "relinked": len(relink),
+        "unlinked": removed,
+        "skipped": len(chosen) - len(current),
+    }
 
 
 def backup_database(source, target):
@@ -253,6 +297,7 @@ def main(argv=None, out=sys.stdout):
             finally:
                 db.close_all()
         _report(verdicts, args.json, out)
+        out.write(APPLY_EFFECTS)
         out.write("Dry run: nothing was changed.\n")
         return 0
 
@@ -268,7 +313,8 @@ def main(argv=None, out=sys.stdout):
     finally:
         db.close_all()
     out.write(
-        f"Applied: {result['relinked']} relinked, {result['unlinked']} unlinked\n"
+        f"Applied: {result['relinked']} relinked, {result['unlinked']} unlinked, "
+        f"{result['skipped']} skipped (link changed since review)\n"
     )
     return 0
 

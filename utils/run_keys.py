@@ -4,9 +4,14 @@ A PromptManager node registers the text it executed under a *run key*: a digest
 of the node and everything upstream of it in the queued API graph. The image
 embeds the same graph, so the image monitor can compute the same key for the
 image's positive prompt node. Equal keys mean the node ran with exactly the
-inputs (and upstream nodes) that produced this image. That is also the identity
-ComfyUI's own output cache uses: a node whose upstream is unchanged is served
-from the cache, so a re-run of an unchanged upstream reproduces the same text.
+inputs (and upstream nodes) that produced this image.
+
+Equal keys do not always mean equal text. ComfyUI's cache signature also folds
+in each node's ``IS_CHANGED``, which the key cannot see: an upstream node that
+forces a re-run (a random line, an "always run" LLM) can give two runs one key
+and two texts. The key is therefore never used alone: the monitor also requires
+the entry to come from the run the snapshot taken when the image appeared names
+(``PromptTracker.pop_for_key``, ``ImageGenerationHandler._find_prompt_from_run``).
 
 Pure functions; the only host dependency (the executing run id) is optional.
 """
@@ -23,20 +28,27 @@ except ImportError:
 RUN_KEY_VERSION = 1
 
 
+def is_link(value: Any) -> bool:
+    """ComfyUI's own test (``comfy_execution.graph_utils.is_link``), exactly.
+
+    A two-item list of a ``str`` node id and an ``int`` or ``float`` slot (a
+    ``bool`` slot passes too, as it does in ComfyUI). Tuples are values.
+    """
+    if not isinstance(value, list):
+        return False
+    if len(value) != 2:
+        return False
+    if not isinstance(value[0], str):
+        return False
+    if not isinstance(value[1], int) and not isinstance(value[1], float):
+        return False
+    return True
+
+
 def _links(inputs: Any) -> List[str]:
     if not isinstance(inputs, dict):
         return []
-    found = []
-    for value in inputs.values():
-        if (
-            isinstance(value, (list, tuple))
-            and len(value) == 2
-            and isinstance(value[0], (str, int))
-            and isinstance(value[1], int)
-            and not isinstance(value[1], bool)
-        ):
-            found.append(str(value[0]))
-    return found
+    return [value[0] for value in inputs.values() if is_link(value)]
 
 
 def prompt_node_key(graph: Any, node_id: Any) -> Optional[str]:
@@ -79,8 +91,9 @@ def prompt_node_key(graph: Any, node_id: Any) -> Optional[str]:
 def image_run_keys(metadata: Any) -> Dict[str, str]:
     """``{node_id: run key}`` for each positive PromptManager node of an image.
 
-    Empty without an embedded API graph: an image without one can never be
-    proven to belong to a tracked run.
+    Empty without an embedded API graph, and empty when any positive node has
+    no key: one unkeyable node must not leave another looking like the only
+    positive prompt (a two-pass workflow would link the wrong pass).
     """
     graph = metadata.get("prompt") if isinstance(metadata, dict) else None
     if isinstance(graph, str):
@@ -93,8 +106,9 @@ def image_run_keys(metadata: Any) -> Dict[str, str]:
     keys = {}
     for node_id in run_prompt_nodes(graph):
         key = prompt_node_key(graph, node_id)
-        if key is not None:
-            keys[node_id] = key
+        if key is None:
+            return {}
+        keys[node_id] = key
     return keys
 
 

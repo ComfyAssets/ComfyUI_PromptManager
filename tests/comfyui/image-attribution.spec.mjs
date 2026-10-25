@@ -37,7 +37,7 @@ function graph({ kind = 'PromptManagerPair', text = '', prepend = '', llm = '', 
     return nodes;
 }
 
-async function saved(request, prompt) {
+async function saved(request, prompt, history = {}) {
     const id = randomUUID();
     const response = await request.post('/prompt', { data: { prompt, prompt_id: id } });
     expect(response.ok()).toBe(true);
@@ -48,6 +48,7 @@ async function saved(request, prompt) {
     }, { timeout: 15000 }).toBe(true);
     const [image] = item.outputs['70'].images;
     expect(image.type).toBe('output');
+    history.item = item;
     return image.filename;
 }
 
@@ -62,11 +63,19 @@ async function monitoring(execution, enabled) {
     expect((await response.json()).monitoring).toBe(enabled);
 }
 
+async function cacheMode(execution, mode) {
+    expect((await execution.request.post('/pm_execution_fixture/cache', { data: { mode } })).ok()).toBe(true);
+}
+
 test.beforeEach(async ({ execution }) => {
     expect((await execution.request.post('/pm_execution_fixture/metadata', { data: { disabled: false } })).ok()).toBe(true);
+    await cacheMode(execution, 'CLASSIC');  // keeps the re-run's PromptManager node cached
     await monitoring(execution, true);
 });
-test.afterEach(async ({ execution }) => { await monitoring(execution, false); });
+test.afterEach(async ({ execution }) => {
+    await monitoring(execution, false);
+    await cacheMode(execution, 'RAM_PRESSURE');
+});
 
 test('an output whose positive is only linked prepend text stays unlinked, never given an earlier prompt', async ({ execution }, testInfo) => {
     const tag = `${testInfo.project.name} ${randomUUID()}`;
@@ -89,9 +98,13 @@ test('an output whose positive is only linked prepend text stays unlinked, never
     const state = await readLinks(execution.databasePath, [orphan], [prepended]);
     expect(state).toEqual({ links: { [orphan]: null }, stored: { [prepended]: false } });
 
-    // Only the sampler seed changes: the PromptManager node may be served from the
-    // cache without running, and its unchanged upstream still proves the prompt.
+    // Only the sampler seed changes: the PromptManager node is served from the cache
+    // without running (the host says so), so no queue entry exists for this run and
+    // only the snapshot's run match can link it.
+    const rerunHistory = {};
     const rerun = await saved(execution.request, { ...llmGraph, '40': { ...llmGraph['40'],
-        inputs: { ...llmGraph['40'].inputs, seed: 2 } } });
+        inputs: { ...llmGraph['40'].inputs, seed: 2 } } }, rerunHistory);
+    const cached = rerunHistory.item.status.messages.find(([kind]) => kind === 'execution_cached');
+    expect(cached?.[1].nodes).toEqual(expect.arrayContaining(['11', '20']));
     await linkedTo(execution, rerun, llmText);
 });

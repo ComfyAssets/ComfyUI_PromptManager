@@ -1654,7 +1654,9 @@ class AdminRoutesMixin:
         a dict.
         """
         if not metadata:
-            return None
+            # No prompt metadata (--disable-metadata, bare savers): only the
+            # recorded run can say which prompt made it (#342)
+            return self._link_recorded_run(media_file, {}, detailed)
         canonical = dict(metadata)
         for key in ("prompt", "workflow"):
             if isinstance(canonical.get(key), str):
@@ -1664,7 +1666,7 @@ class AdminRoutesMixin:
                     # Preserve malformed metadata for conservative resolver rejection.
                     pass
         if not canonical.get("prompt") and not canonical.get("parameters"):
-            return None
+            return self._link_recorded_run(media_file, canonical, detailed)
         _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
         if blank_positive(resolution):
@@ -1698,7 +1700,7 @@ class AdminRoutesMixin:
             # Graphs without a recognized sampler keep the legacy extractor below.
             prompt_text = self._graph_prompt_text(metadata)
             if not prompt_text:
-                linked = self._link_recorded_run(media_file, canonical)
+                linked = self._link_recorded_run(media_file, canonical, detailed)
                 if linked is not None:
                     return linked
                 return "unresolved" if unchoosable else resolution["state"]
@@ -1724,12 +1726,13 @@ class AdminRoutesMixin:
             return status
         return {"status": status, "title": self._scan_title(media_file, prompt_text)}
 
-    def _link_recorded_run(self, media_file, canonical):
+    def _link_recorded_run(self, media_file, canonical, detailed=False):
         """Link a file recorded history attributes to one stored prompt (#342).
 
-        Returns the scan status, or None when history names no single stored
+        Returns the scan status (with ``detailed``, a stored or linked file's
+        ``{"status", "title"}``), or None when history names no single stored
         prompt for the file (``database.run_attribution``). Never creates a
-        prompt.
+        prompt. Works without any prompt metadata in the file.
         """
         try:
             prompt_id = stored_run_prompt(
@@ -1749,7 +1752,14 @@ class AdminRoutesMixin:
         except Exception as e:
             self.logger.error(f"Failed to link {media_file.name} from history: {e}")
             return "found"
-        return "linked" if image_id else "unchanged"
+        status = "linked" if image_id else "unchanged"
+        if not detailed or status not in SCAN_TITLED_DETAILS:
+            return status
+        prompt = self.db.get_prompt_by_id(prompt_id) or {}
+        return {
+            "status": status,
+            "title": self._scan_title(media_file, prompt.get("text") or ""),
+        }
 
     def _scan_title(self, media_file, text):
         """The linked prompt's Library title (its stored title, else ``text``'s

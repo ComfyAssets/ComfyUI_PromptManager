@@ -510,5 +510,119 @@ class TestRunKeys(unittest.TestCase):
         self.assertIsNone(prompt_node_key(chain, "0"))
 
 
+class TestReviewFindings(MonitorCase, NodeCase):
+    """Final-review findings M1-M4 (#344)."""
+
+    def test_m1_a_positive_node_without_a_key_makes_the_image_unkeyable(self):
+        graph = llm_text_graph()
+        graph["30"] = {
+            "class_type": "PromptManager",
+            "inputs": {"text": ["missing", 0], "clip": ["4", 1]},
+        }
+        graph["31"] = {
+            "class_type": "KSampler",
+            "inputs": {**graph["3"]["inputs"], "positive": ["30", 0]},
+        }
+        self.assertIsNone(prompt_node_key(graph, "30"))
+        self.assertEqual(image_run_keys({"prompt": graph}), {})
+        prompt_id = self.save(LLM_TEXT)
+        self.tracker.set_current_prompt(
+            LLM_TEXT,
+            {"prompt_id": prompt_id},
+            run_key=prompt_node_key(graph, "18:35"),
+            run_id="run-1",
+        )
+        self.assertIsNone(self.process({"prompt": graph}))
+
+    def test_m2_links_are_exactly_comfyui_is_link(self):
+        from utils.run_keys import _links
+
+        inputs = {
+            "string_slot_int": ["7", 0],
+            "string_slot_float": ["7", 0.0],
+            "string_slot_bool": ["7", True],  # bool is an int to ComfyUI too
+            "int_source": [7, 0],
+            "tuple": ("7", 0),
+            "three": ["7", 0, 1],
+            "slot_text": ["7", "0"],
+        }
+        self.assertEqual(sorted(_links(inputs)), ["7", "7", "7"])
+        widget = issue_graph()
+        widget["18:17"]["inputs"]["size"] = [512, 768]  # a value, not a link
+        self.assertIsNotNone(prompt_node_key(widget, "18:35"))
+        floated = issue_graph()
+        floated["18:35"]["inputs"]["prepend_text"] = ["18:13", 0.0]
+        changed = copy.deepcopy(floated)
+        changed["18:17"]["inputs"]["value"] = "another instruction"
+        self.assertNotEqual(
+            prompt_node_key(floated, "18:35"), prompt_node_key(changed, "18:35")
+        )
+
+    def _failing_save(self, node):
+        def explode(*args, **kwargs):
+            raise RuntimeError("database is locked")
+
+        node.db = mock.Mock(wraps=self.db)
+        for name in ("save_prompt", "save_prompt_pair", "get_prompt_by_hash"):
+            setattr(node.db, name, mock.Mock(side_effect=explode))
+        return node
+
+    def test_m3_a_failed_save_takes_over_its_run_key(self):
+        graph = llm_text_graph()
+        key = prompt_node_key(graph, "18:35")
+        older = self.save("previous run text")
+        self.tracker.set_current_prompt(
+            "previous run text", {"prompt_id": older}, run_key=key, run_id="run-1"
+        )
+        node = self._failing_save(self.node(PromptManager))
+        with mock.patch("prompt_manager_base.executing_run_id", return_value="run-2"):
+            node.encode_prompt(
+                self.clip(), "new run text", prompt=graph, unique_id="18:35"
+            )
+        latest, run_id, _count = self.tracker.keyed_snapshot()[key]
+        self.assertTrue(latest.get("placeholder"))
+        self.assertEqual(run_id, "run-2")
+        self.assertIsNone(self.process({"prompt": graph}))
+
+    def test_m3_a_failed_pair_save_takes_over_its_run_key(self):
+        graph = issue_graph(text="typed")
+        key = prompt_node_key(graph, "18:35")
+        node = self._failing_save(self.node(PromptManagerPair))
+        with self.assertLogs("test.prompt_attribution.node", "WARNING"):
+            node.encode_prompt(self.clip(), "typed", prompt=graph, unique_id="18:35")
+        self.assertTrue(self.tracker.keyed_snapshot()[key][0].get("placeholder"))
+
+    def test_m3_a_failed_text_node_save_takes_over_its_run_key(self):
+        graph = issue_graph()
+        graph["18:35"] = {
+            "class_type": "PromptManagerText",
+            "inputs": {"text": "typed"},
+        }
+        graph["40"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": ["18:35", 0], "clip": ["4", 1]},
+        }
+        graph["3"]["inputs"]["positive"] = ["40", 0]
+        node = self._failing_save(self.node(PromptManagerText))
+        with mock.patch.object(
+            node, "_track_prompt_execution", side_effect=RuntimeError("boom")
+        ):
+            node.process_text("typed", prompt=graph, unique_id="18:35")
+        key = prompt_node_key(graph, "18:35")
+        self.assertTrue(self.tracker.keyed_snapshot()[key][0].get("placeholder"))
+
+    def test_m4_a_placeholder_never_falls_through_to_history(self):
+        graph = llm_text_graph()
+        key = prompt_node_key(graph, "18:35")
+        self.tracker.mark_empty(key, "run-1", push_to_queue=False)
+        with mock.patch.object(
+            self.handler, "_history_prompt", return_value=99
+        ) as history:
+            self.assertIsNone(self.process({"prompt": graph}))  # snapshot form
+            self.tracker.mark_empty(key, "run-2", push_to_queue=True)
+            self.assertIsNone(self.process({"prompt": graph}))  # popped form
+        history.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
