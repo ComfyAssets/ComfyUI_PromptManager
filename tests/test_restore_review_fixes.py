@@ -70,14 +70,20 @@ class TestPostPublishSteps(RestoreTestCase):
         self.save("old")
         old_db = self.api.db
         body = await self.preview(self.upload(["restored"]))
-        with patch.object(old_db, "close_all", side_effect=RuntimeError("close")):
-            started = await self.apply(body["token"])
-            job = await self.finish(started["job"]["id"])
-        self.assertEqual(job.state, "finished", job.log)
-        self.assertIsNot(self.api.db, old_db)
-        self.assertEqual(
-            [p["text"] for p in self.api.db.search_prompts()], ["restored"]
-        )
+        try:
+            with patch.object(old_db, "close_all", side_effect=RuntimeError("close")):
+                started = await self.apply(body["token"])
+                job = await self.finish(started["job"]["id"])
+            self.assertEqual(job.state, "finished", job.log)
+            self.assertIsNot(self.api.db, old_db)
+            self.assertEqual(
+                [p["text"] for p in self.api.db.search_prompts()], ["restored"]
+            )
+        finally:
+            # The patched close left the old object's executor-thread
+            # connections open; close them before teardown removes the files
+            # (once the object is collected, close_all_instances misses it).
+            await asyncio.get_running_loop().run_in_executor(None, old_db.close_all)
 
     async def test_job_finishes_when_opening_the_new_object_fails(self):
         self.save("old")
