@@ -37,7 +37,8 @@ runner runs); a refused start keeps it. The runner:
 
 The job log names the backup by its file name only, and the job says "No
 safety backup" when none was taken. Apply errors: ``invalid-request`` (400),
-``plan-expired`` (410: unknown, expired or forgotten after a restart),
+``apply-failed`` (500: nothing started), ``plan-expired`` (410: unknown,
+expired or forgotten after a restart),
 ``plan-used`` (409, with the job that applied it), ``storage-changed`` (409:
 a restore replaced the database since the review) and ``busy`` (409).
 """
@@ -512,7 +513,9 @@ class MaintenanceRoutesMixin:
             )
         except (OSError, sqlite3.Error):
             self.logger.exception("Could not measure the disk space for an apply")
-            return _failure(APPLY_FAILED, 500)
+            # Coded: the workspace tells the server's own refusal (nothing
+            # started) from a proxy's 5xx (the job may have started).
+            return _failure(APPLY_FAILED, 500, "apply-failed")
         if short is not None:
             # Refused before any job starts: nothing fails halfway for space.
             return _failure(short_space_message(short), 507, "insufficient-space")
@@ -676,7 +679,13 @@ def backup_note(backup):
 
 
 def _fail_job(job, code, message):
-    """End ``job`` failed with ``message`` (one error row) and its code."""
+    """End ``job`` failed with ``message`` (one error row) and its code.
+
+    The code is also the job's ``scope["failure"]``, so Activity can offer
+    Review again for a plan the library overtook.
+    """
+    if code:
+        job.scope["failure"] = code
     job.record("errors", {"path": "", "detail": message}, f"! {message}")
     job.update(status_line=message)
     job.publish({"type": "error", "code": code, "message": message})

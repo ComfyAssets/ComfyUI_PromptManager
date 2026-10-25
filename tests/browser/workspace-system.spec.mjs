@@ -173,8 +173,8 @@ test('Run health checks opens Health report and updates metric 4', async ({ page
     await page.goto(`${workspace}#/system/maintenance`);
     const layout = layoutOf(page);
     await expect(layout.locator(':scope > .notice h2')).toHaveText('Check first. Review changes. Then apply.');
-    // The rest of Maintenance is still the existing tools' (D94).
-    await expect(layout.locator(':scope > section.handoff h2')).toHaveText('Your current tools are ready');
+    // Maintenance is native (S7): its two surfaces follow the notice.
+    await expect(layout.locator(':scope > section.surface > h2')).toHaveText(['Database', 'Images & cache']);
     const run = layout.getByRole('button', { name: 'Run health checks', exact: true });
     await run.click();
     const dialog = page.locator('dialog#modal[open]');
@@ -204,8 +204,11 @@ test('Run health checks opens Health report and updates metric 4', async ({ page
         .toHaveText(['1 link needs review', 'Passed', 'Not available']);
     await expect(dialog.locator('.operation h3').filter({ hasText: 'Missing files' }))
         .toHaveText(['Missing files · output', 'Missing files · input', 'Missing files · unmounted-drive']);
-    // Review missing links goes to Maintenance, where the cleanup's existing tool is linked.
+    // Review missing links reviews a fresh Missing-file links plan (S7); nothing is cleaned up.
     await dialog.getByRole('button', { name: 'Review missing links', exact: true }).click();
+    await expect(dialog.locator('#modal-title')).toHaveText('Review maintenance plan');
+    await expect(dialog.locator('#modal-body > h3')).toHaveText('Missing-file links');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.locator('dialog#modal[open]')).toHaveCount(0);
     await expect(page).toHaveURL(`${workspace}#/system/maintenance`);
     await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Overview', exact: true }).click();

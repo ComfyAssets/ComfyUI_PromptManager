@@ -344,7 +344,7 @@ test('unknown kinds get the generic view without the scan tiles', async () => {
         ['no_metadata', 'No usable metadata'], ['known', 'Already known']]);
     assert.deepEqual([...scan.openable].sort(), ['added', 'known']);
     assert.deepEqual([scan.log, scan.cancel], ['Scan log', 'Cancel scan']);
-    for (const kind of ['maintenance', '', 'constructor', '__proto__']) {
+    for (const kind of ['restore', '', 'constructor', '__proto__']) {
         const view = jobView(kind);
         assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [[], [], []]);
         assert.deepEqual([view.log, view.cancel], ['Job log', 'Cancel job']);
@@ -436,4 +436,17 @@ test('numbers group the way the server writes them, whatever the browser locale'
     } finally {
         Number.prototype.toLocaleString = original;
     }
+});
+
+test('a busy start names the job the server named, not the first running one (S7 review M9)', async () => {
+    const { createActivityStore } = await source;
+    const { world, ...deps } = harness();
+    const store = createActivityStore(deps);
+    const holder = 'b'.repeat(32);
+    // Two read jobs run side by side; the server says the second one holds the slot.
+    world.list = [summary(), summary({ id: holder, kind: 'duplicates', title: 'Find duplicate image files' })];
+    world.postError = Object.assign(apiError(409, 'busy', 'busy'),
+        { running: { id: holder, title: 'Find duplicate image files' } });
+    const busy = await store.start('duplicates');
+    assert.deepEqual([busy.busy.id, busy.busy.title], [holder, 'Find duplicate image files']);
 });

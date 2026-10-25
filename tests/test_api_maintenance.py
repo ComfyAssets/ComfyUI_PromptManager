@@ -950,6 +950,37 @@ class TestFinalReviewFixes(ApplyTestCase):
         self.assertEqual(reply["code"], "plan-used")
         self.assertEqual(self.api._jobs.list(), [])
 
+    async def test_an_apply_that_never_started_says_so_with_its_code(self):
+        """S7 review I1: the server's own pre-start failure is definitive, so
+        it carries a code the workspace can tell from a proxy's 5xx."""
+        from py.api import maintenance
+
+        self.save("Orphan")
+        plan = await self.preview("unused_components")
+        with patch.object(maintenance, "disk_plan", side_effect=OSError("disk")):
+            reply = await self.apply(plan["token"], 500)
+        self.assertEqual(reply["code"], "apply-failed")
+        self.assertEqual(reply["error"], maintenance.APPLY_FAILED)
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_a_failed_apply_names_its_failure_in_its_scope(self):
+        """S7 review M2: Activity offers Review again from the job's own record."""
+        orphan, soon = self.save("Orphan"), self.save("Soon a recipe")
+        plan = await self.preview("unused_components")
+        with self.api.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_library_state(prompt_id,title) VALUES(?,?)",
+                (soon, "Recipe"),
+            )
+        body = await self.apply(plan["token"])
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(
+            job.summary()["scope"],
+            {"operation": "unused_components", "failure": "plan-changed"},
+        )
+        self.assertIsNotNone(self.api.db.get_prompt_by_id(orphan))
+
     async def test_the_backup_decision_is_frozen_when_the_job_starts(self):
         PromptManagerConfig.SAFETY_BACKUP = False
         self.save("Orphan")

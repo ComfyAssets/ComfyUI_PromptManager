@@ -5,7 +5,7 @@
  * (`span.small#settings-status` + "Save preferences"). D92: no "Sample configuration" chip, the status copy is
  * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
  * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview (system-overview.mjs),
- * Appearance (system-appearance.mjs) and Sources & scans (system-sources.mjs) are native.
+ * Appearance (system-appearance.mjs), Sources & scans (system-sources.mjs) and Maintenance (system-maintenance.mjs) are native.
  *
  * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
@@ -14,16 +14,16 @@ import { createButton, createScope } from '../shared/toolkit/core.js';
 import { SYSTEM_SECTIONS, navigateTo } from './state.mjs';
 import { createSystemDrafts, DRAFT_DOMAINS } from './system-state.mjs';
 import { sectionNav } from './system-controls.mjs';
-import { healthNotice, mountOverview } from './system-overview.mjs';
+import { mountOverview } from './system-overview.mjs';
 import { mountAppearance } from './system-appearance.mjs';
 import { mountSources } from './system-sources.mjs';
+import { mountMaintenance } from './system-maintenance.mjs';
 import { busyToast } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { displayPreferences, readPreferences, reconcilePreferences, subscribePreferences, writePreferences } from './preferences.mjs';
 
 const SETTINGS_URL = '/prompt_manager/settings';
 const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existing administration' });
-const GALLERY = Object.freeze({ href: '/prompt_manager/gallery', label: 'Open existing image gallery' });
 /**
  * D94: where each section's capabilities live until its PR (the plan's legacy capability coverage): the admin page's
  * dashboard, Settings, Maintenance, Backup, Restore, Scan, Logs, Diagnostics and Auto-tag tools, and the gallery's
@@ -32,7 +32,6 @@ const GALLERY = Object.freeze({ href: '/prompt_manager/gallery', label: 'Open ex
 export const SECTION_HANDOFFS = Object.freeze({
     integrations: [ADMIN],
     tagging: [ADMIN],
-    maintenance: [ADMIN, GALLERY],
     backups: [ADMIN],
     diagnostics: [ADMIN],
 });
@@ -120,14 +119,14 @@ function markFailed(layout, store) {
 }
 
 /**
- * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), Sources & scans (S4 Task 11), and Maintenance's notice with "Run health checks" above the
- * hand-off to the maintenance tools that are not native yet (D123).
+ * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), Sources & scans (S4 Task 11) and
+ * Maintenance (S7 Task 19).
  */
 export const DELIVERED_SECTIONS = Object.freeze({
     overview: mountOverview,
     appearance: mountAppearance,
     sources: mountSources,
-    maintenance: (container, { api, activity, scope }) => [healthNotice({ api, activity, scope }), ...handoff('maintenance')],
+    maintenance: mountMaintenance,
 });
 
 /**

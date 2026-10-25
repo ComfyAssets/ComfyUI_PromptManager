@@ -32,8 +32,11 @@ function sseResponse(frames) {
 function load(file, className, fetchUrl, extra = {}, dom = elements()) {
     const timers = [];
     const notifications = [];
-    const storage = new Map([['pm_cached', '1'], ['userData', 'keep']]);
+    const storage = new Map([['pm_cached', '1'], ['userData', 'keep'], ['pm_workspace_theme', 'light'],
+        ['pm_update_notice_dismissed', '3.3.0']]);
     const localStorage = {
+        get length() { return storage.size; },
+        key: index => [...storage.keys()][index] ?? null,
         getItem: key => storage.get(key) ?? null,
         setItem: (key, value) => storage.set(key, String(value)),
         removeItem: key => storage.delete(key),
@@ -45,11 +48,12 @@ function load(file, className, fetchUrl, extra = {}, dom = elements()) {
         setTimeout: callback => timers.push(callback),
         confirm: () => true,
         localStorage,
-        Object: { ...Object, keys: target => (target === localStorage ? [...storage.keys()] : Object.keys(target)) },
         TextDecoder, TextEncoder, JSON,
         ApiClient: { fetchUrl },
         ...extra,
     });
+    // gallery.html loads cache-ownership.js before gallery.js (#222).
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../../web/js/cache-ownership.js'), 'utf8'), context);
     const source = fs.readFileSync(path.join(__dirname, `../../web/js/${file}`), 'utf8');
     const Page = vm.runInContext(`${source}\n${className};`, context, { filename: path.join(__dirname, `../../web/js/${file}`) });
     const page = Object.create(Page.prototype);
@@ -78,18 +82,68 @@ test('gallery cache clear reports a refused server clear and never claims succes
     assert.equal(storage.get('gallerySettings'), undefined); // thumbnailsGenerated is not reset
 });
 
-test('gallery cache clear still says so when the server clears', async () => {
-    const { page, dom, notifications, storage } = load('gallery.js', 'GalleryManager',
-        async () => jsonResponse(200, { success: true, cleared_count: 3 }));
+test('gallery cache clear says what it cleared and keeps preferences and other data (#222)', async () => {
+    const calls = [];
+    const { page, dom, notifications, storage } = load('gallery.js', 'GalleryManager', async url => {
+        calls.push(url);
+        return jsonResponse(200, { success: true, cleared_count: 3 });
+    });
     page.getSettings = () => ({ thumbnailsGenerated: true });
 
     await page.clearCache();
 
-    assert.deepEqual(notifications, [['success', 'PromptManager cache cleared successfully! Original images untouched.']]);
+    // The server's thumbnails are cleared by their own explicit call; nothing Prompt Manager owns is cached in this
+    // browser, so no browser entry is removed and the toast says exactly that.
+    assert.deepEqual(calls, ['/prompt_manager/images/clear-thumbnails']);
+    assert.deepEqual(notifications, [['success',
+        "Thumbnails cleared; original images untouched. Nothing of Prompt Manager's is cached in this browser."]]);
     assert.equal(dom.nodes.thumbnailStatus.textContent, 'Not generated');
     assert.equal(JSON.parse(storage.get('gallerySettings')).thumbnailsGenerated, false);
     assert.equal(storage.get('userData'), 'keep');
-    assert.equal(storage.has('pm_cached'), false);
+    assert.equal(storage.get('pm_cached'), '1');
+    assert.equal(storage.get('pm_workspace_theme'), 'light');
+    assert.equal(storage.get('pm_update_notice_dismissed'), '3.3.0');
+});
+
+test("gallery cache clear never deletes another tool's gallery or thumbnail caches (#222)", async () => {
+    const names = new Set(['comfy-gallery', 'thumbnail-cache']);
+    const caches = { keys: async () => [...names], delete: async name => names.delete(name) };
+    const { page, notifications } = load('gallery.js', 'GalleryManager',
+        async () => jsonResponse(200, { success: true }), { caches, window: { caches } });
+    page.getSettings = () => ({});
+
+    await page.clearCache();
+
+    assert.deepEqual([...names], ['comfy-gallery', 'thumbnail-cache']);
+    assert.equal(notifications.at(-1)[0], 'success');
+});
+
+test('gallery cache clear reports a lost server clear instead of success', async () => {
+    const { page, dom, notifications, storage } = load('gallery.js', 'GalleryManager', async () => {
+        throw new TypeError('Failed to fetch');
+    });
+    page.getSettings = () => ({ thumbnailsGenerated: true });
+    dom.getElementById('thumbnailStatus').textContent = 'Generated';
+
+    await page.clearCache();
+
+    assert.deepEqual(notifications, [['error', 'Thumbnails were not cleared: the server could not be reached.']]);
+    assert.equal(dom.nodes.thumbnailStatus.textContent, 'Generated');
+    assert.equal(storage.get('gallerySettings'), undefined);
+});
+
+test('gallery cache clear says so when browser storage is denied', async () => {
+    const denied = { get length() { throw new Error('SecurityError'); }, key() { throw new Error('SecurityError'); },
+        getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('SecurityError'); },
+        removeItem() { throw new Error('SecurityError'); } };
+    const { page, notifications } = load('gallery.js', 'GalleryManager',
+        async () => jsonResponse(200, { success: true }), { localStorage: denied });
+    page.getSettings = () => ({});
+
+    await page.clearCache();
+
+    assert.deepEqual(notifications, [['warning',
+        'Thumbnails cleared; original images untouched. This browser refused access to its storage, so nothing there was cleared.']]);
 });
 
 test('admin LoRA import shows a refusal frame and closes its modal', async () => {

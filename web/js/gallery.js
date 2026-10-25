@@ -2166,61 +2166,44 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
 
+            /**
+             * Clear cache (#222): the server's thumbnails by their own request, then only the browser entries Prompt
+             * Manager owns as a cache (cache-ownership.js; preferences and other tools' storage stay). Nothing is
+             * claimed that did not happen: a refused or lost server clear changes nothing here, and the toast says what
+             * the browser part removed, or that nothing of Prompt Manager's is cached, or that storage was refused.
+             */
             async clearCache() {
-                if (confirm('Clear PromptManager cache and thumbnails? This will NOT affect your original images.')) {
-                    try {
-                        // Clear only PromptManager-related browser caches (never touch user images)
-                        if ('caches' in window) {
-                            const cacheNames = await caches.keys();
-                            // Only clear caches that are specifically ours
-                            const ourCaches = cacheNames.filter(name => 
-                                name.includes('prompt-manager') || 
-                                name.includes('gallery') ||
-                                name.includes('thumbnail')
-                            );
-                            await Promise.all(ourCaches.map(name => caches.delete(name)));
-                        }
-                        
-                        // Clear only our localStorage entries (never touch user data)
-                        Object.keys(localStorage).forEach(key => {
-                            if (key.startsWith('gallery_cache_') || 
-                                key.startsWith('metadata_cache_') ||
-                                key.startsWith('promptManager_') ||
-                                key.startsWith('pm_')) {
-                                localStorage.removeItem(key);
-                            }
-                        });
-                        
-                        // Call backend to clear server-side thumbnails (only our generated thumbnails)
-                        try {
-                            const response = await ApiClient.fetchUrl('/prompt_manager/images/clear-thumbnails', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' }
-                            });
-                            
-                            if (!response.ok) {
-                                // Refused (a running job holds the thumbnails): say why and claim nothing.
-                                const data = await response.json().catch(() => ({}));
-                                this.showNotification(`Thumbnails were not cleared: ${data.error || `HTTP ${response.status}`}`, 'error');
-                                return;
-                            }
-                        } catch (e) {
-                            console.warn('Could not clear server thumbnails:', e);
-                            // Not a critical error - continue with local cleanup
-                        }
-                        
-                        // Update thumbnail status
-                        const settings = this.getSettings();
-                        settings.thumbnailsGenerated = false;
-                        localStorage.setItem('gallerySettings', JSON.stringify(settings));
-                        document.getElementById('thumbnailStatus').textContent = 'Not generated';
-                        
-                        this.showNotification('PromptManager cache cleared successfully! Original images untouched.', 'success');
-                    } catch (error) {
-                        console.error('Clear cache error:', error);
-                        this.showNotification('Failed to clear cache', 'error');
-                    }
+                if (!confirm('Clear PromptManager cache and thumbnails? This will NOT affect your original images.')) return;
+                let response;
+                try {
+                    response = await ApiClient.fetchUrl('/prompt_manager/images/clear-thumbnails', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                } catch (error) {
+                    console.warn('Could not clear server thumbnails:', error);
+                    this.showNotification('Thumbnails were not cleared: the server could not be reached.', 'error');
+                    return;
                 }
+                if (!response.ok) {
+                    // Refused (a running job holds the thumbnails): say why and claim nothing.
+                    const data = await response.json().catch(() => ({}));
+                    this.showNotification(`Thumbnails were not cleared: ${data.error || `HTTP ${response.status}`}`, 'error');
+                    return;
+                }
+                // Read through a getter: a browser that refuses storage throws on `localStorage` itself.
+                const browser = await window.CacheOwnership.clearOwned({ storage: () => localStorage,
+                    cacheStorage: 'caches' in window ? window.caches : null });
+                try {
+                    const settings = this.getSettings();
+                    settings.thumbnailsGenerated = false;
+                    localStorage.setItem('gallerySettings', JSON.stringify(settings));
+                } catch (error) {
+                    console.warn('Could not record the cleared thumbnails:', error);
+                }
+                document.getElementById('thumbnailStatus').textContent = 'Not generated';
+                this.showNotification(`Thumbnails cleared; original images untouched. ${window.CacheOwnership.clearMessage(browser)}`,
+                    browser.partial ? 'warning' : 'success');
             }
 
             async rescanFolder() {

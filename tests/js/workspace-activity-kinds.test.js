@@ -126,7 +126,7 @@ test('held legacy jobs read "(admin page)" with no outcomes', async () => {
 
 test('unknown and generic kinds show no tiles of another kind', async () => {
     const { kindOf, viewOf } = await source;
-    for (const kind of ['maintenance', '', 'constructor', '__proto__', 'health']) {
+    for (const kind of ['restore', '', 'constructor', '__proto__', 'health']) {
         const view = kindOf(kind);
         assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [[], [], []], kind);
         assert.deepEqual([view.log, view.cancelLabel], ['Job log', 'Cancel job']);
@@ -145,4 +145,83 @@ test('unknown and generic kinds show no tiles of another kind', async () => {
     assert.deepEqual(partial.outcomes, [['added', 'Added to Library'], ['errors', 'Errors']]);
     assert.deepEqual([...partial.openable], ['added']);
     assert.equal(partial.log, 'Scan log');
+});
+
+// System S7 (carry-over from S6): the maintenance jobs read as themselves in Activity, with their own counters, a
+// report like every job, and Cancel only when the server can stop them.
+test('a maintenance apply shows its title, changed / protected / errors and no Cancel', async () => {
+    const { kindOf, viewOf, canCancel } = await source;
+    const { finishToast, startToast, pillParts, outcomeLine } = await store;
+    const apply = job({ kind: 'maintenance', title: 'Duplicate prompt text', progress: 0, processed: 0, total: 0,
+        counters: { changed: 3, protected: 1, errors: 0 }, scope: { operation: 'duplicate_prompts' }, cancellable: false });
+    const view = kindOf('maintenance');
+    assert.equal(viewOf(apply), view);
+    assert.deepEqual(view.tiles, [['changed', 'Changed', 'added'], ['protected', 'Protected', ''], ['errors', 'Errors', 'bad']]);
+    assert.deepEqual(view.outcomes, [['changed', 'Changed'], ['errors', 'Errors'], ['protected', 'Protected']]);
+    assert.deepEqual([...view.openable], []);
+    assert.deepEqual([view.log, view.cancelLabel], ['Maintenance log', 'Cancel job']);
+    assert.equal(canCancel(apply), false);
+    // Indeterminate while it runs: the title alone, never a made-up percentage.
+    assert.equal(pillParts(apply).text, 'Duplicate prompt text');
+    assert.equal(startToast(apply), 'Duplicate prompt text started.');
+    assert.equal(outcomeLine(apply), '3 changed · 0 errors');
+    assert.equal(finishToast({ ...apply, state: 'finished' }), 'Duplicate prompt text finished · 3 changed');
+    // A failed apply says why, so plan-changed asks for a new review.
+    const changed = 'The library changed since the review; nothing was changed. Review the plan again.';
+    assert.equal(finishToast({ ...apply, state: 'failed', status_line: changed, counters: { changed: 0, protected: 1, errors: 1 } }),
+        `Duplicate prompt text failed · ${changed}`);
+    assert.equal(finishToast({ ...apply, state: 'failed', status_line: '' }), 'Duplicate prompt text failed · 0 errors');
+    // Store each workflow once is a cancellable maintenance job: Cancel shows while it runs.
+    const migration = { ...apply, title: 'Store each workflow once', cancellable: true };
+    assert.equal(canCancel(migration), true);
+    assert.equal(finishToast({ ...migration, state: 'cancelled' }), 'Store each workflow once cancelled · 3 changed');
+});
+
+test('a duplicate search counts groups, opens their first copy and cancels as a search', async () => {
+    const { kindOf, viewOf, canCancel } = await source;
+    const { finishToast, startToast, pillParts, outcomeLine } = await store;
+    const find = job({ kind: 'duplicates', title: 'Find duplicate image files', processed: 5, total: 10, progress: 50,
+        counters: { groups_found: 0 }, scope: { output_folders: 2 } });
+    const view = kindOf('duplicates');
+    assert.equal(viewOf(find), view);
+    assert.deepEqual(view.tiles, [['groups_found', 'Groups found', '']]);
+    assert.deepEqual(view.outcomes, [['groups_found', 'Groups found']]);
+    assert.deepEqual([...view.openable], ['groups_found']);
+    assert.deepEqual([view.log, view.cancelLabel], ['Search log', 'Cancel search']);
+    assert.equal(canCancel(find), true);
+    assert.equal(pillParts(find).text, 'Finding duplicates · 50% · 5 / 10');
+    assert.equal(startToast(find), 'Duplicate search started.');
+    assert.equal(view.scope(find), '2 output folders');
+    const found = { ...find, state: 'finished', counters: { groups_found: 12 } };
+    assert.equal(outcomeLine(found), '12 groups found');
+    assert.equal(finishToast(found), 'Duplicate search finished · 12 groups found');
+    assert.equal(finishToast({ ...find, state: 'cancelled' }), 'Duplicate search cancelled · 0 groups found');
+    assert.equal(finishToast({ ...found, counters: { groups_found: 1 } }), 'Duplicate search finished · 1 group found');
+});
+
+test('a duplicate cleanup counts removed, kept and errors and cannot be cancelled', async () => {
+    const { kindOf, viewOf, canCancel } = await source;
+    const { finishToast, pillParts, outcomeLine } = await store;
+    const cleanup = job({ kind: 'duplicate_cleanup', title: 'Remove duplicate image files', processed: 1, total: 4,
+        progress: 25, counters: { removed: 1, kept: 0, errors: 0 }, cancellable: false });
+    const view = kindOf('duplicate_cleanup');
+    assert.equal(viewOf(cleanup), view);
+    assert.deepEqual(view.tiles, [['removed', 'Removed', 'added'], ['kept', 'Kept', ''], ['errors', 'Errors', 'bad']]);
+    assert.deepEqual(view.outcomes, [['removed', 'Removed'], ['errors', 'Errors'], ['kept', 'Kept']]);
+    assert.deepEqual([...view.openable], ['kept']);
+    assert.deepEqual([view.log, view.cancelLabel], ['Cleanup log', 'Cancel job']);
+    assert.equal(canCancel(cleanup), false);
+    assert.equal(pillParts(cleanup).text, 'Removing duplicate files · 25% · 1 / 4');
+    assert.equal(outcomeLine(cleanup), '1 removed · 0 errors');
+    assert.equal(finishToast({ ...cleanup, state: 'finished', counters: { removed: 3, kept: 1, errors: 1 } }),
+        'Duplicate cleanup finished · 3 removed · 1 error');
+});
+
+test('a failed duplicate cleanup says the server reason (S7 review M3)', async () => {
+    const { finishToast } = await store;
+    const reason = 'The sources changed since the search. Search for duplicates again.';
+    const failed = job({ kind: 'duplicate_cleanup', title: 'Remove duplicate image files', state: 'failed', status_line: reason,
+        counters: { removed: 0, kept: 0, errors: 1 }, cancellable: false });
+    assert.equal(finishToast(failed), `Duplicate cleanup failed · ${reason}`);
+    assert.equal(finishToast({ ...failed, status_line: '' }), 'Duplicate cleanup failed · 0 removed · 1 error');
 });
