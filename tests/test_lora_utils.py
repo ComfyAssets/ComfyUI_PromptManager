@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.response
@@ -686,7 +687,7 @@ class TestRedirectsAreRefused(unittest.TestCase):
             if host not in CIVITAI_HOSTS:
                 self.assertIsNone(req.get_header("Authorization"))
 
-    def test_redirect_to_civitai_is_not_followed_either(self):
+    def test_redirect_to_civitai_is_followed_without_the_key(self):
         handler = _FakeHTTPSHandler("https://image.civitai.com/other.png")
         opener = lora_utils._build_opener(handler)
 
@@ -695,8 +696,199 @@ class TestRedirectsAreRefused(unittest.TestCase):
                 "https://civitai.com/api/download/1", self.tmpdir / "x.jpg", "key"
             )
 
+        # image.civitai.com redirects again (the fake handler always does),
+        # so the hop limit ends this chain; the first request alone had the key.
         self.assertIsNone(result)
+        self.assertEqual(len(handler.requests), lora_utils.MAX_CIVITAI_REDIRECTS + 1)
+        self.assertEqual(handler.requests[0].get_header("Authorization"), "Bearer key")
+        for req in handler.requests[1:]:
+            self.assertIsNone(req.get_header("Authorization"))
+
+
+class _ChainHTTPSHandler(urllib.request.HTTPSHandler):
+    """Serves ``routes`` (url -> (status, Location or None)) through a real
+    urllib opener, recording every request; an unknown URL answers 404."""
+
+    def __init__(self, routes):
+        super().__init__()
+        self.routes = routes
+        self.requests = []
+
+    def https_open(self, req):
+        self.requests.append(req)
+        status, location = self.routes.get(req.full_url, (404, None))
+        if location is not None:
+            headers = email.message_from_string(f"Location: {location}\n")
+            resp = urllib.response.addinfourl(
+                BytesIO(b""), headers, req.full_url, status
+            )
+            resp.msg = "Redirect"
+            return resp
+        body = _png_bytes() if status == 200 else b""
+        headers = email.message_from_string("Content-Type: image/png\n")
+        resp = urllib.response.addinfourl(BytesIO(body), headers, req.full_url, status)
+        resp.msg = "OK" if status == 200 else "Not Found"
+        return resp
+
+    def http_open(self, req):  # a plain-HTTP hop must never be requested
+        self.requests.append(req)
+        raise AssertionError(f"plain HTTP requested: {req.full_url}")
+
+
+START = "https://image.civitai.com/xG1/abc/width=450/1.jpeg"
+BLOB = "https://blobs-b2.civitai.com/file/civitai-media-cache/1/original"
+
+
+class TestCivitaiRedirects(unittest.TestCase):
+    """#337: image.civitai.com now redirects to blobs-b2.civitai.com.
+
+    A redirect is followed only over HTTPS to civitai.com or a subdomain of
+    it, at most MAX_CIVITAI_REDIRECTS hops, and never with the API key.
+    """
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.target = self.tmpdir / "x.jpg"
+
+    def _download(self, routes, url=START, api_key="secret-key"):
+        handler = _ChainHTTPSHandler(routes)
+        opener = lora_utils._build_opener(handler)
+        with patch.object(lora_utils, "_opener", opener):
+            result = lora_utils._download_one(url, self.target, api_key)
+        return result, handler.requests
+
+    def _refused(self, location, status=302):
+        result, requests = self._download({START: (status, location)})
+        self.assertIsNone(result)
+        self.assertEqual([r.full_url for r in requests], [START])
+        self.assertFalse(self.target.exists())
+
+    def test_redirect_to_an_allowed_host_succeeds_without_the_key(self):
+        for status in (301, 302, 303, 307, 308):
+            with self.subTest(status=status):
+                if self.target.exists():
+                    os.remove(self.target)
+                result, requests = self._download(
+                    {START: (status, BLOB), BLOB: (200, None)}
+                )
+
+                self.assertIsNotNone(result)
+                self.assertTrue(self.target.exists())
+                self.assertEqual([r.full_url for r in requests], [START, BLOB])
+                self.assertEqual(
+                    requests[0].get_header("Authorization"), "Bearer secret-key"
+                )
+                self.assertIsNone(requests[1].get_header("Authorization"))
+                # urllib adds Host itself; nothing else rides along.
+                self.assertEqual(
+                    [h for h in requests[1].header_items() if h[0] != "Host"],
+                    [("User-agent", "ComfyUI-PromptManager/1.0")],
+                )
+
+    def test_a_relative_location_resolves_on_the_same_host(self):
+        follow = "https://image.civitai.com/elsewhere/1.jpeg"
+        result, requests = self._download(
+            {START: (302, "/elsewhere/1.jpeg"), follow: (200, None)}
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual([r.full_url for r in requests], [START, follow])
+        self.assertIsNone(requests[1].get_header("Authorization"))
+
+    def test_a_plain_http_redirect_is_refused(self):
+        self._refused("http://blobs-b2.civitai.com/file/1")
+
+    def test_a_redirect_to_another_host_is_refused(self):
+        self._refused("https://evil.example/steal")
+
+    def test_lookalike_hosts_are_refused(self):
+        for location in (
+            "https://civitai.com.evil.example/x",
+            "https://evilcivitai.com/x",
+            "https://civitai.com@evil.example/x",
+            "https://user:pw@blobs-b2.civitai.com/x",
+            "https://blobs-b2.civitai.com:8443/x",
+            "https://civitai.co/x",
+            "//evil.example/x",
+            "ftp://blobs-b2.civitai.com/x",
+            "https://[::1]/x",
+        ):
+            with self.subTest(location=location):
+                self._refused(location)
+
+    def test_a_redirect_without_a_location_is_refused(self):
+        result, requests = self._download({START: (302, "")})
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), 1)
+
+    def test_the_hop_limit_is_enforced(self):
+        limit = lora_utils.MAX_CIVITAI_REDIRECTS
+        self.assertEqual(limit, 3)
+        hops = [f"https://blobs-b2.civitai.com/hop/{i}" for i in range(limit + 1)]
+
+        # Exactly ``limit`` redirects: followed.
+        routes = {START: (302, hops[0])}
+        for i in range(limit - 1):
+            routes[hops[i]] = (302, hops[i + 1])
+        routes[hops[limit - 1]] = (200, None)
+        result, requests = self._download(routes)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(requests), limit + 1)
+        self.assertTrue(
+            all(r.get_header("Authorization") is None for r in requests[1:])
+        )
+
+        # One more redirect: refused, and the next hop is never requested.
+        os.remove(self.target)
+        routes[hops[limit - 1]] = (302, hops[limit])
+        routes[hops[limit]] = (200, None)
+        result, requests = self._download(routes)
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), limit + 1)
+        self.assertNotIn(hops[limit], [r.full_url for r in requests])
+        self.assertFalse(self.target.exists())
+
+    def test_a_redirect_loop_ends_at_the_hop_limit(self):
+        result, requests = self._download({START: (302, START)})
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), lora_utils.MAX_CIVITAI_REDIRECTS + 1)
+
+    def test_size_cap_applies_after_a_redirect(self):
+        with patch.object(lora_utils, "MAX_CIVITAI_DOWNLOAD_BYTES", 10):
+            result, requests = self._download({START: (302, BLOB), BLOB: (200, None)})
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), 2)
+        self.assertFalse(self.target.exists())
+
+    def test_an_error_after_a_redirect_fails_cleanly(self):
+        result, requests = self._download({START: (302, BLOB)})  # BLOB is 404
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), 2)
+        self.assertFalse(self.target.exists())
+
+    def test_the_opener_itself_still_refuses_every_redirect(self):
+        handler = _ChainHTTPSHandler({START: (302, BLOB), BLOB: (200, None)})
+        opener = lora_utils._build_opener(handler)
+        req = urllib.request.Request(START, headers={"Authorization": "Bearer k"})
+
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            opener.open(req, timeout=5)
+        caught.exception.close()
         self.assertEqual(len(handler.requests), 1)
+
+    def test_redirect_logs_never_carry_the_key_or_the_query(self):
+        signed = BLOB + "?X-Amz-Signature=sig123"
+        with self.assertLogs("prompt_manager.lora_utils", level="DEBUG") as logs:
+            self._download(
+                {START: (302, "https://evil.example/x?token=t0k3n")},
+                api_key="secret-key",
+            )
+            self._download({START: (302, signed), signed: (200, None)})
+        text = "\n".join(logs.output)
+        self.assertNotIn("secret-key", text)
+        self.assertNotIn("t0k3n", text)
+        self.assertNotIn("sig123", text)
 
 
 class TestDownloadCivitaiImages(unittest.TestCase):

@@ -100,6 +100,25 @@ def _import_line(result, skipped):
     return " · ".join(parts)
 
 
+def _all_downloads_failed(errors):
+    """The warning when every planned download failed (#337)."""
+    if errors == 1:
+        return "Warning: the example image could not be downloaded"
+    return f"Warning: none of the {errors:,} example images could be downloaded"
+
+
+def _with_downloads(line, downloaded, errors):
+    """``line`` with the failed downloads: counted when some failed, led by
+    a warning when every planned download failed (#337). The job still
+    finishes: the import itself succeeded and the downloads are best effort."""
+    if not errors:
+        return line
+    if not downloaded:
+        return f"{_all_downloads_failed(errors)} · {line}"
+    failed = f"{_count(errors, 'example image')} could not be downloaded"
+    return f"{line} · {failed}"
+
+
 class LoraImportRoutesMixin:
     """Mixin providing the reviewed LoRA import (preview, apply, job)."""
 
@@ -415,7 +434,12 @@ class LoraImportRoutesMixin:
         downloaded = staged.stats.get("downloaded", 0)
         errors = staged.stats.get("download_errors", 0)
         job.record_counted("downloaded", downloaded)
-        job.record_counted("download_errors", errors)
+        rows = []
+        if errors and not downloaded:
+            warning = _all_downloads_failed(errors)
+            rows = [{"path": "", "detail": f"{warning}; the log has the details"}]
+            job.log_line(warning)
+        job.record_counted("download_errors", errors, rows)
         if downloaded or errors:
             job.log_line(
                 f"Downloaded {_count(downloaded, 'example image')}"
@@ -451,4 +475,9 @@ class LoraImportRoutesMixin:
         if result["removed"]:
             job.log_line(f"Replaced {_count(result['removed'], 'previous import')}")
         job.log_line(line)
+        line = _with_downloads(
+            line,
+            staged.stats.get("downloaded", 0),
+            staged.stats.get("download_errors", 0),
+        )
         job.update(progress=100, processed=job.total, status_line=line)
