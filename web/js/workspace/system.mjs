@@ -5,8 +5,8 @@
  * (`span.small#settings-status` + "Save preferences"). D92: no "Sample configuration" chip, the status copy is
  * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
  * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview (system-overview.mjs),
- * Appearance (system-appearance.mjs), Sources & scans (system-sources.mjs), Integrations (system-integrations.mjs) and
- * Maintenance (system-maintenance.mjs) are native.
+ * Appearance (system-appearance.mjs), Sources & scans (system-sources.mjs), Integrations (system-integrations.mjs),
+ * Maintenance (system-maintenance.mjs) and Backup & export (system-backups.mjs) are native.
  *
  * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
@@ -19,6 +19,7 @@ import { mountOverview } from './system-overview.mjs';
 import { mountAppearance } from './system-appearance.mjs';
 import { mountSources } from './system-sources.mjs';
 import { mountMaintenance } from './system-maintenance.mjs';
+import { mountBackups } from './system-backups.mjs';
 import { LORA_ENABLE_URL, LORA_STATUS_URL, loraValues, mountIntegrations, writeHostInParts } from './system-integrations.mjs';
 import { busyToast } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
@@ -33,7 +34,6 @@ const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existi
  */
 export const SECTION_HANDOFFS = Object.freeze({
     tagging: [ADMIN],
-    backups: [ADMIN],
     diagnostics: [ADMIN],
 });
 export const NOT_DELIVERED = 'This setting is not available here yet.';
@@ -128,7 +128,7 @@ function markFailed(layout, store) {
 
 /**
  * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), Sources & scans (S4 Task 11),
- * Integrations (S10 Task 27) and Maintenance (S7 Task 19).
+ * Integrations (S10 Task 27), Maintenance (S7 Task 19) and Backup & export (S9 Task 24).
  */
 export const DELIVERED_SECTIONS = Object.freeze({
     overview: mountOverview,
@@ -136,6 +136,7 @@ export const DELIVERED_SECTIONS = Object.freeze({
     sources: mountSources,
     integrations: mountIntegrations,
     maintenance: mountMaintenance,
+    backups: mountBackups,
 });
 
 /**

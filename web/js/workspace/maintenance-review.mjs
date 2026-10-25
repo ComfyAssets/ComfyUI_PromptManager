@@ -186,15 +186,17 @@ export async function applyPlan({ api, store, scope, token, reviewAgain, notify 
         if (refusal.review) reviewAgain?.();
         return;
     }
-    if (scope.signal.aborted) return;
     let job;
     try {
+        // The page's store follows the started job even when its section was left meanwhile (S9: a restore that ends
+        // must still reload the views), but only a section still shown toasts and opens it.
         job = store.track(result?.job);
     } catch {
-        notify(NOT_CONFIRMED);
+        if (!scope.signal.aborted) notify(NOT_CONFIRMED);
         store.load();
         return;
     }
+    if (scope.signal.aborted) return;
     notify(`${job.title} started.`);
     navigate(`#/activity/${job.id}`);
 }

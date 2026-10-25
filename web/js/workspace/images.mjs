@@ -12,7 +12,7 @@ import { createMediaViewer } from './media-viewer.mjs';
 import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
-import { openImportDialog, openRefineDialog } from './workspace-dialogs.mjs';
+import { RESCAN_FAILED, RESCAN_STARTED, openImportDialog, openRefineDialog, rescanFinished } from './workspace-dialogs.mjs';
 import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
@@ -70,15 +70,6 @@ function loadFailure(sourcesRetry, categoriesFailed) {
     if (sourcesRetry) return `Sources and folders could not be loaded. ${sourcesRetry}`;
     return categoriesFailed ? `Categories could not be loaded. ${RETRY_RESCAN}` : '';
 }
-// Import → Rescan (D15): the concept has no rescan copy, so its toasts follow the workspace pattern. The answer
-// counts every listed file across the output roots it walked.
-const RESCAN_STARTED = 'Rescanning output folders…';
-const RESCAN_FAILED = 'Rescan could not finish. Try again.';
-function rescanFinished(result) {
-    const {total, roots} = result ?? {};
-    if (![total, roots].every(value => Number.isSafeInteger(value) && value >= 0)) return 'Rescan finished.';
-    return `Rescan finished. ${total.toLocaleString('en-US')} ${noun(total, 'file')} in ${roots.toLocaleString('en-US')} output ${noun(roots, 'folder')}.`;
-}
 // The concept card's first `.media-info` reservation and list row (image-layout.mjs); real rows are measured.
 const INITIAL_METRICS = Object.freeze({columns:1, gap:13, footerHeight:54, listHeight:97});
 
@@ -90,6 +81,10 @@ setFavoriteVisitTarget((key, favorite) => {
 
 // A tag save made while Images is left (Tags › Auto-tag images) may change what a filtered visit lists: it reloads (M6).
 onImageTagsSaved(() => { if (lastVisit?.filters.tags.length || lastVisit?.filters.q) lastVisit = {...lastVisit, stale: true}; });
+/** Forget the last Images visit (its listing, scroll and selection): the next visit reads everything again (S9). */
+export function forgetImagesVisit() {
+    lastVisit = null;
+}
 /** The image selected in Images when it was last left (the concept's `state.selectedImage`, for Tags › Auto-tag images). */
 export function selectedImage() {
     const key = lastVisit?.selection;

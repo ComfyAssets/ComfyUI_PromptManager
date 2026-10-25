@@ -36,6 +36,9 @@ const layoutOf = page => page.locator('#workspace-main .settings-layout');
 async function openOverview(page) {
     await page.goto(`${workspace}#/system/overview`);
     await expect(layoutOf(page).locator(':scope > .summary-metrics')).toBeVisible();
+    // The Backup status row is its own read of /backup/status (S9): compare once it answered.
+    await expect(layoutOf(page).locator('.operation').filter({ has: page.locator('h3', { hasText: 'Backup status' }) })
+        .locator('p')).not.toHaveText('Checking backups…');
     return layoutOf(page);
 }
 
@@ -67,7 +70,7 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     ]);
     expect(await rowsOf(layout, 'Library health')).toEqual([
         ['0 ambiguous image links', 'Review metadata before assigning a positive / negative pair.', 'Review metadata'],
-        ['Backup status', 'No retained backup record.', 'View backups'],
+        ['Backup status', 'No backup recorded.', 'View backups'],
         // D129: the fixture's database is configured explicitly, so it reads as config.json's choice and does not move.
         ['Library location', 'browser.db · The database path set in config.json.', 'Details'],
         ['No missing thumbnails', 'Generate only missing previews when necessary.', 'Review thumbnails'],

@@ -889,7 +889,7 @@ test('review dialog backup box keeps the dialog open and toasts the outcome', as
         assert.equal(action.getAttribute('aria-disabled'), 'true');
         // A second press while the copy downloads is ignored.
         action.click();
-        answer({ ok: true, blob: async () => new Blob(['db']), headers: { get: () => 'attachment; filename="prompts_backup_1.db"' } });
+        answer({ ok: true, blob: async () => new Blob(['db']), headers: { get: name => (name === 'Content-Disposition' ? 'attachment; filename="prompts_backup_1.db"' : null) } });
         await tick();
         assert.deepEqual(toasts, [BACKUP_DONE]);
         assert.equal(modal(dom).open, true);
