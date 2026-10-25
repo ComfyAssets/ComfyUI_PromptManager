@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -371,7 +372,9 @@ class TestMonitorHistoryRecheck(RecordedRuns, unittest.TestCase):
         path = self.image("late_00001_.png")
         self.handler.process_new_image(path)  # the run is still executing
         self.assertEqual(self.linked, [])
-        self.assertIn(os.path.normcase(path), self.handler.awaiting_history())
+        self.assertIn(
+            os.path.normcase(os.path.realpath(path)), self.handler.awaiting_history()
+        )
         self.record_run(self.db, self.output, [("", "late_00001_.png")], [LLM_TEXT])
         self.assertTrue(self.wait_for(lambda: self.linked))
         self.assertTrue(self.wait_for(lambda: self.handler.pending_count() == 0))
@@ -383,6 +386,55 @@ class TestMonitorHistoryRecheck(RecordedRuns, unittest.TestCase):
         )
         self.assertTrue(self.wait_for(lambda: self.handler.pending_count() == 0))
         self.assertEqual(len(self.linked), 1)
+
+    def test_a_seal_during_the_first_pass_is_not_lost(self):
+        """R1: the run seals while the image's own pass is still pending."""
+        prompt_id = self.save(LLM_TEXT)
+        path = self.image("race_00001_.png")
+        real = self.handler._history_prompt
+        sealed = []
+
+        def history(image_path):
+            result = real(image_path)  # before the run's outputs commit: None
+            if not sealed:
+                sealed.append(True)
+                # The writer commits and notifies now; the path is still pending
+                self.record_run(
+                    self.db, self.output, [("", "race_00001_.png")], [LLM_TEXT]
+                )
+            return result
+
+        self.handler._history_prompt = history
+        self.assertTrue(self.handler.schedule(path))
+        self.assertTrue(self.wait_for(lambda: self.linked))
+        self.assertTrue(self.wait_for(lambda: self.handler.pending_count() == 0))
+        self.assertEqual(self.linked, [("race_00001_.png", prompt_id)])
+
+    def test_a_seal_while_the_pending_set_is_full_is_rechecked_later(self):
+        from utils import image_monitor
+
+        prompt_id = self.save(LLM_TEXT)
+        path = self.image("full_00001_.png")
+        self.handler.process_new_image(path)  # waiting, unlinked
+        blocker = self.image("blocker.png")
+        release = threading.Event()
+        original = self.handler.process_new_image
+
+        def slow(image_path, prompt_snapshot=None):
+            if image_path == blocker:
+                release.wait(5)
+            return original(image_path, prompt_snapshot=prompt_snapshot)
+
+        self.handler.process_new_image = slow
+        with mock.patch.object(image_monitor, "MAX_PENDING_IMAGES", 1):
+            self.assertTrue(self.handler.schedule(blocker))
+            self.assertTrue(self.wait_for(lambda: self.handler.pending_count() == 1))
+            self.record_run(self.db, self.output, [("", "full_00001_.png")], [LLM_TEXT])
+            self.assertEqual(self.linked, [], "not scheduled while the set is full")
+            release.set()
+            self.assertTrue(self.wait_for(lambda: self.linked))
+        self.assertTrue(self.wait_for(lambda: self.handler.pending_count() == 0))
+        self.assertEqual(self.linked, [("full_00001_.png", prompt_id)])
 
     def test_a_run_naming_nothing_stored_leaves_the_image_unlinked(self):
         path = self.image("empty_00001_.png")
@@ -502,6 +554,25 @@ class TestBoundedLookup(RecordedRuns, unittest.TestCase):
 class TestScanBatchLookup(RecordedRuns, AdminAPITestCase):
     """M5: a scan batch asks history once per chunk of names, not per file."""
 
+    def test_a_batch_its_metadata_links_never_asks_history(self):
+        """R3: the batch lookup is made only when a file needs it."""
+        files = []
+        for n in range(3):
+            path = self.output_dir / f"typed_{n:05}_.png"
+            path.write_bytes(b"png")
+            files.append(path)
+        meta = {"prompt": json.dumps(issue_graph(text="typed mountains"))}
+        statements = []
+        conn = self.api.db.model.get_connection()
+        conn.set_trace_callback(statements.append)
+        try:
+            counts = self.api._ingest_scan_batch_sync([(f, meta) for f in files])
+        finally:
+            conn.set_trace_callback(None)
+        self.assertEqual(counts["added"] + counts["linked"], 3, counts)
+        lookups = [s for s in statements if "FROM execution_run_outputs" in s]
+        self.assertEqual(lookups, [])
+
     def test_metadata_less_batch_links_with_one_history_lookup(self):
         db = self.api.db
         prompt_id = db.save_prompt(
@@ -533,6 +604,70 @@ class TestScanBatchLookup(RecordedRuns, AdminAPITestCase):
             )
         }
         self.assertEqual(linked, {f.name for f in files[:4]})
+
+
+class TestLinkedOutputRoot(RecordedRuns, unittest.TestCase):
+    """R2: ComfyUI's output folder reached through a symlink or junction."""
+
+    setUp = history_tests.HistoryDatabaseTests.setUp
+    close_databases = history_tests.HistoryDatabaseTests.close_databases
+    database = history_tests.HistoryDatabaseTests.database
+
+    def linked_root(self):
+        self.real = str(Path(self.temp.name) / "big_drive" / "output")
+        os.makedirs(os.path.join(self.real, "sub"))
+        link = str(Path(self.temp.name) / "output_link")
+        try:
+            os.symlink(self.real, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        return link
+
+    def test_either_spelling_of_the_file_is_attributed(self):
+        db = self.database()
+        link = self.linked_root()
+        prompt_id = db.save_prompt(
+            text=LLM_TEXT, prompt_hash=generate_prompt_hash(LLM_TEXT)
+        )
+        real_file = os.path.join(self.real, "sub", "img_00001_.png")
+        Path(real_file).write_bytes(b"png")
+        # History keeps the host's spelling of its output folder (the link)
+        self.record_run(db, link, [("sub", "img_00001_.png")], [LLM_TEXT])
+        link_file = os.path.join(link, "sub", "img_00001_.png")
+        self.assertEqual(stored_run_prompt(db, real_file, link), prompt_id)
+        self.assertEqual(stored_run_prompt(db, link_file, link), prompt_id)
+        # The real folder named as the root is another root key: not attributed
+        self.assertIsNone(stored_run_prompt(db, real_file, self.real))
+
+    def test_the_monitor_rechecks_a_file_seen_through_the_real_path(self):
+        db = self.database()
+        link = self.linked_root()
+        prompt_id = db.save_prompt(
+            text=LLM_TEXT, prompt_hash=generate_prompt_hash(LLM_TEXT)
+        )
+        real_file = os.path.join(self.real, "late_00001_.png")
+        Path(real_file).write_bytes(b"png")
+        handler = ImageGenerationHandler(db, make_tracker(db))
+        handler.processing_delay = 0
+        handler.settle_interval = 0.01
+        self.addCleanup(handler.shutdown)
+        linked = []
+        handler.link_image_to_prompt = lambda path, prompt, meta: linked.append(
+            prompt["id"]
+        )
+        with (
+            mock.patch("utils.image_monitor.host_output_directory", return_value=link),
+            mock.patch.object(
+                handler.metadata_extractor, "extract_metadata", return_value=None
+            ),
+        ):
+            handler.process_new_image(real_file)
+            self.assertEqual(linked, [])
+            self.record_run(db, link, [("", "late_00001_.png")], [LLM_TEXT])
+            deadline = time.monotonic() + 5
+            while not linked and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(linked, [prompt_id])
 
 
 if __name__ == "__main__":

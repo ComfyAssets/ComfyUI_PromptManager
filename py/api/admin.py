@@ -558,6 +558,24 @@ def _current_image_monitor():
     return getattr(_image_monitor_module(), "_monitor_instance", None)
 
 
+class _BatchHistory:
+    """A scan batch's recorded-history lookup, made on the first file needing it.
+
+    Most files link through their metadata and never ask; the first one that
+    does triggers one lookup for the whole batch (``_recorded_runs_for``).
+    """
+
+    def __init__(self, api, media_files):
+        self._api = api
+        self._files = media_files
+        self._found = None
+
+    def get(self, path):
+        if self._found is None:
+            self._found = self._api._recorded_runs_for(self._files)
+        return self._found.get(path)
+
+
 class AdminRoutesMixin:
     """Mixin providing admin, diagnostics, and maintenance API endpoints."""
 
@@ -1575,7 +1593,7 @@ class AdminRoutesMixin:
                 outcomes.append(_scan_outcome(media_file, roots, status, title))
 
         batch_results = list(batch_results)
-        history = self._recorded_runs_for(media for media, _meta in batch_results)
+        history = _BatchHistory(self, [media for media, _meta in batch_results])
         for media_file, metadata in batch_results:
             if self._scan_job and self._scan_job.cancelled:
                 break
@@ -1751,7 +1769,9 @@ class AdminRoutesMixin:
                 self.db, [str(path) for path in media_files], host_output_directory()
             )
         except Exception:
-            self.logger.warning("History attribution failed for a scan batch")
+            self.logger.warning(
+                "History attribution failed for a scan batch", exc_info=True
+            )
             return {}
 
     def _link_recorded_run(self, media_file, canonical, detailed=False, history=None):

@@ -4013,7 +4013,16 @@ fallback (`_get_fallback_prompt` is gone) and no unproven tracker entry.
   listeners after commit), each waiting image the run reported gets exactly one
   history-only re-check on the monitor's worker. At most 1000 images wait, each
   for at most an hour; shutdown forgets them. The image is registered before the
-  first history check, so a run sealed in between is not missed.
+  first history check, so a run sealed in between is not missed; a re-check that
+  can't be scheduled yet (the image's own pass still pending, or the pending set
+  full) is kept due and scheduled when a pending image finishes. A keyless image
+  outside ComfyUI's output folder never waits (history can't attribute it).
+- **Spellings.** History keeps ComfyUI's own spelling of its output folder (the
+  root key). A file is matched through that spelling first, then with both sides
+  resolved (`realpath`), so an output folder reached through a symlink or a
+  Windows junction still attributes the scan's resolved file paths; waiting
+  files are keyed by their resolved path for the same reason. The scan makes
+  its batch's history lookup only when the first file in the batch needs it.
 - **Blank positive.** A resolved pair whose stored positive is empty (the #342
   image with its Pair execution record) is `unresolved` for the scan and for
   `ingest_resolved_pair` (it used to raise in `_save_pair`).

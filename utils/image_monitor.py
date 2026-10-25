@@ -45,6 +45,7 @@ try:
     from ..database.pair_ingestion import ingest_resolved_pair
     from ..database.run_attribution import (
         host_output_directory,
+        in_output_folder,
         stored_run_prompt,
         subscribe_outputs_sealed,
     )
@@ -52,6 +53,7 @@ except ImportError:
     from database.pair_ingestion import ingest_resolved_pair
     from database.run_attribution import (
         host_output_directory,
+        in_output_folder,
         stored_run_prompt,
         subscribe_outputs_sealed,
     )
@@ -132,6 +134,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # Keyless unlinked images awaiting their run's recorded outputs:
         # normalized path -> (path, monotonic deadline), oldest first.
         self._awaiting: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
+        # Sealed re-checks ``schedule`` refused (the path still pending, or the
+        # pending set full): retried each time a pending image finishes.
+        self._history_due: "OrderedDict[str, None]" = OrderedDict()
         self._awaiting_lock = threading.Lock()
         self._sealed_subscribed = False
 
@@ -203,6 +208,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         """
         with self._awaiting_lock:
             self._awaiting.clear()
+            self._history_due.clear()
         with self._pending_lock:
             self._pending.clear()
             worker, self._worker = self._worker, None
@@ -258,6 +264,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         finally:
             with self._pending_lock:
                 self._pending.pop(image_path, None)
+            self._drain_history_due()
 
     def _queue_thumbnail(self, image_path: str) -> None:
         """Queue a settled output's preview, best effort (linked or not).
@@ -427,7 +434,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
         name = os.path.basename(image_path)
         if not keys:
             # No tracked run can be proven: history now, and once more after
-            # the run's outputs are recorded (``_on_outputs_sealed``)
+            # the run's outputs are recorded (``_on_outputs_sealed``). A file
+            # outside ComfyUI's output folder can never be attributed, so it
+            # does not take a waiting slot.
+            if not in_output_folder(image_path, host_output_directory()):
+                return None
             self._await_history(image_path)
             prompt_id = self._history_prompt(image_path)
             if prompt_id is None:
@@ -467,7 +478,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
     @staticmethod
     def _awaiting_key(image_path: str) -> str:
-        return os.path.normcase(os.path.abspath(image_path))
+        """One spelling for a waiting file, through symlinks and junctions."""
+        try:
+            resolved = os.path.realpath(image_path)
+        except (OSError, ValueError):
+            resolved = os.path.abspath(image_path)
+        return os.path.normcase(resolved)
 
     def _prune_awaiting(self) -> None:
         """Drop expired and surplus entries (``_awaiting_lock`` held)."""
@@ -524,7 +540,28 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 if waiting is not None:
                     due.append(waiting[0])
         for image_path in due:
-            self.schedule(image_path, HISTORY_ONLY)
+            self._schedule_recheck(image_path)
+
+    def _schedule_recheck(self, image_path: str) -> None:
+        """Schedule the history-only re-check, or keep it due for later."""
+        if self.schedule(image_path, HISTORY_ONLY):
+            return
+        with self._awaiting_lock:
+            self._history_due.pop(image_path, None)
+            self._history_due[image_path] = None
+            while len(self._history_due) > MAX_AWAITING_HISTORY:
+                self._history_due.popitem(last=False)
+
+    def _drain_history_due(self) -> None:
+        """Schedule due re-checks now that a pending slot or path is free."""
+        with self._awaiting_lock:
+            if not self._history_due:
+                return
+            due = list(self._history_due)
+        for image_path in due:
+            if self.schedule(image_path, HISTORY_ONLY):
+                with self._awaiting_lock:
+                    self._history_due.pop(image_path, None)
 
     def _recheck_history(self, image_path: str) -> None:
         """The one history-only re-check of a keyless image (#342)."""

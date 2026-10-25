@@ -63,25 +63,56 @@ def host_output_directory() -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def _location(image_path: str, output_root: str, path_style: str):
-    """(root key, subfolder, filename) as history records them, or None."""
-    root_key = snapshot_output_roots(path_style, output_root, output_root).output_key
-    if root_key is None:
-        return None
+def _inside(image_path: str, output_root: str) -> Optional[str]:
+    """``image_path`` relative to ``output_root``, or None when outside it."""
     try:
-        relative = os.path.relpath(
-            os.path.abspath(image_path), os.path.abspath(output_root)
-        )
+        relative = os.path.relpath(image_path, output_root)
     except ValueError:  # another drive on Windows
         return None
     if os.path.isabs(relative) or relative == os.pardir:
         return None
     if relative.startswith(os.pardir + os.sep):
         return None
+    return relative
+
+
+def _resolved(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return os.path.abspath(path)
+
+
+def _location(image_path: str, output_root: str, path_style: str):
+    """(root key, subfolder, filename) as history records them, or None.
+
+    The root key is always the host's own spelling of its output folder,
+    because history recorded that one. The file may be spelled through the
+    same folder or through its resolved path (a symlinked or junction output
+    folder, as scan roots are): the lexical spelling is tried first, then
+    both sides resolved.
+    """
+    root_key = snapshot_output_roots(path_style, output_root, output_root).output_key
+    if root_key is None:
+        return None
+    relative = _inside(os.path.abspath(image_path), os.path.abspath(output_root))
+    if relative is None:
+        relative = _inside(_resolved(image_path), _resolved(output_root))
+    if relative is None:
+        return None
     subfolder, filename = os.path.split(relative)
     if not filename:
         return None
     return root_key, subfolder, filename
+
+
+def in_output_folder(image_path: str, output_root: Optional[str]) -> bool:
+    """Whether history could ever attribute ``image_path`` (inside the host's
+    output folder, in either spelling)."""
+    if not image_path or not output_root:
+        return False
+    style = "windows" if os.name == "nt" else "posix"
+    return _location(image_path, output_root, style) is not None
 
 
 def _written_during(image_path: str, started: Any, finished: Any) -> bool:

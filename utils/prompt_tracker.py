@@ -177,20 +177,18 @@ class PromptTracker:
 
         self._remember_keyed(execution_context)
 
-        # Push to batch queue for ordered image linking
-        if push_to_queue:
-            with self._queue_lock:
-                self._prompt_queue.append(execution_context)
-                self.logger.debug(
-                    f"Queue size: {len(self._prompt_queue)} after push "
-                    f"for prompt {prompt_id}"
-                )
-
         self.logger.debug(
             f"Set current prompt: {execution_id} -> {prompt_text[:50]}... "
             f"(thread: {threading.current_thread().ident})"
         )
         self.logger.debug(f"Active prompts count: {len(self.active_prompts)}")
+
+        # Push to batch queue for ordered image linking. Last, with nothing
+        # after it that can raise: a caller that marks a failed execution
+        # (#342) must never add a second queue slot for the same item.
+        if push_to_queue:
+            with self._queue_lock:
+                self._prompt_queue.append(execution_context)
         return execution_id
 
     def get_current_prompt(self) -> Optional[Dict[str, Any]]:

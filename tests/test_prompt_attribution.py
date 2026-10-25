@@ -624,5 +624,39 @@ class TestReviewFindings(MonitorCase, NodeCase):
         history.assert_not_called()
 
 
+class TestRereviewFindings(MonitorCase, NodeCase):
+    """Re-review findings R4 and R5 (#344)."""
+
+    def test_r4_a_logging_failure_after_tracking_never_doubles_a_queue_slot(self):
+        graph = llm_text_graph()
+        key = prompt_node_key(graph, "18:35")
+        node = self.node(PromptManager)
+        logger = mock.Mock(wraps=self.tracker.logger)
+        logger.debug.side_effect = RuntimeError("log handler broke")
+        self.tracker.logger = logger
+        node.encode_prompt(self.clip(), LLM_TEXT, prompt=graph, unique_id="18:35")
+        queued = [ctx for ctx in self.tracker._prompt_queue if ctx["run_key"] == key]
+        self.assertEqual(len(queued), 1)
+
+    def test_r5_a_keyless_image_outside_the_output_folder_does_not_wait(self):
+        outside = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(outside, True))
+        stray = os.path.join(outside, "copied.png")
+        with open(stray, "wb") as handle:
+            handle.write(b"png")
+        with mock.patch(
+            "utils.image_monitor.host_output_directory", return_value=self.tmp.name
+        ):
+            with mock.patch.object(
+                self.handler.metadata_extractor, "extract_metadata", return_value=None
+            ):
+                self.handler.process_new_image(stray)
+                self.handler.process_new_image(self.image)  # inside: waits
+        self.assertEqual(
+            self.handler.awaiting_history(),
+            [os.path.normcase(os.path.realpath(self.image))],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
