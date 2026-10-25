@@ -133,6 +133,18 @@ class RestoreTestCase(AdminAPITestCase):
         self.addAsyncCleanup(self._release, job, gate)
         return job, gate
 
+    async def download_backup(self):
+        """GET /backup, read every byte, then wait for its hold to end.
+
+        The client can hold the last byte before the handler has left its
+        hold, so the registry is read only once the hold says it is done.
+        """
+        resp = await self.client.get("/prompt_manager/backup")
+        data = await resp.read()
+        while self.api._jobs.active("backup") is not None:
+            await asyncio.sleep(0)
+        return resp, data
+
     async def _release(self, job, gate):
         gate.set()
         await asyncio.gather(job.task, return_exceptions=True)
@@ -519,8 +531,7 @@ class TestBackupDownload(RestoreTestCase):
             return path
 
         with patch("py.api.backup_restore.safety_temp", spy):
-            resp = await self.client.get("/prompt_manager/backup")
-            data = await resp.read()
+            resp, data = await self.download_backup()
         self.assertEqual(resp.status, 200)
         [temp] = created
         self.assertEqual(os.path.dirname(temp), self.tmpdir)
@@ -539,7 +550,7 @@ class TestBackupDownload(RestoreTestCase):
         self.assertEqual(
             body, {"success": True, "safety_backups": [], "last_download": None}
         )
-        await (await self.client.get("/prompt_manager/backup")).read()
+        await self.download_backup()
         body = await (await self.client.get("/prompt_manager/backup/status")).json()
         download = body["last_download"]
         self.assertEqual(set(download), {"at", "bytes", "verified"})
@@ -574,8 +585,7 @@ class TestBackupDownload(RestoreTestCase):
 
     async def test_backup_is_listed_while_it_streams(self):
         self.save("keep")
-        resp = await self.client.get("/prompt_manager/backup")
-        await resp.read()
+        await self.download_backup()
         [job] = self.api._jobs.list()
         self.assertEqual(
             (job.kind, job.title, job.admission, job.state),
