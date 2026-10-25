@@ -296,12 +296,9 @@ class TestCivitaiUrlPolicy(unittest.TestCase):
         self.assertEqual(
             CIVITAI_HOSTS,
             frozenset(
-                {
-                    "civitai.com",
-                    "www.civitai.com",
-                    "api.civitai.com",
-                    "image.civitai.com",
-                }
+                f"{prefix}{domain}"
+                for domain in ("civitai.com", "civitai.red", "civitai.green")
+                for prefix in ("", "www.", "api.", "image.")
             ),
         )
         self.assertEqual(MAX_CIVITAI_DOWNLOAD_BYTES, 50 * 1024 * 1024)
@@ -333,6 +330,36 @@ class TestCivitaiUrlPolicy(unittest.TestCase):
 
     def test_explicit_default_port_is_allowed(self):
         self.assertTrue(is_civitai_url("https://civitai.com:443/x"))
+
+    def test_red_and_green_starting_hosts_are_allowed(self):
+        # #340: CivitAI's own .red and .green domains serve the same content.
+        for url in (
+            "https://image.civitai.red/xG1/abc/width=450/1.jpeg",
+            "https://civitai.red/api/download/1",
+            "https://civitai.green/api/download/1",
+            "https://image.civitai.green/xG1/abc/1.jpeg",
+            "https://IMAGE.CIVITAI.RED/x",
+            "https://civitai.green:443/x",
+        ):
+            self.assertTrue(is_civitai_url(url), url)
+
+    def test_red_and_green_lookalikes_are_refused(self):
+        for url in (
+            "http://image.civitai.red/x",
+            "http://civitai.green/x",
+            "https://civitai.red.evil.example/x",
+            "https://civitai.green.evil.example/x",
+            "https://evilcivitai.red/x",
+            "https://evilcivitai.green/x",
+            "https://civitai.redx/x",
+            "https://civitai.greenx/x",
+            "https://civitai.red@evil.example/x",
+            "https://user:pw@civitai.red/x",
+            "https://civitai.green:8443/x",
+            "https://blobs-b2.civitai.red/x",  # starting hosts stay a fixed list
+            "https://evil.example/civitai.red",
+        ):
+            self.assertFalse(is_civitai_url(url), url)
 
 
 class TestLoraManagerPathPolicy(unittest.TestCase):
@@ -889,6 +916,283 @@ class TestCivitaiRedirects(unittest.TestCase):
         self.assertNotIn("secret-key", text)
         self.assertNotIn("t0k3n", text)
         self.assertNotIn("sig123", text)
+
+
+RED_BLOB = "https://blobs-b2.civitai.red/file/civitai-media-cache/1/original"
+GREEN_BLOB = "https://media.civitai.green/file/1/original"
+
+
+class TestCivitaiRedAndGreenDomains(unittest.TestCase):
+    """#340: civitai.red and civitai.green are CivitAI's own domains.
+
+    They are redirect targets under the civitai.com rules (HTTPS, default
+    port, no credentials, parsed host name, 3 hops, never the key) and
+    starting hosts whose first request may carry the key.
+    """
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.target = self.tmpdir / "x.jpg"
+
+    def _download(self, routes, url=START, api_key="secret-key"):
+        handler = _ChainHTTPSHandler(routes)
+        opener = lora_utils._build_opener(handler)
+        with patch.object(lora_utils, "_opener", opener):
+            result = lora_utils._download_one(url, self.target, api_key)
+        return result, handler.requests
+
+    def test_redirect_targets_on_red_and_green_are_allowed(self):
+        for url in (
+            "https://civitai.red/x",
+            "https://civitai.green/x",
+            RED_BLOB,
+            GREEN_BLOB,
+            "https://a.b.civitai.red:443/x",
+            "https://CIVITAI.GREEN/x",
+        ):
+            self.assertTrue(lora_utils.is_civitai_redirect_target(url), url)
+
+    def test_redirect_target_lookalikes_are_refused(self):
+        for url in (
+            "https://civitai.red.evil.example/x",
+            "https://civitai.green.evil.example/x",
+            "https://evilcivitai.red/x",
+            "https://evilcivitai.green/x",
+            "https://civitai.redx/x",
+            "https://civitai.greenx/x",
+            "https://civitai.red@evil.example/x",
+            "https://user:pw@blobs-b2.civitai.red/x",
+            "https://user@civitai.green/x",
+            "https://blobs-b2.civitai.red:8443/x",
+            "http://blobs-b2.civitai.red/x",
+            "http://civitai.green/x",
+            "ftp://civitai.red/x",
+            "https://evil.example/civitai.red",
+            "https://evil.example/?h=civitai.green",
+            "https://red/x",
+            "https://.civitai.red.evil/x",
+        ):
+            self.assertFalse(lora_utils.is_civitai_redirect_target(url), url)
+
+    def test_a_redirect_to_red_or_green_is_followed_without_the_key(self):
+        for blob in (RED_BLOB, GREEN_BLOB):
+            with self.subTest(blob=blob):
+                if self.target.exists():
+                    os.remove(self.target)
+                result, requests = self._download(
+                    {START: (302, blob), blob: (200, None)}
+                )
+
+                self.assertIsNotNone(result)
+                self.assertEqual([r.full_url for r in requests], [START, blob])
+                self.assertEqual(
+                    requests[0].get_header("Authorization"), "Bearer secret-key"
+                )
+                self.assertIsNone(requests[1].get_header("Authorization"))
+
+    def test_lookalike_and_plain_http_redirects_are_refused(self):
+        for location in (
+            "https://civitai.red.evil.example/x",
+            "https://evilcivitai.red/x",
+            "https://civitai.redx/x",
+            "https://civitai.green.evil.example/x",
+            "https://evilcivitai.green/x",
+            "https://civitai.greenx/x",
+            "http://blobs-b2.civitai.red/x",
+            "http://civitai.green/x",
+        ):
+            with self.subTest(location=location):
+                result, requests = self._download({START: (302, location)})
+                self.assertIsNone(result)
+                self.assertEqual([r.full_url for r in requests], [START])
+                self.assertFalse(self.target.exists())
+
+    def test_a_red_starting_host_gets_the_key_and_its_redirect_does_not(self):
+        start = "https://image.civitai.red/xG1/abc/width=450/1.jpeg"
+        result, requests = self._download(
+            {start: (302, BLOB), BLOB: (200, None)}, url=start
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual([r.full_url for r in requests], [start, BLOB])
+        self.assertEqual(requests[0].get_header("Authorization"), "Bearer secret-key")
+        self.assertIsNone(requests[1].get_header("Authorization"))
+
+    def test_a_green_starting_host_downloads_directly(self):
+        start = "https://civitai.green/api/download/1"
+        result, requests = self._download({start: (200, None)}, url=start)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(requests[0].get_header("Authorization"), "Bearer secret-key")
+
+    def test_the_hop_limit_spans_domains(self):
+        hops = [RED_BLOB, GREEN_BLOB, BLOB, "https://civitai.red/4"]
+        routes = {START: (302, hops[0])}
+        for here, there in zip(hops, hops[1:]):
+            routes[here] = (302, there)
+        routes[hops[-1]] = (200, None)
+
+        result, requests = self._download(routes)
+
+        self.assertIsNone(result)
+        self.assertEqual(len(requests), lora_utils.MAX_CIVITAI_REDIRECTS + 1)
+        self.assertNotIn(hops[-1], [r.full_url for r in requests])
+        for req in requests[1:]:
+            self.assertIsNone(req.get_header("Authorization"))
+
+
+class _RaisingOpener:
+    """An ``_open_url`` stand-in that raises ``error`` for every request."""
+
+    def __init__(self, error):
+        self.error = error
+        self.requests = []
+
+    def __call__(self, req, timeout=None):
+        self.requests.append(req)
+        raise self.error
+
+
+class TestDownloadFailureWarnings(unittest.TestCase):
+    """#340: each failed download logs one warning line with a short reason,
+    the URL without its query or credentials, and never the key."""
+
+    LOGGER = "prompt_manager.lora_utils"
+    SIGNED = START + "?token=t0k3n"
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.target = self.tmpdir / "x.jpg"
+
+    def _warning(self, run):
+        """Run ``run`` and return its one WARNING-or-above record's text."""
+        with self.assertLogs(self.LOGGER, level="WARNING") as logs:
+            result = run()
+        self.assertIsNone(result)
+        self.assertFalse(self.target.exists())
+        self.assertEqual(len(logs.records), 1, logs.output)
+        record = logs.records[0]
+        self.assertEqual(record.levelname, "WARNING")
+        text = record.getMessage()
+        self.assertNotIn("secret-key", text)
+        self.assertNotIn("t0k3n", text)
+        self.assertNotIn("sig123", text)
+        self.assertIn(START.split("?")[0], text)
+        return text
+
+    def _chain(self, routes, url=SIGNED):
+        handler = _ChainHTTPSHandler(routes)
+        opener = lora_utils._build_opener(handler)
+
+        def run():
+            with patch.object(lora_utils, "_opener", opener):
+                return lora_utils._download_one(url, self.target, "secret-key")
+
+        return run
+
+    def _fake(self, opener, url=SIGNED):
+        def run():
+            with patch.object(lora_utils, "_open_url", opener):
+                return lora_utils._download_one(url, self.target, "secret-key")
+
+        return run
+
+    def test_http_status(self):
+        text = self._warning(self._chain({}))  # unknown URL answers 404
+        self.assertIn("HTTP 404", text)
+
+    def test_http_status_after_a_redirect(self):
+        text = self._warning(self._chain({self.SIGNED: (302, BLOB)}))
+        self.assertIn("HTTP 404", text)
+
+    def test_refused_redirect(self):
+        text = self._warning(
+            self._chain({self.SIGNED: (302, "https://evil.example/x?sig123=1")})
+        )
+        self.assertIn("redirect refused", text)
+        self.assertIn("https://evil.example/x", text)
+
+    def test_hop_limit(self):
+        text = self._warning(self._chain({self.SIGNED: (302, self.SIGNED)}))
+        self.assertIn("more than 3 redirects", text)
+
+    def test_size_cap(self):
+        opener = _FakeOpener(
+            _FakeResponse(_png_bytes(), content_length=MAX_CIVITAI_DOWNLOAD_BYTES + 1)
+        )
+        text = self._warning(self._fake(opener))
+        self.assertIn("larger than the 50 MB cap", text)
+
+    def test_decode_error(self):
+        text = self._warning(self._fake(_FakeOpener(_FakeResponse(b"not an image"))))
+        self.assertIn("image could not be decoded", text)
+
+    def test_timeout(self):
+        for error in (
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("timed out")),
+        ):
+            with self.subTest(error=type(error).__name__):
+                text = self._warning(self._fake(_RaisingOpener(error)))
+                self.assertIn("timed out", text)
+
+    def test_network_error(self):
+        for error in (
+            urllib.error.URLError("[Errno -2] Name or service not known"),
+            ConnectionResetError(104, "Connection reset by peer"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                text = self._warning(self._fake(_RaisingOpener(error)))
+                self.assertIn("network error", text)
+
+    def test_a_timeout_while_reading_the_body(self):
+        class SlowResponse(_FakeResponse):
+            def read(self, amt=-1):
+                raise TimeoutError("timed out")
+
+        text = self._warning(self._fake(_FakeOpener(SlowResponse(b""))))
+        self.assertIn("timed out", text)
+
+    def test_a_failed_save(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+
+        def run():
+            with patch.object(
+                lora_utils.os, "replace", side_effect=OSError(28, "No space left")
+            ):
+                return self._fake(opener)()
+
+        text = self._warning(run)
+        self.assertIn("could not be saved", text)
+
+    def test_a_refused_starting_url(self):
+        def run():
+            return lora_utils._download_one(
+                "http://image.civitai.com/x?token=t0k3n", self.target, "secret-key"
+            )
+
+        with self.assertLogs(self.LOGGER, level="WARNING") as logs:
+            self.assertIsNone(run())
+        self.assertEqual(len(logs.records), 1)
+        text = logs.records[0].getMessage()
+        self.assertIn("not an allowed CivitAI URL", text)
+        self.assertNotIn("t0k3n", text)
+
+    def test_an_unexpected_error_names_only_its_type(self):
+        error = ValueError("unknown url type: https://x?token=t0k3n")
+        text = self._warning(self._fake(_RaisingOpener(error)))
+        self.assertIn("unexpected ValueError", text)
+
+    def test_the_line_names_the_download(self):
+        text = self._warning(self._chain({}))
+        self.assertTrue(text.startswith("CivitAI image download failed"), text)
+
+    def test_a_successful_download_logs_no_warning(self):
+        with self.assertNoLogs(self.LOGGER, level="WARNING"):
+            result = self._fake(_FakeOpener(_FakeResponse(_png_bytes())))()
+        self.assertIsNotNone(result)
 
 
 class TestDownloadCivitaiImages(unittest.TestCase):
