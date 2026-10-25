@@ -239,10 +239,13 @@ class LoraImportAPITestCase(LoraAPITestCase):
         self.requests = []
         self.gate = None  # a threading.Event a download waits on
         self.downloading = threading.Event()
+        self.failing = set()  # URLs whose download fails
 
         def fake_open(req, timeout=None):
             self.requests.append(req)
             self.downloading.set()
+            if req.full_url in self.failing:
+                raise OSError("connection reset")
             if self.gate is not None:
                 self.gate.wait(10)
             return _FakeResponse(_png_bytes())
@@ -595,6 +598,114 @@ class LoraImportRouteTests(LoraImportAPITestCase):
         )
         imported = self.api.db.search_prompts(category=CATEGORY)
         self.assertEqual(sorted(p["text"] for p in imported), ["neon street", "plain"])
+
+
+class LoraImportDownloadOutcomeTests(LoraImportAPITestCase):
+    """#337: failed CivitAI downloads show in the job's status line."""
+
+    URLS = ["https://civitai.com/a.png", "https://civitai.com/b.png"]
+
+    def _lora_with_images(self):
+        _write_metadata(
+            self.loras,
+            "neon",
+            words=["glow"],
+            images=list(self.URLS),
+            prompt="neon street",
+        )
+        _write_metadata(self.loras, "plain")
+
+    async def _run(self):
+        _plan, job = await self._apply_reviewed()
+        await job.task
+        return job
+
+    async def test_status_line_unchanged_when_every_download_succeeds(self):
+        self._lora_with_images()
+
+        job = await self._run()
+
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(job.status_line, "Imported 2 LoRAs")
+        self.assertEqual(job.outcomes["download_errors"], [])
+
+    async def test_status_line_counts_failed_downloads(self):
+        self._lora_with_images()
+        self.failing = {self.URLS[1]}
+
+        job = await self._run()
+
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(
+            (job.counters["downloaded"], job.counters["download_errors"]), (1, 1)
+        )
+        self.assertEqual(
+            job.status_line,
+            "Imported 2 LoRAs · 1 example image could not be downloaded",
+        )
+        self.assertNotIn("Warning", job.status_line)
+        self.assertEqual(job.outcomes["download_errors"], [])
+
+    async def test_every_download_failing_is_a_warning(self):
+        self._lora_with_images()
+        self.failing = set(self.URLS)
+
+        job = await self._run()
+
+        # The import itself succeeded, so the job still finishes.
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(
+            (job.counters["downloaded"], job.counters["download_errors"]), (0, 2)
+        )
+        warning = "Warning: none of the 2 example images could be downloaded"
+        self.assertEqual(job.status_line, f"{warning} · Imported 2 LoRAs")
+        self.assertEqual(
+            job.outcomes["download_errors"],
+            [
+                {
+                    "path": "",
+                    "root": "",
+                    "root_index": None,
+                    "detail": f"{warning}; the log has the details",
+                }
+            ],
+        )
+        self.assertTrue(any(warning in line for line in job.log), job.log)
+        self.assertEqual(job.summary()["status_line"], job.status_line)
+        self.assertNotIn(SECRET_KEY, json.dumps(job.report()))
+
+    async def test_one_planned_download_failing_reads_in_the_singular(self):
+        _write_metadata(self.loras, "neon", images=[self.URLS[0]], prompt="neon street")
+        self.failing = {self.URLS[0]}
+
+        job = await self._run()
+
+        self.assertEqual(
+            job.status_line,
+            "Warning: the example image could not be downloaded · Imported 1 LoRA",
+        )
+
+    async def test_legacy_scan_events_unchanged_when_every_download_fails(self):
+        self._lora_with_images()
+        self.failing = set(self.URLS)
+
+        resp = await self.client.request("POST", SCAN)
+        events = self._sse(await resp.text())
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(
+            events[-1],
+            {
+                "type": "complete",
+                "progress": 100,
+                "total": 2,
+                "imported": 2,
+                "skipped": 0,
+            },
+        )
+        for event in events[:-1]:
+            self.assertEqual(event["type"], "progress")
+            self.assertNotIn("Warning", event.get("status", ""))
 
 
 class LoraImportRefusalTests(LoraImportAPITestCase):

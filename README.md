@@ -501,6 +501,8 @@ To add your key:
 2. Paste it into the **CivitAI API Key** field in the Integrations settings
 3. Save and re-import to download any previously skipped images
 
+The key is sent only over HTTPS to CivitAI's own hosts. CivitAI serves images through a redirect to its storage host; PromptManager follows such a redirect only over HTTPS to a `civitai.com` host, at most three hops, and never sends the key with it. When downloads fail, the import's status line says how many; when none could be downloaded, it starts with a warning.
+
 > **Note:** Re-importing is safe — PromptManager skips LoRAs that were already imported. To do a fresh import, the previous `lora-manager` data is cleared automatically before re-scanning.
 
 ### 🌐 Web Interface Features
