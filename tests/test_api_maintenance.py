@@ -23,6 +23,7 @@ sys.modules.setdefault("server", _mock_server)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database import safety_backup  # noqa: E402
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 from py.api.maintenance_plans import PlanExpired  # noqa: E402
@@ -562,7 +563,7 @@ class TestSafetyBackup(ApplyTestCase):
 
         frozen = datetime.datetime(2026, 10, 23, 12, 0, 0, 123456)
         model = self.api.db.model
-        with patch.object(maintenance, "_now", return_value=frozen):
+        with patch.object(safety_backup, "_now", return_value=frozen):
             names = [maintenance.take_safety_backup(model) for _ in range(3)]
         self.assertEqual(
             names,
@@ -987,7 +988,7 @@ class TestFinalReviewFixes(ApplyTestCase):
         with (
             patch.object(maintenance.os, "link", side_effect=link),
             patch.object(
-                maintenance, "_reserve_backup_name", side_effect=AssertionError
+                safety_backup, "reserve_backup_name", side_effect=AssertionError
             ),
         ):
             name = maintenance.take_safety_backup(self.api.db.model)

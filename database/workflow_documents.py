@@ -475,3 +475,81 @@ def release_documents(conn: sqlite3.Connection, ids: Iterable[Optional[int]]) ->
 def sweep_documents(conn: sqlite3.Connection) -> int:
     """Delete every document no image row references; returns the count."""
     return conn.execute(SWEEP_SQL).rowcount
+
+
+# ── repair (a restore's stage) ────────────────────────────────────────
+
+INLINE_TEXTS_SQL = (
+    "SELECT workflow_data, prompt_metadata FROM generated_images "
+    "WHERE workflow_data IS NOT NULL OR prompt_metadata IS NOT NULL"
+)
+
+
+def _inline_copies(conn: sqlite3.Connection, wanted: Dict[bytes, int]):
+    """``{document id: text}`` for each wanted hash an inline row still holds."""
+    found: Dict[int, str] = {}
+    for row in conn.execute(INLINE_TEXTS_SQL):
+        for text in row:
+            if not isinstance(text, str) or not storable(text):
+                continue
+            document_id = wanted.get(hashlib.sha256(text.encode("utf-8")).digest())
+            if document_id is not None and document_id not in found:
+                found[document_id] = text
+        if len(found) == len(wanted):
+            break
+    return found
+
+
+def repair_damaged_documents(conn: sqlite3.Connection) -> Dict[str, int]:
+    """Repair or clear every document failing its checks; commit (writes).
+
+    For a restore's stage only, never the live library. A damaged document
+    whose exact text an inline row still holds (the same SHA-256, its key) is
+    stored again from that text. Any other damaged document is unreadable for
+    good: its images' references are cleared (they already showed no
+    workflow) and the document is removed, so the stage verifies. Returns
+    ``{repaired, cleared, images}``: documents repaired, documents cleared
+    and the image rows whose reference was cleared.
+    """
+    damaged: Dict[bytes, int] = {}
+    for row in conn.execute(ALL_DOCUMENTS_SQL):
+        if _decode(row[:3], row[3], quiet=True) is None:
+            damaged[bytes(row[0])] = row[3]
+    result = {"repaired": 0, "cleared": 0, "images": 0}
+    if not damaged:
+        return result
+    with conn:
+        copies = _inline_copies(conn, damaged)
+        for document_id, text in copies.items():
+            raw = text.encode("utf-8")
+            data = zlib.compress(raw, COMPRESSION_LEVEL)
+            conn.execute(REPAIR_SQL, (len(raw), data, document_id))
+        lost = sorted(set(damaged.values()) - set(copies))
+        images = 0
+        for chunk in _chunks(lost):
+            marks = ",".join("?" * len(chunk))
+            # ``marks`` is only "?" placeholders; the ids are bound.
+            images += conn.execute(
+                "SELECT COUNT(*) FROM generated_images WHERE "  # nosec B608
+                f"workflow_document_id IN ({marks}) OR prompt_document_id IN ({marks})",
+                chunk + chunk,
+            ).fetchone()[0]
+            for column in DOCUMENT_ID_COLUMNS:
+                conn.execute(
+                    f"UPDATE generated_images SET {column}=NULL "  # nosec B608
+                    f"WHERE {column} IN ({marks})",
+                    chunk,
+                )
+            conn.execute(
+                f"DELETE FROM workflow_documents WHERE id IN ({marks})",  # nosec B608
+                chunk,
+            )
+    for document_id in copies:
+        logger.warning(f"Workflow document {document_id} was damaged; repaired")
+    if lost:
+        logger.warning(
+            f"{len(lost)} damaged workflow document(s) could not be repaired; "
+            f"{images} image(s) show no workflow"
+        )
+    result.update(repaired=len(copies), cleared=len(lost), images=images)
+    return result

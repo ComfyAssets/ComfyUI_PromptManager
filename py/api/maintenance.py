@@ -48,7 +48,6 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from contextlib import closing
 
 from aiohttp import web
 
@@ -58,10 +57,22 @@ from .jobs import MAINTENANCE_JOB_KIND, JobBusy
 from .maintenance_plans import PlanExpired, PlanUsed, ScopeTooLarge
 
 try:
+    from ...database import safety_backup as _backups
+    from ...database.safety_backup import (  # noqa: F401 - re-exported
+        SAFETY_TEMP_PREFIX,
+        SafetyBackupFailed,
+        sweep_safety_temps,
+    )
     from ...database.workflow_storage import PRE_MIGRATION_LABEL, pre_migration_backups
     from ...database.health import readonly_uri
     from ...database.maintenance import MAINTENANCE_OPERATIONS, PlanChanged
 except ImportError:
+    from database import safety_backup as _backups
+    from database.safety_backup import (  # noqa: F401 - re-exported
+        SAFETY_TEMP_PREFIX,
+        SafetyBackupFailed,
+        sweep_safety_temps,
+    )
     from database.workflow_storage import PRE_MIGRATION_LABEL, pre_migration_backups
     from database.health import readonly_uri
     from database.maintenance import MAINTENANCE_OPERATIONS, PlanChanged
@@ -95,18 +106,6 @@ PLAN_CHANGED = (
 APPLY_FAILED = "Maintenance failed; nothing was changed."
 NOTHING_TO_DO = "Every image record already stores its workflow once; nothing to do."
 NO_BACKUP = "No safety backup"
-_NAME_ATTEMPTS = 1000
-
-
-class SafetyBackupFailed(Exception):
-    """The safety backup could not be written, verified or put in place.
-
-    ``reason`` is the verify reason when the copy did not verify.
-    """
-
-    def __init__(self, message, reason=None):
-        super().__init__(message)
-        self.reason = reason
 
 
 def backup_failed_message(error):
@@ -115,10 +114,6 @@ def backup_failed_message(error):
     if reason.startswith("Workflow document "):
         return f"{BACKUP_FAILED} {reason}"
     return BACKUP_FAILED
-
-
-def _now():
-    return datetime.datetime.now()
 
 
 def _free_bytes(path):
@@ -305,142 +300,13 @@ def _changed_line(operation, count):
     return f"Removed {count:,} {noun}"
 
 
-def _remove_quietly(*paths):
-    for path in paths:
-        try:
-            if path and os.path.exists(path):
-                os.remove(path)
-        except OSError:
-            pass
-
-
-def _reserve_backup_name(db_path, label="backup"):
-    """Create and return an unused ``<db>.<label>_<stamp>[_n]`` (O_EXCL)."""
-    for candidate in _backup_names(db_path, label):
-        try:
-            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            continue
-        os.close(fd)
-        return candidate
-    raise SafetyBackupFailed("No free backup name")
-
-
-def _backup_names(db_path, label="backup"):
-    base = f"{db_path}.{label}_{_now().strftime('%Y%m%d_%H%M%S_%f')}"
-    for attempt in range(_NAME_ATTEMPTS):
-        yield base if attempt == 0 else f"{base}_{attempt}"
-
-
-def _place_backup(temp, db_path, label="backup"):
-    """Give the verified ``temp`` its unique backup name; return that path.
-
-    ``os.link`` is atomic and refuses an existing name, so no empty or half
-    file ever carries a backup name, even across a crash. A filesystem
-    without hard links falls back to reserving the name (``O_EXCL``) and
-    ``os.replace``. The temp file is removed by the caller.
-    """
-    for candidate in _backup_names(db_path, label):
-        try:
-            os.link(temp, candidate)
-        except FileExistsError:
-            continue
-        except (OSError, NotImplementedError):
-            break  # no hard links here
-        else:
-            return candidate
-    else:
-        raise SafetyBackupFailed("No free backup name")
-    final = _reserve_backup_name(db_path, label)
-    try:
-        os.replace(temp, final)
-    except OSError:
-        _remove_quietly(final)
-        raise
-    return final
-
-
-SAFETY_TEMP_PREFIX = ".pm-safety-"
-
-
-def sweep_safety_temps(db_path):
-    """Remove the temp copies an interrupted safety backup left (blocking).
-
-    Called once at startup, before any job can take a backup. Returns the
-    names removed.
-    """
-    folder = os.path.dirname(os.path.abspath(db_path))
-    removed = []
-    try:
-        names = os.listdir(folder)
-    except OSError:
-        return removed
-    for name in names:
-        if not (name.startswith(SAFETY_TEMP_PREFIX) and ".tmp" in name):
-            continue
-        try:
-            os.remove(os.path.join(folder, name))
-            removed.append(name)
-        except OSError:
-            continue
-    return removed
-
-
-def _standalone(path):
-    """Make the copy one self-contained file (rollback journal, not WAL).
-
-    The backup API copies the live database's WAL flag; a WAL file opened
-    read-only later (a verify, a restore preview) would leave ``-wal`` and
-    ``-shm`` sidecars beside it.
-    """
-    try:
-        with closing(sqlite3.connect(path)) as conn:
-            conn.execute("PRAGMA journal_mode=DELETE").fetchone()
-    except sqlite3.Error as exc:
-        raise SafetyBackupFailed("The backup could not be finished") from exc
-
-
-def _fsync(path):
-    with open(path, "rb+") as handle:
-        os.fsync(handle.fileno())
-
-
 def take_safety_backup(model, label="backup"):
     """Write and verify a safety backup; return its file name (blocking).
 
-    The copy is made in a temp file beside the database and only renamed
-    onto its final, unique name ``<db>.<label>_<stamp>`` once it verified,
-    so a backup file on disk is always a verified one. ``label`` "backup"
-    joins the pruned pool; another label (the workflow storage migration's
-    ``pre-workflow-storage``) is kept until the user removes it. Raises
-    SafetyBackupFailed, leaving no file.
+    See ``database/safety_backup.py``: a backup file on disk is always a
+    verified one. Raises SafetyBackupFailed, leaving no file.
     """
-    db_path = os.path.abspath(model.db_path)
-    fd, temp = tempfile.mkstemp(
-        dir=os.path.dirname(db_path), prefix=SAFETY_TEMP_PREFIX, suffix=".tmp"
-    )
-    os.close(fd)
-    final = None
-    try:
-        if not model.backup_database(temp):
-            raise SafetyBackupFailed("The backup could not be written")
-        _standalone(temp)
-        ok, reason = model.verify_database_file(temp)
-        if not ok:
-            raise SafetyBackupFailed("The backup did not verify", reason)
-        _fsync(temp)
-        if os.name != "nt":
-            os.chmod(temp, 0o600)
-        final = _place_backup(temp, db_path, label)
-        return os.path.basename(final)
-    except OSError as exc:
-        _remove_quietly(final)
-        raise SafetyBackupFailed("The backup could not be put in place") from exc
-    except SafetyBackupFailed:
-        _remove_quietly(final)
-        raise
-    finally:
-        _remove_quietly(temp, temp + "-journal", temp + "-wal", temp + "-shm")
+    return os.path.basename(_backups.take_safety_backup(model, label))
 
 
 def _failure(message, status, code=None, **extra):

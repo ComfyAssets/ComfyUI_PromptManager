@@ -1963,7 +1963,7 @@ class TestBackupRestoreContract(AdminAPITestCase):
         self.assertFalse((await invalid.json())["success"])
         compatible = self._snapshot_upload()
         with patch(
-            "database.models.rotate_history_epoch",
+            "database.restore_stage.rotate_history_epoch",
             side_effect=sqlite3.OperationalError("staging failed before safety backup"),
         ):
             staged = await self._restore("database_file", compatible)

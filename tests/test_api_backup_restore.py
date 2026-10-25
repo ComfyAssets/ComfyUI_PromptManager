@@ -38,6 +38,13 @@ from py.api import PromptManagerAPI, _public_path
 from utils.hashing import generate_prompt_hash
 
 
+def _is_upload(path):
+    """Not the safety backup's temp copy (database/safety_backup.py)."""
+    from database.safety_backup import SAFETY_TEMP_PREFIX
+
+    return not os.path.basename(path).startswith(SAFETY_TEMP_PREFIX)
+
+
 def _texts(path):
     conn = sqlite3.connect(path)
     try:
@@ -267,9 +274,13 @@ class TestRestoreRoute(BackupRestoreTestCase):
             resp = await self._restore(upload)
 
         self.assertEqual(resp.status, 200)
-        self.assertEqual(len(created), 1)
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            self.assertFalse(os.path.exists(created[0] + suffix))
+        # One upload, in the library's folder; it and the safety backup's
+        # temp copy are gone afterwards.
+        uploads = [p for p in created if _is_upload(p)]
+        self.assertEqual(len(uploads), 1)
+        for path in created:
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                self.assertFalse(os.path.exists(path + suffix))
 
     async def test_text_file_is_rejected_and_database_untouched(self):
         self._save("keep me")
@@ -417,7 +428,7 @@ class TestLargeRestores(BackupRestoreTestCase):
         self.assertEqual(
             [p["text"] for p in self.api.db.search_prompts()], ["restored"]
         )
-        self.assertEqual(len(created), 1)
+        self.assertEqual(len([p for p in created if _is_upload(p)]), 1)
         self._assert_removed(created)
 
     async def test_a_short_disk_is_refused_up_front(self):
@@ -455,7 +466,7 @@ class TestLargeRestores(BackupRestoreTestCase):
         self.assertEqual(data["code"], "insufficient-space")
         self.assertTrue(data["error"].endswith("Nothing was changed."))
         self.assertEqual([p["text"] for p in self.api.db.search_prompts()], ["keep me"])
-        self.assertEqual(len(created), 1)
+        self.assertEqual(len([p for p in created if _is_upload(p)]), 1)
         self._assert_removed(created)
 
 

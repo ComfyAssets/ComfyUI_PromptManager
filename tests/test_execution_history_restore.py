@@ -512,7 +512,7 @@ class HistoryRestoreTests(unittest.TestCase):
             subscribe_history_restore(self.path, lambda: notices.append(True))
         )
         with patch(
-            "database.models.rotate_history_epoch",
+            "database.restore_stage.rotate_history_epoch",
             side_effect=sqlite3.OperationalError("injected staging failure"),
         ):
             with self.assertRaisesRegex(sqlite3.OperationalError, "injected staging"):
