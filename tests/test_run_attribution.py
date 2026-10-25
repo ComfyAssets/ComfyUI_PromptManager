@@ -235,3 +235,69 @@ class TestScanUsesHistory(RecordedRuns, AdminAPITestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHostHelpers(unittest.TestCase):
+    """The host lookups degrade to "no proof", never to an error."""
+
+    def test_host_output_directory(self):
+        import sys
+        import types
+
+        from database import run_attribution
+
+        cases = (
+            (types.SimpleNamespace(get_output_directory=lambda: "/out"), "/out"),
+            (types.SimpleNamespace(get_output_directory=lambda: ""), None),
+            (types.SimpleNamespace(get_output_directory=lambda: 1 / 0), None),
+        )
+        original = sys.modules.get("folder_paths")
+        try:
+            for module, expected in cases:
+                sys.modules["folder_paths"] = module
+                self.assertEqual(run_attribution.host_output_directory(), expected)
+            sys.modules["folder_paths"] = None  # import fails: outside ComfyUI
+            self.assertIsNone(run_attribution.host_output_directory())
+        finally:
+            if original is None:
+                sys.modules.pop("folder_paths", None)
+            else:
+                sys.modules["folder_paths"] = original
+
+    def test_run_window_needs_integer_times_and_a_readable_file(self):
+        from database.run_attribution import _written_during
+
+        self.assertFalse(_written_during(__file__, None, 5))
+        self.assertFalse(_written_during(os.path.join("no", "such.png"), 0, 5))
+
+    def test_executing_run_id(self):
+        import sys
+        import types
+
+        from utils.run_keys import executing_run_id
+
+        def host(context):
+            def get_executing_context():
+                if isinstance(context, Exception):
+                    raise context
+                return context
+
+            return types.SimpleNamespace(get_executing_context=get_executing_context)
+
+        original = sys.modules.get("comfy_execution.utils")
+        try:
+            for context, expected in (
+                (types.SimpleNamespace(prompt_id="run-1"), "run-1"),
+                (types.SimpleNamespace(prompt_id=""), None),
+                (None, None),
+                (RuntimeError("no context"), None),
+            ):
+                sys.modules["comfy_execution.utils"] = host(context)
+                self.assertEqual(executing_run_id(), expected)
+            sys.modules["comfy_execution.utils"] = None
+            self.assertIsNone(executing_run_id())
+        finally:
+            if original is None:
+                sys.modules.pop("comfy_execution.utils", None)
+            else:
+                sys.modules["comfy_execution.utils"] = original
