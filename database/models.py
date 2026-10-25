@@ -1247,7 +1247,11 @@ class PromptModel:
             Path(src_path).resolve().as_uri() + "?mode=ro", uri=True
         )
         try:
-            source.backup(self.get_connection())
+            target = self.get_connection()
+            # The target is written under backup's step too: mark it in use
+            # so a concurrent close_all retires it instead of closing it.
+            with target.using():
+                source.backup(target)
         finally:
             source.close()
 

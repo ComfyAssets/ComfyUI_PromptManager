@@ -319,6 +319,32 @@ class TestBackgroundWritesSurviveTheSwitch(_MoveCase):
         self.assertEqual(outcome, {"ok": True})
         self.assertEqual(_run_count(self.old_db, text), 1)
 
+    def test_a_retire_failure_after_a_complete_switch_does_not_fail_the_move(self):
+        node = PromptDatabase(self.old_db)
+        node.get_prompt_by_id(1)
+        real = models.PromptModel.retire_detached
+        calls = []
+
+        def failing(connections, logger=None):
+            calls.append(len(connections))
+            real(connections, logger)  # closed, but the call still fails
+            raise RuntimeError("retiring failed")
+
+        with mock.patch.object(
+            models.PromptModel, "retire_detached", staticmethod(failing)
+        ):
+            with self.assertLogs("prompt_manager.database.library_move", "ERROR"):
+                result = self.move()
+        self.assertEqual(len(calls), 1)
+        self.assertGreater(calls[0], 0)
+        self.assertEqual(node.model.db_path, self.new_db)
+        self.assertEqual(result.location.db_path, self.new_db)
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self.ext, "prompts.db.moved-to-__promptmanager")
+            )
+        )
+
     @staticmethod
     def _racing_run_count(writer_db, text):
         """A run count whose UPDATE marks its connection in use for the probe."""

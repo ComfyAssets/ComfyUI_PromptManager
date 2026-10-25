@@ -725,16 +725,14 @@ def _switch_guarded(move: _Move, location) -> list:
             # Retire, never wait, here: a connection still in use may be
             # waiting on the very locks this thread holds.
             try:
-                move.retiring.extend(
-                    PromptModel.retire_detached(
-                        move.unswitch(plan.db_path, location.db_path), logger
-                    )
-                )
+                undone = move.unswitch(plan.db_path, location.db_path)
             except Exception:
                 logger.exception("Library move: undoing the switch failed")
+            else:
+                _retire(move, undone)
             # The old file's connections a partial switch detached: the
             # models reopen it on next use, so close them now, not at GC.
-            move.retiring.extend(PromptModel.retire_detached(detached, logger))
+            _retire(move, detached)
             raise MoveFailed("switch-failed") from error
         move.checkpoint("switched")
         return detached
@@ -755,7 +753,23 @@ def _copy_and_switch(move: _Move, location, attempts: int):
     try:
         return _copy_and_switch_locked(move, location, attempts)
     finally:
-        PromptModel.await_detached(move.retiring, logger)
+        try:
+            PromptModel.await_detached(move.retiring, logger)
+        except Exception:
+            logger.exception("Library move: waiting for old connections failed")
+
+
+def _retire(move: _Move, connections: list) -> None:
+    """Retire ``connections``, adding those still in use to ``move.retiring``.
+
+    Never raises: a switch that completed must not be reported as failed
+    because one of the old connections could not be retired (logged; the
+    rename then reports the old files as still in use).
+    """
+    try:
+        move.retiring.extend(PromptModel.retire_detached(connections, logger))
+    except Exception:
+        logger.exception("Library move: retiring the old connections failed")
 
 
 def _copy_and_switch_locked(move: _Move, location, attempts: int):
@@ -781,7 +795,7 @@ def _copy_and_switch_locked(move: _Move, location, attempts: int):
                 # on it is interrupted and cannot commit, so it fails (and
                 # runs again on the new library) instead of landing in the
                 # old file. Its own thread closes the connection.
-                move.retiring.extend(PromptModel.retire_detached(detached, logger))
+                _retire(move, detached)
             finally:
                 if source.in_transaction:
                     source.execute("ROLLBACK")

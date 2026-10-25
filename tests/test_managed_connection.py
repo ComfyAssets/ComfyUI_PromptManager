@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import weakref
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -202,6 +203,117 @@ class TestCalls(_Case):
         # As with sqlite3's own cursors (the result varies by Python version).
         with contextlib.suppress(sqlite3.ProgrammingError):
             reader.close()
+
+
+class _CursorOpenedDuringClose(weakref.WeakSet):
+    """The cursor set of a connection being closed; a cursor opens mid-iteration.
+
+    ``hook`` runs after the first cursor is yielded, where a thread switch
+    could let the owner call ``conn.cursor()`` (Python 3.10-3.12 copy a
+    WeakSet one item at a time). It runs in the closing thread itself, so
+    the result does not depend on scheduling.
+    """
+
+    def __init__(self, items, hook):
+        super().__init__(items)
+        self.hook = hook
+
+    def __iter__(self):
+        hooked = False
+        for item in super().__iter__():
+            yield item
+            if not hooked:
+                hooked = True
+                self.hook()
+
+
+class TestReviewRound(_Case):
+    """PR #321 review: I1 (cursor set race), M1 and M2 (unguarded paths)."""
+
+    def test_a_cursor_opened_while_the_connection_closes_cannot_break_retire(self):
+        conn = self.connect()
+        kept = [conn.cursor() for _ in range(3)]
+        refused = []
+
+        def open_cursor():
+            try:
+                kept.append(conn.cursor())
+            except sqlite3.ProgrammingError as error:
+                refused.append(error)
+
+        conn._cursors = _CursorOpenedDuringClose(conn._cursors, open_cursor)
+        self.assertTrue(conn.retire())  # no "Set changed size during iteration"
+        self.assertTrue(conn.wait_closed(0))
+        self.assertEqual(len(refused), 1)
+        self.assertEqual(len(kept), 3)
+
+    def test_a_retired_connection_refuses_new_cursors_and_scripts(self):
+        conn = self.connect()
+        conn._enter()  # its owner is inside a call: retired, not yet closed
+        try:
+            self.assertFalse(conn.retire())
+            for call in (
+                conn.cursor,
+                lambda: conn.executescript("CREATE TABLE late(x);"),
+                lambda: conn.in_transaction,
+                lambda: conn.create_function("f", 0, lambda: 1),
+            ):
+                with self.subTest(call=call):
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        call()
+        finally:
+            conn._leave()
+        self.assertTrue(conn.wait_closed(0))
+        with contextlib.closing(sqlite3.connect(self.path)) as check:
+            tables = check.execute(
+                "SELECT name FROM sqlite_master WHERE name='late'"
+            ).fetchall()
+        self.assertEqual(tables, [])
+
+    def test_one_connection_failing_to_retire_does_not_skip_the_rest(self):
+        class Broken(ManagedConnection):
+            def retire(self):
+                raise RuntimeError("retire failed")
+
+        broken = sqlite3.connect(self.path, check_same_thread=False, factory=Broken)
+        try:
+            after = self.connect()
+            logger = mock.Mock()
+            pending = retire_connections([broken, after], logger)
+            self.assertEqual(pending, [])
+            self.assertTrue(after.wait_closed(0))
+            logger.exception.assert_called_once()
+        finally:
+            ManagedConnection.retire(broken)
+
+    def test_a_restore_marks_its_backup_target_in_use(self):
+        model = PromptModel(os.path.join(self._tmp.name, "live.db"))
+        try:
+            self._restore_marks_its_target(model)
+        finally:
+            model.close_all()
+
+    def _restore_marks_its_target(self, model):
+        source_path = os.path.join(self._tmp.name, "source.db")
+        PromptModel(source_path).close_all()
+        target = model.get_connection()
+        depths = []
+        connect = sqlite3.connect
+
+        class Source(sqlite3.Connection):
+            def backup(self, into, *args, **kwargs):
+                depths.append(into._depth)
+                return super().backup(into, *args, **kwargs)
+
+        def connect_source(*args, **kwargs):
+            if "factory" in kwargs:
+                return connect(*args, **kwargs)
+            return connect(*args, **kwargs, factory=Source)
+
+        with mock.patch("database.models.sqlite3.connect", connect_source):
+            model._replace_contents_from(source_path)
+        self.assertEqual(depths, [1])
+        self.assertEqual(target._depth, 0)
 
 
 class TestModelConnections(_Case):
