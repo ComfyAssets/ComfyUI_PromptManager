@@ -238,6 +238,8 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
             except Exception as e:
                 # Log error but don't fail the encoding
                 self.logger.warning(f"Failed to save prompt to database: {e}")
+        else:
+            self._skip_empty_prompt(prompt, unique_id)
 
         # Perform standard CLIP text encoding using the combined text
         self.logger.debug(

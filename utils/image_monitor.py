@@ -18,8 +18,9 @@ Typical usage:
 The system automatically:
 - Detects new image files in monitored directories
 - Extracts ComfyUI workflow metadata from PNG chunks
-- Links images to active prompts using the prompt tracker
-- Handles fallback linking when no active prompt is available
+- Links images to tracked prompts only when the image's own graph proves the
+  tracked entry belongs to its run (``utils.run_keys``)
+- Leaves an image unlinked when nothing certain identifies its prompt (#342)
 - Provides status information and monitoring control
 """
 
@@ -36,12 +37,15 @@ from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
 from .prompt_graph import resolve_text, run_prompt_nodes
 from .prompt_pair_resolver import resolve_prompt_pair
+from .run_keys import image_run_keys
 from .usage_tracking import survive_switch
 
 try:
     from ..database.pair_ingestion import ingest_resolved_pair
+    from ..database.run_attribution import host_output_directory, stored_run_prompt
 except ImportError:
     from database.pair_ingestion import ingest_resolved_pair
+    from database.run_attribution import host_output_directory, stored_run_prompt
 
 # Upper bound on images waiting to be processed (a burst beyond this is skipped)
 MAX_PENDING_IMAGES = 1000
@@ -126,15 +130,17 @@ class ImageGenerationHandler(FileSystemEventHandler):
         if event.is_directory or not self.is_image_file(event.src_path):
             return
         self.logger.info(f"New image detected: {event.src_path}")
-        # Snapshot prompt context NOW before the delay — in batch workflows
-        # the tracker advances to the next prompt before images are processed.
-        prompt_snapshot = self.prompt_tracker.get_current_prompt()
-        if prompt_snapshot:
-            self.logger.debug(
-                f"Snapshot prompt {prompt_snapshot.get('id', '?')} for "
-                f"{os.path.basename(event.src_path)}"
-            )
-        self.schedule(event.src_path, prompt_snapshot)
+        # Snapshot the tracked runs NOW, before the delay: a later run may
+        # execute the same node again before this image is processed.
+        self.schedule(event.src_path, self._keyed_snapshot())
+
+    def _keyed_snapshot(self):
+        """The tracker's latest entry per run key, or None when unavailable."""
+        try:
+            return self.prompt_tracker.keyed_snapshot()
+        except Exception as error:
+            self.logger.warning(f"Could not snapshot tracked prompts: {error}")
+            return None
 
     def schedule(self, image_path: str, prompt_snapshot=None) -> bool:
         """Queue an image for processing on the worker thread, once per path.
@@ -290,13 +296,15 @@ class ImageGenerationHandler(FileSystemEventHandler):
         This method handles the complete processing pipeline for a new image:
         1. Verifies the file still exists
         2. Extracts ComfyUI metadata from the image
-        3. Tries to identify the correct prompt via metadata-based lookup
-        4. Falls back to the prompt snapshot captured at event time
-        5. Links the image to the appropriate prompt in the database
+        3. Identifies the prompt from the image's metadata, else from a tracked
+           run the image's graph proves (``_find_prompt_from_run``)
+        4. Links the image to that prompt, or leaves it unlinked when nothing
+           certain identifies it (logged at info; #342)
 
         Args:
             image_path: Full path to the newly created image file
-            prompt_snapshot: Prompt context captured at file-creation time (optional)
+            prompt_snapshot: The tracker's keyed snapshot taken when the image
+                appeared (``PromptTracker.keyed_snapshot``); None reads it now
         """
         try:
             self.logger.info(f"Processing image: {image_path}")
@@ -329,43 +337,17 @@ class ImageGenerationHandler(FileSystemEventHandler):
                     f"Metadata match: prompt {current_prompt['id']} for "
                     f"{os.path.basename(image_path)}"
                 )
-
-            # Strategy 2: Pop from batch queue. Batch items (text supplied by
-            # PromptSearchList) share one graph, so metadata can't tell them apart;
-            # they are queued in encoding order and images save in the same order.
-            if not current_prompt:
-                current_prompt = self.prompt_tracker.pop_next_prompt()
-                if current_prompt:
-                    self.logger.info(
-                        f"Queue match: prompt {current_prompt['id']} for "
-                        f"{os.path.basename(image_path)}"
-                    )
-
-            # Strategy 3: Use snapshot captured at file-creation time
-            if not current_prompt and prompt_snapshot:
-                current_prompt = prompt_snapshot
-                self.logger.info(
-                    f"Snapshot match: prompt {current_prompt.get('id', 'unknown')}"
+            else:
+                current_prompt = self._find_prompt_from_run(
+                    image_path, metadata, prompt_snapshot
                 )
-
-            # Strategy 4: Check live prompt tracker
             if not current_prompt:
-                current_prompt = self.prompt_tracker.get_current_prompt()
-                if current_prompt:
-                    self.logger.info(
-                        f"Live tracker match: prompt {current_prompt['id']}"
-                    )
-
-            # Strategy 5: Fallback to most recent prompt in DB
-            if not current_prompt:
-                current_prompt = self._get_fallback_prompt()
-                if current_prompt:
-                    self.logger.debug(f"Fallback match: prompt {current_prompt['id']}")
-                else:
-                    self.logger.warning(
-                        f"No prompt context available, skipping image: {image_path}"
-                    )
-                    return
+                # Nothing certain: never guess from recency or a stale entry (#342)
+                self.logger.info(
+                    "No certain prompt for "
+                    f"{os.path.basename(image_path)}; left unlinked"
+                )
+                return
 
             # Extend timeout if we have an active execution
             if current_prompt.get("execution_id"):
@@ -392,6 +374,61 @@ class ImageGenerationHandler(FileSystemEventHandler):
             import traceback
 
             self.logger.error(traceback.format_exc())
+
+    def _find_prompt_from_run(
+        self, image_path: str, metadata, prompt_snapshot=None
+    ) -> Optional[Dict[str, Any]]:
+        """The prompt a tracked run proves for an image whose metadata can't say.
+
+        Only an entry registered under the run key of the image's own positive
+        node counts (``utils.run_keys``): never the newest prompt in the
+        database and never an entry of another graph (#342).
+
+        1. Batch queue: the oldest queued entry of that key. Batch items (text
+           from PromptSearchList) share one key and are linked in order. An
+           empty item's placeholder leaves its image unlinked.
+        2. Snapshot taken when the image appeared: the key's latest entry, when
+           its run registered exactly one entry for the key (a batch's latest
+           item says nothing about the other images) and the run is known.
+        3. Recorded execution history: the run that wrote this file names one
+           stored prompt (``database.run_attribution``).
+        """
+        keys = image_run_keys(metadata)
+        name = os.path.basename(image_path)
+        if len(keys) == 1:
+            (key,) = keys.values()
+            queued = self.prompt_tracker.pop_for_keys([key])
+            if queued is not None:
+                if queued.get("placeholder"):
+                    self.logger.info(f"Queue entry for {name} has no prompt text")
+                    return None
+                self.logger.info(f"Queue match: prompt {queued['id']} for {name}")
+                return queued
+            if prompt_snapshot is None:
+                prompt_snapshot = self._keyed_snapshot()
+            entry = (prompt_snapshot or {}).get(key)
+            if entry is not None:
+                context, run_id, count = entry
+                if not context.get("placeholder") and run_id and count == 1:
+                    self.logger.info(f"Run match: prompt {context['id']} for {name}")
+                    return context
+        elif len(keys) > 1:
+            self.logger.debug(f"{len(keys)} positive prompt nodes for {name}")
+        prompt_id = self._history_prompt(image_path)
+        if prompt_id is None:
+            return None
+        self.logger.info(f"History match: prompt {prompt_id} for {name}")
+        return {"id": prompt_id, "from_history": True}
+
+    def _history_prompt(self, image_path: str) -> Optional[int]:
+        """The stored prompt recorded history attributes to this file, if one."""
+        try:
+            return stored_run_prompt(
+                self.db_manager, image_path, host_output_directory()
+            )
+        except Exception as error:
+            self.logger.warning(f"History attribution failed: {error}")
+            return None
 
     def _find_prompt_from_metadata(self, metadata) -> Tuple[str, Optional[Dict]]:
         """Identify the prompt that produced an image from its embedded metadata.
@@ -542,35 +579,6 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.logger.error(f"Error getting file info: {e}")
             return {}
 
-    def _get_fallback_prompt(self) -> Optional[Dict[str, Any]]:
-        """Get the most recent prompt from database as fallback.
-
-        When no active prompt is available from the tracker, this method attempts
-        to find the most recently created prompt in the database to use as a fallback
-        for image linking.
-
-        Returns:
-            Dictionary containing prompt information with 'fallback' flag set to True,
-            or None if no recent prompt is available
-        """
-        try:
-            recent = self.db_manager.get_recent_prompts(limit=1)
-            # Paginated dict ({"prompts": [...]}) or a plain list
-            recent_prompts = (
-                recent.get("prompts") if isinstance(recent, dict) else recent
-            )
-            if recent_prompts:
-                prompt = recent_prompts[0]
-                return {
-                    "id": prompt["id"],
-                    "text": prompt["text"],
-                    "timestamp": prompt.get("created_at"),
-                    "fallback": True,
-                }
-        except Exception as e:
-            self.logger.error(f"Error getting fallback prompt: {e}")
-        return None
-
     def link_image_to_prompt(
         self, image_path: str, prompt_context: Dict, metadata: Dict
     ):
@@ -615,10 +623,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
             if image_id is None:
                 return
             if image_id:  # 0: nothing new was linked (logged by the database)
-                fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
                 self.logger.debug(
                     f"Successfully linked image {image_id} to prompt "
-                    f"{prompt_context['id']}{fallback_note}"
+                    f"{prompt_context['id']}"
                 )
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")

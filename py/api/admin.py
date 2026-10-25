@@ -35,7 +35,8 @@ except ImportError:
     from utils.parallel import map_parallel
 
 try:
-    from ...database.pair_ingestion import ingest_resolved_pair
+    from ...database.pair_ingestion import blank_positive, ingest_resolved_pair
+    from ...database.run_attribution import host_output_directory, stored_run_prompt
     from ...utils.generation_params import (
         PLACEHOLDERS,
         GenerationParamsError,
@@ -45,7 +46,8 @@ try:
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
     from ...utils.review_capture import reviewable
 except ImportError:
-    from database.pair_ingestion import ingest_resolved_pair
+    from database.pair_ingestion import blank_positive, ingest_resolved_pair
+    from database.run_attribution import host_output_directory, stored_run_prompt
     from utils.generation_params import (
         PLACEHOLDERS,
         GenerationParamsError,
@@ -1665,6 +1667,9 @@ class AdminRoutesMixin:
             return None
         _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
+        if blank_positive(resolution):
+            # Only prepend/append text: no stored prompt can own it (#342)
+            resolution = {**resolution, "state": "unresolved"}
         # Ambiguous without a choice: unresolved unless something links it.
         unchoosable = resolution["state"] == "ambiguous" and not reviewable(resolution)
         if unchoosable:
@@ -1693,6 +1698,9 @@ class AdminRoutesMixin:
             # Graphs without a recognized sampler keep the legacy extractor below.
             prompt_text = self._graph_prompt_text(metadata)
             if not prompt_text:
+                linked = self._link_recorded_run(media_file, canonical)
+                if linked is not None:
+                    return linked
                 return "unresolved" if unchoosable else resolution["state"]
         elif resolution["state"] == "ambiguous":
             return "unresolved" if unchoosable else "ambiguous"
@@ -1715,6 +1723,33 @@ class AdminRoutesMixin:
         if not detailed or status not in SCAN_TITLED_DETAILS:
             return status
         return {"status": status, "title": self._scan_title(media_file, prompt_text)}
+
+    def _link_recorded_run(self, media_file, canonical):
+        """Link a file recorded history attributes to one stored prompt (#342).
+
+        Returns the scan status, or None when history names no single stored
+        prompt for the file (``database.run_attribution``). Never creates a
+        prompt.
+        """
+        try:
+            prompt_id = stored_run_prompt(
+                self.db, str(media_file), host_output_directory()
+            )
+        except Exception:
+            self.logger.warning(
+                f"History attribution failed for {media_file.name}", exc_info=True
+            )
+            return None
+        if prompt_id is None:
+            return None
+        try:
+            image_id = self.db.link_image_to_prompt(
+                prompt_id, str(media_file), metadata=canonical
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to link {media_file.name} from history: {e}")
+            return "found"
+        return "linked" if image_id else "unchanged"
 
     def _scan_title(self, media_file, text):
         """The linked prompt's Library title (its stored title, else ``text``'s

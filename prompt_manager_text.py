@@ -216,6 +216,8 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
             except Exception as e:
                 # Log error but don't fail the processing
                 self.logger.warning(f"Failed to save prompt to database: {e}")
+        else:
+            self._skip_empty_prompt(prompt, unique_id)
 
         # Register with ComfyUI integration for standard metadata compatibility
         node_id = f"promptmanagertext_{int(time.time() * 1000)}"

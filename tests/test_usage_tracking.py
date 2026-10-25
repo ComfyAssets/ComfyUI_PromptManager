@@ -477,10 +477,19 @@ class TestPendingFirstUse(unittest.TestCase):
 class FakeTracker:
     def __init__(self):
         self.calls = []
+        self.runs = []
 
-    def set_current_prompt(self, prompt_text, additional_data=None, push_to_queue=True):
+    def set_current_prompt(
+        self, prompt_text, additional_data=None, push_to_queue=True, **run
+    ):
         self.calls.append({"text": prompt_text, "push_to_queue": push_to_queue})
+        self.runs.append(run)
         return "exec-1"
+
+    def mark_empty(self, run_key=None, run_id=None, push_to_queue=False):
+        self.calls.append(
+            {"empty": True, "run_key": run_key, "push_to_queue": push_to_queue}
+        )
 
 
 class TestNodeRoles(DbTestCase):
