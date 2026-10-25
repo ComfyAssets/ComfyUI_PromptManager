@@ -82,20 +82,43 @@ def detect_lora_manager(custom_path: str = "") -> Optional[str]:
         if p.is_dir() and _looks_like_lora_manager(p):
             return str(p.resolve())
 
-    # 2. Auto-detect via custom_nodes (case-insensitive scan)
+    # 2. Auto-detect in every custom_nodes folder (case-insensitive scan):
+    # ComfyUI's own first, then the extra ones it registered (#144).
+    folders = []
     root = find_comfyui_root()
     if root:
-        custom_nodes = root / "custom_nodes"
-        if custom_nodes.is_dir():
-            for entry in custom_nodes.iterdir():
-                if (
-                    entry.is_dir()
-                    and "lora" in entry.name.lower()
-                    and "manager" in entry.name.lower()
-                    and _looks_like_lora_manager(entry)
-                ):
-                    return str(entry.resolve())
+        folders.append(root / "custom_nodes")
+    folders.extend(custom_nodes_directories())
+    seen = set()
+    for custom_nodes in folders:
+        key = os.path.normcase(os.path.abspath(str(custom_nodes)))
+        if key in seen:
+            continue
+        seen.add(key)
+        found = _lora_manager_in(Path(custom_nodes))
+        if found:
+            return found
 
+    return None
+
+
+def _lora_manager_in(custom_nodes: Path) -> Optional[str]:
+    """The LoraManager install directly under ``custom_nodes``, or None."""
+    try:
+        entries = sorted(custom_nodes.iterdir()) if custom_nodes.is_dir() else []
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            if (
+                entry.is_dir()
+                and "lora" in entry.name.lower()
+                and "manager" in entry.name.lower()
+                and _looks_like_lora_manager(entry)
+            ):
+                return str(entry.resolve())
+        except OSError:
+            continue
     return None
 
 

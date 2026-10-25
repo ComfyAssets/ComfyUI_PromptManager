@@ -817,8 +817,65 @@ class TestDetectLoraManager(unittest.TestCase):
         self.assertTrue(lora_utils._looks_like_lora_manager(lm))
 
     def test_nothing_found(self):
-        with patch.object(lora_utils, "find_comfyui_root", return_value=None):
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=None),
+            patch.object(lora_utils, "custom_nodes_directories", return_value=[]),
+        ):
             self.assertIsNone(lora_utils.detect_lora_manager())
+
+    def test_auto_detects_in_an_extra_custom_nodes_folder(self):
+        # #144: ComfyUI's main custom_nodes has no LoraManager; an extra
+        # custom_nodes path registered through folder_paths (extra model
+        # paths, --base-directory) has it.
+        root = _make_comfy_root(self.tmp)
+        extra = self.tmp / "shared_nodes"
+        extra.mkdir()
+        lm = _make_lora_manager(extra, "ComfyUI-Lora-Manager")
+        fake = types.SimpleNamespace(
+            base_path=str(root),
+            get_folder_paths=lambda name: (
+                [str(root / "custom_nodes"), str(extra)]
+                if name == "custom_nodes"
+                else []
+            ),
+        )
+        with (
+            patch.dict(sys.modules, {"folder_paths": fake}),
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
+
+    def test_main_custom_nodes_wins_over_an_extra_folder(self):
+        root = _make_comfy_root(self.tmp)
+        main = _make_lora_manager(root / "custom_nodes")
+        extra = self.tmp / "shared_nodes"
+        extra.mkdir()
+        _make_lora_manager(extra)
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(
+                lora_utils,
+                "custom_nodes_directories",
+                return_value=[(root / "custom_nodes").resolve(), extra.resolve()],
+            ),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(main.resolve()))
+
+    def test_an_unreadable_extra_folder_is_skipped(self):
+        root = _make_comfy_root(self.tmp)
+        missing = self.tmp / "gone"
+        extra = self.tmp / "shared_nodes"
+        extra.mkdir()
+        lm = _make_lora_manager(extra)
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(
+                lora_utils,
+                "custom_nodes_directories",
+                return_value=[missing, extra.resolve()],
+            ),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
 
 
 class TestFindLoraDirectories(unittest.TestCase):
