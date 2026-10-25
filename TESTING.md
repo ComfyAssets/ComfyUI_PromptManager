@@ -3071,6 +3071,50 @@ are closed before `os.replace`; renames stay inside one folder; folder identity 
 folder are refused. The browser test server closes its own log handlers before its temp
 root (which now holds the logs) is removed.
 
+### Backup and restore contract (#249 System S8)
+
+A restore is staged, then published (`database/restore_stage.py`). The upload is
+streamed to `.pm-restore-upload-*.tmp` and staged in a `.pm-restore-*` folder, both in
+the library's own folder (never the system temp folder); free space there must hold
+the upload three times (upload, stage, WAL growth) plus the current database
+(`restore_room`). The stage checks the upload without reading every workflow document,
+copies it with the backup API (rollback-journal and WAL files alike), migrates an older
+schema, repairs damaged workflow documents (re-stored from an inline copy with the same
+SHA-256, else dropped with their images' references cleared, both counted), rotates the
+history epoch, makes the copy standalone, verifies it with every document read and
+records its SHA-256. Publishing rechecks that digest (`StageChanged`), keeps the
+current database as `<db>.backup_<YYYYmmdd_HHMMSS_ffffff>[_n]` (`database/safety_backup.py`:
+standalone, fsynced, 0600, not verified because the database being replaced may be the
+damaged one), copies the stage over the live pages through the backup API (#226: no
+file copy) and checkpoints the WAL with TRUNCATE, waiting up to 30 s for readers and
+logging one that stays (`tests/test_restore_stage.py`).
+
+`POST /prompt_manager/restore/preview` answers `{token, expires_at, summary, schema,
+integrity, documents, live, size, safety_backup}` and writes nothing live; at most two
+stages are held (429 `too-large`) for 15 minutes; `DELETE .../preview/{token}` removes
+one. `POST /prompt_manager/restore/apply {token}` rechecks the live fingerprint (409
+`plan-changed`, stage dropped) and starts "Database restore": kind `restore`, admission
+`exclusive` (it runs alone, like Move library and Optimize), not cancellable,
+indeterminate. Its runner waits for request leases, rechecks the fingerprint,
+publishes, swaps `self.db`, prunes the pool and logs the safety backup by name, any
+document repair and the restored counts; a failed page copy keeps the safety backup and
+says so. Tokens are single use (409 `plan-used` with the job), expire (410
+`plan-expired`) and are bound to the database identity (409 `storage-changed`). The
+legacy `/restore` runs the same stage and publish under the same `exclusive` kind with
+its old response; a repair adds `workflow_documents` and a sentence to `message`
+(`tests/test_restore_plans.py`, `tests/test_api_backup_restore.py`).
+
+Short request-scoped work takes a registry lease (`JobRegistry.lease`): a Needs review
+decision, a maintenance preview, a restore preview and the apply's check. A lease is not
+listed, never refuses another lease or a job, and is refused (409 `busy`) while an
+`exclusive` job runs; the restore waits for running leases before it switches the file
+(`tests/test_job_leases.py`). `GET /prompt_manager/backup` holds `backup` ("Database
+backup", `guarded`), writes a standalone copy beside the database, verifies it
+(integrity and schema, not every document) before a byte is sent (500 and no bytes
+otherwise), streams it and closes the file before removing it. `GET
+/prompt_manager/backup/status` lists up to ten `<db>.backup_*` files newest first (name,
+bytes, modified time; no paths) and this session's last verified download, or null.
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no
