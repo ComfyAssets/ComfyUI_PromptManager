@@ -190,6 +190,7 @@ test('status text per outcome', async () => {
         host: 'Saved to the server configuration.',
         runtime: 'Applied until the server restarts.',
         partial: 'Some changes were not saved. Review the highlighted settings.',
+        partialSaved: 'Some changes were saved to the server configuration; the highlighted ones were not.',
         tabOnly: 'Saved for this tab only; browser storage is unavailable.',
         conflict: 'Settings changed elsewhere. Reload this section to see them.',
         restart: 'Restart ComfyUI to apply:',
@@ -363,4 +364,43 @@ test('a host save refused for one source says the server reason and names it unt
     drafts.set('host', 'gallery_root_paths', ['output']);
     assert.equal(drafts.invalidSource(), null);
     assert.equal(drafts.statusText(), 'Unsaved changes.');
+});
+
+test('a partial host save keeps what saved, adopts its revision and fails only the rest (S10 review I3)', async () => {
+    const { SETTINGS_STATUS } = await source;
+    const domains = adapters({ host: { lora_trigger_words_enabled: false, gallery_root_paths: ['a'] } });
+    const drafts = await loaded(domains);
+    // The LoRA part is written (config.json moves to sha256:lora), then /settings refuses one source.
+    domains.outcome.host = () => {
+        throw Object.assign(new Error('missing can\'t be used: not found. Remove it or reconnect it, then save.'), {
+            code: 'invalid-source', source: 'missing', partial: { saved: ['lora_trigger_words_enabled'], revision: 'sha256:lora' } });
+    };
+    drafts.set('host', 'lora_trigger_words_enabled', true);
+    drafts.set('host', 'gallery_root_paths', ['a', 'missing']);
+    const first = await drafts.save();
+    assert.equal(first.host, 'partial');
+    assert.deepEqual([...drafts.failed('host')], ['gallery_root_paths']);
+    assert.equal(drafts.saved('host').lora_trigger_words_enabled, true);
+    assert.deepEqual(drafts.changes('host'), { gallery_root_paths: ['a', 'missing'] });
+    assert.equal(drafts.invalidSource(), 'missing');
+    assert.equal(drafts.statusText(), 'missing can\'t be used: not found. Remove it or reconnect it, then save.');
+    // The next save carries the revision the saved part produced: no false "changed elsewhere".
+    domains.outcome.host = null;
+    drafts.set('host', 'gallery_root_paths', ['a']);
+    const second = await drafts.save();
+    assert.equal(second.host, 'saved');
+    assert.equal(domains.calls.at(-1)[2].expected_revision, 'sha256:lora');
+    assert.deepEqual(domains.calls.at(-1)[1], { gallery_root_paths: ['a'] });
+    // Without a server reason, the status says some were saved and the highlighted ones were not.
+    domains.outcome.host = () => { throw Object.assign(new Error('boom'), { partial: { saved: ['x'], revision: 'sha256:three' } }); };
+    drafts.set('host', 'x', 1);
+    drafts.set('host', 'y', 2);
+    assert.equal((await drafts.save()).host, 'partial');
+    assert.equal(drafts.statusText(), SETTINGS_STATUS.partialSaved);
+    assert.deepEqual([...drafts.failed('host')], ['y']);
+    // A partial result that saved nothing is a plain failure.
+    domains.outcome.host = () => { throw Object.assign(new Error('boom'), { partial: { saved: [] } }); };
+    drafts.set('host', 'z', 3);
+    assert.equal((await drafts.save()).host, 'failed');
+    assert.equal(drafts.statusText(), SETTINGS_STATUS.partial);
 });

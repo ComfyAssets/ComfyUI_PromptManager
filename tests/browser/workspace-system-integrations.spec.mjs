@@ -190,6 +190,13 @@ test('key never prefilled; blank keeps; Clear saved key clears; saved through Sa
     await expect(field).toHaveValue('');
     await expect(key.locator('p.small')).toHaveText('No key saved.');
     await expect(clear).toHaveCount(0);
+    // A typed key is dropped when the section is left: the field comes back empty with nothing hidden to save (N4).
+    await field.fill('sk-dropped');
+    await expect(status(page)).toHaveText('Unsaved changes.');
+    await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Appearance', exact: true }).click();
+    await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Integrations', exact: true }).click();
+    await expect(status(page)).toHaveText('No unsaved changes.');
+    await expect(key.locator('p.small')).toHaveText('No key saved.');
     // Typing a key drafts it; Save sends it once through /lora/enable with the settings revision.
     await field.fill('sk-test-key');
     await expect(key.locator('p.small')).toHaveText('The new key replaces the saved one when you save.');
@@ -215,10 +222,15 @@ test('key never prefilled; blank keeps; Clear saved key clears; saved through Sa
     await field.fill('   ');
     await expect(status(page)).toHaveText('No unsaved changes.');
     await field.fill('');
-    // Clear saved key drafts the removal; Save removes it.
-    await clear.click();
+    // Clear saved key drafts the removal; Save removes it. The keyboard stays on the key field, and the line that
+    // says so is announced (S10 review M2).
+    await expect(key.locator('p.small')).toHaveAttribute('role', 'status');
+    await expect(field).toHaveAttribute('aria-describedby', 'civitai-key-status');
+    await clear.focus();
+    await page.keyboard.press('Enter');
     await expect(key.locator('p.small')).toHaveText('The saved key is removed when you save.');
     await expect(clear).toHaveCount(0);
+    await expect(field).toBeFocused();
     await save(page).click();
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     expect(enables.at(-1)).toMatchObject({ clear_civitai_api_key: true });
@@ -241,6 +253,37 @@ test('a LoRA save over settings changed elsewhere is a conflict, never a blind w
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     expect((await serverJson(request, '/__test__/integrations/state')).trigger_words).toBe(true);
 });
+
+test('a save where only the LoRA part is written says so; the next save needs no conflict (S10 review I3)',
+    async ({ page, request }) => {
+        await lora(request);
+        await expect(await request.post('/__test__/system/missing-source', { data: { inside: true } })).toBeOK();
+        await openIntegrations(page);
+        const triggers = settingOf(page, 'Automatically include trigger words').locator('input');
+        await triggers.check();
+        // In Sources, the drive is unplugged after the page read the list, and another source is removed.
+        const nav = page.locator('#workspace-main .section-nav');
+        await nav.getByRole('button', { name: 'Sources & scans', exact: true }).click();
+        const sourceRow = title => layoutOf(page).locator('#source-list .operation').filter({ has: page.locator('h3', { hasText: title }) });
+        await expect(sourceRow('unplugged')).toBeVisible();
+        await expect(await request.post('/__test__/system/unplug')).toBeOK();
+        await sourceRow('ComfyUI input').getByRole('button', { name: 'Remove', exact: true }).click();
+        await save(page).click();
+        // The LoRA part was saved, the sources were refused: the status gives the server's reason for the source, and
+        // only the source row is highlighted.
+        await expect(status(page)).toHaveText("output/unplugged can't be used: Gallery root does not exist. Remove it or reconnect it, then save.");
+        await expect(sourceRow('unplugged')).toHaveAttribute('aria-invalid', 'true');
+        expect((await serverJson(request, '/__test__/integrations/state')).trigger_words).toBe(true);
+        await nav.getByRole('button', { name: 'Integrations', exact: true }).click();
+        await expect(triggers).toBeChecked();
+        await expect(triggers).not.toHaveAttribute('aria-invalid', 'true');
+        // The next save carries the revision the saved part left: it saves, with no "changed elsewhere".
+        await nav.getByRole('button', { name: 'Sources & scans', exact: true }).click();
+        await sourceRow('unplugged').getByRole('button', { name: 'Remove', exact: true }).click();
+        await save(page).click();
+        await expect(status(page)).toHaveText('Saved to the server configuration.');
+        expect((await serverJson(request, '/prompt_manager/settings')).sources.configured.map(source => source.path)).toEqual(['output']);
+    });
 
 test('Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107)',
     async ({ page, request }) => {
@@ -341,7 +384,11 @@ test('the import can be cancelled while it downloads; then nothing is written', 
     await expect.poll(async () => (await serverJson(request, '/__test__/integrations/state')).downloads).toBeGreaterThan(0);
     const cancel = page.locator('#workspace-main').getByRole('button', { name: 'Cancel import', exact: true });
     await expect(cancel).toBeVisible();
-    await cancel.click();
+    // The cancel must have reached the server before the held download goes on (S10 review M1).
+    await Promise.all([
+        page.waitForResponse(response => /\/prompt_manager\/jobs\/[0-9a-f]+\/cancel$/.test(response.url()) && response.ok()),
+        cancel.click(),
+    ]);
     await expect(await request.post('/__test__/integrations/gate', { data: { hold: false } })).toBeOK();
     const job = await ended(request, id);
     expect(job.state).toBe('cancelled');

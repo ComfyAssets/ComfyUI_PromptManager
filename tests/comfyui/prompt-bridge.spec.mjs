@@ -196,7 +196,7 @@ test('each destination reports its window renderer, and System › Integrations 
     const id=await addNode(page,'PromptManager',{text:'Renderer check'});
     await withClient(page,context,async clientPage=>{
         const name=renderer=>renderer?'Nodes 2.0':'Classic';
-        const status=clientPage.locator('#workspace-main .setting-row [role="status"]');
+        const status=clientPage.locator('#workspace-main #renderer-status');
         expect((await destination(clientPage,id)).target.renderer).toBe(initial?'nodes2':'classic');
         await clientPage.evaluate(()=>{location.hash='#/system/integrations';});
         await expect(status).toHaveText(`Detected: ${name(initial)} (1 ComfyUI window).`);

@@ -423,3 +423,9 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 /* D101: a duplicate copy's Keep label is its source and path, often long names with no space to break at; it wraps
    inside its `.compare-item` so the review never scrolls sideways. */
 .duplicate-groups .compare-item label { overflow-wrap: anywhere; /* D101 */ }
+/* D106: Integrations' two selects keep their chosen option readable: they never shrink for the row's reason lines, and
+   at phone width they may grow past the concept's 120px cap (which cuts "Follow host renderer") up to 160px. */
+.setting-row :is(#send-destination, #renderer) { flex-shrink: 0; /* D106 */ }
+@media (max-width: 700px) {
+  #workspace-main .setting-row :is(#send-destination, #renderer) { max-width: 160px !important; /* D106 */ }
+}

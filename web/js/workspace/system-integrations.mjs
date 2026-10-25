@@ -74,6 +74,7 @@ export function loraValues(status) {
         lora_path: typeof status?.path === 'string' ? status.path : '',
         lora_detected: status?.detected === true,
         lora_detected_path: typeof status?.detected_path === 'string' ? status.detected_path : '',
+        lora_detected_usable: status?.detected_usable !== false,
         lora_has_key: status?.has_civitai_api_key === true,
         lora_cache_loaded: status?.trigger_cache_loaded === true,
     };
@@ -100,6 +101,45 @@ export function loraPayload(changes, saved) {
     return body;
 }
 
+/**
+ * Write host `changes` in their two parts (S10 review I3): the LoRA keys through `postLora` (`/lora/enable`), then the
+ * other keys through `postSettings` (`/settings`), each with the revision the previous write left. Resolves with the
+ * last answer when everything saved. When only one part saved, rejects with the other part's error carrying
+ * `partial: {saved: [keys], revision}`, so the store keeps what saved and adopts the new revision; a
+ * conflict on the first write (another page changed config.json) stops before the second.
+ */
+export async function writeHostInParts({ changes, saved, expected_revision, postLora, postSettings }) {
+    const { lora, settings } = splitHostChanges(changes);
+    let revision = expected_revision;
+    let result = null;
+    const written = [];
+    let refused = null;
+    if (lora) {
+        try {
+            result = await postLora({ ...loraPayload(lora, saved), expected_revision: revision });
+            if (typeof result?.revision === 'string') revision = result.revision;
+            written.push(...Object.keys(lora));
+        } catch (error) {
+            if (!settings || error?.code === 'settings-changed') throw error;
+            refused = error;
+        }
+    }
+    if (settings) {
+        try {
+            result = await postSettings({ ...settings, expected_revision: revision });
+            if (typeof result?.revision === 'string') revision = result.revision;
+            written.push(...Object.keys(settings));
+        } catch (error) {
+            if (!written.length) throw error;
+            throw Object.assign(error, { partial: { saved: written, revision } });
+        }
+    }
+    if (refused) {
+        throw Object.assign(refused, { partial: { saved: written, revision } });
+    }
+    return result;
+}
+
 /** The renderer line for discovered bridge hosts (D106). */
 export function rendererText(hosts) {
     if (!Array.isArray(hosts) || hosts.length === 0) return RENDERER_COPY.none;
@@ -114,6 +154,10 @@ export function rendererText(hosts) {
 export function detectionText(values) {
     if (values.lora_detected === undefined) return null;
     if (!values.lora_detected) return 'Not detected in ComfyUI’s custom_nodes folders.';
+    if (values.lora_detected_usable === false) {
+        // A linked install outside custom_nodes is found but cannot be enabled (S10 review N5).
+        return `Found at ${values.lora_detected_path || 'a linked folder'}, but outside ComfyUI’s custom_nodes folders, so it can’t be enabled.`;
+    }
     return values.lora_detected_path ? `Detected: ${values.lora_detected_path}.` : 'Detected.';
 }
 
@@ -260,17 +304,23 @@ function comfySurface({ scope, clientFactory }) {
     setNote(returnRow, REASONS.returnCanvas);
     const status = el('p', RENDERER_COPY.looking, 'small');
     status.setAttribute('role', 'status');
+    status.id = 'renderer-status';
     renderer.children[0].append(el('p', REASONS.renderer, 'small'), status);
     surface.append(send, renderer, returnRow);
 
     let client = null;
+    // Overlapping checks (two quick visibility changes) paint only the newest answer (S10 review N2).
+    let latest = 0;
     const detect = async () => {
+        const check = ++latest;
+        let text;
         try {
             client ??= clientFactory();
-            status.textContent = rendererText(await client.discover({ waitMs: 300 }));
+            text = rendererText(await client.discover({ waitMs: 300 }));
         } catch {
-            if (!scope.signal.aborted) status.textContent = RENDERER_COPY.unavailable;
+            text = RENDERER_COPY.unavailable;
         }
+        if (check === latest && !scope.signal.aborted) status.textContent = text;
     };
     scope.cleanup(() => client?.dispose());
     // Another tab may open or switch ComfyUI meanwhile: look again when this page is shown again.
@@ -309,8 +359,16 @@ export function mountIntegrations(container, { api, activity, scope, drafts, cli
     const key = settingRow({ id: 'civitai-key', label: 'CivitAI API key', description: 'Credentials stay in the server configuration.',
         control: { type: 'password' } });
     const keyInput = controlOf(key, 'civitai-key');
-    keyInput.autocomplete = 'off';
+    // Never a login the browser offers to save or fill (S10 review N3).
+    keyInput.autocomplete = 'new-password';
+    keyInput.spellcheck = false;
     keyInput.placeholder = 'Optional';
+    // D114: the saved-key line is announced (a polite live region) and describes the field (S10 review M2).
+    const keyNote = el('p', '', 'small');
+    keyNote.id = 'civitai-key-status';
+    keyNote.setAttribute('role', 'status');
+    key.children[0].append(keyNote);
+    keyInput.setAttribute('aria-describedby', keyNote.id);
     const clear = createButton('Clear saved key');
     clear.dataset.setting = 'clear_civitai_api_key';
     clear.dataset.key = 'clear_civitai_api_key';
@@ -324,6 +382,8 @@ export function mountIntegrations(container, { api, activity, scope, drafts, cli
     });
     scope.listen(clear, 'click', () => {
         keyInput.value = '';
+        // The button leaves with the saved key: keep the keyboard on the field it belongs to (S10 review M2).
+        keyInput.focus();
         drafts.set('host', 'civitai_api_key', undefined);
         drafts.set('host', 'clear_civitai_api_key', true);
     });
@@ -354,10 +414,13 @@ export function mountIntegrations(container, { api, activity, scope, drafts, cli
         pathInput.value = values.lora_path || values.lora_detected_path || '';
         setNote(triggers, cacheText(values));
         keyInput.disabled = unread;
-        setNote(key, keyText(values, changes));
+        keyNote.textContent = keyText(values, changes) ?? '';
         // D114: "Clear saved key" is offered only while a saved key would stay.
         if (values.lora_has_key === true && changes.clear_civitai_api_key !== true) key.children[0].append(keyActions);
-        else keyActions.remove();
+        else {
+            if (keyActions.contains(document.activeElement)) keyInput.focus();
+            keyActions.remove();
+        }
         const state = JSON.stringify([values.lora_enabled, values.lora_trigger_words_enabled, values.civitai_api_key,
             values.clear_civitai_api_key]);
         const saved = values.civitai_api_key !== undefined || values.clear_civitai_api_key === true;
@@ -370,6 +433,9 @@ export function mountIntegrations(container, { api, activity, scope, drafts, cli
         if (!unread) shown = state;
     };
     scope.cleanup(drafts.subscribe(repaint));
+    // A typed key is held only while its field shows it: leaving the section drops it, since the field comes back
+    // empty and a hidden key draft could not be seen or discarded (S10 review N4).
+    scope.cleanup(() => drafts.set('host', 'civitai_api_key', undefined));
     repaint();
     return [comfy, surface];
 }

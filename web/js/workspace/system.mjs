@@ -19,7 +19,7 @@ import { mountOverview } from './system-overview.mjs';
 import { mountAppearance } from './system-appearance.mjs';
 import { mountSources } from './system-sources.mjs';
 import { mountMaintenance } from './system-maintenance.mjs';
-import { LORA_ENABLE_URL, LORA_STATUS_URL, loraPayload, loraValues, mountIntegrations, splitHostChanges } from './system-integrations.mjs';
+import { LORA_ENABLE_URL, LORA_STATUS_URL, loraValues, mountIntegrations, writeHostInParts } from './system-integrations.mjs';
 import { busyToast } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { displayPreferences, readPreferences, reconcilePreferences, subscribePreferences, writePreferences } from './preferences.mjs';
@@ -88,18 +88,11 @@ export function systemDrafts(api) {
                 revision: result.revision };
         },
         async writeHost(changes, { expected_revision }) {
-            // S10: the LoRA keys save through /lora/enable first, then the rest through /settings with the revision that
-            // save returned; both refuse a config.json changed since it was read.
-            const { lora, settings } = splitHostChanges(changes);
-            let revision = expected_revision;
-            let result = null;
+            // S10: the LoRA keys save through /lora/enable, the rest through /settings, each with the current revision;
+            // a save where only one part was written reports which (writeHostInParts, review I3).
             try {
-                if (lora) {
-                    result = await api.post(LORA_ENABLE_URL, { ...loraPayload(lora, drafts.saved('host')), expected_revision: revision });
-                    revision = result?.revision ?? revision;
-                }
-                if (settings) result = await api.post(SETTINGS_URL, { ...settings, expected_revision: revision });
-                return result;
+                return await writeHostInParts({ changes, saved: drafts.saved('host'), expected_revision,
+                    postLora: body => api.post(LORA_ENABLE_URL, body), postSettings: body => api.post(SETTINGS_URL, body) });
             } catch (error) {
                 // A sources change waits for a running record-changing job (S4): name it, as a refused start does (D57).
                 if (error?.code === 'busy') showWorkspaceToast(busyToast(await runningJob(error)));

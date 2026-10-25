@@ -19,6 +19,8 @@
  * 'settings-changed'` when another page changed a drafted value (a conflict: the browser values are read again),
  * `writeHost(changes, {expected_revision})` the settings response (`{success, persisted, revision}`, and the
  * `restart_required_fields` the status names), `writeRuntime(changes)` anything; a write that throws failed. A host
+ * write that saved part of its changes throws with `partial: {saved: [keys], revision}`: those keys are saved, the
+ * revision is adopted and only the rest fail (`partial`, S10). A host
  * write refused as `invalid-source` (its error's `source` and server message) makes that message the status and
  * `invalidSource()` that source, so Sources marks its row (S4).
  */
@@ -32,6 +34,8 @@ export const SETTINGS_STATUS = Object.freeze({
     host: 'Saved to the server configuration.',
     runtime: 'Applied until the server restarts.',
     partial: 'Some changes were not saved. Review the highlighted settings.',
+    // S10 review I3: a host save written in two parts where only one was saved.
+    partialSaved: 'Some changes were saved to the server configuration; the highlighted ones were not.',
     tabOnly: 'Saved for this tab only; browser storage is unavailable.',
     conflict: 'Settings changed elsewhere. Reload this section to see them.',
     // D128: a saved setting the running server applies only after a restart.
@@ -55,6 +59,7 @@ export function statusText(outcome) {
     const results = DRAFT_DOMAINS.map(domain => outcome?.[domain]);
     if (results.includes('conflict')) return SETTINGS_STATUS.conflict;
     if (results.includes('failed')) return outcome?.invalid?.message || SETTINGS_STATUS.partial;
+    if (results.includes('partial')) return outcome?.invalid?.message || SETTINGS_STATUS.partialSaved;
     const saved = [];
     if (outcome?.browser === 'saved') saved.push(SETTINGS_STATUS.browser);
     if (outcome?.browser === 'tab-only') saved.push(SETTINGS_STATUS.tabOnly);
@@ -177,10 +182,21 @@ export function createSystemDrafts(adapters) {
             commit(domain, written);
             return 'applied';
         } catch (error) {
-            fail(domain, written);
             if (domain === 'host' && error?.code === INVALID_SOURCE_CODE && typeof error.message === 'string') {
                 hostDetail.invalid = { source: typeof error.source === 'string' ? error.source : null, message: error.message };
             }
+            const partial = domain === 'host' ? error?.partial : null;
+            if (partial && Array.isArray(partial.saved)) {
+                // S10 review I3: part of the host save was written (config.json moved on): keep what saved, adopt the
+                // revision it produced, and fail only the rest, so the next save is not a false conflict.
+                if (typeof partial.revision === 'string') revision = partial.revision;
+                const saved = new Map([...written].filter(([key]) => partial.saved.includes(key)));
+                commit(domain, saved);
+                fail(domain, new Map([...written].filter(([key]) => !saved.has(key))));
+                if (error?.code === CONFLICT_CODE) return 'conflict';
+                return saved.size ? 'partial' : 'failed';
+            }
+            fail(domain, written);
             return error?.code === CONFLICT_CODE ? 'conflict' : 'failed';
         }
     }

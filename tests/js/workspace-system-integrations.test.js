@@ -36,7 +36,7 @@ test('LoRA status becomes host values: drafted flags and read-only facts kept ap
         has_civitai_api_key: true, detected: true, detected_path: 'custom_nodes/ComfyUI-Lora-Manager', trigger_cache_loaded: true }), {
         lora_enabled: true, lora_trigger_words_enabled: false, clear_civitai_api_key: false,
         lora_path: 'custom_nodes/ComfyUI-Lora-Manager', lora_detected: true, lora_detected_path: 'custom_nodes/ComfyUI-Lora-Manager',
-        lora_has_key: true, lora_cache_loaded: true,
+        lora_detected_usable: true, lora_has_key: true, lora_cache_loaded: true,
     });
     const empty = loraValues({});
     assert.equal(empty.lora_enabled, false);
@@ -84,6 +84,10 @@ test('LoRA rows show detected / enabled / cache-loaded separately', async () => 
     assert.equal(detectionText({ lora_detected: true, lora_detected_path: '' }), 'Detected.');
     assert.equal(detectionText({ lora_detected: false }), 'Not detected in ComfyUI’s custom_nodes folders.');
     assert.equal(detectionText({}), null);
+    // S10 review N5: a linked install outside custom_nodes is found but can't be enabled.
+    assert.equal(detectionText({ lora_detected: true, lora_detected_path: 'LoRA-Manager', lora_detected_usable: false }),
+        'Found at LoRA-Manager, but outside ComfyUI’s custom_nodes folders, so it can’t be enabled.');
+    assert.equal((await integrations).loraValues({ detected: true, detected_usable: false }).lora_detected_usable, false);
     assert.equal(cacheText({ lora_cache_loaded: true }), 'Trigger words are loaded.');
     assert.equal(cacheText({ lora_cache_loaded: false }), 'Trigger words are not loaded.');
     assert.equal(cacheText({}), null);
@@ -151,4 +155,43 @@ test('a failed import the files or saved pairs overtook is reviewed again in Int
     }
     assert.equal(reviewAgainOf(failed('import-failed')), null);
     assert.equal(reviewAgainOf({ ...failed('plan-changed'), state: 'cancelled' }), null);
+});
+
+test('a host save in two parts reports exactly which part saved (S10 review I3)', async () => {
+    const { writeHostInParts } = await integrations;
+    const saved = { lora_enabled: true, lora_trigger_words_enabled: false, lora_path: 'custom_nodes/LM' };
+    const calls = [];
+    const ok = revision => async body => { calls.push(body); return { success: true, persisted: true, revision }; };
+    const refuse = (code, message) => async body => { calls.push(body); throw Object.assign(new Error(message), { code }); };
+    const run = (changes, postLora, postSettings) => writeHostInParts({ changes, saved, expected_revision: 'r0', postLora, postSettings });
+
+    // Both parts: the second carries the revision the first returned.
+    assert.equal((await run({ lora_trigger_words_enabled: true, result_timeout: 5 }, ok('r1'), ok('r2'))).revision, 'r2');
+    assert.deepEqual(calls.map(body => body.expected_revision), ['r0', 'r1']);
+    // LoRA saved, settings refused: the LoRA keys and the new revision ride on the settings error.
+    calls.length = 0;
+    const later = await run({ lora_trigger_words_enabled: true, gallery_root_paths: ['x'] }, ok('r1'),
+        refuse('invalid-source', 'x cannot be used')).catch(error => error);
+    assert.equal(later.code, 'invalid-source');
+    assert.deepEqual(later.partial, { saved: ['lora_trigger_words_enabled'], revision: 'r1' });
+    // LoRA refused (not detected), settings still sent with the unchanged revision and saved.
+    calls.length = 0;
+    const first = await run({ lora_enabled: true, result_timeout: 5 }, refuse(null, 'LoraManager not found'), ok('r2'))
+        .catch(error => error);
+    assert.equal(first.message, 'LoraManager not found');
+    assert.deepEqual(first.partial, { saved: ['result_timeout'], revision: 'r2' });
+    assert.deepEqual(calls.map(body => body.expected_revision), ['r0', 'r0']);
+    // A conflict on the first write stops there; a lone part fails as itself.
+    calls.length = 0;
+    const conflict = await run({ lora_enabled: false, result_timeout: 5 }, refuse('settings-changed', 'changed'), ok('r2'))
+        .catch(error => error);
+    assert.equal(conflict.code, 'settings-changed');
+    assert.equal(conflict.partial, undefined);
+    assert.equal(calls.length, 1);
+    const alone = await run({ result_timeout: 5 }, ok('r1'), refuse('busy', 'scan running')).catch(error => error);
+    assert.equal(alone.code, 'busy');
+    assert.equal(alone.partial, undefined);
+    const both = await run({ lora_enabled: true, result_timeout: 5 }, refuse(null, 'a'), refuse(null, 'b')).catch(error => error);
+    assert.equal(both.message, 'b');
+    assert.equal(both.partial, undefined);
 });

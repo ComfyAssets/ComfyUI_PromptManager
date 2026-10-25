@@ -71,6 +71,20 @@ function measureIntegrations(mainSelector) {
         // The concept's `.small` text (its Save row status); production's row notes use the same class.
         small: css(layout.querySelector('#settings-status'), 'fontSize', 'color'),
         note: note && css(note, 'fontSize', 'color'),
+        // Whether each select shows its whole chosen option (its text within the box, less the native arrow).
+        // Whether each select is as wide as the browser lays out a copy holding only its chosen option, i.e. it shows
+        // that option whole (the browser's own select sizing, arrow included).
+        selectsFit: [...layout.querySelectorAll('.setting-row > select')].map(select => {
+            const copy = select.cloneNode(false);
+            copy.removeAttribute('id');
+            copy.append(new Option(select.selectedOptions[0]?.textContent ?? ''));
+            Object.assign(copy.style, { position: 'absolute', visibility: 'hidden', width: 'max-content', minWidth: '0',
+                maxWidth: 'none', flex: 'none' });
+            select.parentElement.append(copy);
+            const needed = copy.getBoundingClientRect().width;
+            copy.remove();
+            return select.getBoundingClientRect().width + 0.5 >= needed;
+        }),
         pageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
     };
 }
@@ -122,6 +136,10 @@ function mapIntegrationsConcept(reference) {
                 // D107: the import is reviewed first ("Review import"; the concept's button only simulated a job).
                 operations: lora.operations.map(operation => ({ ...operation, actions: [['Review import', '']] })) },
         ],
+        // D106: both selects show their whole chosen option at every width (at 390 the concept cuts "Follow host
+        // renderer"; production lets the two selects grow to 160px and never shrink for the reason lines).
+        selectsFit: reference.selectsFit.map(() => true),
+        select: reference.select.maxWidth === '120px' ? { ...reference.select, maxWidth: '160px' } : reference.select,
         // The D106/D114 row notes are `p.small` inside the row text, so they read as its description (`.setting-row p`).
         note: { fontSize: reference.description.fontSize, color: reference.description.color },
     };
@@ -139,7 +157,7 @@ async function productionIntegrations(page, theme) {
     await openProduction(page, 'system/integrations', theme);
     // Compare once the LoRA state and the renderer check answered.
     await expect(page.locator('#workspace-main #lora-path')).toHaveValue('custom_nodes/ComfyUI-Lora-Manager');
-    await expect(page.locator('#workspace-main .setting-row [role="status"]')).toHaveText(RENDERER_NONE);
+    await expect(page.locator('#workspace-main #renderer-status')).toHaveText(RENDERER_NONE);
     await page.mouse.move(0, 0);
     return page.evaluate(measureIntegrations, '#workspace-main');
 }
@@ -190,6 +208,10 @@ test('integrations comparison detects mutations', async ({ page, request }) => {
     await page.evaluate(() => { document.querySelectorAll('#workspace-main #renderer option')[1].disabled = false; });
     expect(await paths()).toEqual(['surfaces.0.rows.1.control.options.1.1']);
     await page.evaluate(() => { document.querySelectorAll('#workspace-main #renderer option')[1].disabled = true; });
+    // A select squeezed until its chosen option is cut (S10 review M3).
+    const undoSqueeze = await mutate(page, { css: '#workspace-main #renderer { max-width: 70px !important; }' });
+    expect(await paths()).toEqual(['selectsFit.1']);
+    await undoSqueeze();
     // A swapped token.
     const undoToken = await mutate(page, { css: '#workspace-main .settings-layout { --line: rgb(255, 0, 0); }' });
     expect(await paths()).toEqual(expect.arrayContaining(['row.borderTopColor']));
@@ -265,7 +287,7 @@ async function productionReview(page, request, theme) {
     await openProduction(page, 'system/integrations', theme);
     await expect(page.locator('#workspace-main #lora-path')).toHaveValue('custom_nodes/ComfyUI-Lora-Manager');
     // The renderer line above settles first: its new text moves the rows below (a click must not land mid-shift).
-    await expect(page.locator('#workspace-main .setting-row [role="status"]')).toHaveText(RENDERER_NONE);
+    await expect(page.locator('#workspace-main #renderer-status')).toHaveText(RENDERER_NONE);
     // The import reviews what is enabled: save the integration on first.
     await page.locator('#workspace-main #lora-enable').check();
     await page.getByRole('button', { name: 'Save preferences', exact: true }).click();
