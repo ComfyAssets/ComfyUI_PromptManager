@@ -295,6 +295,15 @@ class TestApply(RestoreTestCase):
         self.assertEqual([p["text"] for p in self.api.db.search_prompts()], ["live"])
         self.assertEqual(self.stages(), [])
 
+    async def test_a_restore_drops_previews_of_the_old_library(self):
+        first = await self.preview(self.upload(["first"]))
+        other = await self.preview(self.upload(["other"], "other.db"))
+        job = await self.finish((await self.apply(first["token"]))["job"]["id"])
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(self.stages(), [])
+        refused = await self.apply(other["token"], status=410)
+        self.assertEqual(refused["code"], "plan-expired")
+
     async def test_jobs_survive_db_swap(self):
         earlier, gate = self.gated_job("health", "read", "Health check")
         gate.set()

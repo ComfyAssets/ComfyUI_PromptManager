@@ -405,13 +405,18 @@ class BackupRestoreRoutesMixin:
                 await self._prune_after(model.db_path, failed=True)
             raise
 
-    def _swap_database(self, db_path):
-        """Open the restored library as ``self.db``; the previous one to close."""
+    async def _switch_to_restored(self, db_path):
+        """Open the restored library as ``self.db`` and close the previous one.
+
+        Its connections would otherwise linger (a file lock on Windows). The
+        health report and every held restore preview described the old
+        library, so they are dropped (the stage files off the event loop).
+        """
         previous = self.db
         self.db = PromptDatabase(db_path)
-        self._database_replaced()  # a health report described the old one
-        self._restore_plans.discard_all()  # stages reviewed against the old one
-        return previous
+        self._database_replaced()
+        await self._run_in_executor(self._restore_plans.discard_all)
+        await self._run_in_executor(previous.close_all)
 
     # ── legacy one-step restore ───────────────────────────────────────
 
@@ -457,9 +462,7 @@ class BackupRestoreRoutesMixin:
             finally:
                 await self._run_in_executor(staged.discard)
             await self._prune_after(model.db_path)
-            previous = self._swap_database(model.db_path)
-            # Its connections would otherwise linger (a file lock on Windows)
-            await self._run_in_executor(previous.close_all)
+            await self._switch_to_restored(model.db_path)
             prompt_count = self.db.model.get_database_info().get("total_prompts", 0)
             message = f"Database restored successfully. Found {prompt_count} prompts."
             body = {
@@ -695,8 +698,7 @@ class BackupRestoreRoutesMixin:
                 self.logger.error(f"Restore failed: {error}")
                 return _fail_job(job, "restore-failed", NOT_RESTORED + kept)
             await self._prune_after(model.db_path)
-            previous = self._swap_database(model.db_path)
-            await self._run_in_executor(previous.close_all)
+            await self._switch_to_restored(model.db_path)
             if backup_path:
                 job.log_line(f"Safety backup {os.path.basename(backup_path)}")
             else:
