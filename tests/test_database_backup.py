@@ -293,6 +293,8 @@ class TestRestoreFromFile(BackupTestCase):
                 super().backup(target, *args, **kwargs)
 
         def connect_with_failure(*args, **kwargs) -> sqlite3.Connection:
+            if "factory" in kwargs:  # the model's own managed connections
+                return connect(*args, **kwargs)
             return connect(*args, **kwargs, factory=FailingLiveBackup)
 
         with patch("database.models.sqlite3.connect", side_effect=connect_with_failure):
