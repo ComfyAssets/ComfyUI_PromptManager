@@ -2588,7 +2588,10 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   duplicate image files") shows the real groups ten at a time: a `p.small[role=status]`
   "Groups 1–10 of N", then per group a `p.small` "N identical files · S each" and one
   `.compare-grid` with a `.compare-item` per copy (its preview as the concept's
-  `img.sample-fluid`, and a radio "Keep <source>/<path>", the oldest copy checked; a copy
+  `img.sample-fluid`, and a radio "Keep <source>/<path>", the oldest copy checked, its
+  label wrapping anywhere (CSS under D101) so long dataset paths never make the review
+  scroll sideways (`long copy paths wrap; the duplicates review never scrolls sideways`,
+  desktop and phone); a copy
   gone since the search is disabled and says so), "Previous groups" / "Next groups" when
   there are more than ten, the `p.small` "Removing a copy deletes its file from disk;
   its database links move to the kept copy. History keeps the removed paths in its run

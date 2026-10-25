@@ -44,7 +44,8 @@ read. These per-server hooks only change what a System test needs on top:
   times: ``output/s7-dupes/same.png``, ``input/s7-dupes/same.png`` (the same
   relative path in the other source) and ``output/s7-dupes/copy.png``;
   ``{"groups": n}`` adds ``n`` more groups of two copies each, and
-  ``{"trio": false}`` leaves the three ``same.png``/``copy.png`` copies out;
+  ``{"trio": false}`` leaves the three ``same.png``/``copy.png`` copies out,
+  and ``{"long": true}`` adds a group under long names with no spaces;
 - ``GET /__test__/system/digest`` (S7) answers the sha256 of the database's
   rows (a read-only dump) and of every media file under ``output`` and
   ``input`` (not the automatic previews in ``thumbnails``), so a test proves
@@ -306,6 +307,15 @@ def register_system_commands(app, routes, api, root: Path):
                 image.save(dupes[0] / f"group_{number:02}_a.png")
             copy = (dupes[0] / f"group_{number:02}_a.png").read_bytes()
             (dupes[0] / f"group_{number:02}_b.png").write_bytes(copy)
+        if body.get("long") is True:
+            # One group whose copies sit under long folder and file names with
+            # no space to break at, as real dataset folders do.
+            deep = dupes[0] / ("mabes9sans_DATASET_ideogram_v1_" * 3).rstrip("_")
+            deep.mkdir(exist_ok=True)
+            with Image.new("RGB", (16, 16), "#204060") as image:
+                image.save(deep / ("mabes9sans_DATASET072_" * 4 + "a.png"))
+            copy = (deep / ("mabes9sans_DATASET072_" * 4 + "a.png")).read_bytes()
+            (deep / ("mabes9sans_DATASET072_" * 4 + "b.png")).write_bytes(copy)
         if body.get("trio", True) is not False:
             with Image.new("RGB", (48, 48), "#7a3b2e") as image:
                 image.save(dupes[0] / "same.png")

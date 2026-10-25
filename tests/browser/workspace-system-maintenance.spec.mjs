@@ -451,6 +451,27 @@ test('the duplicates review pages ten groups at a time and keeps each choice (D1
     await expect(dialog(page)).toHaveCount(0);
 });
 
+for (const [width, height] of [[1600, 1100], [390, 844]]) {
+    test(`long copy paths wrap; the duplicates review never scrolls sideways ${width}x${height}`, async ({ page, request }) => {
+        await page.setViewportSize({ width, height });
+        await expect(await request.post('/__test__/system/duplicate-files', { data: { long: true, trio: false } })).toBeOK();
+        await openMaintenance(page);
+        await row(page, 'Duplicate image files').getByRole('button', { name: 'Find duplicates', exact: true }).click();
+        await page.locator('#workspace-main').getByRole('button', { name: 'Review groups', exact: true }).click();
+        const review = dialog(page);
+        await expect(review.locator('.compare-item')).toHaveCount(2);
+        const overflow = await review.evaluate(node => {
+            const body = node.querySelector('#modal-body');
+            // An item wider than its box, or a label (inline: measured by its boxes) past its item's right edge.
+            const wide = [...node.querySelectorAll('.compare-item')].filter(item => item.scrollWidth > item.clientWidth + 1
+                || [...item.querySelector('label').getClientRects()].some(rect => rect.right > item.getBoundingClientRect().right + 1)).length;
+            return { dialog: node.scrollWidth > node.clientWidth + 1, body: body.scrollWidth > body.clientWidth + 1, wide,
+                page: document.documentElement.scrollWidth > document.documentElement.clientWidth };
+        });
+        expect(overflow).toEqual({ dialog: false, body: false, wide: 0, page: false });
+    });
+}
+
 test('Thumbnail cache opens the S5 dialog', async ({ page }) => {
     await openMaintenance(page);
     const options = row(page, 'Thumbnail cache').getByRole('button', { name: 'Review options', exact: true });
