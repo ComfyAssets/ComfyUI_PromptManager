@@ -12,10 +12,11 @@ import json
 import os
 import re
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 try:
     from ..utils.logging_config import get_logger
@@ -427,11 +428,19 @@ MAX_CIVITAI_DOWNLOAD_BYTES = 50 * 1024 * 1024
 _DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
 
+# A redirect is followed (#337: image.civitai.com now answers with a redirect
+# to blobs-b2.civitai.com) only over HTTPS to civitai.com or a subdomain of
+# it, at most this many hops, and never with the API key.
+MAX_CIVITAI_REDIRECTS = 3
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+_USER_AGENT = "ComfyUI-PromptManager/1.0"
+
+
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
-    """Never follow a redirect: urllib would re-send the Bearer header to it."""
+    """Never follow a redirect inside urllib: it would re-send the Bearer
+    header. A 3xx surfaces as ``HTTPError``; ``_download_one`` decides."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        logger.warning(f"Refusing redirect from {req.full_url} to {newurl}")
         return None
 
 
@@ -446,6 +455,82 @@ _opener = _build_opener()
 def _open_url(req: urllib.request.Request, timeout: float = 10):
     """Open ``req`` through the redirect-refusing opener."""
     return _opener.open(req, timeout=timeout)
+
+
+def _loggable(url: str) -> str:
+    """``url`` without its query, fragment or credentials (signed URLs)."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return "<unparsable URL>"
+    return f"{parts.scheme}://{host}{parts.path}"
+
+
+def is_civitai_redirect_target(url: str) -> bool:
+    """True when a redirect to ``url`` may be followed: HTTPS on civitai.com
+    or a subdomain of it, matched on the parsed host name, default port and
+    no credentials in the URL."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    hostname = (parts.hostname or "").lower()
+    return (
+        parts.scheme == "https"
+        and (hostname == "civitai.com" or hostname.endswith(".civitai.com"))
+        and parts.username is None
+        and parts.password is None
+        and port in (None, 443)
+    )
+
+
+def _redirect_target(url: str, error) -> Optional[str]:
+    """The URL a 3xx ``error`` for ``url`` points to, or None when absent."""
+    if error.code not in _REDIRECT_CODES:
+        return None
+    location = (error.headers.get("Location") or "").strip()
+    if not location:
+        return None
+    return urljoin(url, location)
+
+
+def _open_following_civitai_redirects(url: str, api_key: str):
+    """Open ``url``, following only allowed CivitAI redirects (keyless).
+
+    The first request carries the key; every redirected one carries the
+    User-Agent alone. Returns the open response, or None when a redirect is
+    refused or the hop limit is reached. Other HTTP errors propagate.
+    """
+    headers = {"User-Agent": _USER_AGENT}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    current = url
+    for hop in range(MAX_CIVITAI_REDIRECTS + 1):
+        req = urllib.request.Request(current, headers=headers)
+        try:
+            return _open_url(req, timeout=10)
+        except urllib.error.HTTPError as error:
+            with error:
+                target = _redirect_target(current, error)
+            if target is None:
+                raise
+        if hop == MAX_CIVITAI_REDIRECTS:
+            logger.warning(
+                f"Refusing redirect past {MAX_CIVITAI_REDIRECTS} hops "
+                f"from {_loggable(url)}"
+            )
+            return None
+        if not is_civitai_redirect_target(target):
+            logger.warning(
+                f"Refusing redirect from {_loggable(current)} to {_loggable(target)}"
+            )
+            return None
+        logger.debug(f"Following redirect to {_loggable(target)}")
+        current = target
+        headers = {"User-Agent": _USER_AGENT}  # never the key across a redirect
+    return None  # pragma: no cover - the loop returns on its last hop
 
 
 def is_civitai_url(url: str) -> bool:
@@ -492,21 +577,21 @@ def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
     """Download a single CivitAI image, resize to thumbnail, save as JPEG.
 
     Refuses any URL that is not HTTPS on an allow-listed CivitAI host so the
-    API key is never sent elsewhere, and refuses bodies larger than
-    MAX_CIVITAI_DOWNLOAD_BYTES.
+    API key is never sent elsewhere, follows a redirect only as
+    ``_open_following_civitai_redirects`` allows (without the key), and
+    refuses bodies larger than MAX_CIVITAI_DOWNLOAD_BYTES.
     """
     if not is_civitai_url(url):
-        logger.warning(f"Refusing non-CivitAI download URL: {url}")
+        logger.warning(f"Refusing non-CivitAI download URL: {_loggable(url)}")
         return None
     try:
-        headers = {"User-Agent": "ComfyUI-PromptManager/1.0"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        req = urllib.request.Request(url, headers=headers)
-        with _open_url(req, timeout=10) as resp:
+        resp = _open_following_civitai_redirects(url, api_key)
+        if resp is None:
+            return None
+        with resp:
             raw = _read_capped(resp, MAX_CIVITAI_DOWNLOAD_BYTES)
         if raw is None:
-            logger.warning(f"Refusing oversized download: {url}")
+            logger.warning(f"Refusing oversized download: {_loggable(url)}")
             return None
 
         # Resize to thumbnail to save disk space
@@ -520,7 +605,7 @@ def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
         _save_atomically(rgb, local_path)
         return str(local_path.resolve())
     except Exception as e:
-        logger.debug(f"Failed to download {url}: {e}")
+        logger.debug(f"Failed to download {_loggable(url)}: {e}")
         return None
 
 
