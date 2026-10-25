@@ -173,7 +173,8 @@ test('visual fixture exposes real stable media and library records', async ({ re
     await expect(await request.get(image.url)).toBeOK();
     const thumbnail = await request.get(image.thumbnail_url);
     await expect(thumbnail).toBeOK();
-    expect(thumbnail.headers()['content-type']).toBe('image/png');
+    // #317: previews are written as WebP by default.
+    expect(thumbnail.headers()['content-type']).toBe('image/webp');
     const inspection = await (await request.get(`/prompt_manager/images/inspect/${encodeURIComponent(image.path)}?root=${image.root_index}`)).json();
     expect(inspection.success).toBe(true);
     expect(inspection.image.path).toBe(image.path);

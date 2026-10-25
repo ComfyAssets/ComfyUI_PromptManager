@@ -3442,6 +3442,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 if (image.thumbnail_url) return ApiClient.resolveUrl(image.thumbnail_url);
 
                 // Try to construct thumbnail URL from filename and relative_path
+                // An older release's name: the server answers it with the current preview
+                // (any format the file owns, #317), or makes it on first view.
                 // Thumbnails are stored as: thumbnails/{parent_dir}/{stem}_thumb{ext}
                 // to avoid collisions with same-named files in different directories
                 if (image.filename) {

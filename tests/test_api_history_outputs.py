@@ -14,6 +14,7 @@ from unittest import skipUnless
 from unittest.mock import patch
 
 from aiohttp import web
+from PIL import Image
 from aiohttp.test_utils import make_mocked_request
 
 from tests.test_api_images import ImageAPITestCase, make_png
@@ -431,10 +432,11 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(int(response.headers["Content-Length"]), len(payload))
         self.assertEqual(await response.read(), b"")
         # A missing preview is made on first view (#249): an undecodable video
-        # gets the placeholder frame, never the whole file.
-        preview = self.output_dir / "thumbnails" / "clip_thumb.jpg"
+        # gets the placeholder frame, never the whole file, written in the
+        # thumbnail format (#317, WebP by default).
+        preview = self.output_dir / "thumbnails" / "clip_thumb.webp"
         response = await self.current(descriptor["thumbnail_url"])
-        self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+        self.assertEqual(response.headers["Content-Type"], "image/webp")
         self.assertEqual(await response.read(), preview.read_bytes())
         self.assertLess(preview.stat().st_size, len(payload))
         make_png(preview)
@@ -1172,6 +1174,105 @@ class HistoryOutputAPITests(ImageAPITestCase):
             gate.set()
             await asyncio.wait_for(job.task, 5)
         self.assertFalse((self.output_dir / "thumbnails").exists())
+
+    async def test_the_cover_is_the_preview_the_images_listing_shows(self):
+        # Review M5: JPEG XL configured with no encoder left writes WebP; the
+        # history cover prefers that WebP, like the Images listing.
+        from py.api import thumbnail_encode
+        from py.config import PromptManagerConfig
+
+        make_png(self.output_dir / "image.png")
+        folder = self.output_dir / "thumbnails"
+        folder.mkdir()
+        (folder / "image_thumb.jxl").write_bytes(b"\xff\x0a stale jxl")
+        webp = folder / "image_thumb.webp"
+        Image.new("RGB", (16, 16)).save(webp, "WEBP")
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        with (
+            patch.object(PromptManagerConfig, "THUMBNAIL_FORMAT", "jxl"),
+            patch.object(thumbnail_encode, "detect_jxl_encoder", return_value=None),
+        ):
+            response = await self.current(descriptor["thumbnail_url"])
+            body = await response.read()
+        self.assertEqual(response.headers["Content-Type"], "image/webp")
+        self.assertEqual(body, webp.read_bytes())
+
+    async def _jxl_cover(self, filename, accept):
+        from py.api import thumbnail_encode
+        from py.config import PromptManagerConfig
+
+        folder = self.output_dir / "thumbnails"
+        folder.mkdir(exist_ok=True)
+        stem = filename.rsplit(".", 1)[0]
+        jxl = folder / f"{stem}_thumb.jxl"
+        jxl.write_bytes(b"\xff\x0a jxl preview")
+        start = self.capture([self.ref(filename=filename)])
+        descriptor = await self.media(start)
+        headers = {"Accept": accept} if accept else {}
+        with (
+            patch.object(PromptManagerConfig, "THUMBNAIL_FORMAT", "jxl"),
+            patch.object(thumbnail_encode, "detect_jxl_encoder", return_value="cjxl"),
+        ):
+            response = await self.current(descriptor["thumbnail_url"], headers=headers)
+            body = await response.read()
+        return response, body, jxl
+
+    async def test_a_jxl_cover_is_served_only_to_a_browser_that_accepts_it(self):
+        # Review M3: History's cover URL names no format, so the server picks:
+        # a browser that does not list image/jxl gets the original image.
+        original = make_png(self.output_dir / "image.png")
+        response, body, jxl = await self._jxl_cover(
+            "image.png", "image/avif,image/webp,image/*,*/*;q=0.8"
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body, original.read_bytes())
+        self.assertEqual(response.headers["Content-Type"], "image/png")
+        self.assertTrue(jxl.exists())
+
+    async def test_a_browser_that_lists_image_jxl_gets_the_jxl_cover(self):
+        make_png(self.output_dir / "image.png")
+        response, body, jxl = await self._jxl_cover(
+            "image.png", "image/webp,image/avif,image/jxl,image/*;q=0.8"
+        )
+        self.assertEqual(response.headers["Content-Type"], "image/jxl")
+        self.assertEqual(body, jxl.read_bytes())
+
+    async def test_the_jxl_flag_selects_the_jxl_cover_without_accept(self):
+        # M3 follow-up: a browser that decodes JPEG XL but does not list it in
+        # Accept (Firefox) says so with jxl=1 on the cover URL.
+        make_png(self.output_dir / "image.png")
+        folder = self.output_dir / "thumbnails"
+        folder.mkdir(exist_ok=True)
+        jxl = folder / "image_thumb.jxl"
+        jxl.write_bytes(b"\xff\x0a jxl preview")
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        from py.api import thumbnail_encode
+        from py.config import PromptManagerConfig
+
+        with (
+            patch.object(PromptManagerConfig, "THUMBNAIL_FORMAT", "jxl"),
+            patch.object(thumbnail_encode, "detect_jxl_encoder", return_value="cjxl"),
+        ):
+            url = descriptor["thumbnail_url"]
+            response = await self.current(url + "&jxl=1", headers={"Accept": "*/*"})
+            self.assertEqual(response.headers["Content-Type"], "image/jxl")
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+            self.assertEqual(await response.read(), jxl.read_bytes())
+            response = await self.current(url + "&jxl=0", headers={"Accept": "*/*"})
+            self.assertEqual(response.headers["Content-Type"], "image/png")
+            await response.read()
+            for bad in ("&jxl=true", "&jxl=", "&jxl=1&jxl=1", "&jxl=2"):
+                response = await self.current(url + bad)
+                self.assertEqual(response.status, 400, bad)
+                await response.read()
+
+    async def test_a_video_jxl_cover_is_the_placeholder_without_jxl_support(self):
+        (self.output_dir / "clip.webm").write_bytes(b"AV1 stream no decoder here")
+        response, body, _jxl = await self._jxl_cover("clip.webm", "image/*,*/*")
+        self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+        self.assertTrue(body.startswith(b"\xff\xd8"))
 
     async def test_a_preview_that_cannot_be_made_serves_the_original(self):
         broken = self.output_dir / "image.png"

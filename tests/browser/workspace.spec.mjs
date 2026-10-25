@@ -469,7 +469,7 @@ test('System is native: the concept shell, section navigation, sections, hand-of
         if (hash === 'overview') await expect(layout.locator(':scope > .summary-metrics')).toBeVisible();
         if (hash === 'sources') await expect(layout.locator('#source-list .operation')).toHaveCount(2);
         expect(await layout.evaluate(node => [...node.children].map(child => `${child.localName}.${child.className}`)))
-            .toEqual({ overview: ['div.summary-metrics', 'div.two-col', 'div.save-row'], appearance: ['section.surface', 'div.save-row'],
+            .toEqual({ overview: ['div.summary-metrics', 'div.two-col', 'div.save-row'], appearance: ['section.surface', 'section.surface', 'div.save-row'],
                 sources: ['div.notice', 'section.surface', 'div.save-row'],
                 maintenance: ['div.notice', 'section.surface handoff', 'div.save-row'] }[hash]
                 ?? ['section.surface handoff', 'div.save-row']);

@@ -13,6 +13,7 @@ checks one path and writes nothing.
 """
 
 import contextlib
+import functools
 import os
 
 from aiohttp import web
@@ -23,9 +24,11 @@ from ..config_store import (
     get_config_store,
 )
 from . import sources
+from . import thumbnail_encode
+from . import thumbnail_settings
 from .admin import _current_image_monitor
 from .job_routes import busy_response
-from .jobs import JobBusy
+from .jobs import THUMBNAILS_JOB_KIND, JobBusy
 
 try:
     from ...utils.validators import validate_result_timeout, validate_worker_threads
@@ -41,7 +44,12 @@ _SETTINGS_FILE_KEYS = {
     "WORKER_THREADS": ("performance", "worker_threads"),
     "MONITORING_ENABLED": ("gallery", "monitoring", "enabled"),
     "SAFETY_BACKUP": ("maintenance", "safety_backup"),
+    "THUMBNAIL_FORMAT": ("thumbnails", "format"),
+    "THUMBNAIL_QUALITY": ("thumbnails", "quality"),
+    "THUMBNAIL_EDGE": ("thumbnails", "edge"),
 }
+# The thumbnail settings a running Convert outdated job fixes (#317).
+_THUMBNAIL_SETTINGS = ("THUMBNAIL_FORMAT", "THUMBNAIL_QUALITY", "THUMBNAIL_EDGE")
 # Attributes that live on GalleryConfig; the others on PromptManagerConfig.
 _GALLERY_SETTINGS = frozenset({"MONITORING_ENABLED"})
 SOURCE_CHANGE_JOB_KIND = "source_change"
@@ -176,12 +184,15 @@ class SettingsRoutesMixin:
             ]
             revision = await self._run_in_executor(self._config_revision)
             source_status, monitor = await self._run_in_executor(self._source_status)
+            # #317: which thumbnail formats can be written (a cached probe).
+            encoders = await self._run_in_executor(thumbnail_encode.encoder_status)
             return web.json_response(
                 {
                     "success": True,
                     **revision,
                     "sources": source_status,
                     "monitor": monitor,
+                    "thumbnail_encoders": encoders,
                     "settings": {
                         "monitoring_enabled": GalleryConfig.MONITORING_ENABLED,
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
@@ -189,6 +200,9 @@ class SettingsRoutesMixin:
                         "infinite_scroll": PromptManagerConfig.INFINITE_SCROLL,
                         "worker_threads": PromptManagerConfig.WORKER_THREADS,
                         "safety_backup": PromptManagerConfig.SAFETY_BACKUP,
+                        "thumbnail_format": PromptManagerConfig.THUMBNAIL_FORMAT,
+                        "thumbnail_quality": PromptManagerConfig.THUMBNAIL_QUALITY,
+                        "thumbnail_edge": PromptManagerConfig.THUMBNAIL_EDGE,
                         "cpu_count": PromptManagerConfig.max_worker_threads(),
                         "gallery_root_paths": root_paths,
                         "gallery_root_path": root_paths[0] if root_paths else "",
@@ -295,6 +309,26 @@ class SettingsRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": str(ve)}, status=400
                 )
+            if updates.get("THUMBNAIL_FORMAT") == "jxl":
+                # #317: JPEG XL only with an encoder (a cached probe).
+                encoder = await self._run_in_executor(
+                    functools.partial(
+                        thumbnail_encode.detect_jxl_encoder, recheck_missing=True
+                    )
+                )
+                if encoder is None:
+                    return web.json_response(
+                        {
+                            "success": False,
+                            "code": "jxl-unavailable",
+                            "error": thumbnail_encode.JXL_UNAVAILABLE,
+                        },
+                        status=400,
+                    )
+
+            refused = self._thumbnail_change_refused(updates)
+            if refused is not None:
+                return refused
 
             # Off the loop: an accepted root is resolved (filesystem access).
             new_roots, error = await self._run_in_executor(
@@ -354,6 +388,33 @@ class SettingsRoutesMixin:
                 {"success": False, "error": "Failed to save settings"},
                 status=500,
             )
+
+    def _thumbnail_change_refused(self, updates):
+        """409 ``busy`` for a thumbnail format, quality or size change while
+        Convert outdated runs (review I4): the job converts to the settings
+        it started with, and a change under it would make it remove previews
+        in the newly chosen format. Unchanged values pass."""
+        from ..config import PromptManagerConfig
+
+        changed = any(
+            key in updates and updates[key] != getattr(PromptManagerConfig, key)
+            for key in _THUMBNAIL_SETTINGS
+        )
+        job = self._jobs.active(THUMBNAILS_JOB_KIND) if changed else None
+        if job is None or job.scope.get("mode") != "convert":
+            return None
+        return web.json_response(
+            {
+                "success": False,
+                "code": "busy",
+                "error": (
+                    f"{job.title} is running. Change the thumbnail settings "
+                    "when it finishes, or cancel it first."
+                ),
+                "running": {"id": job.id, "title": job.title},
+            },
+            status=409,
+        )
 
     def _publish_settings(self, updates, new_roots):
         """Install committed settings at runtime (inside the config commit).
@@ -490,6 +551,18 @@ class SettingsRoutesMixin:
         if "worker_threads" in data:
             updates["WORKER_THREADS"] = validate_worker_threads(
                 data["worker_threads"], PromptManagerConfig.max_worker_threads()
+            )
+        if "thumbnail_format" in data:
+            updates["THUMBNAIL_FORMAT"] = thumbnail_settings.validate_format(
+                data["thumbnail_format"]
+            )
+        if "thumbnail_quality" in data:
+            updates["THUMBNAIL_QUALITY"] = thumbnail_settings.validate_quality(
+                data["thumbnail_quality"]
+            )
+        if "thumbnail_edge" in data:
+            updates["THUMBNAIL_EDGE"] = thumbnail_settings.validate_edge(
+                data["thumbnail_edge"]
             )
         return updates
 

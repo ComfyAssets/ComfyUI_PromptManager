@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from .jobs import AUTOTAG_BATCH_JOB_KIND
 from .prompts import thumbnail_url_for
+from . import thumbnail_settings
 from .. import model_gate
 
 from aiohttp import web
@@ -792,13 +793,16 @@ class AutotagRoutesMixin:
                 rel_path = image_path.relative_to(output_path)
                 thumbnail_url = None
                 if has_thumbnails:
-                    thumb_rel = (
-                        f"thumbnails/{rel_path.with_suffix('').as_posix()}"
-                        f"_thumb{image_path.suffix}"
+                    # Any preview the file owns, the current format first (#317)
+                    existing = thumbnail_settings.existing_thumbnail(
+                        output_path, rel_path
                     )
-                    thumbnail_url = thumbnail_url_for(
-                        thumb_rel, output_path / thumb_rel
-                    )
+                    if existing is not None:
+                        thumb_rel = (
+                            thumbnail_settings.thumbnail_stem_rel(rel_path)
+                            + existing.suffix
+                        )
+                        thumbnail_url = thumbnail_url_for(thumb_rel, existing)
                 images.append(
                     {
                         "filename": image_path.name,

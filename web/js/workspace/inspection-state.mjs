@@ -71,20 +71,28 @@ function downloadFor(image, required) {
     }
 }
 
-// The server's video extensions (py/api/inspection_service.py VIDEO_EXTENSIONS): their preview is a JPEG.
+// The server's video extensions (py/api/inspection_service.py VIDEO_EXTENSIONS).
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.avi', '.mov', '.mkv', '.m4v', '.wmv']);
+// #317: the formats a preview is written in (WebP, JPEG XL, JPEG), for images and videos alike.
+const WRITTEN_PREVIEW_EXTENSIONS = ['.webp', '.jxl', '.jpg'];
 
-/** `thumbnails/<path>_thumb<ext>` for a listed file, as the server names its preview (images.media_thumbnail_rel). */
-function previewPath(path) {
+/**
+ * Every `thumbnails/<path>_thumb<ext>` the server may list as this file's preview (py/api/thumbnail_settings.py
+ * `owns`): a written format, or the name an older release gave it (the source's own extension, `.jpg` for a video).
+ */
+function previewPaths(path) {
     const slash = path.lastIndexOf('/'), dot = path.lastIndexOf('.');
-    const cut = dot > slash ? dot : path.length, extension = path.slice(cut).toLowerCase();
-    return `thumbnails/${path.slice(0, cut)}_thumb${VIDEO_EXTENSIONS.has(extension) ? '.jpg' : extension}`;
+    const cut = dot > slash ? dot : path.length, spelled = path.slice(cut), extension = spelled.toLowerCase();
+    const stem = `thumbnails/${path.slice(0, cut)}_thumb`;
+    const legacy = VIDEO_EXTENSIONS.has(extension) ? ['.jpg'] : [extension, spelled];
+    return new Set([...WRITTEN_PREVIEW_EXTENSIONS, ...legacy].filter(Boolean).map(ext => stem + ext));
 }
 
 /**
  * #249: the listing's thumbnail of `image` as `{url}` for the inspector's cover, or null. Only the same-origin
- * serve URL of this file's own preview under the same root and source scope is used; anything else keeps the
- * original (a missing preview is made by the server on first view).
+ * serve URL of this file's own preview (any format it owns, #317) under the same root and source scope is used;
+ * anything else keeps the original (a missing preview is made by the server on first view). The cover is only a
+ * placeholder: metadata, downloads and the viewer always use the original.
  */
 function previewFor(image) {
     try {
@@ -93,9 +101,10 @@ function previewFor(image) {
         const reference = new URL(location?.href || 'http://localhost/');
         const resolveUrl = globalThis.window?.ApiClient?.resolveUrl || globalThis.ApiClient?.resolveUrl || (url => url);
         const value = resolveUrl(image.thumbnail_url), url = new URL(value, reference);
-        const expected = new URL(resolveUrl(`/prompt_manager/images/serve/${previewPath(image.path).split('/').map(quoteSegment).join('/')}`), reference);
+        const expected = new Set([...previewPaths(image.path)].map(preview =>
+            new URL(resolveUrl(`/prompt_manager/images/serve/${preview.split('/').map(quoteSegment).join('/')}`), reference).pathname));
         const scope = descriptorScope(image);
-        if (url.origin !== reference.origin || url.username || url.password || url.hash || url.pathname !== expected.pathname ||
+        if (url.origin !== reference.origin || url.username || url.password || url.hash || !expected.has(url.pathname) ||
             url.searchParams.getAll('root').length !== 1 || url.searchParams.get('root') !== String(image.root_index) ||
             url.searchParams.getAll('root_scope').length > 1 || (scope !== null && url.searchParams.get('root_scope') !== scope)) return null;
         return { url: value };

@@ -19,6 +19,7 @@ import { mountReview } from './review.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
 import { mountLibraryBanner } from './library-location.mjs';
+import { detectJxlSupport } from './thumbnail-support.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
 
@@ -49,6 +50,8 @@ function mountWorkspace() {
     });
     // D4: the concept's Theme select; "System" keeps following ComfyUI, then the OS.
     const theme = mountWorkspaceTheme({ root: document.body, scope });
+    // #317: learn once whether this browser shows JPEG XL thumbnails (cards fall back to originals otherwise).
+    detectJxlSupport();
     const preference = document.getElementById('theme');
     preference.value = theme.preference;
     scope.listen(preference, 'change', () => theme.setPreference(preference.value));

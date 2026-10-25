@@ -13,10 +13,14 @@
  *   (`showImageInfo`), "Collapse viewer details by default" (`sidebarCollapsedByDefault`) and the operation "Reset
  *   display defaults", which drafts the gallery's defaults for these browser rows and touches no other key.
  *
+ * - #317: a second surface, "Thumbnails", holds the server's thumbnail format, quality and size limit
+ *   (system-thumbnails.mjs).
+ *
  * Controls follow the store: a value read later (the host settings, another tab's change) repaints them. A host row
  * whose value could not be read stays disabled and says so ("Server settings could not be read.").
  */
 import { settingRow, operationRow } from './system-controls.mjs';
+import { mountThumbnailSettings } from './system-thumbnails.mjs';
 import { preferenceDefaults } from './preferences.mjs';
 
 export const RESULT_TIMEOUT_MAX = 300;
@@ -98,8 +102,11 @@ function paint(input, control, value) {
     else if (document.activeElement !== input || control.type === 'select') input.value = String(value);
 }
 
-/** Mount Appearance in `container` (System's `.settings-layout`); returns the section's nodes. */
-export function mountAppearance(container, { scope, drafts }) {
+/**
+ * Mount Appearance in `container` (System's `.settings-layout`); returns the section's nodes: "Browsing & display",
+ * then the server's thumbnail settings (#317, system-thumbnails.mjs).
+ */
+export function mountAppearance(container, { scope, drafts, api, activity }) {
     const surface = el('section', undefined, 'surface');
     surface.append(el('h2', 'Browsing & display'), el('p', 'One set of defaults; toolbar changes apply to the current view.'));
     const controls = [];
@@ -139,5 +146,5 @@ export function mountAppearance(container, { scope, drafts }) {
     };
     scope.cleanup(drafts.subscribe(repaint));
     repaint();
-    return [surface];
+    return [surface, mountThumbnailSettings(container, { scope, drafts, api, activity })];
 }

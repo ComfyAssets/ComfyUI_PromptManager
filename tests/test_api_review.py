@@ -408,9 +408,10 @@ class TestQueueReads(ReviewRoutesTestCase):
         scope = item["target"]["root_scope"]
         self.assertEqual(
             item["thumbnail_url"],
-            "/prompt_manager/images/serve/thumbnails/sub/f0_thumb.png"
+            "/prompt_manager/images/serve/thumbnails/sub/f0_thumb.webp"
             f"?root=0&root_scope={scope}",
         )
+        # A legacy preview name is still listed until it is converted (#317).
         thumb = self.output_dir / "thumbnails" / "sub" / "f0_thumb.png"
         thumb.parent.mkdir(parents=True)
         write_png(thumb, prompt=ambiguous_graph("cat", "dog"), color=(1, 2, 3))

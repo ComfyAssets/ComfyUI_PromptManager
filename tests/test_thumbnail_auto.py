@@ -143,15 +143,15 @@ class TestListingsAlwaysCarryAThumbnailUrl(AutoThumbnailCase):
         entry = _entry(self.api, self.output_dir, "sub/new.png")
         self.assertEqual(
             entry["thumbnail_url"],
-            f"{SERVE}thumbnails/sub/new_thumb.png?root=0",
+            f"{SERVE}thumbnails/sub/new_thumb.webp?root=0",
         )
         self.assertFalse((self.output_dir / "thumbnails").exists(), "no write")
 
-    def test_missing_video_preview_is_a_jpeg_url(self):
+    def test_missing_video_preview_url_is_in_the_configured_format(self):
         (self.output_dir / "clip.mp4").write_bytes(b"not really a video")
         entry = _entry(self.api, self.output_dir, "clip.mp4")
         self.assertEqual(
-            entry["thumbnail_url"], f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
+            entry["thumbnail_url"], f"{SERVE}thumbnails/clip_thumb.webp?root=0"
         )
 
     def test_listing_says_whether_the_preview_file_exists(self):
@@ -160,7 +160,7 @@ class TestListingsAlwaysCarryAThumbnailUrl(AutoThumbnailCase):
         self.assertIs(
             _entry(self.api, self.output_dir, "a.png")["thumbnail_ready"], False
         )
-        make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        make_png(self.output_dir / "thumbnails" / "a_thumb.webp")
         self.assertIs(
             _entry(self.api, self.output_dir, "a.png")["thumbnail_ready"], True
         )
@@ -174,11 +174,11 @@ class TestListingsAlwaysCarryAThumbnailUrl(AutoThumbnailCase):
 
     def test_existing_preview_keeps_its_mtime_version(self):
         make_png(self.output_dir / "a.png", size=(64, 64))
-        make_png(self.output_dir / "thumbnails" / "a_thumb.png")
+        make_png(self.output_dir / "thumbnails" / "a_thumb.webp")
         entry = _entry(self.api, self.output_dir, "a.png")
         self.assertRegex(
             entry["thumbnail_url"],
-            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.png\?v=\d+&root=0$",
+            r"^/prompt_manager/images/serve/thumbnails/a_thumb\.webp\?v=\d+&root=0$",
         )
 
     async def test_workspace_listing_never_returns_a_null_thumbnail(self):
@@ -190,7 +190,7 @@ class TestListingsAlwaysCarryAThumbnailUrl(AutoThumbnailCase):
         urls = [image["thumbnail_url"] for image in data["images"]]
         self.assertEqual(len(urls), 3)
         for url in urls:
-            self.assertIn("_thumb.png", url)
+            self.assertIn("_thumb.webp", url)
 
 
 class TestThumbnailOnFirstView(AutoThumbnailCase):
@@ -201,31 +201,33 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         resp = await self.client.get(url)
 
         self.assertEqual(resp.status, 200)
-        self.assertEqual(resp.headers["Content-Type"], "image/png")
+        self.assertEqual(resp.headers["Content-Type"], "image/webp")
         body = await resp.read()
-        thumb = self.output_dir / "thumbnails" / "sub" / "big_thumb.png"
+        thumb = self.output_dir / "thumbnails" / "sub" / "big_thumb.webp"
         self.assertTrue(thumb.is_file())
         self.assertEqual(body, thumb.read_bytes())
         with Image.open(thumb) as img:
-            self.assertEqual(max(img.size), auto.AUTO_THUMBNAIL_EDGE)
+            self.assertEqual(max(img.size), 512)
         # No temp sibling is ever left next to the preview.
-        self.assertEqual(os.listdir(thumb.parent), ["big_thumb.png"])
+        self.assertEqual(os.listdir(thumb.parent), ["big_thumb.webp"])
 
     async def test_upper_case_extension_source_is_found(self):
         make_png(self.output_dir / "Shot.PNG", size=(64, 64))
         url = _entry(self.api, self.output_dir, "Shot.PNG")["thumbnail_url"]
-        self.assertIn("thumbnails/Shot_thumb.png", url)
+        self.assertIn("thumbnails/Shot_thumb.webp", url)
         resp = await self.client.get(url)
         self.assertEqual(resp.status, 200)
-        self.assertTrue((self.output_dir / "thumbnails" / "Shot_thumb.png").is_file())
+        self.assertTrue((self.output_dir / "thumbnails" / "Shot_thumb.webp").is_file())
 
-    async def test_video_preview_is_generated_as_jpeg(self):
+    async def test_video_preview_is_generated_in_the_configured_format(self):
+        # #317: a video's preview is written like an image's (WebP default);
+        # an undecodable clip's preview is the placeholder frame.
         (self.output_dir / "clip.mp4").write_bytes(b"not really a video")
         url = _entry(self.api, self.output_dir, "clip.mp4")["thumbnail_url"]
         resp = await self.client.get(url)
         self.assertEqual(resp.status, 200)
-        self.assertEqual(resp.headers["Content-Type"], "image/jpeg")
-        self.assertTrue((self.output_dir / "thumbnails" / "clip_thumb.jpg").is_file())
+        self.assertEqual(resp.headers["Content-Type"], "image/webp")
+        self.assertTrue((self.output_dir / "thumbnails" / "clip_thumb.webp").is_file())
 
     async def test_concurrent_views_generate_once(self):
         make_png(self.output_dir / "a.png", size=(256, 256))
@@ -298,14 +300,15 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         for name in names:
             stem = name[:-4]
             self.assertTrue(
-                (self.output_dir / "thumbnails" / f"{stem}_thumb.png").is_file()
+                (self.output_dir / "thumbnails" / f"{stem}_thumb.webp").is_file()
             )
 
     async def test_requests_beyond_the_cap_get_the_fallback_at_once(self):
         names = [f"c{i}.png" for i in range(auto.ON_DEMAND_LIMIT)]
         for name in names + ["late.png"]:
             make_png(self.output_dir / name, size=(64, 64))
-        (self.output_dir / "late.mp4").write_bytes(b"not a video")
+        # Another stem: same-stem files share one preview name (#317 R2).
+        (self.output_dir / "latev.mp4").write_bytes(b"not a video")
         entered, release, state = self._gate_writes()
         listings = []
         real_scandir = auto.os.scandir
@@ -327,25 +330,25 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
                 for n in names
             ]
             await self._writers(state, auto.ON_DEMAND_LIMIT)
-            image = await self.client.get(f"{SERVE}thumbnails/late_thumb.png?root=0")
+            image = await self.client.get(f"{SERVE}thumbnails/late_thumb.webp?root=0")
             self.assertEqual(image.status, 200)
             self.assertEqual(image.headers["Cache-Control"], "no-store")
             self.assertEqual(
                 await image.read(), (self.output_dir / "late.png").read_bytes()
             )
-            video = await self.client.get(f"{SERVE}thumbnails/late_thumb.jpg?root=0")
+            video = await self.client.get(f"{SERVE}thumbnails/latev_thumb.webp?root=0")
             self.assertEqual(video.status, 200)
             self.assertEqual(video.headers["Content-Type"], "image/jpeg")
             self.assertEqual(video.headers["Cache-Control"], "no-store")
             await video.read()
-            missing = await self.client.get(f"{SERVE}thumbnails/Nope_thumb.png?root=0")
+            missing = await self.client.get(f"{SERVE}thumbnails/Nope_thumb.webp?root=0")
             self.assertEqual(missing.status, 404)
             # M2: no folder is listed for a request the cap turned away.
             self.assertEqual(listings, [])
             release.set()
             responses = [await task for task in tasks]
         self.assertEqual([r.status for r in responses], [200] * len(names))
-        self.assertFalse((self.output_dir / "thumbnails" / "late_thumb.png").exists())
+        self.assertFalse((self.output_dir / "thumbnails" / "late_thumb.webp").exists())
 
     async def test_mixed_case_folder_listing_runs_once_inside_admission(self):
         make_png(self.output_dir / "Shot.Png", size=(64, 64))
@@ -357,13 +360,13 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
             return real_scandir(path)
 
         with patch.object(auto.os, "scandir", counting):
-            resp = await self.client.get(f"{SERVE}thumbnails/Shot_thumb.png?root=0")
+            resp = await self.client.get(f"{SERVE}thumbnails/Shot_thumb.webp?root=0")
         self.assertEqual(resp.status, 200)
         # A case-insensitive filesystem (macOS, Windows) finds it by its exact
         # name; a case-sensitive one lists the folder once.
         found_by_name = (self.output_dir / "Shot.png").exists()
         self.assertEqual(len(listings), 0 if found_by_name else 1)
-        self.assertTrue((self.output_dir / "thumbnails" / "Shot_thumb.png").is_file())
+        self.assertTrue((self.output_dir / "thumbnails" / "Shot_thumb.webp").is_file())
 
     async def test_broken_file_falls_back_to_the_original_and_is_remembered(self):
         broken = self.output_dir / "broken.png"
@@ -380,7 +383,9 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
             self.assertEqual(resp.headers["Cache-Control"], "no-store")
             self.assertEqual(await resp.read(), broken.read_bytes())
         self.assertEqual(calls, ["broken.png"], "a known failure is not retried")
-        self.assertFalse((self.output_dir / "thumbnails" / "broken_thumb.png").exists())
+        self.assertFalse(
+            (self.output_dir / "thumbnails" / "broken_thumb.webp").exists()
+        )
 
         status = await (
             await self.client.get("/prompt_manager/images/thumbnails/status")
@@ -394,7 +399,9 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         third = await self.client.get(url)
         self.assertEqual(third.status, 200)
         self.assertEqual(calls, ["broken.png", "broken.png"])
-        self.assertTrue((self.output_dir / "thumbnails" / "broken_thumb.png").is_file())
+        self.assertTrue(
+            (self.output_dir / "thumbnails" / "broken_thumb.webp").is_file()
+        )
 
     async def test_locked_preview_is_not_remembered_as_a_failure(self):
         make_png(self.output_dir / "a.png", size=(64, 64))
@@ -411,10 +418,10 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
 
         resp = await self.client.get(url)
         self.assertEqual(resp.status, 200)
-        self.assertTrue((self.output_dir / "thumbnails" / "a_thumb.png").is_file())
+        self.assertTrue((self.output_dir / "thumbnails" / "a_thumb.webp").is_file())
 
     async def test_no_source_is_a_plain_uncacheable_404(self):
-        resp = await self.client.get(f"{SERVE}thumbnails/nope_thumb.png?root=0")
+        resp = await self.client.get(f"{SERVE}thumbnails/nope_thumb.webp?root=0")
         self.assertEqual(resp.status, 404)
         self.assertEqual(resp.headers["Cache-Control"], "no-store")
         text = await resp.text()
@@ -424,13 +431,13 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
     def test_drive_unc_and_absolute_segments_are_refused_as_text(self):
         # M1: a drive or UNC segment would reset the anchor of a joined path.
         for path in (
-            "thumbnails/D:/x_thumb.png",
-            "thumbnails/D:x_thumb.png",
-            "thumbnails/\\\\server\\share/x_thumb.png",
-            "thumbnails//server/share/x_thumb.png",
-            "/thumbnails/x_thumb.png",
-            "thumbnails/a/./x_thumb.png",
-            "thumbnails/C:\\Users\\x_thumb.png",
+            "thumbnails/D:/x_thumb.webp",
+            "thumbnails/D:x_thumb.webp",
+            "thumbnails/\\\\server\\share/x_thumb.webp",
+            "thumbnails//server/share/x_thumb.webp",
+            "/thumbnails/x_thumb.webp",
+            "thumbnails/a/./x_thumb.webp",
+            "thumbnails/C:\\Users\\x_thumb.webp",
         ):
             with self.subTest(path=path):
                 self.assertFalse(auto._is_preview_request(path))
@@ -442,9 +449,9 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
             patch.object(auto.os, "stat") as stat,
         ):
             for path in (
-                "thumbnails/D:/x_thumb.png",
-                "thumbnails/\\\\server\\share/x_thumb.png",
-                "/thumbnails/x_thumb.png",
+                "thumbnails/D:/x_thumb.webp",
+                "thumbnails/\\\\server\\share/x_thumb.webp",
+                "/thumbnails/x_thumb.webp",
             ):
                 answer = await self.api._serve_missing_thumbnail(
                     [self.output_dir], path
@@ -457,8 +464,8 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
     async def test_traversal_is_refused_before_any_filesystem_access(self):
         with patch.object(auto, "_thumbnail_source") as source:
             for path in (
-                "thumbnails/../../etc/passwd_thumb.png",
-                "thumbnails/..%2F..%2Fx_thumb.png",
+                "thumbnails/../../etc/passwd_thumb.webp",
+                "thumbnails/..%2F..%2Fx_thumb.webp",
             ):
                 resp = await self.client.get(f"{SERVE}{path}?root=0")
                 self.assertIn(resp.status, (403, 404))
@@ -468,7 +475,7 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         outside = Path(self._output_tmp.name) / "outside.png"
         make_png(outside, size=(64, 64))
         self._make_symlink(outside, self.output_dir / "link.png")
-        resp = await self.client.get(f"{SERVE}thumbnails/link_thumb.png?root=0")
+        resp = await self.client.get(f"{SERVE}thumbnails/link_thumb.webp?root=0")
         self.assertEqual(resp.status, 404)
         self.assertFalse((self.output_dir / "thumbnails").exists())
 
@@ -477,7 +484,7 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         elsewhere = Path(self._output_tmp.name) / "elsewhere"
         elsewhere.mkdir()
         self._make_symlink(elsewhere, self.output_dir / "thumbnails")
-        resp = await self.client.get(f"{SERVE}thumbnails/a_thumb.png?root=0")
+        resp = await self.client.get(f"{SERVE}thumbnails/a_thumb.webp?root=0")
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.headers["Cache-Control"], "no-store")
         self.assertEqual(os.listdir(elsewhere), [])
@@ -524,7 +531,7 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
                     _entry(self.api, self.output_dir, name)["thumbnail_url"]
                 )
                 self.assertEqual(resp.status, 200)
-                thumb = self.output_dir / "thumbnails" / f"a{index}_thumb.png"
+                thumb = self.output_dir / "thumbnails" / f"a{index}_thumb.webp"
                 self.assertTrue(thumb.is_file())
                 job.finish("finished")
 
@@ -565,8 +572,12 @@ class TestVideoPreviewsNeverFallBackToTheVideo(AutoThumbnailCase):
         cv2 = MagicMock()
         cv2.VideoCapture.return_value.isOpened.return_value = False
         with patch.dict(sys.modules, {"cv2": cv2}):
-            await self._assert_placeholder(f"{SERVE}thumbnails/clip_thumb.jpg?root=0")
-        self.assertTrue((self.output_dir / "thumbnails" / "clip_thumb.jpg").is_file())
+            resp = await self.client.get(f"{SERVE}thumbnails/clip_thumb.webp?root=0")
+        # The placeholder frame became the preview file, in the format (#317).
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.headers["Content-Type"], "image/webp")
+        made = self.output_dir / "thumbnails" / "clip_thumb.webp"
+        self.assertEqual(await resp.read(), made.read_bytes())
 
     async def test_a_held_video_preview_is_the_placeholder_and_writes_nothing(self):
         from py.api.jobs import RESTORE_JOB_KIND
@@ -574,7 +585,7 @@ class TestVideoPreviewsNeverFallBackToTheVideo(AutoThumbnailCase):
         self._video()
         self._hold(RESTORE_JOB_KIND)
         resp = await self._assert_placeholder(
-            f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
+            f"{SERVE}thumbnails/clip_thumb.webp?root=0"
         )
         self.assertEqual(resp.headers["Cache-Control"], "no-store")
         self.assertFalse((self.output_dir / "thumbnails").exists())
@@ -585,7 +596,7 @@ class TestVideoPreviewsNeverFallBackToTheVideo(AutoThumbnailCase):
         elsewhere.mkdir()
         self._make_symlink(elsewhere, self.output_dir / "thumbnails")
         resp = await self._assert_placeholder(
-            f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
+            f"{SERVE}thumbnails/clip_thumb.webp?root=0"
         )
         self.assertEqual(resp.headers["Cache-Control"], "no-store")
         self.assertEqual(os.listdir(elsewhere), [])
@@ -594,7 +605,7 @@ class TestVideoPreviewsNeverFallBackToTheVideo(AutoThumbnailCase):
         self._video()
         with patch.object(self.api, "_generate_video_thumbnail", return_value=False):
             resp = await self._assert_placeholder(
-                f"{SERVE}thumbnails/clip_thumb.jpg?root=0"
+                f"{SERVE}thumbnails/clip_thumb.webp?root=0"
             )
         self.assertEqual(resp.headers["Cache-Control"], "no-store")
 
@@ -653,6 +664,9 @@ class TestWriteSafety(AutoThumbnailCase):
 
 class TestShutdown(AutoThumbnailCase):
     async def test_no_thread_remains_after_cleanup_and_capture_cannot_restart(self):
+        from py.api import thumbnail_encode
+
+        self.addCleanup(thumbnail_encode.reset_encoders)
         path = make_png(self.output_dir / "a.png", size=(64, 64))
         self.assertEqual(self.api.queue_capture_thumbnail(str(path)), "queued")
         thumbnailer = self.api._auto_thumbnails()
@@ -676,6 +690,9 @@ class TestShutdown(AutoThumbnailCase):
         self.assertEqual(self.api.queue_capture_thumbnail(str(other)), "skipped")
         restarted = self.api._auto_thumbnailer
         self.assertTrue(restarted is None or restarted._worker is None)
+        # #317: no encoder process (ffmpeg, cjxl) starts after the cleanup.
+        with self.assertRaises(thumbnail_encode.EncoderClosed):
+            thumbnail_encode.run_encoder([sys.executable, "-c", "pass"])
 
     async def test_an_idle_worker_leaves(self):
         path = make_png(self.output_dir / "a.png", size=(64, 64))
@@ -689,7 +706,7 @@ class TestShutdown(AutoThumbnailCase):
         other = make_png(self.output_dir / "b.png", size=(64, 64))
         self.assertEqual(self.api.queue_capture_thumbnail(str(other)), "queued")
         await self._idle()
-        self.assertTrue((self.output_dir / "thumbnails" / "b_thumb.png").is_file())
+        self.assertTrue((self.output_dir / "thumbnails" / "b_thumb.webp").is_file())
 
     async def test_a_reload_stops_the_old_worker(self):
         entered, release, _state = self._gate_writes()
@@ -761,7 +778,7 @@ class TestHistorySharesTheAdmission(AutoThumbnailCase):
         self.assertEqual(answers["history"], auto.READY)
         resp = answers["view"]
         self.assertEqual(resp.status, 200)
-        self.assertEqual(resp.headers["Content-Type"], "image/png")
+        self.assertEqual(resp.headers["Content-Type"], "image/webp")
         self.assertEqual(await resp.read(), dst.read_bytes())
 
     async def test_history_joining_a_view_flight_gets_the_outcome(self):
@@ -773,9 +790,10 @@ class TestHistorySharesTheAdmission(AutoThumbnailCase):
         from py.api.jobs import RESTORE_JOB_KIND
 
         make_png(self.output_dir / "c.png", size=(64, 64))
-        (self.output_dir / "c.mp4").write_bytes(b"AV1 stream no decoder here")
+        # Another stem: same-stem files share one preview name (#317 R2).
+        (self.output_dir / "cv.mp4").write_bytes(b"AV1 stream no decoder here")
         self._hold(RESTORE_JOB_KIND)
-        for name, is_video in (("c.png", False), ("c.mp4", True)):
+        for name, is_video in (("c.png", False), ("cv.mp4", True)):
             with self.subTest(name=name):
                 src = self.output_dir / name
                 url = _entry(self.api, self.output_dir, name)["thumbnail_url"]
@@ -797,9 +815,9 @@ class TestHistorySharesTheAdmission(AutoThumbnailCase):
 
     def test_history_and_serve_route_share_one_flight_key(self):
         root = self.output_dir
-        preview = root / "thumbnails" / "sub" / "a_thumb.png"
+        preview = root / "thumbnails" / "sub" / "a_thumb.webp"
         self.assertEqual(
-            auto.flight_key(root, ("thumbnails", "sub", "a_thumb.png")),
+            auto.flight_key(root, ("thumbnails", "sub", "a_thumb.webp")),
             auto.flight_key(
                 Path(os.path.normcase(os.path.realpath(root))),
                 preview.relative_to(root).parts,
@@ -813,7 +831,7 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
         outcome = self.api.queue_capture_thumbnail(str(path))
         self.assertEqual(outcome, "queued")
         await self._idle()
-        thumb = self.output_dir / "thumbnails" / "run" / "ComfyUI_0001_thumb.png"
+        thumb = self.output_dir / "thumbnails" / "run" / "ComfyUI_0001_thumb.webp"
         self.assertTrue(thumb.is_file())
         self.assertIn(
             "v=",
@@ -837,7 +855,7 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
 
     async def test_files_outside_the_roots_and_previews_are_ignored(self):
         outside = make_png(Path(self._output_tmp.name) / "x.png")
-        preview = make_png(self.output_dir / "thumbnails" / "y_thumb.png")
+        preview = make_png(self.output_dir / "thumbnails" / "y_thumb.webp")
         text = self.output_dir / "notes.txt"
         text.write_text("x")
         for path in (outside, preview, text, self.output_dir / "missing.png"):
@@ -873,7 +891,7 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
         self.assertLessEqual(state["peak"], 2)
         for i in range(5):
             self.assertTrue(
-                (self.output_dir / "thumbnails" / f"w{i}_thumb.png").is_file()
+                (self.output_dir / "thumbnails" / f"w{i}_thumb.webp").is_file()
             )
 
     async def test_worker_survives_a_failing_write(self):
@@ -884,7 +902,7 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
         await self._idle()
         self.api.queue_capture_thumbnail(str(good))
         await self._idle()
-        self.assertTrue((self.output_dir / "thumbnails" / "good_thumb.png").is_file())
+        self.assertTrue((self.output_dir / "thumbnails" / "good_thumb.webp").is_file())
         self.assertEqual(self.api._auto_thumbnails().failure_count, 1)
 
     async def test_worker_writes_nothing_during_a_restore(self):
@@ -919,7 +937,7 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
         await self._idle()
         for name in ("first", "second"):
             self.assertTrue(
-                (self.output_dir / "thumbnails" / f"{name}_thumb.png").is_file()
+                (self.output_dir / "thumbnails" / f"{name}_thumb.webp").is_file()
             )
 
     async def test_a_worker_that_cannot_start_is_started_by_the_next_enqueue(self):
@@ -940,7 +958,7 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
         await self._idle()
         for name in ("first", "second"):
             self.assertTrue(
-                (self.output_dir / "thumbnails" / f"{name}_thumb.png").is_file()
+                (self.output_dir / "thumbnails" / f"{name}_thumb.webp").is_file()
             )
 
     def test_queue_is_bounded(self):
@@ -1041,7 +1059,7 @@ class TestScanHandsOffThumbnails(AutoThumbnailCase):
         await self._idle()
         for i in range(2):
             self.assertTrue(
-                (self.output_dir / "thumbnails" / f"s{i}_thumb.png").is_file()
+                (self.output_dir / "thumbnails" / f"s{i}_thumb.webp").is_file()
             )
 
     async def test_a_scan_that_added_nothing_does_nothing(self):
@@ -1091,12 +1109,12 @@ class TestScanHandsOffThumbnails(AutoThumbnailCase):
         outcome = await self.api._thumbnails_after_scan(job, [self.output_dir, other])
         self.assertEqual(outcome, "queued")
         await self._idle()
-        self.assertTrue((other / "thumbnails" / "o_thumb.png").is_file())
+        self.assertTrue((other / "thumbnails" / "o_thumb.webp").is_file())
         self.assertFalse((self.output_dir / "thumbnails").exists())
 
     async def test_nothing_missing_is_none(self):
         make_png(self.output_dir / "s.png", size=(32, 32))
-        make_png(self.output_dir / "thumbnails" / "s_thumb.png")
+        make_png(self.output_dir / "thumbnails" / "s_thumb.webp")
         self.assertEqual(
             await self.api._thumbnails_after_scan(self._scan_job(1)), "none"
         )

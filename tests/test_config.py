@@ -75,7 +75,8 @@ class TestGalleryConfig(unittest.TestCase):
             {"web_interface": {"images_per_page": 50, "thumbnail_size": 512}}
         )
         self.assertEqual(GalleryConfig.IMAGES_PER_PAGE, 50)
-        self.assertEqual(GalleryConfig.THUMBNAIL_SIZE, 512)
+        # #317 R1: the never-read thumbnail_size is ignored (thumbnails.edge).
+        self.assertFalse(hasattr(GalleryConfig, "THUMBNAIL_SIZE"))
 
     def test_update_performance(self):
         GalleryConfig.update_config({"performance": {"max_concurrent_processing": 5}})
