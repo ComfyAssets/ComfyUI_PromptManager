@@ -22,6 +22,7 @@
  * Every opener takes the page `scope`: disposing it closes and removes the shell, so a dialog never outlives its page.
  */
 import { createButton, createSwitch } from '../shared/toolkit/core.js';
+import { noun } from './plural.mjs';
 
 const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags' });
 const FIELD_ORDER = Object.keys(FIELD_LABELS);
@@ -255,6 +256,17 @@ function operation(title, description, label, onAction) {
 
 const RESCAN_LABEL = 'Rescan';
 const RESCAN_BUSY_LABEL = 'Rescanning…';
+// Import → Rescan (D15): the concept has no rescan copy, so its toasts follow the workspace pattern. The answer counts
+// every listed file across the output roots it walked. Images and System › Backup & export (S9) share them.
+export const RESCAN_STARTED = 'Rescanning output folders…';
+export const RESCAN_FAILED = 'Rescan could not finish. Try again.';
+/** The toast after a rescan answered `{total, roots}`. */
+export function rescanFinished(result) {
+    const { total, roots } = result ?? {};
+    if (![total, roots].every(value => Number.isSafeInteger(value) && value >= 0)) return 'Rescan finished.';
+    return `Rescan finished. ${total.toLocaleString('en-US')} ${noun(total, 'file')} in ` +
+        `${roots.toLocaleString('en-US')} output ${noun(roots, 'folder')}.`;
+}
 
 /**
  * "Import & inspect" with the real operations (D15). While `rescanBusy`, Rescan reads "Rescanning…" and is
@@ -415,12 +427,14 @@ function requireGrid(grid) {
  * `h3` heading, the `dl.meta-grid` of `[term, value]` rows, page-built `options` nodes, the optional `p.small`
  * sentence, the D55 backup box when `backup` is `{copy, onBackup}`, then `.dialog-actions` with `cancelLabel` and the
  * primary (`ca-primary`, or the concept's `danger` when `primary.danger`). The primary closes the dialog, then calls
- * `onStart()`. Returns `{setValue(term, text)}` for a grid value that follows an option.
+ * `onStart()`; `onDismiss()` runs once when the dialog closes any other way (Cancel, ×, Escape, a replacing dialog, the
+ * page leaving), so a staged review is discarded (S9). Returns `{setValue(term, text)}` for a grid value that follows
+ * an option.
  */
 export function openReviewDialog({ scope, title, heading = null, grid, options = [], sentence = null, backup = null,
-    cancelLabel, primary, onStart, trigger = null }) {
+    cancelLabel, primary, onStart, trigger = null, onDismiss = null }) {
     requireScope(scope);
-    requireCallbacks({ onStart });
+    requireCallbacks({ onStart, ...(onDismiss ? { onDismiss } : {}) });
     for (const [name, text] of Object.entries({ title, cancelLabel, label: primary?.label })) {
         if (typeof text !== 'string' || !text) throw new TypeError(`The review needs its ${name}`);
     }
@@ -444,15 +458,18 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
     if (backup) nodes.push(backupNotice(backup));
     const cancel = createButton(cancelLabel);
     const start = createButton(primary.label, primary.danger ? 'danger' : 'ca-primary');
+    let started = false;
     cancel.addEventListener('click', () => finish());
     start.addEventListener('click', () => {
+        started = true;
         finish();
         onStart();
     });
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(cancel, start);
     nodes.push(actions);
-    show(title, nodes, { scope, trigger });
+    // Cancel, ×, Escape, a replacing dialog or the page leaving: everything but the primary is a dismissal.
+    show(title, nodes, { scope, trigger, onClose: onDismiss ? () => { if (!started) onDismiss(); } : null });
     return {
         setValue(term, text) {
             const dd = values.get(term);

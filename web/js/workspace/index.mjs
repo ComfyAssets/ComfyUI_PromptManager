@@ -1,10 +1,10 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts,
+import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts, navigateTo,
     LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
-import { mountImages, onFavoriteChange } from './images.mjs';
-import { mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
+import { forgetImagesVisit, mountImages, onFavoriteChange } from './images.mjs';
+import { forgetLibraryVisit, mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { bindCanvasLink, canvasHref } from './topbar.mjs';
@@ -18,6 +18,7 @@ import { mountInspect } from './inspect.mjs';
 import { mountReview } from './review.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
+import { onRestoreFinished, onRestoreHandedBack, showRestoreReview } from './system-backups.mjs';
 import { mountLibraryBanner } from './library-location.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
 
@@ -159,6 +160,20 @@ function mountWorkspace() {
         if (ended) refreshCounts(REVIEW_WRITE_COUNTS);
     }));
     refreshCounts(NAV_COUNT_ROUTES);
+    // S9: a finished restore replaced the library. The cached visits are dropped, the counts and saved views read
+    // again, and the open page is shown again from the restored data; the Activity job view the restore opened stays.
+    scope.cleanup(onRestoreFinished(activity, () => {
+        forgetImagesVisit();
+        forgetLibraryVisit();
+        refreshCounts(NAV_COUNT_ROUTES);
+        savedViews.load();
+        if (currentKey !== 'activity') navigateTo(window.location.hash);
+    }));
+    // S9 I1: a restore this page started that could not run yet (other requests kept reading) hands its review back:
+    // it opens again over the page shown now, with Restore (again) and Discard; leaving it any other way discards it.
+    scope.cleanup(onRestoreHandedBack(activity, review => {
+        if (viewScope && !viewScope.signal.aborted) showRestoreReview({ api, store: activity, scope: viewScope, ...review, again: true });
+    }));
     let viewScope;
     let firstRender = true;
     // D62: a page whose teardown must wait (Inspect, while a video is still starting) holds the next route until it

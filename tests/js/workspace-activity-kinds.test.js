@@ -126,7 +126,7 @@ test('held legacy jobs read "(admin page)" with no outcomes', async () => {
 
 test('unknown and generic kinds show no tiles of another kind', async () => {
     const { kindOf, viewOf } = await source;
-    for (const kind of ['restore', '', 'constructor', '__proto__', 'health']) {
+    for (const kind of ['backup', '', 'constructor', '__proto__', 'health']) {
         const view = kindOf(kind);
         assert.deepEqual([view.tiles, view.outcomes, [...view.openable]], [[], [], []], kind);
         assert.deepEqual([view.log, view.cancelLabel], ['Job log', 'Cancel job']);

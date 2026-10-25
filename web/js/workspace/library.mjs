@@ -65,6 +65,10 @@ export function invalidateLibraryAfterWrite(commit) {
     if(shelfVisit) shelfVisit={filters:shelfVisit.filters,anchor:shelfVisit.layout?.anchor ?? shelfVisit.anchor ?? null};
     for(const listener of [...writeListeners]) listener(commit);
 }
+/** Forget the shelf's last visit (filters, items and position): the next visit starts fresh (S9: a restored library). */
+export function forgetLibraryVisit() {
+    writeGeneration++;shelfVisit=null;
+}
 /** Observe confirmed Library and vocabulary writes (the sidebar re-reads its counts); returns the unsubscribe. */
 export function onLibraryWrite(listener) {
     if(typeof listener!=='function') throw new TypeError('Invalid Library write listener');

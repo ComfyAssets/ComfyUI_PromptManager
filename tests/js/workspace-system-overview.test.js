@@ -34,14 +34,17 @@ test('metric 4 is the last health result', async () => {
 });
 
 test('library health rows never invent a review count, a backup or thumbnails', async () => {
-    const { ambiguousTitle, backupText } = await overviewModule;
+    const { ambiguousTitle } = await overviewModule;
+    // S9: the Backup status row is Backup & export's status line (system-backups.mjs, tested there).
+    const { backupStatusText } = await import('../../web/js/workspace/system-backups.mjs');
     assert.equal(ambiguousTitle({ pending: null }), 'Ambiguous image links');
     assert.equal(ambiguousTitle(undefined), 'Ambiguous image links');
     assert.equal(ambiguousTitle({ pending: 1 }), '1 ambiguous image link');
     assert.equal(ambiguousTitle({ pending: 3 }), '3 ambiguous image links');
-    assert.equal(backupText(null), 'No retained backup record.');
-    assert.equal(backupText({ verified_at: 'not a time' }), 'No retained backup record.');
-    assert.match(backupText({ verified_at: '2026-10-22T09:30:00Z' }), /^Last verified backup .+\.$/);
+    assert.equal(backupStatusText({ safety_backups: [], last_download: null }), 'No backup recorded.');
+    assert.equal(backupStatusText({ safety_backups: [{ modified_at: 'not a time' }], last_download: null }), 'No backup recorded.');
+    assert.match(backupStatusText({ safety_backups: [], last_download: { at: '2026-10-22T09:30:00Z', verified: true } }),
+        /^Downloaded backup · .+ · verified\.$/);
 });
 
 test('the thumbnail row is its own read of the thumbnail status', async () => {

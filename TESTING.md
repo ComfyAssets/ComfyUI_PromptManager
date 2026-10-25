@@ -2378,7 +2378,8 @@ paints nothing. Until it answers, the section shows "Loading the overview…"; a
 shows "The overview could not be loaded. Your saved data has not changed." and Retry,
 never zeros. The thumbnail row is a separate read of `/images/thumbnails/status` (a
 walk of every source), so the other values never wait for it: "Checking thumbnails…"
-until it answers. The health check (`POST /prompt_manager/system/health`) is a `read`
+until it answers. The Backup status row is likewise its own read of
+`/prompt_manager/backup/status` (S9). The health check (`POST /prompt_manager/system/health`) is a `read`
 registry job of kind `health`: one at a time, beside a scan, not cancellable and with
 no file outcomes. The page tracks the started job in the Activity store (its event
 stream; the store marks it lost if the server stops listing it), never by polling. A press while one runs (another tab) waits
@@ -2399,7 +2400,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D70, D74, D75, D79–D82 renumbered D92–D102, D106, D107 and D111–D114; D121–D131 assigned):
+Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–D114; D121–D131 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2416,7 +2417,10 @@ Recorded deviations (plan D60–D70, D74, D75, D79–D82 renumbered D92–D102, 
   `needs_review.pending`) with the concept's line; its Review metadata action opens
   `#/review` (the concept's `go-review`). A count
   that is not an integer reads "Ambiguous image links" / "Not available yet." (Q6).
-  "Backup status" reads "No retained backup record." until verified backups exist (S8).
+  "Backup status" says what `GET /prompt_manager/backup/status` reports, in Backup &
+  export's own status line (D103, S9): "Checking backups…" until its own read answers,
+  then the session's last download and the newest safety backup, "No backup recorded."
+  or "The backup status could not be read.".
   The thumbnail row is "Checking thumbnails…" until its own read answers, then "No
   missing thumbnails", "N missing thumbnails" (the pending count of
   `/images/thumbnails/status`, followed by " · M outdated" when previews are in an
@@ -2615,6 +2619,68 @@ Recorded deviations (plan D60–D70, D74, D75, D79–D82 renumbered D92–D102, 
   is D93's style. `maintenance matches the concept` (both themes and sizes) maps only this
   row; `maintenance comparison detects mutations` proves it is the only difference and
   catches a removed row, a renamed operation, a lost danger mark and a swapped token.
+- **D103** (Backup & export, S9): "Back up" (the concept's "Simulate backup") downloads
+  the verified copy of `GET /prompt_manager/backup` through the api client (the same
+  `downloadDatabaseBackup` as every backup box; a copy whose `X-PromptManager-Verify` is
+  not `ok` toasts "Database backup downloaded, but it did not pass verification:
+  <reason>"), then reads the status again. The `p.small#backup-status` under the
+  actions shows only what `GET /prompt_manager/backup/status` reports: "Downloaded
+  backup · <date, time> · verified." (or "not verified") for this session's last
+  download and "Safety backup · <date, time> · N on disk." for the newest
+  `<db>.backup_*`, else "No backup recorded."; "Checking backups…" while read and "The
+  backup status could not be read." when it failed (never "no backup"). Portable
+  export's "Export JSON" (the concept's "Export sample JSON") downloads the Library
+  document (`/library/export`); a second `.row-actions.spaced` adds "Export all prompts
+  JSON" (`/export`, the legacy admin page's Export of every prompt) and "Export saved pairs JSON"
+  (`/pairs/export`), plain buttons as the concept's; a failed export toasts "The export
+  could not be downloaded. Nothing was saved to this device." "Import / inspect file"
+  opens the shared "Import & inspect" (D15, D55), as Images does.
+- **D104** (Backup & export, S9, Q4): Recovery policy keeps the concept's "Proposed" chip.
+  "Create a safety backup before maintenance" is the server's `safety_backup`
+  (`maintenance.safety_backup`) policy. Its line says what it does ("Keep a verified copy
+  of the database on disk before maintenance, cleanups and LoRA imports change records. A
+  restore always keeps one."); the concept's "Preview a verified backup before applying
+  operations that change records." describes nothing the server does. It is drafted behind the Save row and saved with
+  `expected_revision` (a configuration changed elsewhere is the conflict status); it is
+  disabled with "Server settings could not be read." when the read failed. "Scheduled
+  database backups" offers Manual only; Daily and Weekly stay listed but disabled
+  (there is no scheduler), the row's line is "Daily and Weekly are not available yet:
+  back up with Back up whenever you choose." (the concept's proposal line is
+  prototype copy) and nothing is drafted for it. The warning note reads "Restores are
+  staged, migrated and validated before replacing live data."
+- **D105** (Backup & export, S9): "Review restore…" picks a file (no type filter: the
+  safety backups `<db>.backup_<time>` have no `.db` extension; the server validates) and stages it
+  (`POST /prompt_manager/restore/preview`, multipart through `fetchUrl`; the button reads
+  "Reviewing…" meanwhile). "Restore preview" is the shared review: no sample note; the
+  concept's `dl.meta-grid` Snapshot (file name · size · date), Integrity ("Verified" plus
+  the stage's document repairs), Migration ("Current schema" / "Upgraded to the current
+  schema"), Safety backup ("Created before replacing (<label>)": the restore always
+  keeps one; the Snapshot size is whole KB below 1 MB), then "In the backup" and "In the library now" (prompts, image links, saved
+  pairs, runs); a `p.small` "Restore replaces the whole library with this backup and
+  runs alone in Activity. Nothing changes until you restore. This review holds for N
+  minutes."; the D55 backup box ("Downloads a copy of the prompts database before the
+  restore replaces it."); Cancel / "Restore" (the concept's "Simulate restore", still
+  `danger`). Leaving it any way but Restore (Cancel, ×, Escape, another dialog, the page
+  leaving) discards the stage (`DELETE …/preview/<token>`). Restore starts the "Database
+  restore" Activity job (exclusive, not cancellable, indeterminate; its descriptor ends
+  with the server's line) and opens its view; a review the server asks to redo (expired,
+  library changed) stages the same file again. A Restore refused as `busy` (another job
+  runs; the server keeps the token) opens the same review again with "Discard" / "Restore":
+  Restore retries, Discard (or leaving) releases it. A job whose leases did not drain
+  hands its review back (`scope.review_kept`, "…The review was reopened in the page that
+  started the restore: restore it again there, or discard it."): the page that started it
+  opens the review again over the page shown now, with Discard / Restore. Every other path
+  that abandons a token after Restore (a used, expired or replaced review, a lost answer)
+  sends its DELETE, which changes nothing for a token the server dropped or a job took. A
+  third review while two are held elsewhere toasts "Two restores are already being
+  reviewed in another window. Discard one there, or try again when it expires (15 minutes
+  after it was reviewed)." An upload whose answer is lost because the section was left
+  mid-response is not discarded by the page: the server's 15-minute expiry removes it. When a restore the page saw running
+  finishes, the cached Images and Library visits are dropped, the sidebar counts and
+  saved views are read again and the open route is shown again (the Activity job view
+  stays). A refused file toasts "This file can't be restored: <validator reason>.". A
+  review value may wrap anywhere (`#modal-body > dl.meta-grid dd`, CSS under D105), so a
+  long file name keeps the concept's two equal columns at phone width.
 - **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window
   and node, and the nodes always follow ComfyUI's own renderer, so "Default send
   destination" offers only "Ask each time" and "Host compatibility" only "Follow host
@@ -3353,7 +3419,8 @@ the executor. `POST /prompt_manager/restore/apply {token}` rechecks the live fin
 `plan-changed`, stage dropped) and starts "Database restore": kind `restore`, admission
 `exclusive` (it runs alone, like Move library and Optimize), not cancellable,
 indeterminate. Its runner waits for request leases (when they outlast the wait the job
-fails `busy` and the review is kept under its token), rechecks the fingerprint,
+fails `busy` and the review is kept under its token, flagged `scope.review_kept` for the
+page that started it), rechecks the fingerprint,
 publishes, swaps `self.db`, prunes the pool and logs the safety backup by name, any
 document repair and the restored counts; a failed page copy keeps the safety backup and
 says so. Once the copy replaced the library the restore succeeded: pruning, reopening
@@ -3381,6 +3448,34 @@ recorded as `verified:false`. The file is streamed outside the hold, then closed
 removed. `GET
 /prompt_manager/backup/status` lists up to ten `<db>.backup_*` files newest first (name,
 bytes, modified time; no paths) and this session's last verified download, or null.
+
+System › Backup & export (`system-backups.mjs`, S9) is the concept's "backups" body on
+these routes (D103–D105 above); Overview's Backup status row reads the same status. The
+admin page's Backup and Restore are unchanged. `tests/browser/system-backups-concept.spec.mjs`
+compares the section, the Restore preview and the Import & inspect dialog with the
+concept (both themes, 1600×1100 and 390×844), mapping only D103–D105 (D15 and D55 for the
+shared Import dialog); unmapped, exactly those paths differ, and `backup & export
+comparison detects mutations` renames a label, removes a row, drops a danger mark and
+swaps tokens. `tests/browser/workspace-system-backups.spec.mjs` covers Back up and its
+revoked object URL, the status line against the server (none, a safety backup, a failed
+read), Overview's row, the restore review against the preview (and that it writes
+nothing), Cancel and Escape discarding the stage, a restore through Activity that
+reloads the counts and the open Library, a busy refusal reopened and retried, two
+refusals then a third review, ×, a section and a route leave discarding, a safety-backup
+file name, an invalid file, the three exports and a
+failed one, Import / inspect (Rescan while running, Scan for metadata, Inspect), the
+safety-backup policy with its revision and a conflict, the schedule, a failed settings
+read and the legacy routes. The fixture (`workspace_system_fixture.py`) writes a safety
+backup (`/__test__/system/safety-backup`), lists the backups and held stages
+(`GET /__test__/system/backups`), and its reset drops held reviews, removes the safety
+backups and forgets the last download.
+
+```sh
+node --test tests/js/workspace-system-backups.test.js tests/js/workspace-system-overview.test.js
+npm run --prefix tools/vendor test:workflows -- workspace-system-backups.spec.mjs \
+  system-backups-concept.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+```
 
 ## Workspace data fields for the concept pages (#249)
 

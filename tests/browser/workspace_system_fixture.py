@@ -50,6 +50,12 @@ read. These per-server hooks only change what a System test needs on top:
   rows (a read-only dump) and of every media file under ``output`` and
   ``input`` (not the automatic previews in ``thumbnails``), so a test proves
   a Cancel wrote nothing.
+- ``POST /__test__/system/safety-backup`` (S9) writes one verified safety
+  backup beside the database, as a maintenance apply does;
+  ``GET /__test__/system/backups`` answers ``{safety: [names], stages: n}``:
+  the ``<db>.backup_*`` files and the held ``.pm-restore-*`` stage folders.
+  Reset drops every held restore review, removes the safety backups and
+  forgets the session's last download.
 
 Delays use the shared request holds (``request_hold.py``).
 """
@@ -151,10 +157,44 @@ def register_system_commands(app, routes, api, root: Path):
             staged.write_bytes(config_bytes)
             os.replace(staged, config_path)
 
+    def backup_files():
+        db_path = Path(api.db.model.db_path)
+        safety = sorted(
+            path.name
+            for path in db_path.parent.glob(db_path.name + ".backup_*")
+            if path.is_file()
+        )
+        stages = [
+            path
+            for path in db_path.parent.glob(".pm-restore-*")
+            if path.is_dir() and not path.name.startswith(".pm-restore-upload-")
+        ]
+        return db_path, safety, stages
+
+    async def reset_backups():
+        await api._discard_held(api._restore_plans.pop_all())
+        db_path, safety, _stages = backup_files()
+        for name in safety:
+            (db_path.parent / name).unlink(missing_ok=True)
+        api._last_backup_download = None
+
     @routes.post("/__test__/system/reset")
     async def system_reset(request):
         reset()
+        await reset_backups()
         return web.json_response({"success": True})
+
+    @routes.post("/__test__/system/safety-backup")
+    async def safety_backup(request):
+        from py.api.maintenance import take_safety_backup
+
+        name = await api._run_in_executor(take_safety_backup, api.db.model)
+        return web.json_response({"success": True, "name": name})
+
+    @routes.get("/__test__/system/backups")
+    async def backups(request):
+        _db_path, safety, stages = backup_files()
+        return web.json_response({"safety": safety, "stages": len(stages)})
 
     @routes.post("/__test__/system/fail")
     async def system_fail(request):
