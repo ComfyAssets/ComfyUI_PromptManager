@@ -12,12 +12,17 @@ At most ``max_stages`` stages are held. Bytes are bounded by free disk space
 (the upload is refused when the disk has no room, and held stages use that
 disk), not by a fixed budget. A stage being applied belongs to its job and is
 never evicted or counted.
+
+The store is only read and changed on the event loop (it has no lock). Its
+entries own stage folders, whose removal is blocking: every method that
+drops an entry returns it (or keeps it in ``take_doomed``), and the caller
+removes the folder in the executor (``HeldRestore.staged.discard``).
 """
 
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .maintenance_plans import PlanExpired, PlanUsed
 
@@ -42,15 +47,23 @@ class HeldRestore:
 class RestorePlanStore:
     def __init__(
         self,
+        clock: Optional[Callable[[], float]] = None,
         ttl: float = STAGE_TTL_SECONDS,
         max_stages: int = MAX_STAGES,
-        clock: Optional[Callable[[], float]] = None,
     ):
         self._ttl = ttl
         self._max = max_stages
         self._clock = clock or time.time
         self._held: Dict[str, HeldRestore] = {}
         self._used: Dict[str, str] = {}
+        self._doomed: List[HeldRestore] = []
+
+    @property
+    def ttl(self) -> float:
+        return self._ttl
+
+    def now(self) -> float:
+        return self._clock()
 
     def __len__(self):
         return len(self._held)
@@ -79,7 +92,7 @@ class RestorePlanStore:
         if held is None:
             raise PlanExpired()
         if held.expires_at <= self._clock():
-            self.discard(token)
+            self._doomed.append(self._held.pop(token))
             raise PlanExpired()
         return held
 
@@ -92,23 +105,35 @@ class RestorePlanStore:
             self._used.pop(next(iter(self._used)))
         return held
 
-    def discard(self, token) -> bool:
-        """Drop the token and remove its stage; False when it was not held."""
-        held = self._held.pop(token, None)
-        if held is None:
-            return False
-        held.staged.discard()
-        return True
+    def give_back(self, token, held) -> None:
+        """Hold a taken stage again under its token (its job did not apply it)."""
+        self._used.pop(token, None)
+        self._held[token] = held
 
-    def drop_expired(self) -> int:
-        """Remove every expired stage (blocking file removal); the count."""
+    def entry(self, token) -> Optional[HeldRestore]:
+        """The held entry, expired or not (for the response that issued it)."""
+        return self._held.get(token)
+
+    def pop(self, token) -> Optional[HeldRestore]:
+        """Drop the token; its entry (to discard) or None when it was not held."""
+        return self._held.pop(token, None)
+
+    def pop_expired(self) -> List[HeldRestore]:
+        """Drop every expired entry; them, with any ``peek`` found expired."""
         now = self._clock()
         expired = [t for t, held in self._held.items() if held.expires_at <= now]
-        for token in expired:
-            self.discard(token)
-        return len(expired)
+        return [self._held.pop(token) for token in expired] + self.take_doomed()
 
-    def discard_all(self) -> None:
-        """Remove every held stage (the database was replaced or shutdown)."""
-        for token in list(self._held):
-            self.discard(token)
+    def pop_all(self) -> List[HeldRestore]:
+        """Drop every entry (the library was replaced); them, to discard."""
+        held = list(self._held.values()) + self.take_doomed()
+        self._held.clear()
+        return held
+
+    def take_doomed(self) -> List[HeldRestore]:
+        doomed, self._doomed = self._doomed, []
+        return doomed
+
+    def next_expiry(self) -> Optional[float]:
+        """When the soonest held entry expires (clock time), or None."""
+        return min((held.expires_at for held in self._held.values()), default=None)

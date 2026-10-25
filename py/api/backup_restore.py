@@ -3,12 +3,16 @@
 Legacy routes, responses unchanged:
 
 - ``GET /prompt_manager/backup`` downloads a consistent copy of the library.
-  It holds the registry as ``backup`` ("Database backup", ``guarded``): it is
-  refused while a restore, maintenance apply or other record-changing job
-  runs. The copy is written in the library's folder, made one standalone
-  file and verified (integrity and schema) before a byte is sent; a copy that
-  does not verify is a 500 with no bytes. It is streamed from the open file,
-  then closed and removed.
+  While the copy is made it holds the registry as ``backup`` ("Database
+  backup", ``guarded``): it is refused while a restore, maintenance apply or
+  other record-changing job runs. The copy is written in the library's
+  folder and made one standalone file; the hold ends there, so a slow or
+  stalled download never keeps other work waiting. A copy that fails its
+  integrity check is a 500 with no bytes. One that fails only a semantic
+  check (``verify_database_file``) is still sent: a user can always get a
+  backup. The reason is logged and sent as ``X-PromptManager-Verify``
+  (``ok`` otherwise), and the status records it as not verified. The file
+  is streamed, then closed and removed.
 - ``POST /prompt_manager/restore`` (multipart ``database_file``) restores in
   one request through the same stage and publish as the restore job, holding
   the registry as ``restore`` (``exclusive``).
@@ -28,16 +32,20 @@ Reviewed restore (new routes answer errors as ``{success:false, code, error}``):
   alone, like Move library), not cancellable, indeterminate. The runner waits
   for request leases to end, rechecks the live fingerprint (``plan-changed``),
   publishes the exact staged bytes, swaps ``self.db``, prunes old safety
-  backups and logs what was restored.
+  backups and logs what was restored. Once the copy replaced the library,
+  the restore is done: the later steps only log their failures.
 - ``GET /prompt_manager/backup/status``: the safety backups on disk
   (``<db>.backup_*``, newest first, names only) and this session's last
   verified download (Q9: no sidecar file).
 """
 
+import asyncio
 import datetime
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
+from pathlib import Path
 
 from aiohttp import web
 
@@ -82,6 +90,12 @@ REQUESTS_BUSY = (
     "Other requests are still reading the library; nothing was changed. "
     "Try again in a moment."
 )
+REVIEW_KEPT = (
+    "Other requests are still reading the library; nothing was changed. "
+    "The review is kept: start the restore again in a moment."
+)
+VERIFY_HEADER = "X-PromptManager-Verify"
+SQLITE_HEADER = b"SQLite format 3\x00"
 PLAN_CHANGED = (
     "The library changed since the review; nothing was changed. "
     "Review the restore again."
@@ -158,25 +172,53 @@ def safety_backups(db_path, limit=MAX_LISTED_BACKUPS):
     ]
 
 
+def snapshot_corruption(path):
+    """Why the snapshot file is corrupt, or None (blocking).
+
+    Only physical damage refuses a download: not a SQLite file, or a failed
+    ``PRAGMA integrity_check``.
+    """
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
+                return "Not a SQLite database file"
+        uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+    except (OSError, sqlite3.Error) as error:
+        return f"Invalid SQLite database: {error}"
+    verdict = row[0] if row else "no result"
+    return None if verdict == "ok" else f"Integrity check failed: {verdict}"
+
+
 def write_backup_snapshot(model):
-    """A verified, standalone copy of the library beside it; its path (blocking).
+    """A standalone copy of the library beside it: ``(path, warning)`` (blocking).
 
     Raises SafetyBackupFailed with nothing left on disk when the copy cannot
-    be written or does not verify. The caller removes the returned file.
+    be written or is corrupt (``snapshot_corruption``). ``warning`` is the
+    reason a semantic check (``verify_database_file``, workflow documents
+    not read) refused the copy, or None. The caller removes the file.
     """
     temp = safety_temp(model.db_path)
     try:
         if not model.backup_database(temp):
             raise SafetyBackupFailed("The backup could not be written")
         make_standalone(temp)
+        corrupt = snapshot_corruption(temp)
+        if corrupt is not None:
+            raise SafetyBackupFailed("The backup is corrupt", corrupt)
         ok, reason = model.verify_database_file(temp, documents=False)
-        if not ok:
-            raise SafetyBackupFailed("The backup did not verify", reason)
         fsync_file(temp)
-        return temp
+        return temp, (None if ok else reason)
     except BaseException:
         remove_quietly(*(temp + suffix for suffix in SIDECARS))
         raise
+
+
+def _header_text(text):
+    """A reason as a one-line, latin-1 header value."""
+    flat = " ".join(str(text).split())[:300]
+    return flat.encode("latin-1", "replace").decode("latin-1")
 
 
 class BackupRestoreRoutesMixin:
@@ -209,13 +251,8 @@ class BackupRestoreRoutesMixin:
     # ── backup ────────────────────────────────────────────────────────
 
     async def backup_database(self, request):
-        """Download a verified copy of the prompts database (WAL included)."""
-        return await self._run_held(
-            BACKUP_JOB_KIND,
-            BACKUP_HOLD_TITLE,
-            "guarded",
-            lambda: self._stream_backup(request),
-        )
+        """Download a copy of the prompts database (WAL included)."""
+        return await self._stream_backup(request)
 
     async def _stream_backup(self, request):
         model = self.db.model
@@ -223,8 +260,21 @@ class BackupRestoreRoutesMixin:
             return web.json_response(
                 {"success": False, "error": "Database file not found"}, status=404
             )
+        made = await self._run_held(
+            BACKUP_JOB_KIND,
+            BACKUP_HOLD_TITLE,
+            "guarded",
+            lambda: self._make_backup_snapshot(model),
+        )
+        if isinstance(made, web.StreamResponse):
+            return made  # refused, or the snapshot failed
+        temp, warning = made
+        return await self._send_snapshot(request, temp, warning)
+
+    async def _make_backup_snapshot(self, model):
+        """``(path, warning)``, or the error response (inside the hold)."""
         try:
-            temp = await self._run_in_executor(write_backup_snapshot, model)
+            temp, warning = await self._run_in_executor(write_backup_snapshot, model)
         except SafetyBackupFailed as failed:
             self.logger.error(f"Backup failed: {failed} {failed.reason or ''}")
             return web.json_response(
@@ -240,6 +290,12 @@ class BackupRestoreRoutesMixin:
                 },
                 status=500,
             )
+        if warning is not None:
+            self.logger.warning(f"Backup sent with a failed check: {warning}")
+        return temp, warning
+
+    async def _send_snapshot(self, request, temp, warning):
+        """Stream the snapshot (outside the hold), then close and remove it."""
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         handle = None
         try:
@@ -252,6 +308,7 @@ class BackupRestoreRoutesMixin:
                         f'attachment; filename="prompts_backup_{timestamp}.db"'
                     ),
                     "Content-Length": str(size),
+                    VERIFY_HEADER: "ok" if warning is None else _header_text(warning),
                 }
             )
             await response.prepare(request)
@@ -264,7 +321,7 @@ class BackupRestoreRoutesMixin:
             self._last_backup_download = {
                 "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "bytes": size,
-                "verified": True,
+                "verified": warning is None,
             }
             return response
         finally:
@@ -386,12 +443,19 @@ class BackupRestoreRoutesMixin:
             )
 
     async def _prune_after(self, db_path, *, failed=False):
+        """Prune old safety backups; a failure is only logged (never raises).
+
+        It runs after a restore replaced the library, or after one failed:
+        either way the restore's outcome stands.
+        """
         try:
             removed = await self._run_in_executor(_admin._prune_safety_backups, db_path)
-        except Exception:
-            if not failed:
-                raise
-            self.logger.warning("Could not prune safety backups after failed restore")
+        except Exception as error:
+            when = "failed" if failed else "completed"
+            self.logger.warning(
+                f"Could not prune safety backups after a {when} restore: "
+                f"{type(error).__name__}"
+            )
             return
         if removed:
             self.logger.info(f"Removed {len(removed)} old safety backups")
@@ -405,18 +469,75 @@ class BackupRestoreRoutesMixin:
                 await self._prune_after(model.db_path, failed=True)
             raise
 
-    async def _switch_to_restored(self, db_path):
-        """Open the restored library as ``self.db`` and close the previous one.
+    async def _after_publish(self, db_path):
+        """Everything after the copy replaced the library: best effort, logged.
 
-        Its connections would otherwise linger (a file lock on Windows). The
-        health report and every held restore preview described the old
-        library, so they are dropped (the stage files off the event loop).
+        The restore is done once the copy succeeded, so nothing here fails it
+        (#335 review I1). The library is adopted as ``self.db`` (the previous
+        object, which points at the same file, stays when a new one cannot
+        be opened), the generation is bumped (so the health report and
+        reviewed plans of the old library are dropped), held restore
+        previews are dropped and the previous object's connections closed.
         """
+        await self._prune_after(db_path)
         previous = self.db
-        self.db = PromptDatabase(db_path)
-        self._database_replaced()
-        await self._run_in_executor(self._restore_plans.discard_all)
-        await self._run_in_executor(previous.close_all)
+        try:
+            self.db = PromptDatabase(db_path)
+        except Exception:
+            self.logger.exception("Could not reopen the restored library")
+        try:
+            self._database_replaced()
+        except Exception:
+            self.logger.exception("Could not drop the old library's reports")
+        try:
+            await self._discard_held(self._restore_plans.pop_all())
+        except Exception:
+            self.logger.exception("Could not remove the old restore previews")
+        if previous is not self.db:
+            try:
+                # Its connections would otherwise linger (a lock on Windows).
+                await self._run_in_executor(previous.close_all)
+            except Exception:
+                self.logger.exception("Could not close the previous library")
+
+    async def _discard_held(self, held):
+        """Remove the stage folders of dropped store entries (off the loop)."""
+        for entry in held:
+            try:
+                await self._run_in_executor(entry.staged.discard)
+            except Exception:
+                self.logger.exception("Could not remove a restore stage")
+
+    async def _drop_expired_restores(self):
+        """Drop expired previews from the store (on the loop), then their files."""
+        await self._discard_held(self._restore_plans.pop_expired())
+
+    def _schedule_restore_expiry(self):
+        """Remove each preview's stage when it expires, without a request.
+
+        A loop timer (``call_later``), so a server that stops with previews
+        held leaves nothing pending; the startup sweep removes the folders.
+        """
+        store = self._restore_plans
+        expires = store.next_expiry()
+        if expires is None:
+            return
+        handle = getattr(self, "_restore_expiry_handle", None)
+        if handle is not None:
+            handle.cancel()
+        loop = asyncio.get_running_loop()
+
+        def fire():
+            self._restore_expiry_handle = None
+            task = loop.create_task(self._expire_restores())
+            self._restore_expiry_task = task
+
+        delay = max(0.0, expires - store.now())
+        self._restore_expiry_handle = loop.call_later(delay, fire)
+
+    async def _expire_restores(self):
+        await self._drop_expired_restores()
+        self._schedule_restore_expiry()
 
     # ── legacy one-step restore ───────────────────────────────────────
 
@@ -461,9 +582,15 @@ class BackupRestoreRoutesMixin:
                 backup_path = await self._publish(model, staged)
             finally:
                 await self._run_in_executor(staged.discard)
-            await self._prune_after(model.db_path)
-            await self._switch_to_restored(model.db_path)
-            prompt_count = self.db.model.get_database_info().get("total_prompts", 0)
+            # The library is replaced: from here on the restore succeeded.
+            await self._after_publish(model.db_path)
+            try:
+                prompt_count = await self._run_in_executor(
+                    lambda: self.db.model.get_database_info().get("total_prompts", 0)
+                )
+            except Exception:
+                self.logger.exception("Could not count the restored prompts")
+                prompt_count = staged.summary.get("prompts", 0)
             message = f"Database restored successfully. Found {prompt_count} prompts."
             body = {
                 "success": True,
@@ -497,62 +624,100 @@ class BackupRestoreRoutesMixin:
 
     async def preview_restore(self, request):
         """Stage an upload for review; nothing live is written (see module)."""
-        store = self._restore_plans
-        await self._run_in_executor(store.drop_expired)
-        if store.full():
-            return _failure(
-                "Two restores are already being reviewed. Discard one first.",
-                429,
-                "too-large",
-            )
+        await self._drop_expired_restores()
+        if self._restore_plans.full():
+            return _too_many_reviews()
         uploads = []
-        staged = None
         try:
-            async with self._jobs.lease("Restore preview"):
-                db = self.db
-                identity = self._database_identity(db)
-                temp_path, refused = await self._receive_restore_upload(
-                    request, uploads
-                )
-                if refused is not None:
-                    return refused
-                reason = await self._upload_problem(temp_path)
-                if reason is not None:
-                    return _failure(reason, 400, "invalid-backup")
-                try:
-                    staged = await self._run_in_executor(
-                        db.model.stage_restore, temp_path
-                    )
-                except ValueError as invalid:
-                    return _failure(str(invalid), 400, "invalid-backup")
-                live, fingerprint = await self._run_in_executor(
-                    self._live_fingerprint, db
-                )
-        except JobBusy as busy:
-            return busy_response(busy)
+            db = self.db
+            identity = self._database_identity(db)
+            temp_path, refused = await self._receive_restore_upload(request, uploads)
+            if refused is not None:
+                return refused
+            return await self._review_upload(db, identity, temp_path, uploads)
         except Exception:
             self.logger.exception("Restore preview failed")
-            if staged is not None:
-                await self._run_in_executor(staged.discard)
             return _failure("Failed to review the restore", 500)
         finally:
             await self._remove_uploads(uploads)
-        if identity != self._database_identity(self.db) or store.full():
-            await self._run_in_executor(staged.discard)
-            if store.full():
-                return _failure(
-                    "Two restores are already being reviewed. Discard one first.",
-                    429,
-                    "too-large",
-                )
-            return _failure(
-                "The database was replaced while the restore was reviewed. "
-                "Review again.",
-                409,
-                "storage-changed",
+
+    async def _stage_for_review(self, db, temp_path, uploads):
+        """Stage ``temp_path`` in the executor; a cancel discards the result.
+
+        A cancelled handler (shutdown, a dropped client) cannot stop the
+        worker thread: the stage it finishes is removed when it is done, and
+        so is the upload it reads (``_orphan_stage_cleanup``).
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, db.model.stage_restore, temp_path)
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            orphans = getattr(self, "_orphan_stages", None)
+            if orphans is None:
+                orphans = self._orphan_stages = set()
+            entry = (future, tuple(uploads))
+            orphans.add(entry)
+            uploads.clear()  # still being read: removed with the stage
+            future.add_done_callback(
+                lambda _f: loop.create_task(self._orphan_stage_cleanup())
             )
-        token = store.issue(staged, fingerprint, identity, live)
-        held = store.peek(token)
+            raise
+
+    async def _orphan_stage_cleanup(self):
+        """Remove what cancelled previews staged, once their workers are done."""
+        for entry in list(getattr(self, "_orphan_stages", ()) or ()):
+            future, uploads = entry
+            if not future.done():
+                continue
+            self._orphan_stages.discard(entry)
+            if not future.cancelled() and future.exception() is None:
+                await self._discard_held([_Orphan(future.result())])
+            await self._remove_uploads(uploads)
+
+    async def _review_upload(self, db, identity, temp_path, uploads=None):
+        """Check, stage and compare an upload; the preview response.
+
+        Only the read of the live library takes a lease (#335 review M2):
+        the upload and the staging never touch it, and a lease held for a
+        long staging would make a restore's drain fail. A stage that is not
+        handed to the store (a refusal, an error, a cancel) is removed.
+        """
+        uploads = [] if uploads is None else uploads  # the caller removes them
+        reason = await self._upload_problem(temp_path)
+        if reason is not None:
+            return _failure(reason, 400, "invalid-backup")
+        staged = None
+        issued = False
+        try:
+            try:
+                staged = await self._stage_for_review(db, temp_path, uploads)
+            except ValueError as invalid:
+                return _failure(str(invalid), 400, "invalid-backup")
+            try:
+                async with self._jobs.lease("Restore preview"):
+                    live, fingerprint = await self._run_in_executor(
+                        self._live_fingerprint, db
+                    )
+            except JobBusy as busy:
+                return busy_response(busy)
+            store = self._restore_plans
+            if identity != self._database_identity(self.db):
+                return _failure(
+                    "The database was replaced while the restore was reviewed. "
+                    "Review again.",
+                    409,
+                    "storage-changed",
+                )
+            if store.full():
+                return _too_many_reviews()
+            token = store.issue(staged, fingerprint, identity, live)
+            issued = True
+            self._schedule_restore_expiry()
+        finally:
+            if staged is not None and not issued:
+                await self._discard_held([_Orphan(staged)])
+        held = store.entry(token)
         name = os.path.basename(db.model.db_path)
         return web.json_response(
             {
@@ -576,9 +741,11 @@ class BackupRestoreRoutesMixin:
         token = request.match_info.get("token", "")
         if not 0 < len(token) <= MAX_TOKEN_LENGTH:
             return _failure("Unknown restore review.", 410, "plan-expired")
-        discarded = await self._run_in_executor(self._restore_plans.discard, token)
-        if not discarded:
+        held = self._restore_plans.pop(token)
+        if held is None:
+            await self._drop_expired_restores()
             return _failure("Unknown restore review.", 410, "plan-expired")
+        await self._discard_held([held])
         return web.json_response({"success": True})
 
     def _peek_restore(self, token):
@@ -612,13 +779,14 @@ class BackupRestoreRoutesMixin:
             return _failure("token must be the review's token", 400, "invalid-request")
         if not 0 < len(token) <= MAX_TOKEN_LENGTH:
             return _failure("token must be the review's token", 400, "invalid-request")
-        await self._run_in_executor(self._restore_plans.drop_expired)
+        await self._drop_expired_restores()
         held, refused = self._peek_restore(token)
         if refused is not None:
+            await self._drop_expired_restores()  # one peek found expired
             return refused
         db = self.db
         if held.db_identity != self._database_identity(db):
-            await self._run_in_executor(self._restore_plans.discard, token)
+            await self._discard_held([self._restore_plans.pop(token) or held])
             return _failure(
                 "The database was replaced since the review. Review again.",
                 409,
@@ -633,11 +801,12 @@ class BackupRestoreRoutesMixin:
             return busy_response(busy)
         if fingerprint != held.fingerprint:
             # It can never match again: free the stage for a new review.
-            await self._run_in_executor(self._restore_plans.discard, token)
+            await self._discard_held([self._restore_plans.pop(token) or held])
             return _failure(PLAN_CHANGED, 409, "plan-changed")
         # The token may have been used, expired or discarded meanwhile.
         held, refused = self._peek_restore(token)
         if refused is not None:
+            await self._drop_expired_restores()
             return refused
         if db is not self.db:
             return _failure(
@@ -655,7 +824,7 @@ class BackupRestoreRoutesMixin:
                 cancellable=False,
                 scope={},
                 groups=RESTORE_GROUPS,
-                runner=lambda job: self._run_restore(job, db, held),
+                runner=lambda job: self._run_restore(job, db, held, token),
             )
         except JobBusy as busy:
             return busy_response(busy)  # the token stays usable
@@ -663,13 +832,20 @@ class BackupRestoreRoutesMixin:
         self._restore_plans.take(token, job.id)
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
-    async def _run_restore(self, job, db, held):
+    async def _run_restore(self, job, db, held, token=None):
         from .maintenance import _fail_job
 
         staged = held.staged
+        keep_stage = False
         try:
             job.update(status_line="Waiting for other requests to finish")
             if not await self._jobs.drain_leases():
+                if token is not None:
+                    # Nothing ran: the reviewed stage stays usable (#335 M2).
+                    self._restore_plans.give_back(token, held)
+                    keep_stage = True
+                    self._schedule_restore_expiry()
+                    return _fail_job(job, "busy", REVIEW_KEPT)
                 return _fail_job(job, "busy", REQUESTS_BUSY)
             job.update(status_line="Checking the library")
             _live, fingerprint = await self._run_in_executor(self._live_fingerprint, db)
@@ -697,20 +873,37 @@ class BackupRestoreRoutesMixin:
                 )
                 self.logger.error(f"Restore failed: {error}")
                 return _fail_job(job, "restore-failed", NOT_RESTORED + kept)
-            await self._prune_after(model.db_path)
-            await self._switch_to_restored(model.db_path)
-            if backup_path:
-                job.log_line(f"Safety backup {os.path.basename(backup_path)}")
-            else:
-                job.log_line("No safety backup: there was no library to keep")
-            repaired = documents_line(staged.documents)
-            if repaired:
-                job.log_line(repaired)
-            line = restored_line(staged.summary)
-            job.log_line(line)
-            job.update(progress=100, status_line=line)
         except Exception:
             self.logger.exception("Restore job failed")
-            _fail_job(job, None, NOT_RESTORED)
+            return _fail_job(job, None, NOT_RESTORED)
         finally:
-            await self._run_in_executor(staged.discard)
+            if not keep_stage:
+                await self._discard_held([_Orphan(staged)])
+        # The copy replaced the library: the restore is done (#335 review I1).
+        # Every later step only logs a failure.
+        await self._after_publish(model.db_path)
+        if backup_path:
+            job.log_line(f"Safety backup {os.path.basename(backup_path)}")
+        else:
+            job.log_line("No safety backup: there was no library to keep")
+        repaired = documents_line(staged.documents)
+        if repaired:
+            job.log_line(repaired)
+        line = restored_line(staged.summary)
+        job.log_line(line)
+        job.update(progress=100, status_line=line)
+
+
+class _Orphan:
+    """A stage with no store entry, in the shape ``_discard_held`` takes."""
+
+    def __init__(self, staged):
+        self.staged = staged
+
+
+def _too_many_reviews():
+    return _failure(
+        "Two restores are already being reviewed. Discard one first.",
+        429,
+        "too-large",
+    )

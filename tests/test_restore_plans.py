@@ -136,12 +136,15 @@ class RestoreTestCase(AdminAPITestCase):
     async def download_backup(self):
         """GET /backup, read every byte, then wait for its hold to end.
 
-        The client can hold the last byte before the handler has left its
-        hold, so the registry is read only once the hold says it is done.
+        The client can hold the last byte before the handler has finished:
+        it records the download, then closes and removes its snapshot. So
+        the state is read only once the snapshot file is gone.
         """
         resp = await self.client.get("/prompt_manager/backup")
         data = await resp.read()
-        while self.api._jobs.active("backup") is not None:
+        while self.api._jobs.active("backup") is not None or any(
+            name.startswith(".pm-safety-") for name in os.listdir(self.tmpdir)
+        ):
             await asyncio.sleep(0)
         return resp, data
 
@@ -502,9 +505,12 @@ class TestLegacyRestore(RestoreTestCase):
 
 class TestBackupDownload(RestoreTestCase):
     async def test_backup_verifies_snapshot_before_streaming(self):
+        # A corrupt snapshot is refused (a semantic-only failure still
+        # downloads: tests/test_restore_review_fixes.py, #335 review M5).
         self.save("keep")
-        with patch.object(
-            PromptModel, "verify_database_file", return_value=(False, "bad")
+        with patch(
+            "py.api.backup_restore.snapshot_corruption",
+            return_value="Integrity check failed: page 3",
         ):
             resp = await self.client.get("/prompt_manager/backup")
         self.assertEqual(resp.status, 500)

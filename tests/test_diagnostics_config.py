@@ -177,8 +177,9 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
         try:
             stub = self._make_api_stub(db_file)
             stub.db.model = real_db.model
-            snapshot = write_backup_snapshot(stub.db.model)
+            snapshot, warning = write_backup_snapshot(stub.db.model)
             try:
+                self.assertIsNone(warning)
                 self.assertEqual(os.path.dirname(snapshot), folder)
                 with open(snapshot, "rb") as handle:
                     self.assertTrue(handle.read(16) == b"SQLite format 3\x00")

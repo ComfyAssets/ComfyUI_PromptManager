@@ -186,15 +186,20 @@ _FINGERPRINT_SQL = (
 def live_fingerprint(conn: sqlite3.Connection):
     """``(summary, fingerprint)`` of a live library, read in one snapshot.
 
-    The fingerprint changes when anything a restore would overwrite was
-    added or edited since (counts plus the newest row and edit of each
-    table); the apply refuses with ``plan-changed`` then.
+    The fingerprint changes when rows are added to or removed from the
+    tables a restore replaces, or when a prompt, pair, run or saved view is
+    the newest edited (counts plus the newest row and edit of each table);
+    the apply refuses with ``plan-changed`` then. It does not see every
+    edit (a tag or favorite change on an older row); those are kept in the
+    restore's safety backup. A read transaction the caller already has is
+    used and left open; one opened here is ended here.
     """
     import json
 
-    with conn:
-        if not conn.in_transaction:
-            conn.execute("BEGIN")  # one read snapshot for every count
+    opened = not conn.in_transaction
+    if opened:
+        conn.execute("BEGIN")  # one read snapshot for every count
+    try:
         summary = library_summary(conn)
         newest = []
         for table, sql in _FINGERPRINT_SQL:
@@ -202,6 +207,9 @@ def live_fingerprint(conn: sqlite3.Connection):
                 newest.append([table, list(conn.execute(sql).fetchone())])
             except sqlite3.OperationalError:
                 newest.append([table, None])  # no such table or column
+    finally:
+        if opened:
+            conn.rollback()  # it only read
     text = json.dumps([summary, newest], sort_keys=True, default=str)
     return summary, "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 

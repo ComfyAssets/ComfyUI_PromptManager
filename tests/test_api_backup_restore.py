@@ -132,9 +132,9 @@ class TestBackupRoute(BackupRestoreTestCase):
         self.assertTrue(disposition.rstrip('"').endswith(".db"))
 
         body = await resp.read()
-        # The handler removes its temp file as it leaves the registry hold,
-        # which can be just after the client holds the last byte.
-        while self.api._jobs.active("backup") is not None:
+        # The handler removes its temp file after the last byte is sent,
+        # which can be just after the client holds it: wait on that state.
+        while self.api._jobs.active("backup") is not None or os.path.exists(created[0]):
             await asyncio.sleep(0)
         downloaded = self._write("downloaded.db", body)
         self.assertEqual(
