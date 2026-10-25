@@ -112,6 +112,16 @@ class AdminAPITestCase(AioHTTPTestCase):
         if api is not None:
             # A scan of an ambiguous file captures it for Needs review.
             api.close_annotation_captures()
+            # A scan's job hands its missing previews to the automatic worker
+            # as it ends, which can be after the test read the scan's last
+            # event and after tearDownAsync closed the worker: that hand-off
+            # starts a new one. Close it for good now that no job runs, so
+            # no preview write (an open ``.part`` file) outlives the test:
+            # this API refuses new workers, and the close joins the worker.
+            # Not ``final=True``, which also shuts the process-wide encoders
+            # (#319) that later tests use.
+            api._auto_thumbnails_shut = True
+            api.close_auto_thumbnails()
         PromptModel.close_all_instances()  # restore may have swapped api.db
         assert_closed(self, self.tmpdir)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -547,6 +557,48 @@ class TestDuplicateScanSyncBody(AdminAPITestCase):
             groups[0]["images"][1]["url"], "/prompt_manager/images/serve/sub/newer.PNG"
         )
         self.assertNotIn(self.tmpdir, json.dumps(groups))
+
+    def test_view_full_names_the_gallery_folder_source(self):
+        """Carry-over (System S7): a group's View Full opens the copy in the gallery's
+        own source; without ``?root=`` the serve route took the first source that
+        has a file at that path, another source's file when two hold one."""
+        renders = self.output_dir / "renders"
+        renders.mkdir()
+        GalleryConfig.MONITORING_DIRECTORIES = [
+            self._root(renders),
+            self._root(self.output_dir),
+        ]
+        (renders / "same.png").write_bytes(b"other content")
+        (self.output_dir / "same.png").write_bytes(b"same")
+        (self.output_dir / "a#1.png").write_bytes(b"same")
+
+        groups = self._scan()
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(
+            sorted(img["url"] for img in groups[0]["images"]),
+            [
+                "/prompt_manager/images/serve/a%231.png?root=1",
+                "/prompt_manager/images/serve/same.png?root=1",
+            ],
+        )
+
+    def test_view_full_without_a_listed_source_keeps_its_plain_url(self):
+        renders = self.output_dir / "renders"
+        renders.mkdir()
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(renders)]
+        (self.output_dir / "a.png").write_bytes(b"same")
+        (self.output_dir / "b.png").write_bytes(b"same")
+
+        groups = self._scan()
+
+        self.assertEqual(
+            sorted(img["url"] for img in groups[0]["images"]),
+            [
+                "/prompt_manager/images/serve/a.png",
+                "/prompt_manager/images/serve/b.png",
+            ],
+        )
 
     def test_thumbnails_dir_is_skipped_and_thumbnail_url_reported(self):
         (self.output_dir / "a.png").write_bytes(b"same")

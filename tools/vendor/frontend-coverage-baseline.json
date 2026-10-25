@@ -11,6 +11,12 @@
     "functions": 98,
     "statements": 98
   },
+  "cache-ownership.js": {
+    "lines": 94,
+    "branches": 89,
+    "functions": 98,
+    "statements": 94
+  },
   "classic-node.js": {
     "lines": 98,
     "branches": 79,
@@ -43,7 +49,7 @@
   },
   "gallery.js": {
     "lines": 45,
-    "branches": 64,
+    "branches": 66,
     "functions": 48,
     "statements": 45
   },
@@ -407,6 +413,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/maintenance-review.mjs": {
+    "lines": 94,
+    "branches": 81,
+    "functions": 90,
+    "statements": 94
+  },
   "workspace/media-viewer.mjs": {
     "lines": 98,
     "branches": 93,
@@ -490,6 +502,12 @@
     "branches": 89,
     "functions": 89,
     "statements": 98
+  },
+  "workspace/system-maintenance.mjs": {
+    "lines": 92,
+    "branches": 80,
+    "functions": 92,
+    "statements": 92
   },
   "workspace/system-overview.mjs": {
     "lines": 96,

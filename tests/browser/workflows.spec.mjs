@@ -99,6 +99,34 @@ for (const leave of ['beforeunload', 'pagehide']) {
     });
 }
 
+// #222: the gallery's Clear cache clears the server's thumbnails by its own request and keeps this browser's
+// preferences and other tools' storage; nothing of Prompt Manager's is cached in a browser, and the toast says so.
+test('the gallery cache clear keeps preferences and other tools caches', async ({ page }) => {
+    await page.addInitScript(() => {
+        if (sessionStorage.getItem('seeded')) return;
+        sessionStorage.setItem('seeded', '1');
+        localStorage.setItem('pm_workspace_theme', 'light');
+        localStorage.setItem('other-tool-setting', 'keep');
+        localStorage.setItem('pm_other_tool', 'keep');
+    });
+    await page.goto('/prompt_manager/gallery');
+    await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);
+    await page.evaluate(async () => { await (await caches.open('other-tool-gallery-thumbnails')).put('/x', new Response('x')); });
+    const clears = [];
+    page.on('request', req => { if (req.url().includes('/clear-thumbnails')) clears.push(req.method()); });
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#settingsBtn').click();
+    await page.locator('#clearCacheBtn').click();
+    await expect(page.getByText("Thumbnails cleared; original images untouched. Nothing of Prompt Manager's is cached in this browser."))
+        .toBeVisible();
+    expect(clears).toEqual(['POST']);
+    expect(await page.evaluate(async () => ({
+        theme: localStorage.getItem('pm_workspace_theme'), other: localStorage.getItem('other-tool-setting'),
+        prefixed: localStorage.getItem('pm_other_tool'), notice: localStorage.getItem('pm_update_notice_dismissed'),
+        caches: await caches.keys(),
+    }))).toEqual({ theme: 'light', other: 'keep', prefixed: 'keep', notice: '3.2.0', caches: ['other-tool-gallery-thumbnails'] });
+});
+
 test('actual gallery review generates and persists tags for the selected root', async ({ page, request }) => {
     await page.goto('/prompt_manager/gallery');
     await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);

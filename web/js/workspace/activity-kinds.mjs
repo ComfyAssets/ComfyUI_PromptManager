@@ -11,7 +11,9 @@
  * - `log` and `cancelLabel` (`cancel` is the same label under the job view's older name).
  *
  * `scan` is exactly the D56 view and `image-tags` the D89 one. `thumbnails` counts Generated (green), Skipped and
- * Errors (red). Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
+ * Errors (red). System S7: `maintenance` (a reviewed plan's apply) counts Changed, Protected and Errors and, when it
+ * failed, ends with the server's reason; `duplicates` (the search) counts Groups found; `duplicate_cleanup` counts
+ * Removed, Kept and Errors. Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
  * the generic descriptor: title-based copy and no tiles or outcomes, so it never shows another kind's zeros (S1 review
  * M6, S2 review M3). `viewOf(job)` keeps only the groups the job itself counts, so a hold (no groups) has none either.
  *
@@ -35,6 +37,15 @@ export const addedOf = job => counted(job, 'added', 'added');
 export const taggedOf = job => counted(job, 'tagged', 'tagged');
 /** "3 generated" (D111). */
 export const generatedOf = job => counted(job, 'generated', 'generated');
+/** "3 changed" (System S7: a maintenance apply). */
+export const changedOf = job => counted(job, 'changed', 'changed');
+/** "12 groups found" (System S7: a duplicate search). */
+export const groupsOf = job => {
+    const groups = job.counters?.groups_found ?? 0;
+    return `${number(groups)} ${noun(groups, 'group')} found`;
+};
+/** "3 removed" (System S7: a duplicate cleanup). */
+export const removedOf = job => counted(job, 'removed', 'removed');
 
 /** "2 output folders": what a scan or a thumbnail job walks. */
 function foldersOf(job) {
@@ -72,6 +83,15 @@ const GENERIC = Object.freeze({
 const scanLine = job => `${addedOf(job)} · ${errorsOf(job)}`;
 const tagLine = job => `${taggedOf(job)} · ${errorsOf(job)}`;
 const thumbnailLine = job => `${generatedOf(job)} · ${errorsOf(job)}`;
+const changedLine = job => `${changedOf(job)} · ${errorsOf(job)}`;
+const cleanupLine = job => `${removedOf(job)} · ${errorsOf(job)}`;
+
+/** A maintenance apply ends with its counters, or, when it failed, the server's reason (plan-changed: review again). */
+function maintenanceFinish(job) {
+    if (job.state === 'cancelled') return `${job.title} cancelled · ${changedOf(job)}`;
+    if (job.state === 'failed') return `${job.title} failed · ${job.status_line || errorsOf(job)}`;
+    return `${job.title} finished · ${changedOf(job)}`;
+}
 // D85: an image tagging job says which of its two modes started.
 const IMAGE_TAG_START_TOASTS = Object.freeze({ add: 'Tagging started.', auto: 'Auto-tagging started.' });
 
@@ -122,6 +142,45 @@ export const KINDS = Object.freeze({
         tiles: tiles([['generated', 'Generated', 'added'], ['skipped', 'Skipped', ''], ['errors', 'Errors', 'bad']]),
         outcomes: tiles([['generated', 'Generated'], ['errors', 'Errors'], ['skipped', 'Skipped']]),
         openable: groups('generated', 'skipped'),
+    }),
+    // System S7: a reviewed maintenance plan's apply, titled after its operation; it runs without a known total.
+    maintenance: Object.freeze({
+        ...GENERIC,
+        finishToast: maintenanceFinish,
+        line: changedLine,
+        kept: changedOf,
+        tiles: tiles([['changed', 'Changed', 'added'], ['protected', 'Protected', ''], ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['changed', 'Changed'], ['errors', 'Errors'], ['protected', 'Protected']]),
+        log: 'Maintenance log',
+    }),
+    // System S7: the duplicate image search; each found group's row opens its first copy.
+    duplicates: Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Finding duplicates',
+        startToast: () => 'Duplicate search started.',
+        finishToast: namedFinish(() => 'Duplicate search', groupsOf, groupsOf),
+        line: groupsOf,
+        kept: groupsOf,
+        tiles: tiles([['groups_found', 'Groups found', '']]),
+        outcomes: tiles([['groups_found', 'Groups found']]),
+        openable: groups('groups_found'),
+        log: 'Search log',
+        cancelLabel: 'Cancel search',
+        cancel: 'Cancel search',
+    }),
+    // System S7: the reviewed duplicate cleanup; the kept copies open the viewer, the removed ones are gone.
+    duplicate_cleanup: Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Removing duplicate files',
+        // A failed cleanup says the server's reason (sources changed, no safety backup), as a maintenance apply does.
+        finishToast: job => (job.state === 'failed' && job.status_line ? `Duplicate cleanup failed · ${job.status_line}`
+            : namedFinish(() => 'Duplicate cleanup', removedOf, cleanupLine)(job)),
+        line: cleanupLine,
+        kept: removedOf,
+        tiles: tiles([['removed', 'Removed', 'added'], ['kept', 'Kept', ''], ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['removed', 'Removed'], ['errors', 'Errors'], ['kept', 'Kept']]),
+        openable: groups('kept'),
+        log: 'Cleanup log',
     }),
 });
 

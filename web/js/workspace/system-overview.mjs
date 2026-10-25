@@ -235,7 +235,7 @@ export function healthNodes(report, { scope, onReviewMissing }) {
     const close = createButton('Close');
     const review = createButton('Review missing links', 'ca-primary');
     scope.listen(close, 'click', () => closeWorkspaceDialog());
-    scope.listen(review, 'click', () => onReviewMissing());
+    scope.listen(review, 'click', () => onReviewMissing(review));
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(close, review);
     return [list, el('p', healthSummary(report), 'small'), actions];
@@ -288,41 +288,55 @@ export async function runHealthCheck(api, { activity, signal } = {}) {
     return report;
 }
 
-/** Open the Health report for `report` (the Maintenance notice's and, from S7, its Check action's dialog). */
-export function openHealthReport(report, { scope, trigger = null, navigate = navigateTo }) {
+/**
+ * Open the Health report for `report` (Maintenance's notice and its Check action). Its "Review missing links" runs
+ * `onReviewMissing(trigger, pressed)`: Maintenance reviews a fresh Missing-file links plan (S7), never a cleanup,
+ * holding the pressed button while it is read; without one it goes to Maintenance.
+ */
+export function openHealthReport(report, { scope, trigger = null, navigate = navigateTo, onReviewMissing = null }) {
     openContentDialog({ scope, title: 'Health report', trigger, nodes: healthNodes(report, { scope,
-        // Missing-link cleanup lives in Maintenance (its D94 hand-off until S7).
-        onReviewMissing: () => { closeWorkspaceDialog(); navigate('#/system/maintenance'); } }) });
+        onReviewMissing: pressed => {
+            if (onReviewMissing) onReviewMissing(trigger, pressed);
+            else { closeWorkspaceDialog(); navigate('#/system/maintenance'); }
+        } }) });
 }
 
 /**
- * The concept's Maintenance notice ("Check first. Review changes. Then apply." + "Run health checks", a689), which
- * S2 delivers ahead of the rest of Maintenance (D123): the press runs the read-only check, then opens the report.
+ * Run the read-only health check from `button` and open its report: the button reads "Checking…" and is aria-disabled
+ * until the check ended (a second press is ignored), then reads `label` again.
  */
-export function healthNotice({ api, activity, scope, navigate = navigateTo, notify = showWorkspaceToast }) {
+export async function runHealthAction({ api, activity, scope, button, navigate = navigateTo, notify = showWorkspaceToast,
+    onReviewMissing = null }) {
+    if (button.getAttribute('aria-disabled') === 'true') return;
+    const label = button.textContent;
+    button.setAttribute('aria-disabled', 'true');
+    button.textContent = 'Checking…';
+    try {
+        const report = await runHealthCheck(api, { activity, signal: scope.signal });
+        if (scope.signal.aborted) return;
+        openHealthReport(report, { scope, trigger: button, navigate, onReviewMissing });
+    } catch (error) {
+        if (!scope.signal.aborted) notify(HEALTH_FAILED_TEXT);
+    } finally {
+        if (!scope.signal.aborted) {
+            button.removeAttribute('aria-disabled');
+            button.textContent = label;
+        }
+    }
+}
+
+/**
+ * The concept's Maintenance notice ("Check first. Review changes. Then apply." + "Run health checks", a689), D123: the
+ * press runs the read-only check, then opens the report.
+ */
+export function healthNotice({ api, activity, scope, navigate = navigateTo, notify = showWorkspaceToast, onReviewMissing = null }) {
     const notice = el('div', undefined, 'notice');
     const text = el('div');
     text.append(el('h2', 'Check first. Review changes. Then apply.'),
         el('p', 'One home for database and media maintenance. Scanning is separate from changing or removing records.'));
     const run = createButton('Run health checks', 'ca-primary');
     notice.append(text, run);
-    scope.listen(run, 'click', async () => {
-        if (run.getAttribute('aria-disabled') === 'true') return;
-        run.setAttribute('aria-disabled', 'true');
-        run.textContent = 'Checking…';
-        try {
-            const report = await runHealthCheck(api, { activity, signal: scope.signal });
-            if (scope.signal.aborted) return;
-            openHealthReport(report, { scope, trigger: run, navigate });
-        } catch (error) {
-            if (!scope.signal.aborted) notify(HEALTH_FAILED_TEXT);
-        } finally {
-            if (!scope.signal.aborted) {
-                run.removeAttribute('aria-disabled');
-                run.textContent = 'Run health checks';
-            }
-        }
-    });
+    scope.listen(run, 'click', () => runHealthAction({ api, activity, scope, button: run, navigate, notify, onReviewMissing }));
     return notice;
 }
 

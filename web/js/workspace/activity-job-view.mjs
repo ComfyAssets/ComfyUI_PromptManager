@@ -15,6 +15,8 @@
  * - D89: the tiles, the outcome list, the openable rows and the log and cancel labels are the job kind's (`jobView`):
  *   an image tagging job shows Tagged, Unchanged, Skipped and Errors, opens Tagged and Unchanged rows, and reads
  *   "Tagging log" and "Cancel tagging".
+ * - D101 (System S7): a finished duplicate search that found groups adds **Review groups** after Download report; it
+ *   opens "Review duplicate image files" for this search.
  * - D111: the kind's descriptor (activity-kinds.mjs `viewOf`) decides them for every kind: a thumbnail job counts
  *   Generated, Skipped and Errors; a kind without groups (the health check, a held legacy-page operation) shows no
  *   tiles and no Results, never another kind's zeros. A job without a known total has an indeterminate `<progress>`;
@@ -35,6 +37,8 @@ import { createMediaViewer } from './media-viewer.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { imageKey } from './images-state.mjs';
+import { OPERATION_TITLES, openDuplicatesReview, reviewPlan } from './maintenance-review.mjs';
+import { navigateTo } from './state.mjs';
 
 export const DETAIL_INTERVAL_MS = 1000;
 export const NOT_FOUND = 'This job is not in this session’s Activity. Jobs are kept until ComfyUI restarts.';
@@ -71,6 +75,31 @@ export function parseDetail(raw) {
     }
     const log = Array.isArray(raw.log) ? raw.log.filter(isText) : [];
     return { job, outcomes, log };
+}
+
+// Failures that mean the reviewed plan no longer matches: the review must be done again (S7 review M2).
+const OVERTAKEN = new Set(['plan-changed', 'storage-changed', 'plan-expired']);
+
+/**
+ * Where a failed apply's Review again goes (S7 review M2): a maintenance plan the library overtook is reviewed again
+ * (`{operation}`); a duplicate cleanup whose sources or plan changed needs a new search, in Maintenance (`{section}`);
+ * otherwise null.
+ */
+export function reviewAgainOf(job) {
+    if (job.state !== 'failed') return null;
+    const failure = job.scope?.failure;
+    if (job.kind === 'maintenance' && OVERTAKEN.has(failure) && Object.hasOwn(OPERATION_TITLES, job.scope?.operation)) {
+        return { operation: job.scope.operation };
+    }
+    if (job.kind === 'duplicate_cleanup' && (OVERTAKEN.has(failure) || failure === 'sources-changed')) {
+        return { section: '#/system/maintenance' };
+    }
+    return null;
+}
+
+/** D101: a duplicate search that finished with groups to review. */
+export function hasDuplicateGroups(job) {
+    return job.kind === 'duplicates' && job.state === 'finished' && (job.counters.groups_found ?? 0) > 0;
 }
 
 /** The progress line: the server's while running, then what the job got through. */
@@ -125,6 +154,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const download = createButton('Download report');
     const cancel = createButton('Cancel scan', 'danger');
     const review = createReviewMetadataButton(scope); // D87
+    // System S7 (D101): a finished duplicate search that found groups reviews them.
+    const reviewGroups = createButton('Review groups', 'ca-primary');
+    // S7 review M2: a failed apply whose plan the library overtook goes back to its review.
+    const reviewAgain = createButton('Review again', 'ca-primary');
 
     const progressPart = section('Progress', 'job-progress-title');
     const status = element('span', '', 'small');
@@ -226,6 +259,8 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
             mounted = false;
             const focused = main.contains(document.activeElement) && document.activeElement !== parts.h1;
             download.remove();
+            reviewGroups.remove();
+            reviewAgain.remove();
             cancel.remove();
             progressPart.node.remove();
             resultsPart.node.remove();
@@ -289,6 +324,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         download.disabled = lost;
         if (hasReviewItems(job)) { if (!review.isConnected) download.after(review); } // D87
         else review.remove();
+        if (hasDuplicateGroups(job)) { if (!reviewGroups.isConnected) download.after(reviewGroups); } // D101
+        else reviewGroups.remove();
+        if (reviewAgainOf(job)) { if (!reviewAgain.isConnected) download.after(reviewAgain); }
+        else reviewAgain.remove();
         // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel.
         if (canCancel(job)) {
             if (!cancel.isConnected) parts.actions.append(cancel);
@@ -389,6 +428,13 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         } finally {
             download.removeAttribute('aria-disabled');
         }
+    });
+    scope.listen(reviewGroups, 'click', () => openDuplicatesReview({ api, store, scope, jobId, trigger: reviewGroups }));
+    scope.listen(reviewAgain, 'click', () => {
+        const job = current();
+        const target = job ? reviewAgainOf(job) : null;
+        if (target?.operation) reviewPlan({ api, store, scope, operation: target.operation, trigger: reviewAgain });
+        else if (target?.section) navigateTo(target.section);
     });
     scope.listen(cancel, 'click', async () => {
         if (cancel.getAttribute('aria-disabled') === 'true') return;
