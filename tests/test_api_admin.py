@@ -2015,7 +2015,7 @@ class TestBackupRestoreContract(AdminAPITestCase):
         self.assertFalse((await invalid.json())["success"])
         compatible = self._snapshot_upload()
         with patch(
-            "database.models.rotate_history_epoch",
+            "database.restore_stage.rotate_history_epoch",
             side_effect=sqlite3.OperationalError("staging failed before safety backup"),
         ):
             staged = await self._restore("database_file", compatible)
@@ -2109,7 +2109,8 @@ class TestBackupRestoreContract(AdminAPITestCase):
         resp = await self._restore("database_file", upload)
         self.assertEqual(resp.status, 200)
         self.assertIn("verify_database_file", calls)
-        self.assertIn("restore_from_file", calls)
+        self.assertIn("stage_restore", calls)
+        self.assertIn("publish_staged", calls)
 
     async def test_restore_keeps_at_most_ten_safety_backups(self):
         import time
@@ -2150,12 +2151,12 @@ class TestBackupRestoreContract(AdminAPITestCase):
         self.api.db.save_prompt(text="restored", prompt_hash="h1")
         upload = self._snapshot_upload()
 
-        def boom(src_path):
+        def boom(staged):
             raise PermissionError(
                 13, "Permission denied", os.path.join(self.tmpdir, "prompts.db")
             )
 
-        self.api.db.model.restore_from_file = boom
+        self.api.db.model.publish_staged = boom
         resp = await self._restore("database_file", upload)
         body = await resp.text()
         self.assertEqual(resp.status, 500)
