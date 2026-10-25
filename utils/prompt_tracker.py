@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # Import logging system
 try:
@@ -180,7 +180,6 @@ class PromptTracker:
         # Push to batch queue for ordered image linking
         if push_to_queue:
             with self._queue_lock:
-                self._supersede_queued(run_key, run_id)
                 self._prompt_queue.append(execution_context)
                 self.logger.debug(
                     f"Queue size: {len(self._prompt_queue)} after push "
@@ -265,7 +264,6 @@ class PromptTracker:
         self._remember_keyed(placeholder)
         if push_to_queue:
             with self._queue_lock:
-                self._supersede_queued(run_key, run_id)
                 self._prompt_queue.append(placeholder)
 
     def _keyed_runs(self) -> "KeyedRuns":
@@ -281,21 +279,6 @@ class PromptTracker:
         if context.get("run_key"):
             self._keyed_runs().record(context)
 
-    def _supersede_queued(self, run_key: Optional[str], run_id: Optional[str]):
-        """Drop queued entries of ``run_key`` from an earlier run.
-
-        A node that executes again with the same key in a new run replaces what
-        the earlier run queued: images of the new run must not take them.
-        Called with ``_queue_lock`` held.
-        """
-        if not run_key or run_id is None:
-            return
-        self._prompt_queue = [
-            ctx
-            for ctx in self._prompt_queue
-            if ctx.get("run_key") != run_key or ctx.get("run_id") in (None, run_id)
-        ]
-
     def keyed_snapshot(self) -> Dict[str, Tuple[Dict[str, Any], Optional[str], int]]:
         """``{run key: (latest entry, its run id, entries of that run)}`` now.
 
@@ -304,26 +287,46 @@ class PromptTracker:
         """
         return self._keyed_runs().snapshot(self.prompt_timeout)
 
-    def pop_for_keys(self, keys: Iterable[str]) -> Optional[Dict[str, Any]]:
-        """Pop the oldest queued entry whose run key is one of ``keys`` (FIFO).
+    def pop_for_key(
+        self, run_key: Optional[str], run_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Pop the oldest queued entry of ``run_key`` (FIFO), from ``run_id`` if set.
 
-        Entries of other keys stay queued; expired entries are discarded.
+        ``run_id`` is the run the key's latest entry came from when the image
+        appeared (``keyed_snapshot``): entries of that key queued by earlier
+        runs ahead of it are stale and dropped, while entries of later runs
+        (queued after the image appeared) stay for their own images. Entries
+        of other keys stay queued; expired entries are discarded.
         """
-        wanted = {key for key in keys if key}
-        if not wanted:
+        if not run_key:
             return None
         now = time.time()
         with self._queue_lock:
-            kept = []
-            found = None
-            for ctx in self._prompt_queue:
-                if now - ctx.get("timestamp", 0) >= self.prompt_timeout:
-                    continue
-                if found is None and ctx.get("run_key") in wanted:
-                    found = ctx
-                    continue
-                kept.append(ctx)
-            self._prompt_queue = kept
+            live = [
+                ctx
+                for ctx in self._prompt_queue
+                if now - ctx.get("timestamp", 0) < self.prompt_timeout
+            ]
+            index = next(
+                (
+                    i
+                    for i, ctx in enumerate(live)
+                    if ctx.get("run_key") == run_key
+                    and (run_id is None or ctx.get("run_id") == run_id)
+                ),
+                None,
+            )
+            if index is None:
+                self._prompt_queue = live
+                return None
+            found = live[index]
+            # Same-key entries ahead of it came from earlier runs: stale
+            stale_or_found = {
+                i for i in range(index + 1) if live[i].get("run_key") == run_key
+            }
+            self._prompt_queue = [
+                ctx for i, ctx in enumerate(live) if i not in stale_or_found
+            ]
         return found
 
     def pop_next_prompt(self) -> Optional[Dict[str, Any]]:

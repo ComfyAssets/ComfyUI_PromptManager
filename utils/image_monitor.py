@@ -384,12 +384,16 @@ class ImageGenerationHandler(FileSystemEventHandler):
         node counts (``utils.run_keys``): never the newest prompt in the
         database and never an entry of another graph (#342).
 
-        1. Batch queue: the oldest queued entry of that key. Batch items (text
-           from PromptSearchList) share one key and are linked in order. An
-           empty item's placeholder leaves its image unlinked.
-        2. Snapshot taken when the image appeared: the key's latest entry, when
-           its run registered exactly one entry for the key (a batch's latest
-           item says nothing about the other images) and the run is known.
+        The snapshot taken when the image appeared names the key's latest run.
+
+        1. Batch queue: the oldest queued entry of that key from that run.
+           Batch items (text from PromptSearchList) share one key and are
+           linked in order; an empty item's placeholder leaves its image
+           unlinked; entries queued by later runs stay for their own images.
+        2. The snapshot's entry itself, when its run is known and registered
+           exactly one entry for the key (a batch's latest item says nothing
+           about the other images). This covers a cached node that did not
+           run again.
         3. Recorded execution history: the run that wrote this file names one
            stored prompt (``database.run_attribution``).
         """
@@ -397,18 +401,19 @@ class ImageGenerationHandler(FileSystemEventHandler):
         name = os.path.basename(image_path)
         if len(keys) == 1:
             (key,) = keys.values()
-            queued = self.prompt_tracker.pop_for_keys([key])
-            if queued is not None:
-                if queued.get("placeholder"):
-                    self.logger.info(f"Queue entry for {name} has no prompt text")
-                    return None
-                self.logger.info(f"Queue match: prompt {queued['id']} for {name}")
-                return queued
             if prompt_snapshot is None:
                 prompt_snapshot = self._keyed_snapshot()
+            # No entry of the key when the image appeared: no tracked run made it
             entry = (prompt_snapshot or {}).get(key)
             if entry is not None:
                 context, run_id, count = entry
+                queued = self.prompt_tracker.pop_for_key(key, run_id)
+                if queued is not None:
+                    if queued.get("placeholder"):
+                        self.logger.info(f"Queue entry for {name} has no prompt text")
+                        return None
+                    self.logger.info(f"Queue match: prompt {queued['id']} for {name}")
+                    return queued
                 if not context.get("placeholder") and run_id and count == 1:
                     self.logger.info(f"Run match: prompt {context['id']} for {name}")
                     return context

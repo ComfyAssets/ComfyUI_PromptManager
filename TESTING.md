@@ -3873,9 +3873,12 @@ fallback (`_get_fallback_prompt` is gone) and no unproven tracker entry.
 - **Run keys** (`utils/run_keys.py`): sha256 of a prompt node plus its whole
   upstream closure (`class_type` and `inputs`) in the API graph. Nodes register
   tracker entries under it; the monitor computes it from the image's embedded
-  graph. A queued entry is used only by key (batch items in order, a placeholder
-  leaves its image unlinked, a new run of a key drops the old run's entries). The
-  snapshot taken when the file appears is used only when its run id is known
+  graph. The snapshot taken when the file appears names the key's latest run; a
+  queued entry is taken only by key and from that run (batch items in order, a
+  placeholder leaves its image unlinked, same-key entries of earlier runs ahead
+  of it are stale and dropped, entries of later runs that executed during the
+  monitor's delay wait for their own images). Without a queued entry the
+  snapshot's entry itself is used only when its run id is known
   (`comfy_execution.utils.get_executing_context`) and that run registered one
   entry for the key, which covers a cached re-run (sampler seed changed) without
   applying a batch's last item to every image. More than one positive

@@ -232,9 +232,10 @@ class TestEmptyEditorSavesNothing(NodeCase):
         )
         latest, _run, _count = self.tracker.keyed_snapshot()[key]
         self.assertTrue(latest.get("placeholder"))
-        popped = self.tracker.pop_for_keys([key])
+        self.assertIsNone(self.tracker.pop_for_key(key, "another run"))
+        popped = self.tracker.pop_for_key(key)
         self.assertEqual(popped["id"], older, "an earlier queued item stays first")
-        self.assertTrue(self.tracker.pop_for_keys([key]).get("placeholder"))
+        self.assertTrue(self.tracker.pop_for_key(key).get("placeholder"))
 
     def test_empty_negative_node_is_not_marked(self):
         graph = issue_graph(text="a typed positive")
@@ -391,11 +392,39 @@ class TestProvenRuns(MonitorCase):
         self.assertIsNone(self.process({"prompt": graph}))
         self.assertEqual(self.process({"prompt": graph}), third)
 
-    def test_a_new_run_supersedes_queued_entries_of_the_same_key(self):
+    def test_a_newer_run_drops_stale_entries_of_the_same_key(self):
         graph = llm_text_graph()
+        # run-1 saved no image, so its entry was never taken
         self.track(graph, "earlier run text", run_id="run-1")
         newer = self.track(graph, "newer run text", run_id="run-2")
         self.assertEqual(self.process({"prompt": graph}), newer)
+        self.assertEqual(self.tracker._prompt_queue, [])
+
+    def test_a_later_run_queued_before_processing_keeps_its_own_entry(self):
+        # The image appears (snapshot), the next queued run executes the same
+        # node again before the monitor's delay is over, then the image is
+        # processed: it takes its own run's entry, the later run keeps its own.
+        graph = llm_text_graph()
+        own = self.track(graph, "first run text", run_id="run-1")
+        snapshot = self.tracker.keyed_snapshot()
+        later = self.track(graph, "second run text", run_id="run-2")
+        self.assertEqual(self.process({"prompt": graph}, snapshot), own)
+        self.assertEqual(self.process({"prompt": graph}), later)
+
+    def test_no_entry_when_the_image_appeared_means_no_queue_match(self):
+        graph = llm_text_graph()
+        empty_snapshot = self.tracker.keyed_snapshot()
+        self.track(graph, "queued after the image appeared")
+        self.assertIsNone(self.process({"prompt": graph}, empty_snapshot))
+        self.assertEqual(len(self.tracker._prompt_queue), 1)
+
+    def test_hosts_without_run_ids_still_link_queued_entries_in_order(self):
+        graph = llm_text_graph()
+        first = self.track(graph, "item one", run_id=None)
+        second = self.track(graph, "item two", run_id=None)
+        self.assertEqual(self.process({"prompt": graph}), first)
+        self.assertEqual(self.process({"prompt": graph}), second)
+        self.assertIsNone(self.process({"prompt": graph}))
 
     def test_other_keys_stay_queued_for_their_own_images(self):
         mine, other = llm_text_graph(), copy.deepcopy(llm_text_graph())
