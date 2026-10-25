@@ -554,7 +554,10 @@ class PromptModel:
             "WHERE pp.positive_prompt_id IS NOT gi.prompt_id LIMIT 1"
         ).fetchone():
             return "Image pair association has a different positive prompt owner"
-        for row in conn.execute("SELECT provenance FROM image_prompt_pairs"):
+        # fetchone, not iteration: a managed connection's cursor prefetches
+        # ITER_CHUNK rows when iterated, and each provenance may be ~4 MB.
+        cursor = conn.execute("SELECT provenance FROM image_prompt_pairs")
+        while (row := cursor.fetchone()) is not None:
             error = pair_provenance_error(row[0])
             if error:
                 return error
