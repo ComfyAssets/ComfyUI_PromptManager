@@ -44,6 +44,9 @@ export function installClassicControls(nodeType, app, parseSearchQuery, api) {
         this._classicContainer = container;
         const wrapper = document.createElement('div');
         wrapper.className = 'pm-classic-workspace';
+        const linkNote = this.createTextLinkNote();
+        linkNote.classList.add('pm-classic-link');
+        wrapper.append(linkNote);
         const buttons = document.createElement('div');
         buttons.className = 'pm-classic-toolbar';
         for (const [label, action, primary] of [

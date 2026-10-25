@@ -3856,6 +3856,45 @@ Viewer, including nested modal focus, mobile layouts and per-role sending.
 real Classic and Nodes 2.0 widgets and verifies workflow serialization without
 loading a workflow or queueing generation.
 
+## Linked prompt text (#343)
+
+A link drives `text` on every PromptManager node, and `negative_text` on the Pair,
+as it drives any core widget. The Focused, Split and Pair editors hide their widgets,
+and the frontend only draws a widget's socket while the widget is visible, so
+`web/js/text-links.js` detaches those two inputs from their hidden widgets. They become
+ordinary sockets; the schema, widget order and saved `widgets_values` do not change. A
+STRING link dropped on the editor body fills the main prompt first, then the negative,
+before the frontend's own choice (it used to pick `prepend_text`, which caused #342).
+While linked, each editor says the value comes from a link, and the typed text is kept
+in the workflow for when the link is disconnected. That includes the Classic nodes,
+which used to save `null` under a link.
+
+- `tests/js/text-links.test.js`: socket exposure, drop preference, stored values.
+- `tests/browser/{focused,pair,classic}-node.spec.mjs`: the linked note, typed text
+  kept through save and configure (also with a workflow's widget binding restored), the
+  Classic "use prompt" guard while linked.
+- `tests/comfyui/text-link.spec.mjs` (both startup projects): a real mouse drag of a
+  STRING output onto each node's prompt box (and onto the Pair's negative socket); the
+  link, the note and the typed text survive renderer switches both ways, a reload,
+  disconnect and node removal. `fixtures/workflow-before-343.json` was serialized by
+  the pre-#343 code on the pinned host and must load unchanged.
+- `tests/comfyui/execution-text-link.spec.mjs` (execution host): workflows built by the
+  real frontend through the sockets, with text from `PrimitiveString` or through
+  `PreviewAny`, for PromptManager, PromptManagerText, Focused and the Pair (positive,
+  negative, both, neither linked). The linked text is saved, counted once, recorded as
+  the run's raw positive/negative, and after a scan the run's image links to it. Text
+  only known at run time (`PreviewAny`) cannot be read from the image; the case only
+  requires that it is never linked to another prompt (its attribution from the recorded
+  run belongs to #342).
+
+```sh
+node --test tests/js/text-links.test.js
+npm run --prefix tools/vendor test:workflows -- classic-node.spec.mjs focused-node.spec.mjs pair-node.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:comfyui -- text-link
+PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:executions -- execution-text-link
+```
+
 ## Durable execution ledger
 
 `npm run --prefix tools/vendor test:executions` runs 46 real execution cases

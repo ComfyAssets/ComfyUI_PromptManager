@@ -12,3 +12,5 @@
 .pm-classic-restore { white-space: normal !important; }
 .pm-classic-notification { position: fixed; inset-block-start: 20px; inset-inline-end: 20px; padding: 10px 15px; border: 1px solid var(--ca-border); border-radius: 5px; z-index: 10000; max-inline-size: min(300px, calc(100vw - 40px)); overflow-wrap: anywhere; }
 .pm-classic-notification[data-kind="error"] { color: var(--ca-error-text); background: var(--ca-error-bg); border-color: var(--ca-error); }
+.pm-classic .pm-classic-link { margin: 0; padding: 6px 8px; border: 1px solid var(--ca-line); border-radius: 5px; color: var(--ca-text); background: var(--ca-field); overflow-wrap: anywhere; }
+.pm-classic .pm-classic-link[hidden] { display: none; }

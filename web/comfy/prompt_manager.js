@@ -5,6 +5,7 @@ import { api } from "../../scripts/api.js";
 const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
 const { installFocusedNode, installSplitNode, installPairNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
 const { installPromptBridge } = await import(api.fileURL('/prompt_manager/js/prompt-bridge-host.js'));
+const { isLinked, linkNoteText, storedWidgetValue } = await import(api.fileURL('/prompt_manager/js/text-links.js'));
 const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']);
 
 // ============================================================================
@@ -208,15 +209,10 @@ function syncPromptManagerWidgets() {
 
         node.widgets.forEach((widget, idx) => {
           if (widget) {
-            // Skip widgets whose input is connected to another node —
-            // the connected value takes precedence over the DOM widget value
-            const isConnected = node.inputs?.some(
-              i => i.name === widget.name && i.link != null
-            );
-            if (isConnected) return;
-
+            // A linked widget keeps the text the user typed (#343): the link drives the run,
+            // the workflow keeps the typed text for when the link is disconnected.
             // For non-connected widgets, inputEl.value is the true source
-            const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
+            const actualValue = storedWidgetValue(node, widget);
             if (actualValue !== undefined) {
               node.widgets_values[idx] = actualValue;
 
@@ -443,13 +439,8 @@ app.registerExtension({
             }
             this.widgets.forEach((widget, idx) => {
               if (widget) {
-                // Skip connected widgets — their value comes from the link
-                const isConnected = self.inputs?.some(
-                  i => i.name === widget.name && i.link != null
-                );
-                if (isConnected) return;
-
-                const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
+                // A linked widget stores its typed text, not the live editor (#343)
+                const actualValue = storedWidgetValue(self, widget);
                 if (actualValue !== undefined) {
                   this.widgets_values[idx] = actualValue;
                   if (widget.inputEl && widget.value !== actualValue) {
@@ -488,9 +479,31 @@ app.registerExtension({
           if (data._userHasResized) {
             this._userHasResized = data._userHasResized;
           }
+          this.renderTextLink();
         };
 
         this.setDirtyCanvas(true, true);
+      };
+
+      // #343: text can come from a link like any core widget. The host hides the text box;
+      // the controls say why, and the typed text is kept for when the link is disconnected.
+      const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+      nodeType.prototype.onConnectionsChange = function (...args) {
+        const result = onConnectionsChange?.apply(this, args);
+        this.renderTextLink();
+        return result;
+      };
+      nodeType.prototype.createTextLinkNote = function () {
+        const note = document.createElement("p");
+        note.className = "pm-text-link-note";
+        note.setAttribute("role", "status");
+        note.textContent = linkNoteText("Text");
+        this._textLinkNote = note;
+        this.renderTextLink();
+        return note;
+      };
+      nodeType.prototype.renderTextLink = function () {
+        if (this._textLinkNote) this._textLinkNote.hidden = !isLinked(this, "text");
       };
 
       // Override onRemoved to cleanup styles
@@ -525,6 +538,10 @@ app.registerExtension({
         searchSection.style.flexDirection = "column";
         searchSection.style.height = "100%";
         searchSection.style.gap = "8px";
+
+        const linkNote = this.createTextLinkNote();
+        linkNote.style.cssText = "margin: 0; color: #f9a825; font-size: 12px;";
+        searchSection.appendChild(linkNote);
 
         // Search buttons row
         const buttonRow = document.createElement("div");
@@ -876,6 +893,11 @@ app.registerExtension({
 
       // Method to use a selected prompt
       nodeType.prototype.usePrompt = function (prompt, index) {
+        // The typed text under a link is kept for when it is disconnected (#343)
+        if (isLinked(this, "text")) {
+          this.showNotification("Text comes from a link. Disconnect it to use a saved prompt.", "error");
+          return;
+        }
         // Find the text widget and set its value
         const textWidget = this.widgets?.find((w) => w.name === "text");
         if (textWidget) {

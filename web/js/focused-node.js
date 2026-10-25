@@ -1,6 +1,7 @@
 import {createScope, createButton, createField, mountTheme} from './shared/toolkit/core.js';
 import {createPromptLibrary} from './prompt-library.js';
 import {attachMetadataAutocomplete} from './metadata-autocomplete.js';
+import {exposeTextSockets, linkNoteText, preferTextInputs} from './text-links.js';
 
 const names = ['text', 'category', 'tags', 'search_text', 'prepend_text', 'append_text'];
 let nextEditorId = 0;
@@ -23,7 +24,9 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
     const pair = layout === 'pair';
     const split = layout !== 'focused';
     const uiKey = pair ? 'pairUI' : split ? 'splitUI' : 'focusedUI';
+    const textInputs = pair ? ['text','negative_text'] : ['text'];
     const prototype = nodeType.prototype;
+    preferTextInputs(prototype, textInputs);
     const created = prototype.onNodeCreated;
     const removed = prototype.onRemoved;
     const configure = prototype.configure;
@@ -41,6 +44,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             widget.hidden = true; widget.type = 'hidden'; widget.computeSize = () => [0, -4];
             widgets.set(name, widget);
         }
+        exposeTextSockets(this, textInputs);
         const element = document.createElement('div'); element.className = `ca-tools pm-focused${split ? ' pm-split' : ''}${pair ? ' pm-pair' : ''}`;
         element.setAttribute('aria-label',pair ? 'Paired prompt editor' : split ? 'Split prompt editor' : 'Focused prompt editor');
         loadStyles(); mountTheme(element, app.ui?.settings, scope);
@@ -78,7 +82,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             const field = createField(label,input,`${editorId}-${name}`);
             field.classList.add('pm-editor-main');
             const note = document.createElement('p'); note.className = 'pm-editor-status';
-            note.textContent = `${pair ? label : 'Text'} is supplied by an upstream connection.`;
+            note.textContent = linkNoteText(label);
             return {input,field,note};
         }
         const positive = textControl('text',pair ? 'Positive prompt' : 'Main prompt');
@@ -218,7 +222,13 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         this.addDOMWidget('prompt_manager_focused_ui','div',element,{serialize:false, hideOnZoom:false, getMinHeight:() => 360});
         this.size = [pair ? 1100 : split ? 900 : 550,pair ? 700 : 650]; this.setSize(this.size); restore();
     };
-    prototype.configure = function (...args) { const result = configure?.apply(this,args); this._focusedView?.restore(); return result; };
+    prototype.configure = function (...args) {
+        const result = configure?.apply(this,args);
+        // A saved workflow restores its inputs with their widget bindings; keep the text inputs as sockets.
+        exposeTextSockets(this, textInputs);
+        this._focusedView?.restore();
+        return result;
+    };
     prototype.serialize = function (...args) {
         if (this._focusedView) this.properties[uiKey] = this._focusedView.snapshot();
         return serialize?.apply(this,args);
