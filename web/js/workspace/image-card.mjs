@@ -9,6 +9,7 @@ import { cardTitle, cardSubtitle, imageKey, mediaRatio } from './images-state.mj
 import { createWorkspaceIcon } from './icons.mjs';
 import { createTagButton } from './image-tagging.mjs';
 import { paintStar } from './images-favorites.mjs';
+import { fallBackToOriginal, replaceOnError, showsThumbnail, thumbnailSource } from './thumbnail-support.mjs';
 
 function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -27,15 +28,17 @@ function videoMedia(image) {
 
 /**
  * The card's media: the thumbnail (a video's is its preview frame), else the image, else a video's own element.
- * #249: a video whose preview cannot be loaded swaps back to its own element.
+ * #249: a video whose preview cannot be loaded swaps back to its own element. #317: a JPEG XL thumbnail this browser
+ * cannot show loads the original, and an image's thumbnail that fails to load falls back to the original.
  */
 export function cardMedia(image, lazy = false) {
     const { resolveUrl } = window.ApiClient;
-    if (image.is_video && !image.thumbnail_url) return videoMedia(image);
+    if (!showsThumbnail(image)) return videoMedia(image);
     const node = el('img');
-    node.src = resolveUrl(image.thumbnail_url || image.url);
+    node.src = resolveUrl(thumbnailSource(image));
     // replaceWith does nothing for a card no longer in the page.
-    if (image.is_video) node.addEventListener('error', () => node.replaceWith(videoMedia(image)), { once: true });
+    if (image.is_video) replaceOnError(node, () => videoMedia(image));
+    else fallBackToOriginal(node, resolveUrl(image.url));
     // The concept card image: alt is the card title, with the listing's intrinsic size when known.
     node.alt = cardTitle(image); node.decoding = 'async'; if (lazy) node.loading = 'lazy';
     if ([image.width, image.height].every(value => Number.isFinite(value) && value > 0)) {

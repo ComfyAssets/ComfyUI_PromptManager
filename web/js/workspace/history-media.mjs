@@ -1,4 +1,5 @@
 import {projectInspectionPayload} from './inspection-state.mjs';
+import {jxlSupport} from './thumbnail-support.mjs';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value);
@@ -65,8 +66,10 @@ export function toHistoryInspectionRecord(result, target, extractFacts) {
     const identity = {kind:'reported-location', key:target.location_key, path:target.reference.path_style === 'windows' ? path.replaceAll('\\', '/') : path,
         occurrence:{...target.occurrence}, history_epoch:target.history_epoch, current_scope:target.current_scope, reference:{...target.reference}};
     const record = projectInspectionPayload(result, identity, {url:urlFor(target, 'url', 'media'), filename:target.filename}, extractFacts);
-    // #249: the inspector's cover is the recorded output's preview (made by the server on first view).
-    record.preview = {url:urlFor(target, 'thumbnail_url', 'thumbnail')};
+    // #249: the inspector's cover is the recorded output's preview (made by the server on first view). #317: its URL
+    // names no format, so where this browser decoded JPEG XL it says so (`jxl=1`); the server also reads Accept.
+    const cover = urlFor(target, 'thumbnail_url', 'thumbnail');
+    record.preview = {url:jxlSupport() === true ? `${cover}&jxl=1` : cover};
     return record;
 }
 export const reportedLocationAdapter = Object.freeze({

@@ -164,5 +164,10 @@ def seed_workspace_visual(api: PromptManagerAPI, root: Path) -> None:
             path = root / directory / category.lower() / filename
             _write_art(path, index, positive, negatives[offset % len(negatives)])
             api.db.link_image_to_prompt(prompt_id, str(path))
-    api._generate_gallery_thumbnails_sync(api._get_all_output_dirs(), (150, 150))
+    from py.api.thumbnail_settings import ThumbnailSettings
+
+    # 150 px previews in the default format (#317 thumbnail settings).
+    api._generate_gallery_thumbnails_sync(
+        api._get_all_output_dirs(), ThumbnailSettings("webp", 80, 150)
+    )
     api.invalidate_gallery_cache()

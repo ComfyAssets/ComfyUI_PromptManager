@@ -7,6 +7,7 @@ import { navigateTo } from './state.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { openCopyFallback } from './workspace-dialogs.mjs';
 import { displayPreferences } from './preferences.mjs';
+import { fallBackToOriginal, thumbnailSource } from './thumbnail-support.mjs';
 
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
@@ -320,12 +321,16 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
     }
     /**
      * The concept's plain cover; the card image opens the viewer (D19). #249: it is the file's preview (a video's
-     * is a JPEG frame) whenever the listing gave one; without one the original, and a video keeps its own element.
+     * is a still frame) whenever the listing gave one; without one the original, and a video keeps its own element.
+     * #317: a JPEG XL preview this browser cannot show is the original instead, and an image's preview that fails to
+     * load falls back to the original. Only the cover is a preview: metadata and downloads use the original.
      */
     function cover(record) {
-        const {file} = record, preview = record.preview?.url, isVideo = file?.media_type === 'video';
-        if (isVideo && !preview) return videoCover(record);
+        const {file} = record, isVideo = file?.media_type === 'video';
+        const preview = record.preview?.url ? thumbnailSource({url: record.download.url, thumbnail_url: record.preview.url}) : null;
+        if (isVideo && (!preview || preview === record.download.url)) return videoCover(record);
         const node = el('img', undefined, 'detail-cover'); node.src = preview || record.download.url;
+        if (!isVideo) fallBackToOriginal(node, record.download.url, (...args) => contentScope.listen(...args));
         node.alt = ''; node.decoding = 'async';
         if (file?.width && file?.height) {node.width = file.width; node.height = file.height;}
         contentScope.cleanup(() => node.removeAttribute('src'));

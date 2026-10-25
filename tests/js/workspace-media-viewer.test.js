@@ -324,3 +324,29 @@ test('server adapters still cache-bust the original on open and retry', async ()
         } finally { view.dispose(); controller.dispose(); parentScope.dispose(); restoreGlobals(); f.restore(); }
     }
 });
+
+test('the viewer and its download always use the original, never the thumbnail in any format (#317)', async () => {
+    const {rootedFileAdapter, createInspectionController} = await import('../../web/js/workspace/inspection-state.mjs');
+    const scope = 'a'.repeat(64);
+    for (const extension of ['.webp', '.jxl', '.jpg', '.png']) {
+        const item = {root_index:0,path:'folder/a.png',filename:'a.png',root_scope:scope,is_video:false,
+            url:`/prompt_manager/images/serve/folder/a.png?root=0&root_scope=${scope}`,
+            thumbnail_url:`/prompt_manager/images/serve/thumbnails/folder/a_thumb${extension}?v=3&root=0&root_scope=${scope}`};
+        const f = mountedDom(), restoreGlobals = withViewerGlobals(f), parentScope = createScope(), paths = [];
+        const controller = createInspectionController({adapter:rootedFileAdapter,api:{get(url) {paths.push(url);return new Promise(() => {});}}});
+        const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter:rootedFileAdapter,
+            onSelect:entry => controller.select(entry),sender:{open(){}}});
+        try {
+            view.open({items:[item],selectedKey:'0:folder/a.png'});
+            // The metadata read is the original's inspection, never a path under thumbnails/.
+            assert.deepEqual(paths, [`/prompt_manager/images/inspect/folder/a.png?root=0&root_scope=${scope}`], extension);
+            const media = f.walk(f.container,n => n.tagName === 'img');
+            assert.equal(media.length, 1, extension);
+            const url = new URL(media[0].src);url.searchParams.delete('_pm_viewer');
+            assert.equal(`${url.pathname}${url.search}`, item.url, extension);
+            assert.doesNotMatch(media[0].src, /thumbnails/, extension);
+            const download = f.walk(f.container,n => n.attributes['aria-label'] === 'Download original')[0];
+            if (download) assert.equal(download.href, item.url, extension);
+        } finally { view.dispose(); controller.dispose(); parentScope.dispose(); restoreGlobals(); f.restore(); }
+    }
+});

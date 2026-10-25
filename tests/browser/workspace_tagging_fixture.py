@@ -148,7 +148,12 @@ def seed_tagging(api: PromptManagerAPI, root: Path, extra_images: int = 0) -> di
             image_id = db.link_image_to_prompt(positive_id, str(output / relative))
             if kind == "linked":
                 db.link_image_to_pair(pair_id, image_id, {"source": "fixture"})
-    api._generate_gallery_thumbnails_sync(api._get_all_output_dirs(), (150, 150))
+    from py.api.thumbnail_settings import ThumbnailSettings
+
+    # 150 px previews in the default format (#317 thumbnail settings).
+    api._generate_gallery_thumbnails_sync(
+        api._get_all_output_dirs(), ThumbnailSettings("webp", 80, 150)
+    )
     api.invalidate_gallery_cache()
     return {
         "positive_id": positive_id,

@@ -117,6 +117,14 @@ class ThumbnailJobCase(ThumbnailTestCase):
         self.addCleanup(patcher.stop)
         return lines
 
+    def _use(self, fmt="webp", quality=80, edge=512):
+        """Set the server's thumbnail settings for this test (#317)."""
+        saved = PromptManagerConfig.get_config()["thumbnails"]
+        self.addCleanup(PromptManagerConfig.update_config, {"thumbnails": saved})
+        PromptManagerConfig.update_config(
+            {"thumbnails": {"format": fmt, "quality": quality, "edge": edge}}
+        )
+
     def _one_worker(self):
         original = PromptManagerConfig.WORKER_THREADS
         PromptManagerConfig.WORKER_THREADS = 1  # batches of 4
@@ -149,13 +157,10 @@ class TestThumbnailPlan(ThumbnailJobCase):
         os.utime(fresh, (source_time + 10, source_time + 10))
         before = _tree_state(self.comfy_dir)
 
+        self._use("webp", 80, 512)
         with patch.object(images_module, "MAX_THUMBNAIL_FILES", 1):
-            missing = await self.client.get(
-                PLAN_URL, params={"mode": "missing", "size": "512", "quality": "high"}
-            )
-            rebuild = await self.client.get(
-                PLAN_URL, params={"mode": "rebuild", "size": "256", "quality": "low"}
-            )
+            missing = await self.client.get(PLAN_URL, params={"mode": "missing"})
+            rebuild = await self.client.get(PLAN_URL, params={"mode": "rebuild"})
 
         self.assertEqual(missing.status, 200)
         self.assertEqual(
@@ -164,40 +169,38 @@ class TestThumbnailPlan(ThumbnailJobCase):
                 "success": True,
                 "targets": 1,
                 "fresh": 1,
+                "outdated": 0,
                 "remaining": 1,
                 "roots": ["output"],
                 "mode": "missing",
+                "format": "webp",
                 "size": 512,
-                "quality": "high",
+                "quality": 80,
             },
         )
         data = await rebuild.json()
         # Rebuild regenerates fresh previews too: all three are work, one fits the cap.
         self.assertEqual((data["targets"], data["fresh"], data["remaining"]), (1, 1, 2))
-        self.assertEqual(
-            (data["mode"], data["size"], data["quality"]), ("rebuild", 256, "low")
-        )
+        self.assertEqual(data["mode"], "rebuild")
         self.assertEqual(_tree_state(self.comfy_dir), before)
         self.assertEqual(self.api._jobs.list(), [])
 
-    async def test_plan_defaults_to_missing_previews_at_the_concept_size(self):
+    async def test_plan_defaults_to_missing_previews_with_the_settings(self):
+        self._use("webp", 80, 512)
         make_png(self.output_dir / "a.png")
         data = await (await self.client.get(PLAN_URL)).json()
         self.assertEqual(
-            (data["mode"], data["size"], data["quality"], data["targets"]),
-            ("missing", 512, "medium", 1),
+            (data["mode"], data["format"], data["size"], data["quality"]),
+            ("missing", "webp", 512, 80),
         )
+        self.assertEqual(data["targets"], 1)
 
-    async def test_size_bounds_validated(self):
+    async def test_mode_validated_and_size_quality_ignored(self):
+        # #317: format, quality and size limit are the server's settings; an
+        # older client's size or quality is ignored, an unknown mode refused.
+        self._use("webp", 80, 512)
         make_png(self.output_dir / "a.png")
-        for params in (
-            {"size": "127"},
-            {"size": "2049"},
-            {"size": "512.5"},
-            {"size": "big"},
-            {"mode": "all"},
-            {"quality": "ultra"},
-        ):
+        for params in ({"mode": "all"}, {"mode": ""}):
             with self.subTest(params=params):
                 resp = await self.client.get(PLAN_URL, params=params)
                 body = await resp.json()
@@ -205,24 +208,14 @@ class TestThumbnailPlan(ThumbnailJobCase):
                 self.assertEqual(
                     (body["success"], body["code"]), (False, "invalid-request")
                 )
-        for body in (
-            {"size": 127},
-            {"size": 2049},
-            {"size": "512"},
-            {"size": 512.0},
-            {"size": True},
-            {"mode": "rebuild-all"},
-            {"quality": None},
-            [],
-        ):
+        for body in ({"mode": "rebuild-all"}, {"mode": None}, []):
             with self.subTest(body=body):
                 resp = await self.client.post(JOB_URL, json=body)
                 self.assertEqual(resp.status, 400)
                 self.assertEqual((await resp.json())["code"], "invalid-request")
-        for edge in (128, 2048):
-            with self.subTest(edge=edge):
-                resp = await self.client.get(PLAN_URL, params={"size": str(edge)})
-                self.assertEqual(resp.status, 200)
+        resp = await self.client.get(PLAN_URL, params={"size": "9999", "quality": "x"})
+        data = await resp.json()
+        self.assertEqual((data["size"], data["quality"]), (512, 80))
         self.assertEqual(self.api._jobs.list(), [])
         self.assertFalse(self._thumb_path("a").exists())
 
@@ -233,7 +226,8 @@ class TestThumbnailJob(ThumbnailJobCase):
         make_png(self.output_dir / "sub" / "b.png", size=(64, 64))
         (self.output_dir / "bad.png").write_bytes(b"\x89PNG not really")
 
-        status, body = await self._start(mode="missing", size=200, quality="medium")
+        self._use("webp", 80, 200)
+        status, body = await self._start(mode="missing", size=999, quality="high")
 
         self.assertEqual(status, 202)
         summary = body["job"]
@@ -244,7 +238,8 @@ class TestThumbnailJob(ThumbnailJobCase):
         self.assertTrue(summary["cancellable"])
         self.assertEqual(set(summary["counters"]), {"generated", "skipped", "errors"})
         self.assertEqual(
-            summary["scope"], {"mode": "missing", "size": 200, "quality": "medium"}
+            summary["scope"],
+            {"mode": "missing", "format": "webp", "size": 200, "quality": 80},
         )
         job = await self._finished(summary["id"])
         self.assertEqual(job.state, "finished")
@@ -279,7 +274,8 @@ class TestThumbnailJob(ThumbnailJobCase):
     async def test_rebuild_never_touches_originals(self):
         for name in ("a", "b"):
             make_png(self.output_dir / f"{name}.png", size=(400, 400))
-        _, body = await self._start(size=128)
+        self._use("webp", 80, 128)
+        _, body = await self._start()
         await self._finished(body["job"]["id"])
         originals = {
             name: hashlib.sha256(
@@ -288,7 +284,8 @@ class TestThumbnailJob(ThumbnailJobCase):
             for name in ("a", "b")
         }
 
-        _, body = await self._start(mode="rebuild", size=256, quality="high")
+        self._use("webp", 95, 256)
+        _, body = await self._start(mode="rebuild")
         job = await self._finished(body["job"]["id"])
 
         self.assertEqual(job.counters, {"generated": 2, "skipped": 0, "errors": 0})
@@ -315,12 +312,12 @@ class TestThumbnailJob(ThumbnailJobCase):
         self.assertEqual(job.counters["errors"], 1)
         self.assertEqual(self._thumb_path("a").read_bytes(), preview)
         leftovers = [p.name for p in self._thumb_path("a").parent.iterdir()]
-        self.assertEqual(leftovers, ["a_thumb.png"])  # no temp file left
+        self.assertEqual(leftovers, ["a_thumb.webp"])  # no temp file left
 
     async def test_rebuild_keeps_an_old_video_preview_instead_of_a_placeholder(self):
         clip = self.output_dir / "clip.mp4"
         clip.write_bytes(b"\x00")
-        preview = make_png(self.output_dir / "thumbnails" / "clip_thumb.jpg")
+        preview = make_png(self.output_dir / "thumbnails" / "clip_thumb.webp")
         old = preview.read_bytes()
         with (
             patch.dict(sys.modules, {"cv2": None}),
@@ -339,7 +336,8 @@ class TestThumbnailJob(ThumbnailJobCase):
             img.save(self.output_dir / "photo.jpg", "JPEG", quality=95)
         sizes = {}
         for quality in ("low", "high"):
-            _, body = await self._start(mode="rebuild", size=300, quality=quality)
+            self._use("jpeg", 40 if quality == "low" else 95, 300)
+            _, body = await self._start(mode="rebuild")
             await self._finished(body["job"]["id"])
             thumb = self._thumb_path("photo", ".jpg")
             with Image.open(thumb) as image:
@@ -380,7 +378,7 @@ class TestThumbnailJob(ThumbnailJobCase):
         self.assertEqual(len(written), 2)
         for dst in written:
             self.assertTrue(dst.is_file())
-        made = sorted((self.output_dir / "thumbnails").glob("*_thumb.png"))
+        made = sorted((self.output_dir / "thumbnails").glob("*_thumb.webp"))
         self.assertEqual(made, sorted(written))
         self.assertTrue(any("Thumbnails cancelled" in line for line in job.log))
 
@@ -511,16 +509,16 @@ class TestThumbnailJob(ThumbnailJobCase):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
         checked = []
-        real_fresh = images_module._thumbnail_is_fresh
+        real_state = images_module._preview_state
 
-        def gated_fresh(src, dst):
+        def gated_state(src, *args):
             checked.append(src.name)
             if len(checked) == 1:
                 entered.set()
                 release.wait(10)
-            return real_fresh(src, dst)
+            return real_state(src, *args)
 
-        with patch.object(images_module, "_thumbnail_is_fresh", gated_fresh):
+        with patch.object(images_module, "_preview_state", gated_state):
             stream = asyncio.ensure_future(self.client.post(self.PROGRESS_URL))
             await self._wait(entered)
             job = self.api._jobs.active("thumbnails")
@@ -567,7 +565,7 @@ class TestThumbnailJob(ThumbnailJobCase):
         with (
             patch.dict(sys.modules, {"cv2": None}),
             patch("subprocess.Popen", side_effect=FileNotFoundError("no ffmpeg")),
-            patch.object(images_module, "_atomic_save", refuse),
+            patch.object(images_module, "write_thumbnail", refuse),
         ):
             _, body = await self._start()
             job = await self._finished(body["job"]["id"])
@@ -586,52 +584,66 @@ class TestThumbnailJob(ThumbnailJobCase):
         [row] = job.outcomes["errors"]
         self.assertEqual(row["detail"], images_module.PREVIEW_NOT_WRITABLE)
 
-    async def test_ffmpeg_fallback_keeps_quality_and_aspect_ratio(self):
-        """M1: without OpenCV, ffmpeg keeps the chosen quality and the aspect ratio."""
+    async def test_ffmpeg_fallback_keeps_the_aspect_ratio_and_the_settings(self):
+        """M1: without OpenCV, ffmpeg's frame keeps its aspect ratio; #317: it is
+        read as a PNG on stdout and encoded with the server's settings."""
+        import io
+
         (self.output_dir / "clip.mp4").write_bytes(b"\x00")
         commands = []
+        frame = io.BytesIO()
+        Image.new("RGB", (640, 360), (0, 99, 0)).save(frame, "PNG")
 
         def fake_ffmpeg(cmd, **_kwargs):
             commands.append(cmd)
-            Path(cmd[-1]).write_bytes(b"jpeg")
             done = type("Done", (), {"returncode": 0})()
-            done.communicate = lambda timeout=None: ("", "")
+            done.communicate = lambda input=None, timeout=None: (frame.getvalue(), b"")
+            done.poll = lambda: 0
+            done.kill = lambda: None
             return done
 
-        for quality, qscale in (("high", "2"), ("medium", "4"), ("low", "8")):
-            with (
-                patch.dict(sys.modules, {"cv2": None}),
-                patch("subprocess.Popen", side_effect=fake_ffmpeg),
-            ):
-                _, body = await self._start(mode="rebuild", size=640, quality=quality)
-                job = await self._finished(body["job"]["id"])
-            self.assertEqual(job.counters["generated"], 1, quality)
-            cmd = commands[-1]
-            self.assertNotIn("-s", cmd)
-            self.assertEqual(
-                cmd[cmd.index("-vf") + 1],
-                "scale=640:640:force_original_aspect_ratio=decrease",
-            )
-            self.assertEqual(cmd[cmd.index("-q:v") + 1], qscale, quality)
+        self._use("webp", 70, 320)
+        with (
+            patch.dict(sys.modules, {"cv2": None}),
+            patch("subprocess.Popen", side_effect=fake_ffmpeg),
+        ):
+            _, body = await self._start(mode="rebuild")
+            job = await self._finished(body["job"]["id"])
+        self.assertEqual(job.counters["generated"], 1)
+        cmd = commands[-1]
+        self.assertNotIn("-q:v", cmd)
+        self.assertEqual(
+            cmd[cmd.index("-vf") + 1],
+            "scale='min(iw,320)':'min(ih,320)':force_original_aspect_ratio=decrease",
+        )
+        self.assertEqual(cmd[-5:], ["-f", "image2pipe", "-vcodec", "png", "-"])
+        # Review M6: the input is always read as a file, never a protocol URL.
+        self.assertTrue(cmd[cmd.index("-i") + 1].startswith("file:"))
+        with Image.open(self._thumb_path("clip")) as thumb:
+            self.assertEqual((thumb.format, thumb.size), ("WEBP", (320, 180)))
 
-    async def test_the_placeholder_uses_the_chosen_quality(self):
+    async def test_the_placeholder_uses_the_settings(self):
         (self.output_dir / "clip.mp4").write_bytes(b"\x00")
         saved = []
-        real_save = images_module._atomic_save
+        real_write = images_module.write_thumbnail
 
-        def recording(img, dst, fmt=None, **kwargs):
-            # The encoder settings (guard is the automatic previews' hold check).
-            saved.append({k: v for k, v in kwargs.items() if k != "guard"})
-            return real_save(img, dst, fmt, **kwargs)
+        def recording(frame, dst, settings, **kwargs):
+            saved.append(settings)
+            return real_write(frame, dst, settings, **kwargs)
 
+        self._use("jpeg", 33, 200)
         with (
             patch.dict(sys.modules, {"cv2": None}),
             patch("subprocess.Popen", side_effect=FileNotFoundError("no ffmpeg")),
-            patch.object(images_module, "_atomic_save", recording),
+            patch.object(images_module, "write_thumbnail", recording),
         ):
-            _, body = await self._start(quality="low")
+            _, body = await self._start()
             await self._finished(body["job"]["id"])
-        self.assertEqual(saved, [images_module.THUMBNAIL_ENCODINGS["low"]])
+        self.assertEqual(
+            [(x.format, x.quality, x.edge) for x in saved], [("jpeg", 33, 200)]
+        )
+        with Image.open(self._thumb_path("clip", ".jpg")) as thumb:
+            self.assertEqual(thumb.size, (200, 200))
 
 
 # The legacy stream's frames and their keys, as the gallery page reads them.
@@ -675,11 +687,119 @@ LEGACY_KEYS = {
 }
 
 
+class TestBatchesContinue(ThumbnailJobCase):
+    """MAX_THUMBNAIL_FILES bounds one batch, not the job: after each batch
+    the job plans again and goes on until nothing is left, it is cancelled,
+    or a batch makes no progress (files that fail every time are never
+    planned again)."""
+
+    def _sources(self, count, broken=False):
+        for i in range(count):
+            path = self.output_dir / f"s{i}.png"
+            if broken:
+                path.write_bytes(b"\x89PNG broken")
+            else:
+                make_png(path, size=(32, 32))
+
+    async def test_one_job_makes_every_preview_past_the_cap(self):
+        self._sources(8)
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 3):
+            status, body = await self._start(mode="missing")
+            self.assertEqual(status, 202)
+            job = await self._finished(body["job"]["id"])
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(job.counters["generated"], 8)
+        for i in range(8):
+            self.assertTrue(self._thumb_path(f"s{i}").is_file(), i)
+        summary = job.summary()
+        self.assertEqual((summary["total"], summary["processed"]), (8, 8))
+        self.assertEqual(summary["progress"], 100)
+        self.assertEqual(job.status_line, "8 previews written")
+
+    async def test_rebuild_goes_through_every_file_once(self):
+        self._sources(5)
+        calls = []
+        real = self.api._generate_batch
+
+        def counting(batch, *args, **kwargs):
+            calls.extend(src.name for src, _dst, _video in batch)
+            return real(batch, *args, **kwargs)
+
+        self.api._generate_batch = counting
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 2):
+            _, body = await self._start(mode="rebuild")
+            job = await self._finished(body["job"]["id"])
+        self.assertEqual(sorted(calls), [f"s{i}.png" for i in range(5)])
+        self.assertEqual(job.counters["generated"], 5)
+
+    async def test_cancel_between_batches_stops_the_job(self):
+        self._sources(8)
+        real = self.api._plan_gallery_thumbnails
+        plans = []
+        job_ids = []
+
+        def cancelling(*args, **kwargs):
+            plans.append(1)
+            if len(plans) == 2:
+                self.assertTrue(self.api._jobs.cancel(job_ids[0]))
+            return real(*args, **kwargs)
+
+        self.api._plan_gallery_thumbnails = cancelling
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 3):
+            _, body = await self._start(mode="missing")
+            job_ids.append(body["job"]["id"])
+            job = await self._finished(job_ids[0])
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(job.counters["generated"], 3)
+        self.assertEqual(len(plans), 2)
+
+    async def test_a_batch_where_everything_fails_stops(self):
+        self._sources(8, broken=True)
+        plans = []
+        real = self.api._plan_gallery_thumbnails
+
+        def counting(*args, **kwargs):
+            plans.append(1)
+            return real(*args, **kwargs)
+
+        self.api._plan_gallery_thumbnails = counting
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 3):
+            _, body = await self._start(mode="missing")
+            job = await asyncio.wait_for(self._finished(body["job"]["id"]), 10)
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(len(plans), 1, "no second plan after a batch with no progress")
+        self.assertEqual(job.counters["errors"], 3)
+        self.assertIn("5 more on the next run", job.status_line)
+
+    async def test_failed_files_are_never_planned_again(self):
+        # One bad file per batch still lets the job go on, without retrying it.
+        for i in range(6):
+            path = self.output_dir / f"m{i}.png"
+            if i in (0, 3):
+                path.write_bytes(b"\x89PNG broken")
+            else:
+                make_png(path, size=(32, 32))
+        seen = []
+        real = self.api._generate_batch
+
+        def counting(batch, *args, **kwargs):
+            seen.extend(src.name for src, _dst, _video in batch)
+            return real(batch, *args, **kwargs)
+
+        self.api._generate_batch = counting
+        with patch.object(images_module, "MAX_THUMBNAIL_FILES", 2):
+            _, body = await self._start(mode="missing")
+            job = await self._finished(body["job"]["id"])
+        self.assertEqual(sorted(seen), sorted(f"m{i}.png" for i in range(6)))
+        self.assertEqual((job.counters["generated"], job.counters["errors"]), (4, 2))
+
+
 class TestLegacyStreamOnTheJob(ThumbnailJobCase):
     async def test_legacy_progress_events_unchanged_on_success(self):
         make_png(self.output_dir / "a.png", size=(400, 400))
         make_png(self.output_dir / "b.png")
 
+        self._use("webp", 80, 200)
         resp = await self.client.post(f"{self.PROGRESS_URL}?quality=low")
         events = parse_sse(await resp.text())
 
@@ -696,7 +816,8 @@ class TestLegacyStreamOnTheJob(ThumbnailJobCase):
             {"phase": "scanning", "message": "Scanning for images and videos..."},
         )
         with Image.open(self._thumb_path("a")) as thumb:
-            self.assertEqual(max(thumb.size), 150)  # the legacy preset still sizes
+            # #317 R3: the server's size limit, not the legacy preset (low = 150).
+            self.assertEqual(max(thumb.size), 200)
         [job] = self.api._jobs.list()
         self.assertEqual(
             (job.kind, job.title, job.state, job.cancellable),
@@ -766,7 +887,8 @@ class TestLegacyStreamOnTheJob(ThumbnailJobCase):
     async def test_legacy_stream_attaches_to_a_running_job(self):
         make_png(self.output_dir / "a.png")
         entered, release = self._gate_generation()
-        _, started = await self._start(mode="missing", size=256)
+        self._use("webp", 80, 256)
+        _, started = await self._start(mode="missing")
         await self._wait(entered)
 
         job = self.api._jobs.get(started["job"]["id"])

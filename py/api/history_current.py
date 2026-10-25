@@ -15,7 +15,9 @@ from typing import BinaryIO
 
 from aiohttp import web
 
+from . import thumbnail_settings
 from .images import _canonical, _public_path, SERVABLE_EXTENSIONS, VIDEO_EXTENSIONS
+from .images import existing_media_thumbnail, media_thumbnail_rel
 
 try:
     from ...utils.execution_outputs import (
@@ -239,14 +241,19 @@ def resolve_current_candidate(
 
 
 def _open_current_target(
-    target: Path, namespace: Path, scope: CurrentOutputScope
+    target: Path, namespace: Path, scope: CurrentOutputScope, preview: bool = False
 ) -> BinaryIO:
-    """Open only the canonical target and verify authority against the actual handle."""
+    """Open only the canonical target and verify authority against the actual handle.
+
+    A *preview* (a file under ``thumbnails/``) may also be JPEG XL (#317)."""
     if _canonical(target) != target:
         raise CurrentLocationUnavailable("not_authorized", stale=True)
     if not _authorized(target, namespace, scope):
         raise CurrentLocationUnavailable("not_authorized")
-    if target.suffix.lower() not in SERVABLE_EXTENSIONS:
+    suffix = target.suffix.lower()
+    if suffix not in SERVABLE_EXTENSIONS and not (
+        preview and suffix in thumbnail_settings.THUMBNAIL_EXTENSIONS
+    ):
         raise CurrentLocationUnavailable("unsupported_media")
     flags = (
         os.O_RDONLY
@@ -319,6 +326,61 @@ def _preview_writable(root: Path, preview: Path) -> bool:
     ).is_relative_to(_canonical(folder))
 
 
+def _is_jxl(path) -> bool:
+    return Path(path).suffix.lower() == ".jxl"
+
+
+def _preview_without_jxl(root: Path, relative: Path) -> Path | None:
+    """The first existing preview *relative* owns that is not JPEG XL."""
+    return next(
+        (
+            path
+            for path in thumbnail_settings.owned_thumbnails(root, relative)
+            if not _is_jxl(path)
+        ),
+        None,
+    )
+
+
+def accepts_jxl(request) -> bool:
+    """Whether the request's ``Accept`` lists ``image/jxl``."""
+    accept = request.headers.get("Accept", "")
+    return any(
+        part.split(";", 1)[0].strip().lower() == "image/jxl"
+        for part in accept.split(",")
+    )
+
+
+def _placeholder_media(placeholder: bytes) -> "_OpenedCurrentMedia":
+    return _OpenedCurrentMedia(io.BytesIO(placeholder), len(placeholder), "image/jpeg")
+
+
+def _cover_target(resolved, ensure_preview, placeholder, accepts_jxl):
+    """What the cover opens: a preview path, the placeholder media, or None
+    for the original (see ``_prepare_current_media``)."""
+    target = resolved.canonical_target
+    relative = target.relative_to(resolved.gallery_root)
+    is_video = target.suffix.lower() in VIDEO_EXTENSIONS
+    # #317: any preview the file owns (the current format first); a missing
+    # one is made under the current format's name.
+    preview = existing_media_thumbnail(resolved.gallery_root, relative)
+    if preview is not None and not accepts_jxl and _is_jxl(preview):
+        preview = _preview_without_jxl(resolved.gallery_root, relative)
+        if preview is None:
+            if is_video and placeholder is not None:
+                return _placeholder_media(placeholder)
+            return None
+        return _canonical(preview)
+    if preview is not None:
+        return _canonical(preview)
+    preview = resolved.gallery_root / media_thumbnail_rel(relative)
+    if ensure_preview is not None and _preview_writable(resolved.gallery_root, preview):
+        ensure_preview(target, preview, is_video)
+    if is_video and placeholder is not None:
+        return _placeholder_media(placeholder)
+    return None
+
+
 def _prepare_current_media(
     resolved: ResolvedCurrentCandidate,
     scope: CurrentOutputScope,
@@ -326,6 +388,7 @@ def _prepare_current_media(
     thumbnail: bool,
     ensure_preview=None,
     placeholder: bytes | None = None,
+    accepts_jxl: bool = True,
 ) -> _OpenedCurrentMedia:
     """Open the current file, or its preview for ``thumbnail``.
 
@@ -333,36 +396,28 @@ def _prepare_current_media(
     ``ensure_preview(src, dst, is_video)`` (the route makes it and reads
     again, #249). Without one an image's original is opened and a video is
     the ``placeholder`` JPEG, never the video inside an ``<img>``.
+
+    The cover's URL names no format, so a JPEG XL preview goes only to a
+    browser whose ``Accept`` lists ``image/jxl`` (*accepts_jxl*, review M3).
+    Another one gets the file's preview in another format when there is one,
+    else the original image or a video's placeholder: never a broken image.
     """
     target = resolved.canonical_target
+    is_preview = False
     if thumbnail:
-        relative = target.relative_to(resolved.gallery_root)
-        is_video = target.suffix.lower() in VIDEO_EXTENSIONS
-        extension = ".jpg" if is_video else target.suffix.lower()
-        preview = (
-            resolved.gallery_root
-            / "thumbnails"
-            / f"{relative.with_suffix('').as_posix()}_thumb{extension}"
-        )
-        try:
-            preview.stat()
-        except FileNotFoundError:
-            if ensure_preview is not None and _preview_writable(
-                resolved.gallery_root, preview
-            ):
-                ensure_preview(target, preview, is_video)
-            if is_video and placeholder is not None:
-                return _OpenedCurrentMedia(
-                    io.BytesIO(placeholder), len(placeholder), "image/jpeg"
-                )
-        else:
-            target = _canonical(preview)
-    handle = _open_current_target(target, resolved.namespace, scope)
+        chosen = _cover_target(resolved, ensure_preview, placeholder, accepts_jxl)
+        if isinstance(chosen, _OpenedCurrentMedia):
+            return chosen
+        if chosen is not None:
+            target, is_preview = chosen, True
+    handle = _open_current_target(target, resolved.namespace, scope, is_preview)
     try:
         return _OpenedCurrentMedia(
             handle,
             os.fstat(handle.fileno()).st_size,
-            mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            thumbnail_settings.content_type(target)
+            or mimetypes.guess_type(target.name)[0]
+            or "application/octet-stream",
         )
     except BaseException:
         handle.close()

@@ -59,6 +59,18 @@ test('the thumbnail row is its own read of the thumbnail status', async () => {
     assert.equal(thumbnailTitle({ pending: 2 }, { effective: 1 }), '2 missing thumbnails');
 });
 
+test('the thumbnail row says N missing · M outdated · K failed, and offers Convert outdated only for outdated ones (#317)', async () => {
+    const { thumbnailTitle, convertOffered } = await overviewModule;
+    assert.equal(thumbnailTitle({ pending: 3, outdated: 17500, failed: 2 }), '3 missing thumbnails · 17,500 outdated · 2 failed');
+    assert.equal(thumbnailTitle({ pending: 0, outdated: 1, failed: 0 }), 'No missing thumbnails · 1 outdated');
+    assert.equal(thumbnailTitle({ pending: 0, outdated: 0, failed: 4 }), 'No missing thumbnails · 4 failed');
+    assert.equal(thumbnailTitle({ pending: 1, outdated: 'x' }), '1 missing thumbnail');
+    assert.equal(convertOffered({ pending: 0, outdated: 5 }), true);
+    for (const status of [undefined, null, { pending: 0 }, { outdated: 0 }, { outdated: -1 }, { outdated: '5' }]) {
+        assert.equal(convertOffered(status), false, JSON.stringify(status));
+    }
+});
+
 test('an integrity count SQLite stopped at reads as a lower bound', async () => {
     const { checkChip } = await overviewModule;
     assert.equal(checkChip({ id: 'integrity', status: 'issues', count: 100, capped: true }), '100+ problems found');

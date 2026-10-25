@@ -33,9 +33,11 @@ previews behind those URLs are made here, in three ways:
   (missing only, visible and cancellable) instead of writing them silently,
   and fewer go through the worker.
 
-Every preview is written by ``_generate_one`` with the thumbnail job's default
-size and quality (``DEFAULT_THUMBNAIL_EDGE``, medium), into a temp sibling
-renamed over the old one, so a reader never sees a partial file.
+Every preview is written by ``_generate_one`` with the server's thumbnail
+settings (format, quality, size limit; ``thumbnail_settings``, #317), into a
+temp sibling verified and renamed over the old one, so a reader never sees a
+partial file. A request for an older preview name (``_thumb.png``) is answered
+with the preview in the current format.
 
 Holds: automatic previews only write files under ``thumbnails/`` and never
 touch the database, like the thumbnail job, so they run beside a scan, image
@@ -63,11 +65,10 @@ from pathlib import Path
 
 from aiohttp import web
 
+from . import thumbnail_settings
 from .images import (
-    GALLERY_IMAGE_EXTENSIONS,
     MEDIA_EXTENSIONS,
     THUMBNAIL_CLEAR_TITLE,
-    THUMBNAIL_ENCODINGS,
     VIDEO_EXTENSIONS,
     _has_traversal,
     _is_within,
@@ -83,16 +84,20 @@ from .jobs import (
     JobBusy,
 )
 from .settings_routes import SOURCE_CHANGE_JOB_KIND
-from .thumbnail_jobs import DEFAULT_THUMBNAIL_EDGE, ThumbnailOptions
+from .thumbnail_encode import shutdown_encoders, writer_settings
+from .thumbnail_jobs import ThumbnailOptions
 
 try:
     from ...utils.parallel import map_parallel
 except ImportError:  # tests import the package top-level
     from utils.parallel import map_parallel
 
-AUTO_THUMBNAIL_EDGE = DEFAULT_THUMBNAIL_EDGE
-AUTO_THUMBNAIL_SIZE = (AUTO_THUMBNAIL_EDGE, AUTO_THUMBNAIL_EDGE)
-AUTO_THUMBNAIL_ENCODING = THUMBNAIL_ENCODINGS["medium"]
+# The placeholder frame a video without a preview is answered with (JPEG
+# bytes, never written to disk); written previews follow the settings.
+PLACEHOLDER_SIZE = (thumbnail_settings.DEFAULT_EDGE, thumbnail_settings.DEFAULT_EDGE)
+PLACEHOLDER_QUALITY = 85
+# Source extensions in the order a shared preview name looks for them (R2).
+_SOURCE_ORDER = thumbnail_settings.IMAGE_SOURCE_ORDER + tuple(sorted(VIDEO_EXTENSIONS))
 # Previews views may write at once (the size of the view pool).
 ON_DEMAND_LIMIT = 3
 # View requests that may wait on the gate; one more gets its fallback at once.
@@ -146,8 +151,8 @@ def _dst_key(dst):
 def video_placeholder_jpeg():
     """The placeholder frame as JPEG bytes (a video whose preview is missing)."""
     buffer = io.BytesIO()
-    _video_placeholder_image(AUTO_THUMBNAIL_SIZE).save(
-        buffer, "JPEG", **AUTO_THUMBNAIL_ENCODING
+    _video_placeholder_image(PLACEHOLDER_SIZE).save(
+        buffer, "JPEG", quality=PLACEHOLDER_QUALITY, optimize=True
     )
     return buffer.getvalue()
 
@@ -171,7 +176,7 @@ def _is_preview_request(filepath):
         stem.endswith("_thumb")
         and len(stem) > len("_thumb")
         and extension == extension.lower()
-        and extension in GALLERY_IMAGE_EXTENSIONS
+        and extension in thumbnail_settings.THUMBNAIL_EXTENSIONS
     )
 
 
@@ -184,10 +189,25 @@ def _regular_file(path):
 
 
 def _candidates(parts):
-    """``(folder parts, base, extensions)`` of a checked preview request."""
+    """``(folder parts, base, source extensions)`` of a checked preview
+    request: every media extension that owns the requested preview name
+    (``thumbnail_settings.owns``), images first (ruling R2)."""
     stem, extension = os.path.splitext(parts[-1])
-    wanted = [extension] + (sorted(VIDEO_EXTENSIONS) if extension == ".jpg" else [])
+    wanted = [
+        source
+        for source in _SOURCE_ORDER
+        if source in MEDIA_EXTENSIONS and thumbnail_settings.owns(extension, source)
+    ]
     return parts[1:-1], stem[: -len("_thumb")], wanted
+
+
+def _current_preview(root, parts):
+    """The preview *parts* names, in the format written now (#317): a request
+    for an older name (``_thumb.png`` before a conversion) is answered with
+    the current file."""
+    _folder, base, _wanted = _candidates(parts)
+    name = base + thumbnail_settings.THUMB_SUFFIX + writer_settings().extension
+    return Path(root).joinpath(*parts[:-1], name)
 
 
 def _quick_source(root, parts):
@@ -207,11 +227,12 @@ def _thumbnail_source(root, parts):
     """``(src, dst, is_video)`` for the preview *parts* under *root*, or None.
 
     *parts* passed ``_is_preview_request``. The source has the preview's name
-    without ``_thumb`` and an extension that previews as the requested one
-    (any case: exact names first, then one listing of the folder); a ``.jpg``
-    may also be a video's. It must be a regular file inside *root*. ``dst``
-    is None when the preview's folder resolves outside ``root/thumbnails`` (a
-    link): nothing is written there.
+    without ``_thumb`` and an extension that owns the requested one (any case:
+    exact names first, then one listing of the folder; ruling R4). It must be
+    a regular file inside *root*. ``dst`` is the preview in the format written
+    now (#317), whatever extension was requested; it is None when the
+    preview's folder resolves outside ``root/thumbnails`` (a link): nothing is
+    written there.
     """
     root = Path(root)
     folder_parts, base, wanted = _candidates(parts)
@@ -224,7 +245,7 @@ def _thumbnail_source(root, parts):
             return None
     rel = Path(*folder_parts, found.name)
     dst = root / media_thumbnail_rel(rel)
-    if dst != root.joinpath(*parts):
+    if dst != _current_preview(root, parts):
         return None
     if not _is_within(root / "thumbnails", root) or not _is_within(
         dst, root / "thumbnails"
@@ -605,6 +626,8 @@ class AutoThumbnailMixin:
             thumbnailer.close()
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
+        if final:
+            shutdown_encoders()  # kill JPEG XL / ffmpeg encoders still running
 
     def _auto_thumbnail_failures(self):
         thumbnailer = self._auto_thumbnailer
@@ -614,9 +637,8 @@ class AutoThumbnailMixin:
         return self._generate_one(
             src,
             dst,
-            AUTO_THUMBNAIL_SIZE,
+            writer_settings(),
             is_video,
-            encoding=AUTO_THUMBNAIL_ENCODING,
             stop=stop,
             guard=guard,
             track=track,
@@ -730,7 +752,7 @@ class AutoThumbnailMixin:
                 if quick is None:
                     continue
                 return self._preview_response(BUSY, quick[0], None, quick[1])
-            dst = root.joinpath(*parts)
+            dst = _current_preview(root, parts)
             if outcome == READY:
                 return self._file_response(dst)
             located = await gate.loop.run_in_executor(
@@ -807,7 +829,7 @@ class AutoThumbnailMixin:
         plan = await self._run_in_executor(self._plan_gallery_thumbnails, output_dirs)
         missing = len(plan["targets"]) + plan["remaining"]
         if missing >= SCAN_THUMBNAIL_JOB_THRESHOLD:
-            options = ThumbnailOptions("missing", AUTO_THUMBNAIL_EDGE, "medium")
+            options = ThumbnailOptions("missing", writer_settings())
             try:
                 self._start_thumbnail_job(options)
             except JobBusy as busy:

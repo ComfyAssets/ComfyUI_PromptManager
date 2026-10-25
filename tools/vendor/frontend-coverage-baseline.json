@@ -527,6 +527,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/system-thumbnails.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 83,
+    "statements": 98
+  },
   "workspace/system.mjs": {
     "lines": 98,
     "branches": 92,
@@ -540,10 +546,16 @@
     "statements": 98
   },
   "workspace/thumbnail-review.mjs": {
-    "lines": 96,
+    "lines": 98,
     "branches": 93,
     "functions": 98,
-    "statements": 96
+    "statements": 98
+  },
+  "workspace/thumbnail-support.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/toast.mjs": {
     "lines": 98,

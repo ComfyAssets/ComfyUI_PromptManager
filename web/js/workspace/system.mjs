@@ -78,8 +78,9 @@ export function systemDrafts(api) {
         writeRuntime: undelivered,
         async readHost() {
             const result = await api.get(SETTINGS_URL, { cache: 'no-store' });
-            // The store reads a missing value as none and a missing revision as unreadable (no host save).
-            return { values: result.settings, revision: result.revision };
+            // The store reads a missing value as none and a missing revision as unreadable (no host save). #317: which
+            // thumbnail formats the server can write rides along as a read-only value (never drafted or sent).
+            return { values: { ...result.settings, thumbnail_encoders: result.thumbnail_encoders }, revision: result.revision };
         },
         async writeHost(changes, { expected_revision }) {
             try {

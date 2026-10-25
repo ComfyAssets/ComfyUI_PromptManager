@@ -399,7 +399,7 @@ test('real video media has a usable card and native playback cleans up on close 
     await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
     const media = await (await request.get('/prompt_manager/images/output?limit=40')).json();
     // #249: a video with no preview yet still lists its preview URL; the server makes the frame on first view.
-    expect(media.images.find(image => image.filename === 'clip.webm').thumbnail_url).toMatch(/\/thumbnails\/clip_thumb\.jpg\?root=0/);
+    expect(media.images.find(image => image.filename === 'clip.webm').thumbnail_url).toMatch(/\/thumbnails\/clip_thumb\.webp\?root=0/);
     await page.goto(workspace);
     await refine(page, { Media: 'video' });
     await expect(cards(page)).toHaveCount(1);
@@ -722,7 +722,7 @@ test('refresh releases the previous inspector cover source', async ({ page, requ
     await card.getByRole('button', { name: 'Inspect clip.webm', exact: true }).click();
     // #249: a video's cover is its preview frame, not the video.
     const cover = details(page).locator('img.detail-cover');
-    await expect(cover).toHaveAttribute('src', /\/thumbnails\/clip_thumb\.jpg\?/);
+    await expect(cover).toHaveAttribute('src', /\/thumbnails\/clip_thumb\.webp\?/);
     await expect(details(page).locator('video')).toHaveCount(0);
     await cover.evaluate(element => { window.__oldInspectorCover = element; });
     await rescan(page);

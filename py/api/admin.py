@@ -19,6 +19,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .prompts import thumbnail_url_for
+from . import thumbnail_settings
 from .jobs import (
     DEFAULT_SCAN_SCOPE,
     SCAN_GROUP_NAMES,
@@ -147,39 +148,48 @@ def _physical_file_key(path, stat):
     return ("path", os.path.normcase(os.path.realpath(str(path))))
 
 
-def _thumbnail_rel_path(rel_path, thumbnail_ext):
-    """Relative path of the thumbnail the gallery would generate for ``rel_path``."""
-    return f"thumbnails/{rel_path.with_suffix('').as_posix()}_thumb{thumbnail_ext}"
-
-
-def _media_thumbnail_rel_path(rel_path):
-    """The thumbnail of a media file: a video's preview is a ``.jpg``."""
-    extension = rel_path.suffix.lower()
-    return _thumbnail_rel_path(
-        rel_path, ".jpg" if extension in VIDEO_EXTENSIONS else rel_path.suffix
-    )
+def _other_sources(output_path, rel_path):
+    """Whether another media file shares *rel_path*'s stem in its folder."""
+    folder = Path(output_path) / Path(rel_path).parent
+    stem = Path(rel_path).stem
+    own = Path(rel_path).suffix.lower()
+    for extension in IMAGE_EXTENSIONS + VIDEO_EXTENSIONS:
+        if extension == own:
+            continue
+        for name in (stem + extension, stem + extension.upper()):
+            if (folder / name).is_file():
+                return True
+    return False
 
 
 def _remove_thumbnail(output_path, rel_path, logger=None):
-    """Remove the thumbnail of ``rel_path`` under ``output_path``, if any.
+    """Remove the previews of ``rel_path`` under ``output_path``, if any.
 
-    Shared by the legacy duplicate delete and the reviewed removal job. A
-    thumbnail that is a link, or one that cannot be removed, is left alone
-    (a stale preview never fails a removal). Returns whether one was removed.
+    Shared by the legacy duplicate delete and the reviewed removal job.
+    Every preview the file owns goes, in any format (#317); a preview name
+    another same-stem file still shares (``x_thumb.webp`` of ``x.png`` and
+    ``x.mp4``, ruling R2) stays for it. A preview that is a link, or one that
+    cannot be removed, is left alone (a stale preview never fails a removal).
+    Returns whether one was removed.
     """
     output_path = Path(output_path)
-    thumbnail_path = output_path / _media_thumbnail_rel_path(Path(rel_path))
-    try:
-        if thumbnail_path.is_symlink() or not thumbnail_path.is_file():
-            return False
-        os.remove(thumbnail_path)
-    except OSError as e:
+    rel_path = Path(rel_path)
+    shared = _other_sources(output_path, rel_path)
+    removed = False
+    for thumbnail_path in thumbnail_settings.owned_thumbnails(output_path, rel_path):
+        extension = thumbnail_path.suffix.lower()
+        if shared and extension in thumbnail_settings.WRITTEN_EXTENSIONS:
+            continue
+        try:
+            os.remove(thumbnail_path)
+        except OSError as e:
+            if logger is not None:
+                logger.warning(f"Could not delete thumbnail for {rel_path}: {e}")
+            continue
+        removed = True
         if logger is not None:
-            logger.warning(f"Could not delete thumbnail for {rel_path}: {e}")
-        return False
-    if logger is not None:
-        logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
-    return True
+            logger.debug(f"Deleted associated thumbnail: {thumbnail_path}")
+    return removed
 
 
 async def _read_json(request):
@@ -863,8 +873,13 @@ class AdminRoutesMixin:
         extension = media_path.suffix.lower()
         is_video = extension in VIDEO_EXTENSIONS
 
-        thumb_rel = _thumbnail_rel_path(rel_path, ".jpg" if is_video else extension)
-        thumbnail_url = thumbnail_url_for(thumb_rel, output_path / thumb_rel)
+        existing = thumbnail_settings.existing_thumbnail(output_path, rel_path)
+        thumbnail_url = None
+        if existing is not None:
+            thumb_rel = (
+                thumbnail_settings.thumbnail_stem_rel(rel_path) + existing.suffix
+            )
+            thumbnail_url = thumbnail_url_for(thumb_rel, existing)
         if root_index is None:
             url = f"/prompt_manager/images/serve/{rel_path.as_posix()}"
         else:
