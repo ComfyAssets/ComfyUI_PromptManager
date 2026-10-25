@@ -13,6 +13,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from aiohttp import web
@@ -724,9 +725,20 @@ class AdminRoutesMixin:
 
         Only the files under ``output_dir`` count (paths are relative to it);
         a group needs two of them. A file that vanished since it was hashed
-        is left out.
+        is left out. Each ``url`` names the source ``output_dir`` is
+        (``?root=``) when it is one, so View Full never opens another
+        source's file at the same path.
         """
         output_path = Path(os.path.abspath(output_dir))
+        identity = os.path.normcase(os.path.realpath(str(output_path)))
+        root_index = next(
+            (
+                index
+                for index, root in enumerate(self._get_all_output_dirs())
+                if os.path.normcase(os.path.realpath(str(root))) == identity
+            ),
+            None,
+        )
         base = os.path.normcase(str(output_path)).rstrip("\\/") + os.sep
         duplicates = []
         for group in groups:
@@ -737,7 +749,10 @@ class AdminRoutesMixin:
                 try:
                     images.append(
                         self._describe_media_file(
-                            Path(record["abs"]), output_path, file_hash=group["hash"]
+                            Path(record["abs"]),
+                            output_path,
+                            file_hash=group["hash"],
+                            root_index=root_index,
                         )
                     )
                 except (OSError, ValueError) as e:
@@ -837,9 +852,12 @@ class AdminRoutesMixin:
                 )
         return groups
 
-    def _describe_media_file(self, media_path, output_path, file_hash=None):
+    def _describe_media_file(
+        self, media_path, output_path, file_hash=None, root_index=None
+    ):
         """Describe one media file for the duplicates response (hashing it
-        unless ``file_hash`` is given)."""
+        unless ``file_hash`` is given). With ``root_index`` the ``url`` names
+        that source and its path is URL-encoded."""
         stat = media_path.stat()
         rel_path = media_path.relative_to(output_path)
         extension = media_path.suffix.lower()
@@ -847,13 +865,18 @@ class AdminRoutesMixin:
 
         thumb_rel = _thumbnail_rel_path(rel_path, ".jpg" if is_video else extension)
         thumbnail_url = thumbnail_url_for(thumb_rel, output_path / thumb_rel)
+        if root_index is None:
+            url = f"/prompt_manager/images/serve/{rel_path.as_posix()}"
+        else:
+            encoded = urllib.parse.quote(rel_path.as_posix(), safe="/")
+            url = f"/prompt_manager/images/serve/{encoded}?root={root_index}"
 
         return {
             "id": str(hash(str(media_path))),
             "filename": media_path.name,
             "path": str(rel_path),
             "relative_path": str(rel_path),
-            "url": f"/prompt_manager/images/serve/{rel_path.as_posix()}",
+            "url": url,
             "thumbnail_url": thumbnail_url,
             "size": stat.st_size,
             "modified_time": stat.st_mtime,

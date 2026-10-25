@@ -2311,7 +2311,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D113; D121–D129 assigned):
+Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–D113; D121–D129 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2352,7 +2352,8 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   available" (an unavailable source), "Not available yet" (Ambiguous metadata, Q6) or
   "Could not check". A `p.small` after the list says when it was checked and whether
   every check passed, some could not run, or issues need review. Close / Review missing
-  links (to Maintenance, its hand-off until S7). Nothing is changed by a check.
+  links, which reviews a fresh Missing-file links plan (D100, S7); it never cleans up.
+  Nothing is changed by a check.
 - **D96** (Statistics): "Usage statistics" without the sample note: the concept's
   "Runs by category" table (Category / Runs / Avg. rating) with the real runs and
   average rating of eligible parents per category ("Uncategorized", "Not rated"),
@@ -2368,9 +2369,9 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
 - **D122** (shell): the section nav's `aria-label` is "System sections"; the concept's
   literal label is its prototype action name "system-tab sections".
 - **D123** (Maintenance): the concept's Maintenance notice
-  ("Check first. Review changes. Then apply." + Run health checks) is delivered ahead of
-  the rest of Maintenance, above its D94 hand-off, as the native place that runs the
-  health check. A press shows "Checking…" (`aria-disabled`) and opens the report; a
+  ("Check first. Review changes. Then apply." + Run health checks) was delivered ahead of
+  the rest of Maintenance (S2), as the native place that runs the health check; since S7
+  the section's two surfaces follow it and its D94 hand-off is gone. A press shows "Checking…" (`aria-disabled`) and opens the report; a
   failed check toasts "The health check could not finish. Nothing was changed."
 - **D97** (Appearance): added rows for the legacy gallery settings the concept leaves
   out, after its own rows: "Show image details on cards" (`showImageInfo`; off hides a
@@ -2407,7 +2408,7 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   dialog, since size and quality change no count. The primary is "Start" (the
   concept's "Simulate thumbnail job"). Overview's Review thumbnails opens the same
   dialog (the concept's row starts a sample "Thumbnail check" job directly). Maintenance's
-  Thumbnail cache row takes the dialog with S7. `thumbnail dialog matches the concept
+  Thumbnail cache → Review options opens it too (S7). `thumbnail dialog matches the concept
   from sources|overview` (system-concept.spec, both themes and sizes) maps the line and
   "Start"; `thumbnail dialog comparison detects mutations` proves they are the only
   difference and catches a renamed option, swapped options, swapped actions and a
@@ -2429,11 +2430,69 @@ Recorded deviations (plan D60–D67, D79–D81 renumbered D92–D99 and D111–D
   `tests/js/workspace-activity-kinds.test.js`, and in `workspace-activity.spec.mjs` "a
   thumbnail job shows Generated Skipped Errors, its pill verb and its toasts" and "a held
   legacy job and the health check show no tiles, no Results and no made-up percentage".
+- **D111, S7 kinds**: a maintenance apply (`maintenance`, titled after its operation,
+  not cancellable except "Store each workflow once") reads its title in the pill (no
+  total, so no percentage), counts Changed (green), Protected and Errors, keeps
+  "Maintenance log", and toasts "<title> finished · N changed" or, when it failed,
+  "<title> failed · <the server's status line>" (a plan-changed apply says "The library
+  changed since the review; nothing was changed. Review the plan again."). The duplicate
+  search (`duplicates`) reads "Finding duplicates · N% · a / b", counts Groups found
+  (rows open their first copy), says "Duplicate search started." and "Duplicate search
+  finished · N groups found", with "Search log" and "Cancel search". The duplicate
+  cleanup (`duplicate_cleanup`, not cancellable) reads "Removing duplicate files", counts
+  Removed (green), Kept and Errors (Kept rows open the viewer), and toasts "Duplicate
+  cleanup finished · N removed · M errors". Every job keeps Download report. Tests: the
+  three S7 cases in `tests/js/workspace-activity-kinds.test.js`.
 - **D112** (Activity, S5): a legacy-page operation held on the registry (not
   cancellable, no outcome groups) reads as its server title ("Database restore (admin
   page)", "Thumbnail clear (gallery page)"), with no tiles, no Results, no Cancel, an
   indeterminate bar while it runs and "<title> finished." when it ends, whatever its
   kind (the gallery's clear is a `thumbnails` hold).
+- **D100** (Maintenance, S7): the concept's `maintenancePlan` dialog ("Review maintenance
+  plan") on the server's read-only plan (`POST /maintenance/preview`), opened by each
+  Review plan and by the health report's Review missing links. No sample note. The `h3`
+  is the operation's concept name; the `dl.meta-grid` keeps Scope / Protected / Backup /
+  Media on disk with the plan's values: its scope label, its protected reasons joined
+  with " · " ("Nothing is protected" when none), "Create and verify before changes
+  (<db>.backup_<date and time>)", "No safety backup (the policy is off)" or "Always
+  created and verified first (…)" for Store each workflow once, and its media line. A
+  `details` "Listed records (N)" ("(N of M)" past the server's 50) holds the records the
+  plan names in a `pre`. The `p.small` says "Nothing changes until you apply. This
+  review holds for N minutes." (from `expires_at`), plus "Not enough free disk space:
+  about X MB is needed and Y MB is free." when the plan's disk check is short. Then the
+  D55 backup box ("Back up the database first (recommended)", "Back up now") and Cancel /
+  "Apply reviewed operation" (the concept's "Simulate reviewed operation"). Apply sends
+  only the token; the dialog closes, "<title> started." is toasted and the job opens in
+  Activity. A refused apply stays and says why: "Another job is running: <title>."
+  (D57), "This plan was already applied: <job>." (`plan-used`, linking the job), the
+  server's line for an expired or replaced review (then the plan is reviewed again at
+  once), for a short disk and for nothing to do, and "Outcome not confirmed. Check
+  Activity before applying it again." when the answer was lost (the job may run).
+  Cancel and Escape write nothing (`Cancel writes nothing`: a read-only dump of the rows
+  and the media hashes, `GET /__test__/system/digest`).
+- **D101** (Maintenance, S7): Duplicate image files → Find duplicates starts the
+  duplicate search (Activity, D111); its job view adds "Review groups" after Download
+  report once it finished with groups. The concept's `duplicates` dialog ("Review
+  duplicate image files") shows the real groups ten at a time: a `p.small[role=status]`
+  "Groups 1–10 of N", then per group a `p.small` "N identical files · S each" and one
+  `.compare-grid` with a `.compare-item` per copy (its preview as the concept's
+  `img.sample-fluid`, and a radio "Keep <source>/<path>", the oldest copy checked; a copy
+  gone since the search is disabled and says so), "Previous groups" / "Next groups" when
+  there are more than ten, the `p.small` "Removing a copy deletes its file from disk;
+  its database links move to the kept copy. History keeps the removed paths in its run
+  records. Nothing is deleted until you review and apply the cleanup.", and Cancel /
+  "Review duplicate cleanup". Choices survive paging; the review sends every group shown
+  so far as `{group_id, root_index, path}` (never a bare path: two sources may hold a
+  file at the same path) and opens the D100 plan for "Duplicate image files".
+- **D102** (Maintenance, S7, Q5, #222): Metadata cache clears only the browser entries
+  Prompt Manager owns as a cache (`web/js/cache-ownership.js`). The inventory of every
+  storage writer has none (see "Browser cache ownership" below), so the row's line adds
+  "Nothing is cached in this browser." and its Review plan is `aria-disabled` and opens
+  nothing. With owned entries (a test names one through the module's inventory), Review
+  plan opens "Review maintenance plan" › "Metadata cache" (Scope "N cached entries in
+  this browser", Protected "Preferences and other tools’ data in this browser", Backup
+  "Not needed: the database is not changed", Media "No files are removed") and "Clear
+  browser cache" clears exactly those and toasts what it cleared.
 - **D113** (Sources): the Worker threads range ends at the server's `cpu_count` (the
   concept's fixed `max=16`) and shows the server's real `worker_threads` (the concept's
   sample 4).
@@ -2846,6 +2905,30 @@ the batch's distinct documents (`test_memory_stays_bounded_by_one_row`, tracemal
 Restoring a deduped backup on a version before this one is not supported: that
 version's restore accepts the file and then reads rewritten images without their
 workflow (README changelog).
+
+### Browser cache ownership (#222)
+
+The legacy gallery's Clear cache used to delete every localStorage key starting `pm_` or
+`promptManager_` (the workspace theme and the dismissed update notice among them) and
+every CacheStorage cache whose name held "gallery" or "thumbnail" (another tool's, on
+ComfyUI's shared origin). `web/js/cache-ownership.js` names what a clear may remove
+from an inventory of the real writers (2026-10-24): every key a Prompt Manager page
+writes is a preference (`gallerySettings`, `pm_workspace_theme`,
+`pm_update_notice_dismissed`) and no page opens CacheStorage or IndexedDB (the
+`web/sw.js` service worker that did never shipped). So nothing is removed, and the
+toast says "Nothing of Prompt Manager's is cached in this browser." `the inventory covers
+every browser storage writer in web/` (`tests/js/cache-ownership.test.js`) fails when a
+page writes a key that is neither a preference nor inventoried, or opens a cache. The
+gallery's server thumbnail clear stays its own request and runs first: refused or
+unreachable, it changes nothing and says so (the old code toasted success when the
+request failed); refused browser storage is reported, never hidden
+(`tests/js/legacy-refusals.test.js`; the browser case `the gallery cache clear keeps
+preferences and other tools caches` in `workflows.spec.mjs`).
+
+The legacy duplicates dialog's View Full now names its source (`?root=<index>`, with the
+path URL-encoded) when the gallery's output folder is a listed source; before, the serve
+route opened the first source holding a file at that path
+(`test_view_full_names_the_gallery_folder_source`).
 
 ### Library location contract (#249 System S6b)
 

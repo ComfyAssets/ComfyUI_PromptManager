@@ -50,6 +50,14 @@
                 running.title.length > 0 && running.title.length <= 200) {
                 this.running = { id: running.id, title: running.title };
             }
+            // A used plan names the job that applied it (System S7); its title is null once that job was pruned.
+            this.job = null;
+            const job = current && current.job;
+            if (this.code === "plan-used" && job && typeof job.id === "string" &&
+                /^[A-Za-z0-9_-]{1,64}$/.test(job.id) && (job.title === null ||
+                (typeof job.title === "string" && job.title.length > 0 && job.title.length <= 200))) {
+                this.job = { id: job.id, title: job.title };
+            }
             this.source = null;
             if (this.code === "invalid-source" && current && typeof current.source === "string" &&
                 current.source.length > 0 && current.source.length <= 4096) {

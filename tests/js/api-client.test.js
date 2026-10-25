@@ -356,6 +356,21 @@ test("keepalive is forwarded only when asked, so a request can outlive its page"
     await Promise.all(writes);
 });
 
+test("ApiError keeps the job that applied a used plan (plan-used, System S7)", () => {
+    const body = { job: { id: "b".repeat(32), title: "Optimize database" } };
+    const used = new ApiError(409, "This plan was already applied.", "plan-used", null, body);
+    assert.deepEqual(used.job, { id: "b".repeat(32), title: "Optimize database" });
+    assert.notEqual(used.job, body.job, "server objects must be copied");
+    // The applying job may already be pruned: its title is null, its id still links Activity.
+    assert.deepEqual(new ApiError(409, "used", "plan-used", null, { job: { id: "c".repeat(32), title: null } }).job,
+        { id: "c".repeat(32), title: null });
+    assert.equal(new ApiError(409, "busy", "busy", null, body).job, null);
+    for (const job of [null, "x", { id: 1, title: "t" }, { id: "a b", title: "t" }, { id: "a", title: 7 },
+        { id: "a", title: "x".repeat(201) }, { id: "a".repeat(65), title: "t" }]) {
+        assert.equal(new ApiError(409, "used", "plan-used", null, { job }).job, null);
+    }
+});
+
 test("ApiError keeps a validated running job on busy and a validated source on invalid-source", () => {
     const body = { running: { id: "a".repeat(32), title: "Scan for metadata" }, source: "output/gone" };
     const busy = new ApiError(409, "busy", "busy", null, body);

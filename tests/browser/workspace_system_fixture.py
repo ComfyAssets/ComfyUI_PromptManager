@@ -30,10 +30,25 @@ read. These per-server hooks only change what a System test needs on top:
   ``failing`` is the same library whose move fails verification. Reset
   restores the real resolver, the real move and "Keep it here".
 
+- ``POST /__test__/system/duplicate-prompts`` (S7) adds two prompts whose
+  text differs only in case and spacing (a duplicate prompt text group);
+  ``{"again": true}`` adds a third, so a reviewed plan no longer matches;
+- ``POST /__test__/system/duplicate-files`` (S7) writes one PNG's bytes three
+  times: ``output/s7-dupes/same.png``, ``input/s7-dupes/same.png`` (the same
+  relative path in the other source) and ``output/s7-dupes/copy.png``;
+  ``{"groups": n}`` adds ``n`` more groups of two copies each;
+- ``GET /__test__/system/digest`` (S7) answers the sha256 of the database's
+  rows (a read-only dump) and of every media file under ``output`` and
+  ``input`` (not the automatic previews in ``thumbnails``), so a test proves
+  a Cancel wrote nothing.
+
 Delays use the shared request holds (``request_hold.py``).
 """
 
+import hashlib
 import os
+import shutil
+import sqlite3
 from pathlib import Path
 
 from aiohttp import web
@@ -90,8 +105,12 @@ def register_system_commands(app, routes, api, root: Path):
 
     unplugged = root / "output" / "unplugged"
 
+    dupes = [root / "output" / "s7-dupes", root / "input" / "s7-dupes"]
+
     def reset():
         failures.clear()
+        for folder in dupes:
+            shutil.rmtree(folder, ignore_errors=True)
         if unplugged.is_dir():
             unplugged.rmdir()
         GalleryConfig.MONITORING_DIRECTORIES = list(configured)
@@ -200,6 +219,65 @@ def register_system_commands(app, routes, api, root: Path):
             [str(root / name) for name in watching], alive
         )
         return web.json_response({"success": True})
+
+    @routes.post("/__test__/system/duplicate-prompts")
+    async def duplicate_prompts(request):
+        data = await request.json() if request.can_read_body else {}
+        texts = [("S7 duplicate prompt", "2001-01-01 00:00:00")]
+        texts.append(("  s7 DUPLICATE prompt", "2002-01-01 00:00:00"))
+        if data.get("again") is True:
+            texts = [("S7 Duplicate Prompt  ", "2003-01-01 00:00:00")]
+        with api.db.model.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO prompts(text, created_at) VALUES(?, ?)", texts
+            )
+            conn.commit()
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/system/duplicate-files")
+    async def duplicate_files(request):
+        body = await request.json() if request.can_read_body else {}
+        for folder in dupes:
+            folder.mkdir(exist_ok=True)
+        extra = body.get("groups", 0)
+        if (
+            isinstance(extra, bool)
+            or not isinstance(extra, int)
+            or not 0 <= extra <= 20
+        ):
+            raise web.HTTPBadRequest()
+        for number in range(extra):
+            # One more group each: two copies of a picture no other file has.
+            with Image.new("RGB", (16, 16), (number * 9, 40, 90)) as image:
+                image.save(dupes[0] / f"group_{number:02}_a.png")
+            copy = (dupes[0] / f"group_{number:02}_a.png").read_bytes()
+            (dupes[0] / f"group_{number:02}_b.png").write_bytes(copy)
+        with Image.new("RGB", (48, 48), "#7a3b2e") as image:
+            image.save(dupes[0] / "same.png")
+        data = (dupes[0] / "same.png").read_bytes()
+        (dupes[1] / "same.png").write_bytes(data)
+        (dupes[0] / "copy.png").write_bytes(data)
+        api.invalidate_gallery_cache()
+        return web.json_response({"success": True})
+
+    @routes.get("/__test__/system/digest")
+    async def digest(request):
+        uri = Path(api.db.model.db_path).as_uri() + "?mode=ro"
+        rows = hashlib.sha256()
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            for line in conn.iterdump():
+                rows.update(line.encode("utf-8") + b"\n")
+        finally:
+            conn.close()
+        media = hashlib.sha256()
+        for name in ("output", "input"):
+            for path in sorted((root / name).rglob("*")):
+                # Automatic previews are written in the background (#316): media only.
+                if path.is_file() and "thumbnails" not in path.relative_to(root).parts:
+                    media.update(str(path.relative_to(root)).encode("utf-8"))
+                    media.update(hashlib.sha256(path.read_bytes()).digest())
+        return web.json_response({"rows": rows.hexdigest(), "media": media.hexdigest()})
 
     @routes.post("/__test__/system/library")
     async def library_state(request):
