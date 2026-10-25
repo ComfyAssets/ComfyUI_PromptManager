@@ -9,7 +9,6 @@ import math
 import sqlite3
 import os
 import threading
-import tempfile
 import weakref
 from contextlib import closing
 from pathlib import Path
@@ -20,6 +19,7 @@ from .managed_connection import (
     await_closed,
     retire_connections,
 )
+from . import restore_stage
 from .library_schema import library_schema_error, migrate_library_state
 from .image_favorites import image_favorites_schema_error, migrate_image_favorites
 from .annotation_schema import annotation_schema_error, migrate_annotation_state
@@ -39,7 +39,6 @@ from .workflow_documents import (
 from .execution_history_schema import (
     history_schema_error,
     migrate_execution_history,
-    rotate_history_epoch,
 )
 
 # Import logging system
@@ -555,7 +554,10 @@ class PromptModel:
             "WHERE pp.positive_prompt_id IS NOT gi.prompt_id LIMIT 1"
         ).fetchone():
             return "Image pair association has a different positive prompt owner"
-        for row in conn.execute("SELECT provenance FROM image_prompt_pairs"):
+        # fetchone, not iteration: a managed connection's cursor prefetches
+        # ITER_CHUNK rows when iterated, and each provenance may be ~4 MB.
+        cursor = conn.execute("SELECT provenance FROM image_prompt_pairs")
+        while (row := cursor.fetchone()) is not None:
             error = pair_provenance_error(row[0])
             if error:
                 return error
@@ -1132,7 +1134,7 @@ class PromptModel:
 
     @staticmethod
     def verify_database_file(
-        path: str, *, require_library_state: bool = False
+        path: str, *, require_library_state: bool = False, documents: bool = True
     ) -> Tuple[bool, str]:
         """
         Check that a file is a healthy prompts database before restoring it.
@@ -1146,6 +1148,9 @@ class PromptModel:
                 database has (Library state, image favorites, saved views,
                 image annotations and the review queue), as a migrated
                 restore stage must; old backups may lack them.
+            documents: Read every workflow document and refuse a damaged
+                one. A restore checks its upload without it and repairs
+                damaged documents on the stage (``database/restore_stage.py``).
 
         Returns:
             (ok, reason): reason is "ok" when the file is acceptable, otherwise
@@ -1221,7 +1226,7 @@ class PromptModel:
             if review_error:
                 return False, review_error
             documents_error = workflow_documents_schema_error(
-                conn, allow_missing=not require_library_state, documents=True
+                conn, allow_missing=not require_library_state, documents=documents
             )
             if documents_error:
                 return False, documents_error
@@ -1255,17 +1260,43 @@ class PromptModel:
         finally:
             source.close()
 
+    def stage_restore(self, src_path: str):
+        """Stage ``src_path`` beside this database for a restore (blocking).
+
+        Returns a ``StagedRestore`` (``database/restore_stage.py``): a
+        migrated, repaired and verified copy in the library's folder, its
+        digest and what it holds. Neither the live database nor the source
+        is touched. Raises ValueError when either does not verify.
+        """
+        return restore_stage.stage_restore(PromptModel, self.db_path, src_path)
+
+    def publish_staged(self, staged) -> str:
+        """Replace the live database with ``staged``; return the safety backup.
+
+        See ``restore_stage.publish_staged``: the staged bytes are rechecked,
+        the current database is kept as ``<db_path>.backup_<stamp>`` and the
+        WAL is truncated afterwards.
+        """
+        backup_path = restore_stage.publish_staged(self, staged)
+        self.logger.info("Database restored from a staged copy")
+        from .execution_history import notify_history_restore
+
+        notify_history_restore(self.db_path)
+        return backup_path
+
     def restore_from_file(self, src_path: str) -> str:
         """
         Replace the live database with the file at src_path.
 
-        A disposable SQLite backup of the source is migrated and verified first.
-        Only then is the current database backed up next to itself as
-        ``<db_path>.backup_<YYYYmmdd_HHMMSS>`` (WAL content included), and the
-        staged pages replace the live pages through SQLite's backup API.
-        Migration failures never replace live content or modify the source.
-        An online replacement failure leaves the live database intact and
-        propagates; the completed safety backup remains available.
+        ``stage_restore`` then ``publish_staged``: a disposable copy of the
+        source is migrated, repaired and verified in the library's folder
+        first. Only then is the current database backed up next to itself as
+        ``<db_path>.backup_<YYYYmmdd_HHMMSS_ffffff>`` (WAL content included),
+        and the staged pages replace the live pages through SQLite's backup
+        API. Staging failures never replace live content or modify the
+        source. An online replacement failure leaves the live database intact
+        and propagates; the completed safety backup remains available. The
+        stage is removed either way.
 
         Args:
             src_path: SQLite file to restore
@@ -1275,55 +1306,14 @@ class PromptModel:
             there was no database to back up.
 
         Raises:
-            RuntimeError: If the previous database could not be backed up
+            ValueError: If the source or its migrated copy does not verify
+            SafetyBackupFailed: If the previous database could not be backed up
             sqlite3.OperationalError: If SQLite refuses online replacement
         """
-        ok, reason = self.verify_database_file(src_path)
-        if not ok:
-            raise ValueError(reason)
-        with tempfile.TemporaryDirectory(prefix="prompt-manager-restore-") as directory:
-            staged_path = str(Path(directory) / "staged.db")
-            source = sqlite3.connect(
-                Path(src_path).resolve().as_uri() + "?mode=ro", uri=True
-            )
-            try:
-                with closing(sqlite3.connect(staged_path)) as destination:
-                    source.backup(destination)
-            finally:
-                source.close()
-            staged = None
-            try:
-                staged = PromptModel(staged_path)
-                rotate_history_epoch(staged.get_connection())
-                ok, reason = self.verify_database_file(
-                    staged_path, require_library_state=True
-                )
-                if not ok:
-                    raise ValueError(reason)
-                staged.close_all()
-                backup_path = ""
-                if os.path.exists(self.db_path):
-                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    backup_path = f"{self.db_path}.backup_{timestamp}"
-                    if not self.backup_database(backup_path):
-                        raise RuntimeError("Could not back up the current database")
-                    self.logger.info(f"Current database backed up to: {backup_path}")
-                try:
-                    self._replace_contents_from(staged_path)
-                except sqlite3.OperationalError as exc:
-                    exc._prompt_manager_restore_backup_created = bool(backup_path)
-                    raise
-                with PromptModel._init_lock:
-                    PromptModel._initialized_paths.add(self._schema_key())
-                self.logger.info(f"Database restored from {src_path}")
-                from .execution_history import notify_history_restore
-
-                notify_history_restore(self.db_path)
-                return backup_path
-            finally:
-                if staged is not None:
-                    staged.close_all()
-                with PromptModel._init_lock:
-                    PromptModel._initialized_paths.discard(
-                        os.path.normcase(os.path.realpath(staged_path))
-                    )
+        staged = self.stage_restore(src_path)
+        try:
+            backup_path = self.publish_staged(staged)
+        finally:
+            staged.discard()
+        self.logger.info(f"Database restored from {src_path}")
+        return backup_path

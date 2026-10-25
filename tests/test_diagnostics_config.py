@@ -161,46 +161,48 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
         self.assertNotIn("/nonexistent/custom", message)
 
     def test_backup_uses_model_db_path(self):
-        """backup_database should read from self.db.model.db_path."""
+        """The backup snapshot is taken of self.db.model.db_path."""
         if "server" not in sys.modules:
             sys.modules["server"] = MagicMock()
 
-        from py.api.admin import AdminRoutesMixin
+        from py.api.backup_restore import write_backup_snapshot
 
         from database.operations import PromptDatabase
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as f:
-            db_file = f.name
-
+        folder = tempfile.mkdtemp()
+        db_file = os.path.join(folder, "custom.db")
         # A WAL-safe backup copies pages through sqlite itself, so the
         # configured path has to hold a real database, not arbitrary bytes.
         real_db = PromptDatabase(db_file)
         try:
             stub = self._make_api_stub(db_file)
             stub.db.model = real_db.model
-            result = self._run_async(
-                AdminRoutesMixin.backup_database(stub, MagicMock())
-            )
-
-            self.assertEqual(result.content_type, "application/octet-stream")
-            self.assertGreater(len(result.body), 0)
-            self.assertTrue(result.body.startswith(b"SQLite format 3\x00"))
+            snapshot, warning = write_backup_snapshot(stub.db.model)
+            try:
+                self.assertIsNone(warning)
+                self.assertEqual(os.path.dirname(snapshot), folder)
+                with open(snapshot, "rb") as handle:
+                    self.assertTrue(handle.read(16) == b"SQLite format 3\x00")
+            finally:
+                os.unlink(snapshot)
         finally:
             real_db.close_all()
-            for suffix in ("", "-wal", "-shm"):
-                if os.path.exists(db_file + suffix):
-                    os.unlink(db_file + suffix)
+            for name in os.listdir(folder):
+                os.unlink(os.path.join(folder, name))
+            os.rmdir(folder)
 
     def test_backup_reports_missing_custom_path(self):
-        """backup_database should return 404 when configured path doesn't exist."""
+        """The backup answers 404 when the configured path doesn't exist."""
         if "server" not in sys.modules:
             sys.modules["server"] = MagicMock()
 
-        from py.api.admin import AdminRoutesMixin
+        from py.api.backup_restore import BackupRestoreRoutesMixin
 
         stub = self._make_api_stub("/nonexistent/custom/prompts.db")
 
-        result = self._run_async(AdminRoutesMixin.backup_database(stub, MagicMock()))
+        result = self._run_async(
+            BackupRestoreRoutesMixin._stream_backup(stub, MagicMock())
+        )
         body = json.loads(result.body)
         self.assertFalse(body["success"])
         self.assertEqual(result.status, 404)

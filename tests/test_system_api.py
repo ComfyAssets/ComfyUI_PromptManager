@@ -60,8 +60,8 @@ class SystemAPITestCase(AdminAPITestCase):
         self.assertEqual(response.status, status, await response.text())
         return await response.json()
 
-    async def restore_snapshot(self):
-        """Restore the live database from a copy of itself through the legacy route."""
+    def snapshot_form(self):
+        """A multipart upload of a copy of the live database."""
         from contextlib import closing
 
         from aiohttp import FormData
@@ -74,8 +74,12 @@ class SystemAPITestCase(AdminAPITestCase):
             upload = handle.read()
         form = FormData()
         form.add_field("database_file", upload, filename="upload.db")
+        return form
+
+    async def restore_snapshot(self):
+        """Restore the live database from a copy of itself through the legacy route."""
         response = await self.client.request(
-            "POST", "/prompt_manager/restore", data=form
+            "POST", "/prompt_manager/restore", data=self.snapshot_form()
         )
         self.assertEqual(response.status, 200, await response.text())
 
@@ -193,8 +197,10 @@ class TestHealthRoute(SystemAPITestCase):
         overview = await self.json("GET", "/prompt_manager/system/overview")
         self.assertIsNone(overview["health"])
 
-    async def test_check_finishing_after_a_restore_is_not_kept(self):
-        # A check that started on the old database describes it, not the new one.
+    async def test_restore_refused_while_a_check_runs(self):
+        # #249 S8 carry-over: a restore and the health check never interleave
+        # (the restore is exclusive), so no check outlives the database it
+        # read; a restore after the check forgets its report.
         self.save("Any")
         release = threading.Event()
         entered = threading.Event()
@@ -209,18 +215,24 @@ class TestHealthRoute(SystemAPITestCase):
             body = await self.json("POST", "/prompt_manager/system/health", 202)
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, entered.wait, WAIT)
-            await self.restore_snapshot()
+            refused = await self.client.post(
+                "/prompt_manager/restore", data=self.snapshot_form()
+            )
+            self.assertEqual(refused.status, 409)
+            self.assertEqual(
+                await refused.json(),
+                {"success": False, "error": "Health check already running"},
+            )
             release.set()
             job = self.api._jobs.get(body["job"]["id"])
             await asyncio.wait_for(asyncio.shield(job.task), WAIT)
         self.assertEqual(job.state, "finished")
-        body = await self.json("GET", "/prompt_manager/system/health")
-        self.assertEqual(body, {"success": True, "report": None})
-        # A check started on the restored database is kept again.
-        await self.run_health()
         self.assertIsNotNone(
             (await self.json("GET", "/prompt_manager/system/health"))["report"]
         )
+        await self.restore_snapshot()
+        body = await self.json("GET", "/prompt_manager/system/health")
+        self.assertEqual(body, {"success": True, "report": None})
 
     async def test_health_sources_resolve_off_the_event_loop(self):
         loop_thread = threading.get_ident()

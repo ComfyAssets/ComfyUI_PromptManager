@@ -475,3 +475,178 @@ def release_documents(conn: sqlite3.Connection, ids: Iterable[Optional[int]]) ->
 def sweep_documents(conn: sqlite3.Connection) -> int:
     """Delete every document no image row references; returns the count."""
     return conn.execute(SWEEP_SQL).rowcount
+
+
+# ── repair (a restore's stage) ────────────────────────────────────────
+
+INLINE_TEXTS_SQL = (
+    "SELECT workflow_data, prompt_metadata FROM generated_images "
+    "WHERE workflow_data IS NOT NULL OR prompt_metadata IS NOT NULL"
+)
+REKEY_SQL = "UPDATE workflow_documents SET sha256=?, byte_length=? WHERE id=?"
+
+
+def _rows(conn: sqlite3.Connection, sql: str, params=()):
+    """Each row of ``sql``, read one at a time.
+
+    Iterating a managed connection's cursor prefetches ``ITER_CHUNK`` (128)
+    rows, and a document or inline text can be megabytes.
+    """
+    cursor = conn.execute(sql, params)
+    while (row := cursor.fetchone()) is not None:
+        yield row
+
+
+def _inflated(data) -> Optional[bytes]:
+    """The complete text bytes ``data`` inflates to, or None.
+
+    Complete means the zlib stream ends (its Adler-32 checked) within
+    MAX_DOCUMENT_BYTES with nothing after it: the body is intact even when
+    the row's recorded hash or length is not.
+    """
+    try:
+        inflater = zlib.decompressobj()
+        raw = inflater.decompress(bytes(data), MAX_DOCUMENT_BYTES + 1)
+        if not inflater.eof or inflater.unconsumed_tail or inflater.unused_data:
+            return None
+        if len(raw) > MAX_DOCUMENT_BYTES:
+            return None
+        raw.decode("utf-8")
+        return raw
+    except (zlib.error, TypeError, UnicodeDecodeError):
+        return None
+
+
+def _one_column_off(row, raw: bytes) -> bool:
+    """Whether only the recorded hash or only the recorded length is wrong.
+
+    The two columns check the body independently. When the body inflates
+    completely and one of them still agrees with it, that column vouches for
+    the body and the other one is the damaged value. When both disagree, the
+    body itself is the suspect (another valid stream), so it is not trusted.
+    """
+    hash_ok = hashlib.sha256(raw).digest() == bytes(row[0])
+    length_ok = row[1] == len(raw)
+    return hash_ok != length_ok
+
+
+def _inline_copies(conn: sqlite3.Connection, wanted: Dict[bytes, int]):
+    """``{document id: text}`` for each wanted hash an inline row still holds."""
+    found: Dict[int, str] = {}
+    for row in _rows(conn, INLINE_TEXTS_SQL):
+        for text in row:
+            if not isinstance(text, str) or not storable(text):
+                continue
+            document_id = wanted.get(hashlib.sha256(text.encode("utf-8")).digest())
+            if document_id is not None and document_id not in found:
+                found[document_id] = text
+        if len(found) == len(wanted):
+            break
+    return found
+
+
+def _rekey(conn: sqlite3.Connection, document_id: int, raw: bytes) -> Optional[int]:
+    """Give an intact body its true key, or merge it into the document that has it.
+
+    Returns the holder's id when its own body was damaged and has just been
+    rewritten from ``raw`` (it is repaired, never to be cleared), else None.
+    """
+    digest = hashlib.sha256(raw).digest()
+    holder = conn.execute(LOOKUP_SQL, (digest,)).fetchone()
+    if holder is None or holder[0] == document_id:
+        conn.execute(REKEY_SQL, (digest, len(raw), document_id))
+        return None
+    for column in DOCUMENT_ID_COLUMNS:
+        # ``column`` is one of DOCUMENT_ID_COLUMNS, never caller data.
+        conn.execute(
+            f"UPDATE generated_images SET {column}=? WHERE {column}=?",  # nosec B608
+            (holder[0], document_id),
+        )
+    conn.execute("DELETE FROM workflow_documents WHERE id=?", (document_id,))
+    if _decode(holder[1:], holder[0], quiet=True) is None:
+        conn.execute(
+            REPAIR_SQL, (len(raw), zlib.compress(raw, COMPRESSION_LEVEL), holder[0])
+        )
+        return holder[0]
+    return None
+
+
+def repair_damaged_documents(conn: sqlite3.Connection) -> Dict[str, int]:
+    """Repair or clear every document failing its checks; commit (writes).
+
+    For a restore's stage only, never the live library. In order:
+
+    1. A document whose body inflates completely and whose recorded hash or
+       length (not both) disagrees is re-keyed from its text, or merged
+       into the document that already holds that text (``_one_column_off``).
+    2. A damaged body whose exact text an inline row still holds (the same
+       SHA-256, its key) is stored again from that text.
+    3. Any other damaged document is unreadable for good: its images'
+       references are cleared (they already showed no workflow) and the
+       document is removed, so the stage verifies.
+
+    Returns ``{repaired, cleared, images}``: documents repaired (1 and 2),
+    documents cleared and the distinct image rows whose reference was
+    cleared. Rows are read one at a time.
+    """
+    damaged: Dict[bytes, int] = {}
+    intact: Dict[int, bytes] = {}
+    for row in _rows(conn, ALL_DOCUMENTS_SQL):
+        if _decode(row[:3], row[3], quiet=True) is None:
+            raw = _inflated(row[2])
+            if raw is not None and _one_column_off(row, raw):
+                intact[row[3]] = raw
+            else:
+                damaged[bytes(row[0])] = row[3]
+    result = {"repaired": 0, "cleared": 0, "images": 0}
+    if not damaged and not intact:
+        return result
+    with conn:
+        healed = []
+        for document_id, raw in intact.items():
+            holder = _rekey(conn, document_id, raw)
+            if holder is not None and holder in damaged.values():
+                # Rewritten from the merged body: repaired, not to be cleared
+                # (it now also holds the merged images' references).
+                damaged = {k: v for k, v in damaged.items() if v != holder}
+                healed.append(holder)
+        copies = _inline_copies(conn, damaged) if damaged else {}
+        for document_id, text in copies.items():
+            raw = text.encode("utf-8")
+            data = zlib.compress(raw, COMPRESSION_LEVEL)
+            conn.execute(REPAIR_SQL, (len(raw), data, document_id))
+        lost = sorted(set(damaged.values()) - set(copies))
+        images: Set[int] = set()
+        for chunk in _chunks(lost):
+            marks = ",".join("?" * len(chunk))
+            # ``marks`` is only "?" placeholders; the ids are bound.
+            for (image_id,) in _rows(
+                conn,
+                "SELECT id FROM generated_images WHERE "  # nosec B608
+                f"workflow_document_id IN ({marks}) OR prompt_document_id IN ({marks})",
+                chunk + chunk,
+            ):
+                images.add(image_id)
+            for column in DOCUMENT_ID_COLUMNS:
+                conn.execute(
+                    f"UPDATE generated_images SET {column}=NULL "  # nosec B608
+                    f"WHERE {column} IN ({marks})",
+                    chunk,
+                )
+            conn.execute(
+                f"DELETE FROM workflow_documents WHERE id IN ({marks})",  # nosec B608
+                chunk,
+            )
+    for document_id in list(intact) + healed + list(copies):
+        logger.warning(f"Workflow document {document_id} was damaged; repaired")
+    if lost:
+        logger.warning(
+            f"{len(lost)} damaged workflow document(s) could not be repaired; "
+            f"{len(images)} image(s) show no workflow"
+        )
+    result.update(
+        repaired=len(intact) + len(healed) + len(copies),
+        cleared=len(lost),
+        images=len(images),
+    )
+    return result

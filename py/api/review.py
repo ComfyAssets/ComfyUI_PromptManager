@@ -31,6 +31,8 @@ from aiohttp import web
 from .annotations import _HEX64, _TOKEN, _UUID, _capture_error, _error
 from .images import media_thumbnail_url
 from .inspection_service import VIDEO_EXTENSIONS
+from .job_routes import busy_response
+from .jobs import JobBusy
 from .prompts import bad_request
 
 try:
@@ -237,6 +239,9 @@ def _side_label(titles: dict, side, empty: str) -> str:
     stored = side.get("storage_text")
     stored = stored if isinstance(stored, str) else text
     return display_title(titles.get(stored, ()), text) or empty
+
+
+REVIEW_DECISION_LEASE = "Needs review decision"
 
 
 class ReviewRoutesMixin:
@@ -446,7 +451,20 @@ class ReviewRoutesMixin:
     # -- decision --------------------------------------------------------------
 
     async def decide_review_item(self, request: web.Request) -> web.Response:
-        """POST one explicit decision on one pending item."""
+        """POST one explicit decision on one pending item.
+
+        The decision runs under a registry lease (#249 S8): it is refused
+        (409 ``busy``) while a restore or another ``exclusive`` job runs, and
+        a restore waits for decisions already running before it switches the
+        database. Decisions never refuse one another or a scan.
+        """
+        try:
+            async with self._jobs.lease(REVIEW_DECISION_LEASE):
+                return await self._decide_review_item(request)
+        except JobBusy as busy:
+            return busy_response(busy)
+
+    async def _decide_review_item(self, request: web.Request) -> web.Response:
         data, error = await self._read_json_body(request, max_bytes=MAX_BODY_BYTES)
         if error is not None:
             return error

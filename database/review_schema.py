@@ -380,15 +380,21 @@ def _structure_error(conn: sqlite3.Connection) -> Optional[str]:
 
 
 def _evidence_error(conn: sqlite3.Connection) -> Optional[str]:
-    """Stream every evidence document once; one row is held at a time."""
-    for evidence_hash, text in conn.execute(
+    """Stream every evidence document once; one row is held at a time.
+
+    Rows are read with ``fetchone``: iterating a managed connection's cursor
+    would prefetch ``ITER_CHUNK`` (128) rows (``database/managed_connection.py``).
+    """
+    items = conn.execute(
         f"SELECT evidence_hash, evidence FROM {ITEMS_TABLE}"  # nosec B608
-    ):
+    )
+    while (row := items.fetchone()) is not None:
+        evidence_hash, text = row[0], row[1]
         if not _is_canonical(text) or evidence_digest(text) != evidence_hash:
             return f"Review queue table {ITEMS_TABLE} contains invalid evidence"
-    for (text,) in conn.execute(
-        f"SELECT evidence FROM {DECISIONS_TABLE}"  # nosec B608
-    ):
+    decisions = conn.execute(f"SELECT evidence FROM {DECISIONS_TABLE}")  # nosec B608
+    while (row := decisions.fetchone()) is not None:
+        text = row[0]
         if not _is_canonical(text):
             return f"Review queue table {DECISIONS_TABLE} contains invalid evidence"
     return None
