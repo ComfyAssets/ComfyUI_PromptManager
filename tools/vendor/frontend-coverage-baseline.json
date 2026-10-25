@@ -149,6 +149,12 @@
     "functions": 56,
     "statements": 57
   },
+  "text-links.js": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
   "theme-bridge.js": {
     "lines": 90,
     "branches": 53,
