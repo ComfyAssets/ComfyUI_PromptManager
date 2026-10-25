@@ -163,7 +163,7 @@
   },
   "workspace/activity-job-view.mjs": {
     "lines": 97,
-    "branches": 86,
+    "branches": 87,
     "functions": 98,
     "statements": 97
   },
@@ -415,7 +415,7 @@
   },
   "workspace/maintenance-review.mjs": {
     "lines": 94,
-    "branches": 81,
+    "branches": 85,
     "functions": 90,
     "statements": 94
   },
@@ -503,11 +503,17 @@
     "functions": 89,
     "statements": 98
   },
+  "workspace/system-integrations.mjs": {
+    "lines": 96,
+    "branches": 86,
+    "functions": 91,
+    "statements": 96
+  },
   "workspace/system-maintenance.mjs": {
-    "lines": 92,
+    "lines": 93,
     "branches": 80,
     "functions": 92,
-    "statements": 92
+    "statements": 93
   },
   "workspace/system-overview.mjs": {
     "lines": 96,
@@ -604,11 +610,5 @@
     "branches": 95,
     "functions": 98,
     "statements": 97
-  },
-  "workspace/system-integrations.mjs": {
-    "lines": 80,
-    "branches": 80,
-    "functions": 80,
-    "statements": 80
   }
 }
