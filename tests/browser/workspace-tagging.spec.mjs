@@ -602,6 +602,10 @@ test('a save under a Tags filter re-reads the listing: the selection stays while
 
 test('a save under a search keeps the scroll position and the loaded range', async ({ page, request }) => {
     await expect(await request.post('/__test__/tagging/reset', { data: { extra_images: 140 } })).toBeOK();
+    // Listing pages still in flight: one that lands after the scroll below would grow the loaded range.
+    const inFlight = new Set();
+    page.on('request', item => { if (item.url().includes('/images/output?')) inFlight.add(item); });
+    for (const done of ['requestfinished', 'requestfailed']) page.on(done, item => inFlight.delete(item));
     await page.goto(images);
     const searched = listingOf(page, query => query.get('q') === 'bulk');
     await page.getByRole('searchbox', { name: 'Search workspace', exact: true }).fill('bulk');
@@ -615,6 +619,9 @@ test('a save under a search keeps the scroll position and the loaded range', asy
     await expect.poll(async () => { await continuation.scrollIntoViewIfNeeded(); return loadedCount(); }).toBeGreaterThanOrEqual(80);
     await page.evaluate(() => window.scrollTo(0, Math.round(document.documentElement.scrollHeight / 3)));
     await expect(continuation).not.toBeInViewport();
+    // A load the continuation scheduled for the next frame has started by now; wait for every page to land.
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    await expect.poll(() => inFlight.size).toBe(0);
     const loaded = await continuation.textContent();
     await expect.poll(() => continuation.textContent()).toBe(loaded);
     const y = await page.evaluate(() => window.scrollY);
