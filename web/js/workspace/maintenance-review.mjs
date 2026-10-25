@@ -56,7 +56,7 @@ export const OPERATION_TITLES = Object.freeze({
 const REVIEW_AGAIN = new Set(['plan-expired', 'storage-changed']);
 // Refusals whose server message is the whole truth.
 const SERVER_SAYS = new Set(['insufficient-space', 'nothing-to-do', 'too-large', 'invalid-request', 'not-found',
-    'job-running', 'no-groups', 'apply-failed']);
+    'job-running', 'no-groups', 'apply-failed', 'sources-changed']);
 
 const number = value => value.toLocaleString('en-US');
 

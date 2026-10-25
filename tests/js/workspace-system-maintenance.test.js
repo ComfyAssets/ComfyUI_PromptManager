@@ -93,6 +93,9 @@ test('a refused apply names its reason; a lost answer is not confirmed', async (
     assert.equal(reviewRefusal(error(413, 'too-large', 'This plan is too large to review at once.')),
         'This plan is too large to review at once.');
     assert.equal(reviewRefusal(error(500, null, 'boom')), REVIEW_FAILED);
+    // S7 re-review N1: a duplicate review whose sources changed since the search keeps the server's "search again".
+    const changed = 'The sources changed since the search. Search for duplicates again.';
+    assert.equal(reviewRefusal(error(409, 'sources-changed', changed)), changed);
     assert.equal(reviewRefusal(new TypeError('x')), REVIEW_FAILED);
 });
 
