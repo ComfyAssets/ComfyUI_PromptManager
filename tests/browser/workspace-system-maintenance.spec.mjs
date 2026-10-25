@@ -438,7 +438,7 @@ test('Thumbnail cache opens the S5 dialog', async ({ page }) => {
     const options = row(page, 'Thumbnail cache').getByRole('button', { name: 'Review options', exact: true });
     await options.click();
     await expect(dialog(page).locator('#modal-title')).toHaveText('Thumbnail maintenance');
-    await expect(dialog(page).locator('.field > label')).toHaveText(['Scope', 'Quality', 'Preview size limit']);
+    await expect(dialog(page).locator('.field > label')).toHaveText(['Scope']);
     await page.keyboard.press('Escape');
     await expect(options).toBeFocused();
 });

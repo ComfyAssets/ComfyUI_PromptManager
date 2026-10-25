@@ -116,8 +116,12 @@ class AdminAPITestCase(AioHTTPTestCase):
             # as it ends, which can be after the test read the scan's last
             # event and after tearDownAsync closed the worker: that hand-off
             # starts a new one. Close it for good now that no job runs, so
-            # no preview write (an open ``.part`` file) outlives the test.
-            api.close_auto_thumbnails(final=True)
+            # no preview write (an open ``.part`` file) outlives the test:
+            # this API refuses new workers, and the close joins the worker.
+            # Not ``final=True``, which also shuts the process-wide encoders
+            # (#319) that later tests use.
+            api._auto_thumbnails_shut = True
+            api.close_auto_thumbnails()
         PromptModel.close_all_instances()  # restore may have swapped api.db
         assert_closed(self, self.tmpdir)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
