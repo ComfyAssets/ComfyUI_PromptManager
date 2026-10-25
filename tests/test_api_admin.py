@@ -112,6 +112,12 @@ class AdminAPITestCase(AioHTTPTestCase):
         if api is not None:
             # A scan of an ambiguous file captures it for Needs review.
             api.close_annotation_captures()
+            # A scan's job hands its missing previews to the automatic worker
+            # as it ends, which can be after the test read the scan's last
+            # event and after tearDownAsync closed the worker: that hand-off
+            # starts a new one. Close it for good now that no job runs, so
+            # no preview write (an open ``.part`` file) outlives the test.
+            api.close_auto_thumbnails(final=True)
         PromptModel.close_all_instances()  # restore may have swapped api.db
         assert_closed(self, self.tmpdir)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
