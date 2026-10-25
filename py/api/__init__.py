@@ -56,6 +56,7 @@ from .thumbnail_auto import AutoThumbnailMixin
 from .system import SystemRoutesMixin
 from .library_location import LibraryLocationRoutesMixin
 from .maintenance import MaintenanceRoutesMixin
+from .backup_restore import BackupRestoreRoutesMixin
 from .workflow_storage import WorkflowStorageRoutesMixin
 from .duplicate_files import DuplicateFilesMixin
 from .maintenance_plans import PlanStore
@@ -302,6 +303,7 @@ class PromptManagerAPI(
     SystemRoutesMixin,
     LibraryLocationRoutesMixin,
     MaintenanceRoutesMixin,
+    BackupRestoreRoutesMixin,
     WorkflowStorageRoutesMixin,
     DuplicateFilesMixin,
     LoggingRoutesMixin,
@@ -376,7 +378,10 @@ class PromptManagerAPI(
         try:
             from .maintenance import sweep_safety_temps
 
+            from .backup_restore import restore_stage
+
             swept = sweep_safety_temps(self.db.model.db_path)
+            swept += restore_stage.sweep_restore_temps(self.db.model.db_path)
             if swept:
                 self.logger.info(f"Removed {len(swept)} interrupted backup copies")
         except Exception as e:
@@ -547,6 +552,7 @@ class PromptManagerAPI(
         self._register_system_routes(routes)
         self._register_library_location_routes(routes)
         self._register_maintenance_routes(routes)
+        self._register_backup_restore_routes(routes)
         self._register_duplicate_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)

@@ -28,6 +28,15 @@ ones. One job of a kind runs at a time, and each job has an admission class
 A short legacy-page operation takes a ``hold``: a running, non-cancellable
 job that lasts as long as the request, so the Activity page lists it and a
 workspace job is refused while it runs (and the other way round).
+
+Short request-scoped work that reads or writes the library beside any
+ordinary job (a Needs review decision, a maintenance or restore preview)
+takes a ``lease`` instead: it is not listed (so quick requests never push
+real jobs out of the finished history, and two of them never refuse each
+other), but it is refused while an ``exclusive`` job runs, and an
+``exclusive`` job that replaces the database (a restore) awaits
+``drain_leases`` before it switches the file, so no lease's connection is
+open across the switch (#249 S8).
 """
 
 import asyncio
@@ -48,6 +57,9 @@ MAX_OUTCOME_ROWS = 200  # rows listed per outcome group; counters stay exact
 MAX_LOG_LINES = 2000
 LOG_CAP_LINE = "[Log capped at 2,000 lines]"
 MAX_FINISHED_JOBS = 20  # finished jobs this session keeps
+# The longest an exclusive job waits for running leases to end (a ceiling a
+# hung request reaches, not a pacing timer: leases end with their request).
+LEASE_DRAIN_SECONDS = 60
 
 # The metadata scan's outcome groups, in counter-tile order of the spec's
 # mapping, and the per-file scan status each group collects. Files without
@@ -403,6 +415,74 @@ class JobRegistry:
     def __init__(self, logger_=None):
         self._logger = logger_ or logger
         self._jobs = {}
+        self._leases = {}  # title -> running count
+        self._drain_waiters = []
+
+    # ── leases ────────────────────────────────────────────────────────
+
+    def lease(self, title):
+        """An async context manager for short request-scoped library work.
+
+        Entering raises JobBusy, naming the job, while an ``exclusive`` job
+        runs; otherwise the lease is counted until the block exits. Leases
+        are never listed and never refuse one another or any job.
+        """
+        return _Lease(self, title)
+
+    def lease_blocker(self):
+        """The running ``exclusive`` job a new lease is refused for, or None."""
+        for job in self.running():
+            if job.admission == "exclusive":
+                return job
+        return None
+
+    @property
+    def leases(self):
+        """Running leases by title (a copy)."""
+        return dict(self._leases)
+
+    def _take_lease(self, title):
+        blocker = self.lease_blocker()
+        if blocker is not None:
+            raise JobBusy(blocker)
+        self._leases[title] = self._leases.get(title, 0) + 1
+
+    def _release_lease(self, title):
+        count = self._leases.get(title, 0) - 1
+        if count > 0:
+            self._leases[title] = count
+        else:
+            self._leases.pop(title, None)
+        if not self._leases:
+            waiters, self._drain_waiters = self._drain_waiters, []
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.set_result(True)
+
+    async def drain_leases(self, timeout=None):
+        """Wait until no lease runs; False when ``timeout`` ended the wait.
+
+        For an ``exclusive`` job about to switch the database: once it runs
+        no new lease is admitted, so the count only goes down.
+        """
+        if not self._leases:
+            return True
+        waiter = asyncio.get_running_loop().create_future()
+        self._drain_waiters.append(waiter)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(waiter),
+                LEASE_DRAIN_SECONDS if timeout is None else timeout,
+            )
+            return True
+        except asyncio.TimeoutError:
+            self._logger.warning(
+                "Still running after the wait: " + ", ".join(sorted(self._leases))
+            )
+            return False
+        finally:
+            if waiter in self._drain_waiters:
+                self._drain_waiters.remove(waiter)
 
     def start(
         self,
@@ -564,4 +644,24 @@ class _Hold:
     async def __aexit__(self, exc_type, exc, tb):
         if self._job.running:
             self._job.finish("finished" if exc_type is None else "failed")
+        return False
+
+
+class _Lease:
+    """The async context manager ``JobRegistry.lease`` returns."""
+
+    def __init__(self, registry, title):
+        self._registry = registry
+        self._title = title
+        self._held = False
+
+    async def __aenter__(self):
+        self._registry._take_lease(self._title)
+        self._held = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._held:
+            self._held = False
+            self._registry._release_lease(self._title)
         return False

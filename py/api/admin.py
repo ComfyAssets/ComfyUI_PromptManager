@@ -3,14 +3,12 @@
 import asyncio
 import contextlib
 from contextlib import closing
-import datetime
 import functools
 import hashlib
 import json
 import math
 import os
 import sqlite3
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -27,7 +25,6 @@ from .jobs import (
     DUPLICATE_CLEANUP_JOB_KIND,
     DUPLICATES_JOB_KIND,
     MAINTENANCE_JOB_KIND,
-    RESTORE_JOB_KIND,
     JobBusy,
 )
 
@@ -37,7 +34,6 @@ except ImportError:
     from utils.parallel import map_parallel
 
 try:
-    from ...database.operations import PromptDatabase
     from ...database.pair_ingestion import ingest_resolved_pair
     from ...utils.generation_params import (
         PLACEHOLDERS,
@@ -48,7 +44,6 @@ try:
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
     from ...utils.review_capture import reviewable
 except ImportError:
-    from database.operations import PromptDatabase
     from database.pair_ingestion import ingest_resolved_pair
     from utils.generation_params import (
         PLACEHOLDERS,
@@ -1235,216 +1230,6 @@ class AdminRoutesMixin:
             "issues": issues[:10],
             "message": f"Found {len(issues)} consistency issues",
         }
-
-    async def backup_database(self, request):
-        """Download a consistent copy of the prompts database (WAL included)."""
-        try:
-            model = self.db.model
-            db_path = model.db_path
-
-            if not os.path.exists(db_path):
-                return web.json_response(
-                    {"success": False, "error": "Database file not found"}, status=404
-                )
-
-            fd, temp_path = tempfile.mkstemp(suffix=".db")
-            os.close(fd)
-            try:
-                ok = await self._run_in_executor(model.backup_database, temp_path)
-                if not ok:
-                    return web.json_response(
-                        {"success": False, "error": "Failed to create database backup"},
-                        status=500,
-                    )
-                # Read once (the file is deleted right after) rather than
-                # streaming so the temp file never outlives the request.
-                with open(temp_path, "rb") as fh:
-                    file_data = fh.read()
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"prompts_backup_{timestamp}.db"
-
-            return web.Response(
-                body=file_data,
-                content_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                    "Content-Length": str(len(file_data)),
-                },
-            )
-
-        except Exception as e:
-            self.logger.error(f"Backup error: {e}", exc_info=True)
-            return web.json_response(
-                {
-                    "success": False,
-                    "error": f"Failed to backup database: {self._public_error(e)}",
-                },
-                status=500,
-            )
-
-    async def restore_database(self, request):
-        """Restore the prompts database from an uploaded SQLite file.
-
-        The upload is streamed to a temp file. Free disk space decides how
-        large it may be (``maintenance.restore_room``), under a 64 GiB ceiling
-        (``restore_max_bytes``): a request whose Content-Length does not fit
-        is refused before anything is written, and one without is refused as
-        soon as its running size does not. The file is
-        verified with PromptModel.verify_database_file and only then copied
-        over the live database, which is backed up first. The whole request
-        holds the registry (records): it is refused while a scan or another
-        record-changing job runs, and those are refused while it runs.
-        """
-        return await self._run_held(
-            RESTORE_JOB_KIND,
-            "Database restore (admin page)",
-            "records",
-            lambda: self._restore_database(request),
-        )
-
-    def _restore_refusal(self, size, ceiling, room, *, known):
-        """``400 too-large`` past the ceiling, else ``507 insufficient-space``."""
-        from .maintenance import restore_space_message
-
-        if size > ceiling:
-            return web.json_response(
-                {
-                    "success": False,
-                    "code": "too-large",
-                    "error": (
-                        "File too large. Maximum size is "
-                        f"{ceiling // (1024 * 1024)}MB"
-                    ),
-                },
-                status=400,
-            )
-        return web.json_response(
-            {
-                "success": False,
-                "code": "insufficient-space",
-                "error": restore_space_message(size, room, known=known),
-            },
-            status=507,
-        )
-
-    async def _restore_database(self, request):
-        from .maintenance import RESTORE_MAX_BYTES, restore_room
-
-        ceiling = getattr(self, "restore_max_bytes", RESTORE_MAX_BYTES)
-        temp_path = None
-        try:
-            # Free disk space decides how large a backup may be (#313): the
-            # upload, its staged copy and the swap must all fit.
-            room = await self._run_in_executor(restore_room, self.db.model.db_path)
-            max_bytes = min(ceiling, room)
-            length = request.content_length
-            if length is not None and length > max_bytes:
-                return self._restore_refusal(length, ceiling, room, known=True)
-            reader = await request.multipart()
-            field = await reader.next()
-
-            if not field or field.name != "database_file":
-                return web.json_response(
-                    {
-                        "success": False,
-                        "error": (
-                            "No database file uploaded. "
-                            "Expected field name: database_file"
-                        ),
-                    },
-                    status=400,
-                )
-
-            fd, temp_path = tempfile.mkstemp(suffix=".db")
-            os.close(fd)
-            size = 0
-            with open(temp_path, "wb") as out:
-                while True:
-                    chunk = await field.read_chunk()
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > max_bytes:
-                        return self._restore_refusal(size, ceiling, room, known=False)
-                    out.write(chunk)
-
-            if size == 0:
-                return web.json_response(
-                    {"success": False, "error": "Uploaded file is empty"}, status=400
-                )
-
-            model = self.db.model
-            ok, reason = await self._run_in_executor(
-                model.verify_database_file, temp_path
-            )
-            if ok:
-                reason = await self._run_in_executor(_inspect_restore_upload, temp_path)
-                ok = reason is None
-            if not ok:
-                return web.json_response(
-                    {"success": False, "error": reason}, status=400
-                )
-
-            try:
-                backup_path = await self._run_in_executor(
-                    model.restore_from_file, temp_path
-                )
-            except sqlite3.OperationalError as exc:
-                if (
-                    getattr(exc, "_prompt_manager_restore_backup_created", False)
-                    is True
-                ):
-                    try:
-                        await self._run_in_executor(
-                            _prune_safety_backups, model.db_path
-                        )
-                    except Exception:
-                        self.logger.warning(
-                            "Could not prune safety backups after failed restore"
-                        )
-                raise
-            removed = await self._run_in_executor(_prune_safety_backups, model.db_path)
-            if removed:
-                self.logger.info(f"Removed {len(removed)} old safety backups")
-            previous = self.db
-            self.db = PromptDatabase(model.db_path)
-            self._database_replaced()  # a health report described the old one
-            # Its connections would otherwise linger (a file lock on Windows)
-            previous.close_all()
-            prompt_count = self.db.model.get_database_info().get("total_prompts", 0)
-
-            return web.json_response(
-                {
-                    "success": True,
-                    "message": (
-                        "Database restored successfully. "
-                        f"Found {prompt_count} prompts."
-                    ),
-                    "prompt_count": prompt_count,
-                    "backup_created": (
-                        self._public_path(backup_path) if backup_path else None
-                    ),
-                }
-            )
-
-        except Exception as e:
-            self.logger.error(f"Restore error: {e}", exc_info=True)
-            return web.json_response(
-                {
-                    "success": False,
-                    "error": f"Failed to restore database: {self._public_error(e)}",
-                },
-                status=500,
-            )
-        finally:
-            if temp_path:
-                for suffix in ("", "-wal", "-shm", "-journal"):
-                    if os.path.exists(temp_path + suffix):
-                        os.unlink(temp_path + suffix)
 
     async def scan_images(self, request):
         """Scan ComfyUI output images for prompt metadata and add them to the database.

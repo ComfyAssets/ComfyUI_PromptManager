@@ -121,7 +121,7 @@ class TestBackupRoute(BackupRestoreTestCase):
             created.append(result[1])
             return result
 
-        with patch("py.api.admin.tempfile.mkstemp", spy_mkstemp):
+        with patch("tempfile.mkstemp", spy_mkstemp):
             resp = await self.client.get("/prompt_manager/backup")
 
         self.assertEqual(resp.status, 200)
@@ -270,7 +270,7 @@ class TestRestoreRoute(BackupRestoreTestCase):
             created.append(result[1])
             return result
 
-        with patch("py.api.admin.tempfile.mkstemp", spy_mkstemp):
+        with patch("tempfile.mkstemp", spy_mkstemp):
             resp = await self._restore(upload)
 
         self.assertEqual(resp.status, 200)
@@ -278,6 +278,7 @@ class TestRestoreRoute(BackupRestoreTestCase):
         # temp copy are gone afterwards.
         uploads = [p for p in created if _is_upload(p)]
         self.assertEqual(len(uploads), 1)
+        self.assertEqual(os.path.dirname(uploads[0]), self.tmpdir)
         for path in created:
             for suffix in ("", "-wal", "-shm", "-journal"):
                 self.assertFalse(os.path.exists(path + suffix))
@@ -409,7 +410,7 @@ class TestLargeRestores(BackupRestoreTestCase):
             created.append(result[1])
             return result
 
-        return patch("py.api.admin.tempfile.mkstemp", spy), created
+        return patch("tempfile.mkstemp", spy), created
 
     def _assert_removed(self, created):
         for path in created:

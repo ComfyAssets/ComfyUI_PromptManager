@@ -47,7 +47,6 @@ import json
 import os
 import shutil
 import sqlite3
-import tempfile
 
 from aiohttp import web
 
@@ -78,6 +77,7 @@ except ImportError:
     from database.maintenance import MAINTENANCE_OPERATIONS, PlanChanged
 
 PREVIEW_BODY_MAX = 4096
+MAINTENANCE_PREVIEW_LEASE = "Maintenance preview"
 # Duplicate-file previews carry the reviewed keepers (py/api/duplicate_files.py).
 DUPLICATE_PREVIEW_BODY_MAX = 1024 * 1024
 DUPLICATE_FILES = "duplicate_files"
@@ -238,29 +238,18 @@ def size_label(size):
 
 
 def restore_room(db_path):
-    """The largest restore upload the disks have room for (blocking).
+    """The largest restore upload the disk has room for (blocking).
 
-    The upload is written to a temp file and staged once more in the
-    temporary folder (2x), then copied over the live database beside it,
-    whose current contents are first kept as a safety backup (1x the upload
-    for the WAL, plus the current database). Needs on one device add up,
-    each with ``DISK_MARGIN_BYTES``.
+    Everything a restore writes is in the library's folder (#318): the
+    upload, its staged copy (``database/restore_stage.py``) and the WAL
+    growth while the stage is copied over the live database (3x the upload),
+    plus the safety backup of the current database (1x its size), with
+    ``DISK_MARGIN_BYTES`` to spare.
     """
     db_path = os.path.abspath(db_path)
     folder = os.path.dirname(db_path)
     current = database_bytes(db_path) if os.path.exists(db_path) else 0
-    devices = {}
-    for path, per_upload, fixed in (
-        (tempfile.gettempdir(), 2, 0),
-        (folder, 1, current),
-    ):
-        entry = devices.setdefault(_device(path), {"path": path, "per": 0, "fixed": 0})
-        entry["per"] += per_upload
-        entry["fixed"] += fixed
-    room = min(
-        (_free_bytes(e["path"]) - e["fixed"] - DISK_MARGIN_BYTES) // e["per"]
-        for e in devices.values()
-    )
+    room = (_free_bytes(folder) - current - DISK_MARGIN_BYTES) // 3
     return max(0, room)
 
 
@@ -369,6 +358,19 @@ class MaintenanceRoutesMixin:
         return data, None
 
     async def preview_maintenance(self, request):
+        """Review one operation under a registry lease (#249 S8).
+
+        The preview's read-only connections must not be open while a restore
+        switches the database: it is refused (409 ``busy``) while an
+        ``exclusive`` job runs, and a restore waits for running previews.
+        """
+        try:
+            async with self._jobs.lease(MAINTENANCE_PREVIEW_LEASE):
+                return await self._preview_maintenance(request)
+        except JobBusy as busy:
+            return busy_response(busy)
+
+    async def _preview_maintenance(self, request):
         data, error = await self._read_maintenance_body(
             request,
             ("operation", "options"),
