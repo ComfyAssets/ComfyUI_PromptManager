@@ -177,6 +177,24 @@ test("plan dialog shows the server's scope, protected, backup policy and media l
         expect(await serverJson(request, '/__test__/system/digest')).toEqual(before);
     });
 
+test('a plan with nothing to do shows only Close, never Apply', async ({ page, request }) => {
+    const applies = [];
+    page.on('request', item => { if (item.url().endsWith(APPLY_URL)) applies.push(item.url()); });
+    await openMaintenance(page);
+    // The concept fixture has no duplicate prompt text.
+    const reviewButton = row(page, 'Duplicate prompt text').getByRole('button', { name: 'Review plan', exact: true });
+    await reviewButton.click();
+    await expect(dialog(page).locator('#modal-body > h3')).toHaveText('Duplicate prompt text');
+    expect((await gridOf(page))[0]).toEqual(['Scope', 'No duplicate prompt text']);
+    await expect(dialog(page).locator('#modal-body > p.small')).toHaveText('There is nothing to apply; nothing was changed.');
+    await expect(dialog(page).locator('.dialog-actions button')).toHaveText(['Close']);
+    await expect(dialog(page).locator('.notice')).toHaveCount(0);
+    await dialog(page).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(reviewButton).toBeFocused();
+    expect(applies).toEqual([]);
+});
+
 test('Apply reviewed operation closes, toasts, opens the job in Activity', async ({ page, request }) => {
     await expect(await request.post('/__test__/system/duplicate-prompts')).toBeOK();
     const applies = [];

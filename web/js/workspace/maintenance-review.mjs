@@ -6,7 +6,8 @@
  *   plan in the shared review (`openReviewDialog`): the operation's `h3`, the concept's `dl.meta-grid` Scope /
  *   Protected / Backup / Media on disk with the plan's own values, a `details` list of the records it names, the
  *   `p.small` line saying until when the review holds, the D55 backup box ("Back up now") and Cancel / "Apply reviewed
- *   operation" (the concept's "Simulate reviewed operation"). Cancel writes nothing.
+ *   operation" (the concept's "Simulate reviewed operation"). Cancel writes nothing. A plan with nothing to do (a scope
+ *   of 0) shows its rows, "There is nothing to apply; nothing was changed." and only Close.
  * - Apply sends the plan's token (`POST /maintenance/apply`): the dialog closes, the job is followed in the Activity
  *   store, which toasts that it started, and its view opens. A refused apply says why: `busy` names the running job
  *   (D57), `plan-used` links the job that applied it, an expired or replaced review is reviewed again at once, and an
@@ -33,6 +34,7 @@ export const GROUP_PAGE = 10;
 export const PLAN_TITLE = 'Review maintenance plan';
 export const DUPLICATES_TITLE = 'Review duplicate image files';
 export const APPLY_LABEL = 'Apply reviewed operation';
+export const NOTHING_TO_APPLY = 'There is nothing to apply; nothing was changed.';
 export const REVIEW_FAILED = 'The plan could not be reviewed. Nothing was changed.';
 export const APPLY_FAILED = 'The operation could not start. Nothing was changed.';
 export const GROUPS_FAILED = 'The duplicate groups could not be read. Nothing was changed.';
@@ -110,6 +112,11 @@ export function planNote(plan, { now = Date.now() } = {}) {
         parts.push(`Not enough free disk space: about ${megabytes(disk.required_bytes)} is needed and ${megabytes(disk.free_bytes)} is free.`);
     }
     return parts.join(' ');
+}
+
+/** Whether the plan changes anything: a scope of 0 records has nothing to apply (an unknown count is not assumed empty). */
+export function hasWork(plan) {
+    return !(Number.isSafeInteger(plan?.scope?.count) && plan.scope.count === 0);
 }
 
 /** The records a plan names (at most 50), as `label · detail` lines. */
@@ -205,7 +212,24 @@ export function showPlan(plan, { api, store, scope, trigger = null, reviewAgain,
         list.append(body);
         options.push(list);
     }
-    openReviewDialog({ scope, trigger, title: PLAN_TITLE, heading: OPERATION_TITLES[plan.operation] ?? plan.operation,
+    const heading = OPERATION_TITLES[plan.operation] ?? plan.operation;
+    if (!hasWork(plan)) {
+        // Nothing to apply: the review's own rows and a Close, never an Apply that would start an empty job.
+        const grid = el('dl', undefined, 'meta-grid');
+        for (const [term, value] of planGrid(plan)) {
+            const entry = el('div');
+            entry.append(el('dt', term), el('dd', value));
+            grid.append(entry);
+        }
+        const close = createButton('Close');
+        close.addEventListener('click', () => closeWorkspaceDialog());
+        const actions = el('div', undefined, 'dialog-actions');
+        actions.append(close);
+        openContentDialog({ scope, trigger, title: PLAN_TITLE,
+            nodes: [el('h3', heading), grid, ...options, el('p', NOTHING_TO_APPLY, 'small'), actions] });
+        return;
+    }
+    openReviewDialog({ scope, trigger, title: PLAN_TITLE, heading,
         grid: planGrid(plan), options, sentence: planNote(plan), backup: { copy: BACKUP_COPY, onBackup: backup },
         cancelLabel: 'Cancel', primary: { label: APPLY_LABEL },
         onStart: () => applyPlan({ api, store, scope, token: plan.token, reviewAgain, notify, navigate }) });

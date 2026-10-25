@@ -159,3 +159,13 @@ test('a failed apply the library overtook offers Review again, back to its revie
     assert.equal(reviewAgainOf({ ...failed('maintenance', 'plan-changed', 'optimize'), state: 'finished' }), null);
     assert.equal(reviewAgainOf(failed('scan', 'plan-changed', 'optimize')), null);
 });
+
+test('a plan with nothing to do offers no Apply (S7 live test)', async () => {
+    const { hasWork, NOTHING_TO_APPLY } = await review;
+    assert.equal(hasWork(PLAN), true);
+    assert.equal(hasWork({ ...PLAN, scope: { count: 0, label: 'No duplicate prompt text' } }), false);
+    assert.equal(hasWork({ ...PLAN, operation: 'optimize', scope: { count: 1, label: 'The whole database' } }), true);
+    // A plan whose count is unknown is not assumed empty: the server decides at apply.
+    assert.equal(hasWork({ ...PLAN, scope: {} }), true);
+    assert.equal(NOTHING_TO_APPLY, 'There is nothing to apply; nothing was changed.');
+});

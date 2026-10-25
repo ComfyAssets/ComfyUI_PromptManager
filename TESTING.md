@@ -2557,7 +2557,10 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   review holds for N minutes." (from `expires_at`), plus "Not enough free disk space:
   about X MB is needed and Y MB is free." when the plan's disk check is short. Then the
   D55 backup box ("Back up the database first (recommended)", "Back up now") and Cancel /
-  "Apply reviewed operation" (the concept's "Simulate reviewed operation"). Apply sends
+  "Apply reviewed operation" (the concept's "Simulate reviewed operation"). A plan with
+  nothing to do (scope 0, "No duplicate prompt text") shows its rows, "There is nothing to
+  apply; nothing was changed." and only Close, never an Apply that would start an empty
+  job (`a plan with nothing to do shows only Close, never Apply`). Apply sends
   only the token; the dialog closes, "<title> started." is toasted and the job opens in
   Activity. A refused apply stays and says why: "Another job is running: <title>."
   (D57), "This plan was already applied: <job>." (`plan-used`, linking the job), the
