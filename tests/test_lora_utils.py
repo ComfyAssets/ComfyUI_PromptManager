@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import urllib.parse
@@ -524,6 +525,114 @@ class TestDownloadOne(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class TestDownloadIsAtomic(unittest.TestCase):
+    """I2 (S10 review): a cached image is never seen half written."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.target = self.tmpdir / "out.jpg"
+
+    def test_the_image_appears_only_once_complete(self):
+        seen = []
+        real_replace = os.replace
+
+        def replace(source, destination):
+            # At the moment the name appears, the temp copy is whole and closed.
+            seen.append((Path(source).parent, self.target.exists()))
+            with open(source, "rb") as handle:
+                self.assertEqual(handle.read(2), b"\xff\xd8")
+            return real_replace(source, destination)
+
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        with (
+            patch.object(lora_utils, "_open_url", opener),
+            patch.object(lora_utils.os, "replace", side_effect=replace),
+        ):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertEqual(seen, [(self.tmpdir, False)])
+        self.assertEqual(os.path.realpath(result), os.path.realpath(self.target))
+        self.assertEqual(sorted(p.name for p in self.tmpdir.iterdir()), ["out.jpg"])
+
+    def test_a_failed_write_leaves_neither_the_image_nor_a_temp_file(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        with (
+            patch.object(lora_utils, "_open_url", opener),
+            patch.object(lora_utils.os, "replace", side_effect=OSError("disk full")),
+        ):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertIsNone(result)
+        self.assertEqual(list(self.tmpdir.iterdir()), [])
+
+    def test_an_unreadable_image_leaves_no_temp_file(self):
+        opener = _FakeOpener(_FakeResponse(b"not an image"))
+        with patch.object(lora_utils, "_open_url", opener):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertIsNone(result)
+        self.assertEqual(list(self.tmpdir.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_the_image_gets_the_permissions_a_plain_save_gives(self):
+        # S10 re-review N7: the cached JPEG honours the umask like img.save did.
+        previous = os.umask(0o022)
+        self.addCleanup(os.umask, previous)
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        with patch.object(lora_utils, "_open_url", opener):
+            lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o644)
+
+
+class TestStaleDownloadSweep(unittest.TestCase):
+    """S10 re-review N7: a killed download's ``.pm-*.part`` is swept later."""
+
+    def setUp(self):
+        self.cache = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.cache, True)
+        self.lora = self.cache / "my_lora"
+        self.lora.mkdir()
+
+    def _file(self, path, age_seconds):
+        path.write_bytes(b"x")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_only_old_temp_downloads_are_removed(self):
+        old = self._file(self.lora / ".pm-abc123.part", 2 * 3600)
+        old_top = self._file(self.cache / ".pm-top.part", 2 * 3600)
+        fresh = self._file(self.lora / ".pm-new.part", 60)
+        image = self._file(self.lora / "abc.jpg", 2 * 3600)
+        other = self._file(self.lora / "keep.part", 2 * 3600)
+        prefixed = self._file(self.lora / ".pm-keep.jpg", 2 * 3600)
+        deep = self.lora / "nested"
+        deep.mkdir()
+        nested = self._file(deep / ".pm-deep.part", 2 * 3600)
+
+        lora_utils.sweep_stale_downloads(self.cache)
+
+        self.assertFalse(old.exists())
+        self.assertFalse(old_top.exists())
+        for kept in (fresh, image, other, prefixed, nested):
+            self.assertTrue(kept.exists(), kept.name)
+
+    def test_a_missing_cache_is_fine(self):
+        lora_utils.sweep_stale_downloads(self.cache / "absent")
+
+    def test_a_file_that_cannot_be_removed_is_left(self):
+        old = self._file(self.lora / ".pm-abc.part", 2 * 3600)
+        with patch.object(lora_utils.os, "remove", side_effect=PermissionError):
+            lora_utils.sweep_stale_downloads(self.cache)
+        self.assertTrue(old.exists())
+
+
 class _FakeHTTPSHandler(urllib.request.HTTPSHandler):
     """Serves canned responses through a real urllib opener, recording requests.
 
@@ -817,8 +926,94 @@ class TestDetectLoraManager(unittest.TestCase):
         self.assertTrue(lora_utils._looks_like_lora_manager(lm))
 
     def test_nothing_found(self):
-        with patch.object(lora_utils, "find_comfyui_root", return_value=None):
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=None),
+            patch.object(lora_utils, "custom_nodes_directories", return_value=[]),
+        ):
             self.assertIsNone(lora_utils.detect_lora_manager())
+
+    def test_auto_detects_in_an_extra_custom_nodes_folder(self):
+        # #144: ComfyUI's main custom_nodes has no LoraManager; an extra
+        # custom_nodes path registered through folder_paths (extra model
+        # paths, --base-directory) has it.
+        root = _make_comfy_root(self.tmp)
+        extra = self.tmp / "shared_nodes"
+        extra.mkdir()
+        lm = _make_lora_manager(extra, "ComfyUI-Lora-Manager")
+        fake = types.SimpleNamespace(
+            base_path=str(root),
+            get_folder_paths=lambda name: (
+                [str(root / "custom_nodes"), str(extra)]
+                if name == "custom_nodes"
+                else []
+            ),
+        )
+        with (
+            patch.dict(sys.modules, {"folder_paths": fake}),
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
+
+    def test_main_custom_nodes_wins_over_an_extra_folder(self):
+        root = _make_comfy_root(self.tmp)
+        main = _make_lora_manager(root / "custom_nodes")
+        extra = self.tmp / "shared_nodes"
+        extra.mkdir()
+        _make_lora_manager(extra)
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(
+                lora_utils,
+                "custom_nodes_directories",
+                return_value=[(root / "custom_nodes").resolve(), extra.resolve()],
+            ),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(main.resolve()))
+
+    def test_an_entry_that_cannot_be_checked_is_skipped(self):
+        # S10 review N5: a permission error on one entry, not a missing folder.
+        root = _make_comfy_root(self.tmp)
+        blocked = root / "custom_nodes" / "a-lora-manager"
+        blocked.mkdir()
+        lm = _make_lora_manager(root / "custom_nodes", "b-Lora-Manager")
+        real_is_dir = Path.is_dir
+
+        def is_dir(path):
+            if path == blocked:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_is_dir(path)
+
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(lora_utils, "custom_nodes_directories", return_value=[]),
+            patch.object(Path, "is_dir", is_dir),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
+
+    def test_a_folder_that_cannot_be_listed_is_skipped(self):
+        root = _make_comfy_root(self.tmp)
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(lora_utils, "custom_nodes_directories", return_value=[]),
+            patch.object(Path, "iterdir", side_effect=PermissionError(13, "denied")),
+        ):
+            self.assertIsNone(lora_utils.detect_lora_manager())
+
+    def test_an_unreadable_extra_folder_is_skipped(self):
+        root = _make_comfy_root(self.tmp)
+        missing = self.tmp / "gone"
+        extra = self.tmp / "shared_nodes"
+        extra.mkdir()
+        lm = _make_lora_manager(extra)
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(
+                lora_utils,
+                "custom_nodes_directories",
+                return_value=[missing, extra.resolve()],
+            ),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
 
 
 class TestFindLoraDirectories(unittest.TestCase):

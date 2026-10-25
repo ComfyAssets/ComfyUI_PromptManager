@@ -55,10 +55,10 @@ export const OPERATION_TITLES = Object.freeze({
     workflow_storage: 'Store each workflow once',
 });
 // The review is gone or no longer matches the database: review it again.
-const REVIEW_AGAIN = new Set(['plan-expired', 'storage-changed']);
+const REVIEW_AGAIN = new Set(['plan-expired', 'storage-changed', 'plan-changed']);
 // Refusals whose server message is the whole truth.
 const SERVER_SAYS = new Set(['insufficient-space', 'nothing-to-do', 'too-large', 'invalid-request', 'not-found',
-    'job-running', 'no-groups', 'apply-failed', 'sources-changed']);
+    'job-running', 'no-groups', 'apply-failed', 'sources-changed', 'lora-disabled', 'lora-path']);
 
 const number = value => value.toLocaleString('en-US');
 
@@ -169,13 +169,15 @@ async function holding(trigger, busyText, work) {
 }
 
 /**
- * Apply a reviewed plan's `token`; the job opens in Activity. `reviewAgain()` reviews the operation once more when the
- * server says the review expired or the database was replaced.
+ * Apply a reviewed plan's `token` (at `url`: maintenance's apply, or the LoRA import's, S10); the job opens in Activity.
+ * `reviewAgain()` reviews the operation once more when the server says the review expired, the database was replaced
+ * or (the LoRA import) its files changed.
  */
-export async function applyPlan({ api, store, scope, token, reviewAgain, notify = showWorkspaceToast, navigate = navigateTo }) {
+export async function applyPlan({ api, store, scope, token, reviewAgain, notify = showWorkspaceToast, navigate = navigateTo,
+    url = APPLY_URL }) {
     let result;
     try {
-        result = await api.post(APPLY_URL, { token });
+        result = await api.post(url, { token });
     } catch (error) {
         if (scope.signal.aborted) return;
         const refusal = applyRefusal(error);

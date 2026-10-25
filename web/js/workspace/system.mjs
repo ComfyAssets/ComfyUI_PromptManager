@@ -5,7 +5,8 @@
  * (`span.small#settings-status` + "Save preferences"). D92: no "Sample configuration" chip, the status copy is
  * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
  * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview (system-overview.mjs),
- * Appearance (system-appearance.mjs), Sources & scans (system-sources.mjs) and Maintenance (system-maintenance.mjs) are native.
+ * Appearance (system-appearance.mjs), Sources & scans (system-sources.mjs), Integrations (system-integrations.mjs) and
+ * Maintenance (system-maintenance.mjs) are native.
  *
  * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
@@ -18,6 +19,7 @@ import { mountOverview } from './system-overview.mjs';
 import { mountAppearance } from './system-appearance.mjs';
 import { mountSources } from './system-sources.mjs';
 import { mountMaintenance } from './system-maintenance.mjs';
+import { LORA_ENABLE_URL, LORA_STATUS_URL, loraValues, mountIntegrations, writeHostInParts } from './system-integrations.mjs';
 import { busyToast } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { displayPreferences, readPreferences, reconcilePreferences, subscribePreferences, writePreferences } from './preferences.mjs';
@@ -30,7 +32,6 @@ const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existi
  * settings, thumbnails, duplicates and cache tools.
  */
 export const SECTION_HANDOFFS = Object.freeze({
-    integrations: [ADMIN],
     tagging: [ADMIN],
     backups: [ADMIN],
     diagnostics: [ADMIN],
@@ -77,14 +78,21 @@ export function systemDrafts(api) {
         },
         writeRuntime: undelivered,
         async readHost() {
-            const result = await api.get(SETTINGS_URL, { cache: 'no-store' });
+            // S10: the LoRA state rides along; when it cannot be read its values stay missing (Integrations says so)
+            // and every other host setting still loads.
+            const [result, lora] = await Promise.all([api.get(SETTINGS_URL, { cache: 'no-store' }),
+                api.get(LORA_STATUS_URL, { cache: 'no-store' }).catch(() => null)]);
             // The store reads a missing value as none and a missing revision as unreadable (no host save). #317: which
             // thumbnail formats the server can write rides along as a read-only value (never drafted or sent).
-            return { values: { ...result.settings, thumbnail_encoders: result.thumbnail_encoders }, revision: result.revision };
+            return { values: { ...result.settings, thumbnail_encoders: result.thumbnail_encoders, ...(lora ? loraValues(lora) : {}) },
+                revision: result.revision };
         },
         async writeHost(changes, { expected_revision }) {
+            // S10: the LoRA keys save through /lora/enable, the rest through /settings, each with the current revision;
+            // a save where only one part was written reports which (writeHostInParts, review I3).
             try {
-                return await api.post(SETTINGS_URL, { ...changes, expected_revision });
+                return await writeHostInParts({ changes, saved: drafts.saved('host'), expected_revision,
+                    postLora: body => api.post(LORA_ENABLE_URL, body), postSettings: body => api.post(SETTINGS_URL, body) });
             } catch (error) {
                 // A sources change waits for a running record-changing job (S4): name it, as a refused start does (D57).
                 if (error?.code === 'busy') showWorkspaceToast(busyToast(await runningJob(error)));
@@ -119,13 +127,14 @@ function markFailed(layout, store) {
 }
 
 /**
- * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), Sources & scans (S4 Task 11) and
- * Maintenance (S7 Task 19).
+ * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), Sources & scans (S4 Task 11),
+ * Integrations (S10 Task 27) and Maintenance (S7 Task 19).
  */
 export const DELIVERED_SECTIONS = Object.freeze({
     overview: mountOverview,
     appearance: mountAppearance,
     sources: mountSources,
+    integrations: mountIntegrations,
     maintenance: mountMaintenance,
 });
 

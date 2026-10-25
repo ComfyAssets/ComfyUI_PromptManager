@@ -26,6 +26,7 @@ from .history_reads import HistoryReadOperations
 from .health import HealthOperations, iter_consistency_issues
 from .duplicate_copies import DuplicateCopyOperations
 from .workflow_storage import WorkflowStorageOperations
+from .category_import import CategoryImportOperations, EmptyReplacement  # noqa: F401
 from .workflow_documents import (
     DocumentReader,
     documents_of_rows,
@@ -366,6 +367,7 @@ class PromptDatabase(
     MaintenanceOperations,
     DuplicateCopyOperations,
     WorkflowStorageOperations,
+    CategoryImportOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -455,26 +457,9 @@ class PromptDatabase(
 
         try:
             with self.model.get_connection() as conn:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO prompts (
-                        text, category, tags, rating, notes, hash, created_at,
-                        updated_at
-                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        text.strip(),
-                        category,
-                        rating,
-                        notes,
-                        prompt_hash,
-                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    ),
+                prompt_id = self._insert_prompt(
+                    conn, text, category, tags, rating, notes, prompt_hash
                 )
-                prompt_id = cursor.lastrowid
-                if tags:
-                    self._sync_prompt_tags(conn, prompt_id, tags)
                 conn.commit()
                 self.logger.debug(f"Successfully saved prompt with ID: {prompt_id}")
                 return prompt_id
@@ -489,6 +474,32 @@ class PromptDatabase(
                 f"returning existing ID {existing['id']}"
             )
             return existing["id"]
+
+    def _insert_prompt(
+        self,
+        conn: sqlite3.Connection,
+        text: str,
+        category: Optional[str],
+        tags: Optional[List[str]],
+        rating: Optional[int],
+        notes: Optional[str],
+        prompt_hash: Optional[str],
+    ) -> int:
+        """Insert one prompt row and its tags on ``conn`` (no commit)."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        cursor = conn.execute(
+            """
+            INSERT INTO prompts (
+                text, category, tags, rating, notes, hash, created_at,
+                updated_at
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+            """,
+            (text.strip(), category, rating, notes, prompt_hash, now, now),
+        )
+        prompt_id = cursor.lastrowid
+        if tags:
+            self._sync_prompt_tags(conn, prompt_id, tags)
+        return prompt_id
 
     def record_prompt_use(self, prompt_id: int, times: int = 1) -> bool:
         """
@@ -1670,64 +1681,83 @@ class PromptDatabase(
                 return 0
 
             # Proceed with linking
-            if not isinstance(metadata, dict):
-                metadata = {}
-            filename = os.path.basename(image_path)
-            file_path = normalize_image_path(image_path)
-            file_size, width, height, image_format = _coerce_file_info(metadata)
-            # Each workflow and prompt graph is stored once (new form).
-            documents = stored_values(
-                conn,
-                {
-                    "workflow_data": dumps_strict(metadata.get("workflow", {})),
-                    "prompt_metadata": dumps_strict(metadata.get("prompt", {})),
-                },
+            image_id = self._insert_image_link(
+                conn, prompt_id_int, image_path, metadata
             )
+            conn.commit()
 
-            # INSERT OR IGNORE skips a file already linked to this prompt
-            # (same prompt_id + normalised full path)
-            cursor = conn.execute(
-                """
-                INSERT OR IGNORE INTO generated_images
-                (prompt_id, image_path, filename, file_path, file_size, width,
-                 height, format, workflow_data, prompt_metadata, parameters,
-                 workflow_document_id, prompt_document_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            if not image_id:
+                self.logger.debug(
+                    f"Image {normalize_image_path(image_path)} already linked to "
+                    f"prompt {prompt_id_int}"
+                )
+                return 0
+
+            return image_id
+
+    def _insert_image_link(
+        self,
+        conn: sqlite3.Connection,
+        prompt_id_int: int,
+        image_path: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Insert one image link on ``conn`` (no commit).
+
+        Returns the new image row's id, or 0 when the file is already linked
+        to this prompt (``INSERT OR IGNORE``).
+        """
+        if not isinstance(metadata, dict):
+            metadata = {}
+        filename = os.path.basename(image_path)
+        file_path = normalize_image_path(image_path)
+        file_size, width, height, image_format = _coerce_file_info(metadata)
+        # Each workflow and prompt graph is stored once (new form).
+        documents = stored_values(
+            conn,
+            {
+                "workflow_data": dumps_strict(metadata.get("workflow", {})),
+                "prompt_metadata": dumps_strict(metadata.get("prompt", {})),
+            },
+        )
+
+        # INSERT OR IGNORE skips a file already linked to this prompt
+        # (same prompt_id + normalised full path)
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO generated_images
+            (prompt_id, image_path, filename, file_path, file_size, width,
+             height, format, workflow_data, prompt_metadata, parameters,
+             workflow_document_id, prompt_document_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                prompt_id_int,
+                image_path,
+                filename,
+                file_path,
+                file_size,
+                width,
+                height,
+                image_format,
+                documents["workflow_data"],
+                documents["prompt_metadata"],
+                dumps_strict(metadata.get("parameters", {})),
+                documents["workflow_document_id"],
+                documents["prompt_document_id"],
+            ),
+        )
+        if cursor.rowcount == 0:
+            # Already linked: a document made only for this row goes.
+            release_documents(
+                conn,
                 (
-                    prompt_id_int,
-                    image_path,
-                    filename,
-                    file_path,
-                    file_size,
-                    width,
-                    height,
-                    image_format,
-                    documents["workflow_data"],
-                    documents["prompt_metadata"],
-                    dumps_strict(metadata.get("parameters", {})),
                     documents["workflow_document_id"],
                     documents["prompt_document_id"],
                 ),
             )
-            if cursor.rowcount == 0:
-                # Already linked: a document made only for this row goes.
-                release_documents(
-                    conn,
-                    (
-                        documents["workflow_document_id"],
-                        documents["prompt_document_id"],
-                    ),
-                )
-            conn.commit()
-
-            if cursor.rowcount == 0:
-                self.logger.debug(
-                    f"Image {file_path} already linked to prompt {prompt_id_int}"
-                )
-                return 0
-
-            return cursor.lastrowid
+            return 0
+        return cursor.lastrowid
 
     def get_prompt_images(self, prompt_id: str) -> List[Dict[str, Any]]:
         """

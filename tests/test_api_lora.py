@@ -36,7 +36,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
-from py import config_store, lora_utils
+from py import config_store, lora_import, lora_utils
 from py.config import IntegrationConfig, PromptManagerConfig
 from py.api import settings_routes as settings_module
 from py.api import lora_integration as lora_module
@@ -252,6 +252,21 @@ class TestLoraStatusRoute(LoraAPITestCase):
         self.assertFalse(os.path.isabs(public))
         self.assertNotIn(str(self.tmp_root), body)
         self.assertFalse(data["trigger_cache_loaded"])
+        self.assertTrue(data["detected_usable"])
+
+    async def test_status_says_a_detected_install_outside_custom_nodes_is_unusable(
+        self,
+    ):
+        # S10 review N5: found (a linked install), but enabling it is refused.
+        outside = _make_lora_manager(self.tmp_root)
+        self.detect_mock.return_value = str(outside)
+        resp = await self.client.request("GET", "/prompt_manager/lora/status")
+        data = await resp.json()
+        self.assertEqual((data["detected"], data["detected_usable"]), (True, False))
+
+        self.detect_mock.return_value = None
+        resp = await self.client.request("GET", "/prompt_manager/lora/status")
+        self.assertFalse((await resp.json())["detected_usable"])
 
     async def test_status_error_is_500(self):
         with patch("py.lora_utils.get_trigger_cache", side_effect=RuntimeError("x")):
@@ -528,6 +543,48 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.assertEqual(self.config_file.read_bytes(), b"{not json")
         self.assertFalse(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
 
+    async def test_enable_with_a_stale_revision_changes_nothing(self):
+        # System S10: the Save row sends the revision it read; a file changed
+        # since is a settings-changed conflict and nothing is written.
+        self.config_file.write_text(json.dumps({"web_ui": {"result_timeout": 9}}))
+        resp = await self.client.request("GET", "/prompt_manager/settings")
+        revision = (await resp.json())["revision"]
+        self.config_file.write_text(json.dumps({"web_ui": {"result_timeout": 10}}))
+        before = self.config_file.read_bytes()
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {
+                "enabled": False,
+                "trigger_words_enabled": True,
+                "expected_revision": revision,
+            },
+        )
+        body = await resp.json()
+
+        self.assertEqual((resp.status, body["code"]), (409, "settings-changed"))
+        self.assertEqual(self.config_file.read_bytes(), before)
+        self.assertFalse(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {
+                "enabled": False,
+                "trigger_words_enabled": True,
+                "expected_revision": body["revision"],
+            },
+        )
+        saved = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(saved["revision"].startswith("sha256:"))
+        self.assertTrue(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "expected_revision": 7},
+        )
+        self.assertEqual(resp.status, 400)
+
     async def test_enable_requires_boolean_flags_and_body_cap(self):
         for body in (
             {"enabled": "yes"},
@@ -762,9 +819,9 @@ class TestLoraScanRoute(LoraAPITestCase):
     async def test_scan_error_hides_the_server_path(self):
         self._enable()
         err = PermissionError(13, "Permission denied", str(self.tmp_root / "x.db"))
-        with patch.object(self.api.db, "delete_prompts_by_category", side_effect=err):
+        with patch.object(self.api.db, "replace_category_prompts", side_effect=err):
             resp = await self.client.request("POST", "/prompt_manager/lora/scan")
-        body = await resp.text()
+            body = await resp.text()  # the stream ends inside the patch
         self.assertNotIn(str(self.tmp_root), body)
         self.assertIn("x.db", body)
         # The admin page's modal shows the failure as its status and closes.
@@ -862,7 +919,10 @@ class TestLoraScanRoute(LoraAPITestCase):
         loras.mkdir()
         _write_metadata(loras, "neon", words=["glow"])
 
-        with patch.object(self.api.db, "save_prompt", side_effect=RuntimeError("db")):
+        # Preparing one LoRA's record fails: it is skipped, the import goes on.
+        with patch.object(
+            lora_import, "build_record", side_effect=RuntimeError("bad record")
+        ):
             resp, events, _ = await self._scan(loras)
 
         self.assertEqual(events[-1]["imported"], 0)

@@ -82,20 +82,43 @@ def detect_lora_manager(custom_path: str = "") -> Optional[str]:
         if p.is_dir() and _looks_like_lora_manager(p):
             return str(p.resolve())
 
-    # 2. Auto-detect via custom_nodes (case-insensitive scan)
+    # 2. Auto-detect in every custom_nodes folder (case-insensitive scan):
+    # ComfyUI's own first, then the extra ones it registered (#144).
+    folders = []
     root = find_comfyui_root()
     if root:
-        custom_nodes = root / "custom_nodes"
-        if custom_nodes.is_dir():
-            for entry in custom_nodes.iterdir():
-                if (
-                    entry.is_dir()
-                    and "lora" in entry.name.lower()
-                    and "manager" in entry.name.lower()
-                    and _looks_like_lora_manager(entry)
-                ):
-                    return str(entry.resolve())
+        folders.append(root / "custom_nodes")
+    folders.extend(custom_nodes_directories())
+    seen = set()
+    for custom_nodes in folders:
+        key = os.path.normcase(os.path.abspath(str(custom_nodes)))
+        if key in seen:
+            continue
+        seen.add(key)
+        found = _lora_manager_in(Path(custom_nodes))
+        if found:
+            return found
 
+    return None
+
+
+def _lora_manager_in(custom_nodes: Path) -> Optional[str]:
+    """The LoraManager install directly under ``custom_nodes``, or None."""
+    try:
+        entries = sorted(custom_nodes.iterdir()) if custom_nodes.is_dir() else []
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            if (
+                entry.is_dir()
+                and "lora" in entry.name.lower()
+                and "manager" in entry.name.lower()
+                and _looks_like_lora_manager(entry)
+            ):
+                return str(entry.resolve())
+        except OSError:
+            continue
     return None
 
 
@@ -491,47 +514,98 @@ def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
 
         from PIL import Image
 
-        img = Image.open(BytesIO(raw))
-        img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
-        img = img.convert("RGB")
-        img.save(str(local_path), "JPEG", quality=85)
-
+        with Image.open(BytesIO(raw)) as img:
+            img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
+            rgb = img.convert("RGB")
+        _save_atomically(rgb, local_path)
         return str(local_path.resolve())
     except Exception as e:
         logger.debug(f"Failed to download {url}: {e}")
         return None
 
 
-def download_civitai_images(
-    metadata: Dict, metadata_path: Path, cache_dir: Path, api_key: str = ""
-) -> List[str]:
-    """Download civitai example images to a local cache directory.
+_PART_PREFIX = ".pm-"
+_PART_SUFFIX = ".part"
+# A temp download older than this was left by a killed process, not a live one
+# (each download has a 10 s timeout).
+STALE_PART_SECONDS = 3600
 
-    Uses thumbnail URLs (512px) instead of full-size originals, and
-    downloads in parallel (up to 8 concurrent) for speed.
 
-    Args:
-        api_key: CivitAI API key for authenticated downloads (NSFW content).
+def _save_atomically(image, local_path: Path) -> None:
+    """Write ``image`` as JPEG so ``local_path`` only ever names a whole file.
 
-    Returns:
-        List of absolute paths to downloaded image files.
+    The image goes to a ``.pm-*.part`` file in the same folder, which is
+    closed before ``os.replace`` puts it in place (Windows cannot replace an
+    open file); a failure removes the temp file. A reader (another import's
+    cache check) never sees a half-written image. The temp file is opened
+    like ``img.save`` opens a file, so the image keeps the umask's mode.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    import secrets
 
+    while True:
+        temp = local_path.parent / (
+            f"{_PART_PREFIX}{secrets.token_hex(8)}{_PART_SUFFIX}"
+        )
+        try:
+            handle = open(temp, "xb")
+        except FileExistsError:
+            continue
+        break
+    try:
+        with handle:
+            image.save(handle, "JPEG", quality=85)
+        os.replace(temp, local_path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
+
+
+def sweep_stale_downloads(cache_dir: Path) -> None:
+    """Remove ``.pm-*.part`` files a killed download left in the image cache.
+
+    Only that exact pattern, only in ``cache_dir`` and its LoRA folders, and
+    only once older than ``STALE_PART_SECONDS``; a file that cannot be read
+    or removed is left for a later import.
+    """
+    import time
+
+    cutoff = time.time() - STALE_PART_SECONDS
+    try:
+        folders = [cache_dir] + [p for p in cache_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return
+    for folder in folders:
+        try:
+            candidates = list(folder.glob(f"{_PART_PREFIX}*{_PART_SUFFIX}"))
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    os.remove(path)
+            except OSError:
+                logger.debug(f"Could not remove stale download {path}")
+
+
+def _civitai_cache_plan(
+    metadata: Dict, metadata_path: Path, cache_dir: Path
+) -> Tuple[Path, List[str], List[Tuple[str, Path]]]:
+    """``(lora_cache, cached, tasks)`` for a LoRA's CivitAI example images.
+
+    ``cached`` are the images already in the cache, ``tasks`` the
+    ``(url, local_path)`` downloads still needed. Reads only; creates nothing.
+    """
     civitai = _get_civitai(metadata)
     images = civitai.get("images", []) or []
-    if not images:
-        return []
 
     file_name = metadata.get("file_name", "")
     if not file_name:
         file_name = metadata_path.name.replace(".metadata.json", "")
-    lora_stem = Path(file_name).stem
+    lora_cache = cache_dir / Path(file_name).stem
 
-    lora_cache = cache_dir / lora_stem
-    lora_cache.mkdir(parents=True, exist_ok=True)
-
-    # Build download tasks
     cached = []
     tasks = []  # (url, local_path)
     for img in images:
@@ -548,9 +622,42 @@ def download_civitai_images(
             cached.append(str(local_path.resolve()))
         else:
             tasks.append((url, local_path))
+    return lora_cache, cached, tasks
 
+
+def planned_civitai_downloads(
+    metadata: Dict, metadata_path: Path, cache_dir: Path
+) -> int:
+    """How many example images an import would download (no request, no write)."""
+    return len(_civitai_cache_plan(metadata, metadata_path, cache_dir)[2])
+
+
+def download_civitai_images(
+    metadata: Dict,
+    metadata_path: Path,
+    cache_dir: Path,
+    api_key: str = "",
+    stats: Optional[Dict[str, int]] = None,
+) -> List[str]:
+    """Download civitai example images to a local cache directory.
+
+    Uses thumbnail URLs (512px) instead of full-size originals, and
+    downloads in parallel (up to 8 concurrent) for speed.
+
+    Args:
+        api_key: CivitAI API key for authenticated downloads (NSFW content).
+        stats: When given, ``downloaded`` and ``download_errors`` are
+            increased by the downloads that succeeded and failed.
+
+    Returns:
+        List of absolute paths to downloaded image files.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    lora_cache, cached, tasks = _civitai_cache_plan(metadata, metadata_path, cache_dir)
     if not tasks:
         return cached
+    lora_cache.mkdir(parents=True, exist_ok=True)
 
     # Download in parallel
     downloaded = []
@@ -563,15 +670,21 @@ def download_civitai_images(
             if result:
                 downloaded.append(result)
 
+    if stats is not None:
+        stats["downloaded"] = stats.get("downloaded", 0) + len(downloaded)
+        stats["download_errors"] = (
+            stats.get("download_errors", 0) + len(tasks) - len(downloaded)
+        )
     return cached + downloaded
 
 
-def get_lora_image_cache_dir() -> Path:
+def get_lora_image_cache_dir(create: bool = True) -> Path:
     """Get the directory used to cache downloaded LoRA example images.
 
     ``<data folder>/data/lora_images`` (``utils.library_location``): the node
     folder for a library that was not moved, else ComfyUI's
-    ``user/__promptmanager``.
+    ``user/__promptmanager``. ``create=False`` only names it (a preview
+    writes nothing).
     """
     try:
         from ..utils import library_location
@@ -582,7 +695,8 @@ def get_lora_image_cache_dir() -> Path:
     cache = Path(
         library_location.cache_dir("lora_images", extension_root=str(ext_root))
     )
-    cache.mkdir(parents=True, exist_ok=True)
+    if create:
+        cache.mkdir(parents=True, exist_ok=True)
     return cache
 
 

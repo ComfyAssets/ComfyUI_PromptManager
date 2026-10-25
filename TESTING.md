@@ -2399,7 +2399,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–D113; D121–D131 assigned):
+Recorded deviations (plan D60–D70, D74, D75, D79–D82 renumbered D92–D102, D106, D107 and D111–D114; D121–D131 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2615,6 +2615,69 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   is D93's style. `maintenance matches the concept` (both themes and sizes) maps only this
   row; `maintenance comparison detects mutations` proves it is the only difference and
   catches a removed row, a renamed operation, a lost danger mark and a swapped token.
+- **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window
+  and node, and the nodes always follow ComfyUI's own renderer, so "Default send
+  destination" offers only "Ask each time" and "Host compatibility" only "Follow host
+  renderer"; the concept's other options stay listed but disabled, each row says why in a
+  `p.small` under its description, and nothing is stored for them. "Return to canvas
+  after send" is off and disabled with "Not available: sending applies the text in
+  ComfyUI and keeps this page open." Host compatibility adds a `p.small[role=status]`
+  with the renderer the open ComfyUI windows report over the bridge (`renderer`:
+  `classic` or `nodes2` on each Prompt Manager destination,
+  `web/js/prompt-bridge-adapter.js`; `#renderer-status`): "Detected: Nodes 2.0 (1 ComfyUI window).", "…
+  Classic and Nodes 2.0 (2 ComfyUI windows).", "ComfyUI is open; add a Prompt Manager
+  node to see which renderer it uses." or "No ComfyUI window is open in this browser, so
+  its renderer is not known."; it looks again when the page becomes visible, and only the
+  newest check paints. The two selects never shrink for the reason lines and, at phone
+  width, may grow to 160px (the concept caps them at 120px and cuts "Follow host
+  renderer"), so each shows its chosen option whole (`selectsFit` in the comparison). "LoraManager
+  integration" replaces the concept's sample line with the detection ("Detected:
+  custom_nodes/ComfyUI-Lora-Manager." / "Not detected in ComfyUI’s custom_nodes
+  folders." / "Found at …, but outside ComfyUI’s custom_nodes folders, so it can’t be
+  enabled." for a linked install the server would refuse, from `/lora/status`'s
+  `detected_usable`); the legacy read-only "LoraManager path" row follows it; "Automatically
+  include trigger words" adds "Trigger words are (not) loaded." (the trigger cache, a
+  separate fact). The notes read as the row description (`.setting-row p`). Pinned by
+  `integrations matches the concept` (both themes and sizes) and its mutation check
+  (system-integrations-concept.spec), the D106 tests of
+  workspace-system-integrations.spec, and `each destination reports its window
+  renderer, and System › Integrations shows it (S10)` on the real host
+  (tests/comfyui/prompt-bridge.spec).
+- **D107** (Integrations, S10): "LoRA reference data" reads "Review import" (the
+  concept's button only simulated a job) and opens "Review LoRA import" in the concept's
+  record-changing review (its `maintenancePlan` shell): `h3` "LoRA reference data", the
+  `dl.meta-grid` Scope ("Replace N imported prompts with M LoRAs"), Found ("N metadata
+  files · M readable"), Protected (the saved pairs that block it), Network ("Downloads
+  up to N example images from CivitAI[ with your saved key]" / "No downloads"), Backup
+  and Media on disk, a `details` "LoRAs found (N)", the hold line plus "Example images
+  downloaded before a failure stay in the image cache." in the `p.small`, the D55 backup
+  box and Cancel / "Start import" (`danger` when it would remove every import). A review
+  that saved pairs block, or with nothing to import, shows its rows and only Close.
+  Start runs the "LoRA reference import" Activity job (D111 descriptor: Imported, Linked
+  to existing, Skipped, Images downloaded, Download errors, Errors; Cancel only while it
+  downloads; a failure ends with the server's reason). Pinned by `LoRA import review
+  matches the concept` and its mutation check (system-integrations-concept.spec) and
+  the import tests of workspace-system-integrations.spec.
+- **D114** (Integrations, S10): the CivitAI key field is never filled in (the page never
+  receives the key). Typing drafts a new key, a blank field keeps the saved one (no
+  draft), and "Clear saved key" (shown only while a key is saved) drafts its removal.
+  A `p.small#civitai-key-status[role=status]` (it also describes the field) says "A key
+  is saved." / "No key saved." / "The new key replaces the saved one when you save." /
+  "The saved key is removed when you save."; pressing "Clear saved key" keeps the
+  keyboard on the key field, and the line is rewritten only when its text changes. A typed
+  key is dropped when the section is left (the field comes back empty); leaving without one
+  keeps the last Save's outcome, so Sources still marks a refused source. The field is `autocomplete=new-password`, so browsers never offer it
+  as a login; the concept's
+  prototype warning is dropped. The LoRA rows save through the one Save row:
+  `POST /lora/enable` with `expected_revision` (a config.json changed elsewhere is
+  `settings-changed`), then `/settings` for any other host change with the revision the
+  first save returned (`writeHostInParts`). When only one part is written, the store keeps
+  what saved, adopts its revision and highlights only the rest: the status is the
+  server's reason (an unusable source) or "Some changes were saved to the server
+  configuration; the highlighted ones were not.", and the next Save needs no conflict
+  (`a save where only the LoRA part is written says so; the next save needs no conflict`). Pinned by `key never prefilled; blank keeps; Clear saved key
+  clears; saved through Save preferences (D114)` and `a LoRA save over settings changed
+  elsewhere is a conflict, never a blind write` (workspace-system-integrations.spec).
 - **D113** (Sources): the Worker threads range ends at the server's `cpu_count` (the
   concept's fixed `max=16`) and shows the server's real `worker_threads` (the concept's
   sample 4).
@@ -3051,6 +3114,67 @@ the batch's distinct documents (`test_memory_stays_bounded_by_one_row`, tracemal
 Restoring a deduped backup on a version before this one is not supported: that
 version's restore accepts the file and then reads rewritten images without their
 workflow (README changelog).
+
+### LoRA reference import contract (#221, #249 System S10)
+
+The LoRA import is staged (`py/lora_import.py`): discover the LoraManager
+`*.metadata.json` files and fingerprint them (path, size, modification time); stage each
+record (CivitAI example images go into the image cache first, best effort, counted in
+`downloaded` / `download_errors`; each image is written to a temp file beside its cache
+entry and moved in place, so a half-written image is never seen as cached); the files are
+listed and fingerprinted again (a file changed, removed or added while staging aborts with
+nothing written); then `PromptDatabase.replace_category_prompts`
+(`database/category_import.py`) replaces the `lora-manager` category in one
+`BEGIN IMMEDIATE` transaction. Any failure leaves the previous prompts, tags and image
+links exactly as they were; images already downloaded stay in the cache and the job says
+so. A record whose preparation fails is skipped (legacy); a prompt a saved pair uses
+blocks the whole replacement (`PairDependencyError`, nothing deleted); a replacement with
+no record over a non-empty collection needs `allow_empty` (a reviewed import), so the
+legacy scan refuses it.
+
+`POST /prompt_manager/lora/import/preview` (body `{}`) writes nothing and requests
+nothing (`test_preview_writes_nothing_and_makes_no_requests`: DB and `-wal` bytes, `-shm`
+size, rows, no cache folder, the downloader never called) and answers the maintenance
+`Plan` shape plus `lora_files`, `with_metadata`, `current_imports`, `blocked_by_pairs`,
+`planned_downloads` and `network`; a blocked plan has no token. `POST
+/prompt_manager/lora/import/apply {token}` starts the `lora_import` job (202): title "LoRA
+reference import", admission `records`, cancellable only while it stages, the safety
+backup the policy promises before the replace. Refusals: `plan-changed` (409, the files
+changed since the review, or the integration was turned off or moved to another install),
+`plan-expired`, `plan-used`, `storage-changed`, `busy`,
+`insufficient-space`, `apply-failed`. The job fails with `plan-changed` (the files or the
+imports changed meanwhile), `blocked-by-pairs`, `nothing-to-import`, `backup-failed` or
+`import-failed`, each with nothing written; the job keeps what staging skipped, by name,
+whatever happened after. The tests change real files behind a held download
+(`test_files_changed_while_staging_fail_the_job`, removed and added files too). The
+replace binds the category, not one parameter per prompt, so SQLite's variable limit
+never caps a collection. Cached CivitAI images are written to a `.pm-*.part` file in the
+same folder and renamed into place, with the umask's mode as a plain save gives; each import
+first removes `.pm-*.part` files older than an hour from the image cache and its LoRA
+folders (`TestStaleDownloadSweep`). The legacy `POST /lora/scan` runs the same stages under its SSE
+event shape; a page that closes its connection stops staging before its next LoRA, and the
+scan keeps its records hold until staging has stopped, then ends `cancelled` in Activity
+(`test_a_disconnected_legacy_scan_stops_and_holds_until_it_stopped`) (`test_legacy_scan_events_unchanged_on_success`), holds
+the registry as "LoRA import (admin page)" and takes no safety backup. Both imports are
+`records` jobs, so a restore (`exclusive`, #249 S8) is refused while one runs and they are
+refused while a restore runs; the review is a request lease ("LoRA import review"), refused
+(409 `busy`) during a restore, and a restore waits for it (`LoraImportRestoreTests`). `POST /lora/enable`
+accepts the optional `expected_revision`. LoraManager detection also searches every
+`custom_nodes` folder ComfyUI registers through `folder_paths` (#144), main folder first.
+
+`tests/browser/workspace_integrations_fixture.py` (`/__test__/integrations/*`) makes a fake
+LoraManager install and LoRA folder under the server's temp root, holds or fails the
+import, saves a blocking pair and answers CivitAI downloads with a stub opener, so no
+test reaches the network.
+
+```sh
+python3 -m unittest tests.test_lora_import tests.test_api_lora tests.test_lora_database \
+  tests.test_lora_utils -v
+node --test tests/js/workspace-system-integrations.test.js tests/js/prompt-bridge-adapter.test.js
+npm run --prefix tools/vendor test:workflows -- workspace-system-integrations.spec.mjs \
+  system-integrations-concept.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+```
 
 ### Browser cache ownership (#222)
 

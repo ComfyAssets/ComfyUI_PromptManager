@@ -409,11 +409,11 @@ test('out-of-order overview responses never repaint a newer section', async ({ p
     await nav.getByRole('button', { name: 'Appearance', exact: true }).click();
     await nav.getByRole('button', { name: 'Overview', exact: true }).click();
     await expect.poll(held).toBe(2);
-    // Integrations still hands off (S10), so its body is one known panel.
-    await nav.getByRole('button', { name: 'Integrations', exact: true }).click();
+    // Auto-tagging still hands off (S11), so its body is one known panel.
+    await nav.getByRole('button', { name: 'Auto-tagging', exact: true }).click();
     await expect(await request.post('/__test__/release')).toBeOK();
     await expect.poll(held).toBe(0);
-    // Both late answers reached a section that had left: Integrations keeps its own body.
+    // Both late answers reached a section that had left: Auto-tagging keeps its own body.
     await expect(layout.locator(':scope > section.handoff')).toBeVisible();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect(layout.locator('.summary-metrics')).toHaveCount(0);
