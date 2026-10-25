@@ -155,7 +155,7 @@ export function reviewRefusal(error) {
 }
 
 /** Hold `trigger` aria-disabled with `busyText` while `work()` runs; a second press is ignored. */
-async function holding(trigger, busyText, work) {
+export async function holding(trigger, busyText, work) {
     if (trigger?.getAttribute('aria-disabled') === 'true') return;
     const text = trigger?.textContent;
     trigger?.setAttribute('aria-disabled', 'true');
@@ -169,9 +169,11 @@ async function holding(trigger, busyText, work) {
 }
 
 /**
- * Apply a reviewed plan's `token` (at `url`: maintenance's apply, or the LoRA import's, S10); the job opens in Activity.
- * `reviewAgain()` reviews the operation once more when the server says the review expired, the database was replaced
- * or (the LoRA import) its files changed.
+ * Apply a reviewed plan's `token` (at `url`: maintenance's apply, the LoRA import's (S10) or the restore's (S9)); the
+ * job opens in Activity. `reviewAgain()` reviews the operation once more when the server says the review expired, the
+ * database was replaced or (the LoRA import) its files changed. Resolves with the outcome, which maintenance and the
+ * LoRA import ignore and the restore acts on (S9 I1): `{job}` once started, `{refused: error}` when the server or the
+ * network refused it, `{lost: true}` when the answer could not be read (the job may be running).
  */
 export async function applyPlan({ api, store, scope, token, reviewAgain, notify = showWorkspaceToast, navigate = navigateTo,
     url = APPLY_URL }) {
@@ -179,12 +181,12 @@ export async function applyPlan({ api, store, scope, token, reviewAgain, notify 
     try {
         result = await api.post(url, { token });
     } catch (error) {
-        if (scope.signal.aborted) return;
+        if (scope.signal.aborted) return { refused: error };
         const refusal = applyRefusal(error);
         notify(refusal.toast);
         if (refusal.lost) store.load();
         if (refusal.review) reviewAgain?.();
-        return;
+        return refusal.lost ? { lost: true } : { refused: error };
     }
     let job;
     try {
@@ -194,11 +196,13 @@ export async function applyPlan({ api, store, scope, token, reviewAgain, notify 
     } catch {
         if (!scope.signal.aborted) notify(NOT_CONFIRMED);
         store.load();
-        return;
+        return { lost: true };
     }
-    if (scope.signal.aborted) return;
-    notify(`${job.title} started.`);
-    navigate(`#/activity/${job.id}`);
+    if (!scope.signal.aborted) {
+        notify(`${job.title} started.`);
+        navigate(`#/activity/${job.id}`);
+    }
+    return { job };
 }
 
 /** Show the reviewed `plan` for `operation`; Apply applies exactly this token. */

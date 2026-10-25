@@ -26,14 +26,15 @@ test('the section keeps the concept copy: surfaces, descriptions and the two kep
     const body = conceptSection();
     for (const text of ['Database backup', 'A complete recovery snapshot, including prompt pairs, metadata and image links. Media files are separate.',
         'Review restore…', 'Portable export', 'Export reusable recipes and tags as versioned JSON. This is distinct from a complete database backup.',
-        'Import / inspect file', 'Recovery policy', 'Proposed', 'Create a safety backup before maintenance',
-        'Preview a verified backup before applying operations that change records.', 'Scheduled database backups',
+        'Import / inspect file', 'Recovery policy', 'Proposed', 'Create a safety backup before maintenance', 'Scheduled database backups',
         'Manual only', 'Daily', 'Weekly']) {
         assert.ok(body.includes(text), `concept lacks ${text}`);
         assert.ok(SOURCE.includes(text), `production lacks ${text}`);
     }
     // D103/D104: prototype copy is never shipped.
-    for (const sample of ['Simulate backup', 'Sample backup', 'Export sample JSON', 'Production feature proposal', 'A restore would be']) {
+    // D104 (M2): the toggle's concept line ("Preview a verified backup…") misstates the policy and is replaced too.
+    for (const sample of ['Simulate backup', 'Sample backup', 'Export sample JSON', 'Production feature proposal', 'A restore would be',
+        'Preview a verified backup before applying operations that change records.']) {
         assert.ok(body.includes(sample));
         assert.ok(!SOURCE.includes(sample), `production ships ${sample}`);
     }
@@ -117,7 +118,8 @@ test('invalid file shows the validator message; a refusal names its job; a lost 
     const full = await uploadRestore(file, { ApiError, fetchUrl: async () => response(429,
         { success: false, code: 'too-large', error: 'Two restores are already being reviewed. Discard one first.' }) })
         .catch(error => error);
-    assert.equal(reviewRefusal(full), 'Two restores are already being reviewed. Discard one first.');
+    // I1: the server's "Discard one first" names nothing this page can do; the toast says what the user can.
+    assert.equal(reviewRefusal(full), (await backups).REVIEWS_FULL);
     const proxy = await uploadRestore(file, { ApiError, fetchUrl: async () => response(502, undefined) }).catch(error => error);
     assert.equal(reviewRefusal(proxy), REVIEW_FAILED);
     const odd = await uploadRestore(file, { ApiError, fetchUrl: async () => response(200, { success: true }) }).catch(error => error);
@@ -138,7 +140,7 @@ test('Export JSON downloads /library/export; secondary buttons download /export 
     const { EXPORTS } = await backups;
     assert.deepEqual(EXPORTS.map(([label, url]) => [label, url]), [
         ['Export JSON', '/prompt_manager/library/export'],
-        ['Export components JSON', '/prompt_manager/export'],
+        ['Export all prompts JSON', '/prompt_manager/export'],
         ['Export saved pairs JSON', '/prompt_manager/pairs/export'],
     ]);
 });
@@ -214,4 +216,71 @@ test('the Import dialog shares the rescan copy with Images (D15)', async () => {
     assert.equal(rescanFinished({ total: 1, roots: 2 }), 'Rescan finished. 1 file in 2 output folders.');
     assert.equal(rescanFinished({ total: 1200, roots: 1 }), 'Rescan finished. 1,200 files in 1 output folder.');
     assert.equal(rescanFinished(null), 'Rescan finished.');
+});
+
+test('applyPlan follows a started job even after its section left, and reports the outcome (S9 N5, I1)', async () => {
+    const { applyPlan } = await import('../../web/js/workspace/maintenance-review.mjs');
+    const job = { id: 'a'.repeat(32), kind: 'restore', title: 'Database restore', state: 'running' };
+    const tracked = [];
+    const store = { track: raw => { tracked.push(raw.id); return raw; }, load() {} };
+    const left = new AbortController();
+    left.abort();
+    const toasts = [], routes = [];
+    const outcome = await applyPlan({ api: { post: async () => ({ success: true, job }) }, store, scope: { signal: left.signal },
+        token: 't', notify: text => toasts.push(text), navigate: hash => routes.push(hash) });
+    // The page's store follows it (a finished restore must reload the views); the left section neither toasts nor opens it.
+    assert.deepEqual(tracked, [job.id]);
+    assert.deepEqual([toasts, routes], [[], []]);
+    assert.deepEqual(outcome, { job });
+    const busy = new ApiError(409, 'Busy', 'busy', null, { success: false, code: 'busy', running: { id: 'j1', title: 'Scan' } });
+    const live = { signal: new AbortController().signal };
+    const refused = await applyPlan({ api: { post: async () => { throw busy; } }, store, scope: live, token: 't',
+        notify: text => toasts.push(text), navigate: hash => routes.push(hash) });
+    assert.deepEqual(refused, { refused: busy });
+    assert.deepEqual(toasts, [['Another job is running: ', { text: 'Scan', href: '#/activity/j1' }, '.']]);
+});
+
+test('after an apply: follow a started job, reopen a busy refusal, release the token otherwise (I1)', async () => {
+    const { afterApply } = await backups;
+    const refusal = code => ({ refused: new ApiError(409, 'x', code, null, { success: false, code }) });
+    assert.equal(afterApply({ job: { id: 'j' } }), 'follow');
+    assert.equal(afterApply(refusal('busy')), 'reopen');
+    for (const outcome of [refusal('plan-used'), refusal('plan-expired'), refusal('plan-changed'), refusal('storage-changed'),
+        { refused: new TypeError('offline') }, { lost: true }, undefined]) {
+        assert.equal(afterApply(outcome), 'release');
+    }
+});
+
+test('a restore job that hands its review back reopens it once in the page that started it; any other end forgets it (I1)', async () => {
+    const { rememberRestore, onRestoreHandedBack } = await backups;
+    let list = [];
+    const listeners = new Set();
+    const activity = { jobs: () => list, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+    const emit = next => { list = next; for (const listener of listeners) listener(); };
+    const reopened = [];
+    const stop = onRestoreHandedBack(activity, review => reopened.push(review.token));
+    rememberRestore('kept', { token: 'k' });
+    rememberRestore('done', { token: 'd' });
+    rememberRestore('gone', { token: 'g' });
+    emit([{ id: 'kept', kind: 'restore', state: 'running', scope: {} }]);
+    emit([{ id: 'kept', kind: 'restore', state: 'failed', scope: { failure: 'busy', review_kept: true } },
+        { id: 'done', kind: 'restore', state: 'finished', scope: {} },
+        { id: 'gone', kind: 'restore', state: 'failed', scope: { failure: 'busy' } }]);
+    emit(list);
+    assert.deepEqual(reopened, ['k']);
+    stop();
+    assert.equal(listeners.size, 0);
+});
+
+test('small files show KB; a full review store says what to do (N3, I1)', async () => {
+    const { snapshotText, reviewRefusal, EXPORTS } = await backups;
+    assert.equal(snapshotText({ name: 'a.db', size: 40 * 1024 }), 'a.db · 40 KB');
+    assert.equal(snapshotText({ name: 'a.db', size: 10 }), 'a.db · 1 KB');
+    assert.equal(snapshotText({ name: 'a.db', size: 3 * 2 ** 20 }), 'a.db · 3.0 MB');
+    const full = new ApiError(429, 'Two restores are already being reviewed. Discard one first.', 'too-large', null,
+        { success: false, code: 'too-large' });
+    assert.equal(reviewRefusal(full), 'Two restores are already being reviewed in another window. Discard one there, ' +
+        'or try again when it expires (15 minutes after it was reviewed).');
+    // N1: /export is the legacy list of every prompt.
+    assert.deepEqual(EXPORTS[1].slice(0, 2), ['Export all prompts JSON', '/prompt_manager/export']);
 });

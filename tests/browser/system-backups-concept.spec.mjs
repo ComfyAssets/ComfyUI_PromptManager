@@ -87,18 +87,20 @@ function measureBackups(mainSelector) {
 }
 
 const SCHEDULE_REASON = 'Daily and Weekly are not available yet: back up with Back up whenever you choose.';
+const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups and LoRA imports change ' +
+    'records. A restore always keeps one.';
 
 /**
  * D103: "Back up" (the concept's "Simulate backup"), the status line from /backup/status, "Export JSON" (its "Export
  * sample JSON") and the two secondary exports in a second `.row-actions.spaced` with the concept's plain buttons.
- * D104: the schedule's reason replaces the prototype's proposal line, Daily and Weekly are disabled, and the warning
- * note is truthful. The fixture has no backup yet.
+ * D104: the toggle's line says what the policy does, the schedule's reason replaces the prototype's proposal line,
+ * Daily and Weekly are disabled, and the warning note is truthful. The fixture has no backup yet.
  */
 function mapBackupsConcept(reference) {
     const [database, portable] = reference.surfaces;
     const [backup, restore] = database.actions[0].buttons;
     const [exportButton, importButton] = portable.actions[0].buttons;
-    const secondary = ['Export components JSON', 'Export saved pairs JSON'].map(label => ({ ...exportButton, text: label }));
+    const secondary = ['Export all prompts JSON', 'Export saved pairs JSON'].map(label => ({ ...exportButton, text: label }));
     return {
         ...reference,
         surfaces: [
@@ -109,9 +111,12 @@ function mapBackupsConcept(reference) {
         ],
         status: { ...reference.status, text: 'No backup recorded.' },
         policy: { ...reference.policy,
-            rows: reference.policy.rows.map(item => (item.control.kind !== 'select' ? item : { ...item,
-                text: item.text.map(([node, value, target]) => [node, node === 'p' ? SCHEDULE_REASON : value, target]),
-                control: { ...item.control, options: item.control.options.map(([label]) => [label, label !== 'Manual only']) } })),
+            rows: reference.policy.rows.map(item => (item.control.kind !== 'select'
+                // D104 (M2): what the safety-backup policy really does.
+                ? { ...item, text: item.text.map(([node, value, target]) => [node, node === 'p' ? SAFETY_DESCRIPTION : value, target]) }
+                : { ...item,
+                    text: item.text.map(([node, value, target]) => [node, node === 'p' ? SCHEDULE_REASON : value, target]),
+                    control: { ...item.control, options: item.control.options.map(([label]) => [label, label !== 'Manual only']) } })),
             warning: { ...reference.policy.warning, text: 'Restores are staged, migrated and validated before replacing live data.' } },
     };
 }
@@ -255,7 +260,7 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
         const { preview, production } = await productionRestore(page, request, theme);
         await page.screenshot({ path: testInfo.outputPath(`production-restore-${theme}-${width}.png`) });
         const snapshot = production.grid.rows[0][1];
-        expect(snapshot).toMatch(/^prompts_backup_20261025_093000\.db · \d+\.\d MB · .+$/);
+        expect(snapshot).toMatch(/^prompts_backup_20261025_093000.db · (\d+ KB|\d+\.\d MB) · .+$/);
         const { text: _intro, ...small } = conceptImport.note;
         expect(diffInventory(mapRestoreConcept(conceptRestore, small, restoreRows(preview, snapshot)), production)).toEqual([]);
         await page.keyboard.press('Escape');
@@ -281,7 +286,8 @@ test('backup & export comparison detects mutations', async ({ page, request }) =
     const added = 'surfaces.1.actions.1.';
     expect(unmapped.some(path => path.startsWith(added))).toBe(true);
     expect(unmapped.filter(path => !path.startsWith(added))).toEqual([
-        'policy.rows.1.control.options.1.1', 'policy.rows.1.control.options.2.1', 'policy.rows.1.text.1.1', 'policy.warning.text',
+        'policy.rows.0.text.1.1', 'policy.rows.1.control.options.1.1', 'policy.rows.1.control.options.2.1', 'policy.rows.1.text.1.1',
+        'policy.warning.text',
         'status.text', 'surfaces.0.actions.0.buttons.0.text', 'surfaces.1.actions.0.buttons.0.text', 'surfaces.1.actions.length',
         'surfaces.1.tree.3', 'surfaces.1.tree.length']);
     // A renamed label, a removed row, a lost danger mark and a swapped token are noticed.

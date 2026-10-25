@@ -13,12 +13,16 @@
  *   hold line, the D55 backup box and Cancel / "Restore" (`danger`). Leaving it any way but Restore discards the stage
  *   (`DELETE /prompt_manager/restore/preview/<token>`). Restore starts the "Database restore" Activity job (exclusive,
  *   not cancellable) and opens its view; a finished restore reloads the open views (`onRestoreFinished`, index.mjs).
- *   A file the server refuses toasts its validator's reason; nothing is staged.
+ *   I1: a Restore the server refuses as busy reopens the same review (Restore retries, Discard releases); a job that
+ *   hands its review back (the leases did not drain) reopens it in this page (`onRestoreHandedBack`, index.mjs);
+ *   every other path that abandons the token discards it. The picker has no type filter (M3: the safety backups have
+ *   no `.db` extension); a file the server refuses toasts its validator's reason, and nothing is staged.
  * - "Portable export": D103 "Export JSON" downloads the Library document (`/library/export`); the secondary row
- *   downloads the legacy components list (`/export`) and the saved pairs (`/pairs/export`). "Import / inspect file"
+ *   downloads every prompt (`/export`, the legacy admin Export) and the saved pairs (`/pairs/export`). "Import / inspect file"
  *   opens the shared "Import & inspect" (D15, D55): Inspect a local image, Rescan and Scan for metadata.
  * - D104 "Recovery policy" (the concept's "Proposed" chip kept, Q4): "Create a safety backup before maintenance" is
- *   the server's `safety_backup` policy, drafted behind the Save row and saved with the revision; "Scheduled database
+ *   the server's `safety_backup` policy (its line says what it does), drafted behind the Save row and saved with the
+ *   revision; "Scheduled database
  *   backups" offers Manual only, Daily and Weekly disabled with the reason; the warning note is truthful.
  *
  * Every request goes through the api client (or `fetchUrl` for a download or an upload); every listener sits on the
@@ -28,8 +32,8 @@ import { createButton } from '../shared/toolkit/core.js';
 import { navigateTo } from './state.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { settingRow } from './system-controls.mjs';
-import { busyToast, downloadDatabaseBackup, openMetadataScan } from './activity-scan.mjs';
-import { applyPlan } from './maintenance-review.mjs';
+import { busyToast, downloadDatabaseBackup, openMetadataScan, saveResponse } from './activity-scan.mjs';
+import { applyPlan, holding } from './maintenance-review.mjs';
 import { RESCAN_FAILED, RESCAN_STARTED, openImportDialog, openReviewDialog, rescanFinished } from './workspace-dialogs.mjs';
 import { noun } from './plural.mjs';
 
@@ -51,13 +55,20 @@ export const SOURCES_FAILED = 'The output folders could not be read. Try again.'
 export const HOST_UNAVAILABLE = 'Server settings could not be read.';
 export const SCHEDULE_REASON = 'Daily and Weekly are not available yet: back up with Back up whenever you choose.';
 export const WARNING_NOTE = 'Restores are staged, migrated and validated before replacing live data.';
+// D104 (M2): what the safety-backup policy does (the concept's "Preview a verified backup…" line misstates it).
+export const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups and LoRA ' +
+    'imports change records. A restore always keeps one.';
+// I1: a third review while two are held (another window's): what the user can do about it.
+export const REVIEWS_FULL = 'Two restores are already being reviewed in another window. Discard one there, or try again ' +
+    'when it expires (15 minutes after it was reviewed).';
 export const RESTORE_BACKUP_COPY = Object.freeze({ heading: 'Back up the database first (recommended)',
     text: 'Downloads a copy of the prompts database before the restore replaces it.' });
 
 /** D103: the concept's Export plus the two secondary exports: `[label, url, fallback file name]`. */
 export const EXPORTS = Object.freeze([
     ['Export JSON', '/prompt_manager/library/export', 'prompt-manager-library-v1.json'],
-    ['Export components JSON', '/prompt_manager/export', 'prompt-manager-components.json'],
+    // N1: the legacy admin page's Export: every prompt, as `{export_date, total_prompts, prompts}`.
+    ['Export all prompts JSON', '/prompt_manager/export', 'prompt_manager_prompts.json'],
     ['Export saved pairs JSON', '/prompt_manager/pairs/export', 'prompt-pairs.json'],
 ]);
 
@@ -118,10 +129,15 @@ export function integrityText(preview) {
     return parts.join(' · ');
 }
 
+/** A file size: whole KB below 1 MB (never "0.0 MB"), else MB with one decimal. */
+function sizeText(bytes) {
+    if (bytes < 2 ** 20) return `${number(Math.max(1, Math.round(bytes / 1024)))} KB`;
+    return `${(bytes / 2 ** 20).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+}
+
 /** The Snapshot value: the chosen file's name, size and date. */
 export function snapshotText(file) {
-    const size = Number.isFinite(file?.size) ? ` · ${(file.size / 2 ** 20).toLocaleString('en-US', { minimumFractionDigits: 1,
-        maximumFractionDigits: 1 })} MB` : '';
+    const size = Number.isFinite(file?.size) ? ` · ${sizeText(file.size)}` : '';
     const when = Number.isFinite(file?.lastModified) ? whenText(new Date(file.lastModified).toISOString()) : null;
     return `${file?.name ?? 'Backup file'}${size}${when ? ` · ${when}` : ''}`;
 }
@@ -155,6 +171,7 @@ export function restoreNote(preview, { now = Date.now() } = {}) {
 /** The toast for a review the server refused (its reason, a running job) or that could not be read. */
 export function reviewRefusal(error) {
     if (error?.code === 'busy') return busyToast(error.running);
+    if (error?.status === 429) return REVIEWS_FULL;
     if (error?.refused === true && typeof error.message === 'string' && error.message) {
         if (error.code === 'invalid-backup') return `This file can't be restored: ${error.message.replace(/\.?$/, '.')}`;
         return error.message;
@@ -188,18 +205,63 @@ export function discardRestore(token, { fetchUrl = window.ApiClient.fetchUrl } =
         .then(() => {}, () => {});
 }
 
-/** Hold `trigger` aria-disabled with `busyText` while `work()` runs; a second press is ignored. */
-async function holding(trigger, busyText, work) {
-    if (trigger?.getAttribute('aria-disabled') === 'true') return;
-    const text = trigger?.textContent;
-    trigger?.setAttribute('aria-disabled', 'true');
-    if (trigger) trigger.textContent = busyText;
-    try {
-        await work();
-    } finally {
-        trigger?.removeAttribute('aria-disabled');
-        if (trigger) trigger.textContent = text;
-    }
+/**
+ * I1: what to do with a reviewed token once Restore was pressed: `follow` the started job (the page keeps the review
+ * until it ends, in case the job hands it back), `reopen` the review after a busy refusal (the server keeps the token:
+ * Restore retries, Discard releases), and `release` it on every other path (a refusal that dropped it, a used one, a
+ * lost answer): a DELETE of a token the server no longer holds, or a job took, changes nothing.
+ */
+export function afterApply(outcome) {
+    if (outcome?.job) return 'follow';
+    if (outcome?.refused?.code === 'busy') return 'reopen';
+    return 'release';
+}
+
+// I1: the reviews whose restore job is running, by job id, so a job that hands its review back reopens it here.
+const startedReviews = new Map();
+
+/** Keep `review` (`{token, preview, file}`) until the restore job `jobId` ends. */
+export function rememberRestore(jobId, review) {
+    startedReviews.set(jobId, review);
+}
+
+/**
+ * Call `onKept(review)` when a restore job this page started fails and the server kept its review
+ * (`scope.review_kept`, the leases did not drain); any other end forgets the review (the server discarded or used its
+ * stage). Returns the unsubscribe.
+ */
+export function onRestoreHandedBack(activity, onKept) {
+    return activity.subscribe(() => {
+        for (const job of activity.jobs()) {
+            if (job.kind !== RESTORE_KIND || job.state === 'running' || !startedReviews.has(job.id)) continue;
+            const review = startedReviews.get(job.id);
+            startedReviews.delete(job.id);
+            if (job.state === 'failed' && job.scope?.review_kept === true) onKept(review);
+        }
+    });
+}
+
+/**
+ * D105: "Restore preview" for a staged `preview` of `file`. Leaving it any way but Restore discards the stage; after a
+ * refusal or a handed-back job (`again`), Cancel reads "Discard". Restore applies exactly this token and acts on the
+ * outcome (`afterApply`).
+ */
+export function showRestoreReview({ api, store, scope, preview, file, trigger = null, onBackup = () => downloadDatabaseBackup(),
+    again = false, reviewAgain = null, notify = showWorkspaceToast, navigate = navigateTo, fetchUrl = window.ApiClient.fetchUrl }) {
+    const token = preview.token;
+    const show = (retry, shownScope = scope) => showRestoreReview({ api, store, scope: shownScope, preview, file, trigger,
+        onBackup, again: retry, reviewAgain, notify, navigate, fetchUrl });
+    openReviewDialog({ scope, trigger, title: RESTORE_TITLE, grid: restoreGrid(preview, file),
+        sentence: restoreNote(preview), backup: { copy: RESTORE_BACKUP_COPY, onBackup },
+        cancelLabel: again ? 'Discard' : 'Cancel', primary: { label: RESTORE_LABEL, danger: true },
+        onDismiss: () => discardRestore(token, { fetchUrl }),
+        onStart: async () => {
+            const outcome = await applyPlan({ api, store, scope, token, reviewAgain, notify, navigate, url: APPLY_URL });
+            const next = afterApply(outcome);
+            if (next === 'follow') rememberRestore(outcome.job.id, { token, preview, file });
+            else if (next === 'reopen' && !scope.signal.aborted) show(true);
+            else discardRestore(token, { fetchUrl });
+        } });
 }
 
 /**
@@ -220,13 +282,8 @@ export async function reviewRestore({ api, store, scope, file, trigger = null, h
             discardRestore(preview.token, { fetchUrl });
             return;
         }
-        const again = () => reviewRestore({ api, store, scope, file, trigger, onBackup, notify, navigate, fetchUrl });
-        openReviewDialog({ scope, trigger, title: RESTORE_TITLE, grid: restoreGrid(preview, file),
-            sentence: restoreNote(preview), backup: { copy: RESTORE_BACKUP_COPY, onBackup },
-            cancelLabel: 'Cancel', primary: { label: RESTORE_LABEL, danger: true },
-            onDismiss: () => discardRestore(preview.token, { fetchUrl }),
-            onStart: () => applyPlan({ api, store, scope, token: preview.token, reviewAgain: again, notify, navigate,
-                url: APPLY_URL }) });
+        const reviewAgain = () => reviewRestore({ api, store, scope, file, trigger, onBackup, notify, navigate, fetchUrl });
+        showRestoreReview({ api, store, scope, preview, file, trigger, onBackup, reviewAgain, notify, navigate, fetchUrl });
     });
 }
 
@@ -244,15 +301,7 @@ export async function downloadExport([, url, fallback], { fetchUrl = window.ApiC
         if (!response.ok) throw new Error(`Export failed with ${response.status}`);
         const blob = await response.blob();
         if (signal?.aborted) return false;
-        const href = URL.createObjectURL(blob);
-        const link = el('a');
-        link.href = href;
-        link.download = filenameOf(response, fallback);
-        link.hidden = true;
-        document.body.append(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 1000);
+        saveResponse(blob, filenameOf(response, fallback));
         return true;
     } catch {
         if (!signal?.aborted) notify(EXPORT_FAILED);
@@ -311,7 +360,7 @@ export function mountBackups(container, { api, activity, scope, drafts, notify =
     const restore = createButton('Review restore…', 'danger');
     const picker = el('input');
     picker.type = 'file';
-    picker.accept = '.db';
+    // M3: no type filter: the safety backups (`prompts.db.backup_<time>`) have no `.db` extension; the server validates.
     picker.hidden = true;
     picker.id = 'restore-file';
     picker.setAttribute('aria-label', 'Backup file to restore');
@@ -386,7 +435,7 @@ export function mountBackups(container, { api, activity, scope, drafts, notify =
     const heading = el('h2', 'Recovery policy ');
     heading.append(el('span', 'Proposed', 'chip blue'));
     const safety = settingRow({ id: 'backup-before', label: 'Create a safety backup before maintenance',
-        description: 'Preview a verified backup before applying operations that change records.',
+        description: SAFETY_DESCRIPTION,
         control: { type: 'toggle' }, scope, onChange: value => drafts.set('host', 'safety_backup', value) });
     const safetyInput = safety.querySelector('#backup-before');
     safetyInput.dataset.key = 'safety_backup';

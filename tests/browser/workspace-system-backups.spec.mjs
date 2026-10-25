@@ -10,6 +10,8 @@ const STATUS_URL = '/prompt_manager/backup/status';
 const PREVIEW_URL = '/prompt_manager/restore/preview';
 const APPLY_URL = '/prompt_manager/restore/apply';
 const WHEN = { dateStyle: 'medium', timeStyle: 'short' };
+const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups and LoRA imports change ' +
+    'records. A restore always keeps one.';
 
 test.use({ locale: 'en-US', timezoneId: 'UTC' });
 
@@ -154,7 +156,7 @@ test('Review restore stages the chosen file and shows the real summary with the 
         `${summary.pairs} ${summary.pairs === 1 ? 'saved pair' : 'saved pairs'} · ${summary.runs} ${summary.runs === 1 ? 'run' : 'runs'}`;
     const rows = await gridOf(page);
     expect(rows.map(([term]) => term)).toEqual(['Snapshot', 'Integrity', 'Migration', 'Safety backup', 'In the backup', 'In the library now']);
-    expect(rows[0][1]).toMatch(/^prompts_backup_20261025_093000\.db · \d+\.\d MB · .+$/);
+    expect(rows[0][1]).toMatch(/^prompts_backup_20261025_093000.db · (\d+ KB|\d+\.\d MB) · .+$/);
     expect(rows.slice(1)).toEqual([['Integrity', 'Verified'], ['Migration', 'Current schema'],
         ['Safety backup', `Created before replacing (${preview.safety_backup.destination_label})`],
         ['In the backup', counts(preview.summary)], ['In the library now', counts(preview.live)]]);
@@ -264,14 +266,14 @@ test('invalid file shows the validator message; nothing is staged', async ({ pag
     expect(await serverJson(request, '/__test__/system/digest')).toEqual(before);
 });
 
-test('Export JSON downloads /library/export; secondary buttons download /export and /pairs/export (D103)', async ({ page }) => {
+test('Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103)', async ({ page }) => {
     const layout = await openBackups(page);
     const portable = layout.locator('section.surface').filter({ has: page.locator('h2', { hasText: 'Portable export' }) });
     expect(await portable.locator('.row-actions > button').allTextContents())
-        .toEqual(['Export JSON', 'Import / inspect file', 'Export components JSON', 'Export saved pairs JSON']);
+        .toEqual(['Export JSON', 'Import / inspect file', 'Export all prompts JSON', 'Export saved pairs JSON']);
     for (const [label, url, name, kind] of [
         ['Export JSON', '/prompt_manager/library/export', /^prompt-manager-library-v1\.json$/, 'prompt-manager-library'],
-        ['Export components JSON', '/prompt_manager/export', /^prompt_manager_\d{8}_\d{6}\.json$/, null],
+        ['Export all prompts JSON', '/prompt_manager/export', /^prompt_manager_\d{8}_\d{6}\.json$/, null],
         ['Export saved pairs JSON', '/prompt_manager/pairs/export', /^prompt-pairs\.json$/, 'prompt-manager-pairs']]) {
         const download = page.waitForEvent('download');
         const answer = page.waitForResponse(response => new URL(response.url()).pathname === url);
@@ -329,7 +331,10 @@ test('safety backup toggle saves through Save preferences with revision (D104)',
     const before = await serverJson(request, '/prompt_manager/settings');
     expect(before.settings.safety_backup).toBe(true);
     await openBackups(page);
-    const toggle = settingOf(page, 'Create a safety backup before maintenance').locator('input');
+    const row = settingOf(page, 'Create a safety backup before maintenance');
+    // D104: what the policy really does (the concept's "Preview a verified backup…" line does not say it).
+    await expect(row.locator('p').first()).toHaveText(SAFETY_DESCRIPTION);
+    const toggle = row.locator('input');
     await expect(toggle).toBeChecked();
     await toggle.uncheck();
     await expect(settingsStatus(page)).toHaveText('Unsaved changes.');
@@ -385,4 +390,100 @@ test('the legacy admin Backup and Restore keep working', async ({ page, request 
     expect((await restored.json()).success).toBe(true);
     await page.goto('/prompt_manager/admin');
     await expect(page.locator('#restoreFileInput')).toHaveCount(1);
+});
+
+/** Start a fake running job (a metadata scan another tab started), which an exclusive restore must wait for. */
+async function runningScan(request) {
+    const response = await request.post('/__test__/jobs/start', { data: { kind: 'scan', title: 'Metadata scan', total: 4 } });
+    await expect(response).toBeOK();
+    return (await response.json()).job;
+}
+
+const stagesOf = async request => (await serverJson(request, '/__test__/system/backups')).stages;
+const deleted = page => page.waitForResponse(response => response.url().includes(`${PREVIEW_URL}/`) &&
+    response.request().method() === 'DELETE');
+
+test('a refused restore reopens its review: Restore retries it, Discard releases it (I1)', async ({ page, request }) => {
+    const bytes = await backupBytes(request);
+    await openBackups(page);
+    await chooseBackup(page, bytes);
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+    const scan = await runningScan(request);
+    const refused = page.waitForResponse(response => response.url().endsWith(APPLY_URL));
+    await dialog(page).getByRole('button', { name: 'Restore', exact: true }).click();
+    expect((await refused).status()).toBe(409);
+    await expect(toast(page)).toHaveText('Another job is running: Metadata scan.');
+    // The same review is open again, its stage still held: Restore retries, Discard releases it.
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+    await expect(dialog(page).locator('.dialog-actions > button')).toHaveText(['Discard', 'Restore']);
+    expect(await stagesOf(request)).toBe(1);
+    await expect(await request.post(`/__test__/jobs/${scan.id}/finish`, { data: { state: 'finished' } })).toBeOK();
+    const applied = page.waitForResponse(response => response.url().endsWith(APPLY_URL));
+    await dialog(page).getByRole('button', { name: 'Restore', exact: true }).click();
+    const { job } = await (await applied).json();
+    await expect(page).toHaveURL(`${workspace}#/activity/${job.id}`);
+    await expect(toast(page)).toHaveText(/^Database restore finished · /);
+    expect(await stagesOf(request)).toBe(0);
+});
+
+test('two refused restores in a row, then a third Review restore… still opens the preview (I1)', async ({ page, request }) => {
+    const bytes = await backupBytes(request);
+    await openBackups(page);
+    await runningScan(request);
+    for (const leave of ['discard', 'escape']) {
+        await chooseBackup(page, bytes);
+        await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+        const refused = page.waitForResponse(response => response.url().endsWith(APPLY_URL));
+        await dialog(page).getByRole('button', { name: 'Restore', exact: true }).click();
+        expect((await refused).status()).toBe(409);
+        await expect(dialog(page).locator('.dialog-actions > button')).toHaveText(['Discard', 'Restore']);
+        const released = deleted(page);
+        if (leave === 'discard') await dialog(page).getByRole('button', { name: 'Discard', exact: true }).click();
+        else await page.keyboard.press('Escape');
+        expect((await released).status()).toBe(200);
+        await expect(dialog(page)).toHaveCount(0);
+        expect(await stagesOf(request)).toBe(0);
+    }
+    const answer = await chooseBackup(page, bytes);
+    expect((await answer).status()).toBe(200);
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+    expect(await stagesOf(request)).toBe(1);
+});
+
+test('× and leaving the section or the page discard the stage (M1)', async ({ page, request }) => {
+    const bytes = await backupBytes(request);
+    await openBackups(page);
+    const leaves = [
+        ['×', () => page.locator('#modal-close').click()],
+        // The modal covers the page, so the section changes as a link or the Back button changes it: by its hash.
+        ['section', () => page.evaluate(() => { window.location.hash = '#/system/maintenance'; })],
+        ['route', () => page.evaluate(() => { window.location.hash = '#/images'; })],
+    ];
+    for (const [name, leave] of leaves) {
+        if (!page.url().endsWith('#/system/backups')) {
+            await page.goto(`${workspace}#/system/backups`);
+            await expect(statusLine(page)).not.toHaveText('Checking backups…');
+        }
+        await chooseBackup(page, bytes);
+        await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+        expect(await stagesOf(request), name).toBe(1);
+        // A keepalive DELETE (it may outlive the page) is asserted by its request and the server's stage count.
+        const released = page.waitForRequest(item => item.url().includes(`${PREVIEW_URL}/`) && item.method() === 'DELETE');
+        await leave();
+        await released;
+        await expect(dialog(page)).toHaveCount(0);
+        await expect.poll(() => stagesOf(request), { message: name }).toBe(0);
+    }
+});
+
+test('a safety backup file (no .db extension) can be picked and reviewed (M3)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/safety-backup')).toBeOK();
+    const bytes = await backupBytes(request);
+    await openBackups(page);
+    // The picker lists every file; the server decides what is a database.
+    await expect(page.locator('#restore-file')).not.toHaveAttribute('accept', /./);
+    const answer = await chooseBackup(page, bytes, 'prompts.db.backup_20261025_093000_000000');
+    expect((await answer).status()).toBe(200);
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+    expect((await gridOf(page))[0][1]).toMatch(/^prompts\.db\.backup_20261025_093000_000000 · \d+ KB · .+$/);
 });

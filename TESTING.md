@@ -2630,14 +2630,17 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   `<db>.backup_*`, else "No backup recorded."; "Checking backups…" while read and "The
   backup status could not be read." when it failed (never "no backup"). Portable
   export's "Export JSON" (the concept's "Export sample JSON") downloads the Library
-  document (`/library/export`); a second `.row-actions.spaced` adds "Export components
-  JSON" (`/export`, the legacy prompt list) and "Export saved pairs JSON"
+  document (`/library/export`); a second `.row-actions.spaced` adds "Export all prompts
+  JSON" (`/export`, the legacy admin page's Export of every prompt) and "Export saved pairs JSON"
   (`/pairs/export`), plain buttons as the concept's; a failed export toasts "The export
   could not be downloaded. Nothing was saved to this device." "Import / inspect file"
   opens the shared "Import & inspect" (D15, D55), as Images does.
 - **D104** (Backup & export, S9, Q4): Recovery policy keeps the concept's "Proposed" chip.
   "Create a safety backup before maintenance" is the server's `safety_backup`
-  (`maintenance.safety_backup`) policy, drafted behind the Save row and saved with
+  (`maintenance.safety_backup`) policy. Its line says what it does ("Keep a verified copy
+  of the database on disk before maintenance, cleanups and LoRA imports change records. A
+  restore always keeps one."); the concept's "Preview a verified backup before applying
+  operations that change records." describes nothing the server does. It is drafted behind the Save row and saved with
   `expected_revision` (a configuration changed elsewhere is the conflict status); it is
   disabled with "Server settings could not be read." when the read failed. "Scheduled
   database backups" offers Manual only; Daily and Weekly stay listed but disabled
@@ -2645,13 +2648,14 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   back up with Back up whenever you choose." (the concept's proposal line is
   prototype copy) and nothing is drafted for it. The warning note reads "Restores are
   staged, migrated and validated before replacing live data."
-- **D105** (Backup & export, S9): "Review restore…" picks a `.db` file and stages it
+- **D105** (Backup & export, S9): "Review restore…" picks a file (no type filter: the
+  safety backups `<db>.backup_<time>` have no `.db` extension; the server validates) and stages it
   (`POST /prompt_manager/restore/preview`, multipart through `fetchUrl`; the button reads
   "Reviewing…" meanwhile). "Restore preview" is the shared review: no sample note; the
   concept's `dl.meta-grid` Snapshot (file name · size · date), Integrity ("Verified" plus
   the stage's document repairs), Migration ("Current schema" / "Upgraded to the current
   schema"), Safety backup ("Created before replacing (<label>)": the restore always
-  keeps one), then "In the backup" and "In the library now" (prompts, image links, saved
+  keeps one; the Snapshot size is whole KB below 1 MB), then "In the backup" and "In the library now" (prompts, image links, saved
   pairs, runs); a `p.small` "Restore replaces the whole library with this backup and
   runs alone in Activity. Nothing changes until you restore. This review holds for N
   minutes."; the D55 backup box ("Downloads a copy of the prompts database before the
@@ -2660,7 +2664,18 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   leaving) discards the stage (`DELETE …/preview/<token>`). Restore starts the "Database
   restore" Activity job (exclusive, not cancellable, indeterminate; its descriptor ends
   with the server's line) and opens its view; a review the server asks to redo (expired,
-  library changed) stages the same file again. When a restore the page saw running
+  library changed) stages the same file again. A Restore refused as `busy` (another job
+  runs; the server keeps the token) opens the same review again with "Discard" / "Restore":
+  Restore retries, Discard (or leaving) releases it. A job whose leases did not drain
+  hands its review back (`scope.review_kept`, "…The review was reopened in the page that
+  started the restore: restore it again there, or discard it."): the page that started it
+  opens the review again over the page shown now, with Discard / Restore. Every other path
+  that abandons a token after Restore (a used, expired or replaced review, a lost answer)
+  sends its DELETE, which changes nothing for a token the server dropped or a job took. A
+  third review while two are held elsewhere toasts "Two restores are already being
+  reviewed in another window. Discard one there, or try again when it expires (15 minutes
+  after it was reviewed)." An upload whose answer is lost because the section was left
+  mid-response is not discarded by the page: the server's 15-minute expiry removes it. When a restore the page saw running
   finishes, the cached Images and Library visits are dropped, the sidebar counts and
   saved views are read again and the open route is shown again (the Activity job view
   stays). A refused file toasts "This file can't be restored: <validator reason>.". A
@@ -3397,7 +3412,8 @@ the executor. `POST /prompt_manager/restore/apply {token}` rechecks the live fin
 `plan-changed`, stage dropped) and starts "Database restore": kind `restore`, admission
 `exclusive` (it runs alone, like Move library and Optimize), not cancellable,
 indeterminate. Its runner waits for request leases (when they outlast the wait the job
-fails `busy` and the review is kept under its token), rechecks the fingerprint,
+fails `busy` and the review is kept under its token, flagged `scope.review_kept` for the
+page that started it), rechecks the fingerprint,
 publishes, swaps `self.db`, prunes the pool and logs the safety backup by name, any
 document repair and the restored counts; a failed page copy keeps the safety backup and
 says so. Once the copy replaced the library the restore succeeded: pruning, reopening
@@ -3437,7 +3453,9 @@ swaps tokens. `tests/browser/workspace-system-backups.spec.mjs` covers Back up a
 revoked object URL, the status line against the server (none, a safety backup, a failed
 read), Overview's row, the restore review against the preview (and that it writes
 nothing), Cancel and Escape discarding the stage, a restore through Activity that
-reloads the counts and the open Library, an invalid file, the three exports and a
+reloads the counts and the open Library, a busy refusal reopened and retried, two
+refusals then a third review, ×, a section and a route leave discarding, a safety-backup
+file name, an invalid file, the three exports and a
 failed one, Import / inspect (Rescan while running, Scan for metadata, Inspect), the
 safety-backup policy with its revision and a conflict, the schedule, a failed settings
 read and the legacy routes. The fixture (`workspace_system_fixture.py`) writes a safety

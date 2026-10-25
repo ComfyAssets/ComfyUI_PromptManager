@@ -18,7 +18,7 @@ import { mountInspect } from './inspect.mjs';
 import { mountReview } from './review.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
-import { onRestoreFinished } from './system-backups.mjs';
+import { onRestoreFinished, onRestoreHandedBack, showRestoreReview } from './system-backups.mjs';
 import { mountLibraryBanner } from './library-location.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
 
@@ -168,6 +168,11 @@ function mountWorkspace() {
         refreshCounts(NAV_COUNT_ROUTES);
         savedViews.load();
         if (currentKey !== 'activity') navigateTo(window.location.hash);
+    }));
+    // S9 I1: a restore this page started that could not run yet (other requests kept reading) hands its review back:
+    // it opens again over the page shown now, with Restore (again) and Discard; leaving it any other way discards it.
+    scope.cleanup(onRestoreHandedBack(activity, review => {
+        if (viewScope && !viewScope.signal.aborted) showRestoreReview({ api, store: activity, scope: viewScope, ...review, again: true });
     }));
     let viewScope;
     let firstRender = true;

@@ -32,8 +32,8 @@ export function backupFilename(disposition, fallback = FALLBACK_NAME) {
     return match ? match[1] : fallback;
 }
 
-/** Save a fetched response through a temporary link, named by `filename`. */
-function saveResponse(blob, filename) {
+/** Save a fetched response through a temporary link, named by `filename` (also System's exports, S9). */
+export function saveResponse(blob, filename) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
