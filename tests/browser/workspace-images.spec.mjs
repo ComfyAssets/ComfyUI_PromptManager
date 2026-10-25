@@ -2184,6 +2184,8 @@ test('scan for metadata opens the review dialog from Import', async ({ page, req
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(scanReview(page)).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeFocused();
-    const jobs = await (await request.get('/prompt_manager/jobs')).json();
-    expect(jobs.jobs).toEqual([]);
+    // No scan started: the one job is the backup's finished registry hold
+    // (#249 S8: a backup download holds a guarded slot while it streams).
+    await expect.poll(async () => (await (await request.get('/prompt_manager/jobs')).json()).jobs
+        .map(job => [job.kind, job.state])).toEqual([['backup', 'finished']]);
 });
