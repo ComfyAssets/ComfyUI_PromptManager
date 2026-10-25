@@ -56,9 +56,17 @@ async function linkedTo(execution, filename, expected) {
         { timeout: 20000, message: `${filename} is linked by the image monitor` }).toBe(expected);
 }
 
+async function monitoring(execution, enabled) {
+    const response = await execution.request.post('/pm_execution_fixture/monitor', { data: { enabled } });
+    expect(response.ok()).toBe(true);
+    expect((await response.json()).monitoring).toBe(enabled);
+}
+
 test.beforeEach(async ({ execution }) => {
     expect((await execution.request.post('/pm_execution_fixture/metadata', { data: { disabled: false } })).ok()).toBe(true);
+    await monitoring(execution, true);
 });
+test.afterEach(async ({ execution }) => { await monitoring(execution, false); });
 
 test('an output whose positive is only linked prepend text stays unlinked, never given an earlier prompt', async ({ execution }, testInfo) => {
     const tag = `${testInfo.project.name} ${randomUUID()}`;

@@ -255,3 +255,41 @@ async def cache_mode(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest()
     _CACHE_MODE = mode
     return web.json_response({"configured": True})
+
+
+def _plugin_module(suffix: str):
+    """A loaded PromptManager module (ComfyUI names the package by its path)."""
+    import sys
+
+    for name, module in list(sys.modules.items()):
+        if name.endswith("promptmanager." + suffix):
+            return module
+    raise web.HTTPServiceUnavailable(text=f"PromptManager {suffix} not loaded")
+
+
+@PromptServer.instance.routes.post("/pm_execution_fixture/monitor")
+async def image_monitor(request: web.Request) -> web.Response:
+    """Start or stop PromptManager's image monitor on the host output folder.
+
+    The managed host's config disables monitoring; only the attribution cases
+    (#342) turn it on, and they turn it off again.
+    """
+    enabled = (await request.json())["enabled"]
+    if type(enabled) is not bool:
+        raise web.HTTPBadRequest()
+    import folder_paths
+
+    monitor_module = _plugin_module("utils.image_monitor")
+    config = _plugin_module("py.config").GalleryConfig
+    monitor = monitor_module._monitor_instance
+    if monitor is None:
+        database = _plugin_module("database.operations").PromptDatabase()
+        tracker = _plugin_module("utils.prompt_tracker").get_prompt_tracker(database)
+        monitor = monitor_module.get_image_monitor(database, tracker)
+    if enabled:
+        config.MONITORING_ENABLED = True
+        monitor.start_monitoring([folder_paths.get_output_directory()])
+    else:
+        monitor.stop_monitoring()
+        config.MONITORING_ENABLED = False
+    return web.json_response({"monitoring": monitor.is_monitoring})
