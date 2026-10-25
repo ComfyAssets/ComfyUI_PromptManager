@@ -3217,7 +3217,14 @@ replace binds the category, not one parameter per prompt, so SQLite's variable l
 never caps a collection. Cached CivitAI images are written to a `.pm-*.part` file in the
 same folder and renamed into place, with the umask's mode as a plain save gives; each import
 first removes `.pm-*.part` files older than an hour from the image cache and its LoRA
-folders (`TestStaleDownloadSweep`). The legacy `POST /lora/scan` runs the same stages under its SSE
+folders (`TestStaleDownloadSweep`). A download starts only at an HTTPS `civitai.com`,
+`civitai.red` or `civitai.green` host from the fixed `CIVITAI_HOSTS` list (the key goes
+with that first request only); a redirect is followed only over HTTPS to one of those
+domains or a subdomain (parsed host name, default port, no credentials), at most three
+hops, without the key (`TestCivitaiRedirects`, `TestCivitaiRedAndGreenDomains`). Each
+failed download logs one warning naming the URL without its query and a short reason
+(HTTP status, refused redirect, hop limit, size cap, decode or save error, timeout or
+network error), never the key (`TestDownloadFailureWarnings`). The legacy `POST /lora/scan` runs the same stages under its SSE
 event shape; a page that closes its connection stops staging before its next LoRA, and the
 scan keeps its records hold until staging has stopped, then ends `cancelled` in Activity
 (`test_a_disconnected_legacy_scan_stops_and_holds_until_it_stopped`) (`test_legacy_scan_events_unchanged_on_success`), holds
