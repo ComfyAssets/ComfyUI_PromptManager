@@ -56,6 +56,8 @@ async function openIntegrations(page) {
     await expect(layoutOf(page).locator(':scope > section.surface')).toHaveCount(2);
     // The LoRA rows are painted once the server's LoRA state was read.
     await expect(settingOf(page, 'LoraManager integration').locator('input')).toBeEnabled();
+    // The renderer line settles first: its new text moves the rows below, so no click lands mid-shift.
+    await expect(settingOf(page, 'Host compatibility').getByRole('status')).not.toHaveText('Looking for open ComfyUI windows…');
     return layoutOf(page);
 }
 

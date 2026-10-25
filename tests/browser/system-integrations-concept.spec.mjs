@@ -264,6 +264,8 @@ async function conceptReview(page, theme) {
 async function productionReview(page, request, theme) {
     await openProduction(page, 'system/integrations', theme);
     await expect(page.locator('#workspace-main #lora-path')).toHaveValue('custom_nodes/ComfyUI-Lora-Manager');
+    // The renderer line above settles first: its new text moves the rows below (a click must not land mid-shift).
+    await expect(page.locator('#workspace-main .setting-row [role="status"]')).toHaveText(RENDERER_NONE);
     // The import reviews what is enabled: save the integration on first.
     await page.locator('#workspace-main #lora-enable').check();
     await page.getByRole('button', { name: 'Save preferences', exact: true }).click();
