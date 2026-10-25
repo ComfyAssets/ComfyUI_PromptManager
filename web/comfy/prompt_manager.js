@@ -5,7 +5,7 @@ import { api } from "../../scripts/api.js";
 const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
 const { installFocusedNode, installSplitNode, installPairNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
 const { installPromptBridge } = await import(api.fileURL('/prompt_manager/js/prompt-bridge-host.js'));
-const { isLinked, linkNoteText, storedWidgetValue } = await import(api.fileURL('/prompt_manager/js/text-links.js'));
+const { collapseLinkedWidget, isLinked, linkNoteText, primitiveTextValue, storedWidgetValue } = await import(api.fileURL('/prompt_manager/js/text-links.js'));
 const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']);
 
 // ============================================================================
@@ -228,6 +228,25 @@ function syncPromptManagerWidgets() {
   }
 }
 
+/**
+ * #343: a legacy frontend Primitive linked to a PromptManager text input runs with the Primitive's value.
+ * The Primitive writes into the target's widget, but the editor text inputs are no longer bound to their hidden
+ * widgets, so the queued value would otherwise be the hidden typed text while the editor says "linked".
+ */
+function applyPrimitiveText(output) {
+  const nodes = app.graph?._nodes || app.graph?.nodes || [];
+  if (!output) return;
+  for (const node of nodes) {
+    const inputs = promptManagerTypes.has(node.type) ? output[node.id]?.inputs : null;
+    if (!inputs) continue;
+    for (const name of ['text', 'negative_text']) {
+      if (Array.isArray(inputs[name])) continue;
+      const value = primitiveTextValue(node, name);
+      if (value !== undefined) inputs[name] = value;
+    }
+  }
+}
+
 app.registerExtension({
   name: "PromptManager.UI",
 
@@ -243,7 +262,9 @@ app.registerExtension({
     const originalGraphToPrompt = app.graphToPrompt.bind(app);
     app.graphToPrompt = async function(...args) {
       syncPromptManagerWidgets();
-      return originalGraphToPrompt(...args);
+      const result = await originalGraphToPrompt(...args);
+      applyPrimitiveText(result?.output);
+      return result;
     };
 
     // CRITICAL FIX: Intercept api.queuePrompt to fix prompt data at the LAST moment
@@ -270,6 +291,7 @@ app.registerExtension({
         }
       }
 
+      applyPrimitiveText(output);
       return originalQueuePrompt(number, { output, workflow }, ...rest);
     };
   },
@@ -503,7 +525,10 @@ app.registerExtension({
         return note;
       };
       nodeType.prototype.renderTextLink = function () {
-        if (this._textLinkNote) this._textLinkNote.hidden = !isLinked(this, "text");
+        const linked = isLinked(this, "text");
+        if (this._textLinkNote) this._textLinkNote.hidden = !linked;
+        collapseLinkedWidget(this.widgets?.find((w) => w.name === "text"), linked);
+        this.setDirtyCanvas?.(true, true);
       };
 
       // Override onRemoved to cleanup styles
@@ -540,7 +565,7 @@ app.registerExtension({
         searchSection.style.gap = "8px";
 
         const linkNote = this.createTextLinkNote();
-        linkNote.style.cssText = "margin: 0; color: #f9a825; font-size: 12px;";
+        linkNote.style.cssText = "margin: 0; color: var(--fg-color); font-size: 12px;";
         searchSection.appendChild(linkNote);
 
         // Search buttons row

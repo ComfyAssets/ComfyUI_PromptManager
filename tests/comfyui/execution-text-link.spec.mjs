@@ -13,8 +13,9 @@ import { installHostHooks } from './host-fixture.mjs';
 test.beforeEach(async ({ execution }) => { expect(execution.databasePath).toBeTruthy(); });
 installHostHooks(test, ['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerPair', 'PMHistoryInputs']);
 
-// `primitive`: a core string node the queue-time resolver follows. `preview`: PrimitiveString -> PreviewAny, the
-// shape of the maintainer's TextGenerate -> PreviewAny chain, whose text is only known when the node runs.
+// `primitive`: a core string node the queue-time resolver follows. `legacy`: the frontend's virtual Primitive node,
+// whose value is queued as literal text. `preview`: PrimitiveString -> PreviewAny, the shape of the maintainer's
+// TextGenerate -> PreviewAny chain, whose text is only known when the node runs.
 function build(page, { kind, positive, negative, prefix }) {
     return page.evaluate(async ({ kind, positive, negative, prefix }) => {
         const { app } = await import('/scripts/app.js');
@@ -29,6 +30,13 @@ function build(page, { kind, positive, negative, prefix }) {
         if (negative) set('negative_text', negative.typed);
         const drive = (name, side, y) => {
             if (!side.via) return;
+            if (side.via === 'legacy') {
+                // The frontend's own Primitive: a virtual node whose value is applied when the workflow is queued.
+                const primitive = add('PrimitiveNode', 0, y);
+                connect(primitive, 0, prompt, name);
+                primitive.widgets[0].value = side.text;
+                return;
+            }
             const text = add('PrimitiveString', 0, y);
             text.widgets.find(widget => widget.name === 'value').value = side.text;
             let source = text;
@@ -121,14 +129,17 @@ async function expectImagesLinked(execution, evidence, viaRuntime) {
 
 const unique = label => `${label} ${randomUUID()}`;
 
-for (const kind of ['PromptManager', 'PromptManagerText', 'PromptManagerFocused']) {
-    for (const via of ['primitive', 'preview']) {
-        test(`${kind} saves, counts, records and links images to text linked from ${via === 'preview' ? 'PreviewAny' : 'a primitive'}`, async ({ execution, page }) => {
+const sources = { primitive: 'PrimitiveString', legacy: 'a legacy Primitive', preview: 'PreviewAny' };
+for (const kind of ['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit']) {
+    for (const via of Object.keys(sources)) {
+        test(`${kind} saves, counts, records and links images to text linked from ${sources[via]}`, async ({ execution, page }) => {
             test.setTimeout(90000);
             const text = unique(`Linked ${kind} ${via}`);
             const evidence = await run(execution, page, { kind, positive: { typed: 'Typed under the link', text, via } });
             const source = evidence.output[evidence.promptNode].inputs.text;
-            expect(Array.isArray(source), 'the frontend queued the link, not the typed text').toBe(true);
+            // A real node is queued as a link; the virtual Primitive as its own value, never the hidden typed text.
+            if (via === 'legacy') expect(source).toBe(text);
+            else expect(Array.isArray(source), 'the frontend queued the link, not the typed text').toBe(true);
             expect(evidence.context.positive.raw).toBe(text);
             expect(evidence.context.positive.effective).toBe(text);
             expect(evidence.usage).toEqual([{ role: 'positive', run_count: 1 }]);
@@ -139,16 +150,21 @@ for (const kind of ['PromptManager', 'PromptManagerText', 'PromptManagerFocused'
     }
 }
 
-for (const [label, linked] of [['positive', ['text']], ['negative', ['negative_text']], ['both', ['text', 'negative_text']], ['neither', []]]) {
+for (const [label, linked, negativeVia] of [['positive', ['text'], 'primitive'], ['negative', ['negative_text'], 'primitive'],
+    ['both', ['text', 'negative_text'], 'primitive'], ['neither', [], 'primitive'], ['negative from a legacy Primitive', ['negative_text'], 'legacy']]) {
     test(`PromptManagerPair with ${label} linked saves, counts and records the pair and links its images`, async ({ execution, page }) => {
         test.setTimeout(90000);
         const sides = {
             text: { typed: unique('Typed positive'), text: unique('Linked positive'), via: linked.includes('text') ? 'preview' : null },
-            negative_text: { typed: unique('Typed negative'), text: unique('Linked negative'), via: linked.includes('negative_text') ? 'primitive' : null },
+            negative_text: { typed: unique('Typed negative'), text: unique('Linked negative'), via: linked.includes('negative_text') ? negativeVia : null },
         };
         const evidence = await run(execution, page, { kind: 'PromptManagerPair', positive: sides.text, negative: sides.negative_text });
         const expected = name => sides[name].via ? sides[name].text : sides[name].typed;
-        for (const name of ['text', 'negative_text']) expect(Array.isArray(evidence.output[evidence.promptNode].inputs[name]), name).toBe(linked.includes(name));
+        for (const name of ['text', 'negative_text']) {
+            const queuedValue = evidence.output[evidence.promptNode].inputs[name];
+            if (sides[name].via === 'legacy') expect(queuedValue, name).toBe(sides[name].text);
+            else expect(Array.isArray(queuedValue), name).toBe(linked.includes(name));
+        }
         expect(evidence.context.positive.raw).toBe(expected('text'));
         expect(evidence.context.negative.raw).toBe(expected('negative_text'));
         expect(evidence.usage).toEqual([{ role: 'positive', run_count: 1 }, { role: 'negative', run_count: 0 }, { role: 'pair', run_count: 1 }]);

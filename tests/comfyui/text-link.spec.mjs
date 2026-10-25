@@ -140,6 +140,137 @@ for (const type of ['PromptManagerFocused', 'PromptManagerSplit', 'PromptManager
     });
 }
 
+async function addEditors(page) {
+    return page.evaluate(async () => {
+        const { app } = await import('/scripts/app.js');
+        const add = (type, x, y) => { const node = LiteGraph.createNode(type); app.graph.add(node); node.pos = [x, y]; return node; };
+        const focused = add('PromptManagerFocused', 420, 40);
+        focused.setSize([560, 640]);
+        const pair = add('PromptManagerPair', 1020, 40);
+        pair.setSize([1000, 640]);
+        for (const [node, name, value] of [[focused, 'text', 'Typed focused'], [pair, 'text', 'Typed positive'], [pair, 'negative_text', 'Typed negative']]) {
+            const widget = node.widgets.find(item => item.name === name);
+            widget.value = value;
+            if (widget.inputEl) widget.inputEl.value = value;
+        }
+        const sources = [0, 1].map(index => add(index ? 'PrimitiveString' : 'PrimitiveNode', 20, 60 + index * 300).id);
+        app.canvas.ds.scale = .7;
+        // Clear of the floating graph menu (top left) and the PM run bar (top right).
+        app.canvas.ds.offset = [110, 150];
+        app.canvas.setDirty(true, true);
+        return { focused: focused.id, pair: pair.id, primitive: sources[0], string: sources[1] };
+    });
+}
+
+/** The prompt a Run sends to the server, through the real app.queuePrompt path. */
+async function runPrompt(page) {
+    const sent = new Promise(resolve => page.route('**/prompt', async route => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        resolve(route.request().postDataJSON().prompt);
+        return route.fulfill({ json: { prompt_id: 'captured', number: 1, node_errors: {} } });
+    }));
+    await page.evaluate(async () => { const { app } = await import('/scripts/app.js'); await app.queuePrompt(0, 1); });
+    const prompt = await sent;
+    await page.unroute('**/prompt');
+    return prompt;
+}
+
+const box = (page, name, nth = 0) => page.getByRole('textbox', { name, exact: true }).nth(nth);
+
+test('a legacy Primitive dropped on an editor box or socket drives the text it shows as linked (#343 review I1, M1)', async ({ page }) => {
+    test.setTimeout(90000);
+    const ids = await addEditors(page);
+    // A wildcard Primitive aimed at the Main prompt box, a PrimitiveString aimed at the Negative prompt box.
+    await drag(page, await slotPosition(page, ids.primitive, 'out', 0), center(await box(page, 'Main prompt').boundingBox()));
+    await expect.poll(() => linkedInputs(page, ids.focused)).toEqual(['text']);
+    await drag(page, await slotPosition(page, ids.string, 'out', 0), center(await box(page, 'Negative prompt').boundingBox()));
+    await expect.poll(() => linkedInputs(page, ids.pair)).toEqual(['negative_text']);
+    await expect(page.getByText(note('Main prompt'), { exact: true })).toBeVisible();
+    await expect(page.getByText(note('Negative prompt'), { exact: true })).toBeVisible();
+    await page.evaluate(async ({ primitive, string }) => {
+        const { app } = await import('/scripts/app.js');
+        app.graph.getNodeById(primitive).widgets[0].value = 'From the legacy Primitive';
+        app.graph.getNodeById(string).widgets.find(widget => widget.name === 'value').value = 'From PrimitiveString';
+    }, ids);
+    const prompt = await runPrompt(page);
+    expect(prompt[String(ids.focused)].inputs.text).toBe('From the legacy Primitive');
+    expect(prompt[String(ids.pair)].inputs).toMatchObject({ text: 'Typed positive', negative_text: [String(ids.string), 0] });
+    // The Primitive is re-read on every run; the typed text stays for disconnect.
+    await page.evaluate(async ({ primitive }) => { const { app } = await import('/scripts/app.js'); app.graph.getNodeById(primitive).widgets[0].value = 'Changed in the Primitive'; }, ids);
+    expect((await queued(page, ids.focused)).text).toBe('Changed in the Primitive');
+    await page.evaluate(async ({ focused }) => { const { app } = await import('/scripts/app.js'); const node = app.graph.getNodeById(focused); node.disconnectInput(node.inputs.findIndex(input => input.name === 'text')); }, ids);
+    expect((await queued(page, ids.focused)).text).toBe('Typed focused');
+});
+
+test('a workflow saved before #343 with legacy Primitives on editor text keeps running their values (#343 review I1)', async ({ page }) => {
+    const workflow = JSON.parse(await readFile(new URL('./fixtures/workflow-before-343-primitive.json', import.meta.url), 'utf8'));
+    const result = await page.evaluate(async workflow => {
+        const { app } = await import('/scripts/app.js');
+        await app.loadGraphData(structuredClone(workflow));
+        const before = (await app.graphToPrompt()).output;
+        app.graph.getNodeById(4).widgets[0].value = 'Edited after the load';
+        const after = (await app.graphToPrompt()).output;
+        const bound = id => app.graph.getNodeById(id).inputs.filter(input => ['text', 'negative_text'].includes(input.name) && input.widget).length;
+        return { before: [before['1'].inputs.text, before['2'].inputs.text, before['2'].inputs.negative_text], after: after['2'].inputs.negative_text, bound: [bound(1), bound(2)],
+            links: [app.graph.getNodeById(1).inputs.find(input => input.name === 'text').link != null, app.graph.getNodeById(2).inputs.find(input => input.name === 'negative_text').link != null] };
+    }, workflow);
+    expect(result).toEqual({ before: ['Primitive focused text', 'Typed pair positive', 'Primitive pair negative'], after: 'Edited after the load', bound: [0, 0], links: [true, true] });
+    const prompt = await runPrompt(page);
+    expect([prompt['1'].inputs.text, prompt['2'].inputs.negative_text]).toEqual(['Primitive focused text', 'Edited after the load']);
+});
+
+test('moving a linked text and dropping it on the editor body keeps it on text, never prepend_text (#343 review I2)', async ({ page }) => {
+    test.setTimeout(90000);
+    const ids = await addEditors(page);
+    await page.evaluate(async ({ focused, pair, string }) => {
+        const { app } = await import('/scripts/app.js');
+        const source = app.graph.getNodeById(string);
+        for (const id of [focused, pair]) { const node = app.graph.getNodeById(id); source.connect(0, node, node.inputs.findIndex(input => input.name === 'text')); }
+        app.canvas.setDirty(true, true);
+    }, ids);
+    for (const [id, title] of [[ids.focused, 0], [ids.pair, 1]]) {
+        // Grab the link at the text socket and release it over the editor's toolbar, away from any prompt box.
+        const toolbar = page.locator('.pm-editor-toolbar strong').nth(title);
+        await drag(page, await slotPosition(page, id, 'in', 'text'), center(await toolbar.boundingBox()));
+        await expect.poll(() => linkedInputs(page, id)).toEqual(['text']);
+    }
+});
+
+test('paste, clone and undo keep the editor text a linked socket (#343 review M7)', async ({ page }) => {
+    const ids = await addEditors(page);
+    const state = await page.evaluate(async ({ pair, string }) => {
+        const { app } = await import('/scripts/app.js');
+        const node = app.graph.getNodeById(pair);
+        app.graph.getNodeById(string).connect(0, node, node.inputs.findIndex(input => input.name === 'text'));
+        const describe = target => ({ bound: target.inputs.filter(input => ['text', 'negative_text'].includes(input.name) && input.widget).length,
+            linked: target.inputs.find(input => input.name === 'text').link != null });
+        app.canvas.selectItems([node]);
+        app.canvas.copyToClipboard();
+        app.canvas.pasteFromClipboard({ connectInputs: true });
+        const pasted = app.graph._nodes.find(item => item.type === 'PromptManagerPair' && item.id !== pair);
+        const clone = node.clone();
+        app.graph.add(clone);
+        const output = (await app.graphToPrompt()).output;
+        return { pasted: describe(pasted), clone: describe(clone), queued: output[String(pasted.id)].inputs.text, pastedId: pasted.id };
+    }, ids);
+    expect(state).toMatchObject({ pasted: { bound: 0, linked: true }, clone: { bound: 0, linked: false }, queued: [String(ids.string), 0] });
+    // Undo restores the graph through a workflow load: the restored link is still a socket link.
+    const undone = await page.evaluate(async ({ pair }) => {
+        const { app } = await import('/scripts/app.js');
+        const tracker = app.extensionManager?.workflow?.activeWorkflow?.changeTracker;
+        if (!tracker) throw new Error('no change tracker on the active workflow');
+        tracker.checkState();
+        const node = app.graph.getNodeById(pair);
+        node.disconnectInput(node.inputs.findIndex(input => input.name === 'text'));
+        tracker.checkState();
+        await tracker.undo();
+        const restored = app.graph.getNodeById(pair);
+        return { bound: restored.inputs.filter(input => ['text', 'negative_text'].includes(input.name) && input.widget).length,
+            text: (await app.graphToPrompt()).output[String(pair)].inputs.text };
+    }, ids);
+    expect(undone).toEqual({ bound: 0, text: [String(ids.string), 0] });
+});
+
 test('PromptSearchList text is a core widget socket and takes a dragged STRING link too', async ({ page }) => {
     const { id, sources } = await page.evaluate(async () => {
         const { app } = await import('/scripts/app.js');

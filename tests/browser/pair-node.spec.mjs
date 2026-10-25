@@ -147,6 +147,23 @@ test('paired editor offers positive and negative link sockets and keeps both typ
     await expect(positive).toHaveValue('Typed positive');await expect(negative).toHaveValue('Typed negative');
 });
 
+test('a link dropped on either prompt box, or its note, fills that box (#343 review M1)',async({page})=>{
+    const keys=await page.evaluate(()=>[...document.querySelectorAll('.pm-pair .lg-node-widget [data-slot-key]')].map(key=>key.dataset.slotKey));
+    // Nodes 2.0 resolves a drop through the nearest .lg-node-widget and its slot key: positive box and note, negative box and note.
+    expect(keys).toEqual(['1-in-3','1-in-3','1-in-4','1-in-4']);
+    const at=(name,connecting=true)=>page.evaluate(({name,connecting})=>{
+        fixtureApp.canvas={linkConnector:{state:{connectingTo:connecting?'input':undefined}},ds:{convertOffsetToCanvas:point=>point},canvas:{getBoundingClientRect:()=>({left:0,top:0})}};
+        const box=[...document.querySelectorAll('.pm-pair .lg-node-widget')].find(element=>element.getClientRects().length&&element.textContent.includes(name)).getBoundingClientRect();
+        return node.getInputOnPos([box.left+box.width/2,box.top+box.height/2])?.name??null;
+    },{name,connecting});
+    expect(await at('Negative prompt')).toBe('negative_text');
+    expect(await at('Positive prompt')).toBe('text');
+    expect(await at('Negative prompt',false)).toBeNull();
+    await page.evaluate(()=>{node.inputs.find(input=>input.name==='negative_text').link=4;node.onConnectionsChange();});
+    expect(await at('Negative prompt comes from a link')).toBe('negative_text');
+    expect(await page.evaluate(()=>{fixtureApp.canvas={};return node.getInputOnPos([1,1])??null;})).toBeNull();
+});
+
 test('queue hook synchronizes both editors, preserves links and forwards branch execution arguments',async({page})=>{
     await draft(page);
     const args=await page.evaluate(async()=>{

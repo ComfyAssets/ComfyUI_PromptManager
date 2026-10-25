@@ -23,21 +23,22 @@ test('execution script discovers only the new matrix and preserves all 78 origin
         env: { ...process.env, PM_COMFY_ROOT: '/unused-pinned-checkout' } });
     const stock = list('tools/vendor/comfyui.config.mjs');
     // + local Inspect host case (inspect-sender.spec.mjs, 2 projects), + the S10 renderer case (prompt-bridge.spec.mjs, 2 projects)
-    // + #343 linked text: five node types, PromptSearchList and the pre-#343 workflow (text-link.spec.mjs, 2 projects)
-    assert.match(stock, /Total: 98 tests in 9 files/);
+    // + #343 linked text: five node types, PromptSearchList, the pre-#343 workflows, legacy Primitive, moved link,
+    //   paste/clone/undo (text-link.spec.mjs, 2 projects)
+    assert.match(stock, /Total: 106 tests in 9 files/);
     assert.doesNotMatch(stock, /execution-history/);
     assert.doesNotMatch(stock, /execution-outputs/);
     assert.doesNotMatch(stock, /library-location/);  // it starts its own fresh host (#249 S6b)
     const executions = list('tools/vendor/playwright.execution.config.mjs');
     assert.match(executions, /\[classic-start\]/);
     assert.match(executions, /\[nodes2-start\]/);
-    assert.match(executions, /Total: 68 tests in 4 files/);  // + the fresh-host library location case, + #343 linked text
+    assert.match(executions, /Total: 82 tests in 4 files/);  // + the fresh-host library location case, + #343 linked text
     for (const project of ['classic-start', 'nodes2-start']) {
         const cases = executions.split('\n').filter(line => line.includes(`[${project}]`));
         assert.equal(cases.filter(line => line.includes('execution-history.spec.mjs')).length, 15);
         assert.equal(cases.filter(line => line.includes('execution-outputs.spec.mjs')).length, 8);
         assert.equal(cases.filter(line => line.includes('library-location.spec.mjs')).length, 1);
-        assert.equal(cases.filter(line => line.includes('execution-text-link.spec.mjs')).length, 10);
+        assert.equal(cases.filter(line => line.includes('execution-text-link.spec.mjs')).length, 17);
     }
     assert.doesNotMatch(executions, /prompt-manager.spec/);
 });
