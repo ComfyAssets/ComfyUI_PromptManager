@@ -450,3 +450,130 @@ class TestFingerprintTransaction(RestoreTestCase):
         self.assertTrue(conn.in_transaction)
         conn.rollback()
         self.assertEqual([p["text"] for p in self.api.db.search_prompts()], [])
+
+
+class TestRereviewFixes(RestoreTestCase):
+    """PR #335 re-review: R1 to R4."""
+
+    def test_r1_a_merge_into_a_damaged_holder_keeps_both_images(self):
+        rekey = TestRekeyDocuments.library
+        path, text = rekey(self, lambda digest, length: (b"\0" * 32, length))
+        raw = text.encode()
+        with closing(sqlite3.connect(path)) as conn:
+            holder = conn.execute(
+                "INSERT INTO workflow_documents (sha256, byte_length, data) "
+                "VALUES (?,?,?)",
+                (hashlib.sha256(raw).digest(), len(raw), b"garbage-not-zlib"),
+            ).lastrowid
+            prompt_id = conn.execute("SELECT id FROM prompts").fetchone()[0]
+            conn.execute(
+                "INSERT INTO generated_images (prompt_id, image_path, filename, "
+                "workflow_document_id) VALUES (?, '/x/b.png', 'b.png', ?)",
+                (prompt_id, holder),
+            )
+            conn.commit()
+        staged = self.api.db.model.stage_restore(path)
+        try:
+            self.assertEqual(
+                staged.documents, {"repaired": 2, "cleared": 0, "images": 0}
+            )
+            self.assertEqual(
+                TestRekeyDocuments.staged_texts(self, staged), [text, text]
+            )
+            with closing(sqlite3.connect(staged.path)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM workflow_documents").fetchone(),
+                    (1,),
+                )
+        finally:
+            staged.discard()
+
+    async def test_r2_a_losing_duplicate_apply_leaves_the_taken_stage(self):
+        self.save("live")
+        body = await self.preview(self.upload(["restored"]))
+        store = self.api._restore_plans
+        held = store.peek(body["token"])
+        entered, release = threading.Event(), threading.Event()
+        real = self.api._live_fingerprint
+
+        def gated(db):
+            entered.set()
+            release.wait(WAIT)
+            return real(db)
+
+        with patch.object(self.api, "_live_fingerprint", side_effect=gated):
+            second = asyncio.ensure_future(
+                self.client.post(
+                    "/prompt_manager/restore/apply", json={"token": body["token"]}
+                )
+            )
+            loop = asyncio.get_running_loop()
+            self.assertTrue(await loop.run_in_executor(None, entered.wait, WAIT))
+            # Meanwhile the first apply's job took the stage, and a write landed.
+            store.take(body["token"], "first-job")
+            self.save("a run count")
+            release.set()
+            resp = await second
+        self.assertEqual(resp.status, 409)
+        self.assertTrue(os.path.isdir(held.staged.directory))
+        await self._discard_quietly(held)
+
+    async def _discard_quietly(self, held):
+        await asyncio.get_running_loop().run_in_executor(None, held.staged.discard)
+
+    def test_r3_give_back_refuses_a_full_store_or_an_expired_review(self):
+        clock = [1000.0]
+        store = backup_restore.RestorePlanStore(clock=lambda: clock[0], max_stages=1)
+        first = store.issue(_Stage(), "f", "id", {})
+        held = store.take(first, "job")
+        other = store.issue(_Stage(), "f", "id", {})
+        self.assertFalse(store.give_back(first, held))  # the slot was reused
+        self.assertEqual(len(store), 1)
+        store.pop(other)
+        clock[0] = held.expires_at
+        self.assertFalse(store.give_back(first, held))  # expired meanwhile
+        clock[0] -= 1
+        self.assertTrue(store.give_back(first, held))
+        self.assertIs(store.peek(first), held)
+
+    async def test_r4_a_cancelled_backup_removes_its_snapshot(self):
+        from aiohttp.test_utils import make_mocked_request
+
+        self.save("keep")
+        entered, release, done = (threading.Event() for _ in range(3))
+        real = backup_restore.write_backup_snapshot
+
+        def slow(model):
+            entered.set()
+            release.wait(WAIT)
+            try:
+                return real(model)
+            finally:
+                done.set()
+
+        with patch.object(backup_restore, "write_backup_snapshot", slow):
+            task = asyncio.ensure_future(
+                self.api._stream_backup(
+                    make_mocked_request("GET", "/prompt_manager/backup")
+                )
+            )
+            loop = asyncio.get_running_loop()
+            self.assertTrue(await loop.run_in_executor(None, entered.wait, WAIT))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            release.set()
+            self.assertTrue(await loop.run_in_executor(None, done.wait, WAIT))
+
+            async def snapshot_gone():
+                while any(n.startswith(".pm-safety-") for n in os.listdir(self.tmpdir)):
+                    await asyncio.sleep(0)
+
+            # A ceiling only a regression reaches (the file never goes).
+            await asyncio.wait_for(snapshot_gone(), WAIT)
+        self.assertIsNone(self.api._jobs.active("backup"))
+
+
+class _Stage:
+    def discard(self):
+        pass

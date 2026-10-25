@@ -545,13 +545,17 @@ def _inline_copies(conn: sqlite3.Connection, wanted: Dict[bytes, int]):
     return found
 
 
-def _rekey(conn: sqlite3.Connection, document_id: int, raw: bytes) -> None:
-    """Give an intact body its true key, or merge it into the document that has it."""
+def _rekey(conn: sqlite3.Connection, document_id: int, raw: bytes) -> Optional[int]:
+    """Give an intact body its true key, or merge it into the document that has it.
+
+    Returns the holder's id when its own body was damaged and has just been
+    rewritten from ``raw`` (it is repaired, never to be cleared), else None.
+    """
     digest = hashlib.sha256(raw).digest()
     holder = conn.execute(LOOKUP_SQL, (digest,)).fetchone()
     if holder is None or holder[0] == document_id:
         conn.execute(REKEY_SQL, (digest, len(raw), document_id))
-        return
+        return None
     for column in DOCUMENT_ID_COLUMNS:
         # ``column`` is one of DOCUMENT_ID_COLUMNS, never caller data.
         conn.execute(
@@ -563,6 +567,8 @@ def _rekey(conn: sqlite3.Connection, document_id: int, raw: bytes) -> None:
         conn.execute(
             REPAIR_SQL, (len(raw), zlib.compress(raw, COMPRESSION_LEVEL), holder[0])
         )
+        return holder[0]
+    return None
 
 
 def repair_damaged_documents(conn: sqlite3.Connection) -> Dict[str, int]:
@@ -596,8 +602,14 @@ def repair_damaged_documents(conn: sqlite3.Connection) -> Dict[str, int]:
     if not damaged and not intact:
         return result
     with conn:
+        healed = []
         for document_id, raw in intact.items():
-            _rekey(conn, document_id, raw)
+            holder = _rekey(conn, document_id, raw)
+            if holder is not None and holder in damaged.values():
+                # Rewritten from the merged body: repaired, not to be cleared
+                # (it now also holds the merged images' references).
+                damaged = {k: v for k, v in damaged.items() if v != holder}
+                healed.append(holder)
         copies = _inline_copies(conn, damaged) if damaged else {}
         for document_id, text in copies.items():
             raw = text.encode("utf-8")
@@ -625,7 +637,7 @@ def repair_damaged_documents(conn: sqlite3.Connection) -> Dict[str, int]:
                 f"DELETE FROM workflow_documents WHERE id IN ({marks})",  # nosec B608
                 chunk,
             )
-    for document_id in list(intact) + list(copies):
+    for document_id in list(intact) + healed + list(copies):
         logger.warning(f"Workflow document {document_id} was damaged; repaired")
     if lost:
         logger.warning(
@@ -633,6 +645,8 @@ def repair_damaged_documents(conn: sqlite3.Connection) -> Dict[str, int]:
             f"{len(images)} image(s) show no workflow"
         )
     result.update(
-        repaired=len(intact) + len(copies), cleared=len(lost), images=len(images)
+        repaired=len(intact) + len(healed) + len(copies),
+        cleared=len(lost),
+        images=len(images),
     )
     return result

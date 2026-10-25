@@ -105,10 +105,17 @@ class RestorePlanStore:
             self._used.pop(next(iter(self._used)))
         return held
 
-    def give_back(self, token, held) -> None:
-        """Hold a taken stage again under its token (its job did not apply it)."""
+    def give_back(self, token, held) -> bool:
+        """Hold a taken stage again under its token (its job did not apply it).
+
+        False, holding nothing, when the review expired meanwhile or its slot
+        was reused (the store is full): the caller then discards the stage.
+        """
+        if held.expires_at <= self._clock() or self.full():
+            return False
         self._used.pop(token, None)
         self._held[token] = held
+        return True
 
     def entry(self, token) -> Optional[HeldRestore]:
         """The held entry, expired or not (for the response that issued it)."""

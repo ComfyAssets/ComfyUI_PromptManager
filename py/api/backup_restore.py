@@ -273,8 +273,17 @@ class BackupRestoreRoutesMixin:
 
     async def _make_backup_snapshot(self, model):
         """``(path, warning)``, or the error response (inside the hold)."""
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, write_backup_snapshot, model)
         try:
-            temp, warning = await self._run_in_executor(write_backup_snapshot, model)
+            temp, warning = await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # The worker cannot be stopped: remove what it writes once it is
+            # done (#335 re-review R4).
+            future.add_done_callback(
+                lambda done: loop.create_task(self._remove_finished_snapshot(done))
+            )
+            raise
         except SafetyBackupFailed as failed:
             self.logger.error(f"Backup failed: {failed} {failed.reason or ''}")
             return web.json_response(
@@ -293,6 +302,15 @@ class BackupRestoreRoutesMixin:
         if warning is not None:
             self.logger.warning(f"Backup sent with a failed check: {warning}")
         return temp, warning
+
+    async def _remove_finished_snapshot(self, future):
+        """Remove the snapshot a cancelled download's worker finished."""
+        if future.cancelled() or future.exception() is not None:
+            return  # nothing was left on disk
+        temp, _warning = future.result()
+        await self._run_in_executor(
+            remove_quietly, *(temp + suffix for suffix in SIDECARS)
+        )
 
     async def _send_snapshot(self, request, temp, warning):
         """Stream the snapshot (outside the hold), then close and remove it."""
@@ -507,6 +525,16 @@ class BackupRestoreRoutesMixin:
                 await self._run_in_executor(entry.staged.discard)
             except Exception:
                 self.logger.exception("Could not remove a restore stage")
+
+    async def _discard_popped(self, token):
+        """Drop ``token`` and remove its stage, only if the store still held it.
+
+        A stage another apply's job has taken is not this request's to remove
+        (#335 re-review R2).
+        """
+        popped = self._restore_plans.pop(token)
+        if popped is not None:
+            await self._discard_held([popped])
 
     async def _drop_expired_restores(self):
         """Drop expired previews from the store (on the loop), then their files."""
@@ -786,7 +814,7 @@ class BackupRestoreRoutesMixin:
             return refused
         db = self.db
         if held.db_identity != self._database_identity(db):
-            await self._discard_held([self._restore_plans.pop(token) or held])
+            await self._discard_popped(token)
             return _failure(
                 "The database was replaced since the review. Review again.",
                 409,
@@ -801,7 +829,7 @@ class BackupRestoreRoutesMixin:
             return busy_response(busy)
         if fingerprint != held.fingerprint:
             # It can never match again: free the stage for a new review.
-            await self._discard_held([self._restore_plans.pop(token) or held])
+            await self._discard_popped(token)
             return _failure(PLAN_CHANGED, 409, "plan-changed")
         # The token may have been used, expired or discarded meanwhile.
         held, refused = self._peek_restore(token)
@@ -840,9 +868,9 @@ class BackupRestoreRoutesMixin:
         try:
             job.update(status_line="Waiting for other requests to finish")
             if not await self._jobs.drain_leases():
-                if token is not None:
-                    # Nothing ran: the reviewed stage stays usable (#335 M2).
-                    self._restore_plans.give_back(token, held)
+                # Nothing ran: the reviewed stage stays usable (#335 M2),
+                # unless it expired meanwhile or its slot was reused.
+                if token is not None and self._restore_plans.give_back(token, held):
                     keep_stage = True
                     self._schedule_restore_expiry()
                     return _fail_job(job, "busy", REVIEW_KEPT)
