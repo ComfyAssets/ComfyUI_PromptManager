@@ -50,6 +50,10 @@
                 running.title.length > 0 && running.title.length <= 200) {
                 this.running = { id: running.id, title: running.title };
             }
+            // Whether our server itself refused: its body parsed and says success:false. A proxy's error page or an
+            // unreadable body is not a refusal (the request may have done its work; System S7 review I1).
+            this.refused = Boolean(current && typeof current === "object" && !Array.isArray(current) &&
+                current.success === false);
             // A used plan names the job that applied it (System S7); its title is null once that job was pruned.
             this.job = null;
             const job = current && current.job;

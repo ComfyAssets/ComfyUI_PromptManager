@@ -216,3 +216,12 @@ test('a duplicate cleanup counts removed, kept and errors and cannot be cancelle
     assert.equal(finishToast({ ...cleanup, state: 'finished', counters: { removed: 3, kept: 1, errors: 1 } }),
         'Duplicate cleanup finished · 3 removed · 1 error');
 });
+
+test('a failed duplicate cleanup says the server reason (S7 review M3)', async () => {
+    const { finishToast } = await store;
+    const reason = 'The sources changed since the search. Search for duplicates again.';
+    const failed = job({ kind: 'duplicate_cleanup', title: 'Remove duplicate image files', state: 'failed', status_line: reason,
+        counters: { removed: 0, kept: 0, errors: 1 }, cancellable: false });
+    assert.equal(finishToast(failed), `Duplicate cleanup failed · ${reason}`);
+    assert.equal(finishToast({ ...failed, status_line: '' }), 'Duplicate cleanup failed · 0 removed · 1 error');
+});

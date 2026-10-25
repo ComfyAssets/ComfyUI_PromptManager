@@ -49,12 +49,14 @@ export const OPERATION_TITLES = Object.freeze({
     unused_components: 'Unused prompt components',
     missing_links: 'Missing-file links',
     duplicate_files: 'Duplicate image files',
+    // Reviewed and applied through the API and seen in Activity; Maintenance has no row for it (the concept has none).
+    workflow_storage: 'Store each workflow once',
 });
 // The review is gone or no longer matches the database: review it again.
 const REVIEW_AGAIN = new Set(['plan-expired', 'storage-changed']);
 // Refusals whose server message is the whole truth.
 const SERVER_SAYS = new Set(['insufficient-space', 'nothing-to-do', 'too-large', 'invalid-request', 'not-found',
-    'job-running', 'no-groups']);
+    'job-running', 'no-groups', 'apply-failed']);
 
 const number = value => value.toLocaleString('en-US');
 
@@ -117,9 +119,17 @@ export function detailLines(plan) {
         .map(row => (row.detail ? `${row.label} · ${row.detail}` : row.label));
 }
 
-/** The toast for a refused or failed apply; `review` when the plan must be reviewed again. */
+/**
+ * The toast for a refused or failed apply; `review` when the plan must be reviewed again, `lost` when the outcome is
+ * not known. Only our server's own refusal is definitive (a known code, or a 4xx whose body says success:false): a
+ * dropped connection, a proxy's 5xx or a 2xx whose body could not be read may follow a started job.
+ */
 export function applyRefusal(error) {
-    if (!Number.isInteger(error?.status)) return { toast: NOT_CONFIRMED, lost: true };
+    const status = error?.status;
+    const known = error?.code && (error.code === 'busy' || error.code === 'plan-used' || REVIEW_AGAIN.has(error.code)
+        || SERVER_SAYS.has(error.code));
+    const refused = Number.isInteger(status) && status >= 400 && status < 500 && error.refused === true;
+    if (!known && !refused) return { toast: NOT_CONFIRMED, lost: true };
     if (error.code === 'busy') return { toast: busyToast(error.running) };
     if (error.code === 'plan-used') {
         const job = error.job;
@@ -203,12 +213,14 @@ export function showPlan(plan, { api, store, scope, trigger = null, reviewAgain,
 
 /**
  * Review `operation` (`POST /maintenance/preview`) and show its plan. `options` are the preview's (duplicate_files:
- * `{job_id, keep}`). Resolves once the plan is shown or the refusal toasted.
+ * `{job_id, keep}`). `hold` (default `trigger`, which gets focus back) is the pressed button: it reads "Reviewing…"
+ * and ignores presses until the review answered, so a double press sends one preview. Resolves once the plan is shown
+ * or the refusal toasted.
  */
-export async function reviewPlan({ api, store, scope, operation, options = {}, trigger = null, notify = showWorkspaceToast,
-    navigate = navigateTo }) {
+export async function reviewPlan({ api, store, scope, operation, options = {}, trigger = null, hold = trigger,
+    notify = showWorkspaceToast, navigate = navigateTo }) {
     const again = () => reviewPlan({ api, store, scope, operation, options, trigger, notify, navigate });
-    await holding(trigger, 'Reviewing…', async () => {
+    await holding(hold, 'Reviewing…', async () => {
         let plan;
         try {
             plan = await api.post(PREVIEW_URL, { operation, options }, { signal: scope.signal });
@@ -344,7 +356,7 @@ export async function openDuplicatesReview({ api, store, scope, jobId, trigger =
     scope.listen(cancel, 'click', () => closeWorkspaceDialog());
     scope.listen(review, 'click', () => {
         if (review.disabled) return;
-        reviewPlan({ api, store, scope, operation: 'duplicate_files', trigger,
+        reviewPlan({ api, store, scope, operation: 'duplicate_files', trigger, hold: review,
             options: { job_id: jobId, keep: keepEntries(chosen) }, notify, navigate });
     });
     const nodes = [status, groupsNode];

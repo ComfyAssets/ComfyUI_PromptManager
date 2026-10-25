@@ -437,3 +437,16 @@ test('numbers group the way the server writes them, whatever the browser locale'
         Number.prototype.toLocaleString = original;
     }
 });
+
+test('a busy start names the job the server named, not the first running one (S7 review M9)', async () => {
+    const { createActivityStore } = await source;
+    const { world, ...deps } = harness();
+    const store = createActivityStore(deps);
+    const holder = 'b'.repeat(32);
+    // Two read jobs run side by side; the server says the second one holds the slot.
+    world.list = [summary(), summary({ id: holder, kind: 'duplicates', title: 'Find duplicate image files' })];
+    world.postError = Object.assign(apiError(409, 'busy', 'busy'),
+        { running: { id: holder, title: 'Find duplicate image files' } });
+    const busy = await store.start('duplicates');
+    assert.deepEqual([busy.busy.id, busy.busy.title], [holder, 'Find duplicate image files']);
+});

@@ -214,7 +214,7 @@ export function healthNodes(report, { scope, onReviewMissing }) {
     const close = createButton('Close');
     const review = createButton('Review missing links', 'ca-primary');
     scope.listen(close, 'click', () => closeWorkspaceDialog());
-    scope.listen(review, 'click', () => onReviewMissing());
+    scope.listen(review, 'click', () => onReviewMissing(review));
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(close, review);
     return [list, el('p', healthSummary(report), 'small'), actions];
@@ -269,13 +269,13 @@ export async function runHealthCheck(api, { activity, signal } = {}) {
 
 /**
  * Open the Health report for `report` (Maintenance's notice and its Check action). Its "Review missing links" runs
- * `onReviewMissing(trigger)`: Maintenance reviews a fresh Missing-file links plan (S7), never a cleanup; without one it
- * goes to Maintenance.
+ * `onReviewMissing(trigger, pressed)`: Maintenance reviews a fresh Missing-file links plan (S7), never a cleanup,
+ * holding the pressed button while it is read; without one it goes to Maintenance.
  */
 export function openHealthReport(report, { scope, trigger = null, navigate = navigateTo, onReviewMissing = null }) {
     openContentDialog({ scope, title: 'Health report', trigger, nodes: healthNodes(report, { scope,
-        onReviewMissing: () => {
-            if (onReviewMissing) onReviewMissing(trigger);
+        onReviewMissing: pressed => {
+            if (onReviewMissing) onReviewMissing(trigger, pressed);
             else { closeWorkspaceDialog(); navigate('#/system/maintenance'); }
         } }) });
 }

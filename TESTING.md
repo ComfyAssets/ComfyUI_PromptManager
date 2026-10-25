@@ -2441,7 +2441,9 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   finished · N groups found", with "Search log" and "Cancel search". The duplicate
   cleanup (`duplicate_cleanup`, not cancellable) reads "Removing duplicate files", counts
   Removed (green), Kept and Errors (Kept rows open the viewer), and toasts "Duplicate
-  cleanup finished · N removed · M errors". Every job keeps Download report. Tests: the
+  cleanup finished · N removed · M errors" or, when it failed, "Duplicate cleanup failed ·
+  <the server's status line>". A refused start names the job the server named, not the
+  first running one. Every job keeps Download report. Tests: the
   three S7 cases in `tests/js/workspace-activity-kinds.test.js`.
 - **D112** (Activity, S5): a legacy-page operation held on the registry (not
   cancellable, no outcome groups) reads as its server title ("Database restore (admin
@@ -2451,11 +2453,15 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
 - **D100** (Maintenance, S7): the concept's `maintenancePlan` dialog ("Review maintenance
   plan") on the server's read-only plan (`POST /maintenance/preview`), opened by each
   Review plan and by the health report's Review missing links. No sample note. The `h3`
-  is the operation's concept name; the `dl.meta-grid` keeps Scope / Protected / Backup /
+  is the operation's row title (the concept prints its `data-plan` name, "duplicate
+  prompts"); the `dl.meta-grid` keeps Scope / Protected / Backup /
   Media on disk with the plan's values: its scope label, its protected reasons joined
   with " · " ("Nothing is protected" when none), "Create and verify before changes
-  (<db>.backup_<date and time>)", "No safety backup (the policy is off)" or "Always
-  created and verified first (…)" for Store each workflow once, and its media line. A
+  (<db>.backup_<date and time>)" or "No safety backup (the policy is off)", and its
+  media line. (A `workflow_storage` plan would read "Store each workflow once" and
+  "Always created and verified first (…)", but Maintenance has no row for it: the
+  concept has none, so the migration is reviewed and applied through the API and only
+  its jobs appear, in Activity.) A
   `details` "Listed records (N)" ("(N of M)" past the server's 50) holds the records the
   plan names in a `pre`. The `p.small` says "Nothing changes until you apply. This
   review holds for N minutes." (from `expires_at`), plus "Not enough free disk space:
@@ -2466,8 +2472,19 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   Activity. A refused apply stays and says why: "Another job is running: <title>."
   (D57), "This plan was already applied: <job>." (`plan-used`, linking the job), the
   server's line for an expired or replaced review (then the plan is reviewed again at
-  once), for a short disk and for nothing to do, and "Outcome not confirmed. Check
-  Activity before applying it again." when the answer was lost (the job may run).
+  once), for a short disk, for nothing to do and for the server's own pre-start failure
+  (`apply-failed`). Only our server's refusal is definitive: a known code, or a 4xx whose
+  body says `success:false`. A dropped connection, a proxy's 5xx (no code) or a 2xx whose
+  body cannot be read may follow a started job, so they say "Outcome not confirmed. Check
+  Activity before applying it again." and read the Activity list again
+  (`lost apply response…` runs the apply and then drops its answer; `a proxy error or an
+  unreadable answer is not a refusal` answers a 504 after the server started the job). A
+  review button holds ("Reviewing…", `aria-disabled`) while its preview is read, so a
+  double press sends one preview (`a review button pressed twice sends one preview`). A
+  failed apply records its code as the job's `scope.failure`; when the plan was overtaken
+  (`plan-changed`, `storage-changed`, `plan-expired`), its Activity view offers "Review
+  again", which reviews the same operation afresh (a duplicate cleanup whose sources
+  changed goes back to Maintenance to search again).
   Cancel and Escape write nothing (`Cancel writes nothing`: a read-only dump of the rows
   and the media hashes, `GET /__test__/system/digest`). `plan dialogs match the concept`
   (system-maintenance-concept.spec, both themes and sizes) compares each of the four
@@ -2493,7 +2510,8 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   Prompt Manager owns as a cache (`web/js/cache-ownership.js`). The inventory of every
   storage writer has none (see "Browser cache ownership" below), so the row's line adds
   "Nothing is cached in this browser." and its Review plan is `aria-disabled` and opens
-  nothing. With owned entries (a test names one through the module's inventory), Review
+  nothing; a browser that refused to list its storage says "This browser did not allow
+  checking its storage." instead. With owned entries (a test names one through the module's inventory), Review
   plan opens "Review maintenance plan" › "Metadata cache" (Scope "N cached entries in
   this browser", Protected "Preferences and other tools’ data in this browser", Backup
   "Not needed: the database is not changed", Media "No files are removed") and "Clear
@@ -2926,7 +2944,12 @@ writes is a preference (`gallerySettings`, `pm_workspace_theme`,
 `web/sw.js` service worker that did never shipped). So nothing is removed, and the
 toast says "Nothing of Prompt Manager's is cached in this browser." `the inventory covers
 every browser storage writer in web/` (`tests/js/cache-ownership.test.js`) fails when a
-page writes a key that is neither a preference nor inventoried, or opens a cache. The
+page writes a key that is neither a preference nor inventoried, writes one it cannot name
+(a computed `setItem` key, a bracket or property assignment on a Storage), or opens
+CacheStorage or IndexedDB; `the storage scan reports every way of writing browser
+storage` pins those patterns. It skips `web/lib` (third-party builds) and the pinned
+Toolkit build (`web/js/shared/toolkit`, never hand-edited, verified by `npm run check`;
+its storage belongs to the Toolkit repository and a new pin is reviewed on its own). The
 gallery's server thumbnail clear stays its own request and runs first: refused or
 unreachable, it changes nothing and says so (the old code toasted success when the
 request failed); refused browser storage is reported, never hidden

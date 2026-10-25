@@ -172,7 +172,9 @@ export const KINDS = Object.freeze({
     duplicate_cleanup: Object.freeze({
         ...GENERIC,
         pillVerb: 'Removing duplicate files',
-        finishToast: namedFinish(() => 'Duplicate cleanup', removedOf, cleanupLine),
+        // A failed cleanup says the server's reason (sources changed, no safety backup), as a maintenance apply does.
+        finishToast: job => (job.state === 'failed' && job.status_line ? `Duplicate cleanup failed · ${job.status_line}`
+            : namedFinish(() => 'Duplicate cleanup', removedOf, cleanupLine)(job)),
         line: cleanupLine,
         kept: removedOf,
         tiles: tiles([['removed', 'Removed', 'added'], ['kept', 'Kept', ''], ['errors', 'Errors', 'bad']]),

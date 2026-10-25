@@ -21,6 +21,7 @@ test.beforeEach(async ({ page, request, browserName }) => {
 
 test.afterEach(async ({ page, request, browserName }) => {
     await saveCoverage(page, browserName);
+    await request.post('/__test__/release');
     await request.post('/__test__/jobs/restart');
     await request.post('/__test__/system/reset');
     expect(page.systemErrors).toEqual([]);
@@ -212,6 +213,49 @@ test('plan-changed asks for a new review', async ({ page, request }) => {
     await expect(toast(page)).toHaveText(`Duplicate prompt text failed · ${CHANGED}`);
     await expect(page.locator('#workspace-main')).toContainText(CHANGED);
     expect((await serverJson(request, '/__test__/system/digest')).rows).toEqual(before.rows);
+    // S7 review M2: the failed job offers Review again, which reviews the same operation afresh.
+    const previews = [];
+    page.on('request', item => { if (item.url().endsWith(PREVIEW_URL)) previews.push(item.postDataJSON()); });
+    await page.locator('#workspace-main').getByRole('button', { name: 'Review again', exact: true }).click();
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Review maintenance plan');
+    await expect(dialog(page).locator('#modal-body > h3')).toHaveText('Duplicate prompt text');
+    expect(previews).toEqual([{ operation: 'duplicate_prompts', options: {} }]);
+});
+
+test('a review button pressed twice sends one preview (S7 review M4)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/missing-file')).toBeOK();
+    await expect(await request.post('/__test__/system/duplicate-files')).toBeOK();
+    const previews = [];
+    page.on('request', item => { if (item.url().endsWith(PREVIEW_URL)) previews.push(item.postDataJSON().operation); });
+    await openMaintenance(page);
+    await row(page, 'Integrity & relationship checks').getByRole('button', { name: 'Check', exact: true }).click();
+    // Hold the preview at the server so the second press lands while it is read.
+    await expect(await request.post('/__test__/hold', { data: { path: PREVIEW_URL } })).toBeOK();
+    // The pressed button reads "Reviewing…" while held, so it is found by its place, not its name.
+    const missing = dialog(page).locator('.dialog-actions > button').last();
+    await expect(missing).toHaveText('Review missing links');
+    await missing.click();
+    await expect(missing).toHaveAttribute('aria-disabled', 'true');
+    await expect(missing).toHaveText('Reviewing…');
+    await missing.dispatchEvent('click');
+    await expect.poll(async () => (await serverJson(request, '/__test__/hold')).held[PREVIEW_URL]).toBe(1);
+    await expect(await request.post('/__test__/release')).toBeOK();
+    await expect(dialog(page).locator('#modal-body > h3')).toHaveText('Missing-file links');
+    expect(previews).toEqual(['missing_links']);
+    await page.keyboard.press('Escape');
+
+    await row(page, 'Duplicate image files').getByRole('button', { name: 'Find duplicates', exact: true }).click();
+    await page.locator('#workspace-main').getByRole('button', { name: 'Review groups', exact: true }).click();
+    await expect(await request.post('/__test__/hold', { data: { path: PREVIEW_URL } })).toBeOK();
+    const cleanup = dialog(page).locator('.dialog-actions > button').last();
+    await expect(cleanup).toHaveText('Review duplicate cleanup');
+    await cleanup.click();
+    await expect(cleanup).toHaveAttribute('aria-disabled', 'true');
+    await cleanup.dispatchEvent('click');
+    await expect.poll(async () => (await serverJson(request, '/__test__/hold')).held[PREVIEW_URL]).toBe(1);
+    await expect(await request.post('/__test__/release')).toBeOK();
+    await expect(dialog(page).locator('#modal-body > h3')).toHaveText('Duplicate image files');
+    expect(previews).toEqual(['missing_links', 'duplicate_files']);
 });
 
 test('plan-used links the job that applied it', async ({ page, request }) => {
@@ -232,15 +276,68 @@ test('plan-used links the job that applied it', async ({ page, request }) => {
     await expect(page).toHaveURL(`${workspace}#/system/maintenance`);
 });
 
+/**
+ * Record every toast the page shows (`[text, [link hrefs]]`): a job's finish toast may replace an earlier one before a
+ * test reads it.
+ */
+async function recordToasts(page) {
+    await page.addInitScript(() => {
+        window.toastLog = [];
+        const record = node => window.toastLog.push([node.textContent, [...node.querySelectorAll('a')].map(a => a.getAttribute('href'))]);
+        new MutationObserver(() => {
+            const node = document.getElementById('workspace-toast');
+            const last = window.toastLog.at(-1);
+            if (node && node.textContent && last?.[0] !== node.textContent) record(node);
+        }).observe(document, { subtree: true, childList: true, characterData: true });
+    });
+    return () => page.evaluate(() => window.toastLog);
+}
+
+const NOT_CONFIRMED = ['Outcome not confirmed. Check Activity before applying it again.', ['#/activity']];
+
+/** The maintenance jobs the server lists (the apply ran even though its answer was lost). */
+async function maintenanceJobs(request) {
+    return (await serverJson(request, '/prompt_manager/jobs')).jobs.filter(job => job.kind === 'maintenance');
+}
+
 test('lost apply response says Outcome not confirmed and points to Activity', async ({ page, request }) => {
     await expect(await request.post('/__test__/system/duplicate-prompts')).toBeOK();
-    await page.route(`**${APPLY_URL}`, route => route.abort('failed'));
+    // The server applies the plan; its answer never reaches the page.
+    const reads = [];
+    await page.route(`**${APPLY_URL}`, async route => {
+        await route.fetch();
+        page.on('request', item => { if (item.url().endsWith('/prompt_manager/jobs')) reads.push(item.url()); });
+        await route.abort('failed');
+    });
+    const toasts = await recordToasts(page);
     await openMaintenance(page);
     await row(page, 'Duplicate prompt text').getByRole('button', { name: 'Review plan', exact: true }).click();
     await dialog(page).getByRole('button', { name: 'Apply reviewed operation', exact: true }).click();
-    await expect(toast(page)).toHaveText('Outcome not confirmed. Check Activity before applying it again.');
-    await expect(toast(page).getByRole('link', { name: 'Check Activity', exact: true })).toHaveAttribute('href', '#/activity');
+    await expect.poll(toasts).toContainEqual(NOT_CONFIRMED);
     await expect(page).toHaveURL(`${workspace}#/system/maintenance`);
+    // The Activity list is read again at once, and the job the lost answer started is in it.
+    await expect.poll(() => reads.length).toBeGreaterThan(0);
+    expect((await maintenanceJobs(request)).map(job => job.title)).toEqual(['Duplicate prompt text']);
+    await page.evaluate(() => { location.hash = '#/activity'; });
+    await expect(page.locator('#workspace-main')).toContainText('Duplicate prompt text');
+});
+
+test('a proxy error or an unreadable answer is not a refusal: Outcome not confirmed (S7 review I1)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/duplicate-prompts')).toBeOK();
+    const reads = [];
+    // A reverse proxy times out after the server started the job.
+    await page.route(`**${APPLY_URL}`, async route => {
+        await route.fetch();
+        page.on('request', item => { if (item.url().endsWith('/prompt_manager/jobs')) reads.push(item.url()); });
+        await route.fulfill({ status: 504, contentType: 'text/html', body: '<html><body>Gateway Timeout</body></html>' });
+    });
+    const toasts = await recordToasts(page);
+    await openMaintenance(page);
+    await row(page, 'Duplicate prompt text').getByRole('button', { name: 'Review plan', exact: true }).click();
+    await dialog(page).getByRole('button', { name: 'Apply reviewed operation', exact: true }).click();
+    await expect.poll(toasts).toContainEqual(NOT_CONFIRMED);
+    await expect.poll(() => reads.length).toBeGreaterThan(0);
+    expect(await maintenanceJobs(request)).toHaveLength(1);
 });
 
 test('a refused apply names the running job', async ({ page, request }) => {

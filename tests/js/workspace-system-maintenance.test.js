@@ -61,6 +61,8 @@ test("plan dialog shows the server's scope, protected, backup policy and media l
     assert.deepEqual(detailLines(PLAN), ['a cat · 2 copies merged into the oldest', 'a dog']);
     assert.deepEqual(detailLines({ details: [null, { label: 7 }] }), []);
     assert.equal(OPERATION_TITLES.missing_links, 'Missing-file links');
+    // S7 review M8: the workflow migration's plan reads its own title (its job is started outside Maintenance).
+    assert.equal(OPERATION_TITLES.workflow_storage, 'Store each workflow once');
 });
 
 test('a refused apply names its reason; a lost answer is not confirmed', async () => {
@@ -79,7 +81,15 @@ test('a refused apply names its reason; a lost answer is not confirmed', async (
         { toast: 'This review expired. Review the plan again.', review: true });
     assert.deepEqual(applyRefusal(error(409, 'storage-changed', 'Replaced.')), { toast: 'Replaced.', review: true });
     assert.deepEqual(applyRefusal(error(507, 'insufficient-space', 'Not enough free disk space.')), { toast: 'Not enough free disk space.' });
-    assert.deepEqual(applyRefusal(error(500, null, 'Traceback …')), { toast: APPLY_FAILED });
+    // S7 review I1: only our server's own refusal is definitive. A proxy's 5xx, a 2xx whose body could not be read,
+    // or any answer without the server's refusal may have followed a started job: not confirmed, read Activity again.
+    assert.deepEqual(applyRefusal(error(504, null, 'Gateway Timeout')), { toast: NOT_CONFIRMED, lost: true });
+    assert.deepEqual(applyRefusal(error(500, null, 'Internal Server Error')), { toast: NOT_CONFIRMED, lost: true });
+    assert.deepEqual(applyRefusal(error(202, null, 'Invalid JSON response')), { toast: NOT_CONFIRMED, lost: true });
+    assert.deepEqual(applyRefusal(error(502, null, 'Bad Gateway', { refused: false })), { toast: NOT_CONFIRMED, lost: true });
+    assert.deepEqual(applyRefusal(error(400, null, 'token must be the plan token', { refused: true })), { toast: APPLY_FAILED });
+    assert.deepEqual(applyRefusal(error(500, 'apply-failed', 'Maintenance failed; nothing was changed.', { refused: true })),
+        { toast: 'Maintenance failed; nothing was changed.' });
     assert.equal(reviewRefusal(error(413, 'too-large', 'This plan is too large to review at once.')),
         'This plan is too large to review at once.');
     assert.equal(reviewRefusal(error(500, null, 'boom')), REVIEW_FAILED);
@@ -117,6 +127,9 @@ test('Metadata cache follows Q5: disabled with its reason while nothing is owned
     assert.equal(METADATA_CACHE_DESCRIPTION, 'Clear only Prompt Manager metadata cached by this browser.');
     assert.equal(metadataCacheDescription({ keys: [], caches: [] }), `${METADATA_CACHE_DESCRIPTION} ${NOTHING_CACHED_REASON}`);
     assert.equal(metadataCacheDescription({ keys: ['k'], caches: [] }), METADATA_CACHE_DESCRIPTION);
+    // S7 review M6: a browser that refused the listing is not claimed empty.
+    assert.equal(metadataCacheDescription({ keys: [], caches: [], denied: true }),
+        `${METADATA_CACHE_DESCRIPTION} This browser did not allow checking its storage.`);
 });
 
 test('only a finished duplicate search with groups offers Review groups', async () => {
@@ -127,4 +140,19 @@ test('only a finished duplicate search with groups offers Review groups', async 
     assert.equal(hasDuplicateGroups(job('running', 2)), false);
     assert.equal(hasDuplicateGroups(job('finished', 2, 'scan')), false);
     assert.equal(hasDuplicateGroups({ kind: 'duplicates', state: 'finished', counters: {} }), false);
+});
+
+test('a failed apply the library overtook offers Review again, back to its review (S7 review M2)', async () => {
+    const { reviewAgainOf } = await jobView;
+    const failed = (kind, failure, operation) => ({ kind, state: 'failed', scope: { operation, failure } });
+    assert.deepEqual(reviewAgainOf(failed('maintenance', 'plan-changed', 'duplicate_prompts')),
+        { operation: 'duplicate_prompts' });
+    assert.deepEqual(reviewAgainOf(failed('maintenance', 'storage-changed', 'optimize')), { operation: 'optimize' });
+    // A duplicate cleanup reviewed against a search the sources overtook: search again in Maintenance.
+    assert.deepEqual(reviewAgainOf(failed('duplicate_cleanup', 'sources-changed', 'duplicate_files')),
+        { section: '#/system/maintenance' });
+    assert.equal(reviewAgainOf(failed('maintenance', 'backup-failed', 'optimize')), null);
+    assert.equal(reviewAgainOf(failed('maintenance', 'plan-changed', 'not_an_operation')), null);
+    assert.equal(reviewAgainOf({ ...failed('maintenance', 'plan-changed', 'optimize'), state: 'finished' }), null);
+    assert.equal(reviewAgainOf(failed('scan', 'plan-changed', 'optimize')), null);
 });

@@ -246,7 +246,8 @@ export function createActivityStore({ api, scope, connect = defaultConnect, noti
             } catch (error) {
                 if (error?.status !== 409 || error?.code !== 'busy') throw error;
                 await load();
-                return { busy: store.running()[0] ?? null, message: error.message };
+                // The job the server named holds the slot; read jobs run side by side, so the first running one may not.
+                return { busy: error.running ?? store.running()[0] ?? null, message: error.message };
             }
         },
         /**

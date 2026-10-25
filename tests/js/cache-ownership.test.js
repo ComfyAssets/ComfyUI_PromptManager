@@ -68,9 +68,50 @@ test('removes only inventoried owned keys', async () => {
     assert.equal(CacheOwnership.clearMessage(result), CacheOwnership.NOTHING_CACHED);
 });
 
+/**
+ * Every browser-storage write in one file's text: `{keys}` (setItem keys, as written) and `problems` (writes no key
+ * can be read from: a bracket or property assignment on a Storage, a computed setItem key, an IndexedDB or
+ * CacheStorage open or write). The scan is textual, so it errs on the side of reporting.
+ */
+function storageWrites(text) {
+    const keys = [];
+    const problems = [];
+    for (const match of text.matchAll(/\.setItem\(\s*([^,)]+)/g)) {
+        const key = match[1].trim();
+        const literal = /^(?:'([^']+)'|"([^"]+)")$/.exec(key);
+        if (literal) keys.push(literal[1] ?? literal[2]);
+        else if (/^[A-Z_]+_KEY$/.test(key)) keys.push(`$${key}`);
+        else problems.push(`a computed setItem key: ${key}`);
+    }
+    if (/\b\w*[sS]torage\s*\[[^\]]+\]\s*=(?!=)/.test(text)) problems.push('a bracket assignment on a Storage');
+    if (/\b(?:local|session)Storage\s*\.\s*(?!getItem|setItem|removeItem|key\b|length\b|clear\b)\w+\s*=(?!=)/.test(text)) {
+        problems.push('a property assignment on a Storage');
+    }
+    if (/\bcaches\s*\.\s*open\s*\(/.test(text)) problems.push('opens a CacheStorage cache');
+    if (/\bindexedDB\s*\.\s*open\s*\(/.test(text)) problems.push('opens IndexedDB');
+    return { keys, problems };
+}
+
+test('the storage scan reports every way of writing browser storage (S7 review M5)', () => {
+    assert.deepEqual(storageWrites("localStorage.setItem('gallerySettings', x); storage.setItem(NOTICE_KEY, v);").keys,
+        ['gallerySettings', '$NOTICE_KEY']);
+    for (const text of ["localStorage['pm_cache'] = 1;", 'sessionStorage[key] = value;', 'storage[name] = x;',
+        'localStorage.pm_cache = 1;', 'sessionStorage.someKey = "v";', 'localStorage.setItem(key, 1);',
+        "caches.open('pm').then(cache => cache.put(url, response));", "indexedDB.open('pm-cache', 1);"]) {
+        assert.equal(storageWrites(text).problems.length, 1, text);
+    }
+    for (const text of ["if (localStorage['pm'] === x) {}", 'const value = localStorage.getItem(KEY);',
+        'localStorage.removeItem(KEY);', 'const n = localStorage.length;']) {
+        assert.deepEqual(storageWrites(text), { keys: [], problems: [] }, text);
+    }
+});
+
 test('the inventory covers every browser storage writer in web/', () => {
     // Every key a Prompt Manager page writes is a preference or an inventoried cache entry; a new writer must be
-    // classified here before a cache clear may remove it.
+    // classified here before a cache clear may remove it. Skipped: web/lib (third-party Viewer.js and Tailwind
+    // output) and web/js/shared/toolkit (the pinned ComfyAssets Toolkit build, never hand-edited here and verified by
+    // `npm run --prefix tools/vendor check`). Neither writes browser storage today; the Toolkit's own repository owns
+    // its storage, and a new pin is reviewed as its own change.
     const files = [];
     const walk = dir => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -85,15 +126,9 @@ test('the inventory covers every browser storage writer in web/', () => {
     for (const file of files) {
         const text = fs.readFileSync(file, 'utf8');
         for (const match of text.matchAll(/(?:const|export const)\s+([A-Z_]+_KEY)\s*=\s*'([^']+)'/g)) constants[match[1]] = match[2];
-        assert.equal(/caches\.open\(/.test(text), false, `${path.relative(WEB, file)} opens a CacheStorage cache`);
-        assert.equal(/indexedDB\.open\(/.test(text), false, `${path.relative(WEB, file)} opens IndexedDB`);
-        for (const match of text.matchAll(/\.setItem\(\s*([^,)]+)/g)) {
-            const literal = /^(?:'([^']+)'|"([^"]+)")$/.exec(match[1].trim());
-            const constant = /^[A-Z_]+_KEY$/.test(match[1].trim()) ? `$${match[1].trim()}` : null;
-            // A key computed at run time could be anything: it must be a literal or a named key constant.
-            assert.ok(literal || constant, `${path.relative(WEB, file)} writes a computed key: ${match[1]}`);
-            written.add(literal ? literal[1] ?? literal[2] : constant);
-        }
+        const { keys, problems } = storageWrites(text);
+        assert.deepEqual(problems, [], path.relative(WEB, file));
+        for (const key of keys) written.add(key);
     }
     const keys = [...written].map(key => (key.startsWith('$') ? constants[key.slice(1)] : key));
     assert.ok(keys.length >= 3, 'the writers were found');

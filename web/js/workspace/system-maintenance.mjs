@@ -28,6 +28,7 @@ import { noun } from './plural.mjs';
 export const DUPLICATES_KIND = 'duplicates';
 export const FIND_FAILED = 'The duplicate search could not start. Try again.';
 export const NOTHING_CACHED_REASON = 'Nothing is cached in this browser.';
+export const STORAGE_UNCHECKED_REASON = 'This browser did not allow checking its storage.';
 export const METADATA_CACHE_DESCRIPTION = 'Clear only Prompt Manager metadata cached by this browser.';
 
 /** The concept's two surfaces and their rows: `[title, description, label, action, danger]`. */
@@ -75,10 +76,13 @@ export async function findDuplicates({ store, scope, notify = showWorkspaceToast
     }
 }
 
-/** D102: the Metadata cache row's description: the concept's, plus the reason its review is unavailable. */
+/**
+ * D102: the Metadata cache row's description: the concept's, plus the reason its review is unavailable. A browser that
+ * refused to list its storage is never claimed empty.
+ */
 export function metadataCacheDescription(entries) {
     if (entries.keys.length + entries.caches.length > 0) return METADATA_CACHE_DESCRIPTION;
-    return `${METADATA_CACHE_DESCRIPTION} ${NOTHING_CACHED_REASON}`;
+    return `${METADATA_CACHE_DESCRIPTION} ${entries.denied ? STORAGE_UNCHECKED_REASON : NOTHING_CACHED_REASON}`;
 }
 
 /** D102: review the owned browser entries, then clear exactly those and say what happened. */
@@ -136,7 +140,8 @@ function metadataCacheRow({ scope, notify, cache }) {
  */
 export function mountMaintenance(container, { api, activity, scope, navigate = navigateTo, notify = showWorkspaceToast,
     cache = ownership() }) {
-    const reviewMissing = trigger => reviewPlan({ api, store: activity, scope, operation: 'missing_links', trigger, notify, navigate });
+    const reviewMissing = (trigger, pressed = trigger) => reviewPlan({ api, store: activity, scope, operation: 'missing_links',
+        trigger, hold: pressed, notify, navigate });
     const actions = {
         health: button => runHealthAction({ api, activity, scope, button, onReviewMissing: reviewMissing, notify }),
         duplicates: () => findDuplicates({ store: activity, scope, notify, navigate }),

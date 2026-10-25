@@ -387,3 +387,12 @@ test("ApiError keeps a validated running job on busy and a validated source on i
     }
     assert.deepEqual([new ApiError(409, "old caller").running, new ApiError(409, "old caller").source], [null, null]);
 });
+
+test("ApiError says whether the server itself refused (a parsed success:false body; S7 review I1)", () => {
+    assert.equal(new ApiError(400, "bad", null, null, { success: false, error: "bad" }).refused, true);
+    assert.equal(new ApiError(409, "busy", "busy", null, { success: false, code: "busy" }).refused, true);
+    // A proxy's page, a body that was not JSON, or no body at all: nothing says the server refused.
+    for (const body of [null, undefined, "<html>", { success: true }, [], { error: "x" }]) {
+        assert.equal(new ApiError(504, "Gateway Timeout", null, null, body).refused, false);
+    }
+});
