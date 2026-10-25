@@ -140,6 +140,27 @@ for (const type of ['PromptManagerFocused', 'PromptManagerSplit', 'PromptManager
     });
 }
 
+test('PromptSearchList text is a core widget socket and takes a dragged STRING link too', async ({ page }) => {
+    const { id, sources } = await page.evaluate(async () => {
+        const { app } = await import('/scripts/app.js');
+        const node = LiteGraph.createNode('PromptSearchList');
+        app.graph.add(node);
+        node.pos = [500, 80];
+        const source = LiteGraph.createNode('PrimitiveString');
+        app.graph.add(source);
+        source.pos = [40, 80];
+        app.canvas.ds.scale = .8;
+        app.canvas.ds.offset = [40, 40];
+        app.canvas.setDirty(true, true);
+        return { id: node.id, sources: [source.id] };
+    });
+    // A core widget's socket shows while a link is dragged; aim at where the frontend places it.
+    await expect.poll(async () => Boolean(await slotPosition(page, id, 'in', 'text'))).toBe(true);
+    await drag(page, await slotPosition(page, sources[0], 'out', 0), await slotPosition(page, id, 'in', 'text'));
+    await expect.poll(() => linkedInputs(page, id)).toEqual(['text']);
+    expect((await queued(page, id)).text).toEqual([String(sources[0]), 0]);
+});
+
 test('workflows saved before #343 load unchanged and their linked text keeps working', async ({ page }) => {
     const workflow = JSON.parse(await readFile(new URL('./fixtures/workflow-before-343.json', import.meta.url), 'utf8'));
     const result = await page.evaluate(async workflow => {
