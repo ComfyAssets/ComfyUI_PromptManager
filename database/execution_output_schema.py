@@ -119,25 +119,6 @@ def install_output_schema(conn: sqlite3.Connection) -> None:
         conn.execute(_table_sql(table))
 
 
-# The one optional, non-unique read index (#342): output file -> run. Older
-# libraries may lack it; migrate_execution_history adds it.
-OUTPUT_READ_INDEX = "idx_history_read_execution_run_outputs"
-OUTPUT_READ_INDEX_COLUMNS = ("filename", "subfolder", "root_key", "path_style")
-
-
-def _is_read_index(table: str, index: tuple, keys: tuple) -> bool:
-    """Exactly the attribution read index, as the migration creates it."""
-    return (
-        table == "execution_run_outputs"
-        and index[1] == OUTPUT_READ_INDEX
-        and not index[2]
-        and index[3] == "c"
-        and not index[4]
-        and tuple(key[2] for key in keys) == OUTPUT_READ_INDEX_COLUMNS
-        and not any(key[3] or key[4] != "BINARY" for key in keys)
-    )
-
-
 def output_schema_error(conn: sqlite3.Connection) -> str | None:
     """Reject altered schemas and invalid rows before returning bounded DTOs."""
     if conn.execute(
@@ -176,8 +157,6 @@ def output_schema_error(conn: sqlite3.Connection) -> str | None:
             keys = tuple(
                 row for row in conn.execute(f'PRAGMA index_xinfo("{name}")') if row[5]
             )
-            if _is_read_index(table, index, keys):
-                continue
             if (
                 not index[2]
                 or index[3] != "pk"

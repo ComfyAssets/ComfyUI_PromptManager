@@ -36,7 +36,11 @@ except ImportError:
 
 try:
     from ...database.pair_ingestion import blank_positive, ingest_resolved_pair
-    from ...database.run_attribution import host_output_directory, stored_run_prompt
+    from ...database.run_attribution import (
+        host_output_directory,
+        stored_run_prompt,
+        stored_run_prompts,
+    )
     from ...utils.generation_params import (
         PLACEHOLDERS,
         GenerationParamsError,
@@ -47,7 +51,11 @@ try:
     from ...utils.review_capture import reviewable
 except ImportError:
     from database.pair_ingestion import blank_positive, ingest_resolved_pair
-    from database.run_attribution import host_output_directory, stored_run_prompt
+    from database.run_attribution import (
+        host_output_directory,
+        stored_run_prompt,
+        stored_run_prompts,
+    )
     from utils.generation_params import (
         PLACEHOLDERS,
         GenerationParamsError,
@@ -1566,6 +1574,8 @@ class AdminRoutesMixin:
             if outcomes is not None:
                 outcomes.append(_scan_outcome(media_file, roots, status, title))
 
+        batch_results = list(batch_results)
+        history = self._recorded_runs_for(media for media, _meta in batch_results)
         for media_file, metadata in batch_results:
             if self._scan_job and self._scan_job.cancelled:
                 break
@@ -1579,6 +1589,7 @@ class AdminRoutesMixin:
                     ambiguous=ambiguous,
                     untraced=untraced,
                     records=records,
+                    history=history,
                 )
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
@@ -1637,6 +1648,7 @@ class AdminRoutesMixin:
         ambiguous=None,
         untraced=None,
         records=None,
+        history=None,
     ):
         """Enrich exact pairs; retain legacy positive-only import for absent pairs.
 
@@ -1656,7 +1668,7 @@ class AdminRoutesMixin:
         if not metadata:
             # No prompt metadata (--disable-metadata, bare savers): only the
             # recorded run can say which prompt made it (#342)
-            return self._link_recorded_run(media_file, {}, detailed)
+            return self._link_recorded_run(media_file, {}, detailed, history)
         canonical = dict(metadata)
         for key in ("prompt", "workflow"):
             if isinstance(canonical.get(key), str):
@@ -1666,7 +1678,7 @@ class AdminRoutesMixin:
                     # Preserve malformed metadata for conservative resolver rejection.
                     pass
         if not canonical.get("prompt") and not canonical.get("parameters"):
-            return self._link_recorded_run(media_file, canonical, detailed)
+            return self._link_recorded_run(media_file, canonical, detailed, history)
         _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
         if blank_positive(resolution):
@@ -1700,7 +1712,9 @@ class AdminRoutesMixin:
             # Graphs without a recognized sampler keep the legacy extractor below.
             prompt_text = self._graph_prompt_text(metadata)
             if not prompt_text:
-                linked = self._link_recorded_run(media_file, canonical, detailed)
+                linked = self._link_recorded_run(
+                    media_file, canonical, detailed, history
+                )
                 if linked is not None:
                     return linked
                 return "unresolved" if unchoosable else resolution["state"]
@@ -1726,23 +1740,42 @@ class AdminRoutesMixin:
             return status
         return {"status": status, "title": self._scan_title(media_file, prompt_text)}
 
-    def _link_recorded_run(self, media_file, canonical, detailed=False):
+    def _recorded_runs_for(self, media_files):
+        """``{path: prompt id or None}`` from recorded history for a scan batch.
+
+        One output lookup per chunk of names (``stored_run_prompts``), so a
+        batch never queries history once per file. An empty dict on failure.
+        """
+        try:
+            return stored_run_prompts(
+                self.db, [str(path) for path in media_files], host_output_directory()
+            )
+        except Exception:
+            self.logger.warning("History attribution failed for a scan batch")
+            return {}
+
+    def _link_recorded_run(self, media_file, canonical, detailed=False, history=None):
         """Link a file recorded history attributes to one stored prompt (#342).
 
         Returns the scan status (with ``detailed``, a stored or linked file's
         ``{"status", "title"}``), or None when history names no single stored
         prompt for the file (``database.run_attribution``). Never creates a
-        prompt. Works without any prompt metadata in the file.
+        prompt. Works without any prompt metadata in the file. ``history`` is
+        the batch's precomputed lookup; without it the file is looked up alone.
         """
-        try:
-            prompt_id = stored_run_prompt(
-                self.db, str(media_file), host_output_directory()
-            )
-        except Exception:
-            self.logger.warning(
-                f"History attribution failed for {media_file.name}", exc_info=True
-            )
-            return None
+        if history is not None:
+            prompt_id = history.get(str(media_file))
+        else:
+            try:
+                prompt_id = stored_run_prompt(
+                    self.db, str(media_file), host_output_directory()
+                )
+            except Exception:
+                self.logger.warning(
+                    f"History attribution failed for {media_file.name}",
+                    exc_info=True,
+                )
+                return None
         if prompt_id is None:
             return None
         try:

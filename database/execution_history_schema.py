@@ -314,16 +314,12 @@ def migrate_execution_history(conn: sqlite3.Connection) -> None:
                 if version == 1:
                     install_context_schema(conn)
                 install_output_schema(conn)
-        from .execution_output_schema import OUTPUT_READ_INDEX_COLUMNS
-
         # Read projections need reverse content lookup and the complete run order.
         for table, columns in (
             ("execution_prompt_snapshots", "raw_text_id,snapshot_id"),
             ("execution_contexts", "positive_snapshot_id,context_id"),
             ("execution_run_contexts", "context_id,run_id,anchor_id"),
             ("execution_runs", "observed_dequeue_at,session_id,queue_item_id,run_id"),
-            # Attribution of an output file to its run (#342)
-            ("execution_run_outputs", ",".join(OUTPUT_READ_INDEX_COLUMNS)),
         ):
             conn.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_history_read_{table} "

@@ -3900,12 +3900,11 @@ fallback (`_get_fallback_prompt` is gone) and no unproven tracker entry.
   `positive_prompt_id` hint). The monitor tries it last; the scan tries it when the
   #170 browser-parser floor finds nothing, and also for files with no prompt
   metadata at all (`--disable-metadata`, savers that embed none); it never
-  creates a prompt. The lookup uses `idx_history_read_execution_run_outputs`
-  (`filename, subfolder, root_key, path_style`), added by
-  `migrate_execution_history`; the output schema check accepts exactly that
-  optional index and still refuses any other. An older build refuses a library
-  that has it, so downgrading after this change needs `DROP INDEX
-  idx_history_read_execution_run_outputs` first.
+  creates a prompt. Lookups are batched (`stored_run_prompts`): one
+  parameterized `filename IN (...)` query per chunk of at most 500 names
+  (`LOOKUP_CHUNK`), matched in memory, so a scan batch asks history once per
+  chunk, never once per file. The history schema is unchanged (no extra index),
+  so older builds still open the library.
 - **After the run ends.** An image with no run keys (no embedded API graph) that
   nothing identifies waits for its run: when the run's outputs are recorded
   (`write_execution_outputs_for_finish` notifies `subscribe_outputs_sealed`

@@ -440,53 +440,99 @@ class TestMonitorHistoryRecheck(RecordedRuns, unittest.TestCase):
         run_attribution.notify_outputs_sealed("run", [])  # no dead callback raises
 
 
-class TestOutputLookupIndex(unittest.TestCase):
-    """M5: the history lookup by file name uses an index, added by migration."""
+class TestBoundedLookup(RecordedRuns, unittest.TestCase):
+    """M5: history lookups are batched, and the history schema is unchanged."""
 
     setUp = history_tests.HistoryDatabaseTests.setUp
     close_databases = history_tests.HistoryDatabaseTests.close_databases
     database = history_tests.HistoryDatabaseTests.database
 
-    def test_index_exists_is_used_validated_and_reinstalled(self):
-        from database.execution_history_schema import (
-            history_schema_error,
-            migrate_execution_history,
-        )
-        from database.run_attribution import _RUNS_FOR_OUTPUT
+    def output_lookups(self, db, action):
+        statements = []
+        conn = db.model.get_connection()
+        conn.set_trace_callback(statements.append)
+        try:
+            result = action()
+        finally:
+            conn.set_trace_callback(None)
+        return result, [s for s in statements if "FROM execution_run_outputs" in s]
+
+    def test_one_query_per_chunk_not_per_file_and_same_answers(self):
+        from database import run_attribution
 
         db = self.database()
-        conn = db.model.get_connection()
-        name = "idx_history_read_execution_run_outputs"
-        columns = [r[2] for r in conn.execute(f"PRAGMA index_info({name})")]
-        self.assertEqual(columns, ["filename", "subfolder", "root_key", "path_style"])
-        plan = " ".join(
-            str(row[3])
-            for row in conn.execute(
-                "EXPLAIN QUERY PLAN " + _RUNS_FOR_OUTPUT, ("posix", "k", "", "f.png")
+        output = str(Path(self.temp.name) / "output")
+        os.makedirs(output)
+        prompt_id = db.save_prompt(
+            text=LLM_TEXT, prompt_hash=generate_prompt_hash(LLM_TEXT)
+        )
+        names = [f"img_{n:05}_.png" for n in range(25)]
+        paths = [os.path.join(output, name) for name in names]
+        for path in paths:
+            Path(path).write_bytes(b"png")
+        self.record_run(db, output, [("", n) for n in names[:10]], [LLM_TEXT])
+        self.record_run(db, output, [("", n) for n in names[5:10]], [""], item=1)
+        with mock.patch.object(run_attribution, "LOOKUP_CHUNK", 10):
+            result, lookups = self.output_lookups(
+                db, lambda: run_attribution.stored_run_prompts(db, paths, output)
             )
-        )
-        self.assertIn(name, plan)
-        self.assertIsNone(history_schema_error(conn, allow_missing=False))
-        conn.execute(f"DROP INDEX {name}")
-        self.assertIsNone(history_schema_error(conn, allow_missing=False))
-        migrate_execution_history(conn)
-        migrate_execution_history(conn)
-        self.assertTrue(
-            conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (name,)).fetchone()
-        )
+        self.assertEqual(len(lookups), 3)  # 25 names in chunks of 10
+        expected = {path: None for path in paths}
+        expected.update({path: prompt_id for path in paths[:5]})
+        self.assertEqual(result, expected)
+        for path in paths[:12]:
+            self.assertEqual(
+                run_attribution.stored_run_prompt(db, path, output), expected[path]
+            )
 
-    def test_any_other_index_on_the_outputs_table_is_still_refused(self):
-        from database.execution_output_schema import output_schema_error
+    def test_the_history_schema_gains_no_index(self):
+        from database.execution_history_schema import history_schema_error
 
         db = self.database()
         conn = db.model.get_connection()
-        conn.execute("CREATE INDEX idx_rogue ON execution_run_outputs(filename)")
-        self.assertIn("unexpected", output_schema_error(conn))
-        conn.execute("DROP INDEX idx_rogue")
-        name = "idx_history_read_execution_run_outputs"
-        conn.execute(f"DROP INDEX {name}")
-        conn.execute(f"CREATE INDEX {name} ON execution_run_outputs(filename)")
-        self.assertIn("unexpected", output_schema_error(conn))
+        indexes = [
+            row[1]
+            for row in conn.execute("PRAGMA index_list(execution_run_outputs)")
+            if row[3] != "pk"
+        ]
+        self.assertEqual(indexes, [])
+        self.assertIsNone(history_schema_error(conn, allow_missing=False))
+
+
+class TestScanBatchLookup(RecordedRuns, AdminAPITestCase):
+    """M5: a scan batch asks history once per chunk of names, not per file."""
+
+    def test_metadata_less_batch_links_with_one_history_lookup(self):
+        db = self.api.db
+        prompt_id = db.save_prompt(
+            text=LLM_TEXT, prompt_hash=generate_prompt_hash(LLM_TEXT)
+        )
+        files = []
+        for n in range(6):
+            path = self.output_dir / f"bare_{n:05}_.png"
+            path.write_bytes(b"png")
+            files.append(path)
+        self.record_run(
+            db, str(self.output_dir), [("", f.name) for f in files[:4]], [LLM_TEXT]
+        )
+        statements = []
+        conn = db.model.get_connection()
+        conn.set_trace_callback(statements.append)
+        try:
+            counts = self.api._ingest_scan_batch_sync([(f, {}) for f in files])
+        finally:
+            conn.set_trace_callback(None)
+        lookups = [s for s in statements if "FROM execution_run_outputs" in s]
+        self.assertEqual(len(lookups), 1)
+        self.assertEqual(counts["linked"], 4)
+        linked = {
+            row[0]
+            for row in conn.execute(
+                "SELECT filename FROM generated_images WHERE prompt_id=?",
+                (prompt_id,),
+            )
+        }
+        self.assertEqual(linked, {f.name for f in files[:4]})
 
 
 if __name__ == "__main__":
