@@ -108,3 +108,35 @@ test('an output whose positive is only linked prepend text stays unlinked, never
     expect(cached?.[1].nodes).toEqual(expect.arrayContaining(['11', '20']));
     await linkedTo(execution, rerun, llmText);
 });
+
+test('an output saved without metadata links once its recorded run names a stored prompt', async ({ execution }, testInfo) => {
+    const llmText = `bare output landscape ${testInfo.project.name} ${randomUUID()}`;
+    const request = execution.request;
+    expect((await request.post('/pm_execution_fixture/metadata', { data: { disabled: true } })).ok()).toBe(true);
+    try {
+        // No embedded graph: no run key can prove the tracker entry, so only the
+        // run's recorded history can, and only once the run's outputs are sealed.
+        // The gate after SaveImage holds the run open while the monitor looks.
+        const prompt = graph({ kind: 'PromptManager', text: 'llm', llm: llmText, prefix: 'misslink/bare' });
+        prompt['80'] = { class_type: 'PMHistoryImageOutput', inputs: { images: ['70', 0], mode: 'gate' } };
+        expect((await request.post('/pm_execution_fixture/gate/hold')).ok()).toBe(true);
+        const id = randomUUID();
+        try {
+            expect((await request.post('/prompt', { data: { prompt, prompt_id: id } })).ok()).toBe(true);
+            let waiting = [];
+            await expect.poll(async () => {
+                waiting = (await (await request.get('/pm_execution_fixture/monitor')).json()).awaiting;
+                return waiting.filter(name => name.startsWith('bare_')).length;
+            }, { timeout: 20000, message: 'the monitor processed the bare output while its run was open' }).toBe(1);
+            const [bare] = waiting.filter(name => name.startsWith('bare_'));
+            expect((await readLinks(execution.databasePath, [bare])).links[bare]).toBeNull();
+            expect((await request.post('/pm_execution_fixture/gate/release')).ok()).toBe(true);
+            await linkedTo(execution, bare, llmText);
+            expect((await (await request.get('/pm_execution_fixture/monitor')).json()).awaiting).not.toContain(bare);
+        } finally {
+            expect((await request.post('/pm_execution_fixture/gate/release')).ok()).toBe(true);
+        }
+    } finally {
+        expect((await request.post('/pm_execution_fixture/metadata', { data: { disabled: false } })).ok()).toBe(true);
+    }
+});

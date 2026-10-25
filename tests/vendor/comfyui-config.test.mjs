@@ -32,13 +32,13 @@ test('execution script discovers only the new matrix and preserves all 78 origin
     assert.match(executions, /\[classic-start\]/);
     assert.match(executions, /\[nodes2-start\]/);
     // + the fresh-host library location case, + the #342 image attribution case
-    assert.match(executions, /Total: 50 tests in 4 files/);
+    assert.match(executions, /Total: 52 tests in 4 files/);
     for (const project of ['classic-start', 'nodes2-start']) {
         const cases = executions.split('\n').filter(line => line.includes(`[${project}]`));
         assert.equal(cases.filter(line => line.includes('execution-history.spec.mjs')).length, 15);
         assert.equal(cases.filter(line => line.includes('execution-outputs.spec.mjs')).length, 8);
         assert.equal(cases.filter(line => line.includes('library-location.spec.mjs')).length, 1);
-        assert.equal(cases.filter(line => line.includes('image-attribution.spec.mjs')).length, 1);
+        assert.equal(cases.filter(line => line.includes('image-attribution.spec.mjs')).length, 2);
     }
     assert.doesNotMatch(executions, /prompt-manager.spec/);
 });
