@@ -15,14 +15,15 @@ test('real-ComfyUI suite registers Classic and Nodes 2.0 startup projects', () =
     assert.match(output, /\[nodes2-start\]/);
 });
 
-test('execution script discovers only the new matrix and preserves all 78 original stock cases plus the native editor host case', () => {
+test('execution script discovers only the new matrix and preserves all 78 original stock cases plus the native editor and renderer host cases', () => {
     const manifest = JSON.parse(readFileSync(new URL('../../tools/vendor/package.json', import.meta.url), 'utf8'));
     assert.equal(manifest.scripts['test:executions'], 'playwright test --config playwright.execution.config.mjs');
     const list = config => execFileSync(process.execPath, ['tools/vendor/node_modules/@playwright/test/cli.js',
         'test', '--config', config, '--list'], { cwd: root, encoding: 'utf8',
         env: { ...process.env, PM_COMFY_ROOT: '/unused-pinned-checkout' } });
     const stock = list('tools/vendor/comfyui.config.mjs');
-    assert.match(stock, /Total: 82 tests in 8 files/);  // + local Inspect host case (inspect-sender.spec.mjs, 2 projects)
+    // + local Inspect host case (inspect-sender.spec.mjs, 2 projects), + the S10 renderer case (prompt-bridge.spec.mjs, 2 projects)
+    assert.match(stock, /Total: 84 tests in 8 files/);
     assert.doesNotMatch(stock, /execution-history/);
     assert.doesNotMatch(stock, /execution-outputs/);
     assert.doesNotMatch(stock, /library-location/);  // it starts its own fresh host (#249 S6b)

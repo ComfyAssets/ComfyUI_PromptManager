@@ -190,3 +190,21 @@ test('bridge remains live through both renderer switches and workflow reload wit
         await expect(page.locator('.pm-focused').getByRole('textbox',{name:'Main prompt',exact:true})).toHaveValue('After reload');
     });
 });
+
+test('each destination reports its window renderer, and System › Integrations shows it (S10)',async({page,context},testInfo)=>{
+    const initial=testInfo.project.metadata.initialRenderer;
+    const id=await addNode(page,'PromptManager',{text:'Renderer check'});
+    await withClient(page,context,async clientPage=>{
+        const name=renderer=>renderer?'Nodes 2.0':'Classic';
+        const status=clientPage.locator('#workspace-main .setting-row [role="status"]');
+        expect((await destination(clientPage,id)).target.renderer).toBe(initial?'nodes2':'classic');
+        await clientPage.evaluate(()=>{location.hash='#/system/integrations';});
+        await expect(status).toHaveText(`Detected: ${name(initial)} (1 ComfyUI window).`);
+        // Switching the renderer in ComfyUI is what the next check reports; nothing is sent or queued.
+        await page.evaluate(async renderer=>{const {app}=await import('/scripts/app.js');await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled',renderer);await app.loadGraphData(app.graph.serialize());},!initial);
+        await expect.poll(()=>page.evaluate(()=>LiteGraph.vueNodesMode)).toBe(!initial);
+        expect((await destination(clientPage,id)).target.renderer).toBe(initial?'classic':'nodes2');
+        await clientPage.reload();
+        await expect(status).toHaveText(`Detected: ${name(!initial)} (1 ComfyUI window).`);
+    });
+});
