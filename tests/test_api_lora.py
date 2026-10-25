@@ -528,6 +528,48 @@ class TestLoraEnableRoute(LoraAPITestCase):
         self.assertEqual(self.config_file.read_bytes(), b"{not json")
         self.assertFalse(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
 
+    async def test_enable_with_a_stale_revision_changes_nothing(self):
+        # System S10: the Save row sends the revision it read; a file changed
+        # since is a settings-changed conflict and nothing is written.
+        self.config_file.write_text(json.dumps({"web_ui": {"result_timeout": 9}}))
+        resp = await self.client.request("GET", "/prompt_manager/settings")
+        revision = (await resp.json())["revision"]
+        self.config_file.write_text(json.dumps({"web_ui": {"result_timeout": 10}}))
+        before = self.config_file.read_bytes()
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {
+                "enabled": False,
+                "trigger_words_enabled": True,
+                "expected_revision": revision,
+            },
+        )
+        body = await resp.json()
+
+        self.assertEqual((resp.status, body["code"]), (409, "settings-changed"))
+        self.assertEqual(self.config_file.read_bytes(), before)
+        self.assertFalse(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {
+                "enabled": False,
+                "trigger_words_enabled": True,
+                "expected_revision": body["revision"],
+            },
+        )
+        saved = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(saved["revision"].startswith("sha256:"))
+        self.assertTrue(IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED)
+
+        resp = await self._post_json(
+            "/prompt_manager/lora/enable",
+            {"enabled": False, "expected_revision": 7},
+        )
+        self.assertEqual(resp.status, 400)
+
     async def test_enable_requires_boolean_flags_and_body_cap(self):
         for body in (
             {"enabled": "yes"},

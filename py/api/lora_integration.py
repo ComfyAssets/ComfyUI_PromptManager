@@ -168,6 +168,9 @@ class LoraIntegrationMixin:
     async def lora_enable(self, request):
         """Enable or disable LoraManager integration and save it to config.json.
 
+        ``expected_revision`` (optional, GET /settings' ``revision``) refuses
+        a save over a config.json changed meanwhile (``settings-changed``).
+
         The values are committed through the config store first (#220) and
         published at runtime only once config.json holds them; a save that
         cannot be written reports ``persisted: false`` and changes nothing.
@@ -180,6 +183,11 @@ class LoraIntegrationMixin:
             for flag in _LORA_FLAGS:
                 if flag in data and not isinstance(data[flag], bool):
                     return self._bad_lora_request(f"{flag} must be true or false")
+            # The System Save row sends the revision it read (#220); the
+            # legacy page sends none and merges into what is on disk.
+            expected_revision = data.get("expected_revision")
+            if expected_revision is not None and not isinstance(expected_revision, str):
+                return self._bad_lora_request("expected_revision must be a string")
             enabled = data.get("enabled", False)
             path = data.get("path", "")
             trigger_words = data.get("trigger_words_enabled", False)
@@ -226,7 +234,7 @@ class LoraIntegrationMixin:
                 _saved, revision = await self._run_in_executor(
                     get_config_store().commit,
                     _lora_settings_mutation(values),
-                    expected_revision=None,
+                    expected_revision=expected_revision,
                     publish=publish,
                 )
             except (ConfigUnreadable, RevisionConflict, OSError) as exc:
