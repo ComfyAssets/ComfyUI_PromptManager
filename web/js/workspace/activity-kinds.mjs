@@ -13,7 +13,8 @@
  * `scan` is exactly the D56 view and `image-tags` the D89 one. `thumbnails` counts Generated (green), Skipped and
  * Errors (red). System S7: `maintenance` (a reviewed plan's apply) counts Changed, Protected and Errors and, when it
  * failed, ends with the server's reason; `duplicates` (the search) counts Groups found; `duplicate_cleanup` counts
- * Removed, Kept and Errors. Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
+ * Removed, Kept and Errors; S10: `lora_import` counts Imported, Linked to existing, Skipped, Images downloaded, Download
+ * errors and Errors and, when it failed, ends with the server's reason (the previous imports were kept). Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
  * the generic descriptor: title-based copy and no tiles or outcomes, so it never shows another kind's zeros (S1 review
  * M6, S2 review M3). `viewOf(job)` keeps only the groups the job itself counts, so a hold (no groups) has none either.
  *
@@ -46,6 +47,8 @@ export const groupsOf = job => {
 };
 /** "3 removed" (System S7: a duplicate cleanup). */
 export const removedOf = job => counted(job, 'removed', 'removed');
+/** "12 imported" (System S10: the LoRA reference import). */
+export const importedOf = job => counted(job, 'imported', 'imported');
 
 /** "2 output folders": what a scan or a thumbnail job walks. */
 function foldersOf(job) {
@@ -85,6 +88,11 @@ const tagLine = job => `${taggedOf(job)} · ${errorsOf(job)}`;
 const thumbnailLine = job => `${generatedOf(job)} · ${errorsOf(job)}`;
 const changedLine = job => `${changedOf(job)} · ${errorsOf(job)}`;
 const cleanupLine = job => `${removedOf(job)} · ${errorsOf(job)}`;
+const importLine = job => `${importedOf(job)} · ${errorsOf(job)}`;
+
+/** A job that ends with the server's reason when it failed (the LoRA import keeps the old collection and says so). */
+const reasonFinish = (name, kept, line) => job => (job.state === 'failed' && job.status_line
+    ? `${name} failed · ${job.status_line}` : namedFinish(() => name, kept, line)(job));
 
 /** A maintenance apply ends with its counters, or, when it failed, the server's reason (plan-changed: review again). */
 function maintenanceFinish(job) {
@@ -181,6 +189,20 @@ export const KINDS = Object.freeze({
         outcomes: tiles([['removed', 'Removed'], ['errors', 'Errors'], ['kept', 'Kept']]),
         openable: groups('kept'),
         log: 'Cleanup log',
+    }),
+    // System S10: the reviewed LoRA reference import; cancellable only while it downloads (the server says when).
+    lora_import: Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Importing LoRAs',
+        finishToast: reasonFinish('LoRA import', importedOf, importLine),
+        line: importLine,
+        kept: importedOf,
+        tiles: tiles([['imported', 'Imported', 'added'], ['linked', 'Linked to existing', ''], ['skipped', 'Skipped', 'warn'],
+            ['downloaded', 'Images downloaded', ''], ['download_errors', 'Download errors', 'warn'], ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['imported', 'Imported'], ['errors', 'Errors'], ['skipped', 'Skipped'], ['linked', 'Linked to existing']]),
+        log: 'Import log',
+        cancelLabel: 'Cancel import',
+        cancel: 'Cancel import',
     }),
 });
 

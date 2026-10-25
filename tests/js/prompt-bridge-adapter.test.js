@@ -17,6 +17,17 @@ test('lists only explicit PromptManager destinations and roles for all five sche
     assert.equal(targets[0].id,'0'); assert.equal(targets[0].label,'My prompts');
     assert.deepEqual(createPromptAdapter({}).listTargets(),[]);
 });
+test('each destination says which renderer its window draws nodes with (System › Integrations, S10)',async()=>{
+    const {createPromptAdapter}=await source; const {app}=fixture();
+    assert.equal(createPromptAdapter(app,{runtime:{LiteGraph:{vueNodesMode:true}}}).listTargets()[0].renderer,'nodes2');
+    assert.equal(createPromptAdapter(app,{runtime:{LiteGraph:{vueNodesMode:false}}}).listTargets()[0].renderer,'classic');
+    assert.equal(createPromptAdapter(app,{runtime:{LiteGraph:{}}}).listTargets()[0].renderer,'classic');
+    assert.equal(Object.hasOwn(createPromptAdapter(app,{runtime:{}}).listTargets()[0],'renderer'),false);
+    // Read at every listing: a window that switches renderer reports the new one.
+    const runtime={LiteGraph:{vueNodesMode:false}}; const adapter=createPromptAdapter(app,{runtime});
+    runtime.LiteGraph.vueNodesMode=true;
+    assert.equal(adapter.listTargets()[0].renderer,'nodes2');
+});
 test('previews exact composition, updates requested visible/serialized values, preserves other fields',async()=>{
     const {createPromptAdapter}=await source; const {app,node,widget}=fixture(); const adapter=createPromptAdapter(app);
     const {preview,snapshot}=adapter.preview('7',{positive:'new'});

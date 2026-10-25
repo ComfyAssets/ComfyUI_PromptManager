@@ -47,10 +47,19 @@ function redraw(app,node) {
     app.graph?.setDirtyCanvas?.(true,true);
 }
 
-export function createPromptAdapter(app) {
+// The renderer this window draws nodes with (System › Integrations, S10): Nodes 2.0 while LiteGraph's Vue node mode is
+// on, else Classic; unknown (omitted) without LiteGraph.
+function renderer(runtime) {
+    const graph = runtime?.LiteGraph;
+    if (!graph) return {};
+    return {renderer:graph.vueNodesMode === true ? 'nodes2' : 'classic'};
+}
+
+export function createPromptAdapter(app, {runtime = globalThis} = {}) {
     const snapshots = new WeakMap();
     function listTargets() {
-        return nodes(app.graph).filter(node => schemas.has(node.type)).map(node => ({...target(node),roles:Object.keys(schemas.get(node.type))}));
+        const drawn = renderer(runtime);
+        return nodes(app.graph).filter(node => schemas.has(node.type)).map(node => ({...target(node),roles:Object.keys(schemas.get(node.type)),...drawn}));
     }
     function preview(targetId,rawRoles) {
         const roles = validateRoles(rawRoles);

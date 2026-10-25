@@ -82,8 +82,8 @@ const OVERTAKEN = new Set(['plan-changed', 'storage-changed', 'plan-expired']);
 
 /**
  * Where a failed apply's Review again goes (S7 review M2): a maintenance plan the library overtook is reviewed again
- * (`{operation}`); a duplicate cleanup whose sources or plan changed needs a new search, in Maintenance (`{section}`);
- * otherwise null.
+ * (`{operation}`); a duplicate cleanup whose sources or plan changed needs a new search, in Maintenance (`{section}`); a
+ * LoRA import the files or saved pairs overtook is reviewed again in Integrations (`{section}`, S10); otherwise null.
  */
 export function reviewAgainOf(job) {
     if (job.state !== 'failed') return null;
@@ -93,6 +93,10 @@ export function reviewAgainOf(job) {
     }
     if (job.kind === 'duplicate_cleanup' && (OVERTAKEN.has(failure) || failure === 'sources-changed')) {
         return { section: '#/system/maintenance' };
+    }
+    // System S10: a LoRA import whose files or imports changed, or that saved pairs block, is reviewed in Integrations.
+    if (job.kind === 'lora_import' && (OVERTAKEN.has(failure) || failure === 'blocked-by-pairs')) {
+        return { section: '#/system/integrations' };
     }
     return null;
 }

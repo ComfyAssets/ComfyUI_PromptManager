@@ -354,7 +354,9 @@ class LoraImportRoutesMixin:
             return _fail_job(job, "import-failed", f"{FAILED} {CACHE_NOTE}")
         self._count_downloads(job, staged)
         # Past this point nothing stops halfway: the replace is one transaction.
+        # Published, so a view that offered Cancel during the downloads drops it.
         job.cancellable = False
+        job.publish({"type": "progress", "progress": job.progress})
         if job.cancelled:
             job.log_line(f"{CANCELLED} {CACHE_NOTE}")
             job.update(status_line=CANCELLED)
