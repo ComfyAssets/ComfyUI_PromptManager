@@ -1,7 +1,9 @@
 """LoraManager integration API routes for PromptManager."""
 
 import asyncio
+import contextlib
 import json
+import threading
 
 from aiohttp import web
 
@@ -37,6 +39,21 @@ def _lora_settings_mutation(values):
     return mutate
 
 
+# The admin page's own words for the refusals it can meet (it has no review).
+_FILES_CHANGED = (
+    "The LoRA metadata files changed during the scan; the previous imports "
+    "were kept. Run the scan again."
+)
+_IMPORTS_CHANGED = (
+    "The imported LoRA prompts changed during the scan; the previous imports "
+    "were kept. Run the scan again."
+)
+
+
+class LoraFilesChanged(Exception):
+    """A metadata file changed, appeared or went while the legacy scan staged."""
+
+
 def _lora_error_frame(message):
     """An import stream's error event, as the admin page's modal reads it.
 
@@ -44,6 +61,16 @@ def _lora_error_frame(message):
     on ``type: error``, naming ``message``.
     """
     return {"type": "error", "status": message, "progress": 0, "message": message}
+
+
+def _closed(request):
+    """A check (safe off the loop) for whether ``request``'s client left."""
+
+    def closed():
+        transport = request.transport
+        return transport is None or transport.is_closing()
+
+    return closed
 
 
 class LoraIntegrationMixin:
@@ -108,7 +135,11 @@ class LoraIntegrationMixin:
         """Get current LoraManager integration status."""
         try:
             from ..config import IntegrationConfig
-            from ..lora_utils import detect_lora_manager, get_trigger_cache
+            from ..lora_utils import (
+                detect_lora_manager,
+                get_trigger_cache,
+                resolve_lora_manager_path,
+            )
 
             config = IntegrationConfig.get_config()["lora_manager"]
             cache = get_trigger_cache()
@@ -116,6 +147,12 @@ class LoraIntegrationMixin:
             # Check if the configured path is still valid
             detected_path = await self._run_in_executor(
                 detect_lora_manager, config.get("path", "")
+            )
+            # A detected install reached through a link outside custom_nodes is
+            # found but cannot be enabled (S10 review N5): say which.
+            usable = bool(detected_path) and (
+                await self._run_in_executor(resolve_lora_manager_path, detected_path)
+                is not None
             )
 
             return web.json_response(
@@ -126,6 +163,7 @@ class LoraIntegrationMixin:
                     "trigger_words_enabled": config["trigger_words_enabled"],
                     "has_civitai_api_key": bool(config.get("civitai_api_key")),
                     "detected": detected_path is not None,
+                    "detected_usable": usable,
                     "detected_path": (
                         self._public_path(detected_path) if detected_path else ""
                     ),
@@ -316,20 +354,56 @@ class LoraIntegrationMixin:
             ) as job:
                 await response.prepare(request)
                 try:
-                    await self._lora_scan_stream(allowed, send_progress)
+                    await self._lora_scan_stream(
+                        allowed, send_progress, disconnected=_closed(request)
+                    )
                 except Exception as e:
-                    self.logger.exception("LoRA scan failed")
                     job.finish("failed")
-                    await send_progress(_lora_error_frame(self._public_error(e)))
-
-                await response.write_eof()
+                    await self._send_scan_failure(e, send_progress)
+                with contextlib.suppress(ConnectionError, RuntimeError):
+                    await response.write_eof()
             return response
 
         except Exception as e:
             self.logger.error(f"LoRA scan failed: {e}")
             return self._error_response(e)
 
-    async def _lora_scan_stream(self, lm_path, send_progress):
+    async def _send_scan_failure(self, error, send_progress):
+        """The error frame for a failed legacy scan; quiet when the page left.
+
+        Expected refusals (files or imports changed, saved pairs, nothing to
+        import) are warnings in the admin page's own words; anything else is
+        logged with its traceback.
+        """
+        from .. import lora_import
+        from .lora_import_routes import (
+            EmptyReplacement,
+            PairDependencyError,
+            PlanChanged,
+        )
+
+        if isinstance(error, (ConnectionError, lora_import.ImportCancelled)):
+            self.logger.info("LoRA scan stopped: the page closed its connection")
+            return
+        if isinstance(error, PlanChanged):
+            message = _IMPORTS_CHANGED
+        elif isinstance(error, LoraFilesChanged):
+            message = str(error)
+        else:
+            message = self._public_error(error)
+        if isinstance(
+            error,
+            (PlanChanged, LoraFilesChanged, EmptyReplacement, PairDependencyError),
+        ):
+            self.logger.warning(f"LoRA scan refused: {message}")
+        else:
+            self.logger.exception("LoRA scan failed")
+        with contextlib.suppress(ConnectionError, RuntimeError):
+            await send_progress(_lora_error_frame(message))
+
+    async def _lora_scan_stream(
+        self, lm_path, send_progress, disconnected=lambda: False
+    ):
         """Import every LoRA under ``lm_path``, reporting through ``send_progress``.
 
         The staged path of the System import (#221, ``lora_import_routes``):
@@ -358,6 +432,7 @@ class LoraIntegrationMixin:
             }
         )
 
+        reviewed = await self._run_in_executor(lora_import.fingerprint, files)
         events = asyncio.Queue()
         state = await self._run_in_executor(
             self.db.category_import_state, lora_import.LORA_CATEGORY
@@ -397,20 +472,37 @@ class LoraIntegrationMixin:
 
         # Each record's event is queued (through the loop) before staging
         # ends, so reporting until staging is done and then draining the
-        # queue reports every record in order.
+        # queue reports every record in order. I2: when the page goes away
+        # (its connection closes, or a report cannot be sent) staging stops
+        # before its next LoRA, and this returns only once it has stopped, so
+        # the caller's records hold covers every download.
+        stop = threading.Event()
         staging = asyncio.ensure_future(
-            self.stage_lora_import(files, on_record=on_record)
+            self.stage_lora_import(
+                files,
+                on_record=on_record,
+                cancelled=lambda: stop.is_set() or disconnected(),
+            )
         )
-        while not staging.done():
-            getter = asyncio.ensure_future(events.get())
-            await asyncio.wait({getter, staging}, return_when=asyncio.FIRST_COMPLETED)
-            if getter.done():
-                await report(*getter.result())
-            else:
-                getter.cancel()
-        while not events.empty():
-            await report(*events.get_nowait())
+        try:
+            while not staging.done():
+                getter = asyncio.ensure_future(events.get())
+                await asyncio.wait(
+                    {getter, staging}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if getter.done():
+                    await report(*getter.result())
+                else:
+                    getter.cancel()
+            while not events.empty():
+                await report(*events.get_nowait())
+        finally:
+            stop.set()
+            with contextlib.suppress(Exception):
+                await asyncio.shield(staging)
         staged = await staging
+        if not await self.lora_files_unchanged(lm_path, reviewed):
+            raise LoraFilesChanged(_FILES_CHANGED)
 
         await send_progress(
             {

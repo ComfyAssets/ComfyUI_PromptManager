@@ -514,15 +514,39 @@ def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
 
         from PIL import Image
 
-        img = Image.open(BytesIO(raw))
-        img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
-        img = img.convert("RGB")
-        img.save(str(local_path), "JPEG", quality=85)
-
+        with Image.open(BytesIO(raw)) as img:
+            img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
+            rgb = img.convert("RGB")
+        _save_atomically(rgb, local_path)
         return str(local_path.resolve())
     except Exception as e:
         logger.debug(f"Failed to download {url}: {e}")
         return None
+
+
+def _save_atomically(image, local_path: Path) -> None:
+    """Write ``image`` as JPEG so ``local_path`` only ever names a whole file.
+
+    The image goes to a temp file in the same folder, which is closed before
+    ``os.replace`` puts it in place (Windows cannot replace an open file); a
+    failure removes the temp file. A reader (another import's cache check)
+    never sees a half-written image.
+    """
+    import tempfile
+
+    fd, temp = tempfile.mkstemp(
+        dir=str(local_path.parent), prefix=".pm-", suffix=".part"
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            image.save(handle, "JPEG", quality=85)
+        os.replace(temp, local_path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
 
 
 def _civitai_cache_plan(

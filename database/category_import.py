@@ -17,15 +17,20 @@ from typing import Any, Dict, List, Optional, Sequence
 
 try:
     from .maintenance import PlanChanged
+    from .pairs import PairDependencyError
     from .workflow_documents import documents_of_rows, release_documents
 except ImportError:  # pragma: no cover - flat test imports
     from database.maintenance import PlanChanged
+    from database.pairs import PairDependencyError
     from database.workflow_documents import documents_of_rows, release_documents
 
 
 class EmptyReplacement(ValueError):
     """The replacement has no record and would remove every current import."""
 
+
+# The category's prompt ids, as a subquery (one bound parameter).
+_IN_CATEGORY = "SELECT id FROM prompts WHERE category = ?"
 
 # Each record's outcome and the result counter it adds to.
 _COUNTERS = {"imported": "imported", "linked": "linked", "duplicate": "duplicates"}
@@ -49,15 +54,12 @@ class CategoryImportOperations:
                     (category,),
                 ).fetchall()
             ]
-            paired = 0
-            if ids:
-                marks = _placeholders(ids)
-                paired = conn.execute(
-                    f"SELECT COUNT(*) FROM prompts WHERE id IN ({marks}) AND id IN "
-                    "(SELECT positive_prompt_id FROM prompt_pairs UNION "
-                    "SELECT negative_prompt_id FROM prompt_pairs)",
-                    ids,
-                ).fetchone()[0]
+            paired = conn.execute(
+                "SELECT COUNT(*) FROM prompts WHERE category = ? AND id IN "
+                "(SELECT positive_prompt_id FROM prompt_pairs UNION "
+                "SELECT negative_prompt_id FROM prompt_pairs)",
+                (category,),
+            ).fetchone()[0]
         return {"ids": ids, "paired": paired}
 
     def existing_prompt_hashes(
@@ -113,8 +115,8 @@ class CategoryImportOperations:
                 raise EmptyReplacement(
                     "Nothing to import; the previous imports were kept"
                 )
-            self._ensure_prompts_unpaired(conn, ids)
-            removed = self._delete_category_rows(conn, ids)
+            self._ensure_category_unpaired(conn, category)
+            removed = self._delete_category_rows(conn, category, ids)
             result = {
                 "removed": removed,
                 "imported": 0,
@@ -128,16 +130,42 @@ class CategoryImportOperations:
                 self._import_record(conn, category, record, created, result)
             return result
 
-    def _delete_category_rows(self, conn, ids: List[int]) -> int:
-        """Delete prompts ``ids`` with their image links and tags (no commit)."""
+    def _delete_category_rows(self, conn, category: str, ids: List[int]) -> int:
+        """Delete the category's prompts with their image links and tags.
+
+        No commit. The rows are selected by category (just verified against
+        ``ids`` under the write lock), so no statement binds one parameter per
+        prompt and SQLite's variable limit never caps a collection.
+        """
         if not ids:
             return 0
-        marks = _placeholders(ids)
-        documents = documents_of_rows(conn, "prompt_id", ids)
-        conn.execute(f"DELETE FROM generated_images WHERE prompt_id IN ({marks})", ids)
+        documents = documents_of_rows(conn, "prompt_id", ids)  # chunked
+        conn.execute(
+            f"DELETE FROM generated_images WHERE prompt_id IN ({_IN_CATEGORY})",
+            (category,),
+        )
         release_documents(conn, documents)
-        conn.execute(f"DELETE FROM prompt_tags WHERE prompt_id IN ({marks})", ids)
-        return conn.execute(f"DELETE FROM prompts WHERE id IN ({marks})", ids).rowcount
+        conn.execute(
+            f"DELETE FROM prompt_tags WHERE prompt_id IN ({_IN_CATEGORY})",
+            (category,),
+        )
+        return conn.execute(
+            "DELETE FROM prompts WHERE category = ?", (category,)
+        ).rowcount
+
+    @staticmethod
+    def _ensure_category_unpaired(conn, category: str) -> None:
+        """Raise PairDependencyError when a saved pair uses a category prompt."""
+        row = conn.execute(
+            f"SELECT id FROM prompt_pairs WHERE positive_prompt_id IN ({_IN_CATEGORY}) "
+            f"OR negative_prompt_id IN ({_IN_CATEGORY}) LIMIT 1",
+            (category, category),
+        ).fetchone()
+        if row:
+            raise PairDependencyError(
+                f"Prompt belongs to saved pair {row[0]}; delete the pair first "
+                "or save changed text as a new prompt"
+            )
 
     def _import_record(self, conn, category, record, created, result) -> None:
         """Save one staged record on ``conn``, or link it to the prompt it repeats."""

@@ -195,6 +195,31 @@ class CategoryReplacementTests(unittest.TestCase):
             ["imported", "duplicate", "linked"],
         )
 
+    # N1: a collection larger than SQLite's bound-variable limit is replaced.
+    def test_more_imports_than_sqlite_variables(self):
+        conn = self.db.model.get_connection()
+        if not hasattr(conn, "setlimit"):
+            self.skipTest("sqlite3.Connection.setlimit needs Python 3.11")
+        rows = [
+            (f"bulk lora {n}", CATEGORY, generate_prompt_hash(f"bulk lora {n}"))
+            for n in range(1200)
+        ]
+        with conn:
+            conn.executemany(
+                "INSERT INTO prompts(text, category, hash, created_at, updated_at) "
+                "VALUES(?, ?, ?, '2026-01-01', '2026-01-01')",
+                rows,
+            )
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        state = self.db.category_import_state(CATEGORY)
+        self.assertEqual((len(state["ids"]), state["paired"]), (1202, 0))
+
+        result = self.db.replace_category_prompts(
+            CATEGORY, [_record("only one")], expected_ids=state["ids"]
+        )
+
+        self.assertEqual((result["removed"], result["imported"]), (1202, 1))
+
 
 class LoraImportAPITestCase(LoraAPITestCase):
     """The routes with LoraManager enabled over a disposable LoRA folder."""
@@ -482,6 +507,37 @@ class LoraImportRouteTests(LoraImportAPITestCase):
         self.assertEqual(plan["backup"]["policy"], "on")
         self.assertEqual(order, [("backup", True), ("replace", None)])
 
+    async def test_a_disconnected_legacy_scan_stops_and_holds_until_it_stopped(self):
+        # I2: the admin page closes its modal while the downloads run.
+        for number in range(4):
+            _write_metadata(
+                self.loras,
+                f"lora{number}",
+                images=[f"https://civitai.com/{number}.png"],
+            )
+        before = _snapshot(self.api.db)
+        self.gate = threading.Event()
+        resp = await self.client.request("POST", SCAN)
+        await resp.content.readline()  # the stream is open
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, self.downloading.wait, 10))
+        resp.close()
+        await asyncio.sleep(0.05)  # the server sees the closed connection
+        # Its records hold stays while the in-flight download runs.
+        self.assertIsNotNone(self.api._jobs.active("lora_import"))
+        self.gate.set()
+        for _ in range(500):
+            if self.api._jobs.active("lora_import") is None:
+                break
+            await asyncio.sleep(0.01)
+        self.assertIsNone(self.api._jobs.active("lora_import"))
+        # Staging stopped at the next LoRA: no download runs after the hold.
+        served = len(self.requests)
+        self.assertLess(served, 4)
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(self.requests), served)
+        self.assertEqual(_snapshot(self.api.db), before)
+
     async def test_legacy_scan_events_unchanged_on_success(self):
         self._two_loras()
         (self.loras / "broken.metadata.json").write_text("{{{")
@@ -587,6 +643,27 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
         self.assertEqual(_snapshot(self.api.db), before)
         return job
 
+    async def test_start_refused_when_the_integration_changed_since_the_review(self):
+        # M5: disabled, or moved to another install, after the review.
+        self._two_loras()
+        before = _snapshot(self.api.db)
+        resp, plan = await self._post(PREVIEW)
+        IntegrationConfig.LORA_MANAGER_ENABLED = False
+        resp, body = await self._post(APPLY, {"token": plan["token"]})
+        self.assertEqual((resp.status, body["code"]), (409, "plan-changed"))
+        self.assertIn("integration changed", body["error"])
+
+        IntegrationConfig.LORA_MANAGER_ENABLED = True
+        resp, plan = await self._post(PREVIEW)
+        other = _make_lora_manager(self.custom_nodes / "other")
+        target = self.custom_nodes / "Other-Lora-Manager"
+        other.rename(target)
+        IntegrationConfig.LORA_MANAGER_PATH = str(target)
+        resp, body = await self._post(APPLY, {"token": plan["token"]})
+        self.assertEqual((resp.status, body["code"]), (409, "plan-changed"))
+        self.assertEqual(self.api._jobs.list(), [])
+        self.assertEqual(_snapshot(self.api.db), before)
+
     async def test_imports_changed_after_the_review_fail_the_job(self):
         self._two_loras()
         resp, plan = await self._post(PREVIEW)
@@ -619,20 +696,57 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
         with patch.object(lora_import, "build_record", side_effect=ValueError("x")):
             job = await self._failed_job()
         self.assertEqual(job.scope["failure"], "nothing-to-import")
-        self.assertEqual(job.counters["skipped"], 0)
+        # M4: the job keeps what staging skipped, by name, though it failed.
+        self.assertEqual(job.counters["skipped"], 2)
+        self.assertEqual(
+            sorted(row["detail"] for row in job.outcomes["skipped"]), ["neon", "plain"]
+        )
+
+    async def _change_during_download(self, change):
+        """Start the reviewed import, run ``change()`` while a download is held."""
+        self._two_loras()
+        before = _snapshot(self.api.db)
+        self.gate = threading.Event()
+        _plan, job = await self._apply_reviewed()
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, self.downloading.wait, 10))
+        change()
+        self.gate.set()
+        await job.task
+        self.assertEqual(job.state, "failed", job.log)
+        self.assertEqual(job.scope["failure"], "plan-changed")
+        self.assertIn("Review the import again", job.status_line)
+        self.assertEqual(_snapshot(self.api.db), before)
+        return job
 
     async def test_files_changed_while_staging_fail_the_job(self):
+        # I1: LoraManager rewrites a metadata file while the downloads run.
+        meta = self.loras / "plain.safetensors.metadata.json"
+        await self._change_during_download(
+            lambda: meta.write_text(meta.read_text() + "  ")
+        )
+
+    async def test_a_file_removed_while_staging_fails_the_job(self):
+        meta = self.loras / "plain.safetensors.metadata.json"
+        await self._change_during_download(meta.unlink)
+
+    async def test_a_file_added_while_staging_fails_the_job(self):
+        await self._change_during_download(lambda: _write_metadata(self.loras, "late"))
+
+    async def test_legacy_scan_refuses_files_changed_while_it_stages(self):
         self._two_loras()
-        real = lora_import.stage
-
-        def changed(*args, **kwargs):
-            staged = real(*args, **kwargs)
-            staged.fingerprint = "sha256:other"
-            return staged
-
-        with patch.object(lora_import, "stage", side_effect=changed):
-            job = await self._failed_job()
-        self.assertEqual(job.scope["failure"], "plan-changed")
+        before = _snapshot(self.api.db)
+        self.gate = threading.Event()
+        meta = self.loras / "plain.safetensors.metadata.json"
+        resp = await self.client.request("POST", SCAN)
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, self.downloading.wait, 10))
+        meta.write_text(meta.read_text() + "  ")
+        self.gate.set()
+        events = self._sse(await resp.text())
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("changed during the scan", events[-1]["message"])
+        self.assertEqual(_snapshot(self.api.db), before)
 
     async def test_a_failed_safety_backup_changes_nothing(self):
         self._two_loras()

@@ -524,6 +524,59 @@ class TestDownloadOne(unittest.TestCase):
         self.assertFalse(self.target.exists())
 
 
+class TestDownloadIsAtomic(unittest.TestCase):
+    """I2 (S10 review): a cached image is never seen half written."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.target = self.tmpdir / "out.jpg"
+
+    def test_the_image_appears_only_once_complete(self):
+        seen = []
+        real_replace = os.replace
+
+        def replace(source, destination):
+            # At the moment the name appears, the temp copy is whole and closed.
+            seen.append((Path(source).parent, self.target.exists()))
+            with open(source, "rb") as handle:
+                self.assertEqual(handle.read(2), b"\xff\xd8")
+            return real_replace(source, destination)
+
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        with (
+            patch.object(lora_utils, "_open_url", opener),
+            patch.object(lora_utils.os, "replace", side_effect=replace),
+        ):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertEqual(seen, [(self.tmpdir, False)])
+        self.assertEqual(os.path.realpath(result), os.path.realpath(self.target))
+        self.assertEqual(sorted(p.name for p in self.tmpdir.iterdir()), ["out.jpg"])
+
+    def test_a_failed_write_leaves_neither_the_image_nor_a_temp_file(self):
+        opener = _FakeOpener(_FakeResponse(_png_bytes()))
+        with (
+            patch.object(lora_utils, "_open_url", opener),
+            patch.object(lora_utils.os, "replace", side_effect=OSError("disk full")),
+        ):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertIsNone(result)
+        self.assertEqual(list(self.tmpdir.iterdir()), [])
+
+    def test_an_unreadable_image_leaves_no_temp_file(self):
+        opener = _FakeOpener(_FakeResponse(b"not an image"))
+        with patch.object(lora_utils, "_open_url", opener):
+            result = lora_utils._download_one(
+                "https://civitai.com/api/download/1", self.target, ""
+            )
+        self.assertIsNone(result)
+        self.assertEqual(list(self.tmpdir.iterdir()), [])
+
+
 class _FakeHTTPSHandler(urllib.request.HTTPSHandler):
     """Serves canned responses through a real urllib opener, recording requests.
 
@@ -860,6 +913,35 @@ class TestDetectLoraManager(unittest.TestCase):
             ),
         ):
             self.assertEqual(lora_utils.detect_lora_manager(), str(main.resolve()))
+
+    def test_an_entry_that_cannot_be_checked_is_skipped(self):
+        # S10 review N5: a permission error on one entry, not a missing folder.
+        root = _make_comfy_root(self.tmp)
+        blocked = root / "custom_nodes" / "a-lora-manager"
+        blocked.mkdir()
+        lm = _make_lora_manager(root / "custom_nodes", "b-Lora-Manager")
+        real_is_dir = Path.is_dir
+
+        def is_dir(path):
+            if path == blocked:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_is_dir(path)
+
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(lora_utils, "custom_nodes_directories", return_value=[]),
+            patch.object(Path, "is_dir", is_dir),
+        ):
+            self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
+
+    def test_a_folder_that_cannot_be_listed_is_skipped(self):
+        root = _make_comfy_root(self.tmp)
+        with (
+            patch.object(lora_utils, "find_comfyui_root", return_value=root),
+            patch.object(lora_utils, "custom_nodes_directories", return_value=[]),
+            patch.object(Path, "iterdir", side_effect=PermissionError(13, "denied")),
+        ):
+            self.assertIsNone(lora_utils.detect_lora_manager())
 
     def test_an_unreadable_extra_folder_is_skipped(self):
         root = _make_comfy_root(self.tmp)

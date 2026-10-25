@@ -252,6 +252,21 @@ class TestLoraStatusRoute(LoraAPITestCase):
         self.assertFalse(os.path.isabs(public))
         self.assertNotIn(str(self.tmp_root), body)
         self.assertFalse(data["trigger_cache_loaded"])
+        self.assertTrue(data["detected_usable"])
+
+    async def test_status_says_a_detected_install_outside_custom_nodes_is_unusable(
+        self,
+    ):
+        # S10 review N5: found (a linked install), but enabling it is refused.
+        outside = _make_lora_manager(self.tmp_root)
+        self.detect_mock.return_value = str(outside)
+        resp = await self.client.request("GET", "/prompt_manager/lora/status")
+        data = await resp.json()
+        self.assertEqual((data["detected"], data["detected_usable"]), (True, False))
+
+        self.detect_mock.return_value = None
+        resp = await self.client.request("GET", "/prompt_manager/lora/status")
+        self.assertFalse((await resp.json())["detected_usable"])
 
     async def test_status_error_is_500(self):
         with patch("py.lora_utils.get_trigger_cache", side_effect=RuntimeError("x")):

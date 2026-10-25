@@ -67,6 +67,10 @@ BLOCKED = (
     "Saved pairs use some imported LoRA prompts, so the collection cannot be "
     "replaced; the previous imports were kept."
 )
+INTEGRATION_CHANGED = (
+    "The LoraManager integration changed since the review; nothing was changed. "
+    "Review the import again."
+)
 EMPTY = "No LoRA could be prepared for import; the previous imports were kept."
 FAILED = "The import failed; the previous LoRA imports were kept."
 CACHE_NOTE = "Images already downloaded stay in the image cache."
@@ -147,6 +151,18 @@ class LoraImportRoutesMixin:
                 logger=self.logger,
             )
         )
+
+    async def lora_files_unchanged(self, lm_path, expected):
+        """Whether the metadata files under ``lm_path`` still fingerprint as
+        ``expected`` (listed again, so an added file counts too)."""
+
+        def current():
+            return lora_import.fingerprint(lora_import.discover(lm_path))
+
+        try:
+            return await self._run_in_executor(current) == expected
+        except OSError:
+            return False
 
     async def replace_lora_imports(self, db, staged, *, expected_ids, allow_empty):
         """Swap the collection for ``staged.records`` in one transaction."""
@@ -290,6 +306,11 @@ class LoraImportRoutesMixin:
                 "storage-changed",
             )
         lm_path = plan.payload["path"]
+        # M5: the integration must still be on and at the reviewed install.
+        current, _refused = await self._lora_source()
+        if current != lm_path:
+            store.discard(token)
+            return _failure(INTEGRATION_CHANGED, 409, "plan-changed")
         try:
             files = await self._run_in_executor(lora_import.discover, lm_path)
             now = await self._run_in_executor(lora_import.fingerprint, files)
@@ -353,6 +374,12 @@ class LoraImportRoutesMixin:
             self.logger.exception("LoRA import staging failed")
             return _fail_job(job, "import-failed", f"{FAILED} {CACHE_NOTE}")
         self._count_downloads(job, staged)
+        # M4: what staging skipped stays on the job whatever happens next.
+        job.record_counted(
+            "skipped",
+            len(staged.skipped),
+            [{"path": "", "detail": name} for name in staged.skipped],
+        )
         # Past this point nothing stops halfway: the replace is one transaction.
         # Published, so a view that offered Cancel during the downloads drops it.
         job.cancellable = False
@@ -362,11 +389,14 @@ class LoraImportRoutesMixin:
             job.update(status_line=CANCELLED)
             job.finish("cancelled")
             return
-        if staged.fingerprint != plan.fingerprint:
-            return _fail_job(job, "plan-changed", SOURCE_CHANGED)
         ok, _backup = await self._safety_backup_step(job, db, backup_on)
         if not ok:
             return
+        # I1: the files are listed and fingerprinted again right before the
+        # replace, so a file changed, removed or added while the downloads ran
+        # (LoraManager refreshing its CivitAI info) aborts with nothing deleted.
+        if not await self.lora_files_unchanged(plan.payload["path"], plan.fingerprint):
+            return _fail_job(job, "plan-changed", f"{SOURCE_CHANGED} {CACHE_NOTE}")
         job.update(status_line="Replacing the LoRA collection", progress=95)
         await self._replace_in_job(job, db, plan, staged)
 
@@ -405,11 +435,6 @@ class LoraImportRoutesMixin:
         job.record_counted("imported", result["imported"], rows["imported"])
         job.record_counted(
             "linked", result["linked"] + result["duplicates"], rows["linked"]
-        )
-        job.record_counted(
-            "skipped",
-            len(staged.skipped),
-            [{"path": "", "detail": name} for name in staged.skipped],
         )
         line = _import_line(result, len(staged.skipped))
         if result["removed"]:

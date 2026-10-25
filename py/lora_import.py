@@ -12,8 +12,10 @@ only the last writes to the database:
    downloaded into the image cache first (best effort, counted). A cancelled
    or failed stage leaves the database untouched; downloaded images stay in
    the cache.
-3. **replace**: ``PromptDatabase.replace_category_prompts`` swaps the old
-   collection for the staged records in one transaction (or changes nothing).
+3. **replace**: the files are listed and fingerprinted once more (a file
+   changed, removed or added while staging aborts the import), then
+   ``PromptDatabase.replace_category_prompts`` swaps the old collection for
+   the staged records in one transaction (or changes nothing).
 
 Both the System job (``POST /lora/import/apply``) and the legacy ``POST
 /lora/scan`` run these stages (``py/api/lora_integration.py``).
@@ -126,7 +128,6 @@ class StagedImport:
     stats: Dict[str, int] = field(
         default_factory=lambda: {"downloaded": 0, "download_errors": 0}
     )
-    fingerprint: str = ""
 
 
 def stage(
@@ -145,7 +146,7 @@ def stage(
     ImportCancelled); ``on_record(index, record_or_None, staged)`` follows
     each one.
     """
-    staged = StagedImport(total=len(files), fingerprint=fingerprint(files))
+    staged = StagedImport(total=len(files))
     for index, path in enumerate(files):
         if cancelled():
             raise ImportCancelled()
