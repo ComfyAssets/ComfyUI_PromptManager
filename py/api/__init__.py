@@ -19,6 +19,7 @@ Split into domain-specific mixins for maintainability:
 - MaintenanceRoutesMixin: reviewed maintenance plans (preview, apply)
 - WorkflowStorageRoutesMixin: store each workflow once, then Reclaim space
 - DuplicateFilesMixin: duplicate image files as find and removal jobs
+- LoraImportRoutesMixin: the reviewed, staged LoRA reference import job
 """
 
 import asyncio
@@ -63,6 +64,7 @@ from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .autotag_routes import AutotagRoutesMixin
 from .lora_integration import LoraIntegrationMixin
+from .lora_import_routes import LoraImportRoutesMixin
 
 try:
     from ...database.operations import PromptDatabase
@@ -307,6 +309,7 @@ class PromptManagerAPI(
     LoggingRoutesMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
+    LoraImportRoutesMixin,
 ):
     """REST API handler for PromptManager operations and web interface.
 
@@ -551,6 +554,7 @@ class PromptManagerAPI(
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)
+        self._register_lora_import_routes(routes)
 
         # Register gzip compression middleware (once)
         global _gzip_registered

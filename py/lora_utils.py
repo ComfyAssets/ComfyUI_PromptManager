@@ -525,36 +525,22 @@ def _download_one(url: str, local_path: Path, api_key: str) -> Optional[str]:
         return None
 
 
-def download_civitai_images(
-    metadata: Dict, metadata_path: Path, cache_dir: Path, api_key: str = ""
-) -> List[str]:
-    """Download civitai example images to a local cache directory.
+def _civitai_cache_plan(
+    metadata: Dict, metadata_path: Path, cache_dir: Path
+) -> Tuple[Path, List[str], List[Tuple[str, Path]]]:
+    """``(lora_cache, cached, tasks)`` for a LoRA's CivitAI example images.
 
-    Uses thumbnail URLs (512px) instead of full-size originals, and
-    downloads in parallel (up to 8 concurrent) for speed.
-
-    Args:
-        api_key: CivitAI API key for authenticated downloads (NSFW content).
-
-    Returns:
-        List of absolute paths to downloaded image files.
+    ``cached`` are the images already in the cache, ``tasks`` the
+    ``(url, local_path)`` downloads still needed. Reads only; creates nothing.
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     civitai = _get_civitai(metadata)
     images = civitai.get("images", []) or []
-    if not images:
-        return []
 
     file_name = metadata.get("file_name", "")
     if not file_name:
         file_name = metadata_path.name.replace(".metadata.json", "")
-    lora_stem = Path(file_name).stem
+    lora_cache = cache_dir / Path(file_name).stem
 
-    lora_cache = cache_dir / lora_stem
-    lora_cache.mkdir(parents=True, exist_ok=True)
-
-    # Build download tasks
     cached = []
     tasks = []  # (url, local_path)
     for img in images:
@@ -571,9 +557,42 @@ def download_civitai_images(
             cached.append(str(local_path.resolve()))
         else:
             tasks.append((url, local_path))
+    return lora_cache, cached, tasks
 
+
+def planned_civitai_downloads(
+    metadata: Dict, metadata_path: Path, cache_dir: Path
+) -> int:
+    """How many example images an import would download (no request, no write)."""
+    return len(_civitai_cache_plan(metadata, metadata_path, cache_dir)[2])
+
+
+def download_civitai_images(
+    metadata: Dict,
+    metadata_path: Path,
+    cache_dir: Path,
+    api_key: str = "",
+    stats: Optional[Dict[str, int]] = None,
+) -> List[str]:
+    """Download civitai example images to a local cache directory.
+
+    Uses thumbnail URLs (512px) instead of full-size originals, and
+    downloads in parallel (up to 8 concurrent) for speed.
+
+    Args:
+        api_key: CivitAI API key for authenticated downloads (NSFW content).
+        stats: When given, ``downloaded`` and ``download_errors`` are
+            increased by the downloads that succeeded and failed.
+
+    Returns:
+        List of absolute paths to downloaded image files.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    lora_cache, cached, tasks = _civitai_cache_plan(metadata, metadata_path, cache_dir)
     if not tasks:
         return cached
+    lora_cache.mkdir(parents=True, exist_ok=True)
 
     # Download in parallel
     downloaded = []
@@ -586,15 +605,21 @@ def download_civitai_images(
             if result:
                 downloaded.append(result)
 
+    if stats is not None:
+        stats["downloaded"] = stats.get("downloaded", 0) + len(downloaded)
+        stats["download_errors"] = (
+            stats.get("download_errors", 0) + len(tasks) - len(downloaded)
+        )
     return cached + downloaded
 
 
-def get_lora_image_cache_dir() -> Path:
+def get_lora_image_cache_dir(create: bool = True) -> Path:
     """Get the directory used to cache downloaded LoRA example images.
 
     ``<data folder>/data/lora_images`` (``utils.library_location``): the node
     folder for a library that was not moved, else ComfyUI's
-    ``user/__promptmanager``.
+    ``user/__promptmanager``. ``create=False`` only names it (a preview
+    writes nothing).
     """
     try:
         from ..utils import library_location
@@ -605,7 +630,8 @@ def get_lora_image_cache_dir() -> Path:
     cache = Path(
         library_location.cache_dir("lora_images", extension_root=str(ext_root))
     )
-    cache.mkdir(parents=True, exist_ok=True)
+    if create:
+        cache.mkdir(parents=True, exist_ok=True)
     return cache
 
 

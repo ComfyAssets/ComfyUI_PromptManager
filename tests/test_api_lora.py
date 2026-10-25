@@ -36,7 +36,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
-from py import config_store, lora_utils
+from py import config_store, lora_import, lora_utils
 from py.config import IntegrationConfig, PromptManagerConfig
 from py.api import settings_routes as settings_module
 from py.api import lora_integration as lora_module
@@ -762,9 +762,9 @@ class TestLoraScanRoute(LoraAPITestCase):
     async def test_scan_error_hides_the_server_path(self):
         self._enable()
         err = PermissionError(13, "Permission denied", str(self.tmp_root / "x.db"))
-        with patch.object(self.api.db, "delete_prompts_by_category", side_effect=err):
+        with patch.object(self.api.db, "replace_category_prompts", side_effect=err):
             resp = await self.client.request("POST", "/prompt_manager/lora/scan")
-        body = await resp.text()
+            body = await resp.text()  # the stream ends inside the patch
         self.assertNotIn(str(self.tmp_root), body)
         self.assertIn("x.db", body)
         # The admin page's modal shows the failure as its status and closes.
@@ -862,7 +862,10 @@ class TestLoraScanRoute(LoraAPITestCase):
         loras.mkdir()
         _write_metadata(loras, "neon", words=["glow"])
 
-        with patch.object(self.api.db, "save_prompt", side_effect=RuntimeError("db")):
+        # Preparing one LoRA's record fails: it is skipped, the import goes on.
+        with patch.object(
+            lora_import, "build_record", side_effect=RuntimeError("bad record")
+        ):
             resp, events, _ = await self._scan(loras)
 
         self.assertEqual(events[-1]["imported"], 0)
