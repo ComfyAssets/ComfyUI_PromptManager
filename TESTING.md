@@ -2469,7 +2469,9 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   once), for a short disk and for nothing to do, and "Outcome not confirmed. Check
   Activity before applying it again." when the answer was lost (the job may run).
   Cancel and Escape write nothing (`Cancel writes nothing`: a read-only dump of the rows
-  and the media hashes, `GET /__test__/system/digest`).
+  and the media hashes, `GET /__test__/system/digest`). `plan dialogs match the concept`
+  (system-maintenance-concept.spec, both themes and sizes) compares each of the four
+  operations' dialogs with the concept's, mapped by these values only.
 - **D101** (Maintenance, S7): Duplicate image files → Find duplicates starts the
   duplicate search (Activity, D111); its job view adds "Review groups" after Download
   report once it finished with groups. The concept's `duplicates` dialog ("Review
@@ -2483,7 +2485,10 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   records. Nothing is deleted until you review and apply the cleanup.", and Cancel /
   "Review duplicate cleanup". Choices survive paging; the review sends every group shown
   so far as `{group_id, root_index, path}` (never a bare path: two sources may hold a
-  file at the same path) and opens the D100 plan for "Duplicate image files".
+  file at the same path) and opens the D100 plan for "Duplicate image files". The
+  primary stays the concept's plain button; the plan it opens has the primary.
+  `duplicates dialog matches the concept` and `duplicates comparison detects mutations`
+  (system-maintenance-concept.spec) pin the mapping.
 - **D102** (Maintenance, S7, Q5, #222): Metadata cache clears only the browser entries
   Prompt Manager owns as a cache (`web/js/cache-ownership.js`). The inventory of every
   storage writer has none (see "Browser cache ownership" below), so the row's line adds
@@ -2492,7 +2497,10 @@ Recorded deviations (plan D60–D70, D79–D81 renumbered D92–D102 and D111–
   plan opens "Review maintenance plan" › "Metadata cache" (Scope "N cached entries in
   this browser", Protected "Preferences and other tools’ data in this browser", Backup
   "Not needed: the database is not changed", Media "No files are removed") and "Clear
-  browser cache" clears exactly those and toasts what it cleared.
+  browser cache" clears exactly those and toasts what it cleared. The row's dimmed button
+  is D93's style. `maintenance matches the concept` (both themes and sizes) maps only this
+  row; `maintenance comparison detects mutations` proves it is the only difference and
+  catches a removed row, a renamed operation, a lost danger mark and a swapped token.
 - **D113** (Sources): the Worker threads range ends at the server's `cpu_count` (the
   concept's fixed `max=16`) and shows the server's real `worker_threads` (the concept's
   sample 4).

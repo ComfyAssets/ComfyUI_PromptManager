@@ -289,7 +289,8 @@ export async function openDuplicatesReview({ api, store, scope, jobId, trigger =
     const pager = el('div', undefined, 'row-actions');
     pager.append(previous, next);
     const cancel = createButton('Cancel');
-    const review = createButton('Review duplicate cleanup', 'ca-primary');
+    // The concept's `duplicates` dialog: a plain button; the plan it opens has the primary.
+    const review = createButton('Review duplicate cleanup');
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(cancel, review);
     let offset = 0;
