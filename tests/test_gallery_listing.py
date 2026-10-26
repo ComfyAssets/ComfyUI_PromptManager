@@ -4,7 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PureWindowsPath
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -69,6 +70,23 @@ class FolderSetsTests(unittest.TestCase):
 
     def test_an_empty_listing_has_no_folders(self):
         self.assertEqual(folder_sets(Path("/out"), []), (frozenset(), frozenset()))
+
+    def test_folders_come_from_the_path_strings_not_relative_to(self):
+        # relative_to per file was half of a 20,000-file walk (#348 live test).
+        root = Path("/out")
+        files = [(root / "a" / "b" / "one.png", 1.0), (root / "two.png", 2.0)]
+        with patch.object(PurePath, "relative_to", side_effect=AssertionError):
+            folders, with_ancestors = folder_sets(root, files)
+        self.assertEqual(folders, {os.path.join("a", "b")})
+        self.assertEqual(with_ancestors, {os.path.join("a", "b"), "a"})
+
+    def test_a_file_outside_the_root_string_still_gets_its_folder(self):
+        root = Path("/out")
+        odd = Path("/out/./x/y.png")  # normalizes to /out/x/y.png
+        files = [(odd, 1.0)]
+        self.assertEqual(
+            folder_sets(root, files)[0], _legacy_subfolders(root, files, False)
+        )
 
 
 class SameListingTests(unittest.TestCase):

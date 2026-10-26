@@ -772,32 +772,54 @@ def _favorite_root_key(root) -> str:
     return _favorite_relative_key(os.path.realpath(str(root)))
 
 
-def _iter_media_files(output_path, max_files):
-    """Yield media files under *output_path* with bounded effort.
+def _walk_media(output_path, max_files):
+    """Yield the ``os.DirEntry`` of each media file under *output_path*.
 
     Symlinks are never followed, ``thumbnails/`` is skipped, descent stops
-    at MAX_SCAN_DEPTH and at most *max_files* paths are produced.
+    at MAX_SCAN_DEPTH and at most *max_files* entries are produced. The order
+    is ``os.walk``'s (top-down, subfolders in ``os.scandir`` order, files by
+    name), which the gallery's ties in mtime keep. Each entry's type comes
+    from the directory listing itself, so a walk builds no ``Path`` and makes
+    no extra ``lstat`` per file (#348: a 20,000-file walk spent half its time
+    there).
     """
-    output_path = Path(output_path)
-    root_depth = len(output_path.parts)
+    stack = [(os.fspath(output_path), ())]
     produced = 0
-    for root, dirs, files in os.walk(output_path):
-        root_path = Path(root)
-        rel_parts = root_path.parts[root_depth:]
+    while stack:
+        top, rel_parts = stack.pop()
         if "thumbnails" in rel_parts:
-            dirs[:] = []
             continue
-        if len(rel_parts) >= MAX_SCAN_DEPTH:
-            dirs[:] = []
-        for name in sorted(files):
-            if Path(name).suffix.lower() not in MEDIA_EXTENSIONS:
+        dirs, files = [], []
+        try:
+            with os.scandir(top) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    (dirs if is_dir else files).append(entry)
+        except OSError:
+            continue  # as os.walk: an unreadable folder is skipped
+        for entry in sorted(files, key=lambda item: item.name):
+            if os.path.splitext(entry.name)[1].lower() not in MEDIA_EXTENSIONS:
                 continue
-            if (root_path / name).is_symlink():
+            if entry.is_symlink():
                 continue  # never read through a link out of the output tree
             if produced >= max_files:
                 return
             produced += 1
-            yield root_path / name
+            yield entry
+        if len(rel_parts) >= MAX_SCAN_DEPTH:
+            continue
+        for entry in reversed(dirs):
+            if not entry.is_symlink():
+                stack.append((entry.path, rel_parts + (entry.name,)))
+
+
+def _iter_media_files(output_path, max_files):
+    """Yield the ``Path`` of each media file under *output_path* (see _walk_media)."""
+    for entry in _walk_media(output_path, max_files):
+        yield Path(entry.path)
 
 
 def media_thumbnail_rel(rel_path, settings=None):
@@ -1294,11 +1316,14 @@ class ImageRoutesMixin:
         walk is bounded by MAX_SCAN_DEPTH and MAX_GALLERY_FILES.
         """
         found = []
-        for media_path in _iter_media_files(output_path, MAX_GALLERY_FILES):
+        for entry in _walk_media(output_path, MAX_GALLERY_FILES):
             try:
-                found.append((media_path, media_path.stat().st_mtime))
+                # Never a symlink (_walk_media skips them), so this is the
+                # file's own mtime, read from the listing where it can be.
+                mtime = entry.stat(follow_symlinks=False).st_mtime
             except OSError:
                 continue
+            found.append((Path(entry.path), mtime))
         if len(found) >= MAX_GALLERY_FILES:
             self.logger.warning(f"Gallery scan capped at {MAX_GALLERY_FILES} files")
         found.sort(key=lambda x: x[1], reverse=True)

@@ -91,9 +91,19 @@ def folder_sets(root, files) -> tuple[frozenset, frozenset]:
     ``str(relative.parent)`` (native separators) for the folders holding
     files, plus every ancestor joined by ``/``.
     """
+    # From the path strings: relative_to per file was half of a large walk.
+    # The separator is the path flavour's own (tests use PureWindowsPath).
+    sep = str(type(root)("a", "b"))[1]
+    prefix = str(root)
+    if not prefix.endswith(sep):
+        prefix += sep
     folders = set()
     for path, _mtime in files:
-        rel_dir = str(path.relative_to(root).parent)
+        text = str(path)
+        if text.startswith(prefix):
+            rel_dir = text[len(prefix) :].rpartition(sep)[0]
+        else:
+            rel_dir = str(path.relative_to(root).parent)
         if rel_dir and rel_dir != ".":
             folders.add(rel_dir)
     with_ancestors = set(folders)

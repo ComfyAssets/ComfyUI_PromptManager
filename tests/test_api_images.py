@@ -1455,12 +1455,15 @@ class TestGalleryListing(ImageRouteCoverageCase):
         self.assertEqual(data["images"], [])
 
     def test_gallery_scan_skips_unreadable_entries(self):
-        ghost = self.output_dir / "ghost.png"
+        make_png(self.output_dir / "real.png")
+        listed = list(images_module._walk_media(self.output_dir, 10))
+        ghost = MagicMock(path=str(self.output_dir / "ghost.png"))
+        ghost.stat.side_effect = FileNotFoundError("gone")
         with patch.object(
-            images_module, "_iter_media_files", return_value=iter([ghost])
+            images_module, "_walk_media", return_value=iter([ghost, *listed])
         ):
             found = self.api._scan_gallery_files_sync(self.output_dir)
-        self.assertEqual(found, [])
+        self.assertEqual([path.name for path, _mtime in found], ["real.png"])
 
 
 class TestThumbnailUnits(ImageRouteCoverageCase):
@@ -2033,6 +2036,54 @@ class TestOutputScanHelpers(ImageAPITestCase):
         expected = hashlib.sha1(str(media).encode("utf-8")).hexdigest()[:16]
         self.assertEqual(entry["id"], expected)
 
+    def test_media_walk_matches_the_os_walk_reference(self):
+        # The scandir walk (#348) must list exactly what the os.walk version
+        # listed, in the same order: ties in mtime keep this order.
+        output = Path(self.output_dir)
+        for rel in (
+            "z.png",
+            "a.PNG",
+            "notes.txt",
+            "b/2.png",
+            "b/1.webp",
+            "b/c/deep.mp4",
+            "b/c/d/too_deep.png",
+            "thumbnails/t.png",
+            "b/thumbnails/u.png",
+            "e/.hidden.png",
+            "e/f.jpeg",
+        ):
+            make_png(output / rel)
+        try:
+            os.symlink(output / "z.png", output / "b" / "link.png")
+            os.symlink(output / "b", output / "dirlink", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pass  # the rest of the tree still checks order and filters
+        with patch.object(images_module, "MAX_SCAN_DEPTH", 2):
+            listed = list(images_module._iter_media_files(output, 100))
+            expected = list(_reference_iter_media_files(output, 100))
+            capped = list(images_module._iter_media_files(output, 3))
+        self.assertEqual(listed, expected)
+        self.assertEqual(capped, expected[:3])
+        self.assertTrue(all(isinstance(path, Path) for path in listed))
+
+    def test_gallery_scan_reads_each_file_type_and_mtime_from_scandir(self):
+        # Path.stat and Path.is_symlink per file were the other half of the
+        # live walk's cost (#348); the scandir entries already carry both.
+        output = Path(self.output_dir)
+        make_png(output / "a.png")
+        make_png(output / "sub" / "b.png")
+        with (
+            patch.object(Path, "stat", side_effect=AssertionError),
+            patch.object(Path, "is_symlink", side_effect=AssertionError),
+        ):
+            found = self.api._scan_gallery_files_sync(output)
+        self.assertEqual(
+            sorted(path.name for path, _mtime in found), ["a.png", "b.png"]
+        )
+        for path, mtime in found:
+            self.assertEqual(mtime, os.stat(path).st_mtime)
+
     def test_iter_media_files_skips_symlinked_files(self):
         output = Path(self.output_dir)
         make_png(output / "real.png")
@@ -2353,6 +2404,30 @@ class TestRootScopeServing(ImageAPITestCase):
 
 # Seconds any single wait in the shared-listing tests may take.
 _HANG_LIMIT = 30
+
+
+def _reference_iter_media_files(output_path, max_files):
+    """``_iter_media_files`` as it was before the scandir walk (#348)."""
+    output_path = Path(output_path)
+    root_depth = len(output_path.parts)
+    produced = 0
+    for root, dirs, files in os.walk(output_path):
+        root_path = Path(root)
+        rel_parts = root_path.parts[root_depth:]
+        if "thumbnails" in rel_parts:
+            dirs[:] = []
+            continue
+        if len(rel_parts) >= images_module.MAX_SCAN_DEPTH:
+            dirs[:] = []
+        for name in sorted(files):
+            if Path(name).suffix.lower() not in images_module.MEDIA_EXTENSIONS:
+                continue
+            if (root_path / name).is_symlink():
+                continue
+            if produced >= max_files:
+                return
+            produced += 1
+            yield root_path / name
 
 
 class _GatedScan:
