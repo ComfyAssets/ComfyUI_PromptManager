@@ -566,7 +566,7 @@ class PromptManagerAPI(
         """The image monitor settled an output at *path* (any thread).
 
         Called on the monitor's worker thread with the resolved path. It only
-        hands the path to the event loop (``mark_root_dirty``) and never
+        hands the path to the event loop (``output_settled``) and never
         touches a listing from this thread; before the loop is known, or once
         the listings are cleaned up, it does nothing.
         """
@@ -574,7 +574,7 @@ class PromptManagerAPI(
         if loop is None or self._listings_closed or not loop.is_running():
             return
         try:
-            loop.call_soon_threadsafe(self.mark_root_dirty, path)
+            loop.call_soon_threadsafe(self.output_settled, path)
         except RuntimeError:
             pass  # the loop closed meanwhile (shutdown)
 

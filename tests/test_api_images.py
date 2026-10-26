@@ -3125,13 +3125,13 @@ class TestSharedListing(ImageAPITestCase):
         self._interval(0)
         path = self._output("b.png")
         calls = []
-        real = self.api.mark_root_dirty
+        real = self.api.output_settled
 
-        def mark(seen):
+        def settled(seen):
             calls.append(threading.get_ident())
             real(seen)
 
-        self.api.mark_root_dirty = mark
+        self.api.output_settled = settled
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.api.notify_output_settled, path)
         # The hop was queued before the executor's result: one loop turn runs it.
@@ -3139,10 +3139,11 @@ class TestSharedListing(ImageAPITestCase):
         self.assertEqual(calls, [threading.get_ident()])
         await self._settle()
         self.assertEqual(len(record.files), 2)
+        self.assertEqual(self.scan.calls, 1)  # added, not walked
 
     async def test_notify_before_the_loop_is_known_does_nothing(self):
         self.assertIsNone(self.api._listing_loop)
-        with patch.object(self.api, "mark_root_dirty") as mark:
+        with patch.object(self.api, "output_settled") as mark:
             self.api.notify_output_settled(self._output("b.png"))
             await asyncio.sleep(0)
         mark.assert_not_called()
@@ -3152,12 +3153,15 @@ class TestSharedListing(ImageAPITestCase):
         record = await self._listed()
         await self.api.cleanup_gallery_listings(web.Application())
         self._interval(0)
-        with patch.object(self.api, "mark_root_dirty") as mark:
+        with patch.object(self.api, "output_settled") as mark:
             self.api.notify_output_settled(self._output("b.png"))
             await asyncio.sleep(0)
         mark.assert_not_called()
         # A hop queued before the cleanup is dropped when it runs.
-        self.api.mark_root_dirty(self._output("c.png"))
+        self.api.output_settled(self._output("c.png"))
+        self.api.mark_root_dirty(self._output("d.png"))
+        self.assertEqual(self.api._listing_tasks, set())
+        self.assertEqual(record.pending_adds, [])
         self.assertFalse(record.dirty)
         self.assertIsNone(record.flight)
         self.assertIsNone(record.rewalk_handle)
@@ -3505,6 +3509,539 @@ class TestSharedListing(ImageAPITestCase):
         self.assertIsNone(record.flight)
         self.assertIsNone(record.rewalk_handle)
         self.assertEqual(self.api._listing_tasks, set())
+
+    # -- settled outputs added without a walk (live test round) -----------
+
+    def _walked(self):
+        """The listing a full walk of the root gives now (not counted)."""
+        return self.scan.real(self.output_dir)
+
+    def _at(self, name, mtime):
+        """A new output on disk with *mtime*, spelled as the monitor reports it."""
+        path = make_png(self.output_dir / name)
+        os.utime(path, (mtime, mtime))
+        return os.path.realpath(path)
+
+    def _hold_adds(self):
+        """Hold each add batch in the executor until the returned gate is set."""
+        entered, gate, batches = threading.Event(), threading.Event(), []
+        real = images_module._patch_listing
+
+        def held(*args):
+            batches.append(list(args[4]))
+            entered.set()
+            gate.wait(_HANG_LIMIT)
+            return real(*args)
+
+        patcher = patch.object(images_module, "_patch_listing", held)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(gate.set)
+        return entered, gate, batches
+
+    async def _entered(self, event):
+        loop = asyncio.get_running_loop()
+        if not await loop.run_in_executor(None, event.wait, _HANG_LIMIT):
+            raise AssertionError("the add never reached the executor")
+
+    def _no_walk_pending(self, record):
+        self.assertFalse(record.dirty)
+        self.assertIsNone(record.flight)
+        self.assertIsNone(record.rewalk_handle)
+
+    async def test_a_settled_output_is_added_without_a_walk(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        self._interval(0)
+        self.api.output_settled(self._at("b.png", 2000))
+        self.assertIsNone(record.flight)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 1)
+        self.assertEqual(record.patched, 1)
+        self._no_walk_pending(record)
+        self.assertEqual(record.files, self._walked())
+        self.assertEqual(str(record.files[0][0]), str(self.output_dir / "b.png"))
+        _, data = await self._json("GET", self.URL)
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(self.scan.calls, 1)
+
+    async def test_adds_land_where_a_walk_lists_them_and_name_new_folders(self):
+        for index, name in enumerate(("x/a.png", "x/y/b.png", "c.png", "z/d.png")):
+            self._at(name, 1000 + 100 * index)
+        record = await self._listed()
+        old_folders = record.folders
+        for name, mtime in (
+            ("x/y/n1.png", 1150),
+            ("new/deep/n2.png", 1250),
+            ("n3.png", 50),
+            ("x/n4.webp", 9000),
+        ):
+            make_png(self.output_dir / name.replace(".webp", ".png"))
+            if name.endswith(".webp"):
+                os.replace(self.output_dir / "x" / "n4.png", self.output_dir / name)
+            os.utime(self.output_dir / name, (mtime, mtime))
+            self.api.output_settled(os.path.realpath(self.output_dir / name))
+        await self._settle()
+        self.assertEqual(self.scan.calls, 1)
+        walked = self._walked()
+        self.assertEqual(record.files, walked)
+        self.assertEqual(
+            [str(path) for path, _ in record.files], [str(path) for path, _ in walked]
+        )
+        expected = gallery_listing.folder_sets(self.output_dir, walked)
+        self.assertEqual((record.folders, record.folders_with_ancestors), expected)
+        self.assertIsNot(record.folders, old_folders)
+        _, data = await self._json("GET", "/prompt_manager/gallery/subfolders")
+        self.assertIn(os.path.join("new", "deep"), data["subfolders"])
+
+    async def test_a_rewritten_output_moves_to_its_new_place(self):
+        self._at("a.png", 1000)
+        self._at("b.png", 2000)
+        record = await self._listed()
+        self.api.output_settled(self._at("a.png", 3000))
+        await self._settle()
+        self.assertEqual(self.scan.calls, 1)
+        self.assertEqual(record.files, self._walked())
+        self.assertEqual([path.name for path, _ in record.files], ["a.png", "b.png"])
+
+    async def test_a_repeated_report_changes_nothing(self):
+        self._at("a.png", 1000)
+        path = self._at("b.png", 2000)
+        record = await self._listed()
+        self.api.output_settled(path)
+        await self._settle()
+        files, patched = record.files, record.patched
+        with patch.object(self.api, "_schedule_workspace_warm") as warm:
+            self.api.output_settled(path)
+            await self._settle()
+        warm.assert_not_called()
+        self.assertIs(record.files, files)
+        self.assertEqual((record.patched, self.scan.calls), (patched, 1))
+
+    async def test_the_next_full_walk_keeps_the_patched_listing(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        self.api.output_settled(self._at("sub/b.png", 2000))
+        await self._settle()
+        patched = record.files
+        self._age()
+        with patch.object(self.api, "_schedule_workspace_warm") as warm:
+            await self._json("GET", self.URL)  # the 30 s rule walks behind
+            await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+        self.assertIs(record.files, patched)  # equal: the walk kept it
+        self.assertEqual(record.patched, 0)
+        warm.assert_not_called()
+
+    async def test_the_walks_filters_apply_to_an_add(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        files = record.files
+        deep = os.path.join(*[f"d{i}" for i in range(images_module.MAX_SCAN_DEPTH + 1)])
+        skipped = [
+            self._at(".png", 2000),  # no suffix, as Path.suffix on 3.10-3.13
+            self._at("notes.txt", 2000),
+            self._at(os.path.join("thumbnails", "t.png"), 2000),
+            self._at(os.path.join("x", "thumbnails", "t.png"), 2000),
+            self._at(os.path.join(deep, "too-deep.png"), 2000),
+        ]
+        for path in skipped:
+            self.api.output_settled(path)
+        await self._settle()
+        self.assertIs(record.files, files)
+        self.assertEqual(record.files, self._walked())
+        self._no_walk_pending(record)
+        self.assertEqual(self.scan.calls, 1)
+        # The deepest listed folder and a "..png" name are listed by a walk.
+        deepest = os.path.join(*[f"d{i}" for i in range(images_module.MAX_SCAN_DEPTH)])
+        for path in (
+            self._at("..png", 3000),
+            self._at(os.path.join(deepest, "deepest.png"), 4000),
+        ):
+            self.api.output_settled(path)
+        await self._settle()
+        self.assertEqual(record.files, self._walked())
+        self.assertEqual(len(record.files), 3)
+        self.assertEqual(self.scan.calls, 1)
+
+    async def test_a_symlinked_output_is_not_added(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        target = make_png(self.comfy_dir / "elsewhere.png")
+        link = self.output_dir / "link.png"
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available")
+        files = record.files
+        self.api.output_settled(str(link))  # as an unresolved report would name it
+        await self._settle()
+        self.assertIs(record.files, files)
+        self.assertEqual(record.files, self._walked())
+        self._no_walk_pending(record)
+
+    async def _assert_walks_instead(self, record, report):
+        self._interval(0)
+        self.api.output_settled(report)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+        self.assertEqual(record.patched, 0)
+        self.assertEqual(record.files, self._walked())
+
+    async def test_a_tie_in_mtime_walks_instead(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        await self._assert_walks_instead(record, self._at("b.png", 1000))
+
+    async def test_a_report_that_cannot_be_read_walks_instead(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        gone = self._at("gone.png", 2000)
+        os.unlink(gone)
+        await self._assert_walks_instead(record, gone)
+
+    async def test_a_listing_at_the_cap_walks_instead(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        with patch.object(images_module, "MAX_GALLERY_FILES", 1):
+            self._interval(0)
+            self.api.output_settled(self._at("b.png", 2000))
+            await self._settle()
+        self.assertEqual((self.scan.calls, record.patched), (2, 0))
+        self.assertEqual(len(record.files), 1)  # the walk is capped too
+
+    async def test_a_path_that_cannot_be_sliced_walks_instead(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        self._at("b.png", 2000)
+        report = os.path.join(os.path.realpath(self.output_dir), ".", "b.png")
+        await self._assert_walks_instead(record, report)
+
+    async def test_an_on_disk_spelling_mismatch_walks_instead(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        report = self._at("b.png", 2000)
+        with patch.object(images_module, "_on_disk_path", return_value="/x/B.png"):
+            await self._assert_walks_instead(record, report)
+
+    async def test_an_unexpected_add_failure_walks_instead(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        report = self._at("b.png", 2000)
+        with patch.object(images_module, "_patch_listing", side_effect=ValueError):
+            with self.assertLogs(self.api.logger, "WARNING"):
+                await self._assert_walks_instead(record, report)
+        self.assertIsNone(record.add_task)
+
+    async def test_a_report_during_a_walk_gets_the_trailing_walk(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        self._interval(0)
+        self._age()
+        gate = self.scan.hold_next()
+        await self._json("GET", self.URL)
+        await self.scan.wait_entered()  # listed already: misses b.png
+        self.api.output_settled(self._at("b.png", 2000))
+        self.assertTrue(record.dirty)
+        self.assertEqual(record.pending_adds, [])
+        gate.set()
+        await self._settle()
+        self.assertEqual(self.scan.calls, 3)
+        self.assertEqual(record.files, self._walked())
+
+    async def test_a_walk_started_during_an_add_lists_it_and_the_add_is_dropped(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        files = record.files
+        entered, gate, _ = self._hold_adds()
+        self.api.output_settled(self._at("b.png", 2000))
+        await self._entered(entered)
+        walk = self.scan.hold_next()
+        rescan = asyncio.ensure_future(
+            self._json("POST", "/prompt_manager/gallery/rescan")
+        )
+        await self.scan.wait_entered()
+        add = record.add_task
+        gate.set()
+        await asyncio.wait_for(asyncio.shield(add), _HANG_LIMIT)
+        # The add ended while the Rescan walk runs: not stored over it.
+        self.assertIs(record.files, files)
+        self.assertEqual(record.patched, 0)
+        walk.set()
+        status, data = await rescan
+        await self._settle()
+        self.assertEqual((status, data["total"]), (200, 2))
+        self.assertEqual(self.scan.calls, 2)
+        self.assertEqual(record.files, self._walked())
+        self._no_walk_pending(record)
+
+    async def test_a_roots_change_during_an_add_drops_it(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        entered, gate, _ = self._hold_adds()
+        self.api.output_settled(self._at("b.png", 2000))
+        await self._entered(entered)
+        self.api.reset_gallery_roots_cache()
+        gate.set()
+        await self._settle()
+        self.assertIsNone(record.files)
+        self.assertEqual((self.scan.calls, record.patched), (1, 0))
+        self._no_walk_pending(record)
+
+    async def test_an_invalidation_during_an_add_drops_it(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        entered, gate, batches = self._hold_adds()
+        self.api.output_settled(self._at("b.png", 2000))
+        await self._entered(entered)
+        self.api.output_settled(self._at("c.png", 3000))  # waits for the batch
+        self.api.invalidate_gallery_cache()
+        gate.set()
+        await self._settle()
+        self.assertEqual(len(batches), 1)  # the dropped listing gets no second
+        self.assertIsNone(record.files)  # the next read walks
+        self.assertEqual((self.scan.calls, record.patched), (1, 0))
+        self._no_walk_pending(record)
+        _, data = await self._json("GET", self.URL)
+        self.assertEqual((data["total"], self.scan.calls), (3, 2))
+
+    async def test_an_add_failing_after_a_drop_walks_nothing(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+
+        def drop_then_fail(*_args):
+            self.api.invalidate_gallery_cache()  # a settings save, off the loop
+            raise ValueError("boom")
+
+        with patch.object(images_module, "_patch_listing", drop_then_fail):
+            with self.assertLogs(self.api.logger, "WARNING"):
+                self.api.output_settled(self._at("b.png", 2000))
+                await self._settle()
+        self.assertIsNone(record.files)
+        self.assertEqual(self.scan.calls, 1)
+        self._no_walk_pending(record)
+
+    async def test_cleanup_during_an_add_cancels_it(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        files = record.files
+        entered, gate, _ = self._hold_adds()
+        self.api.output_settled(self._at("b.png", 2000))
+        await self._entered(entered)
+        self.api.output_settled(self._at("c.png", 3000))
+        cleanup = asyncio.ensure_future(
+            self.api.cleanup_gallery_listings(web.Application())
+        )
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.wait_for(cleanup, _HANG_LIMIT)
+        self.assertIs(record.files, files)
+        self.assertIsNone(record.add_task)
+        self.assertEqual(self.api._listing_tasks, set())
+        self._no_walk_pending(record)
+
+    async def test_a_removed_root_gets_no_add(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        self.api.reset_gallery_roots_cache()
+        self.api.output_settled(self._at("b.png", 2000))
+        await self._settle()
+        self.assertIsNone(record.files)
+        self.assertEqual(self.api._listing_tasks, set())
+        self.assertEqual(self.scan.calls, 1)
+
+    async def test_a_burst_is_added_in_batches_with_one_warm_build_each(self):
+        self._at("a.png", 1000)
+        await self.api.warm_gallery_listings(web.Application())
+        await self._settle()
+        record = self._record()
+        entered, gate, batches = self._hold_adds()
+        built = []
+        real = self.api._build_workspace_caches
+
+        def build(listings):
+            built.append(len(listings[0][2]))
+            real(listings)
+
+        with patch.object(self.api, "_build_workspace_caches", side_effect=build):
+            self.api.output_settled(self._at("b.png", 2000))
+            await self._entered(entered)
+            for index in range(4):  # land while the first batch is placed
+                self.api.output_settled(self._at(f"c{index}.png", 3000 + index))
+            gate.set()
+            await self._settle()
+        self.assertEqual([len(batch) for batch in batches], [1, 4])
+        self.assertEqual(self.scan.calls, 1)
+        self.assertEqual(record.patched, 2)
+        self.assertEqual(record.files, self._walked())
+        self.assertEqual(built[-1], 6)
+        self.assertLessEqual(len(built), 2)
+        self.assertTrue(self._workspace_ready())
+
+    async def _workspace_pages(self, **params):
+        """Every workspace order's full first page, as file names."""
+        pages = {}
+        for order in images_module.WORKSPACE_ORDERS:
+            query = "&".join(f"{k}={v}" for k, v in {"order": order, **params}.items())
+            _, data = await self._json(
+                "GET", f"{self.URL}?mode=workspace&limit=100&{query}"
+            )
+            pages[order] = [image["filename"] for image in data["images"]]
+        return pages
+
+    def _drop_workspace_caches(self):
+        self.api._workspace_listed_cache = {}
+        self.api._workspace_order_cache = {}
+        self.api._workspace_card_cache = {}
+        self.api._favorite_listing_cache = {}
+
+    async def test_workspace_pages_after_adds_match_a_cold_rebuild(self):
+        for index, name in enumerate(("a.png", "x/b.png", "x/c.mp4", "d.png")):
+            path = self.output_dir / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(b"x")
+            os.utime(path, (1000 + index, 1000 + index))
+        await self._warmed()
+        for name in ("x/b.png", "d.png"):
+            status, _ = await self._json(
+                "PUT",
+                "/prompt_manager/images/favorite",
+                json={"root_index": 0, "path": name},
+            )
+            self.assertEqual(status, 200)
+        await self._workspace_pages()
+        await self._workspace_pages(favorites=1)
+        self.api.output_settled(self._at("y/new.png", 5000))  # a new folder
+        self.api.output_settled(self._at("x/b.png", 6000))  # rewritten favorite
+        await self._settle()
+        self.assertEqual(self.scan.calls, 1)
+        patched = (
+            await self._workspace_pages(),
+            await self._workspace_pages(favorites=1),
+        )
+        self._drop_workspace_caches()
+        cold = (await self._workspace_pages(), await self._workspace_pages(favorites=1))
+        self.assertEqual(patched, cold)
+        self.assertEqual(patched[0]["newest"][:2], ["b.png", "new.png"])
+        self.assertEqual(sorted(patched[1]["newest"]), ["b.png", "d.png"])
+
+    async def test_a_warm_build_after_an_add_builds_only_the_added_values(self):
+        for index in range(300):
+            path = self.output_dir / f"f{index:03d}.png"
+            path.write_bytes(b"x")
+            os.utime(path, (1000 + index, 1000 + index))
+        await self._warmed()
+        record = self._record()
+        listed, keys = [], []
+        real_listed, real_key = images_module._listed, images_module._newest_key
+
+        def counted_listed(*args):
+            listed.append(args[0].name)
+            return real_listed(*args)
+
+        def counted_key(entry):
+            keys.append(entry)
+            return real_key(entry)
+
+        with (
+            patch.object(images_module, "_listed", counted_listed),
+            patch.object(images_module, "_newest_key", counted_key),
+            patch.object(
+                images_module,
+                "_favorite_relative_key",
+                wraps=images_module._favorite_relative_key,
+            ) as favorite_keys,
+        ):
+            self.api.output_settled(self._at("new.png", 9000))
+            await self._settle()
+        self.assertEqual(self.scan.calls, 1)
+        self.assertTrue(self._workspace_ready())
+        self.assertEqual(listed, ["new.png"])
+        self.assertLess(len(keys), 20)  # bisection, not a sort of 301 files
+        self.assertLess(favorite_keys.call_count, 10)  # not one per file
+        self.assertEqual(
+            self.api._workspace_order([(0, self.output_dir, record.files)], "newest")[
+                0
+            ].path.name,
+            "new.png",
+        )
+
+    async def test_a_rewritten_output_drops_its_old_card_facts(self):
+        self._at("a.png", 1000)
+        self._at("b.png", 2000)
+        await self._warmed()
+        await self._json("GET", f"{self.URL}?mode=workspace&limit=10")
+        key = (0, str(self.output_dir))
+        before = set(self.api._workspace_card_cache.get(key, {}))
+        self.assertIn(Path(self._at("a.png", 1000)).name, {p.name for p, _ in before})
+        self.api.output_settled(self._at("a.png", 3000))
+        await self._settle()
+        after = self.api._workspace_card_cache.get(key, {})
+        self.assertNotIn((self.output_dir / "a.png", 1000.0), after)
+        self.assertIn((self.output_dir / "b.png", 2000.0), after)
+
+    def _synthetic(self, root, count, start=1000.0):
+        return [(root / f"f{i:04d}.png", start + i) for i in range(count)][::-1]
+
+    def test_the_newest_order_sorts_again_when_it_missed_a_step(self):
+        root = self.output_dir
+        files = self._synthetic(root, 50)
+        listings = [(0, root, files)]
+        self.api._workspace_orders(listings)
+        one = gallery_listing.insert_entry(files, (root / "n1.png", 5000.0), 100)
+        self.api._workspace_listed(0, root, one)  # values follow, the order not
+        two = gallery_listing.insert_entry(one, (root / "n2.png", 6000.0), 100)
+        newest = self.api._workspace_orders([(0, root, two)])["newest"]
+        self.assertEqual([entry.path for entry in newest], [p for p, _m in two])
+
+    def test_the_newest_order_follows_one_changed_root_of_two(self):
+        first, second = self.output_dir, self.comfy_dir / "second"
+        files = self._synthetic(first, 30)
+        others = self._synthetic(second, 30, start=1000.5)
+        self.api._workspace_orders([(0, first, files), (1, second, others)])
+        patched = gallery_listing.insert_entry(others, (second / "n.png", 1010.25), 100)
+        with patch.object(
+            images_module, "_newest_key", wraps=images_module._newest_key
+        ) as keys:
+            newest = self.api._workspace_orders(
+                [(0, first, files), (1, second, patched)]
+            )["newest"]
+        self.assertLess(keys.call_count, 20)
+        expected = sorted(
+            [(p, m, 0) for p, m in files] + [(p, m, 1) for p, m in patched],
+            key=lambda item: -item[1],
+        )
+        self.assertEqual(
+            [entry.path for entry in newest], [path for path, _m, _i in expected]
+        )
+
+    def test_the_on_disk_spelling_is_read_on_macos_only(self):
+        with patch.object(images_module.sys, "platform", "linux"):
+            self.assertIsNone(images_module._on_disk_path(__file__))
+        fake = MagicMock(F_GETPATH=50)
+        fake.fcntl.return_value = b"/Out/Sub/A.png" + bytes(10)
+        with (
+            patch.dict(sys.modules, {"fcntl": fake}),
+            patch.object(images_module.sys, "platform", "darwin"),
+        ):
+            self.assertEqual(images_module._on_disk_path(__file__), "/Out/Sub/A.png")
+        self.assertEqual(fake.fcntl.call_args.args[1], 50)
+
+    def test_the_favorite_listing_step_rebuilds_when_it_cannot_follow(self):
+        root = self.output_dir
+        listing = {"a.png": "a.png"}
+        step = images_module._favorite_listing_step
+        self.assertEqual(
+            step(root, listing, [(root / "b.png", 2.0)], []),
+            {"a.png": "a.png", "b.png": "b.png"},
+        )
+        self.assertEqual(listing, {"a.png": "a.png"})  # never changed in place
+        # A removed file not added again, or a key another spelling holds.
+        self.assertIsNone(step(root, listing, [], [(root / "a.png", 1.0)]))
+        with patch.object(
+            images_module, "_favorite_relative_key", side_effect=str.lower
+        ):
+            self.assertIsNone(step(root, listing, [(root / "A.png", 2.0)], []))
 
     async def test_monitor_walks_during_a_workspace_build_add_one_more_build(self):
         make_png(self.output_dir / "a.png")

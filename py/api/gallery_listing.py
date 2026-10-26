@@ -7,16 +7,19 @@ folder sets run in the executor through ``walk_root``. Routes live in
 ``py/api/images.py`` (``_listing``); this module has no aiohttp import so
 tests can exercise it without a server.
 
-A settled output the image monitor reports marks its root dirty
-(``mark_root_dirty``); a dirty root gets one background walk, no sooner than
-``rewalk_interval`` after its previous walk started (PR 2).
+A settled output the image monitor reports is added to its root's stored
+listing without a walk (``output_settled``, ``insert_entry``), in the place
+a walk would list it. When that cannot be exact, the root is marked dirty
+(``mark_root_dirty``) instead; a dirty root gets one background walk, no
+sooner than ``rewalk_interval`` after its previous walk started (PR 2).
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
+from bisect import bisect_left
+from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import Callable, NamedTuple
 
@@ -112,12 +115,20 @@ class RootListing:
     # reader (or the warm-up) asks for this root again. The monitor keeps
     # watching a removed root until ComfyUI restarts.
     retired: bool = False
+    # Relative paths of settled outputs waiting to be added to ``files``
+    # without a walk, and the one task adding them (``output_settled``).
+    pending_adds: list = field(default_factory=list)
+    add_task: asyncio.Task | None = None
+    # Settled outputs added to the stored listing since the last walk stored.
+    patched: int = 0
 
     def drop(self) -> None:
         self.files = None
         self.folders = None
         self.folders_with_ancestors = None
         self.walked_at = None
+        self.pending_adds = []
+        self.patched = 0
         self.generation += 1
 
 
@@ -129,26 +140,131 @@ def folder_sets(root, files) -> tuple[frozenset, frozenset]:
     files, plus every ancestor joined by ``/``.
     """
     # From the path strings: relative_to per file was half of a large walk.
+    sep, prefix = _root_prefix(root)
+    folders = set()
+    for path, _mtime in files:
+        rel_dir = _folder_of(root, path, sep, prefix)
+        if rel_dir:
+            folders.add(rel_dir)
+    with_ancestors = set(folders)
+    for folder in folders:
+        with_ancestors.update(_ancestors(folder))
+    return frozenset(folders), frozenset(with_ancestors)
+
+
+def add_folder(root, path, folders, with_ancestors) -> tuple[frozenset, frozenset]:
+    """Both folder sets once *path* is listed too (the same sets when it adds none)."""
+    sep, prefix = _root_prefix(root)
+    rel_dir = _folder_of(root, path, sep, prefix)
+    if not rel_dir or rel_dir in folders:
+        return folders, with_ancestors
+    return folders | {rel_dir}, with_ancestors | {rel_dir, *_ancestors(rel_dir)}
+
+
+def _root_prefix(root) -> tuple[str, str]:
     # The separator is the path flavour's own (tests use PureWindowsPath).
     sep = str(type(root)("a", "b"))[1]
     prefix = str(root)
     if not prefix.endswith(sep):
         prefix += sep
-    folders = set()
-    for path, _mtime in files:
-        text = str(path)
-        if text.startswith(prefix):
-            rel_dir = text[len(prefix) :].rpartition(sep)[0]
-        else:
-            rel_dir = str(path.relative_to(root).parent)
-        if rel_dir and rel_dir != ".":
-            folders.add(rel_dir)
-    with_ancestors = set(folders)
-    for folder in folders:
-        parts = folder.replace("\\", "/").split("/")
-        for i in range(1, len(parts)):
-            with_ancestors.add("/".join(parts[:i]))
-    return frozenset(folders), frozenset(with_ancestors)
+    return sep, prefix
+
+
+def _folder_of(root, path, sep, prefix) -> str:
+    """The folder ``/gallery/subfolders`` names for *path*; "" for the root."""
+    text = str(path)
+    if text.startswith(prefix):
+        rel_dir = text[len(prefix) :].rpartition(sep)[0]
+    else:
+        rel_dir = str(path.relative_to(root).parent)
+    return "" if rel_dir == "." else rel_dir
+
+
+def _ancestors(folder: str) -> list[str]:
+    parts = folder.replace("\\", "/").split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+def relative_part(resolved_root: str, path, pathmod=os.path) -> str | None:
+    """The part of the resolved *path* below *resolved_root*, as a walk spells it.
+
+    Kept in *path*'s own case (``realpath`` gives a file's on-disk case on
+    Windows) with the native separator. None when *path* is not below the
+    root, or when the case folding changed the length so the slice would
+    not be exact.
+    """
+    sep = pathmod.sep
+    text = str(path)
+    if sep == "\\":
+        text = _plain(text.replace("/", sep), pathmod)
+    folded = pathmod.normcase(text)
+    prefix = _plain(resolved_root, pathmod)
+    if not prefix.endswith(sep):
+        prefix += sep
+    if len(folded) != len(text) or not folded.startswith(prefix):
+        return None
+    relative = text[len(prefix) :]
+    if any(part in ("", ".", "..") for part in relative.split(sep)):
+        return None
+    return relative
+
+
+def insert_entry(files: list, entry: tuple, max_files: int) -> list | None:
+    """A new listing with *entry* ``(path, mtime)`` where a walk would list it.
+
+    *files* is newest first; an entry for the same path is replaced. Returns
+    *files* itself when it already holds *entry*, and None when the place is
+    not exact: another file has the same mtime (a walk orders those by its
+    own visit order), or the listing is at the walk's *max_files* cap.
+    Blocking (one pass over *files*): run it in the executor.
+    """
+    path, mtime = entry
+    text = str(path)
+    kept = files
+    for index, (listed, listed_mtime) in enumerate(files):
+        if str(listed) == text:
+            if listed_mtime == mtime:
+                return files
+            kept = files[:index] + files[index + 1 :]
+            break
+    else:
+        if len(files) >= max_files:
+            return None
+    index = bisect_left(kept, -mtime, key=lambda item: -item[1])
+    if index < len(kept) and kept[index][1] == mtime:
+        return None
+    return [*kept[:index], entry, *kept[index:]]
+
+
+# A listing that differs from the cached one by more entries than this is
+# rebuilt in full by the workspace caches (listing_delta).
+MAX_DELTA = 256
+
+
+def listing_delta(old: list, new: list, limit: int = MAX_DELTA):
+    """``(added, removed)`` entries from *old* to *new*, or None past *limit*.
+
+    A listing patched by ``insert_entry`` shares every unchanged entry object
+    with the one it came from, so entries are told apart by identity: a walk
+    builds new tuples, shares none and is rebuilt in full. *old* must still
+    be alive (the
+    caller's cache holds it), so no identity was reused.
+    """
+    if abs(len(new) - len(old)) > limit:
+        return None
+    old_ids = set(map(id, old))
+    added = []
+    for entry in new:
+        if id(entry) not in old_ids:
+            added.append(entry)
+            if len(added) > limit:
+                return None
+    if new and len(added) == len(new):
+        return None  # nothing shared: a walk
+    if len(old) + len(added) == len(new):
+        return added, []
+    new_ids = set(map(id, new))
+    return added, [entry for entry in old if id(entry) not in new_ids]
 
 
 def rewalk_interval(last_duration) -> float:
@@ -172,14 +288,14 @@ def root_contains(resolved_root: str, path, pathmod=os.path) -> bool:
 
 
 def _plain(path: str, pathmod) -> str:
-    """*path* (normcased) without a Windows extended-length prefix.
+    """*path* (normcased or not) without a Windows extended-length prefix.
 
     ``realpath`` may keep ``\\\\?\\`` on a file past MAX_PATH while its shorter
     root resolves without it.
     """
     if pathmod.sep != "\\":
         return path
-    if path.startswith("\\\\?\\unc\\"):
+    if path[:8].lower() == "\\\\?\\unc\\":
         return "\\\\" + path[8:]
     if path.startswith("\\\\?\\"):
         return path[4:]
