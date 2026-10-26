@@ -4015,17 +4015,123 @@ class TestSharedListing(ImageAPITestCase):
             [entry.path for entry in newest], [path for path, _m, _i in expected]
         )
 
-    def test_the_on_disk_spelling_is_read_on_macos_only(self):
-        with patch.object(images_module.sys, "platform", "linux"):
-            self.assertIsNone(images_module._on_disk_path(__file__))
+    def test_the_on_disk_spelling_is_read_where_names_fold_case(self):
+        read = images_module._on_disk_path
+        self.assertIsNone(read(__file__, platform="linux"))
+        fake_fcntl = MagicMock(F_GETPATH=50)
+        fake_fcntl.fcntl.return_value = b"/Out/Sub/A.png" + bytes(10)
+        fake_nt = MagicMock()
+        fake_nt._getfinalpathname.return_value = "\\\\?\\C:\\Out\\A.png"
+        with patch.dict(sys.modules, {"fcntl": fake_fcntl, "nt": fake_nt}):
+            self.assertEqual(read(__file__, platform="darwin"), "/Out/Sub/A.png")
+            self.assertEqual(read(__file__, platform="win32"), "\\\\?\\C:\\Out\\A.png")
+        self.assertEqual(fake_fcntl.fcntl.call_args.args[1], 50)
+        fake_nt._getfinalpathname.assert_called_once_with(__file__)
+
+    def test_a_fifo_named_like_an_image_never_blocks_the_spelling_read(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("no FIFOs here")
+        fifo = self.output_dir / "pipe.png"
+        os.mkfifo(fifo)
         fake = MagicMock(F_GETPATH=50)
-        fake.fcntl.return_value = b"/Out/Sub/A.png" + bytes(10)
-        with (
-            patch.dict(sys.modules, {"fcntl": fake}),
-            patch.object(images_module.sys, "platform", "darwin"),
-        ):
-            self.assertEqual(images_module._on_disk_path(__file__), "/Out/Sub/A.png")
-        self.assertEqual(fake.fcntl.call_args.args[1], 50)
+        fake.fcntl.return_value = os.fsencode(str(fifo))
+        done = []
+
+        def read():
+            with patch.dict(sys.modules, {"fcntl": fake}):
+                done.append(images_module._on_disk_path(fifo, platform="darwin"))
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        reader.join(_HANG_LIMIT)
+        if reader.is_alive():
+            # Unblock the open so the thread ends, then fail.
+            with open(fifo, "wb"):
+                pass
+            self.fail("opening the FIFO blocked")
+        self.assertEqual(done, [str(fifo)])
+
+    async def test_a_folder_the_walk_cannot_list_gets_no_add(self):
+        if os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() == 0:
+            self.skipTest("needs POSIX permissions and a non-root user")
+        self._at("a.png", 1000)
+        record = await self._listed()
+        report = self._at(os.path.join("locked", "b.png"), 2000)
+        locked = self.output_dir / "locked"
+        os.chmod(locked, 0o300)  # enter but not list
+        try:
+            self.assertEqual(self._walked(), record.files)  # the walk skips it
+            files = record.files
+            self.api.output_settled(report)
+            await self._settle()
+        finally:
+            os.chmod(locked, 0o700)
+        self.assertIs(record.files, files)
+        self._no_walk_pending(record)
+
+    async def test_a_folder_named_like_an_image_is_not_added(self):
+        self._at("a.png", 1000)
+        record = await self._listed()
+        folder = self.output_dir / "folder.png"
+        folder.mkdir()
+        files = record.files
+        self.api.output_settled(os.path.realpath(folder))
+        await self._settle()
+        self.assertIs(record.files, files)
+        self._no_walk_pending(record)
+
+    async def test_the_filters_read_the_stored_spelling(self):
+        # Reported as thumbnails/, stored as Thumbnails/: a walk lists it, so
+        # the add must not skip it as a preview folder; the spelling differs,
+        # so the root is walked.
+        self._at("a.png", 1000)
+        record = await self._listed()
+        report = self._at(os.path.join("thumbnails", "t.png"), 2000)
+        stored = os.path.join(str(self.output_dir), "Thumbnails", "t.png")
+        with patch.object(images_module, "_on_disk_path", return_value=stored):
+            await self._assert_walks_instead(record, report)
+
+    def test_a_stale_read_racing_a_newer_build_sorts_in_full(self):
+        root = self.output_dir
+        f0 = self._synthetic(root, 50)
+        f1 = gallery_listing.insert_entry(f0, (root / "n1.png", 5000.0), 100)
+        f2 = gallery_listing.insert_entry(f1, (root / "n2.png", 6000.0), 100)
+        self.api._workspace_orders([(0, root, f0)])
+        self.api._workspace_listed(0, root, f1)  # the warm build of add 1
+        real = self.api._workspace_listed
+        armed = [True]
+
+        def listed(index, part_root, files):
+            values = real(index, part_root, files)
+            if armed[0] and files is f1:
+                armed[0] = False
+                # Another executor thread reads f2 in full meanwhile.
+                self.api._workspace_orders([(0, root, f2)])
+            return values
+
+        with patch.object(self.api, "_workspace_listed", side_effect=listed):
+            stale = self.api._workspace_orders([(0, root, f1)])["newest"]
+        self.assertEqual([entry.path for entry in stale], [p for p, _m in f1])
+        newest = self.api._workspace_orders([(0, root, f2)])["newest"]
+        self.assertEqual([entry.path for entry in newest], [p for p, _m in f2])
+
+    def test_a_roots_change_during_an_order_build_sorts_in_full(self):
+        root = self.output_dir
+        f0 = self._synthetic(root, 20)
+        f1 = gallery_listing.insert_entry(f0, (root / "n1.png", 5000.0), 100)
+        self.api._workspace_orders([(0, root, f0)])
+        real = self.api._workspace_listed
+
+        def listed(index, part_root, files):
+            values = real(index, part_root, files)
+            # A roots reset in another thread, between this call's two cache
+            # reads: the per-file values are gone, the order not yet.
+            self.api._workspace_listed_cache = {}
+            return values
+
+        with patch.object(self.api, "_workspace_listed", side_effect=listed):
+            newest = self.api._workspace_orders([(0, root, f1)])["newest"]
+        self.assertEqual([entry.path for entry in newest], [p for p, _m in f1])
 
     def test_the_favorite_listing_step_rebuilds_when_it_cannot_follow(self):
         root = self.output_dir

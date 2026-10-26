@@ -865,37 +865,53 @@ def _settled_entry(root, relative):
     """``(Path, mtime)`` of a settled output as a walk would list it.
 
     *relative* is its part below *root* (``gallery_listing.relative_part``).
-    None when a walk would not list it (``_walk_media``'s filters); raises
-    ``OSError`` when that cannot be told (the file is unreadable or gone, or
-    its on-disk spelling differs). Blocking: run it in the executor.
+    None when a walk would not list it (``_walk_media``'s filters, and every
+    folder on the way must be listable); raises ``OSError`` when that cannot
+    be told (the file is gone or unreadable, or its on-disk spelling differs
+    or cannot be read). Blocking: run it in the executor.
     """
+    path = Path(os.path.join(os.fspath(root), relative))
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or stat.S_ISDIR(info.st_mode):
+        return None
+    # Before the name filters: they compare the walk's (stored) spelling.
+    on_disk = _on_disk_path(path)
+    if on_disk is not None and not on_disk.endswith(os.sep + relative):
+        raise OSError(f"{relative} is spelled differently on disk")
     *folders, name = relative.split(os.sep)
     if _name_suffix(name).lower() not in MEDIA_EXTENSIONS:
         return None
     if "thumbnails" in folders or len(folders) > MAX_SCAN_DEPTH:
         return None
-    path = Path(os.path.join(os.fspath(root), relative))
-    info = os.lstat(path)
-    if stat.S_ISLNK(info.st_mode) or stat.S_ISDIR(info.st_mode):
-        return None
-    on_disk = _on_disk_path(path)
-    if on_disk is not None and not on_disk.endswith(os.sep + relative):
-        raise OSError(f"{relative} is spelled differently on disk")
+    folder = os.fspath(root)
+    for part in ("", *folders):
+        folder = os.path.join(folder, part) if part else folder
+        if not os.access(folder, os.R_OK | os.X_OK):
+            return None  # the walk cannot list this folder
     return path, info.st_mtime
 
 
-def _on_disk_path(path):
-    """macOS: the file's path in its on-disk case (``F_GETPATH``); else None.
+def _on_disk_path(path, platform=None):
+    """The file's path as its folders store the names, where that can differ.
 
-    macOS file systems ignore case and ``realpath`` keeps the case it was
-    given, while a walk lists the names as stored. Windows' ``realpath``
-    already returns the stored case.
+    Windows and macOS file systems ignore case. Windows' ``realpath`` gives
+    the stored case, but keeps the given one when it cannot open the file;
+    macOS' ``realpath`` always keeps the given one. A walk lists the names as
+    stored, so an add checks them: Windows through ``GetFinalPathNameByHandle``
+    (``nt._getfinalpathname``), macOS through ``F_GETPATH``. Raises OSError
+    when it cannot be read; None elsewhere (case-sensitive file systems).
     """
-    if sys.platform != "darwin":
+    platform = platform or sys.platform
+    if platform == "win32":
+        import nt
+
+        return nt._getfinalpathname(os.fspath(path))
+    if platform != "darwin":
         return None
     import fcntl
 
-    descriptor = os.open(path, os.O_RDONLY)
+    # Non-blocking: a FIFO named like an image must not hold the executor.
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     try:
         raw = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
     finally:
@@ -1980,7 +1996,9 @@ class ImageRoutesMixin:
             old is new for old, new in zip(cached[0], parts, strict=True)
         ):
             return cached[1]
-        newest = self._newest_step(listings, cached) if cached is not None else None
+        newest = None
+        if cached is not None:
+            newest = self._newest_step(listings, parts, cached)
         if newest is None:
             newest = sorted(
                 (entry for part in parts for entry in part),
@@ -1991,19 +2009,26 @@ class ImageRoutesMixin:
         self._workspace_order_cache[key] = (parts, orders)
         return orders
 
-    def _newest_step(self, listings: list[tuple], cached: tuple) -> list | None:
+    def _newest_step(self, listings, parts, cached) -> list | None:
         """The cached newest order with each part's last step applied, or None.
 
-        Only when every changed part is one step (``_workspace_listed_step``)
-        past the part this order was built from: the added values are placed
-        by bisection instead of sorting the whole listing again.
+        Only when every changed part is exactly the value list this call
+        built (*parts*) and one step (``_workspace_listed_step``) past the
+        part the cached order was built from: the added values are placed by
+        bisection instead of sorting the whole listing again. Page reads and
+        the warm build run in executor threads at once, so the per-file cache
+        may already hold a newer step than *parts*; then this sorts in full.
         """
         old_parts, orders = cached
         added, gone = [], []
-        for (index, root, _files), old in zip(listings, old_parts, strict=True):
-            listed = self._workspace_listed_cache.get((index, str(root)))
-            if listed[1] is old:
+        for (index, root, _files), part, old in zip(
+            listings, parts, old_parts, strict=True
+        ):
+            if part is old:
                 continue
+            listed = self._workspace_listed_cache.get((index, str(root)))
+            if listed is None or listed[1] is not part:
+                return None
             step = listed[3]
             if step is None or step[0] is not old:
                 return None

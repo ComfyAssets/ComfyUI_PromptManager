@@ -6,7 +6,8 @@ import posixpath
 import sys
 import tempfile
 import unittest
-from pathlib import Path, PurePath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -354,10 +355,15 @@ class RelativePartTests(unittest.TestCase):
         self.assertEqual(relative_part(drive, "D:\\X\\a.png", ntpath), "X\\a.png")
 
     def test_a_case_fold_that_changes_the_length_is_not_sliced(self):
-        root = ntpath.normcase("C:\\Out")
-        path = "C:\\Out\\\u0130mage.png"  # Turkish dotted I lowers to two chars
-        self.assertNotEqual(len(ntpath.normcase(path)), len(path))
-        self.assertIsNone(relative_part(root, path, ntpath))
+        # str.lower folds the Turkish dotted I to two characters (Windows'
+        # own normcase keeps the length; the guard covers any fold that not).
+        folding = SimpleNamespace(
+            sep="\\", normcase=lambda text: text.replace("/", "\\").lower()
+        )
+        path = "C:\\Out\\\u0130mage.png"
+        self.assertNotEqual(len(folding.normcase(path)), len(path))
+        self.assertIsNone(relative_part("c:\\out", path, folding))
+        self.assertEqual(relative_part("c:\\out", "C:\\Out\\Ab.png", folding), "Ab.png")
 
     def test_dot_parts_are_never_sliced(self):
         for path in ("/srv/out/../x.png", "/srv/out/./x.png", "/srv/out//x.png"):
@@ -366,7 +372,7 @@ class RelativePartTests(unittest.TestCase):
 
 class InsertEntryTests(unittest.TestCase):
     def setUp(self):
-        self.root = PurePath("/out")
+        self.root = PurePosixPath("/out")
         self.files = [
             (self.root / "c.png", 30.0),
             (self.root / "b.png", 20.0),
@@ -386,7 +392,7 @@ class InsertEntryTests(unittest.TestCase):
         self.assertTrue(all(new is old for new, old in zip(patched[1:], self.files)))
 
     def test_the_same_path_with_a_new_mtime_moves(self):
-        patched = insert_entry(self.files, (PurePath("/out/a.png"), 35.0), 100)
+        patched = insert_entry(self.files, (PurePosixPath("/out/a.png"), 35.0), 100)
         self.assertEqual(
             [(str(path), mtime) for path, mtime in patched],
             [("/out/a.png", 35.0), ("/out/c.png", 30.0), ("/out/b.png", 20.0)],
@@ -394,7 +400,7 @@ class InsertEntryTests(unittest.TestCase):
 
     def test_an_entry_already_listed_returns_the_listing_itself(self):
         self.assertIs(
-            insert_entry(self.files, (PurePath("/out/b.png"), 20.0), 3), self.files
+            insert_entry(self.files, (PurePosixPath("/out/b.png"), 20.0), 3), self.files
         )
 
     def test_a_tie_in_mtime_is_not_placed(self):

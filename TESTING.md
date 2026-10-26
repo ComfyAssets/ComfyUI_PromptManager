@@ -348,9 +348,14 @@ hold a walk open with a gated scan instead of sleeping.
   root in its own case (Windows compares folded, slices the original);
   `_run_adds` places the pending files of one root in one executor batch
   (`_patch_listing`): `_settled_entry` applies the walk's filters
-  (`_name_suffix` in `MEDIA_EXTENSIONS`, no `thumbnails` folder, at most
-  `MAX_SCAN_DEPTH` folders, not a symlink or folder by `lstat`; on macOS the
-  `F_GETPATH` spelling must match) and `insert_entry` builds a new list with
+  (not a symlink or folder by `lstat`, `_name_suffix` in `MEDIA_EXTENSIONS`,
+  no `thumbnails` folder, at most `MAX_SCAN_DEPTH` folders, every folder on
+  the way listable by `os.access`). Where names fold case the stored
+  spelling must match first, as the filters compare it: Windows through
+  `nt._getfinalpathname` (its `realpath` keeps the given case when it cannot
+  open the file), macOS through `F_GETPATH` on a non-blocking open (a FIFO
+  never holds the executor); a case-insensitive mount on Linux is not
+  checked and is corrected by the next walk. `insert_entry` builds a new list with
   the `(Path, mtime)` entry where the walk's newest-first sort puts it,
   replacing the same path's entry. `add_folder` copies both folder sets. The
   batch is stored only when no walk started and no drop happened while it
@@ -361,7 +366,8 @@ hold a walk open with a gated scan instead of sleeping.
 - **When it walks instead.** The root is marked dirty (`mark_root_dirty`,
   `_mark_dirty`) when the add cannot be exact: a walk is running (it may have
   passed the folder: the trailing walk), the path cannot be sliced, the
-  `lstat` fails, another file has the same mtime (a walk orders those by its
+  `lstat` or the spelling read fails, the stored spelling differs, another
+  file has the same mtime (a walk orders those by its
   visit order), the listing is at `MAX_GALLERY_FILES`, or the batch raised.
   A file the walk's filters exclude is neither added nor walked. A root
   without a listing, or a dropped one, is walked by its next read. A dirty
@@ -385,7 +391,10 @@ hold a walk open with a gated scan instead of sleeping.
   the change by identity (a walk builds new tuples and is rebuilt in full,
   as is any change of more than `MAX_DELTA` entries). The per-file values
   build only the added files (`_workspace_listed_step`), the newest order
-  places them by bisection (`_newest_step`), the favorites lookup is copied
+  places them by bisection (`_newest_step`, only when the per-file cache
+  still holds exactly the values this call built: a page read and the warm
+  build run in executor threads at once, and an order labelled with older
+  values than it holds would add a file twice), the favorites lookup is copied
   and extended (`_favorite_listing_step`, rebuilt when a key collides), and
   the other orders, wanted paths and locators rebuild lazily. On a synthetic
   20,000-file listing a one-file add costs about 3 ms in the executor and
