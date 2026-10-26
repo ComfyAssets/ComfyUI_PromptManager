@@ -485,5 +485,6 @@ test('a safety backup file (no .db extension) can be picked and reviewed (M3)', 
     const answer = await chooseBackup(page, bytes, 'prompts.db.backup_20261025_093000_000000');
     expect((await answer).status()).toBe(200);
     await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
-    expect((await gridOf(page))[0][1]).toMatch(/^prompts\.db\.backup_20261025_093000_000000 · \d+ KB · .+$/);
+    // The copy's size depends on what earlier tests on this server wrote: KB or MB.
+    expect((await gridOf(page))[0][1]).toMatch(/^prompts\.db\.backup_20261025_093000_000000 · [\d,.]+ (KB|MB) · .+$/);
 });
