@@ -3983,8 +3983,11 @@ own serializer (dynamic prompts: `{red|blue}` becomes one choice). Each queued o
 filled once (the queue hook only fills an output that did not come through the wrapper),
 so a wildcard is drawn once per run. Inputs still bound to their widget (the Classic
 nodes) are left as the host resolved them; as on main, the Classic text widget's own
-serializer queues its text as written, wildcards included. A Primitive drives the text as
-before, also in workflows saved before #343. A linked
+serializer queues its text as written, wildcards included (specs wait on the node's
+`_pmTextSerializerReady` before queuing). A Primitive drives the text as before, also in
+workflows saved before #343. On every Run the host logs "Invalid widget or widget name"
+for a Primitive wired to a detached editor input: its own widget write finds no widget
+binding there. That is expected and harmless. A linked
 Classic text box gives its canvas row back while linked (the core keeps an empty gap) and
 gets its size back on disconnect. The metadata parsers map a known node's positional
 widget values through its widget table when its widget-bound inputs do not line up with
@@ -4020,8 +4023,8 @@ which used to save `null` under a link.
   real frontend through the sockets, with text from `PrimitiveString`, the legacy
   Primitive or through `PreviewAny`, for PromptManager, PromptManagerText, Focused, Split
   and the Pair (positive, negative, both, neither linked, and a Primitive negative). A
-  wildcard Primitive on PromptManager and Focused saves and counts the one choice that was
-  queued. The linked text is saved, counted once, recorded as
+  wildcard Primitive on PromptManager (queued as written) and Focused (one choice) saves
+  and counts what was queued. The linked text is saved, counted once, recorded as
   the run's raw positive/negative, and after a scan the run's image links to it. Text
   only known at run time (`PreviewAny`) cannot be read from the image; the case only
   requires that it is never linked to another prompt (its attribution from the recorded

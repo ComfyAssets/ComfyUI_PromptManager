@@ -223,6 +223,8 @@ test('a wildcard legacy Primitive queues one resolved choice, drawn once per run
             primitive.properties['Run widget replace on values'] = replace;
             ids[type] = [String(node.id), name];
         });
+        // The Classic nodes install their own text serializer shortly after creation; run after it, as a user does.
+        await Promise.all(app.graph.nodes.map(node => node._pmTextSerializerReady));
         // What another extension's graphToPrompt wrapper sees must be what the server gets.
         const inner = app.graphToPrompt;
         const seen = window.__pmSeen = [];
@@ -240,12 +242,12 @@ test('a wildcard legacy Primitive queues one resolved choice, drawn once per run
     const year = String(new Date().getFullYear());
     const stems = { PromptManagerFocused: 'Focused', PromptManagerSplit: `Split ${year}`, PromptManagerPair: 'Pair', PromptManager: 'Classic', PromptManagerText: 'Text' };
     // The Classic nodes keep their widget binding, so the host applies the Primitive and #343 leaves the value alone.
-    // As on main, their text widget's own serializer (installed 50 ms after creation) queues the text as written.
+    // As on main, their text widget's own serializer queues the text as written, wildcard included.
     const classic = new Set(['PromptManager', 'PromptManagerText']);
     for (const [type, [id, name]] of Object.entries(ids)) {
         const value = prompt[id].inputs[name];
-        const expected = classic.has(type) ? `(?:c\\d|${choices.replace(/[{}|]/g, '\\$&')})` : 'c\\d';
-        expect(value, type).toMatch(new RegExp(`^${stems[type]} ${expected}$`));
+        if (classic.has(type)) expect(value, type).toBe(`${stems[type]} ${choices}`);
+        else expect(value, type).toMatch(new RegExp(`^${stems[type]} c\\d$`));
         expect(value, `${type}: one draw per run`).toBe(seen[0][id].inputs[name]);
     }
 });

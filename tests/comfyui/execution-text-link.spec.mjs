@@ -68,6 +68,8 @@ function build(page, { kind, positive, negative, prefix }) {
         const save = add('SaveImage', 2100, 0);
         save.widgets.find(widget => widget.name === 'filename_prefix').value = prefix;
         connect(images, 0, save, 'images');
+        // The Classic nodes install their own text serializer shortly after creation; queue after it, as a user does.
+        await prompt._pmTextSerializerReady;
         const { output, workflow } = await app.graphToPrompt();
         return { output, workflow, promptNode: String(prompt.id) };
     }, { kind, positive, negative, prefix });
@@ -150,17 +152,17 @@ for (const kind of ['PromptManager', 'PromptManagerText', 'PromptManagerFocused'
     }
 }
 
-// A legacy Primitive's wildcard is drawn once when the workflow is queued: the run saves and counts that one choice.
+// A legacy Primitive's wildcard is drawn once when the workflow is queued: the run saves and counts what was queued.
 for (const kind of ['PromptManager', 'PromptManagerFocused']) {
-    test(`${kind} saves and counts the one choice a wildcard legacy Primitive queued (#343 re-review R1)`, async ({ execution, page }) => {
+    test(`${kind} saves and counts the text a wildcard legacy Primitive queued (#343 re-review R1)`, async ({ execution, page }) => {
         test.setTimeout(90000);
         const stem = unique(`Wildcard ${kind}`);
         const evidence = await run(execution, page, { kind, positive: { typed: 'Typed under the link', text: `${stem} {alpha|beta}`, via: 'legacy' } });
         const queuedText = evidence.output[evidence.promptNode].inputs.text;
-        // The Classic node keeps its widget binding: the host applies the Primitive, and its text widget queues the text
-        // as written once its own serializer is installed (50 ms after creation), as on main.
-        const choices = [`${stem} alpha`, `${stem} beta`, ...(kind === 'PromptManager' ? [`${stem} {alpha|beta}`] : [])];
-        expect(choices).toContain(queuedText);
+        // The Classic node keeps its widget binding: the host applies the Primitive, and its own text serializer
+        // queues the text as written, as on main. The Focused editor queues one choice.
+        if (kind === 'PromptManager') expect(queuedText).toBe(`${stem} {alpha|beta}`);
+        else expect([`${stem} alpha`, `${stem} beta`]).toContain(queuedText);
         expect(evidence.context.positive.raw).toBe(queuedText);
         expect(evidence.usage).toEqual([{ role: 'positive', run_count: 1 }]);
         const saved = await (await execution.request.get(`/prompt_manager/library/${evidence.context.positive_prompt_id}`)).json();

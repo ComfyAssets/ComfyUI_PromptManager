@@ -255,7 +255,9 @@ async function applyPrimitiveText(output) {
   primitiveTextApplied.add(output);
   const replaceText = window.comfyAPI?.utils?.applyTextReplacements;
   for (const [id, node] of queuedNodes(app.graph)) {
-    const inputs = promptManagerTypes.has(node.type) ? output[id]?.inputs : null;
+    const queued = promptManagerTypes.has(node.type) ? output[id] : null;
+    // Only an output of this graph: the same id must hold the same node type.
+    const inputs = queued?.class_type === node.type ? queued.inputs : null;
     if (!inputs) continue;
     for (const name of ['text', 'negative_text']) {
       if (Array.isArray(inputs[name])) continue;
@@ -340,53 +342,60 @@ app.registerExtension({
         // CRITICAL FIX: Ensure text widget always returns current value during serialization
         // This fixes the issue where graphToPrompt reads stale cached values
         const self = this;
+        // Settles once the serializer below is in place (or skipped), for callers that must queue after it.
+        let textSerializerSettled;
+        this._pmTextSerializerReady = new Promise((resolve) => { textSerializerSettled = resolve; });
         this._textSyncTimer = setTimeout(() => {
-          if (self._classicScope?.signal.aborted) return;
-          const textWidget = self.widgets?.find((w) => w.name === "text");
-          if (textWidget) {
-            // Store reference to the widget for the closure
-            const widgetRef = textWidget;
-            const originalSerializeValue = textWidget.serializeValue;
+          try {
+            if (self._classicScope?.signal.aborted) return;
+            const textWidget = self.widgets?.find((w) => w.name === "text");
+            if (textWidget) {
+              // Store reference to the widget for the closure
+              const widgetRef = textWidget;
+              const originalSerializeValue = textWidget.serializeValue;
 
-            // Override serializeValue - use arrow function to capture widgetRef
-            textWidget.serializeValue = (nodeId, widgetIndex) => {
-              // Always return the current DOM value using our stored reference
-              if (widgetRef.inputEl) {
-                const currentValue = widgetRef.inputEl.value;
-                // Sync widget.value as well
-                widgetRef.value = currentValue;
-                return currentValue;
-              }
-              return widgetRef.value;
-            };
-
-            // Add aggressive sync listeners for all value change events
-            if (textWidget.inputEl) {
-              const syncValue = function() {
-                const currentVal = textWidget.inputEl.value;
-                textWidget.value = currentVal;
-                // Also update widgets_values array
-                const widgetIndex = self.widgets?.indexOf(textWidget);
-                if (self.widgets_values && widgetIndex >= 0) {
-                  self.widgets_values[widgetIndex] = currentVal;
+              // Override serializeValue - use arrow function to capture widgetRef
+              textWidget.serializeValue = (nodeId, widgetIndex) => {
+                // Always return the current DOM value using our stored reference
+                if (widgetRef.inputEl) {
+                  const currentValue = widgetRef.inputEl.value;
+                  // Sync widget.value as well
+                  widgetRef.value = currentValue;
+                  return currentValue;
                 }
+                return widgetRef.value;
               };
 
-              // Sync on every keystroke
-              const listen = self._classicScope
-                ? (event) => self._classicScope.listen(textWidget.inputEl, event, syncValue)
-                : (event) => textWidget.inputEl.addEventListener(event, syncValue);
-              listen('input');
-              // Sync on change (for paste, autocomplete, etc.)
-              listen('change');
-              // Sync when focus leaves the field
-              listen('blur');
-              // Sync on keyup as backup
-              listen('keyup');
+              // Add aggressive sync listeners for all value change events
+              if (textWidget.inputEl) {
+                const syncValue = function() {
+                  const currentVal = textWidget.inputEl.value;
+                  textWidget.value = currentVal;
+                  // Also update widgets_values array
+                  const widgetIndex = self.widgets?.indexOf(textWidget);
+                  if (self.widgets_values && widgetIndex >= 0) {
+                    self.widgets_values[widgetIndex] = currentVal;
+                  }
+                };
 
-              // Initial sync
-              syncValue();
+                // Sync on every keystroke
+                const listen = self._classicScope
+                  ? (event) => self._classicScope.listen(textWidget.inputEl, event, syncValue)
+                  : (event) => textWidget.inputEl.addEventListener(event, syncValue);
+                listen('input');
+                // Sync on change (for paste, autocomplete, etc.)
+                listen('change');
+                // Sync when focus leaves the field
+                listen('blur');
+                // Sync on keyup as backup
+                listen('keyup');
+
+                // Initial sync
+                syncValue();
+              }
             }
+          } finally {
+            textSerializerSettled();
           }
         }, 50); // Shorter delay to beat other extensions
 
