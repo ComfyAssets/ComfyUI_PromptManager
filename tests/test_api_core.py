@@ -687,9 +687,23 @@ class TestInstanceHelpers(FolderPathsFixture):
         self.assertEqual(self._run(self.api._run_in_executor(add, 1, 2)), 3)
 
     def test_invalidate_gallery_cache(self):
-        self.api._gallery_cache = {"x": 1}
+        record = self.api._root_listing(self.output_dir)
+        record.files = [(self.output_dir / "a.png", 1.0)]
+        record.folders = record.folders_with_ancestors = frozenset()
+        record.walked_at = 1.0
+        self.api._favorite_listing_cache = {"x": 1}
+        self.api._workspace_order_cache = {"x": 1}
         self.api.invalidate_gallery_cache()
-        self.assertEqual(self.api._gallery_cache, {})
+        # The record stays: its generation outlives every drop (#348).
+        self.assertIs(self.api._root_listings[str(self.output_dir)], record)
+        self.assertIsNone(record.files)
+        self.assertIsNone(record.folders)
+        self.assertIsNone(record.walked_at)
+        self.assertEqual(record.generation, 1)
+        self.assertEqual(self.api._favorite_listing_cache, {})
+        self.assertEqual(self.api._workspace_order_cache, {})
+        self.api.reset_gallery_roots_cache()
+        self.assertEqual(record.generation, 2)
 
     def test_enrich_images_adds_urls_and_thumbnails(self):
         GalleryConfig.MONITORING_DIRECTORIES = [str(self.output_dir)]

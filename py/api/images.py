@@ -22,6 +22,15 @@ from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
 from .jobs import MAX_OUTCOME_ROWS, THUMBNAILS_JOB_KIND
+from . import gallery_listing
+from .gallery_listing import (
+    DISCARDED,
+    FAILED,
+    MAX_DISCARDED_WALKS,
+    WALK_STOPPED,
+    WalkOutcome,
+    walk_root,
+)
 from . import thumbnail_settings
 from .thumbnail_encode import (
     PREVIEW_HELD,
@@ -763,32 +772,65 @@ def _favorite_root_key(root) -> str:
     return _favorite_relative_key(os.path.realpath(str(root)))
 
 
-def _iter_media_files(output_path, max_files):
-    """Yield media files under *output_path* with bounded effort.
+def _name_suffix(name):
+    """``Path(name).suffix`` as Python 3.10-3.13 compute it.
+
+    The last ``.``-part unless the dot is the first or last character, so
+    ``..png`` is ``.png`` and ``.png`` has none. Spelled out because 3.14
+    changed ``Path.suffix`` and ``os.path.splitext`` differs for leading dots.
+    """
+    dot = name.rfind(".")
+    return name[dot:] if 0 < dot < len(name) - 1 else ""
+
+
+def _walk_media(output_path, max_files):
+    """Yield the ``os.DirEntry`` of each media file under *output_path*.
 
     Symlinks are never followed, ``thumbnails/`` is skipped, descent stops
-    at MAX_SCAN_DEPTH and at most *max_files* paths are produced.
+    at MAX_SCAN_DEPTH and at most *max_files* entries are produced. The order
+    is ``os.walk``'s (top-down, subfolders in ``os.scandir`` order, files by
+    name), which the gallery's ties in mtime keep. Each entry's type comes
+    from the directory listing itself, so a walk builds no ``Path`` and makes
+    no extra ``lstat`` per file (#348: a 20,000-file walk spent half its time
+    there).
     """
-    output_path = Path(output_path)
-    root_depth = len(output_path.parts)
+    stack = [(os.fspath(output_path), ())]
     produced = 0
-    for root, dirs, files in os.walk(output_path):
-        root_path = Path(root)
-        rel_parts = root_path.parts[root_depth:]
+    while stack:
+        top, rel_parts = stack.pop()
         if "thumbnails" in rel_parts:
-            dirs[:] = []
             continue
-        if len(rel_parts) >= MAX_SCAN_DEPTH:
-            dirs[:] = []
-        for name in sorted(files):
-            if Path(name).suffix.lower() not in MEDIA_EXTENSIONS:
+        dirs, files = [], []
+        try:
+            with os.scandir(top) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    (dirs if is_dir else files).append(entry)
+        except OSError:
+            continue  # as os.walk: an unreadable folder is skipped
+        for entry in sorted(files, key=lambda item: item.name):
+            if _name_suffix(entry.name).lower() not in MEDIA_EXTENSIONS:
                 continue
-            if (root_path / name).is_symlink():
+            if entry.is_symlink():
                 continue  # never read through a link out of the output tree
             if produced >= max_files:
                 return
             produced += 1
-            yield root_path / name
+            yield entry
+        if len(rel_parts) >= MAX_SCAN_DEPTH:
+            continue
+        for entry in reversed(dirs):
+            if not entry.is_symlink():
+                stack.append((entry.path, rel_parts + (entry.name,)))
+
+
+def _iter_media_files(output_path, max_files):
+    """Yield the ``Path`` of each media file under *output_path* (see _walk_media)."""
+    for entry in _walk_media(output_path, max_files):
+        yield Path(entry.path)
 
 
 def media_thumbnail_rel(rel_path, settings=None):
@@ -1278,6 +1320,60 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
+    def _schedule_workspace_warm(self):
+        """Rebuild the workspace caches behind a changed listing (on the loop).
+
+        Only after the host's startup warm-up (warm_gallery_listings), so the
+        first Images open after a restart, and the first read after a refresh
+        found new files, pay no per-file rebuild. A walk stored while a build
+        runs asks for one more build instead of a second one at once.
+        """
+        if not self._workspace_warm_enabled:
+            return
+        task = self._workspace_warm_task
+        if task is not None and not task.done():
+            self._workspace_warm_again = True
+            return
+        self._workspace_warm_task = asyncio.get_running_loop().create_task(
+            self._warm_workspace()
+        )
+
+    async def _warm_workspace(self):
+        while True:
+            self._workspace_warm_again = False
+            try:
+                listings = self._stored_listings()
+                if listings is None:
+                    return  # a root has no listing yet; its walk asks again
+                await self._run_in_executor(self._build_workspace_caches, listings)
+            except Exception as e:
+                self.logger.warning(f"Could not prepare the Images page: {e}")
+                return
+            if not self._workspace_warm_again:
+                return
+
+    def _stored_listings(self):
+        """``[(index, root, files)]`` of every output root, or None if one has none."""
+        listings = []
+        for index, root in enumerate(self._get_all_output_dirs()):
+            record = self._root_listings.get(str(root))
+            if record is None or record.files is None:
+                return None
+            listings.append((index, root, record.files))
+        return listings
+
+    def _build_workspace_caches(self, listings):
+        """Build what a first workspace page reads, as that page builds it (blocking).
+
+        The default page's selection builds the per-file values, the newest
+        order, the wanted paths and reads the prompt links (warming SQLite's
+        cache); the favorites filter builds each root's favorite listing.
+        """
+        self._select_workspace_page(
+            listings, _workspace_filters({}), None, 1, "workspace-warm-up"
+        )
+        self._workspace_favorite_paths(listings)
+
     def _scan_gallery_files_sync(self, output_path):
         """Scan output directory for media files (blocking I/O, run in executor).
 
@@ -1285,27 +1381,141 @@ class ImageRoutesMixin:
         walk is bounded by MAX_SCAN_DEPTH and MAX_GALLERY_FILES.
         """
         found = []
-        for media_path in _iter_media_files(output_path, MAX_GALLERY_FILES):
+        for entry in _walk_media(output_path, MAX_GALLERY_FILES):
             try:
-                found.append((media_path, media_path.stat().st_mtime))
+                # Never a symlink (_walk_media skips them), so this is the
+                # file's own mtime, read from the listing where it can be.
+                mtime = entry.stat(follow_symlinks=False).st_mtime
             except OSError:
                 continue
+            found.append((Path(entry.path), mtime))
         if len(found) >= MAX_GALLERY_FILES:
             self.logger.warning(f"Gallery scan capped at {MAX_GALLERY_FILES} files")
         found.sort(key=lambda x: x[1], reverse=True)
         return found
 
     async def _get_gallery_files(self, output_path):
-        """Get gallery files with per-directory TTL cache."""
-        now = _time.monotonic()
-        key = str(output_path)
-        cached = self._gallery_cache.get(key)
-        if cached and (now - cached[1]) < self._gallery_cache_ttl:
-            return cached[0]
+        """The shared listing of one output root: ``[(path, mtime)]``, newest first."""
+        return (await self._listing(output_path)).files
 
-        files = await self._run_in_executor(self._scan_gallery_files_sync, output_path)
-        self._gallery_cache[key] = (files, now)
-        return files
+    async def _listing(self, output_path, *, fresh=False):
+        """The shared ``RootListing`` of *output_path*, with a listing (#348).
+
+        A listing that exists is returned at once; when it is older than
+        ``REFRESH_AFTER`` one background walk replaces it. With no listing,
+        the caller waits for the root's single walk. ``fresh`` (Rescan) waits
+        for a walk that started after this call, and raises when it fails
+        even if a previous listing exists.
+        """
+        record = self._root_listing(output_path)
+        needed = record.walk_seq + 1 if fresh else 0
+        discarded = 0
+        while True:
+            if record.files is not None and record.stored_seq >= needed:
+                if not fresh:
+                    self._refresh_if_stale(output_path, record)
+                return record
+            flight = record.flight
+            if flight is None:
+                flight = self._start_walk(output_path, record)
+            joined = record.walk_seq
+            # Shielded: a client that goes away never cancels a shared walk.
+            outcome = await asyncio.shield(flight)
+            if joined < needed:
+                continue  # an older walk ended; Rescan needs a newer one
+            if outcome.kind == FAILED:
+                raise outcome.error
+            if outcome.kind == DISCARDED:
+                discarded += 1
+                if discarded >= MAX_DISCARDED_WALKS:
+                    raise RuntimeError(
+                        "The output listing kept changing while it was read"
+                    )
+
+    def _refresh_if_stale(self, output_path, record):
+        """Walk a stale listing again, REFRESH_DELAY after this read (on the loop).
+
+        At most one pending refresh per root, none while a walk runs.
+        """
+        age = _time.monotonic() - (record.walked_at or 0.0)
+        if age < gallery_listing.REFRESH_AFTER:
+            return
+        if record.flight is not None or record.rewalk_handle is not None:
+            return
+        record.rewalk_handle = asyncio.get_running_loop().call_later(
+            gallery_listing.REFRESH_DELAY, self._delayed_walk, output_path, record
+        )
+
+    def _delayed_walk(self, output_path, record):
+        record.rewalk_handle = None
+        self._schedule_walk(output_path)
+
+    def _schedule_walk(self, output_path):
+        """Start a background walk of *output_path* unless one is running."""
+        record = self._root_listing(output_path)
+        if record.flight is None:
+            self._start_walk(output_path, record)
+
+    def _start_walk(self, output_path, record):
+        """Start the root's one walk; returns its flight future (on the loop)."""
+        loop = asyncio.get_running_loop()
+        self._listing_loop = loop
+        handle, record.rewalk_handle = record.rewalk_handle, None
+        if handle is not None:
+            handle.cancel()  # this walk is the refresh it was waiting to start
+        record.walk_seq += 1
+        flight = loop.create_future()
+        record.flight = flight
+        task = loop.create_task(
+            self._run_walk(
+                output_path, record, flight, record.generation, record.walk_seq
+            )
+        )
+        self._listing_tasks.add(task)
+        task.add_done_callback(self._listing_tasks.discard)
+        return flight
+
+    async def _run_walk(self, output_path, record, flight, generation, seq):
+        """Walk in the executor, then store, discard or fail (on the loop).
+
+        The flight is always resolved with a WalkOutcome, never failed, so an
+        error never reaches a future nobody awaits.
+        """
+        outcome = None
+        try:
+            files, folders, with_ancestors = await self._run_in_executor(
+                walk_root, self._scan_gallery_files_sync, output_path, record.files
+            )
+        except asyncio.CancelledError:
+            outcome = WalkOutcome.failed(RuntimeError(WALK_STOPPED))
+            raise
+        except Exception as exc:
+            record.walked_at = _time.monotonic()
+            if not record.failing:
+                self.logger.warning(
+                    f"Could not list output folder {output_path}: {exc}"
+                )
+            record.failing = True
+            outcome = WalkOutcome.failed(exc)
+        else:
+            record.failing = False
+            if record.generation == generation:
+                changed = files is not record.files
+                record.files = files
+                record.folders = folders
+                record.folders_with_ancestors = with_ancestors
+                record.walked_at = _time.monotonic()
+                record.stored_seq = seq
+                outcome = WalkOutcome.stored()
+                if changed:
+                    self._schedule_workspace_warm()
+            else:
+                outcome = WalkOutcome.discarded()
+        finally:
+            if record.flight is flight:
+                record.flight = None
+            if not flight.done():
+                flight.set_result(outcome)
 
     async def get_output_images(self, request):
         """Get all images from ComfyUI output folder(s)."""
@@ -1832,17 +2042,18 @@ class ImageRoutesMixin:
             )
 
     async def rescan_gallery(self, request):
-        """Forget the cached listing and rewalk every output root now.
+        """Rewalk every output root now and answer with the new listing.
 
-        The listing is cached for ``_gallery_cache_ttl`` seconds; the gallery's
-        Rescan button needs files added or removed on disk to show up at once.
+        Readers are served the shared listing and refresh it in the
+        background (``gallery_listing.REFRESH_AFTER``); the gallery's Rescan
+        button needs files added or removed on disk to show up at once, so it
+        waits for a walk that started after the click and fails when it does.
         """
         try:
-            self.invalidate_gallery_cache()
             output_dirs = list(self._get_all_output_dirs())
             total = 0
             for output_path in output_dirs:
-                total += len(await self._get_gallery_files(output_path))
+                total += len((await self._listing(output_path, fresh=True)).files)
             return web.json_response(
                 {"success": True, "total": total, "roots": len(output_dirs)}
             )
@@ -1853,20 +2064,14 @@ class ImageRoutesMixin:
             )
 
     async def _root_subfolders(self, output_path, include_ancestors):
-        """The distinct folders holding listed files under one output root."""
-        subfolders = set()
-        for f, _mtime in await self._get_gallery_files(output_path):
-            rel_dir = str(f.relative_to(output_path).parent)
-            if rel_dir and rel_dir != ".":
-                subfolders.add(rel_dir)
+        """The distinct folders holding listed files under one output root.
+
+        Built with the walk, in the executor (gallery_listing.folder_sets).
+        """
+        listing = await self._listing(output_path)
         if include_ancestors:
-            ancestors = set()
-            for folder in subfolders:
-                parts = folder.replace("\\", "/").split("/")
-                for i in range(1, len(parts)):
-                    ancestors.add("/".join(parts[:i]))
-            subfolders.update(ancestors)
-        return subfolders
+            return listing.folders_with_ancestors
+        return listing.folders
 
     async def get_gallery_subfolders(self, request):
         """Get distinct subfolders from gallery output directories.
@@ -1940,7 +2145,6 @@ class ImageRoutesMixin:
             result = await self._run_in_executor(
                 self._generate_gallery_thumbnails_sync, output_dirs
             )
-            self.invalidate_gallery_cache()
             return web.json_response(result)
 
         except Exception as e:
@@ -2416,7 +2620,6 @@ class ImageRoutesMixin:
             cleared_count, cleared_size = await self._run_in_executor(
                 self._clear_gallery_thumbnails_sync, output_dirs
             )
-            self.invalidate_gallery_cache()
 
             def format_size(bytes_size: int) -> str:
                 size = float(bytes_size)
@@ -2764,9 +2967,17 @@ class ImageRoutesMixin:
         cached = self._favorite_listing_cache.get(cache_key)
         if cached is not None and cached[0] is files:
             return cached[1]
+        # From the path strings, as _listed does: relative_to per file was the
+        # largest cost of a cold first open (#348).
+        prefix = os.path.join(str(root), "")
         listing = {}
         for path, _mtime in files:
-            posix = path.relative_to(root).as_posix()
+            text = str(path)
+            if text.startswith(prefix):
+                relative = text[len(prefix) :]
+                posix = relative if os.sep == "/" else relative.replace(os.sep, "/")
+            else:
+                posix = path.relative_to(root).as_posix()
             listing.setdefault(_favorite_relative_key(posix), posix)
         self._favorite_listing_cache[cache_key] = (files, listing)
         return listing

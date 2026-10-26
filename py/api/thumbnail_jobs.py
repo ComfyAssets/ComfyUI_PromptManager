@@ -261,7 +261,6 @@ class ThumbnailJobsMixin:
         stats, start, left, attempted = await self._generate_in_batches(
             job, options, plan, roots, output_dirs
         )
-        self.invalidate_gallery_cache()
         generated = _plural(stats["generated"], "preview")
         if job.cancelled:
             return self._end_cancelled(

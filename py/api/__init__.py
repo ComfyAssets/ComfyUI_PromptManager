@@ -31,6 +31,7 @@ import math
 import ntpath
 import os
 import re
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -47,6 +48,7 @@ from .review_events import ReviewEventsMixin
 from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
+from .gallery_listing import WALK_STOPPED, RootListing, WalkOutcome
 from .admin import AdminRoutesMixin
 from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
@@ -85,6 +87,18 @@ except ImportError:
 def _get_project_root():
     """Get the project root directory (3 levels up from py/api/__init__.py)."""
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+# How long an executor thread waits for the loop to drop the listings.
+_OFF_LOOP_DROP_WAIT = 30
+
+
+def _running_loop():
+    """The event loop running in this thread, or None."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
 
 
 def _public_path(path) -> str:
@@ -344,8 +358,17 @@ class PromptManagerAPI(
         self._captures_closed = False
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
-        self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
-        self._gallery_cache_ttl = 30  # Cache TTL in seconds
+        # One shared listing per output root, keyed by str(root), and the
+        # background walks refreshing them (py/api/gallery_listing.py, #348).
+        self._root_listings: dict[str, RootListing] = {}
+        self._listing_tasks: set = set()
+        # The loop the walks run on, set by the first walk.
+        self._listing_loop = None
+        # The workspace caches rebuilt behind a stored walk that changed the
+        # listing, once the host's startup warm-up has run (#348).
+        self._workspace_warm_enabled = False
+        self._workspace_warm_task = None
+        self._workspace_warm_again = False
         # Workspace listing values and sort orders derived from a cached scan
         # (py/api/images.py _workspace_listed/_workspace_orders).
         self._workspace_listed_cache = {}
@@ -465,19 +488,86 @@ class PromptManagerAPI(
             return await loop.run_in_executor(None, call)
         return await loop.run_in_executor(None, func, *args)
 
-    def invalidate_gallery_cache(self):
-        """Invalidate the cached gallery file listing.
+    def _root_listing(self, root) -> RootListing:
+        """The shared listing record of one output root (created empty)."""
+        return self._root_listings.setdefault(str(root), RootListing())
 
-        Called by the image monitor when new files are detected. The workspace
-        keeps its per-file values and card facts, so the next request rebuilds
-        only new or changed files (see ImageRoutesMixin._workspace_listed and
-        _card_facts); its sort orders
-        are dropped, as the rescan replaces them anyway, and so is the
-        favorites lookup, which holds the old scan list.
+    def invalidate_gallery_cache(self):
+        """Drop every root's listing, so the next read waits for a new walk.
+
+        Called after files are deleted through the app (duplicate cleanup and
+        the legacy duplicate delete), never for thumbnail writes. A walk
+        running now is not stored (its generation moved on). The workspace
+        keeps its per-file values and card facts, so the next request
+        rebuilds only new or changed files (see ImageRoutesMixin.
+        _workspace_listed and _card_facts); its sort orders are dropped, as
+        the walk replaces them anyway, and so is the favorites lookup, which
+        holds the old list.
         """
-        self._gallery_cache = {}
+        loop = self._listing_loop
+        if loop is not None and loop.is_running() and _running_loop() is not loop:
+            # Called from an executor thread (a settings save, a test seed):
+            # listing records are touched only on the loop, and the caller
+            # expects the drop done when this returns.
+            dropped = threading.Event()
+
+            def drop():
+                try:
+                    self._drop_listings()
+                finally:
+                    dropped.set()
+
+            loop.call_soon_threadsafe(drop)
+            if not dropped.wait(_OFF_LOOP_DROP_WAIT):
+                self.logger.warning("The Images listing drop is still queued")
+            return
+        self._drop_listings()
+
+    def _drop_listings(self):
+        for record in list(self._root_listings.values()):
+            record.drop()
         self._workspace_order_cache = {}
         self._favorite_listing_cache = {}
+
+    async def warm_gallery_listings(self, app=None):
+        """Start one background walk per output root (aiohttp on_startup).
+
+        Registered by the root ``__init__.py``, so the first Images open after
+        ComfyUI starts finds the listing built. It never fails startup: a
+        root that cannot be walked is retried by the first read.
+        """
+        # Each stored walk that changes a listing then rebuilds the workspace's
+        # per-file values, orders and favorites behind it (_warm_workspace).
+        self._workspace_warm_enabled = True
+        try:
+            for root in self._get_all_output_dirs():
+                self._schedule_walk(root)
+        except Exception as e:
+            self.logger.warning(f"Could not warm the Images listing: {e}")
+
+    async def cleanup_gallery_listings(self, app=None):
+        """Stop the background listing walks (aiohttp on_cleanup)."""
+        self._workspace_warm_enabled = False
+        # Before any await, so no delayed refresh can start a walk meanwhile.
+        for record in self._root_listings.values():
+            handle, record.rewalk_handle = record.rewalk_handle, None
+            if handle is not None:
+                handle.cancel()
+        warm, self._workspace_warm_task = self._workspace_warm_task, None
+        if warm is not None:
+            warm.cancel()
+            await asyncio.gather(warm, return_exceptions=True)
+        tasks = list(self._listing_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._listing_tasks.clear()
+        # A walk cancelled before its first step never ran its own cleanup.
+        for record in self._root_listings.values():
+            flight, record.flight = record.flight, None
+            if flight is not None and not flight.done():
+                flight.set_result(WalkOutcome.failed(RuntimeError(WALK_STOPPED)))
 
     def reset_gallery_roots_cache(self):
         """Drop every cached listing and derived workspace value (roots changed)."""

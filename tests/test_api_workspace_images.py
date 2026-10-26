@@ -171,6 +171,44 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertIsNone(second["next_cursor"])
         self.assertEqual(second["total"], 4)
 
+    async def test_an_unchanged_refresh_keeps_the_listing_and_derived_caches(self):
+        from py.api import gallery_listing
+
+        self.media("a.png", 300)
+        self.media("b.png", 200)
+        _, first = await self.get()
+        response = await self.client.put(
+            "/prompt_manager/images/favorite",
+            json={"root_index": 0, "path": "a.png"},
+        )
+        self.assertEqual(response.status, 200)
+        record = self.api._root_listings[str(self.output_dir)]
+        files = record.files
+        key = ((0, str(self.output_dir)),)
+        newest = self.api._workspace_order_cache[key][1]["newest"]
+        favorites = self.api._favorite_listing_cache[str(self.output_dir)]
+        record.walked_at -= gallery_listing.REFRESH_AFTER + 1
+        with patch.object(
+            self.api,
+            "_scan_gallery_files_sync",
+            wraps=self.api._scan_gallery_files_sync,
+        ) as scan:
+            with patch.object(gallery_listing, "REFRESH_DELAY", 0):
+                await self.get()  # served at once; one refresh walk follows
+            while record.rewalk_handle is not None:
+                await asyncio.sleep(0.01)
+            while self.api._listing_tasks:
+                await asyncio.gather(*list(self.api._listing_tasks))
+                # A finished walk leaves the set in a done callback, which needs
+                # a loop turn; gather over finished tasks does not yield one.
+                await asyncio.sleep(0)
+            _, again = await self.get()
+        self.assertEqual(scan.call_count, 1)
+        self.assertIs(record.files, files)
+        self.assertIs(self.api._workspace_order_cache[key][1]["newest"], newest)
+        self.assertIs(self.api._favorite_listing_cache[str(self.output_dir)], favorites)
+        self.assertEqual(again["total"], first["total"])
+
     async def test_filters_apply_before_limit_and_sorts_are_complete(self):
         self.media("folder/Zebra.png", 200)
         self.media("folder/apple.png", 300)
