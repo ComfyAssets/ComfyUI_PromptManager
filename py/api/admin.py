@@ -35,7 +35,12 @@ except ImportError:
     from utils.parallel import map_parallel
 
 try:
-    from ...database.pair_ingestion import ingest_resolved_pair
+    from ...database.pair_ingestion import blank_positive, ingest_resolved_pair
+    from ...database.run_attribution import (
+        host_output_directory,
+        stored_run_prompt,
+        stored_run_prompts,
+    )
     from ...utils.generation_params import (
         PLACEHOLDERS,
         GenerationParamsError,
@@ -45,7 +50,12 @@ try:
     from ...utils.prompt_pair_resolver import resolve_prompt_pair
     from ...utils.review_capture import reviewable
 except ImportError:
-    from database.pair_ingestion import ingest_resolved_pair
+    from database.pair_ingestion import blank_positive, ingest_resolved_pair
+    from database.run_attribution import (
+        host_output_directory,
+        stored_run_prompt,
+        stored_run_prompts,
+    )
     from utils.generation_params import (
         PLACEHOLDERS,
         GenerationParamsError,
@@ -546,6 +556,24 @@ def _image_monitor_module():
 def _current_image_monitor():
     """The running ImageMonitor singleton, or None when not started."""
     return getattr(_image_monitor_module(), "_monitor_instance", None)
+
+
+class _BatchHistory:
+    """A scan batch's recorded-history lookup, made on the first file needing it.
+
+    Most files link through their metadata and never ask; the first one that
+    does triggers one lookup for the whole batch (``_recorded_runs_for``).
+    """
+
+    def __init__(self, api, media_files):
+        self._api = api
+        self._files = media_files
+        self._found = None
+
+    def get(self, path):
+        if self._found is None:
+            self._found = self._api._recorded_runs_for(self._files)
+        return self._found.get(path)
 
 
 class AdminRoutesMixin:
@@ -1564,6 +1592,8 @@ class AdminRoutesMixin:
             if outcomes is not None:
                 outcomes.append(_scan_outcome(media_file, roots, status, title))
 
+        batch_results = list(batch_results)
+        history = _BatchHistory(self, [media for media, _meta in batch_results])
         for media_file, metadata in batch_results:
             if self._scan_job and self._scan_job.cancelled:
                 break
@@ -1577,6 +1607,7 @@ class AdminRoutesMixin:
                     ambiguous=ambiguous,
                     untraced=untraced,
                     records=records,
+                    history=history,
                 )
             except Exception as e:
                 self.logger.error(f"Error processing {media_file.name}: {e}")
@@ -1635,6 +1666,7 @@ class AdminRoutesMixin:
         ambiguous=None,
         untraced=None,
         records=None,
+        history=None,
     ):
         """Enrich exact pairs; retain legacy positive-only import for absent pairs.
 
@@ -1652,7 +1684,9 @@ class AdminRoutesMixin:
         a dict.
         """
         if not metadata:
-            return None
+            # No prompt metadata (--disable-metadata, bare savers): only the
+            # recorded run can say which prompt made it (#342)
+            return self._link_recorded_run(media_file, {}, detailed, history)
         canonical = dict(metadata)
         for key in ("prompt", "workflow"):
             if isinstance(canonical.get(key), str):
@@ -1662,9 +1696,12 @@ class AdminRoutesMixin:
                     # Preserve malformed metadata for conservative resolver rejection.
                     pass
         if not canonical.get("prompt") and not canonical.get("parameters"):
-            return None
+            return self._link_recorded_run(media_file, canonical, detailed, history)
         _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
+        if blank_positive(resolution):
+            # Only prepend/append text: no stored prompt can own it (#342)
+            resolution = {**resolution, "state": "unresolved"}
         # Ambiguous without a choice: unresolved unless something links it.
         unchoosable = resolution["state"] == "ambiguous" and not reviewable(resolution)
         if unchoosable:
@@ -1693,6 +1730,11 @@ class AdminRoutesMixin:
             # Graphs without a recognized sampler keep the legacy extractor below.
             prompt_text = self._graph_prompt_text(metadata)
             if not prompt_text:
+                linked = self._link_recorded_run(
+                    media_file, canonical, detailed, history
+                )
+                if linked is not None:
+                    return linked
                 return "unresolved" if unchoosable else resolution["state"]
         elif resolution["state"] == "ambiguous":
             return "unresolved" if unchoosable else "ambiguous"
@@ -1715,6 +1757,62 @@ class AdminRoutesMixin:
         if not detailed or status not in SCAN_TITLED_DETAILS:
             return status
         return {"status": status, "title": self._scan_title(media_file, prompt_text)}
+
+    def _recorded_runs_for(self, media_files):
+        """``{path: prompt id or None}`` from recorded history for a scan batch.
+
+        One output lookup per chunk of names (``stored_run_prompts``), so a
+        batch never queries history once per file. An empty dict on failure.
+        """
+        try:
+            return stored_run_prompts(
+                self.db, [str(path) for path in media_files], host_output_directory()
+            )
+        except Exception:
+            self.logger.warning(
+                "History attribution failed for a scan batch", exc_info=True
+            )
+            return {}
+
+    def _link_recorded_run(self, media_file, canonical, detailed=False, history=None):
+        """Link a file recorded history attributes to one stored prompt (#342).
+
+        Returns the scan status (with ``detailed``, a stored or linked file's
+        ``{"status", "title"}``), or None when history names no single stored
+        prompt for the file (``database.run_attribution``). Never creates a
+        prompt. Works without any prompt metadata in the file. ``history`` is
+        the batch's precomputed lookup; without it the file is looked up alone.
+        """
+        if history is not None:
+            prompt_id = history.get(str(media_file))
+        else:
+            try:
+                prompt_id = stored_run_prompt(
+                    self.db, str(media_file), host_output_directory()
+                )
+            except Exception:
+                self.logger.warning(
+                    f"History attribution failed for {media_file.name}",
+                    exc_info=True,
+                )
+                return None
+        if prompt_id is None:
+            return None
+        try:
+            image_id = self.db.link_image_to_prompt(
+                prompt_id, str(media_file), metadata=canonical
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to link {media_file.name} from history: {e}")
+            return "found"
+        status = "linked" if image_id else "unchanged"
+        if not detailed or status not in SCAN_TITLED_DETAILS:
+            return status
+        prompt = self.db.get_prompt_by_id(prompt_id) or {}
+        return {
+            "status": status,
+            "title": self._scan_title(media_file, prompt.get("text") or ""),
+        }
 
     def _scan_title(self, media_file, text):
         """The linked prompt's Library title (its stored title, else ``text``'s

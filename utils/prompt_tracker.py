@@ -28,7 +28,8 @@ Or using the context manager:
 import threading
 import time
 import uuid
-from typing import Optional, Dict, Any
+from collections import OrderedDict
+from typing import Any, Dict, Optional, Tuple
 
 # Import logging system
 try:
@@ -103,6 +104,8 @@ class PromptTracker:
         prompt_text: str,
         additional_data: Optional[Dict[str, Any]] = None,
         push_to_queue: bool = True,
+        run_key: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> str:
         """
         Set the current prompt for this thread for image tracking.
@@ -120,6 +123,10 @@ class PromptTracker:
             push_to_queue: Also push onto the FIFO batch queue. Only batch items whose
                 text comes from another node need it; typed prompts are linked from
                 the image's own metadata instead.
+            run_key: The node's run key (``utils.run_keys.prompt_node_key``). The
+                image monitor links an image to a tracked prompt only when the
+                image's own graph gives the same key (#342).
+            run_id: The ComfyUI prompt id executing the node, when the host says.
 
         Returns:
             Unique execution ID for this prompt execution
@@ -157,6 +164,8 @@ class PromptTracker:
             "timestamp": time.time(),
             "thread_id": threading.current_thread().ident,
             "additional_data": additional_data or {},
+            "run_key": run_key,
+            "run_id": run_id,
         }
 
         # Store in thread-local storage
@@ -166,20 +175,20 @@ class PromptTracker:
         with self.lock:
             self.active_prompts[execution_id] = execution_context
 
-        # Push to batch queue for ordered image linking
-        if push_to_queue:
-            with self._queue_lock:
-                self._prompt_queue.append(execution_context)
-                self.logger.debug(
-                    f"Queue size: {len(self._prompt_queue)} after push "
-                    f"for prompt {prompt_id}"
-                )
+        self._remember_keyed(execution_context)
 
         self.logger.debug(
             f"Set current prompt: {execution_id} -> {prompt_text[:50]}... "
             f"(thread: {threading.current_thread().ident})"
         )
         self.logger.debug(f"Active prompts count: {len(self.active_prompts)}")
+
+        # Push to batch queue for ordered image linking. Last, with nothing
+        # after it that can raise: a caller that marks a failed execution
+        # (#342) must never add a second queue slot for the same item.
+        if push_to_queue:
+            with self._queue_lock:
+                self._prompt_queue.append(execution_context)
         return execution_id
 
     def get_current_prompt(self) -> Optional[Dict[str, Any]]:
@@ -224,6 +233,99 @@ class PromptTracker:
             f"No prompt context found (thread: {threading.current_thread().ident})"
         )
         return None
+
+    def mark_empty(
+        self,
+        run_key: Optional[str],
+        run_id: Optional[str] = None,
+        push_to_queue: bool = False,
+    ) -> None:
+        """Record that a positive node ran with nothing to save (#342).
+
+        The run key's latest entry becomes a placeholder, so no earlier prompt of
+        that key can be linked to this run's images; with ``push_to_queue`` the
+        placeholder also holds this item's place in the batch queue, so a later
+        item's image never takes the wrong queue entry.
+        """
+        if not run_key:
+            return
+        placeholder = {
+            "id": None,
+            "placeholder": True,
+            "execution_id": self.generate_execution_id(),
+            "text": "",
+            "timestamp": time.time(),
+            "additional_data": {},
+            "run_key": run_key,
+            "run_id": run_id,
+        }
+        self._remember_keyed(placeholder)
+        if push_to_queue:
+            with self._queue_lock:
+                self._prompt_queue.append(placeholder)
+
+    def _keyed_runs(self) -> "KeyedRuns":
+        keyed = getattr(self, "_keyed", None)
+        if keyed is None:
+            with _KEYED_INIT_LOCK:
+                keyed = getattr(self, "_keyed", None)
+                if keyed is None:
+                    keyed = self._keyed = KeyedRuns()
+        return keyed
+
+    def _remember_keyed(self, context: Dict[str, Any]) -> None:
+        if context.get("run_key"):
+            self._keyed_runs().record(context)
+
+    def keyed_snapshot(self) -> Dict[str, Tuple[Dict[str, Any], Optional[str], int]]:
+        """``{run key: (latest entry, its run id, entries of that run)}`` now.
+
+        The image monitor captures it when an image appears, before later runs
+        can move on.
+        """
+        return self._keyed_runs().snapshot(self.prompt_timeout)
+
+    def pop_for_key(
+        self, run_key: Optional[str], run_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Pop the oldest queued entry of ``run_key`` (FIFO), from ``run_id`` if set.
+
+        ``run_id`` is the run the key's latest entry came from when the image
+        appeared (``keyed_snapshot``): entries of that key queued by earlier
+        runs ahead of it are stale and dropped, while entries of later runs
+        (queued after the image appeared) stay for their own images. Entries
+        of other keys stay queued; expired entries are discarded.
+        """
+        if not run_key:
+            return None
+        now = time.time()
+        with self._queue_lock:
+            live = [
+                ctx
+                for ctx in self._prompt_queue
+                if now - ctx.get("timestamp", 0) < self.prompt_timeout
+            ]
+            index = next(
+                (
+                    i
+                    for i, ctx in enumerate(live)
+                    if ctx.get("run_key") == run_key
+                    and (run_id is None or ctx.get("run_id") == run_id)
+                ),
+                None,
+            )
+            if index is None:
+                self._prompt_queue = live
+                return None
+            found = live[index]
+            # Same-key entries ahead of it came from earlier runs: stale
+            stale_or_found = {
+                i for i in range(index + 1) if live[i].get("run_key") == run_key
+            }
+            self._prompt_queue = [
+                ctx for i, ctx in enumerate(live) if i not in stale_or_found
+            ]
+        return found
 
     def pop_next_prompt(self) -> Optional[Dict[str, Any]]:
         """Pop the next prompt from the batch queue (FIFO).
@@ -461,6 +563,46 @@ class PromptTracker:
             "prompt_timeout": self.prompt_timeout,
             "cleanup_interval": self.cleanup_interval,
         }
+
+
+_KEYED_INIT_LOCK = threading.Lock()
+# Run keys remembered for the image monitor (oldest forgotten first)
+MAX_KEYED_RUNS = 256
+
+
+class KeyedRuns:
+    """The latest tracked entry per run key, and how many its run produced.
+
+    More than one entry for a key in one run (a batch fed by a list) means the
+    latest one alone cannot say which item an image belongs to.
+    """
+
+    def __init__(self, max_keys: int = MAX_KEYED_RUNS):
+        self._max = max_keys
+        self._latest: "OrderedDict[str, Tuple[Dict[str, Any], Optional[str], int]]"
+        self._latest = OrderedDict()
+        self._lock = threading.Lock()
+
+    def record(self, context: Dict[str, Any]) -> None:
+        key, run_id = context["run_key"], context.get("run_id")
+        with self._lock:
+            previous = self._latest.pop(key, None)
+            same_run = (
+                previous is not None and run_id is not None and previous[1] == run_id
+            )
+            count = previous[2] + 1 if same_run else 1
+            self._latest[key] = (context, run_id, count)
+            while len(self._latest) > self._max:
+                self._latest.popitem(last=False)
+
+    def snapshot(self, timeout: float) -> Dict[str, Tuple[Dict[str, Any], Any, int]]:
+        now = time.time()
+        with self._lock:
+            return {
+                key: entry
+                for key, entry in self._latest.items()
+                if now - entry[0].get("timestamp", 0) < timeout
+            }
 
 
 class PromptExecutionContext:

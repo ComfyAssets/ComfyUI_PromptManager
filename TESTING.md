@@ -802,8 +802,8 @@ Recorded shell deviations:
     `file_size` equal to the file's size in this walk. Both paths go through
     `normalize_image_path` (absolute, normalized, `os.path.normcase`); a row without
     `file_path` matches by its `image_path`.
-  - Read again: files linked without a pair (the monitor's fallback and FIFO links, the
-    legacy positive-only import), linked to more than one prompt or pair, not linked, a
+  - Read again: files linked without a pair (the monitor's queue and run-key links,
+    fallback links made before #342, the legacy positive-only import), linked to more than one prompt or pair, not linked, a
     file whose size changed (one replaced at the same path, e.g. a reused ComfyUI
     counter name, is read and its conflict lands under Needs review), and a row with no
     stored size (unknown is not known). The scan now stores each file's size when it
@@ -3352,14 +3352,14 @@ generation did not change meanwhile (`PromptModel.get_connection`).
 Writes racing the switch: a background write that was waiting on the old file's lock
 when the switch closed its connection fails, and run counting (`count_runs`,
 `count_pair_runs`) and the image monitor's link (`ImageGenerationHandler.
-link_image_to_prompt`: the resolved-pair ingest and the fallback or recent-prompt link)
+link_image_to_prompt`: the resolved-pair ingest and the plain prompt link)
 run it once more through `PromptDatabase.survive_library_switch` when the model's
 generation changed during the attempt; the retry opens the new library. The monitor
 links through `PromptDatabase.link_image_to_prompt_or_raise`, which raises database
 errors (`link_image_to_prompt` keeps its log-and-return-0 contract for other callers);
 each attempt is one transaction, so a failed attempt rolls back and a committed one
 does not retry, and the image is linked once. `TestBackgroundWritesSurviveTheSwitch`
-races a real UPDATE (run counting) and a real fallback image link against the lock and
+races a real UPDATE (run counting) and a real plain image link against the lock and
 asserts each lands in the new file only. Any other failure is not retried. Known limit: that
 blocked writer, and the mover with it, waits out the writer's busy timeout (30 s)
 before its connection closes: SQLite holds the connection's mutex during the busy
@@ -3958,6 +3958,106 @@ Viewer, including nested modal focus, mobile layouts and per-role sending.
 real Classic and Nodes 2.0 widgets and verifies workflow serialization without
 loading a workflow or queueing generation.
 
+## Image attribution: certain or unlinked (#342)
+
+The image monitor and the output scan link an output only to a prompt that
+provably produced it; anything uncertain stays unlinked and the monitor logs it
+at info ("No certain prompt for <file>; left unlinked"). There is no recency
+fallback (`_get_fallback_prompt` is gone) and no unproven tracker entry.
+
+- **Empty editor.** Prepend and append text are never stored as the prompt
+  (maintainer's product decision; #343 tracks letting a link drive `text`). A
+  PromptManager, Text, Focused, Split or Pair node whose `text` is empty saves,
+  counts and tracks nothing for the positive side, logs at info (no "Could not
+  save or track" warning), and marks its run key empty, so no earlier entry of
+  that key can be used and a batch item keeps its queue place
+  (`PromptTracker.mark_empty`). The queue hook counts nothing for it either. A
+  save or tracking failure of a positive node marks its run key the same way, so
+  an older entry of that key never stands in for the failed run.
+- **Run keys** (`utils/run_keys.py`): sha256 of a prompt node plus its whole
+  upstream closure (`class_type` and `inputs`) in the API graph. Nodes register
+  tracker entries under it; the monitor computes it from the image's embedded
+  graph. The snapshot taken when the file appears names the key's latest run; a
+  queued entry is taken only by key and from that run (batch items in order, a
+  placeholder leaves its image unlinked, same-key entries of earlier runs ahead
+  of it are stale and dropped, entries of later runs that executed during the
+  monitor's delay wait for their own images). Without a queued entry the
+  snapshot's entry itself is used only when its run id is known
+  (`comfy_execution.utils.get_executing_context`) and that run registered one
+  entry for the key, which covers a cached re-run (sampler seed changed) without
+  applying a batch's last item to every image. When the key's latest entry is a
+  placeholder the image stays unlinked without consulting history (the same
+  rule as a popped placeholder). More than one positive PromptManager node in
+  the image graph, or any positive node without a key: never linked from the
+  tracker. Links are followed exactly as ComfyUI's `is_link` defines them (a
+  `str` node id and an `int` or `float` slot in a two-item list). Equal keys do
+  not always mean equal text: the key can't see `IS_CHANGED`, so an upstream
+  node that forces re-runs gives two runs one key; that is why the run named by
+  the snapshot is required as well. A file event delivered after the next run
+  already re-registered the key is the one remaining exposure (see the ledger).
+- **Recorded history** (`database/run_attribution.py`): a file is attributed when
+  exactly one recorded run reported its output location (root key, subfolder,
+  name), its mtime lies within that run (dequeue to terminal or callback, +-2 s),
+  and every positive context names the same stored prompt (the live
+  `positive_prompt_id` hint). The monitor tries it last; the scan tries it when the
+  #170 browser-parser floor finds nothing, and also for files with no prompt
+  metadata at all (`--disable-metadata`, savers that embed none); it never
+  creates a prompt. Lookups are batched (`stored_run_prompts`): one
+  parameterized `filename IN (...)` query per chunk of at most 500 names
+  (`LOOKUP_CHUNK`), matched in memory, so a scan batch asks history once per
+  chunk, never once per file. The history schema is unchanged (no extra index),
+  so older builds still open the library.
+- **After the run ends.** An image with no run keys (no embedded API graph) that
+  nothing identifies waits for its run: when the run's outputs are recorded
+  (`write_execution_outputs_for_finish` notifies `subscribe_outputs_sealed`
+  listeners after commit), each waiting image the run reported gets exactly one
+  history-only re-check on the monitor's worker. At most 1000 images wait, each
+  for at most an hour; shutdown forgets them. The image is registered before the
+  first history check, so a run sealed in between is not missed; a re-check that
+  can't be scheduled yet (the image's own pass still pending, or the pending set
+  full) is kept due and scheduled when a pending image finishes. A keyless image
+  outside ComfyUI's output folder never waits (history can't attribute it).
+- **Spellings.** History keeps ComfyUI's own spelling of its output folder (the
+  root key). A file is matched through that spelling first, then with both sides
+  resolved (`realpath`), so an output folder reached through a symlink or a
+  Windows junction still attributes the scan's resolved file paths; waiting
+  files are keyed by their resolved path for the same reason. The scan makes
+  its batch's history lookup only when the first file in the batch needs it.
+- **Blank positive.** A resolved pair whose stored positive is empty (the #342
+  image with its Pair execution record) is `unresolved` for the scan and for
+  `ingest_resolved_pair` (it used to raise in `_save_pair`).
+- **Parity floor.** Metadata linking, the scan's resolver and parser floor are
+  unchanged for every non-blank result; only guesses are gone.
+
+Tests: `tests/test_prompt_attribution.py` (nodes, tracker, monitor, run keys),
+`tests/test_run_attribution.py` (history attribution, monitor and scan),
+`tests/test_review_image_links_tool.py`, and the real-host
+`tests/comfyui/image-attribution.spec.mjs` (both renderers): a typed Pair image
+links, a Pair image whose positive is only linked prepend text from an unknown
+node stays unlinked with nothing stored, an unknown node feeding `text` links
+through its run key, and its cached re-run with a new sampler seed links again
+(the host's `execution_cached` event names the PromptManager node, under the
+fixture's Classic cache). A second case saves with metadata disabled and holds
+the run open behind the fixture gate after SaveImage: the output is waiting and
+unlinked while the run is open, and links to the stored prompt once the run's
+outputs are recorded. The managed host config disables monitoring, so these
+cases start and stop the plugin's monitor through the owned fixture route
+`/pm_execution_fixture/monitor` (its GET lists the waiting files).
+On origin/main the prepend image was linked to an unrelated prompt.
+
+Repair: `tools/review_image_links.py <db> --output-dir <ComfyUI output> --ids
+<ids>` (or `--prompt <id>`) judges links by these rules (`keep`, `relink`,
+`unlink`, `conflict`, `missing`) on a backup copy and changes nothing.
+`--apply` writes `relink`/`unlink` only for ids named with `--ids`, after saving
+`<db>.pre-relink_<stamp>`, and only while each image is still linked to the
+prompt it was judged on (otherwise it is counted as skipped). `relink` points the
+link record at the other prompt and drops its pair links. `unlink` removes only
+the image's link record (its `generated_images` row, the metadata snapshot stored
+in it and its pair links): that is how the app represents an unlinked image, the
+same as a file the scan could not attribute, so the file stays on disk and in the
+gallery as unlinked, and its favorite and tags (kept by file) are untouched. Every
+run prints this. Queue-linked batch images can't be proven after the fact and read
+`unlink`, so review before applying. Stop ComfyUI first.
 ## Linked prompt text (#343)
 
 A link drives `text` on every PromptManager node, and `negative_text` on the Pair,
@@ -4040,8 +4140,9 @@ PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:executio
 
 ## Durable execution ledger
 
-`npm run --prefix tools/vendor test:executions` runs 46 real execution cases
-(23 each in Classic and Nodes 2.0, retaining all 42 prior execution cases),
+`npm run --prefix tools/vendor test:executions` runs 52 real execution cases
+(26 each in Classic and Nodes 2.0, retaining all 48 prior execution cases and adding
+the two #342 image-attribution cases),
 alongside the existing 80 stock host cases (the original 78 plus the native
 editor host case) and six pack compatibility cases. Run
 these suites serially because they share report cleanup and owned host resources. Use the same pinned disposable `PM_COMFY_ROOT`,

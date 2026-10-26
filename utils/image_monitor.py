@@ -18,8 +18,9 @@ Typical usage:
 The system automatically:
 - Detects new image files in monitored directories
 - Extracts ComfyUI workflow metadata from PNG chunks
-- Links images to active prompts using the prompt tracker
-- Handles fallback linking when no active prompt is available
+- Links images to tracked prompts only when the image's own graph proves the
+  tracked entry belongs to its run (``utils.run_keys``)
+- Leaves an image unlinked when nothing certain identifies its prompt (#342)
 - Provides status information and monitoring control
 """
 
@@ -27,7 +28,8 @@ import os
 import queue
 import time
 import threading
-from typing import Callable, Optional, Dict, Any, Tuple
+from collections import OrderedDict
+from typing import Callable, Optional, Dict, Any, List, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -36,18 +38,38 @@ from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
 from .prompt_graph import resolve_text, run_prompt_nodes
 from .prompt_pair_resolver import resolve_prompt_pair
+from .run_keys import image_run_keys
 from .usage_tracking import survive_switch
 
 try:
     from ..database.pair_ingestion import ingest_resolved_pair
+    from ..database.run_attribution import (
+        host_output_directory,
+        in_output_folder,
+        stored_run_prompt,
+        subscribe_outputs_sealed,
+    )
 except ImportError:
     from database.pair_ingestion import ingest_resolved_pair
+    from database.run_attribution import (
+        host_output_directory,
+        in_output_folder,
+        stored_run_prompt,
+        subscribe_outputs_sealed,
+    )
 
 # Upper bound on images waiting to be processed (a burst beyond this is skipped)
 MAX_PENDING_IMAGES = 1000
 # A file counts as fully written once its size is unchanged across two reads
 SETTLE_INTERVAL_SECONDS = 0.1
 SETTLE_ATTEMPTS = 20
+# Keyless images (no embedded API graph) left unlinked wait for their run's
+# recorded outputs for one history-only re-check (#342): at most this many,
+# each for at most this long.
+MAX_AWAITING_HISTORY = 1000
+AWAIT_HISTORY_SECONDS = 3600
+# ``schedule`` snapshot meaning "history-only re-check" (not a new image)
+HISTORY_ONLY = object()
 
 
 class ImageGenerationHandler(FileSystemEventHandler):
@@ -109,6 +131,14 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self._work: "queue.Queue[Optional[str]]" = queue.Queue()
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
+        # Keyless unlinked images awaiting their run's recorded outputs:
+        # normalized path -> (path, monotonic deadline), oldest first.
+        self._awaiting: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
+        # Sealed re-checks ``schedule`` refused (the path still pending, or the
+        # pending set full): retried each time a pending image finishes.
+        self._history_due: "OrderedDict[str, None]" = OrderedDict()
+        self._awaiting_lock = threading.Lock()
+        self._sealed_subscribed = False
 
     def on_created(self, event):
         """Handle filesystem creation events.
@@ -126,15 +156,17 @@ class ImageGenerationHandler(FileSystemEventHandler):
         if event.is_directory or not self.is_image_file(event.src_path):
             return
         self.logger.info(f"New image detected: {event.src_path}")
-        # Snapshot prompt context NOW before the delay — in batch workflows
-        # the tracker advances to the next prompt before images are processed.
-        prompt_snapshot = self.prompt_tracker.get_current_prompt()
-        if prompt_snapshot:
-            self.logger.debug(
-                f"Snapshot prompt {prompt_snapshot.get('id', '?')} for "
-                f"{os.path.basename(event.src_path)}"
-            )
-        self.schedule(event.src_path, prompt_snapshot)
+        # Snapshot the tracked runs NOW, before the delay: a later run may
+        # execute the same node again before this image is processed.
+        self.schedule(event.src_path, self._keyed_snapshot())
+
+    def _keyed_snapshot(self):
+        """The tracker's latest entry per run key, or None when unavailable."""
+        try:
+            return self.prompt_tracker.keyed_snapshot()
+        except Exception as error:
+            self.logger.warning(f"Could not snapshot tracked prompts: {error}")
+            return None
 
     def schedule(self, image_path: str, prompt_snapshot=None) -> bool:
         """Queue an image for processing on the worker thread, once per path.
@@ -174,6 +206,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
         and exits; the next ``schedule`` starts a fresh worker with its own
         queue. Safe to call repeatedly and before anything was scheduled.
         """
+        with self._awaiting_lock:
+            self._awaiting.clear()
+            self._history_due.clear()
         with self._pending_lock:
             self._pending.clear()
             worker, self._worker = self._worker, None
@@ -229,6 +264,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         finally:
             with self._pending_lock:
                 self._pending.pop(image_path, None)
+            self._drain_history_due()
 
     def _queue_thumbnail(self, image_path: str) -> None:
         """Queue a settled output's preview, best effort (linked or not).
@@ -290,15 +326,20 @@ class ImageGenerationHandler(FileSystemEventHandler):
         This method handles the complete processing pipeline for a new image:
         1. Verifies the file still exists
         2. Extracts ComfyUI metadata from the image
-        3. Tries to identify the correct prompt via metadata-based lookup
-        4. Falls back to the prompt snapshot captured at event time
-        5. Links the image to the appropriate prompt in the database
+        3. Identifies the prompt from the image's metadata, else from a tracked
+           run the image's graph proves (``_find_prompt_from_run``)
+        4. Links the image to that prompt, or leaves it unlinked when nothing
+           certain identifies it (logged at info; #342)
 
         Args:
             image_path: Full path to the newly created image file
-            prompt_snapshot: Prompt context captured at file-creation time (optional)
+            prompt_snapshot: The tracker's keyed snapshot taken when the image
+                appeared (``PromptTracker.keyed_snapshot``); None reads it now
         """
         try:
+            if prompt_snapshot is HISTORY_ONLY:
+                self._recheck_history(image_path)
+                return
             self.logger.info(f"Processing image: {image_path}")
 
             if not os.path.exists(image_path):
@@ -329,43 +370,17 @@ class ImageGenerationHandler(FileSystemEventHandler):
                     f"Metadata match: prompt {current_prompt['id']} for "
                     f"{os.path.basename(image_path)}"
                 )
-
-            # Strategy 2: Pop from batch queue. Batch items (text supplied by
-            # PromptSearchList) share one graph, so metadata can't tell them apart;
-            # they are queued in encoding order and images save in the same order.
-            if not current_prompt:
-                current_prompt = self.prompt_tracker.pop_next_prompt()
-                if current_prompt:
-                    self.logger.info(
-                        f"Queue match: prompt {current_prompt['id']} for "
-                        f"{os.path.basename(image_path)}"
-                    )
-
-            # Strategy 3: Use snapshot captured at file-creation time
-            if not current_prompt and prompt_snapshot:
-                current_prompt = prompt_snapshot
-                self.logger.info(
-                    f"Snapshot match: prompt {current_prompt.get('id', 'unknown')}"
+            else:
+                current_prompt = self._find_prompt_from_run(
+                    image_path, metadata, prompt_snapshot
                 )
-
-            # Strategy 4: Check live prompt tracker
             if not current_prompt:
-                current_prompt = self.prompt_tracker.get_current_prompt()
-                if current_prompt:
-                    self.logger.info(
-                        f"Live tracker match: prompt {current_prompt['id']}"
-                    )
-
-            # Strategy 5: Fallback to most recent prompt in DB
-            if not current_prompt:
-                current_prompt = self._get_fallback_prompt()
-                if current_prompt:
-                    self.logger.debug(f"Fallback match: prompt {current_prompt['id']}")
-                else:
-                    self.logger.warning(
-                        f"No prompt context available, skipping image: {image_path}"
-                    )
-                    return
+                # Nothing certain: never guess from recency or a stale entry (#342)
+                self.logger.info(
+                    "No certain prompt for "
+                    f"{os.path.basename(image_path)}; left unlinked"
+                )
+                return
 
             # Extend timeout if we have an active execution
             if current_prompt.get("execution_id"):
@@ -392,6 +407,193 @@ class ImageGenerationHandler(FileSystemEventHandler):
             import traceback
 
             self.logger.error(traceback.format_exc())
+
+    def _find_prompt_from_run(
+        self, image_path: str, metadata, prompt_snapshot=None
+    ) -> Optional[Dict[str, Any]]:
+        """The prompt a tracked run proves for an image whose metadata can't say.
+
+        Only an entry registered under the run key of the image's own positive
+        node counts (``utils.run_keys``): never the newest prompt in the
+        database and never an entry of another graph (#342).
+
+        The snapshot taken when the image appeared names the key's latest run.
+
+        1. Batch queue: the oldest queued entry of that key from that run.
+           Batch items (text from PromptSearchList) share one key and are
+           linked in order; an empty item's placeholder leaves its image
+           unlinked; entries queued by later runs stay for their own images.
+        2. The snapshot's entry itself, when its run is known and registered
+           exactly one entry for the key (a batch's latest item says nothing
+           about the other images). This covers a cached node that did not
+           run again.
+        3. Recorded execution history: the run that wrote this file names one
+           stored prompt (``database.run_attribution``).
+        """
+        keys = image_run_keys(metadata)
+        name = os.path.basename(image_path)
+        if not keys:
+            # No tracked run can be proven: history now, and once more after
+            # the run's outputs are recorded (``_on_outputs_sealed``). A file
+            # outside ComfyUI's output folder can never be attributed, so it
+            # does not take a waiting slot.
+            if not in_output_folder(image_path, host_output_directory()):
+                return None
+            self._await_history(image_path)
+            prompt_id = self._history_prompt(image_path)
+            if prompt_id is None:
+                return None
+            self._stop_awaiting(image_path)
+            self.logger.info(f"History match: prompt {prompt_id} for {name}")
+            return {"id": prompt_id, "from_history": True}
+        if len(keys) == 1:
+            (key,) = keys.values()
+            if prompt_snapshot is None:
+                prompt_snapshot = self._keyed_snapshot()
+            # No entry of the key when the image appeared: no tracked run made it
+            entry = (prompt_snapshot or {}).get(key)
+            if entry is not None:
+                context, run_id, count = entry
+                queued = self.prompt_tracker.pop_for_key(key, run_id)
+                if queued is not None:
+                    if queued.get("placeholder"):
+                        self.logger.info(f"Queue entry for {name} has no prompt text")
+                        return None
+                    self.logger.info(f"Queue match: prompt {queued['id']} for {name}")
+                    return queued
+                if context.get("placeholder"):
+                    # Same rule as a popped placeholder: that run had no prompt
+                    self.logger.info(f"Latest run for {name} had no prompt text")
+                    return None
+                if run_id and count == 1:
+                    self.logger.info(f"Run match: prompt {context['id']} for {name}")
+                    return context
+        else:
+            self.logger.debug(f"{len(keys)} positive prompt nodes for {name}")
+        prompt_id = self._history_prompt(image_path)
+        if prompt_id is None:
+            return None
+        self.logger.info(f"History match: prompt {prompt_id} for {name}")
+        return {"id": prompt_id, "from_history": True}
+
+    @staticmethod
+    def _awaiting_key(image_path: str) -> str:
+        """One spelling for a waiting file, through symlinks and junctions."""
+        try:
+            resolved = os.path.realpath(image_path)
+        except (OSError, ValueError):
+            resolved = os.path.abspath(image_path)
+        return os.path.normcase(resolved)
+
+    def _prune_awaiting(self) -> None:
+        """Drop expired and surplus entries (``_awaiting_lock`` held)."""
+        now = time.monotonic()
+        for key in [k for k, (_p, due) in self._awaiting.items() if due <= now]:
+            del self._awaiting[key]
+        while len(self._awaiting) > MAX_AWAITING_HISTORY:
+            self._awaiting.popitem(last=False)
+
+    def _await_history(self, image_path: str) -> None:
+        """Re-check ``image_path`` once, history only, when its run is sealed."""
+        if not self._sealed_subscribed:
+            subscribe_outputs_sealed(self._on_outputs_sealed)
+            self._sealed_subscribed = True
+        key = self._awaiting_key(image_path)
+        with self._awaiting_lock:
+            self._awaiting.pop(key, None)
+            self._awaiting[key] = (
+                image_path,
+                time.monotonic() + AWAIT_HISTORY_SECONDS,
+            )
+            self._prune_awaiting()
+
+    def _stop_awaiting(self, image_path: str) -> None:
+        with self._awaiting_lock:
+            self._awaiting.pop(self._awaiting_key(image_path), None)
+
+    def awaiting_history(self) -> List[str]:
+        """Normalized paths still waiting for their run's recorded outputs."""
+        with self._awaiting_lock:
+            self._prune_awaiting()
+            return list(self._awaiting)
+
+    def _on_outputs_sealed(self, run_id: str, references: List[dict]) -> None:
+        """A run's outputs were recorded: re-check its waiting images once.
+
+        Called on the history writer's thread, so it only schedules the work.
+        """
+        root = host_output_directory()
+        if not root:
+            return
+        due = []
+        with self._awaiting_lock:
+            self._prune_awaiting()
+            for reference in references:
+                if reference.get("folder_type") != "output":
+                    continue
+                key = self._awaiting_key(
+                    os.path.join(
+                        root, reference.get("subfolder", ""), reference["filename"]
+                    )
+                )
+                waiting = self._awaiting.pop(key, None)
+                if waiting is not None:
+                    due.append(waiting[0])
+        for image_path in due:
+            self._schedule_recheck(image_path)
+
+    def _schedule_recheck(self, image_path: str) -> None:
+        """Schedule the history-only re-check, or keep it due for later."""
+        if self.schedule(image_path, HISTORY_ONLY):
+            return
+        with self._awaiting_lock:
+            self._history_due.pop(image_path, None)
+            self._history_due[image_path] = None
+            while len(self._history_due) > MAX_AWAITING_HISTORY:
+                self._history_due.popitem(last=False)
+
+    def _drain_history_due(self) -> None:
+        """Schedule due re-checks now that a pending slot or path is free."""
+        with self._awaiting_lock:
+            if not self._history_due:
+                return
+            due = list(self._history_due)
+        for image_path in due:
+            if self.schedule(image_path, HISTORY_ONLY):
+                with self._awaiting_lock:
+                    self._history_due.pop(image_path, None)
+
+    def _recheck_history(self, image_path: str) -> None:
+        """The one history-only re-check of a keyless image (#342)."""
+        name = os.path.basename(image_path)
+        if not os.path.exists(image_path):
+            return
+        prompt_id = self._history_prompt(image_path)
+        if prompt_id is None:
+            self.logger.info(
+                f"No certain prompt for {name} after its run ended; left unlinked"
+            )
+            return
+        self.logger.info(f"History match after its run ended: {prompt_id} for {name}")
+        try:
+            metadata = self.metadata_extractor.extract_metadata(image_path)
+        except Exception:
+            metadata = None
+        self.link_image_to_prompt(
+            image_path,
+            {"id": prompt_id, "from_history": True},
+            metadata or {"file_info": self.get_basic_file_info(image_path)},
+        )
+
+    def _history_prompt(self, image_path: str) -> Optional[int]:
+        """The stored prompt recorded history attributes to this file, if one."""
+        try:
+            return stored_run_prompt(
+                self.db_manager, image_path, host_output_directory()
+            )
+        except Exception as error:
+            self.logger.warning(f"History attribution failed: {error}")
+            return None
 
     def _find_prompt_from_metadata(self, metadata) -> Tuple[str, Optional[Dict]]:
         """Identify the prompt that produced an image from its embedded metadata.
@@ -542,35 +744,6 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.logger.error(f"Error getting file info: {e}")
             return {}
 
-    def _get_fallback_prompt(self) -> Optional[Dict[str, Any]]:
-        """Get the most recent prompt from database as fallback.
-
-        When no active prompt is available from the tracker, this method attempts
-        to find the most recently created prompt in the database to use as a fallback
-        for image linking.
-
-        Returns:
-            Dictionary containing prompt information with 'fallback' flag set to True,
-            or None if no recent prompt is available
-        """
-        try:
-            recent = self.db_manager.get_recent_prompts(limit=1)
-            # Paginated dict ({"prompts": [...]}) or a plain list
-            recent_prompts = (
-                recent.get("prompts") if isinstance(recent, dict) else recent
-            )
-            if recent_prompts:
-                prompt = recent_prompts[0]
-                return {
-                    "id": prompt["id"],
-                    "text": prompt["text"],
-                    "timestamp": prompt.get("created_at"),
-                    "fallback": True,
-                }
-        except Exception as e:
-            self.logger.error(f"Error getting fallback prompt: {e}")
-        return None
-
     def link_image_to_prompt(
         self, image_path: str, prompt_context: Dict, metadata: Dict
     ):
@@ -615,10 +788,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
             if image_id is None:
                 return
             if image_id:  # 0: nothing new was linked (logged by the database)
-                fallback_note = " (fallback)" if prompt_context.get("fallback") else ""
                 self.logger.debug(
                     f"Successfully linked image {image_id} to prompt "
-                    f"{prompt_context['id']}{fallback_note}"
+                    f"{prompt_context['id']}"
                 )
         except Exception as e:
             self.logger.error(f"Failed to link image to prompt: {e}")

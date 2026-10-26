@@ -1,6 +1,7 @@
 """Bounded read-only SQLite inspection for the owned execution fixture."""
 
 import argparse
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -89,14 +90,48 @@ def read_runs(database: str, job_id: str, session_id: str | None = None) -> dict
         }
 
 
+def read_links(database: str, filenames: list, texts: list) -> dict:
+    """Each output file's linked prompt text (None: unlinked), and which texts
+    are stored as prompts (#342)."""
+    uri = Path(database).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=0.25)) as connection:
+        connection.execute("PRAGMA query_only=ON")
+        links = {}
+        for name in filenames[:64]:
+            rows = connection.execute(
+                "SELECT p.text FROM generated_images g JOIN prompts p "
+                "ON p.id = g.prompt_id WHERE g.filename = ? LIMIT 2",
+                (name,),
+            ).fetchall()
+            values = [row[0] for row in rows]
+            links[name] = values[0] if len(values) == 1 else None
+            if len(values) > 1:
+                links[name] = "<several links>"
+        stored = {
+            text: connection.execute(
+                "SELECT 1 FROM prompts WHERE text = ? LIMIT 1", (text,)
+            ).fetchone()
+            is not None
+            for text in texts[:64]
+        }
+    return {"links": links, "stored": stored}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database")
-    parser.add_argument("job_id")
+    parser.add_argument("job_id", nargs="?")
     parser.add_argument("--session-id")
+    parser.add_argument("--links", nargs="*", default=None)
+    parser.add_argument("--texts", nargs="*", default=[])
     arguments = parser.parse_args()
-    print(
-        json.dumps(
-            read_runs(arguments.database, arguments.job_id, arguments.session_id)
+    if arguments.links is not None:
+        print(
+            json.dumps(read_links(arguments.database, arguments.links, arguments.texts))
         )
-    )
+    else:
+        print(
+            json.dumps(
+                read_runs(arguments.database, arguments.job_id, arguments.session_id)
+            )
+        )

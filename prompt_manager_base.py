@@ -24,6 +24,7 @@ try:
     from .utils.prompt_tracker import get_prompt_tracker
     from .utils.hashing import generate_prompt_hash
     from .utils.prompt_graph import resolve_text, run_prompt_nodes
+    from .utils.run_keys import executing_run_id, prompt_node_key
     from .utils.usage_tracking import PENDING_FIRST_USE
 except ImportError:
     import sys
@@ -35,6 +36,7 @@ except ImportError:
     from utils.prompt_tracker import get_prompt_tracker
     from utils.hashing import generate_prompt_hash
     from utils.prompt_graph import resolve_text, run_prompt_nodes
+    from utils.run_keys import executing_run_id, prompt_node_key
     from utils.usage_tracking import PENDING_FIRST_USE
 
 
@@ -168,13 +170,66 @@ class PromptManagerBase:
         prompt_id = self._save_prompt_to_database(
             text=text, category=category, tags=tags, count_run=batch_item
         )
-        if prompt_id and role["is_run_prompt"]:
+        if role["is_run_prompt"] and not prompt_id:
+            # The save failed: an older entry of this key must not stand in (#342)
+            self._mark_untracked(prompt_graph, unique_id)
+        elif role["is_run_prompt"]:
             self.prompt_tracker.set_current_prompt(
                 prompt_text=encoding_text,
                 additional_data={**additional_data, "prompt_id": prompt_id},
                 push_to_queue=batch_item or not role["known"],
+                **self._run_identity(prompt_graph, unique_id),
             )
         return prompt_id
+
+    @staticmethod
+    def _run_identity(prompt_graph: Any, unique_id: Any) -> Dict[str, Any]:
+        """The tracker's proof that an image belongs to this execution (#342)."""
+        return {
+            "run_key": prompt_node_key(prompt_graph, unique_id),
+            "run_id": executing_run_id(),
+        }
+
+    def _skip_empty_prompt(self, prompt_graph: Any, unique_id: Any) -> None:
+        """The ``text`` editor is empty: save and track nothing (#342).
+
+        Prepend and append text are deliberately never stored as the prompt, so
+        an empty editor has no prompt to save, count or link. For the run's
+        positive node this is logged at info and the node's run key is marked
+        empty (``_mark_untracked``).
+        """
+        self._mark_untracked(
+            prompt_graph,
+            unique_id,
+            "Prompt text is empty (prepend and append text are not stored): "
+            "nothing saved or tracked, and this run's images stay unlinked",
+        )
+
+    def _mark_untracked(
+        self, prompt_graph: Any, unique_id: Any, message: Optional[str] = None
+    ) -> None:
+        """This execution of a positive node has no prompt to link (#342).
+
+        An empty editor, or a save or tracking failure. The node's run key is
+        marked with a placeholder, so no earlier prompt of that key can be
+        linked to this run's images, and a batch item keeps its queue place.
+        ``message`` is logged at info for a positive node.
+        """
+        try:
+            role = self._prompt_role(prompt_graph, unique_id, "")
+            if not role["is_run_prompt"]:
+                if message:
+                    self.logger.debug("Empty text on a non-positive node; not saved")
+                return
+            if message:
+                self.logger.info(message)
+            self.prompt_tracker.mark_empty(
+                push_to_queue=role["known"],
+                **self._run_identity(prompt_graph, unique_id),
+            )
+        except Exception as error:
+            # Tracking must never block generation
+            self.logger.warning(f"Could not mark the untracked prompt: {error}")
 
     def _record_use(self, prompt_id: int, times: int = 1) -> None:
         """Count runs; a tracking failure must never block generation."""

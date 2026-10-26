@@ -23,10 +23,26 @@ except ImportError:
     from utils.prompt_pair_resolver import RESOLVER_VERSION
 
 
+def blank_positive(resolution: Dict[str, Any]) -> bool:
+    """A resolved pair whose stored positive text is empty (#342).
+
+    A PromptManager node whose editor is empty encodes only its prepend and
+    append text, which is never stored as a prompt: such a result names no
+    prompt to link.
+    """
+    if resolution.get("state") != "resolved":
+        return False
+    positive = resolution.get("positive") or {}
+    text = positive.get("storage_text", positive.get("text"))
+    return not (isinstance(text, str) and text.strip())
+
+
 def ingest_resolved_pair(
     db: Any, image_path: str, metadata: Dict[str, Any], resolution: Dict[str, Any]
 ) -> Dict[str, Any]:
     state = resolution.get("state", "unresolved")
+    if state == "resolved" and blank_positive(resolution):
+        state = "unresolved"
     if state != "resolved":
         return {"status": state, "pairs_added": 0, "links_added": 0}
     with db._pair_transaction() as conn:

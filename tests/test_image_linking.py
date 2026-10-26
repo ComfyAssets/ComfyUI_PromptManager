@@ -12,6 +12,7 @@ from database.operations import PromptDatabase
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
 from utils.prompt_tracker import PromptTracker
+from utils.run_keys import prompt_node_key
 
 LOADER = {
     "class_type": "CheckpointLoaderSimple",
@@ -103,8 +104,11 @@ class TestMetadataLinking(LinkingTestCase):
         batch_graph = graph()
         batch_graph["134"]["inputs"]["text"] = ["7", 0]
         batch_graph["7"] = {"class_type": "PromptSearchList", "inputs": {}}
-        self.tracker.set_current_prompt("item one", {"prompt_id": first})
-        self.tracker.set_current_prompt("item two", {"prompt_id": second})
+        key = prompt_node_key(batch_graph, "134")
+        for text, prompt_id in (("item one", first), ("item two", second)):
+            self.tracker.set_current_prompt(
+                text, {"prompt_id": prompt_id}, run_key=key, run_id="run-1"
+            )
 
         self.assertEqual(self._process({"prompt": batch_graph}), first)
         self.assertEqual(self._process({"prompt": batch_graph}), second)
@@ -122,9 +126,10 @@ class TestMetadataLinking(LinkingTestCase):
         self.assertEqual(
             self.handler._find_prompt_from_metadata(metadata), ("unknown", None)
         )
-        latest = self._save("most recent prompt")  # recency fallback picks this
-        self.assertEqual(self._process(metadata), latest)
-        self.assertNotEqual(latest, negative)
+        self._save("most recent prompt")  # never picked by recency (#342)
+        self.assertIsNone(self._process(metadata))
+        self.assertEqual(self.linked, [])
+        self.assertIsNotNone(negative)
 
     def test_workflow_fallback_still_used_without_an_api_graph(self):
         positive = self._save("from workflow only")
@@ -200,12 +205,14 @@ class TestForeignWorkflows(LinkingTestCase):
             self.handler._find_prompt_from_metadata(metadata), ("foreign", None)
         )
 
-    def test_missing_metadata_is_unknown_and_uses_the_queue(self):
+    def test_missing_metadata_is_unknown_and_left_unlinked(self):
         first = self._queue_batch_item("item one")
         self.assertEqual(
             self.handler._find_prompt_from_metadata(None), ("unknown", None)
         )
-        self.assertEqual(self._process(None), first)
+        # Nothing proves which run made it (#342): unlinked, queue untouched
+        self.assertIsNone(self._process(None))
+        self.assertEqual(self.tracker.pop_next_prompt()["id"], first)
 
     def test_tri_state_for_linked_unknown_and_foreign(self):
         positive = self._save("a cat")
@@ -224,14 +231,11 @@ class TestForeignWorkflows(LinkingTestCase):
             ("unknown", None),
         )
 
-    def test_unknown_image_without_any_context_falls_back_to_the_latest_prompt(self):
+    def test_unknown_image_is_never_given_the_latest_prompt(self):
         self._save("older")
-        latest = self._save("latest")
-        self.assertEqual(self._process(None), latest)
-
-    def test_recent_prompt_fallback_handles_an_empty_database(self):
-        self.assertIsNone(self.handler._get_fallback_prompt())
+        self._save("latest")
         self.assertIsNone(self._process(None))
+        self.assertIsNone(self._process({"prompt": graph("not saved")}))
 
     def test_metadata_lookup_errors_are_unknown(self):
         self._save("a cat")

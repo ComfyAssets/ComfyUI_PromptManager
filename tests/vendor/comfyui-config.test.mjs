@@ -29,15 +29,18 @@ test('execution script discovers only the new matrix and preserves all 78 origin
     assert.doesNotMatch(stock, /execution-history/);
     assert.doesNotMatch(stock, /execution-outputs/);
     assert.doesNotMatch(stock, /library-location/);  // it starts its own fresh host (#249 S6b)
+    assert.doesNotMatch(stock, /image-attribution/);  // needs the owned fixture pack (#342)
     const executions = list('tools/vendor/playwright.execution.config.mjs');
     assert.match(executions, /\[classic-start\]/);
     assert.match(executions, /\[nodes2-start\]/);
-    assert.match(executions, /Total: 86 tests in 4 files/);  // + the fresh-host library location case, + #343 linked text
+    // + the fresh-host library location case, + #342 image attribution, + #343 linked text
+    assert.match(executions, /Total: 90 tests in 5 files/);
     for (const project of ['classic-start', 'nodes2-start']) {
         const cases = executions.split('\n').filter(line => line.includes(`[${project}]`));
         assert.equal(cases.filter(line => line.includes('execution-history.spec.mjs')).length, 15);
         assert.equal(cases.filter(line => line.includes('execution-outputs.spec.mjs')).length, 8);
         assert.equal(cases.filter(line => line.includes('library-location.spec.mjs')).length, 1);
+        assert.equal(cases.filter(line => line.includes('image-attribution.spec.mjs')).length, 2);
         assert.equal(cases.filter(line => line.includes('execution-text-link.spec.mjs')).length, 19);
     }
     assert.doesNotMatch(executions, /prompt-manager.spec/);

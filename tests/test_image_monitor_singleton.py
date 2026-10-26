@@ -326,7 +326,7 @@ class TestHandlerScheduling(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.tracker = MagicMock()
-        self.tracker.get_current_prompt.return_value = {"id": 7}
+        self.tracker.keyed_snapshot.return_value = {"key": ({"id": 7}, "run", 1)}
         self.handler = im_mod.ImageGenerationHandler(MagicMock(), self.tracker)
         self.handler.processing_delay = 0
         self.handler.settle_interval = 0.01
@@ -354,7 +354,14 @@ class TestHandlerScheduling(unittest.TestCase):
         self.handler.on_created(FakeEvent(os.path.join(self.tmp.name, "c.txt")))
         self.handler.on_created(FakeEvent(self.tmp.name, is_directory=True))
         self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
-        self.assertEqual(self.processed, [(path, {"id": 7})])
+        self.assertEqual(self.processed, [(path, {"key": ({"id": 7}, "run", 1)})])
+
+    def test_a_failed_snapshot_still_schedules_the_image(self):
+        self.tracker.keyed_snapshot.side_effect = RuntimeError("tracker gone")
+        path = self._image("d.png")
+        self.handler.on_created(FakeEvent(path))
+        self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
+        self.assertEqual(self.processed, [(path, None)])
 
     def test_images_are_processed_in_creation_order(self):
         paths = [self._image(f"{i}.png") for i in range(5)]

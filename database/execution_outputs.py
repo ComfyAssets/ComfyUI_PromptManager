@@ -4,6 +4,8 @@ import sqlite3
 from contextlib import ExitStack
 from typing import Callable, ContextManager
 
+from .run_attribution import notify_outputs_sealed
+
 try:
     from ..utils.execution_history_events import RunFinish, encode_command
     from ..utils.execution_outputs import OutputBundle, validate_output_bundle
@@ -113,6 +115,10 @@ class ExecutionOutputOperations:
                     "VALUES(?,?,?,?,?,?,?,?)",
                     [(run_id, *reference) for reference in prepared],
                 )
+        # Committed: images waiting for this run may now be attributed (#342)
+        notify_outputs_sealed(
+            run_id, [dict(zip(_REFERENCE_FIELDS, row)) for row in prepared]
+        )
         return True
 
     def get_execution_outputs(self, run_id: str) -> dict:

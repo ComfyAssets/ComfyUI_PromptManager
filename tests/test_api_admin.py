@@ -2466,6 +2466,7 @@ class TestActivityJobs(AdminAPITestCase):
             ambiguous=None,
             untraced=None,
             records=None,
+            history=None,
         ):
             key = Path(media_file).relative_to(self.output_dir).as_posix()
             outcome = names[key]
