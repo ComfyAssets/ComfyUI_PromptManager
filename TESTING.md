@@ -31,13 +31,16 @@ its reset endpoint exists only in the test harness.
 Use a Python environment containing `requirements-dev.txt` and Node.js 24:
 
 ```sh
-python -m unittest discover -s tests -q
+python -m tests.run_suite -q        # what CI runs; see "Time limits and hangs"
 npm ci --prefix tools/vendor --ignore-scripts
 npx --prefix tools/vendor playwright install --with-deps chromium firefox webkit
 npm run --prefix tools/vendor test
 npm run --prefix tools/vendor test:coverage
 npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit
 ```
+
+`python -m unittest discover -s tests` still works and finds the same tests;
+it just has no hang watchdog.
 
 `PM_TEST_PYTHON` selects the Python executable; set it when Python is outside
 PATH. Every Playwright worker starts its own `tests/browser/server.py --port 0`,
@@ -203,6 +206,62 @@ reload, widget/style cleanup, node schemas and standalone-page opening. It does
 not certify every existing feature, arbitrary host versions,
 GPU/model changes, cross-pack installation or visual design changes. Those still
 need targeted validation.
+
+## Time limits and hangs
+
+CI and the pre-push hook run the Python suite as `python -m tests.run_suite`
+(`-v`, `-q`, `-s START` and `-p PATTERN` as in `unittest discover`), and the
+coverage job as `python -m coverage run -m tests.run_suite`. The runner
+(`tests/run_suite.py`) discovers the same tests with the same `sys.path` and
+warning filters as `python -m unittest discover -s tests`, exits 0, 1, or 5 when
+no tests ran (Python 3.12+ behaviour, on every version), and adds a watchdog: it writes `start: <test id>` to stderr before every test, at every
+verbosity, and arms `faulthandler.dump_traceback_later`. If a test, its teardown,
+its event-loop shutdown or interpreter exit stops making progress, the stack of
+every thread goes to stderr (`Timeout (0:02:00)!` then `Thread 0x...` blocks) and
+the process exits non-zero.
+
+- `PM_TEST_HANG_LIMIT` (default 120 s) bounds each test from its `start:` line to
+  the next one, including the class and module fixtures (`tearDownClass`,
+  `setUpModule`, ...) that run in between. `PM_TEST_SHUTDOWN_LIMIT` (default
+  120 s) bounds the end of the run: the summary, non-daemon threads, atexit
+  handlers and coverage's save. Both must be
+  positive integers; anything else stops the runner with exit 2. 120 s stays below
+  asyncio's 300 s wait for default-executor threads on Python 3.12 and 3.13 (3.10
+  and 3.11 wait without limit), so a hang in an `IsolatedAsyncioTestCase` loop
+  shutdown is dumped inside the test that hung.
+- Reading a dump: the last `start:` line names the test. An `ok` after it means
+  the test body passed and the hang came after it: in its teardown or event-loop
+  shutdown (where `IsolatedAsyncioTestCase` joins executor threads), or in a
+  class or module fixture before the next test; the stack shows which. A dump
+  after the summary is a hang at interpreter exit. The dump shows thread stacks, not asyncio task
+  stacks.
+- When the watchdog fires under coverage, that run's coverage data is lost; the
+  job fails anyway and the dump is what matters.
+
+Every job in `test.yml`, `code-quality.yml` and `viewerjs-check.yml` has
+`timeout-minutes` (`tests/vendor/ci-workflow.test.mjs` checks it). The rule is
+ceil(1.5 x the slowest of three recent green runs on `main`) + 3 minutes, never
+under 5; the three run ids, their times and the resulting limits are written
+in a comment above `jobs:`. The 3 minutes leave room for one watchdog firing, so
+the dump prints before GitHub cancels the job. A job that hits its limit, or a
+watchdog dump, is a failure like any other: read the dump, find the blocking
+call, fix it. Never raise a limit or rerun to get green; a limit changes only
+with new measurements written next to it.
+
+### After a push
+
+Follow the run for the commit you pushed, never an older one:
+
+```sh
+gh run list --commit <pushed sha> --workflow test.yml     # the run id for that commit
+gh run watch <run id> --exit-status                       # returns when the run ends
+gh run view <run id> --json jobs                          # shows a job that already failed
+gh run view --job <job id> --log-failed                   # that job's failed log, at once
+```
+
+Start fixing as soon as a failed log shows the cause, but push the fix only after
+the run for that commit has finished: pull-request runs use `cancel-in-progress`,
+so a push cancels the running jobs and can hide a second failure.
 
 ## Performance budgets
 

@@ -291,11 +291,15 @@ class TestCancelledPreview(RestoreTestCase):
         self.upload(["restored"], "up.db")
         entered, release = threading.Event(), threading.Event()
         real = self.api._live_fingerprint
+        done = threading.Event()
 
         def slow(db):
             entered.set()
             release.wait(WAIT)
-            return real(db)
+            try:
+                return real(db)
+            finally:
+                done.set()
 
         with patch.object(self.api, "_live_fingerprint", side_effect=slow):
             task = asyncio.ensure_future(
@@ -310,6 +314,9 @@ class TestCancelledPreview(RestoreTestCase):
             release.set()
             with self.assertRaises(asyncio.CancelledError):
                 await task
+            # The cancel cannot stop the worker thread: it still opens the live
+            # library. Let it finish, or teardown can find the file open.
+            self.assertTrue(await loop.run_in_executor(None, done.wait, WAIT))
         self.assertEqual(self.stages(), [])
         self.assertEqual(len(self.api._restore_plans), 0)
 

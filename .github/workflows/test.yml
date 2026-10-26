@@ -19,10 +19,22 @@ concurrency:
 env:
   PYTHONFAULTHANDLER: "1"
 
+# Every job has a time limit: ceil(1.5 x the slowest of three recent green runs on main) + 3
+# minutes, never under 5. The 3 minutes leave room for the Python runner's watchdog (120 s, see
+# tests/run_suite.py) to print its stack dump before GitHub cancels the job. A limit changes only
+# with new measurements written here (TESTING.md "Time limits and hangs").
+# Measured 2026-10-26 on runs 40257217681 (3be0ada), 40240706568 (fb9134f), 40228167328 (f9835aa):
+#   py matrix, slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
+#     (ubuntu 5m27s-6m27s, macos 6m14s-8m30s, windows 11m42s-15m54s)
+#   real ComfyUI compatibility: 13m32s / 8m55s / 11m46s -> 24 min
+#   coverage gate (85%): 7m26s / 7m22s / 7m54s -> 15 min
+#   perf budget 30s / 29s / 27s, black and flake8 39s / 37s / 39s,
+#   frontend modules 23s / 19s / 29s -> 5 min (the floor)
 jobs:
   test:
     name: py${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 27
     strategy:
       fail-fast: false
       matrix:
@@ -45,12 +57,12 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: python -m unittest discover -s tests -v
+        run: python -m tests.run_suite -v
 
   comfyui:
     name: real ComfyUI compatibility
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v7
         with:
@@ -127,6 +139,7 @@ jobs:
   coverage:
     name: coverage gate (85%)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -143,7 +156,7 @@ jobs:
 
       - name: Measure coverage
         run: |
-          python -m coverage run -m unittest discover -s tests
+          python -m coverage run -m tests.run_suite
           python -m coverage combine
           python -m coverage report --fail-under=85
 
@@ -154,6 +167,7 @@ jobs:
     name: perf budget
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
@@ -176,6 +190,7 @@ jobs:
   lint:
     name: black and flake8
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -188,6 +203,7 @@ jobs:
   js-test:
     name: frontend modules
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
