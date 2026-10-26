@@ -32,9 +32,10 @@ REFRESH_DELAY = 1.0
 
 # No background walk of a root starts sooner than rewalk_interval(last walk's
 # duration) after its previous walk started: FACTOR times that duration, at
-# least FLOOR and at most CAP seconds. Background walks then hold the GIL at
-# most ~20% of the time; the cap keeps a new output listed within ~20 s on a
-# slow machine. Read through this module so tests can patch them.
+# least FLOOR and at most CAP seconds. Walks up to CAP / FACTOR (3 s) then
+# hold the GIL at most ~20% of the time; the cap keeps a new output listed
+# within ~20 s, at the cost of a higher share (back to back from 15 s) on
+# slower walks. Read through this module so tests can patch them.
 REWALK_FLOOR = 5
 REWALK_FACTOR = 5
 REWALK_CAP = 15
@@ -102,11 +103,15 @@ class RootListing:
     # normcase(realpath(root)), computed by the walk in the executor: monitor
     # paths are matched against it without file I/O on the loop.
     resolved_root: str | None = None
-    # Monotonic start and duration of the last walk (REWALK_MIN_INTERVAL).
+    # Monotonic start and duration of the last walk (rewalk_interval).
     last_started_at: float | None = None
     last_duration: float | None = None
     # A settled output was reported under this root; cleared when a walk starts.
     dirty: bool = False
+    # Dropped because the output roots changed: no background walk until a
+    # reader (or the warm-up) asks for this root again. The monitor keeps
+    # watching a removed root until ComfyUI restarts.
+    retired: bool = False
 
     def drop(self) -> None:
         self.files = None
@@ -147,7 +152,7 @@ def folder_sets(root, files) -> tuple[frozenset, frozenset]:
 
 
 def rewalk_interval(last_duration) -> float:
-    """REWALK_MIN_INTERVAL after a walk that took *last_duration* seconds."""
+    """Seconds from a walk's start to the next background walk of its root."""
     scaled = REWALK_FACTOR * (last_duration or 0.0)
     return min(REWALK_CAP, max(REWALK_FLOOR, scaled))
 
@@ -159,11 +164,26 @@ def root_contains(resolved_root: str, path, pathmod=os.path) -> bool:
     so Windows matches case-insensitively and with either separator. The
     match ends at a separator: ``/out2/x.png`` is not under ``/out``.
     """
-    target = pathmod.normcase(str(path))
-    prefix = resolved_root
+    target = _plain(pathmod.normcase(str(path)), pathmod)
+    prefix = _plain(resolved_root, pathmod)
     if not prefix.endswith(pathmod.sep):
         prefix += pathmod.sep
     return target.startswith(prefix)
+
+
+def _plain(path: str, pathmod) -> str:
+    """*path* (normcased) without a Windows extended-length prefix.
+
+    ``realpath`` may keep ``\\\\?\\`` on a file past MAX_PATH while its shorter
+    root resolves without it.
+    """
+    if pathmod.sep != "\\":
+        return path
+    if path.startswith("\\\\?\\unc\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
 
 
 def resolve_root(root) -> str:

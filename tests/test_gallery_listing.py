@@ -280,6 +280,24 @@ class RootContainsTests(unittest.TestCase):
         self.assertTrue(root_contains(share, "\\\\server\\share\\out\\a.png", ntpath))
         self.assertFalse(root_contains(share, "\\\\server\\share\\a.png", ntpath))
 
+    def test_a_windows_extended_length_prefix_is_ignored(self):
+        root = ntpath.normcase("C:\\ComfyUI\\Output")
+        long_file = "\\\\?\\C:\\ComfyUI\\Output\\deep\\a.png"
+        self.assertTrue(root_contains(root, long_file, ntpath))
+        prefixed_root = ntpath.normcase("\\\\?\\C:\\ComfyUI\\Output")
+        self.assertTrue(
+            root_contains(prefixed_root, "C:\\ComfyUI\\Output\\a.png", ntpath)
+        )
+        share = ntpath.normcase("\\\\Server\\Share\\Out")
+        unc_file = "\\\\?\\UNC\\server\\share\\out\\a.png"
+        self.assertTrue(root_contains(share, unc_file, ntpath))
+        self.assertFalse(
+            root_contains(root, "\\\\?\\C:\\ComfyUI\\Output2\\a.png", ntpath)
+        )
+
+    def test_posix_keeps_a_literal_question_mark_folder(self):
+        self.assertFalse(root_contains("/srv/out", "//?/srv/out/a.png", posixpath))
+
     def test_the_default_is_this_platforms_rule(self):
         root = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
         inside = os.path.join(root, "x.png")

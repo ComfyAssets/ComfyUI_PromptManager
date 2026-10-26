@@ -495,7 +495,7 @@ class PromptManagerAPI(
         """The shared listing record of one output root (created empty)."""
         return self._root_listings.setdefault(str(root), RootListing())
 
-    def invalidate_gallery_cache(self):
+    def invalidate_gallery_cache(self, retire=False):
         """Drop every root's listing, so the next read waits for a new walk.
 
         Called after files are deleted through the app (duplicate cleanup and
@@ -506,6 +506,9 @@ class PromptManagerAPI(
         _workspace_listed and _card_facts); its sort orders are dropped, as
         the walk replaces them anyway, and so is the favorites lookup, which
         holds the old list.
+
+        ``retire`` (the roots changed): no background walk of a root starts
+        again until a reader or the warm-up asks for it.
         """
         loop = self._listing_loop
         if loop is not None and loop.is_running() and _running_loop() is not loop:
@@ -516,7 +519,7 @@ class PromptManagerAPI(
 
             def drop():
                 try:
-                    self._drop_listings()
+                    self._drop_listings(retire)
                 finally:
                     dropped.set()
 
@@ -524,11 +527,19 @@ class PromptManagerAPI(
             if not dropped.wait(_OFF_LOOP_DROP_WAIT):
                 self.logger.warning("The Images listing drop is still queued")
             return
-        self._drop_listings()
+        self._drop_listings(retire)
 
-    def _drop_listings(self):
+    def _drop_listings(self, retire=False):
         for record in list(self._root_listings.values()):
             record.drop()
+            if retire:
+                # The roots changed: a removed root must not come back through
+                # a pending timer, a trailing walk or a monitor mark.
+                record.retired = True
+                record.dirty = False
+                handle, record.rewalk_handle = record.rewalk_handle, None
+                if handle is not None:
+                    handle.cancel()
         self._workspace_order_cache = {}
         self._favorite_listing_cache = {}
 
@@ -546,6 +557,7 @@ class PromptManagerAPI(
         self._listings_closed = False
         try:
             for root in self._get_all_output_dirs():
+                self._root_listing(root).retired = False
                 self._schedule_walk(root)
         except Exception as e:
             self.logger.warning(f"Could not warm the Images listing: {e}")
@@ -594,7 +606,7 @@ class PromptManagerAPI(
 
     def reset_gallery_roots_cache(self):
         """Drop every cached listing and derived workspace value (roots changed)."""
-        self.invalidate_gallery_cache()
+        self.invalidate_gallery_cache(retire=True)
         self._workspace_listed_cache = {}
         self._workspace_card_cache = {}
 

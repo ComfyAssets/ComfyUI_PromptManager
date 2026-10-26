@@ -2542,7 +2542,7 @@ class TestSharedListing(ImageAPITestCase):
         record = self._record()
         shift = (seconds or gallery_listing.REFRESH_AFTER) + 1
         record.walked_at -= shift
-        # An old listing's walk also started long ago (REWALK_MIN_INTERVAL).
+        # An old listing's walk also started long ago (rewalk_interval).
         record.last_started_at -= shift
 
     async def _settle(self):
@@ -3079,7 +3079,7 @@ class TestSharedListing(ImageAPITestCase):
     # -- monitor-triggered walks (#348, PR 2) ---------------------------
 
     def _interval(self, seconds):
-        """Patch REWALK_MIN_INTERVAL to *seconds*, whatever the walk took."""
+        """Patch rewalk_interval() to *seconds*, whatever the walk took."""
         for name in ("REWALK_FLOOR", "REWALK_CAP"):
             patcher = patch.object(gallery_listing, name, seconds)
             patcher.start()
@@ -3440,6 +3440,67 @@ class TestSharedListing(ImageAPITestCase):
         self.api.mark_root_dirty(self._output("b.png"))
         await self._settle()
         self.assertEqual(len(record.files), 2)
+
+    async def test_a_root_removed_from_the_roots_is_never_walked_again(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        self.api.mark_root_dirty(self._output("b.png"))
+        handle = record.rewalk_handle
+        self.assertIsNotNone(handle)
+        self.api.reset_gallery_roots_cache()  # e.g. the gallery root changed
+        self.assertTrue(handle.cancelled())
+        self.assertIsNone(record.rewalk_handle)
+        self.assertFalse(record.dirty)
+        self._interval(0)
+        # The monitor still watches the old root until ComfyUI restarts.
+        self.api.mark_root_dirty(self._output("c.png"))
+        self.api._delayed_walk(self.output_dir, record)  # a timer that raced
+        self.assertIsNone(record.flight)
+        self.assertIsNone(record.files)
+        self.assertEqual(self.scan.calls, 1)
+
+    async def test_a_walk_running_when_the_roots_change_gets_no_trailing_walk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(0)
+        gate = self.scan.hold_next()
+        self.api.mark_root_dirty(self._output("b.png"))
+        await self.scan.wait_entered()
+        self.api.reset_gallery_roots_cache()
+        self.api.mark_root_dirty(self._output("c.png"))
+        gate.set()
+        await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+        self.assertIsNone(record.files)  # the running walk was discarded
+        self.assertFalse(record.dirty)
+
+    async def test_a_root_read_again_after_the_roots_change_listens_again(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self.api.reset_gallery_roots_cache()
+        record = await self._listed()  # still configured: read and walked
+        self._interval(0)
+        self.api.mark_root_dirty(self._output("b.png"))
+        await self._settle()
+        self.assertEqual(len(record.files), 2)
+
+    async def test_a_cancelled_walk_starts_no_trailing_walk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(0)
+        gate = self.scan.hold_next()
+        self.api.mark_root_dirty(self._output("b.png"))
+        await self.scan.wait_entered()
+        self.api.mark_root_dirty(self._output("c.png"))
+        (task,) = self.api._listing_tasks
+        task.cancel()  # e.g. the loop shutting down without on_cleanup
+        await asyncio.gather(task, return_exceptions=True)
+        gate.set()
+        self.assertTrue(task.cancelled())
+        self.assertIsNone(record.flight)
+        self.assertIsNone(record.rewalk_handle)
+        self.assertEqual(self.api._listing_tasks, set())
 
     async def test_monitor_walks_during_a_workspace_build_add_one_more_build(self):
         make_png(self.output_dir / "a.png")

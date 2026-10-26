@@ -1408,6 +1408,7 @@ class ImageRoutesMixin:
         even if a previous listing exists.
         """
         record = self._root_listing(output_path)
+        record.retired = False  # a configured root: read, so listened to
         needed = record.walk_seq + 1 if fresh else 0
         discarded = 0
         while True:
@@ -1456,7 +1457,7 @@ class ImageRoutesMixin:
         if self._listings_closed:
             return
         for key, record in list(self._root_listings.items()):
-            if record.files is None and record.flight is None:
+            if record.retired or (record.files is None and record.flight is None):
                 continue
             resolved = record.resolved_root or os.path.normcase(key)
             if gallery_listing.root_contains(resolved, path):
@@ -1476,7 +1477,7 @@ class ImageRoutesMixin:
         if self._listings_closed:
             return
         record = self._root_listing(output_path)
-        if record.flight is not None:
+        if record.flight is not None or record.retired:
             return
         now = _time.monotonic()
         due = now + delay
@@ -1505,7 +1506,7 @@ class ImageRoutesMixin:
         start cancels this timer, so when it fires the walk is still due.
         """
         record.rewalk_handle = None
-        if self._listings_closed or record.flight is not None:
+        if self._listings_closed or record.flight is not None or record.retired:
             return
         self._start_walk(output_path, record)
 
@@ -1538,12 +1539,14 @@ class ImageRoutesMixin:
         error never reaches a future nobody awaits.
         """
         outcome = None
+        cancelled = False
         started = record.last_started_at
         try:
             files, folders, with_ancestors, resolved = await self._run_in_executor(
                 walk_root, self._scan_gallery_files_sync, output_path, record.files
             )
         except asyncio.CancelledError:
+            cancelled = True
             outcome = WalkOutcome.failed(RuntimeError(WALK_STOPPED))
             raise
         except Exception as exc:
@@ -1577,7 +1580,7 @@ class ImageRoutesMixin:
                 record.flight = None
             if not flight.done():
                 flight.set_result(outcome)
-            if record.dirty:
+            if record.dirty and not cancelled:
                 # An output settled during this walk: the trailing walk.
                 self._schedule_walk(output_path)
 

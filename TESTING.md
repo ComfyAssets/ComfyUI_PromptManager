@@ -349,7 +349,12 @@ hold a walk open with a gated scan instead of sleeping.
   arms at most one per root and never sooner than 0.5 s, and keeps the
   earlier deadline when the stale refresh and a dirty root both want one;
   every walk start (read, Rescan, warm-up or timer) cancels it. A failed walk
-  clears `dirty`. Tests patch `REWALK_FLOOR`/`REWALK_CAP` and run the pending
+  clears `dirty`; a cancelled walk starts no trailing walk. When the output
+  roots change (`reset_gallery_roots_cache`) every record is `retired`: its
+  timer is cancelled and no mark, timer or trailing walk walks it until a
+  reader or the warm-up asks for that root again (the monitor keeps watching
+  a removed root until restart). `root_contains` ignores a Windows `\\?\`
+  (or `\\?\UNC\`) prefix on either side. Tests patch `REWALK_FLOOR`/`REWALK_CAP` and run the pending
   timer's callback by hand (`_fire`) instead of waiting for it.
 - **Measuring it.** `tools/vendor/perf/images_load_probe.mjs` is a maintainer
   tool, never run in CI. After `npm ci --prefix tools/vendor` and
