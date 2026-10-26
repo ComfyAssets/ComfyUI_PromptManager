@@ -1356,6 +1356,7 @@ class ImageRoutesMixin:
     def _start_walk(self, output_path, record):
         """Start the root's one walk; returns its flight future (on the loop)."""
         loop = asyncio.get_running_loop()
+        self._listing_loop = loop
         record.walk_seq += 1
         flight = loop.create_future()
         record.flight = flight

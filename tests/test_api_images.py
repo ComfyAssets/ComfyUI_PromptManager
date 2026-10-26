@@ -2483,6 +2483,20 @@ class TestSharedListing(ImageAPITestCase):
     async def test_rescans_clicked_during_a_walk_share_the_next_one(self):
         make_png(self.output_dir / "a.png")
         await self._json("GET", self.URL)
+        original = self.api._listing
+        rescans = []
+        clicked = asyncio.Event()
+
+        async def listing(root, *, fresh=False):
+            if fresh:
+                rescans.append(root)
+                if len(rescans) == 3:
+                    clicked.set()
+            # Runs on in this step up to its first wait, so the Rescan's
+            # walk number is taken before the test resumes.
+            return await original(root, fresh=fresh)
+
+        self.api._listing = listing
         gate = self.scan.hold_next()
         first = asyncio.ensure_future(
             self._json("POST", "/prompt_manager/gallery/rescan")
@@ -2494,7 +2508,7 @@ class TestSharedListing(ImageAPITestCase):
             asyncio.ensure_future(self._json("POST", "/prompt_manager/gallery/rescan"))
             for _ in range(2)
         ]
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(clicked.wait(), 30)
         gate.set()
         results = await asyncio.gather(first, *later)
         self.assertEqual([status for status, _ in results], [200] * 3)
@@ -2561,6 +2575,25 @@ class TestSharedListing(ImageAPITestCase):
         status, data = await reader
         self.assertEqual((status, data["total"]), (200, 2))
         self.assertEqual(self.scan.calls, 2)
+
+    async def test_an_invalidation_from_a_worker_thread_drops_on_the_loop(self):
+        make_png(self.output_dir / "a.png")
+        await self._json("GET", self.URL)
+        record = self._record()
+        loop_thread = threading.get_ident()
+        threads = []
+        original = record.drop
+
+        def drop():
+            threads.append(threading.get_ident())
+            original()
+
+        record.drop = drop
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.api.invalidate_gallery_cache)
+        # Dropped on the loop, before invalidate_gallery_cache returned.
+        self.assertEqual(threads, [loop_thread])
+        self.assertIsNone(record.files)
 
     async def test_three_discarded_walks_are_a_500(self):
         loop = asyncio.get_running_loop()

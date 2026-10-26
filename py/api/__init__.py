@@ -31,6 +31,7 @@ import math
 import ntpath
 import os
 import re
+import threading
 from pathlib import Path
 
 from aiohttp import web
@@ -86,6 +87,18 @@ except ImportError:
 def _get_project_root():
     """Get the project root directory (3 levels up from py/api/__init__.py)."""
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+# How long an executor thread waits for the loop to drop the listings.
+_OFF_LOOP_DROP_WAIT = 30
+
+
+def _running_loop():
+    """The event loop running in this thread, or None."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
 
 
 def _public_path(path) -> str:
@@ -349,6 +362,8 @@ class PromptManagerAPI(
         # background walks refreshing them (py/api/gallery_listing.py, #348).
         self._root_listings: dict[str, RootListing] = {}
         self._listing_tasks: set = set()
+        # The loop the walks run on, set by the first walk.
+        self._listing_loop = None
         # Workspace listing values and sort orders derived from a cached scan
         # (py/api/images.py _workspace_listed/_workspace_orders).
         self._workspace_listed_cache = {}
@@ -484,7 +499,27 @@ class PromptManagerAPI(
         the walk replaces them anyway, and so is the favorites lookup, which
         holds the old list.
         """
-        for record in self._root_listings.values():
+        loop = self._listing_loop
+        if loop is not None and loop.is_running() and _running_loop() is not loop:
+            # Called from an executor thread (a settings save, a test seed):
+            # listing records are touched only on the loop, and the caller
+            # expects the drop done when this returns.
+            dropped = threading.Event()
+
+            def drop():
+                try:
+                    self._drop_listings()
+                finally:
+                    dropped.set()
+
+            loop.call_soon_threadsafe(drop)
+            if not dropped.wait(_OFF_LOOP_DROP_WAIT):
+                self.logger.warning("The Images listing drop is still queued")
+            return
+        self._drop_listings()
+
+    def _drop_listings(self):
+        for record in list(self._root_listings.values()):
             record.drop()
         self._workspace_order_cache = {}
         self._favorite_listing_cache = {}
