@@ -364,6 +364,11 @@ class PromptManagerAPI(
         self._listing_tasks: set = set()
         # The loop the walks run on, set by the first walk.
         self._listing_loop = None
+        # The workspace caches rebuilt behind a stored walk that changed the
+        # listing, once the host's startup warm-up has run (#348).
+        self._workspace_warm_enabled = False
+        self._workspace_warm_task = None
+        self._workspace_warm_again = False
         # Workspace listing values and sort orders derived from a cached scan
         # (py/api/images.py _workspace_listed/_workspace_orders).
         self._workspace_listed_cache = {}
@@ -531,6 +536,9 @@ class PromptManagerAPI(
         ComfyUI starts finds the listing built. It never fails startup: a
         root that cannot be walked is retried by the first read.
         """
+        # Each stored walk that changes a listing then rebuilds the workspace's
+        # per-file values, orders and favorites behind it (_warm_workspace).
+        self._workspace_warm_enabled = True
         try:
             for root in self._get_all_output_dirs():
                 self._schedule_walk(root)
@@ -539,6 +547,11 @@ class PromptManagerAPI(
 
     async def cleanup_gallery_listings(self, app=None):
         """Stop the background listing walks (aiohttp on_cleanup)."""
+        self._workspace_warm_enabled = False
+        warm, self._workspace_warm_task = self._workspace_warm_task, None
+        if warm is not None:
+            warm.cancel()
+            await asyncio.gather(warm, return_exceptions=True)
         tasks = list(self._listing_tasks)
         for task in tasks:
             task.cancel()

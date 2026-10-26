@@ -14,7 +14,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePath
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2084,6 +2084,22 @@ class TestOutputScanHelpers(ImageAPITestCase):
         for path, mtime in found:
             self.assertEqual(mtime, os.stat(path).st_mtime)
 
+    def test_favorite_listing_slices_the_path_strings(self):
+        # relative_to per file was the largest cold cost of the first open.
+        output = Path(self.output_dir)
+        files = [
+            (output / "a.png", 1.0),
+            (output / "Sub" / "B.png", 2.0),
+            (output / "sub" / "deep" / "c.webp", 3.0),
+        ]
+        expected = {}
+        for path, _mtime in files:
+            posix = path.relative_to(output).as_posix()
+            expected.setdefault(images_module._favorite_relative_key(posix), posix)
+        with patch.object(PurePath, "relative_to", side_effect=AssertionError):
+            listing = self.api._favorite_listing(output, files)
+        self.assertEqual(listing, expected)
+
     def test_iter_media_files_skips_symlinked_files(self):
         output = Path(self.output_dir)
         make_png(output / "real.png")
@@ -2494,6 +2510,10 @@ class TestSharedListing(ImageAPITestCase):
     def _record(self):
         return self.api._root_listings[str(self.output_dir)]
 
+    def _warming(self):
+        task = self.api._workspace_warm_task
+        return task is not None and not task.done()
+
     def _age(self, seconds=None):
         from py.api import gallery_listing
 
@@ -2504,11 +2524,13 @@ class TestSharedListing(ImageAPITestCase):
         """Wait for every background walk this API started."""
 
         async def settle():
-            while self.api._listing_tasks:
+            while self.api._listing_tasks or self._warming():
                 await asyncio.gather(*list(self.api._listing_tasks))
                 # A finished walk leaves the set in a done callback, which needs
                 # a loop turn; gather over finished tasks does not yield one.
                 await asyncio.sleep(0)
+                if self._warming():
+                    await asyncio.wait([self.api._workspace_warm_task])
 
         await asyncio.wait_for(settle(), _HANG_LIMIT)
 
@@ -2831,6 +2853,125 @@ class TestSharedListing(ImageAPITestCase):
         self.assertEqual(outcome.kind, gallery_listing.FAILED)
         self.assertIsNone(self._record().flight)
         self.assertEqual(self.scan.calls, 0)
+
+    WORKSPACE_URL = "/prompt_manager/images/output?mode=workspace&limit=1"
+
+    async def _warmed(self):
+        await self.api.warm_gallery_listings(web.Application())
+        await self._settle()
+
+    def _workspace_ready(self):
+        """True when a first workspace page needs no per-file rebuild."""
+        files = self._record().files
+        favorites = self.api._favorite_listing_cache.get(str(self.output_dir))
+        listed = self.api._workspace_listed_cache.get((0, str(self.output_dir)))
+        return (
+            favorites is not None
+            and favorites[0] is files
+            and listed is not None
+            and listed[0] is files
+            and bool(self.api._workspace_order_cache)
+        )
+
+    async def test_warm_up_also_builds_the_workspace_caches(self):
+        # The first open after a restart paid ~3 s building these (#348 live).
+        make_png(self.output_dir / "a.png")
+        make_png(self.output_dir / "sub" / "b.png")
+        await self._warmed()
+        self.assertTrue(self._workspace_ready())
+        with patch.object(images_module, "_listed", side_effect=AssertionError):
+            status, data = await self._json("GET", self.WORKSPACE_URL)
+        self.assertEqual((status, data["total"]), (200, 2))
+
+    async def test_a_changed_refresh_rebuilds_the_workspace_caches_behind(self):
+        make_png(self.output_dir / "a.png")
+        await self._warmed()
+        make_png(self.output_dir / "b.png")
+        self._age()
+        await self._json("GET", self.URL)  # stale: one background walk
+        await self._settle()
+        self.assertEqual(len(self._record().files), 2)
+        self.assertTrue(self._workspace_ready())
+
+    async def test_an_unchanged_refresh_does_not_rebuild_them(self):
+        make_png(self.output_dir / "a.png")
+        await self._warmed()
+        with patch.object(
+            self.api, "_build_workspace_caches", side_effect=AssertionError
+        ):
+            self._age()
+            await self._json("GET", self.URL)
+            await self._settle()
+        self.assertTrue(self._workspace_ready())
+
+    async def test_without_the_warm_up_reads_start_no_workspace_build(self):
+        make_png(self.output_dir / "a.png")
+        await self._json("GET", self.URL)
+        await self._settle()
+        self.assertIsNone(self.api._workspace_warm_task)
+        self.assertEqual(self.api._favorite_listing_cache, {})
+
+    async def test_a_failed_workspace_build_warns_and_reads_still_work(self):
+        make_png(self.output_dir / "a.png")
+        with (
+            patch.object(
+                self.api, "_select_workspace_page", side_effect=RuntimeError("boom")
+            ),
+            self.assertLogs(self.api.logger, "WARNING") as logs,
+        ):
+            await self._warmed()
+        self.assertTrue(any("Images page" in line for line in logs.output))
+        status, data = await self._json("GET", self.URL)
+        self.assertEqual((status, data["total"]), (200, 1))
+
+    async def test_walks_during_a_workspace_build_coalesce_into_one_more(self):
+        make_png(self.output_dir / "a.png")
+        release, entered = threading.Event(), threading.Event()
+        built = []
+        real = self.api._build_workspace_caches
+
+        def build(listings):
+            built.append(len(listings[0][2]))
+            if len(built) == 1:
+                entered.set()
+                release.wait(_HANG_LIMIT)
+            real(listings)
+
+        self.addCleanup(release.set)
+        with patch.object(self.api, "_build_workspace_caches", side_effect=build):
+            await self.api.warm_gallery_listings(web.Application())
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, entered.wait, _HANG_LIMIT)
+            for name in ("b.png", "c.png"):  # two changed walks while it builds
+                make_png(self.output_dir / name)
+                self._age()
+                await self._json("GET", self.URL)
+                while self.api._listing_tasks:
+                    await asyncio.gather(*list(self.api._listing_tasks))
+                    await asyncio.sleep(0)
+            release.set()
+            await self._settle()
+        self.assertEqual(built, [1, 3])
+        self.assertTrue(self._workspace_ready())
+
+    async def test_cleanup_stops_a_running_workspace_build(self):
+        make_png(self.output_dir / "a.png")
+        release, entered = threading.Event(), threading.Event()
+
+        def build(_listings):
+            entered.set()
+            release.wait(_HANG_LIMIT)
+
+        self.addCleanup(release.set)
+        with patch.object(self.api, "_build_workspace_caches", side_effect=build):
+            await self.api.warm_gallery_listings(web.Application())
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, entered.wait, _HANG_LIMIT)
+            task = self.api._workspace_warm_task
+            await self.api.cleanup_gallery_listings(web.Application())
+            release.set()
+        self.assertTrue(task.done())
+        self.assertIsNone(self.api._workspace_warm_task)
 
 
 class TestGalleryListingHostHooks(unittest.IsolatedAsyncioTestCase):

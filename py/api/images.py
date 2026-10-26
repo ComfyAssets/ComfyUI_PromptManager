@@ -1309,6 +1309,60 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
+    def _schedule_workspace_warm(self):
+        """Rebuild the workspace caches behind a changed listing (on the loop).
+
+        Only after the host's startup warm-up (warm_gallery_listings), so the
+        first Images open after a restart, and the first read after a refresh
+        found new files, pay no per-file rebuild. A walk stored while a build
+        runs asks for one more build instead of a second one at once.
+        """
+        if not self._workspace_warm_enabled:
+            return
+        task = self._workspace_warm_task
+        if task is not None and not task.done():
+            self._workspace_warm_again = True
+            return
+        self._workspace_warm_task = asyncio.get_running_loop().create_task(
+            self._warm_workspace()
+        )
+
+    async def _warm_workspace(self):
+        while True:
+            self._workspace_warm_again = False
+            listings = self._stored_listings()
+            if listings is None:
+                return  # a root has no listing yet; its walk asks again
+            try:
+                await self._run_in_executor(self._build_workspace_caches, listings)
+            except Exception as e:
+                self.logger.warning(f"Could not prepare the Images page: {e}")
+                return
+            if not self._workspace_warm_again:
+                return
+
+    def _stored_listings(self):
+        """``[(index, root, files)]`` of every output root, or None if one has none."""
+        listings = []
+        for index, root in enumerate(self._get_all_output_dirs()):
+            record = self._root_listings.get(str(root))
+            if record is None or record.files is None:
+                return None
+            listings.append((index, root, record.files))
+        return listings
+
+    def _build_workspace_caches(self, listings):
+        """Build what a first workspace page reads, as that page builds it (blocking).
+
+        The default page's selection builds the per-file values, the newest
+        order, the wanted paths and reads the prompt links (warming SQLite's
+        cache); the favorites filter builds each root's favorite listing.
+        """
+        self._select_workspace_page(
+            listings, _workspace_filters({}), None, 1, "workspace-warm-up"
+        )
+        self._workspace_favorite_paths(listings)
+
     def _scan_gallery_files_sync(self, output_path):
         """Scan output directory for media files (blocking I/O, run in executor).
 
@@ -1419,12 +1473,15 @@ class ImageRoutesMixin:
         else:
             record.failing = False
             if record.generation == generation:
+                changed = files is not record.files
                 record.files = files
                 record.folders = folders
                 record.folders_with_ancestors = with_ancestors
                 record.walked_at = _time.monotonic()
                 record.stored_seq = seq
                 outcome = WalkOutcome.stored()
+                if changed:
+                    self._schedule_workspace_warm()
             else:
                 outcome = WalkOutcome.discarded()
         finally:
@@ -2883,9 +2940,17 @@ class ImageRoutesMixin:
         cached = self._favorite_listing_cache.get(cache_key)
         if cached is not None and cached[0] is files:
             return cached[1]
+        # From the path strings, as _listed does: relative_to per file was the
+        # largest cost of a cold first open (#348).
+        prefix = os.path.join(str(root), "")
         listing = {}
         for path, _mtime in files:
-            posix = path.relative_to(root).as_posix()
+            text = str(path)
+            if text.startswith(prefix):
+                relative = text[len(prefix) :]
+                posix = relative if os.sep == "/" else relative.replace(os.sep, "/")
+            else:
+                posix = path.relative_to(root).as_posix()
             listing.setdefault(_favorite_relative_key(posix), posix)
         self._favorite_listing_cache[cache_key] = (files, listing)
         return listing
