@@ -20,12 +20,13 @@ SUBPROCESS_TIMEOUT = 60
 WATCHDOG_ENV = ("PM_TEST_HANG_LIMIT", "PM_TEST_SHUTDOWN_LIMIT")
 
 
-def run_suite(folder, extra_env=None, *args):
+def run_suite(folder, extra_env=None, *args, verbosity=("-v",)):
     """Run the runner on ``folder`` and return the completed process."""
     env = {k: v for k, v in os.environ.items() if k not in WATCHDOG_ENV}
     env.update(extra_env or {})
+    command = [sys.executable, "-m", "tests.run_suite", "-s", str(folder)]
     return subprocess.run(
-        [sys.executable, "-m", "tests.run_suite", "-s", str(folder), "-v", *args],
+        [*command, *verbosity, *args],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
@@ -81,6 +82,43 @@ class RunSuiteTests(unittest.TestCase):
         result = run_suite(self.folder, None, "-q")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("start: test_probe_quiet.Probe.test_ok", result.stderr)
+
+    def test_start_line_begins_its_own_line_at_default_verbosity(self):
+        self.write(
+            "test_probe_dots.py",
+            """
+            import unittest
+
+            class Probe(unittest.TestCase):
+                def test_a(self):
+                    pass
+
+                def test_b(self):
+                    pass
+            """,
+        )
+        result = run_suite(self.folder, verbosity=())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stderr.splitlines()
+        for name in ("test_a", "test_b"):
+            self.assertIn(f"start: test_probe_dots.Probe.{name}", lines)
+
+    def test_warnings_are_shown_as_with_unittest_discover(self):
+        self.write(
+            "test_probe_warn.py",
+            """
+            import unittest
+            import warnings
+
+            class Probe(unittest.TestCase):
+                def test_warns(self):
+                    warnings.warn("probe-deprecated", DeprecationWarning)
+            """,
+        )
+        env = {"PYTHONWARNINGS": ""}
+        result = run_suite(self.folder, env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("probe-deprecated", result.stderr)
 
     def test_failing_test_exits_one(self):
         self.write(
@@ -206,7 +244,7 @@ class RunSuiteTests(unittest.TestCase):
 
     def test_invalid_limit_is_a_usage_error(self):
         for name in WATCHDOG_ENV:
-            for value in ("abc", "0", "-3", "1.5"):
+            for value in ("abc", "0", "-3", "1.5", "\u00b2"):
                 with self.subTest(name=name, value=value):
                     result = run_suite(self.folder, {name: value})
                     self.assertEqual(result.returncode, 2, result.stderr)

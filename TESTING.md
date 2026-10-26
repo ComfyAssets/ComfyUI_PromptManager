@@ -212,25 +212,28 @@ need targeted validation.
 CI and the pre-push hook run the Python suite as `python -m tests.run_suite`
 (`-v`, `-q`, `-s START` and `-p PATTERN` as in `unittest discover`), and the
 coverage job as `python -m coverage run -m tests.run_suite`. The runner
-(`tests/run_suite.py`) discovers the same tests with the same `sys.path` and exit
-codes as `python -m unittest discover -s tests` (5 when no tests ran), and adds a
-watchdog: it writes `start: <test id>` to stderr before every test, at every
+(`tests/run_suite.py`) discovers the same tests with the same `sys.path` and
+warning filters as `python -m unittest discover -s tests`, exits 0, 1, or 5 when
+no tests ran (Python 3.12+ behaviour, on every version), and adds a watchdog: it writes `start: <test id>` to stderr before every test, at every
 verbosity, and arms `faulthandler.dump_traceback_later`. If a test, its teardown,
 its event-loop shutdown or interpreter exit stops making progress, the stack of
 every thread goes to stderr (`Timeout (0:02:00)!` then `Thread 0x...` blocks) and
 the process exits non-zero.
 
 - `PM_TEST_HANG_LIMIT` (default 120 s) bounds each test from its `start:` line to
-  the next one. `PM_TEST_SHUTDOWN_LIMIT` (default 120 s) bounds what follows the
-  summary: module teardown, non-daemon threads and atexit handlers. Both must be
+  the next one, including the class and module fixtures (`tearDownClass`,
+  `setUpModule`, ...) that run in between. `PM_TEST_SHUTDOWN_LIMIT` (default
+  120 s) bounds the end of the run: the summary, non-daemon threads, atexit
+  handlers and coverage's save. Both must be
   positive integers; anything else stops the runner with exit 2. 120 s stays below
   asyncio's 300 s wait for default-executor threads on Python 3.12 and 3.13 (3.10
   and 3.11 wait without limit), so a hang in an `IsolatedAsyncioTestCase` loop
   shutdown is dumped inside the test that hung.
 - Reading a dump: the last `start:` line names the test. An `ok` after it means
-  the test passed and the hang is in its teardown or event-loop shutdown (where
-  `IsolatedAsyncioTestCase` joins executor threads); a dump after the summary is
-  a hang at interpreter exit. The dump shows thread stacks, not asyncio task
+  the test body passed and the hang came after it: in its teardown or event-loop
+  shutdown (where `IsolatedAsyncioTestCase` joins executor threads), or in a
+  class or module fixture before the next test; the stack shows which. A dump
+  after the summary is a hang at interpreter exit. The dump shows thread stacks, not asyncio task
   stacks.
 - When the watchdog fires under coverage, that run's coverage data is lost; the
   job fails anyway and the dump is what matters.

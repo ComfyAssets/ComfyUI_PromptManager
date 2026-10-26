@@ -3,23 +3,28 @@
 Why: on PR #349 a macOS job stopped inside the test suite and sat silent until
 GitHub cancelled it after six hours, with no stack to read. This runner does
 the same discovery as ``python -m unittest discover -s tests`` (same
-``sys.path`` when started with ``-m`` from the repo root, same exit codes,
-including 5 when no tests ran), and adds a watchdog built on
+``sys.path`` when started with ``-m`` from the repo root, same warning
+filters, and the exit codes of Python 3.12+ on every version: 0, 1, and 5
+when no tests ran), and adds a watchdog built on
 ``faulthandler.dump_traceback_later``: when the timer is not re-armed in time,
 every thread's stack goes to stderr and the process exits non-zero. It works
 the same on Linux, macOS and Windows.
 
 The timer is armed before discovery, re-armed at the start of every test with
 PM_TEST_HANG_LIMIT seconds (default 120), and re-armed when the run ends with
-PM_TEST_SHUTDOWN_LIMIT seconds (default 120) to cover module teardown and
-interpreter exit. It is never cancelled. 120 s stays below asyncio's 300 s
-wait for default-executor threads on Python 3.12 and 3.13, so a hang in an
+PM_TEST_SHUTDOWN_LIMIT seconds (default 120) to cover interpreter exit
+(non-daemon threads, atexit handlers, coverage's save). It is never
+cancelled. Class and module fixtures (setUpClass, tearDownModule, ...) run
+between two ``start:`` lines, so they count toward the test before them.
+120 s stays below asyncio's 300 s wait for default-executor threads on Python
+3.12 and 3.13 (3.10 and 3.11 wait without limit), so a hang in an
 ``IsolatedAsyncioTestCase`` loop shutdown is dumped inside the test that hung.
 
 Reading a dump: the last ``start: <test id>`` line names the test. If its
-"ok" line comes after it, the hang is in that test's teardown or event-loop
-shutdown; a dump after the summary is a hang at interpreter exit (a
-non-daemon thread or an atexit handler).
+"ok" line comes after it, the hang is after the test body: its teardown or
+event-loop shutdown, or a class/module fixture before the next test (the
+stack shows which). A dump after the summary is a hang at interpreter exit
+(a non-daemon thread or an atexit handler).
 
 A limit is a measurement, not a dial: change it only with new measurements
 written next to it (TESTING.md "Time limits and hangs").
@@ -48,7 +53,7 @@ def read_limit(name, default):
     if raw is None:
         return default
     text = raw.strip()
-    if not text.isdigit() or int(text) <= 0:
+    if not (text.isascii() and text.isdigit()) or int(text) <= 0:
         raise LimitError(f"run_suite: {name} must be a positive integer, got {raw!r}")
     return int(text)
 
@@ -61,7 +66,9 @@ def make_result_class(stream, per_test_limit, shutdown_limit):
 
     class WatchdogResult(unittest.TextTestResult):
         def startTest(self, test):
-            stream.write(f"start: {test.id()}\n")
+            # At default verbosity the progress dots share a line; start ours.
+            prefix = "\n" if self.dots else ""
+            stream.write(f"{prefix}start: {test.id()}\n")
             stream.flush()
             super().startTest(test)
             arm(per_test_limit)
@@ -126,6 +133,8 @@ def main(argv=None):
     runner = unittest.TextTestRunner(
         stream=stream,
         verbosity=args.verbosity,
+        # As unittest.main does: show warnings unless -W/PYTHONWARNINGS set them.
+        warnings=None if sys.warnoptions else "default",
         resultclass=make_result_class(stream, per_test_limit, shutdown_limit),
     )
     result = runner.run(suite)
