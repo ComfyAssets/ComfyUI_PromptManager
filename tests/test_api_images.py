@@ -2431,6 +2431,9 @@ class TestSharedListing(ImageAPITestCase):
         async def settle():
             while self.api._listing_tasks:
                 await asyncio.gather(*list(self.api._listing_tasks))
+                # A finished walk leaves the set in a done callback, which needs
+                # a loop turn; gather over finished tasks does not yield one.
+                await asyncio.sleep(0)
 
         await asyncio.wait_for(settle(), _HANG_LIMIT)
 

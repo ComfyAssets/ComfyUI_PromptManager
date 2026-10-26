@@ -196,6 +196,9 @@ class TestWorkspaceImages(ImageAPITestCase):
             await self.get()  # served at once; one background walk runs
             while self.api._listing_tasks:
                 await asyncio.gather(*list(self.api._listing_tasks))
+                # A finished walk leaves the set in a done callback, which needs
+                # a loop turn; gather over finished tasks does not yield one.
+                await asyncio.sleep(0)
             _, again = await self.get()
         self.assertEqual(scan.call_count, 1)
         self.assertIs(record.files, files)
