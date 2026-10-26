@@ -174,8 +174,10 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(failed.kind, FAILED)
         self.assertIs(failed.error, error)
 
-    def test_refresh_constant(self):
+    def test_refresh_constants(self):
         self.assertEqual(gallery_listing.REFRESH_AFTER, 30)
+        self.assertEqual(gallery_listing.REFRESH_DELAY, 1.0)
+        self.assertIsNone(RootListing().rewalk_handle)
 
 
 if __name__ == "__main__":

@@ -193,7 +193,10 @@ class TestWorkspaceImages(ImageAPITestCase):
             "_scan_gallery_files_sync",
             wraps=self.api._scan_gallery_files_sync,
         ) as scan:
-            await self.get()  # served at once; one background walk runs
+            with patch.object(gallery_listing, "REFRESH_DELAY", 0):
+                await self.get()  # served at once; one refresh walk follows
+            while record.rewalk_handle is not None:
+                await asyncio.sleep(0.01)
             while self.api._listing_tasks:
                 await asyncio.gather(*list(self.api._listing_tasks))
                 # A finished walk leaves the set in a done callback, which needs

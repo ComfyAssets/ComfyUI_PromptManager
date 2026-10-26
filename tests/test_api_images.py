@@ -2497,6 +2497,11 @@ class TestSharedListing(ImageAPITestCase):
         self.scan = _GatedScan(self.api._scan_gallery_files_sync)
         self.api._scan_gallery_files_sync = self.scan
         self.addCleanup(self.scan.release_all)
+        # The stale refresh waits REFRESH_DELAY after the read (#348); these
+        # tests start it on the next loop turn and _settle waits for it.
+        delay = patch.object(gallery_listing, "REFRESH_DELAY", 0)
+        delay.start()
+        self.addCleanup(delay.stop)
 
     async def _json(self, method, path, **kwargs):
         # Bounded, like every wait in this class: a stuck walk fails the test
@@ -2509,6 +2514,12 @@ class TestSharedListing(ImageAPITestCase):
 
     def _record(self):
         return self.api._root_listings[str(self.output_dir)]
+
+    def _pending(self):
+        return any(
+            record.rewalk_handle is not None
+            for record in self.api._root_listings.values()
+        )
 
     def _warming(self):
         task = self.api._workspace_warm_task
@@ -2524,7 +2535,9 @@ class TestSharedListing(ImageAPITestCase):
         """Wait for every background walk this API started."""
 
         async def settle():
-            while self.api._listing_tasks or self._warming():
+            while self.api._listing_tasks or self._warming() or self._pending():
+                if self._pending():
+                    await asyncio.sleep(0.01)  # a delayed refresh not started yet
                 await asyncio.gather(*list(self.api._listing_tasks))
                 # A finished walk leaves the set in a done callback, which needs
                 # a loop turn; gather over finished tasks does not yield one.
@@ -2853,6 +2866,66 @@ class TestSharedListing(ImageAPITestCase):
         self.assertEqual(outcome.kind, gallery_listing.FAILED)
         self.assertIsNone(self._record().flight)
         self.assertEqual(self.scan.calls, 0)
+
+    async def test_a_stale_read_starts_its_refresh_after_a_delay(self):
+        # The read is served from the old listing; the walk starts
+        # REFRESH_DELAY later so it does not share the GIL with the page's
+        # own requests (#348 live test: 2.2 s reads during the walk).
+        make_png(self.output_dir / "a.png")
+        await self._json("GET", self.URL)
+        self._age()
+        with patch.object(gallery_listing, "REFRESH_DELAY", 30):
+            status, data = await self._json("GET", self.URL)
+            await self._json("GET", self.URL)  # still one pending refresh
+            record = self._record()
+            handle = record.rewalk_handle
+            self.assertEqual((status, data["total"]), (200, 1))
+            self.assertIsNotNone(handle)
+            self.assertIsNone(record.flight)
+            self.assertEqual(self.scan.calls, 1)
+            self.assertAlmostEqual(
+                handle.when() - asyncio.get_running_loop().time(), 30, delta=2
+            )
+            handle.cancel()
+            record.rewalk_handle = None
+
+    async def test_the_delayed_refresh_walks_once_when_it_fires(self):
+        make_png(self.output_dir / "a.png")
+        await self._json("GET", self.URL)
+        make_png(self.output_dir / "b.png")
+        self._age()
+        await self._json("GET", self.URL)
+        await self._json("GET", self.URL)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+        self.assertIsNone(self._record().rewalk_handle)
+        _, data = await self._json("GET", self.URL)
+        self.assertEqual(data["total"], 2)
+
+    async def test_a_walk_started_meanwhile_cancels_the_delayed_refresh(self):
+        make_png(self.output_dir / "a.png")
+        await self._json("GET", self.URL)
+        self._age()
+        with patch.object(gallery_listing, "REFRESH_DELAY", 30):
+            await self._json("GET", self.URL)
+            handle = self._record().rewalk_handle
+            status, _ = await self._json("POST", "/prompt_manager/gallery/rescan")
+        self.assertEqual(status, 200)
+        self.assertTrue(handle.cancelled())
+        self.assertIsNone(self._record().rewalk_handle)
+        self.assertEqual(self.scan.calls, 2)
+
+    async def test_cleanup_cancels_a_delayed_refresh(self):
+        make_png(self.output_dir / "a.png")
+        await self._json("GET", self.URL)
+        self._age()
+        with patch.object(gallery_listing, "REFRESH_DELAY", 30):
+            await self._json("GET", self.URL)
+            handle = self._record().rewalk_handle
+            await self.api.cleanup_gallery_listings(web.Application())
+        self.assertTrue(handle.cancelled())
+        self.assertIsNone(self._record().rewalk_handle)
+        self.assertEqual(self.scan.calls, 1)
 
     WORKSPACE_URL = "/prompt_manager/images/output?mode=workspace&limit=1"
 

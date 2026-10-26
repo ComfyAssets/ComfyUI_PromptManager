@@ -1422,9 +1422,22 @@ class ImageRoutesMixin:
                     )
 
     def _refresh_if_stale(self, output_path, record):
+        """Walk a stale listing again, REFRESH_DELAY after this read (on the loop).
+
+        At most one pending refresh per root, none while a walk runs.
+        """
         age = _time.monotonic() - (record.walked_at or 0.0)
-        if age >= gallery_listing.REFRESH_AFTER:
-            self._schedule_walk(output_path)
+        if age < gallery_listing.REFRESH_AFTER:
+            return
+        if record.flight is not None or record.rewalk_handle is not None:
+            return
+        record.rewalk_handle = asyncio.get_running_loop().call_later(
+            gallery_listing.REFRESH_DELAY, self._delayed_walk, output_path, record
+        )
+
+    def _delayed_walk(self, output_path, record):
+        record.rewalk_handle = None
+        self._schedule_walk(output_path)
 
     def _schedule_walk(self, output_path):
         """Start a background walk of *output_path* unless one is running."""
@@ -1436,6 +1449,9 @@ class ImageRoutesMixin:
         """Start the root's one walk; returns its flight future (on the loop)."""
         loop = asyncio.get_running_loop()
         self._listing_loop = loop
+        handle, record.rewalk_handle = record.rewalk_handle, None
+        if handle is not None:
+            handle.cancel()  # this walk is the refresh it was waiting to start
         record.walk_seq += 1
         flight = loop.create_future()
         record.flight = flight

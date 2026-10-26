@@ -548,6 +548,11 @@ class PromptManagerAPI(
     async def cleanup_gallery_listings(self, app=None):
         """Stop the background listing walks (aiohttp on_cleanup)."""
         self._workspace_warm_enabled = False
+        # Before any await, so no delayed refresh can start a walk meanwhile.
+        for record in self._root_listings.values():
+            handle, record.rewalk_handle = record.rewalk_handle, None
+            if handle is not None:
+                handle.cancel()
         warm, self._workspace_warm_task = self._workspace_warm_task, None
         if warm is not None:
             warm.cancel()

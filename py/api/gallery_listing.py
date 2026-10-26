@@ -21,6 +21,11 @@ from typing import Callable, NamedTuple
 # patch it.
 REFRESH_AFTER = 30
 
+# The stale read is served at once; its refresh walk starts this many seconds
+# later, so the walk does not share the GIL with the page's own requests
+# (#348 live test: reads during the walk took 2.2 s instead of 0.07 s).
+REFRESH_DELAY = 1.0
+
 # A reader with no listing gives up (500) after this many walks in a row were
 # discarded by invalidations made while they ran.
 MAX_DISCARDED_WALKS = 3
@@ -75,6 +80,8 @@ class RootListing:
     flight: asyncio.Future | None = None
     # True while walks keep failing: one warning per streak.
     failing: bool = False
+    # The delayed refresh not started yet (loop.call_later), or None.
+    rewalk_handle: asyncio.TimerHandle | None = None
 
     def drop(self) -> None:
         self.files = None
