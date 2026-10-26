@@ -17,7 +17,8 @@ test.beforeEach(async({page,browserName})=>{
         window.fixtureApp={registerExtension(extension){this.extension=extension;},ui:{settings},graph:{_nodes:[],setDirtyCanvas(){}},canvas:{},graphToPrompt:async()=>({})};
         await import('/extensions/promptmanager/prompt_manager.js');
         class Node {
-            constructor(){this.id=1;this.type='PromptManagerPair';this.widgets=['text','negative_text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')}));this.inputs=['clip','prepend_text','append_text'].map(name=>({name,link:null}));this.properties={};this.size=[1100,700];}
+            constructor(){this.id=1;this.type='PromptManagerPair';this.widgets=['text','negative_text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')}));this.inputs=[...['clip','prepend_text','append_text'].map(name=>({name,type:name==='clip'?'CLIP':'STRING',link:null})),...['text','negative_text','category','tags','search_text'].map(name=>({name,type:'STRING',link:null,widget:{name}}))];this.properties={};this.size=[1100,700];}
+            findInputByType(type){const index=this.inputs.findIndex(input=>input.type===type&&input.link==null);return index<0?undefined:{index,slot:this.inputs[index]};}
             addWidget(type,name,value,callback,options){const widget={type,name,value,callback,options};this.widgets.push(widget);return widget;}
             addDOMWidget(name,type,element){const host=document.createElement('div');host.style.cssText='height:700px;width:1100px;max-width:100%';host.className='fixture-dom-widget';host.append(element);document.body.append(host);return {element};}
             setSize(size){this.size=size;}setDirtyCanvas(){}
@@ -121,6 +122,46 @@ test('a superseded library response never replaces the latest pair selection',as
     await search.fill('new');await page.getByRole('button',{name:'Search',exact:true}).click();
     await expect(page.locator('.pm-editor-result')).toContainText('Library positive');release();
     await expect(page.locator('.pm-editor-result')).not.toContainText('Stale positive');
+});
+
+test('paired editor offers positive and negative link sockets and keeps both typed texts (#343)',async({page})=>{
+    await draft(page,'Typed positive','Typed negative');
+    expect(await page.evaluate(()=>node.inputs.filter(input=>!input.widget).map(input=>input.name))).toEqual(['clip','prepend_text','append_text','text','negative_text']);
+    const target=()=>page.evaluate(()=>node.findInputByType('STRING').slot.name);
+    expect(await target()).toBe('text');
+    const positive=page.getByRole('textbox',{name:'Positive prompt',exact:true}),negative=page.getByRole('textbox',{name:'Negative prompt',exact:true});
+    const positiveNote=page.getByText('Positive prompt comes from a link. Your typed text is kept for when you disconnect it.',{exact:true});
+    const negativeNote=page.getByText('Negative prompt comes from a link. Your typed text is kept for when you disconnect it.',{exact:true});
+    const link=(name,value)=>page.evaluate(({name,value})=>{node.inputs.find(input=>input.name===name).link=value;node.onConnectionsChange();},{name,value});
+    for(const [linked,next] of [[['text'],'negative_text'],[['negative_text'],'text'],[['text','negative_text'],'prepend_text'],[[],'text']]){
+        for(const name of ['text','negative_text'])await link(name,linked.includes(name)?30:null);
+        expect(await target()).toBe(next);
+        await expect(positive).toBeVisible({visible:!linked.includes('text')});
+        await expect(negative).toBeVisible({visible:!linked.includes('negative_text')});
+        await expect(positiveNote).toBeVisible({visible:linked.includes('text')});
+        await expect(negativeNote).toBeVisible({visible:linked.includes('negative_text')});
+        const saved=await page.evaluate(()=>{const saved=node.serialize();for(const input of node.inputs)if(['text','negative_text'].includes(input.name))input.widget={name:input.name};node.configure(saved);return saved.widgets_values.slice(0,2);});
+        expect(saved).toEqual(['Typed positive','Typed negative']);
+        expect(await page.evaluate(()=>node.inputs.filter(input=>input.widget&&['text','negative_text'].includes(input.name)).length)).toBe(0);
+    }
+    await expect(positive).toHaveValue('Typed positive');await expect(negative).toHaveValue('Typed negative');
+});
+
+test('a link dropped on either prompt box, or its note, fills that box (#343 review M1)',async({page})=>{
+    const keys=await page.evaluate(()=>[...document.querySelectorAll('.pm-pair .lg-node-widget [data-slot-key]')].map(key=>key.dataset.slotKey));
+    // Nodes 2.0 resolves a drop through the nearest .lg-node-widget and its slot key: positive box and note, negative box and note.
+    expect(keys).toEqual(['1-in-3','1-in-3','1-in-4','1-in-4']);
+    const at=(name,connecting=true)=>page.evaluate(({name,connecting})=>{
+        fixtureApp.canvas={linkConnector:{state:{connectingTo:connecting?'input':undefined}},ds:{convertOffsetToCanvas:point=>point},canvas:{getBoundingClientRect:()=>({left:0,top:0})}};
+        const box=[...document.querySelectorAll('.pm-pair .lg-node-widget')].find(element=>element.getClientRects().length&&element.textContent.includes(name)).getBoundingClientRect();
+        return node.getInputOnPos([box.left+box.width/2,box.top+box.height/2])?.name??null;
+    },{name,connecting});
+    expect(await at('Negative prompt')).toBe('negative_text');
+    expect(await at('Positive prompt')).toBe('text');
+    expect(await at('Negative prompt',false)).toBeNull();
+    await page.evaluate(()=>{node.inputs.find(input=>input.name==='negative_text').link=4;node.onConnectionsChange();});
+    expect(await at('Negative prompt comes from a link')).toBe('negative_text');
+    expect(await page.evaluate(()=>{fixtureApp.canvas={};return node.getInputOnPos([1,1])??null;})).toBeNull();
 });
 
 test('queue hook synchronizes both editors, preserves links and forwards branch execution arguments',async({page})=>{

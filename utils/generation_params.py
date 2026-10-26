@@ -762,9 +762,15 @@ def _widget_names(node):
         and _truthy(_get(item, "widget"))
         and _truthy(_get(_get(item, "widget"), "name"))
     ]
-    if from_inputs:
-        return from_inputs
     node_type = _get(node, "type")
+    if from_inputs:
+        # A known node's widget-bound inputs must line up with its widget order.
+        # Sockets that are not widget inputs (#343: the editors' text) would shift
+        # every positional value onto the wrong name; use the table then.
+        known = WIDGET_POSITIONS.get(node_type) if isinstance(node_type, str) else None
+        if known is not None and list(known[: len(from_inputs)]) != from_inputs:
+            return list(known)
+        return from_inputs
     key = _js_string(node_type)
     if key in _OBJECT_PROTOTYPE_KEYS:
         raise GenerationParamsError(f"widget positions of {key!r} are not iterable")

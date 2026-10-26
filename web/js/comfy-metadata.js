@@ -275,7 +275,11 @@
 
     function widgetNames(n) {
         const fromInputs = (n.inputs || []).filter((i) => i && i.widget && i.widget.name).map((i) => i.widget.name);
-        if (fromInputs.length) return fromInputs;
+        if (fromInputs.length) {
+            // Socket inputs that are not widget inputs (#343: the editors' text) would shift the positional values.
+            const known = typeof n.type === "string" && Object.prototype.hasOwnProperty.call(WIDGET_POSITIONS, n.type) ? WIDGET_POSITIONS[n.type] : null;
+            return known && fromInputs.some((name, index) => known[index] !== name) ? known : fromInputs;
+        }
         if (WIDGET_POSITIONS[n.type]) return WIDGET_POSITIONS[n.type];
         if (/checkpointloader/i.test(n.type || "")) return ["ckpt_name"];
         if (/unet/i.test(n.type || "")) return ["unet_name"];

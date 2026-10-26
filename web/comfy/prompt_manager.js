@@ -5,6 +5,7 @@ import { api } from "../../scripts/api.js";
 const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/classic-node.js'));
 const { installFocusedNode, installSplitNode, installPairNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
 const { installPromptBridge } = await import(api.fileURL('/prompt_manager/js/prompt-bridge-host.js'));
+const { collapseLinkedWidget, isLinked, linkNoteText, primitiveTextValue, storedWidgetValue } = await import(api.fileURL('/prompt_manager/js/text-links.js'));
 const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']);
 
 // ============================================================================
@@ -208,15 +209,10 @@ function syncPromptManagerWidgets() {
 
         node.widgets.forEach((widget, idx) => {
           if (widget) {
-            // Skip widgets whose input is connected to another node —
-            // the connected value takes precedence over the DOM widget value
-            const isConnected = node.inputs?.some(
-              i => i.name === widget.name && i.link != null
-            );
-            if (isConnected) return;
-
+            // A linked widget keeps the text the user typed (#343): the link drives the run,
+            // the workflow keeps the typed text for when the link is disconnected.
             // For non-connected widgets, inputEl.value is the true source
-            const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
+            const actualValue = storedWidgetValue(node, widget);
             if (actualValue !== undefined) {
               node.widgets_values[idx] = actualValue;
 
@@ -228,6 +224,45 @@ function syncPromptManagerWidgets() {
           }
         });
       }
+    }
+  }
+}
+
+/**
+ * #343: a legacy frontend Primitive linked to a PromptManager editor text input runs with the Primitive's value.
+ * The Primitive writes into the target's widget, but the editor text inputs are no longer bound to their hidden
+ * widgets, so the queued value would otherwise be the hidden typed text while the editor says "linked". Inputs still
+ * bound to a widget (the Classic nodes) are left as the host resolved them.
+ *
+ * A wildcard (`{red|blue}`) draws a new choice each time it is resolved, so each queued output is filled once: by the
+ * graphToPrompt wrapper, or by the queue hook when a caller queues an output that did not come through it.
+ */
+const primitiveTextApplied = new WeakSet();
+const MAX_SUBGRAPH_DEPTH = 32;
+
+/** Every node with the id it is queued under: a node inside a subgraph is `<subgraph node id>:<inner id>`. */
+function* queuedNodes(graph, prefix = '', depth = 0) {
+  for (const node of graph?._nodes || graph?.nodes || []) {
+    yield [`${prefix}${node.id}`, node];
+    if (depth < MAX_SUBGRAPH_DEPTH && node.isSubgraphNode?.() && node.subgraph) {
+      yield* queuedNodes(node.subgraph, `${prefix}${node.id}:`, depth + 1);
+    }
+  }
+}
+
+async function applyPrimitiveText(output) {
+  if (!output || typeof output !== 'object' || primitiveTextApplied.has(output)) return;
+  primitiveTextApplied.add(output);
+  const replaceText = window.comfyAPI?.utils?.applyTextReplacements;
+  for (const [id, node] of queuedNodes(app.graph)) {
+    const queued = promptManagerTypes.has(node.type) ? output[id] : null;
+    // Only an output of this graph: the same id must hold the same node type.
+    const inputs = queued?.class_type === node.type ? queued.inputs : null;
+    if (!inputs) continue;
+    for (const name of ['text', 'negative_text']) {
+      if (Array.isArray(inputs[name])) continue;
+      const value = await primitiveTextValue(node, name, { replaceText });
+      if (value !== undefined) inputs[name] = value;
     }
   }
 }
@@ -247,7 +282,9 @@ app.registerExtension({
     const originalGraphToPrompt = app.graphToPrompt.bind(app);
     app.graphToPrompt = async function(...args) {
       syncPromptManagerWidgets();
-      return originalGraphToPrompt(...args);
+      const result = await originalGraphToPrompt(...args);
+      await applyPrimitiveText(result?.output);
+      return result;
     };
 
     // CRITICAL FIX: Intercept api.queuePrompt to fix prompt data at the LAST moment
@@ -274,6 +311,7 @@ app.registerExtension({
         }
       }
 
+      await applyPrimitiveText(output);
       return originalQueuePrompt(number, { output, workflow }, ...rest);
     };
   },
@@ -304,53 +342,60 @@ app.registerExtension({
         // CRITICAL FIX: Ensure text widget always returns current value during serialization
         // This fixes the issue where graphToPrompt reads stale cached values
         const self = this;
+        // Settles once the serializer below is in place (or skipped), for callers that must queue after it.
+        let textSerializerSettled;
+        this._pmTextSerializerReady = new Promise((resolve) => { textSerializerSettled = resolve; });
         this._textSyncTimer = setTimeout(() => {
-          if (self._classicScope?.signal.aborted) return;
-          const textWidget = self.widgets?.find((w) => w.name === "text");
-          if (textWidget) {
-            // Store reference to the widget for the closure
-            const widgetRef = textWidget;
-            const originalSerializeValue = textWidget.serializeValue;
+          try {
+            if (self._classicScope?.signal.aborted) return;
+            const textWidget = self.widgets?.find((w) => w.name === "text");
+            if (textWidget) {
+              // Store reference to the widget for the closure
+              const widgetRef = textWidget;
+              const originalSerializeValue = textWidget.serializeValue;
 
-            // Override serializeValue - use arrow function to capture widgetRef
-            textWidget.serializeValue = (nodeId, widgetIndex) => {
-              // Always return the current DOM value using our stored reference
-              if (widgetRef.inputEl) {
-                const currentValue = widgetRef.inputEl.value;
-                // Sync widget.value as well
-                widgetRef.value = currentValue;
-                return currentValue;
-              }
-              return widgetRef.value;
-            };
-
-            // Add aggressive sync listeners for all value change events
-            if (textWidget.inputEl) {
-              const syncValue = function() {
-                const currentVal = textWidget.inputEl.value;
-                textWidget.value = currentVal;
-                // Also update widgets_values array
-                const widgetIndex = self.widgets?.indexOf(textWidget);
-                if (self.widgets_values && widgetIndex >= 0) {
-                  self.widgets_values[widgetIndex] = currentVal;
+              // Override serializeValue - use arrow function to capture widgetRef
+              textWidget.serializeValue = (nodeId, widgetIndex) => {
+                // Always return the current DOM value using our stored reference
+                if (widgetRef.inputEl) {
+                  const currentValue = widgetRef.inputEl.value;
+                  // Sync widget.value as well
+                  widgetRef.value = currentValue;
+                  return currentValue;
                 }
+                return widgetRef.value;
               };
 
-              // Sync on every keystroke
-              const listen = self._classicScope
-                ? (event) => self._classicScope.listen(textWidget.inputEl, event, syncValue)
-                : (event) => textWidget.inputEl.addEventListener(event, syncValue);
-              listen('input');
-              // Sync on change (for paste, autocomplete, etc.)
-              listen('change');
-              // Sync when focus leaves the field
-              listen('blur');
-              // Sync on keyup as backup
-              listen('keyup');
+              // Add aggressive sync listeners for all value change events
+              if (textWidget.inputEl) {
+                const syncValue = function() {
+                  const currentVal = textWidget.inputEl.value;
+                  textWidget.value = currentVal;
+                  // Also update widgets_values array
+                  const widgetIndex = self.widgets?.indexOf(textWidget);
+                  if (self.widgets_values && widgetIndex >= 0) {
+                    self.widgets_values[widgetIndex] = currentVal;
+                  }
+                };
 
-              // Initial sync
-              syncValue();
+                // Sync on every keystroke
+                const listen = self._classicScope
+                  ? (event) => self._classicScope.listen(textWidget.inputEl, event, syncValue)
+                  : (event) => textWidget.inputEl.addEventListener(event, syncValue);
+                listen('input');
+                // Sync on change (for paste, autocomplete, etc.)
+                listen('change');
+                // Sync when focus leaves the field
+                listen('blur');
+                // Sync on keyup as backup
+                listen('keyup');
+
+                // Initial sync
+                syncValue();
+              }
             }
+          } finally {
+            textSerializerSettled();
           }
         }, 50); // Shorter delay to beat other extensions
 
@@ -443,13 +488,8 @@ app.registerExtension({
             }
             this.widgets.forEach((widget, idx) => {
               if (widget) {
-                // Skip connected widgets — their value comes from the link
-                const isConnected = self.inputs?.some(
-                  i => i.name === widget.name && i.link != null
-                );
-                if (isConnected) return;
-
-                const actualValue = widget.inputEl ? widget.inputEl.value : widget.value;
+                // A linked widget stores its typed text, not the live editor (#343)
+                const actualValue = storedWidgetValue(self, widget);
                 if (actualValue !== undefined) {
                   this.widgets_values[idx] = actualValue;
                   if (widget.inputEl && widget.value !== actualValue) {
@@ -488,9 +528,34 @@ app.registerExtension({
           if (data._userHasResized) {
             this._userHasResized = data._userHasResized;
           }
+          this.renderTextLink();
         };
 
         this.setDirtyCanvas(true, true);
+      };
+
+      // #343: text can come from a link like any core widget. The host hides the text box;
+      // the controls say why, and the typed text is kept for when the link is disconnected.
+      const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+      nodeType.prototype.onConnectionsChange = function (...args) {
+        const result = onConnectionsChange?.apply(this, args);
+        this.renderTextLink();
+        return result;
+      };
+      nodeType.prototype.createTextLinkNote = function () {
+        const note = document.createElement("p");
+        note.className = "pm-text-link-note";
+        note.setAttribute("role", "status");
+        note.textContent = linkNoteText("Text");
+        this._textLinkNote = note;
+        this.renderTextLink();
+        return note;
+      };
+      nodeType.prototype.renderTextLink = function () {
+        const linked = isLinked(this, "text");
+        if (this._textLinkNote) this._textLinkNote.hidden = !linked;
+        collapseLinkedWidget(this.widgets?.find((w) => w.name === "text"), linked);
+        this.setDirtyCanvas?.(true, true);
       };
 
       // Override onRemoved to cleanup styles
@@ -525,6 +590,10 @@ app.registerExtension({
         searchSection.style.flexDirection = "column";
         searchSection.style.height = "100%";
         searchSection.style.gap = "8px";
+
+        const linkNote = this.createTextLinkNote();
+        linkNote.style.cssText = "margin: 0; color: var(--fg-color); font-size: 12px;";
+        searchSection.appendChild(linkNote);
 
         // Search buttons row
         const buttonRow = document.createElement("div");
@@ -876,6 +945,11 @@ app.registerExtension({
 
       // Method to use a selected prompt
       nodeType.prototype.usePrompt = function (prompt, index) {
+        // The typed text under a link is kept for when it is disconnected (#343)
+        if (isLinked(this, "text")) {
+          this.showNotification("Text comes from a link. Disconnect it to use a saved prompt.", "error");
+          return;
+        }
         // Find the text widget and set its value
         const textWidget = this.widgets?.find((w) => w.name === "text");
         if (textWidget) {

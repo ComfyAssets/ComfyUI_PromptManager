@@ -149,3 +149,49 @@ test('Classic test button reports success and failure and releases expired notif
     await page.clock.fastForward(3001);
     await expect(page.locator('.pm-classic-notification')).toHaveCount(0);
 });
+
+test('Classic shows linked text, keeps the typed text through save and refuses to overwrite it (#343)',async({page})=>{
+    await page.route('**/prompt_manager/recent?**',route=>route.fulfill({json:{success:true,results:[{text:'Saved prompt',tags:[]}]}}));
+    const note=page.locator('.pm-classic').getByText('Text comes from a link. Your typed text is kept for when you disconnect it.',{exact:true});
+    await expect(note).toBeHidden();
+    await page.evaluate(()=>{
+        const widget=node.widgets.find(item=>item.name==='text');widget.value=widget.inputEl.value='Typed classic';
+        node.inputs=[{name:'text',type:'STRING',link:3,widget:{name:'text'}}];node.onConnectionsChange();
+    });
+    await expect(note).toBeVisible();
+    // The link drives the run; the saved workflow keeps what the user typed, not a stale or empty value.
+    expect(await page.evaluate(()=>node.serialize().widgets_values[0])).toBe('Typed classic');
+    await page.getByRole('button',{name:'📋 Recent',exact:true}).click();
+    await page.getByRole('button',{name:/Saved prompt/}).click();
+    expect(await page.evaluate(()=>node.widgets.find(item=>item.name==='text').value)).toBe('Typed classic');
+    await expect(page.getByRole('alert').filter({hasText:'Text comes from a link. Disconnect it to use a saved prompt.'})).toBeVisible();
+    await page.evaluate(()=>{node.inputs[0].link=null;node.onConnectionsChange();});
+    await expect(note).toBeHidden();
+    await page.getByRole('button',{name:/Saved prompt/}).click();
+    expect(await page.evaluate(()=>node.widgets.find(item=>item.name==='text').value)).toBe('Saved prompt');
+    // A workflow load re-evaluates the link state.
+    await page.evaluate(()=>{node.inputs[0].link=8;node.configure({});});
+    await expect(note).toBeVisible();
+});
+
+test('PromptManagerText shows linked text in its legacy controls and keeps the typed text (#343)',async({page})=>{
+    await page.evaluate(async()=>{
+        class TextNode {
+            constructor(){this.widgets=['text','category','tags','search_text'].map(name=>({name,value:'',inputEl:document.createElement('textarea')}));this.widgets_values=[];this.inputs=[{name:'text',type:'STRING',link:null,widget:{name:'text'}}];}
+            addDOMWidget(name,type,element){element.id='legacy-text-node';document.body.append(element);return {element};}
+            setSize(){} setDirtyCanvas(){} serialize(){return {properties:{...this.properties}};}
+        }
+        await fixtureApp.extensions[0].beforeRegisterNodeDef(TextNode,{name:'PromptManagerText'},fixtureApp);
+        window.textNode=new TextNode();textNode.onNodeCreated();
+        const widget=textNode.widgets[0];widget.value=widget.inputEl.value='Typed text node';
+    });
+    const note=page.locator('#legacy-text-node').getByText('Text comes from a link. Your typed text is kept for when you disconnect it.',{exact:true});
+    await expect(note).toBeHidden();
+    await page.evaluate(()=>{textNode.inputs[0].link=5;textNode.onConnectionsChange();});
+    await expect(note).toBeVisible();
+    expect(await page.evaluate(()=>textNode.serialize().widgets_values[0])).toBe('Typed text node');
+    await page.evaluate(()=>{textNode.usePrompt({text:'Replacement'},0);});
+    expect(await page.evaluate(()=>textNode.widgets[0].value)).toBe('Typed text node');
+    await page.evaluate(()=>{textNode.inputs[0].link=null;textNode.onConnectionsChange();textNode.onRemoved();});
+    await expect(note).toBeHidden();
+});

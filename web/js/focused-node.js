@@ -1,6 +1,7 @@
 import {createScope, createButton, createField, mountTheme} from './shared/toolkit/core.js';
 import {createPromptLibrary} from './prompt-library.js';
 import {attachMetadataAutocomplete} from './metadata-autocomplete.js';
+import {exposeTextSockets, linkNoteText, preferTextInputs, textInputAtPoint} from './text-links.js';
 
 const names = ['text', 'category', 'tags', 'search_text', 'prepend_text', 'append_text'];
 let nextEditorId = 0;
@@ -23,12 +24,16 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
     const pair = layout === 'pair';
     const split = layout !== 'focused';
     const uiKey = pair ? 'pairUI' : split ? 'splitUI' : 'focusedUI';
+    const textInputs = pair ? ['text','negative_text'] : ['text'];
     const prototype = nodeType.prototype;
+    preferTextInputs(prototype, textInputs);
     const created = prototype.onNodeCreated;
     const removed = prototype.onRemoved;
     const configure = prototype.configure;
     const serialize = prototype.serialize;
     const connections = prototype.onConnectionsChange;
+    const inputOnPos = prototype.getInputOnPos;
+    const added = prototype.onAdded;
     prototype.onNodeCreated = function (...args) {
         created?.apply(this, args);
         const scope = createScope(); this._focusedScope = scope;
@@ -41,6 +46,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             widget.hidden = true; widget.type = 'hidden'; widget.computeSize = () => [0, -4];
             widgets.set(name, widget);
         }
+        exposeTextSockets(this, textInputs);
         const element = document.createElement('div'); element.className = `ca-tools pm-focused${split ? ' pm-split' : ''}${pair ? ' pm-pair' : ''}`;
         element.setAttribute('aria-label',pair ? 'Paired prompt editor' : split ? 'Split prompt editor' : 'Focused prompt editor');
         loadStyles(); mountTheme(element, app.ui?.settings, scope);
@@ -63,6 +69,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
                 const mode = data?.settings?.webui_display_mode;
                 if (!scope.signal.aborted && data?.success && ['popup','newtab'].includes(mode)) webDisplayMode = mode;
             }).catch(() => {});
+        const dropTargets = [];
         function textControl(name, label) {
             const widget = widgets.get(name);
             const nativeInput = widget.inputEl;
@@ -78,7 +85,14 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             const field = createField(label,input,`${editorId}-${name}`);
             field.classList.add('pm-editor-main');
             const note = document.createElement('p'); note.className = 'pm-editor-status';
-            note.textContent = `${pair ? label : 'Text'} is supplied by an upstream connection.`;
+            note.textContent = linkNoteText(label);
+            // The prompt box and its link note are drop targets for this input (#343): Nodes 2.0 resolves a drop
+            // through the nearest `.lg-node-widget` and its `[data-slot-key]`; Classic asks getInputOnPos.
+            for (const target of [field,note]) {
+                const key = document.createElement('span'); key.hidden = true; key.dataset.slotKey = '';
+                target.classList.add('lg-node-widget'); target.append(key);
+                dropTargets.push({name,element:target,key});
+            }
             return {input,field,note};
         }
         const positive = textControl('text',pair ? 'Positive prompt' : 'Main prompt');
@@ -143,7 +157,12 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             widget.callback?.(text, app.canvas, thisNode);
             thisNode.setDirtyCanvas(true,true); app.graph?.setDirtyCanvas(true,true);
         }
+        // The node id is assigned when the node joins a graph (and changes on paste), so keys follow it.
+        function syncSlotKeys() {
+            for (const target of dropTargets) target.key.dataset.slotKey = `${thisNode.id}-in-${thisNode.inputs?.findIndex(input => input.name === target.name)}`;
+        }
         function render() {
+            syncSlotKeys();
             mainField.hidden = Boolean(isConnected('text')); connected.hidden = !isConnected('text');
             if (negative) { negative.field.hidden = Boolean(isConnected('negative_text')); negative.note.hidden = !isConnected('negative_text'); }
             if (save) { save.disabled = saving || hasConnectedPairValues(); saveConnectionNotice.hidden = !hasConnectedPairValues(); }
@@ -214,15 +233,33 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             footer.setAttribute('role',opened ? 'status' : 'alert');
             footer.textContent = opened ? 'Web UI opened.' : 'Allow popups to open Web UI, then try again.';
         });
-        this._focusedView = {element,render,restore,snapshot};
+        function inputAt(position) {
+            const canvas = app.canvas;
+            if (canvas?.linkConnector?.state?.connectingTo !== 'input' || !canvas.ds || !canvas.canvas) return undefined;
+            const [x,y] = canvas.ds.convertOffsetToCanvas(position);
+            const box = canvas.canvas.getBoundingClientRect();
+            return textInputAtPoint(thisNode, [box.left + x, box.top + y], dropTargets);
+        }
+        this._focusedView = {element,render,restore,snapshot,inputAt,syncSlotKeys};
         this.addDOMWidget('prompt_manager_focused_ui','div',element,{serialize:false, hideOnZoom:false, getMinHeight:() => 360});
         this.size = [pair ? 1100 : split ? 900 : 550,pair ? 700 : 650]; this.setSize(this.size); restore();
     };
-    prototype.configure = function (...args) { const result = configure?.apply(this,args); this._focusedView?.restore(); return result; };
+    prototype.configure = function (...args) {
+        const result = configure?.apply(this,args);
+        // A saved workflow restores its inputs with their widget bindings; keep the text inputs as sockets.
+        exposeTextSockets(this, textInputs);
+        this._focusedView?.restore();
+        return result;
+    };
     prototype.serialize = function (...args) {
         if (this._focusedView) this.properties[uiKey] = this._focusedView.snapshot();
         return serialize?.apply(this,args);
     };
     prototype.onConnectionsChange = function (...args) { const result = connections?.apply(this,args); this._focusedView?.render(); return result; };
     prototype.onRemoved = function (...args) { this._focusedScope?.dispose(); return removed?.apply(this,args); };
+    prototype.onAdded = function (...args) { const result = added?.apply(this,args); this._focusedView?.syncSlotKeys(); return result; };
+    // Classic: a link dropped on a prompt box (or its link note) fills that box's input.
+    prototype.getInputOnPos = function (...args) {
+        return inputOnPos?.apply(this,args) ?? this._focusedView?.inputAt(args[0]);
+    };
 }

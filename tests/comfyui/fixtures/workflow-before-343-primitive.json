@@ -1,0 +1,379 @@
+{
+ "id": "37b6baef-94f5-49d2-9b42-1ffc70e7da92",
+ "revision": 0,
+ "last_node_id": 4,
+ "last_link_id": 2,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "PromptManagerFocused",
+   "pos": [
+    600,
+    0
+   ],
+   "size": [
+    550,
+    650
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 1
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "CONDITIONING",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "Focused fed by a Primitive",
+   "properties": {
+    "Node name for S&R": "PromptManagerFocused",
+    "focusedUI": {
+     "libraryOpen": false,
+     "libraryFilters": {
+      "category": "",
+      "tags": ""
+     },
+     "composition": false,
+     "metadata": false,
+     "preview": false
+    }
+   },
+   "widgets_values": [
+    "Primitive focused text",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Primitive focused text",
+    "category": "",
+    "tags": "",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_focused_ui": ""
+   }
+  },
+  {
+   "id": 2,
+   "type": "PromptManagerPair",
+   "pos": [
+    600,
+    1200
+   ],
+   "size": [
+    1100,
+    700
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "negative_text",
+     "name": "negative_text",
+     "type": "STRING",
+     "widget": {
+      "name": "negative_text"
+     },
+     "link": 2
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "positive",
+     "name": "positive",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "negative",
+     "name": "negative",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "positive_text",
+     "name": "positive_text",
+     "type": "STRING",
+     "links": null
+    },
+    {
+     "localized_name": "negative_text",
+     "name": "negative_text",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "Pair negative fed by a Primitive",
+   "properties": {
+    "Node name for S&R": "PromptManagerPair",
+    "pairUI": {
+     "libraryOpen": true,
+     "libraryFilters": {
+      "category": "",
+      "tags": ""
+     },
+     "composition": false,
+     "metadata": false,
+     "preview": false
+    }
+   },
+   "widgets_values": [
+    "Typed pair positive",
+    "Primitive pair negative",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Typed pair positive",
+    "negative_text": "Primitive pair negative",
+    "category": "",
+    "tags": "",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_focused_ui": ""
+   }
+  },
+  {
+   "id": 3,
+   "type": "PrimitiveNode",
+   "pos": [
+    0,
+    0
+   ],
+   "size": [
+    210,
+    88
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "STRING",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "links": [
+      1
+     ]
+    }
+   ],
+   "properties": {
+    "Run widget replace on values": false
+   },
+   "widgets_values": [
+    "Primitive focused text"
+   ],
+   "widgets_values_named": {
+    "text": "Primitive focused text"
+   }
+  },
+  {
+   "id": 4,
+   "type": "PrimitiveNode",
+   "pos": [
+    0,
+    1200
+   ],
+   "size": [
+    210,
+    88
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "STRING",
+     "type": "STRING",
+     "widget": {
+      "name": "negative_text"
+     },
+     "links": [
+      2
+     ]
+    }
+   ],
+   "properties": {
+    "Run widget replace on values": false
+   },
+   "widgets_values": [
+    "Primitive pair negative"
+   ],
+   "widgets_values_named": {
+    "negative_text": "Primitive pair negative"
+   }
+  }
+ ],
+ "links": [
+  [
+   1,
+   3,
+   0,
+   1,
+   3,
+   "STRING"
+  ],
+  [
+   2,
+   4,
+   0,
+   2,
+   4,
+   "STRING"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {
+  "ds": {
+   "scale": 0.9,
+   "offset": [
+    416,
+    110
+   ]
+  }
+ },
+ "version": 0.4
+}

@@ -1,0 +1,1241 @@
+{
+ "id": "882efddb-48a1-4dd5-8575-14922103c4b8",
+ "revision": 0,
+ "last_node_id": 12,
+ "last_link_id": 4,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "PromptManager",
+   "pos": [
+    400,
+    100
+   ],
+   "size": [
+    600,
+    610
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "prepend_text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "append_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "CONDITIONING",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "PromptManager typed",
+   "properties": {
+    "Node name for S&R": "PromptManager",
+    "resultTimeout": 3,
+    "showTestButton": false,
+    "webuiDisplayMode": "popup"
+   },
+   "widgets_values": [
+    "Saved PromptManager text",
+    "Saved category",
+    "saved-tag",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Saved PromptManager text",
+    "category": "Saved category",
+    "tags": "saved-tag",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_search_ui": ""
+   }
+  },
+  {
+   "id": 2,
+   "type": "PromptManagerText",
+   "pos": [
+    1600,
+    100
+   ],
+   "size": [
+    600,
+    610
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "prepend_text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "append_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "PromptManagerText typed",
+   "properties": {
+    "Node name for S&R": "PromptManagerText",
+    "resultTimeout": 3,
+    "showTestButton": false,
+    "webuiDisplayMode": "popup"
+   },
+   "widgets_values": [
+    "Saved PromptManagerText text",
+    "Saved category",
+    "saved-tag",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Saved PromptManagerText text",
+    "category": "Saved category",
+    "tags": "saved-tag",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_search_ui": ""
+   }
+  },
+  {
+   "id": 3,
+   "type": "PromptManagerFocused",
+   "pos": [
+    2800,
+    100
+   ],
+   "size": [
+    550,
+    650
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "CONDITIONING",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "PromptManagerFocused typed",
+   "properties": {
+    "Node name for S&R": "PromptManagerFocused",
+    "focusedUI": {
+     "libraryOpen": false,
+     "libraryFilters": {
+      "category": "",
+      "tags": ""
+     },
+     "composition": false,
+     "metadata": false,
+     "preview": false
+    }
+   },
+   "widgets_values": [
+    "Saved PromptManagerFocused text",
+    "Saved category",
+    "saved-tag",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Saved PromptManagerFocused text",
+    "category": "Saved category",
+    "tags": "saved-tag",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_focused_ui": ""
+   }
+  },
+  {
+   "id": 4,
+   "type": "PromptManagerSplit",
+   "pos": [
+    4000,
+    100
+   ],
+   "size": [
+    900,
+    650
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "CONDITIONING",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "PromptManagerSplit typed",
+   "properties": {
+    "Node name for S&R": "PromptManagerSplit",
+    "splitUI": {
+     "libraryOpen": true,
+     "libraryFilters": {
+      "category": "",
+      "tags": ""
+     },
+     "composition": false,
+     "metadata": false,
+     "preview": false
+    }
+   },
+   "widgets_values": [
+    "Saved PromptManagerSplit text",
+    "Saved category",
+    "saved-tag",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Saved PromptManagerSplit text",
+    "category": "Saved category",
+    "tags": "saved-tag",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_focused_ui": ""
+   }
+  },
+  {
+   "id": 5,
+   "type": "PromptManagerPair",
+   "pos": [
+    5200,
+    100
+   ],
+   "size": [
+    1100,
+    700
+   ],
+   "flags": {},
+   "order": 4,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "negative_text",
+     "name": "negative_text",
+     "type": "STRING",
+     "widget": {
+      "name": "negative_text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "positive",
+     "name": "positive",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "negative",
+     "name": "negative",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "positive_text",
+     "name": "positive_text",
+     "type": "STRING",
+     "links": null
+    },
+    {
+     "localized_name": "negative_text",
+     "name": "negative_text",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "PromptManagerPair typed",
+   "properties": {
+    "Node name for S&R": "PromptManagerPair",
+    "pairUI": {
+     "libraryOpen": true,
+     "libraryFilters": {
+      "category": "",
+      "tags": ""
+     },
+     "composition": false,
+     "metadata": false,
+     "preview": false
+    }
+   },
+   "widgets_values": [
+    "Saved PromptManagerPair text",
+    "Saved pair negative",
+    "Saved category",
+    "saved-tag",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Saved PromptManagerPair text",
+    "negative_text": "Saved pair negative",
+    "category": "Saved category",
+    "tags": "saved-tag",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_focused_ui": ""
+   }
+  },
+  {
+   "id": 6,
+   "type": "PromptManagerFocused",
+   "pos": [
+    400,
+    1400
+   ],
+   "size": [
+    550,
+    650
+   ],
+   "flags": {},
+   "order": 9,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 1
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "CONDITIONING",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "Focused linked",
+   "properties": {
+    "Node name for S&R": "PromptManagerFocused",
+    "focusedUI": {
+     "libraryOpen": false,
+     "libraryFilters": {
+      "category": "",
+      "tags": ""
+     },
+     "composition": false,
+     "metadata": false,
+     "preview": false
+    }
+   },
+   "widgets_values": [
+    "Typed under focused link",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Typed under focused link",
+    "category": "",
+    "tags": "",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_focused_ui": ""
+   }
+  },
+  {
+   "id": 7,
+   "type": "PrimitiveString",
+   "pos": [
+    0,
+    1400
+   ],
+   "size": [
+    270,
+    58
+   ],
+   "flags": {},
+   "order": 5,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "value",
+     "name": "value",
+     "type": "STRING",
+     "widget": {
+      "name": "value"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": [
+      1
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PrimitiveString"
+   },
+   "widgets_values": [
+    "Linked focused text"
+   ],
+   "widgets_values_named": {
+    "value": "Linked focused text"
+   }
+  },
+  {
+   "id": 8,
+   "type": "PromptManagerPair",
+   "pos": [
+    1600,
+    1400
+   ],
+   "size": [
+    1100,
+    700
+   ],
+   "flags": {},
+   "order": 10,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 2
+    },
+    {
+     "localized_name": "negative_text",
+     "name": "negative_text",
+     "type": "STRING",
+     "widget": {
+      "name": "negative_text"
+     },
+     "link": 3
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "positive",
+     "name": "positive",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "negative",
+     "name": "negative",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "positive_text",
+     "name": "positive_text",
+     "type": "STRING",
+     "links": null
+    },
+    {
+     "localized_name": "negative_text",
+     "name": "negative_text",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "Pair linked",
+   "properties": {
+    "Node name for S&R": "PromptManagerPair",
+    "pairUI": {
+     "libraryOpen": true,
+     "libraryFilters": {
+      "category": "",
+      "tags": ""
+     },
+     "composition": false,
+     "metadata": false,
+     "preview": false
+    }
+   },
+   "widgets_values": [
+    "Typed pair positive",
+    "Typed pair negative",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Typed pair positive",
+    "negative_text": "Typed pair negative",
+    "category": "",
+    "tags": "",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_focused_ui": ""
+   }
+  },
+  {
+   "id": 9,
+   "type": "PrimitiveString",
+   "pos": [
+    1200,
+    1400
+   ],
+   "size": [
+    270,
+    58
+   ],
+   "flags": {},
+   "order": 6,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "value",
+     "name": "value",
+     "type": "STRING",
+     "widget": {
+      "name": "value"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": [
+      2
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PrimitiveString"
+   },
+   "widgets_values": [
+    "Linked pair text"
+   ],
+   "widgets_values_named": {
+    "value": "Linked pair text"
+   }
+  },
+  {
+   "id": 10,
+   "type": "PrimitiveString",
+   "pos": [
+    1200,
+    1600
+   ],
+   "size": [
+    270,
+    58
+   ],
+   "flags": {},
+   "order": 7,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "value",
+     "name": "value",
+     "type": "STRING",
+     "widget": {
+      "name": "value"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": [
+      3
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PrimitiveString"
+   },
+   "widgets_values": [
+    "Linked pair negative_text"
+   ],
+   "widgets_values_named": {
+    "value": "Linked pair negative_text"
+   }
+  },
+  {
+   "id": 11,
+   "type": "PromptManager",
+   "pos": [
+    3000,
+    1400
+   ],
+   "size": [
+    600,
+    610
+   ],
+   "flags": {},
+   "order": 11,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "clip",
+     "name": "clip",
+     "type": "CLIP",
+     "link": null
+    },
+    {
+     "localized_name": "text",
+     "name": "text",
+     "type": "STRING",
+     "widget": {
+      "name": "text"
+     },
+     "link": 4
+    },
+    {
+     "localized_name": "category",
+     "name": "category",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "category"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "tags",
+     "name": "tags",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "tags"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "search_text",
+     "name": "search_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "search_text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "prepend_text",
+     "name": "prepend_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "prepend_text"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "append_text",
+     "name": "append_text",
+     "shape": 7,
+     "type": "STRING",
+     "widget": {
+      "name": "append_text"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "CONDITIONING",
+     "name": "CONDITIONING",
+     "type": "CONDITIONING",
+     "links": null
+    },
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": null
+    }
+   ],
+   "title": "Classic linked",
+   "properties": {
+    "Node name for S&R": "PromptManager",
+    "resultTimeout": 3,
+    "showTestButton": false,
+    "webuiDisplayMode": "popup"
+   },
+   "widgets_values": [
+    null,
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "widgets_values_named": {
+    "text": "Typed under classic link",
+    "category": "",
+    "tags": "",
+    "search_text": "",
+    "prepend_text": "",
+    "append_text": "",
+    "prompt_manager_search_ui": ""
+   }
+  },
+  {
+   "id": 12,
+   "type": "PrimitiveString",
+   "pos": [
+    2600,
+    1400
+   ],
+   "size": [
+    270,
+    58
+   ],
+   "flags": {},
+   "order": 8,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "value",
+     "name": "value",
+     "type": "STRING",
+     "widget": {
+      "name": "value"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "STRING",
+     "name": "STRING",
+     "type": "STRING",
+     "links": [
+      4
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PrimitiveString"
+   },
+   "widgets_values": [
+    "Linked classic text"
+   ],
+   "widgets_values_named": {
+    "value": "Linked classic text"
+   }
+  }
+ ],
+ "links": [
+  [
+   1,
+   7,
+   0,
+   6,
+   3,
+   "STRING"
+  ],
+  [
+   2,
+   9,
+   0,
+   8,
+   3,
+   "STRING"
+  ],
+  [
+   3,
+   10,
+   0,
+   8,
+   4,
+   "STRING"
+  ],
+  [
+   4,
+   12,
+   0,
+   11,
+   1,
+   "STRING"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {
+  "ds": {
+   "scale": 0.9,
+   "offset": [
+    416,
+    110
+   ]
+  }
+ },
+ "version": 0.4
+}
