@@ -3494,10 +3494,14 @@ class TestSharedListing(ImageAPITestCase):
         await self.scan.wait_entered()
         self.api.mark_root_dirty(self._output("c.png"))
         (task,) = self.api._listing_tasks
+        seq = record.walk_seq
         task.cancel()  # e.g. the loop shutting down without on_cleanup
         await asyncio.gather(task, return_exceptions=True)
         gate.set()
+        await self._settle()
         self.assertTrue(task.cancelled())
+        self.assertEqual(record.walk_seq, seq)  # no walk started after it
+        self.assertEqual(self.scan.calls, 2)
         self.assertIsNone(record.flight)
         self.assertIsNone(record.rewalk_handle)
         self.assertEqual(self.api._listing_tasks, set())
