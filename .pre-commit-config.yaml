@@ -22,7 +22,7 @@ repos:
 
       - id: tests
         name: tests
-        entry: python -m unittest discover tests/ -v
+        entry: python -m tests.run_suite -q
         language: system
         pass_filenames: false
         stages: [pre-push]

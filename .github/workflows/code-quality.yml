@@ -19,6 +19,9 @@ jobs:
   security:
     name: bandit (high severity)
     runs-on: ubuntu-latest
+    # ceil(1.5 x slowest of three green main runs) + 3, never under 5 (test.yml): runs 40257217665,
+    # 40254137380, 40240706583 took 23s / 16s / 23s -> 5 min.
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v7

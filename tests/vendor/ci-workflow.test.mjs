@@ -1,5 +1,6 @@
-// Structural checks on .github/workflows/viewerjs-check.yml. The tooling has no YAML parser, so these
-// read the workflow's fixed two-space layout: jobs at two spaces, their keys at four, steps at six.
+// Structural checks on .github/workflows/viewerjs-check.yml, plus the time limits of every CI workflow.
+// The tooling has no YAML parser, so these read the workflow's fixed two-space layout: jobs at two
+// spaces, their keys at four, steps at six.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -219,5 +220,30 @@ test('browser job timeouts keep a real margin over measured runs', () => {
     for (const id of ['frontend-coverage', 'browser-workflows']) {
         const minutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(allJobs.get(id))[1]);
         assert.ok(minutes >= 20, `${id} allows at least 20 minutes, since runner speed varies`);
+    }
+});
+
+// Every job is bounded (#350): a hang ends at a measured limit instead of GitHub's 6-hour default.
+const BOUNDED_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
+const readWorkflow = name => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
+
+test('every job in the CI workflows has a numeric timeout-minutes', () => {
+    for (const name of BOUNDED_WORKFLOWS) {
+        const found = jobs(readWorkflow(name));
+        assert.ok(found.size > 0, `${name} has jobs`);
+        for (const [id, body] of found) {
+            const limit = /^ {4}timeout-minutes: (\d+)\s*$/m.exec(body);
+            assert.ok(limit, `${name} job ${id} sets a numeric timeout-minutes`);
+            assert.ok(Number(limit[1]) >= 5, `${name} job ${id} allows at least 5 minutes`);
+        }
+    }
+});
+
+test('the Python matrix and coverage run the suite through the watchdog runner', () => {
+    const found = jobs(readWorkflow('test.yml'));
+    assert.match(found.get('test'), /^ {8}run: python -m tests\.run_suite -v$/m);
+    assert.match(found.get('coverage'), /^ {10}python -m coverage run -m tests\.run_suite$/m);
+    for (const id of ['test', 'coverage']) {
+        assert.doesNotMatch(found.get(id), /unittest discover/, `${id} no longer runs the bare unittest discover`);
     }
 });

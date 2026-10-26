@@ -24,6 +24,13 @@ from utils.execution_history_events import (
 )
 from utils.execution_history_writer import HistoryWriter
 
+# These calls must return while another thread holds the writer in a step that
+# waits up to 3 s (release.wait(3)). 1 s still tells "returned at once" from
+# "waited for the release" without failing on a loaded shared runner (#242:
+# generous ceilings, never a short wall clock). A 0.1 s ceiling failed at
+# 0.19 s on macOS py3.13 (PR #351).
+NON_BLOCKING_CEILING = 1.0
+
 
 class ManualClock:
     def __init__(self):
@@ -590,10 +597,10 @@ class HistoryWriterTests(unittest.TestCase):
                 before = time.monotonic()
                 self.assertTrue(writer.status().accepting)
                 self.assertTrue(writer.submit(self.finish_command(start)))
-                self.assertLess(time.monotonic() - before, 0.1)
+                self.assertLess(time.monotonic() - before, NON_BLOCKING_CEILING)
                 before = time.monotonic()
                 self.assertFalse(writer.close(0))
-                self.assertLess(time.monotonic() - before, 0.1)
+                self.assertLess(time.monotonic() - before, NON_BLOCKING_CEILING)
                 self.assertGreater(writer.context_budget.charged_bytes, 0)
                 self.assertEqual(writer.status().pending, 1)
             finally:
@@ -663,11 +670,11 @@ class HistoryWriterTests(unittest.TestCase):
         before = time.monotonic()
         self.assertFalse(writer.submit(self.start_command()))
         self.assertIsNone(writer.status().epoch)
-        self.assertLess(time.monotonic() - before, 0.1)
+        self.assertLess(time.monotonic() - before, NON_BLOCKING_CEILING)
         self.assertIsNone(self.db.get_execution_run(self.start_command().run_id))
         before = time.monotonic()
         self.assertFalse(writer.close(0.03))
-        self.assertLess(time.monotonic() - before, 0.2)
+        self.assertLess(time.monotonic() - before, NON_BLOCKING_CEILING)
         release.set()
         self.wait_for(lambda: not writer.status().alive)
         self.assertFalse(writer.status().accepting)
@@ -958,7 +965,7 @@ class HistoryWriterTests(unittest.TestCase):
             self.assertTrue(writer.submit(queued))
             before = time.monotonic()
             self.assertFalse(writer.close(0.03))
-            self.assertLess(time.monotonic() - before, 0.2)
+            self.assertLess(time.monotonic() - before, NON_BLOCKING_CEILING)
             release.set()
             self.wait_for(lambda: not writer.status().alive)
         self.assertIsNone(self.db.get_execution_run(queued.run_id))
