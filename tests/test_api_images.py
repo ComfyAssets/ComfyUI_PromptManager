@@ -2540,7 +2540,10 @@ class TestSharedListing(ImageAPITestCase):
         from py.api import gallery_listing
 
         record = self._record()
-        record.walked_at -= (seconds or gallery_listing.REFRESH_AFTER) + 1
+        shift = (seconds or gallery_listing.REFRESH_AFTER) + 1
+        record.walked_at -= shift
+        # An old listing's walk also started long ago (REWALK_MIN_INTERVAL).
+        record.last_started_at -= shift
 
     async def _settle(self):
         """Wait for every background walk this API started."""
@@ -3073,6 +3076,401 @@ class TestSharedListing(ImageAPITestCase):
         self.assertTrue(task.done())
         self.assertIsNone(self.api._workspace_warm_task)
 
+    # -- monitor-triggered walks (#348, PR 2) ---------------------------
+
+    def _interval(self, seconds):
+        """Patch REWALK_MIN_INTERVAL to *seconds*, whatever the walk took."""
+        for name in ("REWALK_FLOOR", "REWALK_CAP"):
+            patcher = patch.object(gallery_listing, name, seconds)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _output(self, name):
+        """A new output on disk, spelled as the monitor reports it (resolved)."""
+        return os.path.realpath(make_png(self.output_dir / name))
+
+    async def _listed(self):
+        """A stored listing of the root, built by a read."""
+        await self._json("GET", self.URL)
+        await self._settle()
+        return self._record()
+
+    def _fire(self, record):
+        """Run the pending deferred walk now, as its timer would."""
+        handle = record.rewalk_handle
+        self.assertIsNotNone(handle, "no deferred walk is pending")
+        handle.cancel()
+        self.api._delayed_walk(self.output_dir, record)
+
+    def _remaining(self, handle):
+        return handle.when() - asyncio.get_running_loop().time()
+
+    async def test_a_settled_output_is_listed_without_a_reload(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(0)
+        self.api.mark_root_dirty(self._output("b.png"))
+        self.assertIsNotNone(record.flight)  # the interval allows: walks now
+        self.assertFalse(record.dirty)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+        self.assertEqual(len(record.files), 2)
+        _, data = await self._json("GET", self.URL)
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(self.scan.calls, 2)
+
+    async def test_the_monitor_thread_hops_onto_the_loop(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(0)
+        path = self._output("b.png")
+        calls = []
+        real = self.api.mark_root_dirty
+
+        def mark(seen):
+            calls.append(threading.get_ident())
+            real(seen)
+
+        self.api.mark_root_dirty = mark
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.api.notify_output_settled, path)
+        # The hop was queued before the executor's result: one loop turn runs it.
+        await asyncio.sleep(0)
+        self.assertEqual(calls, [threading.get_ident()])
+        await self._settle()
+        self.assertEqual(len(record.files), 2)
+
+    async def test_notify_before_the_loop_is_known_does_nothing(self):
+        self.assertIsNone(self.api._listing_loop)
+        with patch.object(self.api, "mark_root_dirty") as mark:
+            self.api.notify_output_settled(self._output("b.png"))
+            await asyncio.sleep(0)
+        mark.assert_not_called()
+
+    async def test_notify_after_cleanup_does_nothing(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        await self.api.cleanup_gallery_listings(web.Application())
+        self._interval(0)
+        with patch.object(self.api, "mark_root_dirty") as mark:
+            self.api.notify_output_settled(self._output("b.png"))
+            await asyncio.sleep(0)
+        mark.assert_not_called()
+        # A hop queued before the cleanup is dropped when it runs.
+        self.api.mark_root_dirty(self._output("c.png"))
+        self.assertFalse(record.dirty)
+        self.assertIsNone(record.flight)
+        self.assertIsNone(record.rewalk_handle)
+
+    async def test_notify_on_a_closed_loop_does_nothing(self):
+        loop = asyncio.new_event_loop()
+        loop.close()
+        self.api._listing_loop = loop
+        self.api.notify_output_settled(self._output("b.png"))  # no exception
+
+    async def test_notify_racing_the_loop_closing_does_nothing(self):
+        class ClosingLoop:
+            def is_running(self):
+                return True
+
+            def call_soon_threadsafe(self, *_args):
+                raise RuntimeError("Event loop is closed")
+
+        self.api._listing_loop = ClosingLoop()
+        self.api.notify_output_settled(self._output("b.png"))  # no exception
+
+    async def test_an_output_outside_every_root_is_ignored(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(0)
+        elsewhere = make_png(self.comfy_dir / "output2" / "x.png")
+        self.api.mark_root_dirty(os.path.realpath(elsewhere))
+        self.assertFalse(record.dirty)
+        self.assertIsNone(record.flight)
+        self.assertIsNone(record.rewalk_handle)
+
+    async def test_a_root_never_listed_is_not_walked_by_a_mark(self):
+        # No listing, no walk running: the first read walks anyway.
+        self.api.mark_root_dirty(self._output("b.png"))
+        self.assertEqual(self.api._root_listings, {})
+        self.assertEqual(self.scan.calls, 0)
+
+    async def test_a_dropped_listing_is_left_to_the_next_read(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self.api.invalidate_gallery_cache()
+        self._interval(0)
+        self.api.mark_root_dirty(self._output("b.png"))
+        self.assertIsNone(record.flight)
+        self.assertEqual(self.scan.calls, 1)
+
+    async def test_the_walk_records_the_resolved_root_and_its_timing(self):
+        make_png(self.output_dir / "a.png")
+        before = images_module._time.monotonic()
+        record = await self._listed()
+        self.assertEqual(
+            record.resolved_root, os.path.normcase(os.path.realpath(self.output_dir))
+        )
+        self.assertGreaterEqual(record.last_started_at, before)
+        self.assertLessEqual(record.last_started_at, record.walked_at)
+        # Measured when the walk ended, after its listing was stored.
+        self.assertGreaterEqual(
+            record.last_duration, record.walked_at - record.last_started_at
+        )
+
+    async def test_a_failed_walk_records_its_timing_and_clears_dirty(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        self.api.mark_root_dirty(self._output("b.png"))
+        self.assertTrue(record.dirty)
+        self.api._scan_gallery_files_sync = _raise
+        started = record.last_started_at
+        with self.assertLogs(self.api.logger, "WARNING"):
+            self._fire(record)
+            await self._settle()
+        self.assertGreater(record.last_started_at, started)
+        self.assertIsNotNone(record.last_duration)
+        self.assertFalse(record.dirty)
+        self.assertIsNone(record.rewalk_handle)  # no trailing walk after a failure
+        self.assertEqual(len(record.files), 1)  # the previous listing is kept
+
+    async def test_a_burst_of_marks_coalesces_into_one_walk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        for i in range(5):
+            self.api.mark_root_dirty(self._output(f"b{i}.png"))
+        handle = record.rewalk_handle
+        self.assertIsNotNone(handle)
+        self.assertIsNone(record.flight)
+        self.assertEqual(self.scan.calls, 1)
+        # Due one interval after the last walk started, not 30 s from now.
+        due = record.last_started_at + 30 - images_module._time.monotonic()
+        self.assertAlmostEqual(self._remaining(handle), due, delta=1)
+        self._fire(record)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+        self.assertEqual(len(record.files), 6)
+        self.assertFalse(record.dirty)
+        self.assertIsNone(record.rewalk_handle)
+
+    async def test_a_mark_during_a_walk_gives_exactly_one_trailing_walk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        gate = self.scan.hold_next()
+        rescan = asyncio.ensure_future(
+            self._json("POST", "/prompt_manager/gallery/rescan")
+        )
+        await self.scan.wait_entered()  # listed before b.png exists
+        for name in ("b.png", "c.png"):
+            self.api.mark_root_dirty(self._output(name))
+        # Never armed while a walk runs: the walk's end re-checks dirty.
+        self.assertIsNone(record.rewalk_handle)
+        self.assertTrue(record.dirty)
+        gate.set()
+        status, _ = await rescan
+        self.assertEqual(status, 200)
+        self.assertEqual(len(record.files), 1)
+        handle = record.rewalk_handle
+        self.assertIsNotNone(handle)  # the trailing walk, deferred by the interval
+        self.assertGreaterEqual(self._remaining(handle), 0.5)
+        self._fire(record)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 3)
+        self.assertEqual(len(record.files), 3)
+        self.assertIsNone(record.rewalk_handle)
+        self.assertFalse(record.dirty)
+
+    async def test_a_walk_slower_than_the_interval_trails_at_once_and_stops(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(0)  # the walk outlasts its interval
+        gate = self.scan.hold_next()
+        self.api.mark_root_dirty(self._output("b.png"))
+        await self.scan.wait_entered()
+        self.api.mark_root_dirty(self._output("c.png"))
+        self.assertIsNone(record.rewalk_handle)
+        gate.set()
+        await self._settle()
+        # One walk for the first mark, one trailing walk for the second, then
+        # nothing: no mark arrived during the trailing walk.
+        self.assertEqual(self.scan.calls, 3)
+        self.assertEqual(len(record.files), 3)
+        self.assertIsNone(record.rewalk_handle)
+        self.assertIsNone(record.flight)
+
+    async def test_a_read_triggered_walk_cancels_a_pending_rewalk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        self.api.mark_root_dirty(self._output("b.png"))
+        handle = record.rewalk_handle
+        status, data = await self._json("POST", "/prompt_manager/gallery/rescan")
+        self.assertEqual((status, data["total"]), (200, 2))
+        self.assertTrue(handle.cancelled())
+        self.assertIsNone(record.rewalk_handle)
+        self.assertFalse(record.dirty)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+
+    async def test_after_the_trailing_walk_a_new_mark_arms_again(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        self.api.mark_root_dirty(self._output("b.png"))
+        self._fire(record)
+        await self._settle()
+        self.assertIsNone(record.rewalk_handle)
+        self.api.mark_root_dirty(self._output("c.png"))
+        self.assertIsNotNone(record.rewalk_handle)
+        self._fire(record)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 3)
+        self.assertEqual(len(record.files), 3)
+
+    async def test_a_deferred_walk_waits_at_least_half_a_second(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        # The interval ends in a few milliseconds: still never a zero delay.
+        record.last_started_at = images_module._time.monotonic() - 29.99
+        self.api.mark_root_dirty(self._output("b.png"))
+        handle = record.rewalk_handle
+        self.assertIsNotNone(handle)
+        self.assertGreaterEqual(self._remaining(handle), 0.45)
+        handle.cancel()
+
+    async def test_a_mark_moves_a_later_stale_refresh_earlier(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._age()
+        self._interval(5)
+        with patch.object(gallery_listing, "REFRESH_DELAY", 30):
+            await self._json("GET", self.URL)
+        stale = record.rewalk_handle
+        self.assertGreater(self._remaining(stale), 25)
+        # The interval has long passed: the mark's walk starts now, and that
+        # walk is the refresh the stale read was waiting for.
+        self.api.mark_root_dirty(self._output("b.png"))
+        self.assertTrue(stale.cancelled())
+        self.assertIsNotNone(record.flight)
+        self.assertIsNone(record.rewalk_handle)
+        await self._settle()
+        self.assertEqual(self.scan.calls, 2)
+        self.assertEqual(len(record.files), 2)
+
+    async def test_a_stale_read_keeps_an_earlier_pending_rewalk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(20)
+        self.api.mark_root_dirty(self._output("b.png"))
+        pending = record.rewalk_handle
+        when = pending.when()
+        # Stale by its age, while the interval since the last walk still runs.
+        record.walked_at -= gallery_listing.REFRESH_AFTER + 1
+        with patch.object(gallery_listing, "REFRESH_DELAY", 30):
+            await self._json("GET", self.URL)
+        self.assertIs(record.rewalk_handle, pending)
+        self.assertEqual(pending.when(), when)
+        self.assertFalse(pending.cancelled())
+
+    async def test_a_stale_read_moves_a_later_pending_rewalk_earlier(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(15)
+        self.api.mark_root_dirty(self._output("b.png"))
+        pending = record.rewalk_handle
+        self.assertGreater(self._remaining(pending), 10)
+        # A listing older than REFRESH_AFTER whose interval is over.
+        self._age()
+        with patch.object(gallery_listing, "REFRESH_DELAY", 2):
+            await self._json("GET", self.URL)
+        self.assertTrue(pending.cancelled())
+        replaced = record.rewalk_handle
+        self.assertIsNotNone(replaced)
+        self.assertLess(self._remaining(replaced), 3)
+        self.assertEqual(self.scan.calls, 1)
+        replaced.cancel()
+
+    async def test_a_dirty_read_rearms_a_lost_rewalk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        record.dirty = True  # e.g. its timer was cancelled by hand
+        await self._json("GET", self.URL)
+        self.assertIsNotNone(record.rewalk_handle)
+        self.assertEqual(self.scan.calls, 1)
+
+    async def test_cleanup_cancels_a_pending_rewalk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(30)
+        self.api.mark_root_dirty(self._output("b.png"))
+        handle = record.rewalk_handle
+        await self.api.cleanup_gallery_listings(web.Application())
+        self.assertTrue(handle.cancelled())
+        self.assertIsNone(record.rewalk_handle)
+        self.assertEqual(self.scan.calls, 1)
+
+    async def test_a_walk_cancelled_by_cleanup_starts_no_trailing_walk(self):
+        make_png(self.output_dir / "a.png")
+        record = await self._listed()
+        self._interval(0)
+        gate = self.scan.hold_next()
+        self.api.mark_root_dirty(self._output("b.png"))
+        await self.scan.wait_entered()
+        self.api.mark_root_dirty(self._output("c.png"))
+        self.assertTrue(record.dirty)
+        await self.api.cleanup_gallery_listings(web.Application())
+        gate.set()
+        self.assertIsNone(record.flight)
+        self.assertIsNone(record.rewalk_handle)
+        self.assertEqual(self.api._listing_tasks, set())
+        self.assertEqual(self.scan.calls, 2)
+
+    async def test_a_warm_up_after_cleanup_listens_again(self):
+        make_png(self.output_dir / "a.png")
+        self._interval(0)
+        await self._warmed()
+        await self.api.cleanup_gallery_listings(web.Application())
+        await self._warmed()
+        record = self._record()
+        self.api.mark_root_dirty(self._output("b.png"))
+        await self._settle()
+        self.assertEqual(len(record.files), 2)
+
+    async def test_monitor_walks_during_a_workspace_build_add_one_more_build(self):
+        make_png(self.output_dir / "a.png")
+        release, entered = threading.Event(), threading.Event()
+        built = []
+        real = self.api._build_workspace_caches
+
+        def build(listings):
+            built.append(len(listings[0][2]))
+            if len(built) == 1:
+                entered.set()
+                release.wait(_HANG_LIMIT)
+            real(listings)
+
+        self.addCleanup(release.set)
+        self._interval(0)
+        with patch.object(self.api, "_build_workspace_caches", side_effect=build):
+            await self.api.warm_gallery_listings(web.Application())
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, entered.wait, _HANG_LIMIT)
+            for name in ("b.png", "c.png", "d.png"):  # three monitor walks
+                self.api.mark_root_dirty(self._output(name))
+                while self.api._listing_tasks:
+                    await asyncio.gather(*list(self.api._listing_tasks))
+                    await asyncio.sleep(0)
+            release.set()
+            await self._settle()
+        self.assertEqual(built, [1, 4])
+        self.assertEqual(self.scan.calls, 4)
+        self.assertTrue(self._workspace_ready())
+
 
 class TestGalleryListingHostHooks(unittest.IsolatedAsyncioTestCase):
     async def test_root_registers_the_warm_up_and_its_cleanup(self):
@@ -3092,3 +3490,26 @@ class TestGalleryListingHostHooks(unittest.IsolatedAsyncioTestCase):
             ) as (package, host):
                 self.assertIn(package.api.warm_gallery_listings, host.app.on_startup)
                 self.assertIn(package.api.cleanup_gallery_listings, host.app.on_cleanup)
+
+    async def test_root_connects_the_monitor_to_the_listing(self):
+        try:
+            from test_init_package import fake_server_module, load_package
+        except ImportError:
+            from tests.test_init_package import fake_server_module, load_package
+
+        with tempfile.TemporaryDirectory() as directory:
+            server = fake_server_module()
+            server.PromptServer.instance.app = web.Application()
+            with load_package(
+                "gallery_listing_monitor_pkg",
+                str(Path(directory) / "db.sqlite"),
+                directory,
+                server,
+            ) as (package, host):
+                monitor = package._global_image_monitor
+                self.assertEqual(
+                    monitor.output_listener, package.api.notify_output_settled
+                )
+                # The first cleanup hook stops the monitor's hand-offs.
+                await host.app.on_cleanup[0](host.app)
+                self.assertIsNone(monitor.output_listener)

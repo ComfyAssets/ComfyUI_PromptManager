@@ -1,6 +1,8 @@
 """Pure helpers of the shared Images listing (py/api/gallery_listing.py, #348)."""
 
+import ntpath
 import os
+import posixpath
 import sys
 import tempfile
 import unittest
@@ -17,6 +19,8 @@ from py.api.gallery_listing import (  # noqa: E402
     RootListing,
     WalkOutcome,
     folder_sets,
+    rewalk_interval,
+    root_contains,
     same_listing,
     walk_root,
 )
@@ -123,24 +127,36 @@ class WalkRootTests(unittest.TestCase):
     def test_returns_the_listing_and_both_folder_sets(self):
         files = [(self.root / "sub" / "a.png", 2.0), (self.root / "b.png", 1.0)]
         scan, calls = self._scan(files)
-        listed, folders, with_ancestors = walk_root(scan, self.root, None)
+        listed, folders, with_ancestors, resolved = walk_root(scan, self.root, None)
         self.assertEqual(calls, [self.root])
         self.assertEqual(listed, files)
         self.assertEqual(folders, frozenset({"sub"}))
         self.assertEqual(with_ancestors, frozenset({"sub"}))
+        self.assertEqual(resolved, os.path.normcase(os.path.realpath(self.root)))
+
+    def test_the_resolved_root_follows_a_symlinked_root(self):
+        link = Path(self._tmp.name) / "linked"
+        try:
+            os.symlink(self.root, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        scan, _calls = self._scan([])
+        resolved = walk_root(scan, link, None)[3]
+        self.assertEqual(resolved, os.path.normcase(os.path.realpath(self.root)))
+        self.assertNotEqual(resolved, os.path.normcase(str(link)))
 
     def test_an_unchanged_walk_returns_the_previous_list_object(self):
         files = [(self.root / "sub" / "a.png", 2.0)]
         previous = list(files)
         scan, _calls = self._scan(files)
-        listed, _folders, _ancestors = walk_root(scan, self.root, previous)
+        listed, _folders, _ancestors, _resolved = walk_root(scan, self.root, previous)
         self.assertIs(listed, previous)
 
     def test_a_changed_walk_returns_the_new_list(self):
         previous = [(self.root / "sub" / "a.png", 2.0)]
         files = [(self.root / "sub" / "a.png", 3.0)]
         scan, _calls = self._scan(files)
-        listed, _folders, _ancestors = walk_root(scan, self.root, previous)
+        listed, _folders, _ancestors, _resolved = walk_root(scan, self.root, previous)
         self.assertIsNot(listed, previous)
         self.assertEqual(listed, files)
 
@@ -179,6 +195,96 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(gallery_listing.REFRESH_AFTER, 30)
         self.assertEqual(gallery_listing.REFRESH_DELAY, 1.0)
         self.assertIsNone(RootListing().rewalk_handle)
+
+    def test_a_new_record_is_clean_and_never_walked(self):
+        record = RootListing()
+        self.assertFalse(record.dirty)
+        self.assertIsNone(record.resolved_root)
+        self.assertIsNone(record.last_started_at)
+        self.assertIsNone(record.last_duration)
+
+    def test_drop_keeps_the_resolved_root_and_the_walk_timing(self):
+        # A drop clears the listing, not what is known about the root itself.
+        record = RootListing(resolved_root="/o", last_started_at=1.0)
+        record.last_duration = 0.5
+        record.dirty = True
+        record.drop()
+        self.assertEqual(record.resolved_root, "/o")
+        self.assertEqual((record.last_started_at, record.last_duration), (1.0, 0.5))
+        self.assertTrue(record.dirty)
+
+
+class RewalkIntervalTests(unittest.TestCase):
+    def test_constants(self):
+        self.assertEqual(
+            (
+                gallery_listing.REWALK_FLOOR,
+                gallery_listing.REWALK_FACTOR,
+                gallery_listing.REWALK_CAP,
+                gallery_listing.MIN_REWALK_DELAY,
+            ),
+            (5, 5, 15, 0.5),
+        )
+
+    def test_short_walks_wait_the_floor(self):
+        self.assertEqual(rewalk_interval(0.2), 5)
+        self.assertEqual(rewalk_interval(0), 5)
+        self.assertEqual(rewalk_interval(None), 5)  # never walked
+
+    def test_the_interval_scales_with_the_last_walk(self):
+        self.assertEqual(rewalk_interval(1.0), 5)
+        self.assertEqual(rewalk_interval(2.0), 10)
+        self.assertAlmostEqual(rewalk_interval(2.5), 12.5)
+
+    def test_slow_walks_are_capped(self):
+        self.assertEqual(rewalk_interval(3.0), 15)
+        self.assertEqual(rewalk_interval(60.0), 15)
+
+    def test_the_constants_are_read_when_called(self):
+        with (
+            patch.object(gallery_listing, "REWALK_FLOOR", 0),
+            patch.object(gallery_listing, "REWALK_CAP", 0),
+        ):
+            self.assertEqual(rewalk_interval(2.0), 0)
+
+
+class RootContainsTests(unittest.TestCase):
+    def test_posix_paths_under_the_root_match(self):
+        root = posixpath.normcase("/srv/out")
+        self.assertTrue(root_contains(root, "/srv/out/a.png", posixpath))
+        self.assertTrue(root_contains(root, "/srv/out/sub/deep/a.png", posixpath))
+
+    def test_a_sibling_sharing_the_prefix_does_not_match(self):
+        self.assertFalse(root_contains("/srv/out", "/srv/out2/a.png", posixpath))
+        self.assertFalse(root_contains("/srv/out", "/srv/outside.png", posixpath))
+        self.assertFalse(root_contains("/srv/out", "/srv/other/a.png", posixpath))
+
+    def test_posix_keeps_case(self):
+        self.assertFalse(root_contains("/srv/out", "/srv/OUT/a.png", posixpath))
+
+    def test_the_root_itself_is_not_an_output(self):
+        self.assertFalse(root_contains("/srv/out", "/srv/out", posixpath))
+
+    def test_windows_folds_case_and_separators(self):
+        root = ntpath.normcase("C:\\ComfyUI\\Output")
+        self.assertTrue(root_contains(root, "c:\\comfyui\\output\\a.png", ntpath))
+        self.assertTrue(root_contains(root, "C:/ComfyUI/OUTPUT/sub/a.PNG", ntpath))
+        self.assertFalse(root_contains(root, "C:\\ComfyUI\\Output2\\a.png", ntpath))
+        self.assertFalse(root_contains(root, "D:\\ComfyUI\\Output\\a.png", ntpath))
+
+    def test_a_windows_drive_root_and_a_unc_share(self):
+        drive = ntpath.normcase("E:\\")
+        self.assertTrue(root_contains(drive, "e:\\x.png", ntpath))
+        self.assertFalse(root_contains(drive, "F:\\x.png", ntpath))
+        share = ntpath.normcase("\\\\Server\\Share\\Out")
+        self.assertTrue(root_contains(share, "\\\\server\\share\\out\\a.png", ntpath))
+        self.assertFalse(root_contains(share, "\\\\server\\share\\a.png", ntpath))
+
+    def test_the_default_is_this_platforms_rule(self):
+        root = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+        inside = os.path.join(root, "x.png")
+        self.assertTrue(root_contains(root, inside))
+        self.assertTrue(root_contains(root, inside.upper()) == (os.name == "nt"))
 
 
 if __name__ == "__main__":

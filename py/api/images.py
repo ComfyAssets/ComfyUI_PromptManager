@@ -1433,28 +1433,81 @@ class ImageRoutesMixin:
                     )
 
     def _refresh_if_stale(self, output_path, record):
-        """Walk a stale listing again, REFRESH_DELAY after this read (on the loop).
+        """Ask for a background walk when the listing is stale or dirty.
 
-        At most one pending refresh per root, none while a walk runs.
+        A stale listing (older than REFRESH_AFTER) is walked REFRESH_DELAY
+        after this read, so the walk does not share the GIL with the page's
+        own requests; a dirty one as soon as its interval allows.
         """
         age = _time.monotonic() - (record.walked_at or 0.0)
-        if age < gallery_listing.REFRESH_AFTER:
+        if age >= gallery_listing.REFRESH_AFTER:
+            self._schedule_walk(output_path, gallery_listing.REFRESH_DELAY)
+        elif record.dirty:
+            self._schedule_walk(output_path)
+
+    def mark_root_dirty(self, path):
+        """A settled output at *path*: walk every root holding it again (on the loop).
+
+        *path* is resolved by the monitor's thread (``notify_output_settled``),
+        so this does no file I/O: it compares ``normcase`` strings with each
+        walk's ``resolved_root``. Only roots with a listing, or a walk running,
+        are marked; a root without either is walked by its next read anyway.
+        """
+        if self._listings_closed:
             return
-        if record.flight is not None or record.rewalk_handle is not None:
+        for key, record in list(self._root_listings.items()):
+            if record.files is None and record.flight is None:
+                continue
+            resolved = record.resolved_root or os.path.normcase(key)
+            if gallery_listing.root_contains(resolved, path):
+                record.dirty = True
+                self._schedule_walk(Path(key))
+
+    def _schedule_walk(self, output_path, delay=0.0):
+        """Start or defer a background walk of *output_path* (on the loop).
+
+        - A walk is running: nothing; its end re-checks ``dirty``.
+        - Otherwise the walk is due *delay* from now, and never sooner than
+          ``rewalk_interval`` after the previous walk started. Due now: start
+          it. Later: one deferred walk per root, at least MIN_REWALK_DELAY
+          away; when one is already pending, the earlier deadline wins.
+        Every walk start cancels the pending one (``_start_walk``).
+        """
+        if self._listings_closed:
             return
-        record.rewalk_handle = asyncio.get_running_loop().call_later(
-            gallery_listing.REFRESH_DELAY, self._delayed_walk, output_path, record
+        record = self._root_listing(output_path)
+        if record.flight is not None:
+            return
+        now = _time.monotonic()
+        due = now + delay
+        if record.last_started_at is not None:
+            interval = gallery_listing.rewalk_interval(record.last_duration)
+            due = max(due, record.last_started_at + interval)
+        if due <= now:
+            self._start_walk(output_path, record)
+            return
+        wait = max(gallery_listing.MIN_REWALK_DELAY, due - now)
+        loop = asyncio.get_running_loop()
+        handle = record.rewalk_handle
+        if handle is not None:
+            if handle.when() - loop.time() <= wait:
+                return  # the pending walk comes first
+            handle.cancel()
+        record.rewalk_handle = loop.call_later(
+            wait, self._delayed_walk, output_path, record
         )
 
     def _delayed_walk(self, output_path, record):
-        record.rewalk_handle = None
-        self._schedule_walk(output_path)
+        """The deferred walk's timer: clear the handle first, then walk.
 
-    def _schedule_walk(self, output_path):
-        """Start a background walk of *output_path* unless one is running."""
-        record = self._root_listing(output_path)
-        if record.flight is None:
-            self._start_walk(output_path, record)
+        It was armed for a stale or dirty listing at the earliest moment the
+        interval allowed. Only a walk start clears either reason, and every
+        start cancels this timer, so when it fires the walk is still due.
+        """
+        record.rewalk_handle = None
+        if self._listings_closed or record.flight is not None:
+            return
+        self._start_walk(output_path, record)
 
     def _start_walk(self, output_path, record):
         """Start the root's one walk; returns its flight future (on the loop)."""
@@ -1462,7 +1515,10 @@ class ImageRoutesMixin:
         self._listing_loop = loop
         handle, record.rewalk_handle = record.rewalk_handle, None
         if handle is not None:
-            handle.cancel()  # this walk is the refresh it was waiting to start
+            handle.cancel()  # this walk is the one it was waiting to start
+        # This walk lists every output reported so far.
+        record.dirty = False
+        record.last_started_at = _time.monotonic()
         record.walk_seq += 1
         flight = loop.create_future()
         record.flight = flight
@@ -1482,8 +1538,9 @@ class ImageRoutesMixin:
         error never reaches a future nobody awaits.
         """
         outcome = None
+        started = record.last_started_at
         try:
-            files, folders, with_ancestors = await self._run_in_executor(
+            files, folders, with_ancestors, resolved = await self._run_in_executor(
                 walk_root, self._scan_gallery_files_sync, output_path, record.files
             )
         except asyncio.CancelledError:
@@ -1496,9 +1553,12 @@ class ImageRoutesMixin:
                     f"Could not list output folder {output_path}: {exc}"
                 )
             record.failing = True
+            # Retried by the 30 s rule, not by a trailing walk.
+            record.dirty = False
             outcome = WalkOutcome.failed(exc)
         else:
             record.failing = False
+            record.resolved_root = resolved
             if record.generation == generation:
                 changed = files is not record.files
                 record.files = files
@@ -1512,10 +1572,14 @@ class ImageRoutesMixin:
             else:
                 outcome = WalkOutcome.discarded()
         finally:
+            record.last_duration = _time.monotonic() - started
             if record.flight is flight:
                 record.flight = None
             if not flight.done():
                 flight.set_result(outcome)
+            if record.dirty:
+                # An output settled during this walk: the trailing walk.
+                self._schedule_walk(output_path)
 
     async def get_output_images(self, request):
         """Get all images from ComfyUI output folder(s)."""

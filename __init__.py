@@ -149,6 +149,9 @@ try:
         # Every settled output's preview is queued for the API's background
         # worker (#249): the workspace never asks to generate thumbnails.
         _global_image_monitor.set_thumbnail_queue(_review_api.queue_capture_thumbnail)
+        # Every settled output walks its Images listing again (#348): the
+        # API hops from the monitor's thread onto the server's loop.
+        _global_image_monitor.set_output_listener(_review_api.notify_output_settled)
         _review_host = getattr(config.server_instance, "app", None)
         if _review_host is not None and hasattr(_review_host, "on_cleanup"):
 
@@ -157,6 +160,7 @@ try:
             ):
                 monitor.set_review_recorder(None)
                 monitor.set_thumbnail_queue(None)
+                monitor.set_output_listener(None)
                 api.close_auto_thumbnails(final=True)
 
             _review_host.on_cleanup.insert(0, _stop_review_recording)

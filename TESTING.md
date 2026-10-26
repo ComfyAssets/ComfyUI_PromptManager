@@ -333,6 +333,24 @@ hold a walk open with a gated scan instead of sleeping.
   listing gets a 500. Rescan waits for a walk that started after the click
   (by walk number, not by clock), Rescans clicked during one walk share the
   next, and a failed walk is a 500 even when a previous listing exists.
+- **New outputs (monitor-triggered walks, PR 2).** The image monitor reports
+  every settled output it accepts (by default `.png .jpg .jpeg .webp .gif`;
+  videos only when their extension is in `monitoring.extensions`), linked or
+  not, with its `realpath`, through `set_output_listener`. On its worker
+  thread the API's `notify_output_settled` only does
+  `loop.call_soon_threadsafe(mark_root_dirty, path)`, and does nothing before
+  the loop is known or after `cleanup_gallery_listings`. `mark_root_dirty`
+  matches the path against each walk's `resolved_root` (`normcase(realpath)`,
+  computed in the executor; `root_contains` ends the match at a separator)
+  and marks the root `dirty`. A dirty root gets one background walk, no
+  sooner than `rewalk_interval` = `min(15, max(5, 5 × last walk's duration))`
+  seconds after the previous walk started. `_schedule_walk` never arms a timer
+  while a walk runs (the walk's end re-checks `dirty`: the trailing walk),
+  arms at most one per root and never sooner than 0.5 s, and keeps the
+  earlier deadline when the stale refresh and a dirty root both want one;
+  every walk start (read, Rescan, warm-up or timer) cancels it. A failed walk
+  clears `dirty`. Tests patch `REWALK_FLOOR`/`REWALK_CAP` and run the pending
+  timer's callback by hand (`_fire`) instead of waiting for it.
 - **Measuring it.** `tools/vendor/perf/images_load_probe.mjs` is a maintainer
   tool, never run in CI. After `npm ci --prefix tools/vendor` and
   `npx --prefix tools/vendor playwright install chromium`, run

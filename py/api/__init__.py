@@ -362,8 +362,11 @@ class PromptManagerAPI(
         # background walks refreshing them (py/api/gallery_listing.py, #348).
         self._root_listings: dict[str, RootListing] = {}
         self._listing_tasks: set = set()
-        # The loop the walks run on, set by the first walk.
+        # The loop the walks run on, set by the startup warm-up or the first
+        # walk; the monitor's thread hops onto it (notify_output_settled).
         self._listing_loop = None
+        # Set by cleanup_gallery_listings: no background walk starts after it.
+        self._listings_closed = False
         # The workspace caches rebuilt behind a stored walk that changed the
         # listing, once the host's startup warm-up has run (#348).
         self._workspace_warm_enabled = False
@@ -539,15 +542,35 @@ class PromptManagerAPI(
         # Each stored walk that changes a listing then rebuilds the workspace's
         # per-file values, orders and favorites behind it (_warm_workspace).
         self._workspace_warm_enabled = True
+        self._listing_loop = asyncio.get_running_loop()
+        self._listings_closed = False
         try:
             for root in self._get_all_output_dirs():
                 self._schedule_walk(root)
         except Exception as e:
             self.logger.warning(f"Could not warm the Images listing: {e}")
 
+    def notify_output_settled(self, path):
+        """The image monitor settled an output at *path* (any thread).
+
+        Called on the monitor's worker thread with the resolved path. It only
+        hands the path to the event loop (``mark_root_dirty``) and never
+        touches a listing from this thread; before the loop is known, or once
+        the listings are cleaned up, it does nothing.
+        """
+        loop = self._listing_loop
+        if loop is None or self._listings_closed or not loop.is_running():
+            return
+        try:
+            loop.call_soon_threadsafe(self.mark_root_dirty, path)
+        except RuntimeError:
+            pass  # the loop closed meanwhile (shutdown)
+
     async def cleanup_gallery_listings(self, app=None):
         """Stop the background listing walks (aiohttp on_cleanup)."""
         self._workspace_warm_enabled = False
+        # No mark, deferred walk or trailing walk starts a walk from now on.
+        self._listings_closed = True
         # Before any await, so no delayed refresh can start a walk meanwhile.
         for record in self._root_listings.values():
             handle, record.rewalk_handle = record.rewalk_handle, None

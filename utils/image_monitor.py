@@ -106,6 +106,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # ``queue_capture_thumbnail``, wired at start-up; #249). It only
         # queues: the preview is written on its own worker. None: no queue.
         self.thumbnail_queue: Optional[Callable[[str], str]] = None
+        # Told about every settled output, with its resolved path (the API's
+        # ``notify_output_settled``, wired at start-up; #348): the Images
+        # listing walks that root again. None: nobody is told.
+        self.output_listener: Optional[Callable[[str], None]] = None
 
         # Read from GalleryConfig if available, otherwise use defaults
         try:
@@ -259,8 +263,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
                         f"Image never settled or vanished, skipping: {image_path}"
                     )
                 return
-            self.process_new_image(image_path, prompt_snapshot=prompt_snapshot)
-            self._queue_thumbnail(image_path)
+            try:
+                self.process_new_image(image_path, prompt_snapshot=prompt_snapshot)
+                self._queue_thumbnail(image_path)
+            finally:
+                # Linked or not, even if linking raised: the file exists.
+                self._report_output(image_path)
         finally:
             with self._pending_lock:
                 self._pending.pop(image_path, None)
@@ -284,6 +292,25 @@ class ImageGenerationHandler(FileSystemEventHandler):
             )
             return
         self.logger.debug(f"Preview {outcome}: {os.path.basename(image_path)}")
+
+    def _report_output(self, image_path: str) -> None:
+        """Tell the output listener a settled output exists, best effort.
+
+        The path is resolved here, on the worker thread, so the listener's
+        event loop does no file I/O. A failure is logged, never raised: the
+        output is then listed by the listing's 30 s refresh.
+        """
+        listener = getattr(self, "output_listener", None)
+        if listener is None:
+            return
+        try:
+            listener(os.path.realpath(image_path))
+        except Exception:
+            self.logger.warning(
+                f"{os.path.basename(image_path)} could not be reported to the "
+                "Images listing",
+                exc_info=True,
+            )
 
     def wait_until_settled(self, image_path: str, stop=None) -> bool:
         """True once the file's size is non-zero and unchanged across two reads.
@@ -848,6 +875,14 @@ class ImageMonitor:
         self.logger = get_logger("prompt_manager.image_monitor")
         self.review_recorder: Optional[Callable[[str], str]] = None
         self.thumbnail_queue: Optional[Callable[[str], str]] = None
+        self.output_listener: Optional[Callable[[str], None]] = None
+
+    def set_output_listener(self, listener: Optional[Callable[[str], None]]) -> None:
+        """Report every settled output's resolved path to ``listener`` (None
+        stops it), on the running handler and every later one (#348)."""
+        self.output_listener = listener
+        if self.handler is not None:
+            self.handler.output_listener = listener
 
     def set_thumbnail_queue(
         self, queue_preview: Optional[Callable[[str], str]]
@@ -925,6 +960,7 @@ class ImageMonitor:
         handler = ImageGenerationHandler(self.db_manager, self.prompt_tracker)
         handler.review_recorder = self.review_recorder
         handler.thumbnail_queue = self.thumbnail_queue
+        handler.output_listener = self.output_listener
         observer = Observer()
         scheduled = []
         for output_dir in valid_directories:
