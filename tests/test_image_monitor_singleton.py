@@ -449,6 +449,109 @@ class TestHandlerScheduling(unittest.TestCase):
         self.assertEqual(self.processed, [first, second])
 
 
+class TestOutputListener(unittest.TestCase):
+    """Every settled output is reported to the Images listing (#348, PR 2)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.handler = im_mod.ImageGenerationHandler(MagicMock(), MagicMock())
+        self.addCleanup(self.handler.shutdown)
+        self.handler.processing_delay = 0
+        self.handler.settle_interval = 0.01
+        self.handler.process_new_image = lambda path, prompt_snapshot=None: None
+        self.reported = []
+        self.handler.output_listener = self.reported.append
+
+    def _image(self, name, content=b"x" * 16):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "wb") as f:
+            f.write(content)
+        return path
+
+    def test_a_settled_output_is_reported_once_with_its_resolved_path(self):
+        path = self._image("a.png")
+        self.handler._process_pending(path)
+        self.assertEqual(self.reported, [os.path.realpath(path)])
+
+    def test_a_symlinked_spelling_is_reported_resolved(self):
+        real_dir = os.path.join(self.tmp.name, "real")
+        os.makedirs(real_dir)
+        link_dir = os.path.join(self.tmp.name, "link")
+        try:
+            os.symlink(real_dir, link_dir, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        with open(os.path.join(real_dir, "b.png"), "wb") as f:
+            f.write(b"x" * 16)
+        self.handler._process_pending(os.path.join(link_dir, "b.png"))
+        self.assertEqual(
+            self.reported, [os.path.realpath(os.path.join(real_dir, "b.png"))]
+        )
+
+    def test_it_is_reported_even_when_linking_raises(self):
+        def explode(path, prompt_snapshot=None):
+            raise RuntimeError("boom")
+
+        self.handler.process_new_image = explode
+        path = self._image("c.png")
+        with self.assertRaises(RuntimeError):
+            self.handler._process_pending(path)
+        self.assertEqual(self.reported, [os.path.realpath(path)])
+        self.assertEqual(self.handler.pending_count(), 0)
+
+    def test_an_output_that_never_settles_is_not_reported(self):
+        self.handler.settle_attempts = 3
+        self.handler._process_pending(os.path.join(self.tmp.name, "gone.png"))
+        empty = self._image("empty.png", content=b"")
+        self.handler._process_pending(empty)
+        self.assertEqual(self.reported, [])
+
+    def test_a_video_is_reported_when_its_extension_is_monitored(self):
+        self.handler.supported_extensions = (".png", ".mp4")
+        path = self._image("clip.mp4")
+        self.handler.on_created(FakeEvent(path))
+        self.assertTrue(wait_for(lambda: self.reported != []))
+        self.assertEqual(self.reported, [os.path.realpath(path)])
+
+    def test_a_failing_listener_is_logged_and_the_worker_carries_on(self):
+        def broken(_path):
+            raise RuntimeError("listing gone")
+
+        self.handler.output_listener = broken
+        first = self._image("d.png")
+        with self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs:
+            self.handler._process_pending(first)  # no exception
+        self.assertIn("Images listing", "\n".join(logs.output))
+        self.handler.output_listener = self.reported.append
+        second = self._image("e.png")
+        self.handler.schedule(second)
+        self.assertTrue(wait_for(lambda: self.reported != []))
+        self.assertEqual(self.reported, [os.path.realpath(second)])
+
+    def test_no_listener_reports_nothing(self):
+        self.handler.output_listener = None
+        self.handler._process_pending(self._image("f.png"))  # no exception
+        self.assertEqual(self.reported, [])
+
+    def test_the_monitor_wires_running_and_later_handlers(self):
+        monitor = im_mod.ImageMonitor(MagicMock(), MagicMock())
+        listener = self.reported.append
+        monitor.set_output_listener(listener)
+        with (
+            patch.object(im_mod, "Observer", FakeObserver),
+            patch.object(im_mod.ImageMonitor, "_gallery_config", return_value=None),
+        ):
+            monitor.start_monitoring([self.tmp.name])
+        try:
+            self.assertIs(monitor.handler.output_listener, listener)
+            monitor.set_output_listener(None)
+            self.assertIsNone(monitor.output_listener)
+            self.assertIsNone(monitor.handler.output_listener)
+        finally:
+            monitor.stop_monitoring()
+
+
 class TestModuleIsolation(unittest.TestCase):
     """This module must not leave mocks behind for later test modules."""
 

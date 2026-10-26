@@ -1,10 +1,13 @@
 """Pure helpers of the shared Images listing (py/api/gallery_listing.py, #348)."""
 
+import ntpath
 import os
+import posixpath
 import sys
 import tempfile
 import unittest
-from pathlib import Path, PurePath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,7 +19,13 @@ from py.api.gallery_listing import (  # noqa: E402
     STORED,
     RootListing,
     WalkOutcome,
+    add_folder,
     folder_sets,
+    insert_entry,
+    listing_delta,
+    relative_part,
+    rewalk_interval,
+    root_contains,
     same_listing,
     walk_root,
 )
@@ -123,24 +132,36 @@ class WalkRootTests(unittest.TestCase):
     def test_returns_the_listing_and_both_folder_sets(self):
         files = [(self.root / "sub" / "a.png", 2.0), (self.root / "b.png", 1.0)]
         scan, calls = self._scan(files)
-        listed, folders, with_ancestors = walk_root(scan, self.root, None)
+        listed, folders, with_ancestors, resolved = walk_root(scan, self.root, None)
         self.assertEqual(calls, [self.root])
         self.assertEqual(listed, files)
         self.assertEqual(folders, frozenset({"sub"}))
         self.assertEqual(with_ancestors, frozenset({"sub"}))
+        self.assertEqual(resolved, os.path.normcase(os.path.realpath(self.root)))
+
+    def test_the_resolved_root_follows_a_symlinked_root(self):
+        link = Path(self._tmp.name) / "linked"
+        try:
+            os.symlink(self.root, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        scan, _calls = self._scan([])
+        resolved = walk_root(scan, link, None)[3]
+        self.assertEqual(resolved, os.path.normcase(os.path.realpath(self.root)))
+        self.assertNotEqual(resolved, os.path.normcase(str(link)))
 
     def test_an_unchanged_walk_returns_the_previous_list_object(self):
         files = [(self.root / "sub" / "a.png", 2.0)]
         previous = list(files)
         scan, _calls = self._scan(files)
-        listed, _folders, _ancestors = walk_root(scan, self.root, previous)
+        listed, _folders, _ancestors, _resolved = walk_root(scan, self.root, previous)
         self.assertIs(listed, previous)
 
     def test_a_changed_walk_returns_the_new_list(self):
         previous = [(self.root / "sub" / "a.png", 2.0)]
         files = [(self.root / "sub" / "a.png", 3.0)]
         scan, _calls = self._scan(files)
-        listed, _folders, _ancestors = walk_root(scan, self.root, previous)
+        listed, _folders, _ancestors, _resolved = walk_root(scan, self.root, previous)
         self.assertIsNot(listed, previous)
         self.assertEqual(listed, files)
 
@@ -180,6 +201,278 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(gallery_listing.REFRESH_DELAY, 1.0)
         self.assertIsNone(RootListing().rewalk_handle)
 
+    def test_a_new_record_is_clean_and_never_walked(self):
+        record = RootListing()
+        self.assertFalse(record.dirty)
+        self.assertIsNone(record.resolved_root)
+        self.assertIsNone(record.last_started_at)
+        self.assertIsNone(record.last_duration)
+
+    def test_drop_forgets_pending_adds(self):
+        record = RootListing(files=[], pending_adds=["a.png"], patched=2)
+        record.drop()
+        self.assertEqual((record.pending_adds, record.patched), ([], 0))
+
+    def test_drop_keeps_the_resolved_root_and_the_walk_timing(self):
+        # A drop clears the listing, not what is known about the root itself.
+        record = RootListing(resolved_root="/o", last_started_at=1.0)
+        record.last_duration = 0.5
+        record.dirty = True
+        record.drop()
+        self.assertEqual(record.resolved_root, "/o")
+        self.assertEqual((record.last_started_at, record.last_duration), (1.0, 0.5))
+        self.assertTrue(record.dirty)
+
+
+class RewalkIntervalTests(unittest.TestCase):
+    def test_constants(self):
+        self.assertEqual(
+            (
+                gallery_listing.REWALK_FLOOR,
+                gallery_listing.REWALK_FACTOR,
+                gallery_listing.REWALK_CAP,
+                gallery_listing.MIN_REWALK_DELAY,
+            ),
+            (5, 5, 15, 0.5),
+        )
+
+    def test_short_walks_wait_the_floor(self):
+        self.assertEqual(rewalk_interval(0.2), 5)
+        self.assertEqual(rewalk_interval(0), 5)
+        self.assertEqual(rewalk_interval(None), 5)  # never walked
+
+    def test_the_interval_scales_with_the_last_walk(self):
+        self.assertEqual(rewalk_interval(1.0), 5)
+        self.assertEqual(rewalk_interval(2.0), 10)
+        self.assertAlmostEqual(rewalk_interval(2.5), 12.5)
+
+    def test_slow_walks_are_capped(self):
+        self.assertEqual(rewalk_interval(3.0), 15)
+        self.assertEqual(rewalk_interval(60.0), 15)
+
+    def test_the_constants_are_read_when_called(self):
+        with (
+            patch.object(gallery_listing, "REWALK_FLOOR", 0),
+            patch.object(gallery_listing, "REWALK_CAP", 0),
+        ):
+            self.assertEqual(rewalk_interval(2.0), 0)
+
+
+class RootContainsTests(unittest.TestCase):
+    def test_posix_paths_under_the_root_match(self):
+        root = posixpath.normcase("/srv/out")
+        self.assertTrue(root_contains(root, "/srv/out/a.png", posixpath))
+        self.assertTrue(root_contains(root, "/srv/out/sub/deep/a.png", posixpath))
+
+    def test_a_sibling_sharing_the_prefix_does_not_match(self):
+        self.assertFalse(root_contains("/srv/out", "/srv/out2/a.png", posixpath))
+        self.assertFalse(root_contains("/srv/out", "/srv/outside.png", posixpath))
+        self.assertFalse(root_contains("/srv/out", "/srv/other/a.png", posixpath))
+
+    def test_posix_keeps_case(self):
+        self.assertFalse(root_contains("/srv/out", "/srv/OUT/a.png", posixpath))
+
+    def test_the_root_itself_is_not_an_output(self):
+        self.assertFalse(root_contains("/srv/out", "/srv/out", posixpath))
+
+    def test_windows_folds_case_and_separators(self):
+        root = ntpath.normcase("C:\\ComfyUI\\Output")
+        self.assertTrue(root_contains(root, "c:\\comfyui\\output\\a.png", ntpath))
+        self.assertTrue(root_contains(root, "C:/ComfyUI/OUTPUT/sub/a.PNG", ntpath))
+        self.assertFalse(root_contains(root, "C:\\ComfyUI\\Output2\\a.png", ntpath))
+        self.assertFalse(root_contains(root, "D:\\ComfyUI\\Output\\a.png", ntpath))
+
+    def test_a_windows_drive_root_and_a_unc_share(self):
+        drive = ntpath.normcase("E:\\")
+        self.assertTrue(root_contains(drive, "e:\\x.png", ntpath))
+        self.assertFalse(root_contains(drive, "F:\\x.png", ntpath))
+        share = ntpath.normcase("\\\\Server\\Share\\Out")
+        self.assertTrue(root_contains(share, "\\\\server\\share\\out\\a.png", ntpath))
+        self.assertFalse(root_contains(share, "\\\\server\\share\\a.png", ntpath))
+
+    def test_a_windows_extended_length_prefix_is_ignored(self):
+        root = ntpath.normcase("C:\\ComfyUI\\Output")
+        long_file = "\\\\?\\C:\\ComfyUI\\Output\\deep\\a.png"
+        self.assertTrue(root_contains(root, long_file, ntpath))
+        prefixed_root = ntpath.normcase("\\\\?\\C:\\ComfyUI\\Output")
+        self.assertTrue(
+            root_contains(prefixed_root, "C:\\ComfyUI\\Output\\a.png", ntpath)
+        )
+        share = ntpath.normcase("\\\\Server\\Share\\Out")
+        unc_file = "\\\\?\\UNC\\server\\share\\out\\a.png"
+        self.assertTrue(root_contains(share, unc_file, ntpath))
+        self.assertFalse(
+            root_contains(root, "\\\\?\\C:\\ComfyUI\\Output2\\a.png", ntpath)
+        )
+
+    def test_posix_keeps_a_literal_question_mark_folder(self):
+        self.assertFalse(root_contains("/srv/out", "//?/srv/out/a.png", posixpath))
+
+    def test_the_default_is_this_platforms_rule(self):
+        root = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+        inside = os.path.join(root, "x.png")
+        self.assertTrue(root_contains(root, inside))
+        self.assertTrue(root_contains(root, inside.upper()) == (os.name == "nt"))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelativePartTests(unittest.TestCase):
+    def test_posix_keeps_the_case_and_the_nested_folders(self):
+        self.assertEqual(
+            relative_part("/srv/out", "/srv/out/Day 1/A.png", posixpath),
+            "Day 1/A.png",
+        )
+
+    def test_posix_outside_the_root_a_sibling_or_the_root_itself_is_none(self):
+        for path in ("/srv/other/a.png", "/srv/out2/a.png", "/srv/out", "/srv/out/"):
+            self.assertIsNone(relative_part("/srv/out", path, posixpath), path)
+
+    def test_a_root_spelled_with_a_trailing_separator(self):
+        self.assertEqual(relative_part("/", "/a.png", posixpath), "a.png")
+
+    def test_windows_matches_folded_and_slices_the_original_case(self):
+        root = ntpath.normcase("C:\\ComfyUI\\Output")
+        self.assertEqual(
+            relative_part(root, "c:/COMFYUI/output/Sub/ComfyUI_001.PNG", ntpath),
+            "Sub\\ComfyUI_001.PNG",
+        )
+
+    def test_windows_extended_length_and_unc_forms(self):
+        root = ntpath.normcase("C:\\Out")
+        self.assertEqual(
+            relative_part(root, "\\\\?\\C:\\Out\\Deep\\a.png", ntpath),
+            "Deep\\a.png",
+        )
+        share = ntpath.normcase("\\\\Server\\Share\\Out")
+        self.assertEqual(
+            relative_part(share, "\\\\?\\UNC\\Server\\Share\\Out\\B.png", ntpath),
+            "B.png",
+        )
+        drive = ntpath.normcase("D:\\")
+        self.assertEqual(relative_part(drive, "D:\\X\\a.png", ntpath), "X\\a.png")
+
+    def test_a_case_fold_that_changes_the_length_is_not_sliced(self):
+        # str.lower folds the Turkish dotted I to two characters (Windows'
+        # own normcase keeps the length; the guard covers any fold that not).
+        folding = SimpleNamespace(
+            sep="\\", normcase=lambda text: text.replace("/", "\\").lower()
+        )
+        path = "C:\\Out\\\u0130mage.png"
+        self.assertNotEqual(len(folding.normcase(path)), len(path))
+        self.assertIsNone(relative_part("c:\\out", path, folding))
+        self.assertEqual(relative_part("c:\\out", "C:\\Out\\Ab.png", folding), "Ab.png")
+
+    def test_dot_parts_are_never_sliced(self):
+        for path in ("/srv/out/../x.png", "/srv/out/./x.png", "/srv/out//x.png"):
+            self.assertIsNone(relative_part("/srv/out", path, posixpath), path)
+
+
+class InsertEntryTests(unittest.TestCase):
+    def setUp(self):
+        self.root = PurePosixPath("/out")
+        self.files = [
+            (self.root / "c.png", 30.0),
+            (self.root / "b.png", 20.0),
+            (self.root / "a.png", 10.0),
+        ]
+
+    def test_newest_first_position_at_the_front_middle_and_end(self):
+        for mtime, index in ((40.0, 0), (25.0, 1), (15.0, 2), (5.0, 3)):
+            entry = (self.root / "n.png", mtime)
+            patched = insert_entry(self.files, entry, 100)
+            self.assertIs(patched[index], entry)
+            self.assertEqual(len(patched), 4)
+        self.assertEqual(len(self.files), 3)  # never changed in place
+
+    def test_unchanged_entries_are_the_same_objects(self):
+        patched = insert_entry(self.files, (self.root / "n.png", 40.0), 100)
+        self.assertTrue(all(new is old for new, old in zip(patched[1:], self.files)))
+
+    def test_the_same_path_with_a_new_mtime_moves(self):
+        patched = insert_entry(self.files, (PurePosixPath("/out/a.png"), 35.0), 100)
+        self.assertEqual(
+            [(str(path), mtime) for path, mtime in patched],
+            [("/out/a.png", 35.0), ("/out/c.png", 30.0), ("/out/b.png", 20.0)],
+        )
+
+    def test_an_entry_already_listed_returns_the_listing_itself(self):
+        self.assertIs(
+            insert_entry(self.files, (PurePosixPath("/out/b.png"), 20.0), 3), self.files
+        )
+
+    def test_a_tie_in_mtime_is_not_placed(self):
+        self.assertIsNone(insert_entry(self.files, (self.root / "n.png", 20.0), 100))
+
+    def test_a_tie_with_the_replaced_entry_itself_is_placed(self):
+        files = [(self.root / "b.png", 20.0), (self.root / "a.png", 10.0)]
+        patched = insert_entry(files, (self.root / "a.png", 20.5), 100)
+        self.assertEqual([mtime for _path, mtime in patched], [20.5, 20.0])
+
+    def test_the_cap_refuses_a_new_path_but_replaces_a_listed_one(self):
+        self.assertIsNone(insert_entry(self.files, (self.root / "n.png", 40.0), 3))
+        patched = insert_entry(self.files, (self.root / "a.png", 40.0), 3)
+        self.assertEqual(str(patched[0][0]), "/out/a.png")
+
+    def test_an_empty_listing(self):
+        entry = (self.root / "n.png", 1.0)
+        self.assertEqual(insert_entry([], entry, 100), [entry])
+
+
+class AddFolderTests(unittest.TestCase):
+    def test_a_new_nested_folder_adds_it_and_its_ancestors(self):
+        root = PurePath("/out")
+        folders, with_ancestors = folder_sets(root, [(root / "x" / "a.png", 1.0)])
+        new = add_folder(root, root / "y" / "z" / "b.png", folders, with_ancestors)
+        self.assertEqual(
+            new,
+            folder_sets(
+                root, [(root / "x" / "a.png", 1.0), (root / "y" / "z" / "b.png", 2.0)]
+            ),
+        )
+
+    def test_a_known_folder_or_the_root_keeps_the_same_sets(self):
+        root = PurePath("/out")
+        sets = folder_sets(root, [(root / "x" / "a.png", 1.0)])
+        for path in (root / "x" / "b.png", root / "c.png"):
+            new = add_folder(root, path, *sets)
+            self.assertIs(new[0], sets[0])
+            self.assertIs(new[1], sets[1])
+
+    def test_windows_spelling_matches_folder_sets(self):
+        root = PureWindowsPath("C:/Out")
+        path = root / "A" / "B" / "c.png"
+        self.assertEqual(
+            add_folder(root, path, frozenset(), frozenset()),
+            folder_sets(root, [(path, 1.0)]),
+        )
+
+
+class ListingDeltaTests(unittest.TestCase):
+    def setUp(self):
+        self.old = [(PurePath(f"/out/{i}.png"), float(i)) for i in range(10)]
+
+    def test_an_added_entry(self):
+        entry = (PurePath("/out/n.png"), 99.0)
+        self.assertEqual(listing_delta(self.old, [entry, *self.old]), ([entry], []))
+
+    def test_a_replaced_entry(self):
+        entry = (PurePath("/out/3.png"), 99.0)
+        new = insert_entry(self.old, entry, 100)
+        self.assertEqual(listing_delta(self.old, new), ([entry], [self.old[3]]))
+
+    def test_the_same_listing_has_no_change(self):
+        self.assertEqual(listing_delta(self.old, list(self.old)), ([], []))
+
+    def test_a_walk_builds_new_entries_and_is_past_the_limit(self):
+        walked = [(PurePath(str(path)), mtime) for path, mtime in self.old]
+        self.assertEqual(walked, self.old)
+        self.assertIsNone(listing_delta(self.old, walked, limit=5))
+        self.assertIsNone(listing_delta(self.old, walked))  # shares nothing
+        self.assertIsNone(listing_delta(self.old, self.old[:2], limit=5))
+
+    def test_an_emptied_listing_and_a_first_file(self):
+        self.assertEqual(listing_delta(self.old[:1], []), ([], self.old[:1]))
+        self.assertIsNone(listing_delta([], self.old[:1]))

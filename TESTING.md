@@ -333,6 +333,75 @@ hold a walk open with a gated scan instead of sleeping.
   listing gets a 500. Rescan waits for a walk that started after the click
   (by walk number, not by clock), Rescans clicked during one walk share the
   next, and a failed walk is a 500 even when a previous listing exists.
+- **New outputs (added without a walk, PR 2).** The image monitor reports
+  every settled output it accepts (by default `.png .jpg .jpeg .webp .gif`;
+  videos only when their extension is in `monitoring.extensions`), linked or
+  not, with its `realpath`, through `set_output_listener`. On its worker
+  thread the API's `notify_output_settled` only does
+  `loop.call_soon_threadsafe(output_settled, path)`, and does nothing before
+  the loop is known or after `cleanup_gallery_listings`. `output_settled`
+  matches the path against each walk's `resolved_root` (`normcase(realpath)`,
+  computed in the executor; `root_contains` ends the match at a separator
+  and ignores a Windows `\\?\` or `\\?\UNC\` prefix on either side).
+- **The add.** A root with a stored listing and no walk running gets the
+  file added without a walk. `relative_part` slices the path below the
+  root in its own case (Windows compares folded, slices the original);
+  `_run_adds` places the pending files of one root in one executor batch
+  (`_patch_listing`): `_settled_entry` applies the walk's filters
+  (not a symlink or folder by `lstat`, `_name_suffix` in `MEDIA_EXTENSIONS`,
+  no `thumbnails` folder, at most `MAX_SCAN_DEPTH` folders, every folder on
+  the way listable by `os.access`, which on Windows ignores ACLs: a folder
+  whose ACL denies listing is added there and corrected by the next walk). Where names fold case the stored
+  spelling must match first, as the filters compare it: Windows through
+  `nt._getfinalpathname` (its `realpath` keeps the given case when it cannot
+  open the file), macOS through `F_GETPATH` on a non-blocking open (a FIFO
+  never holds the executor); a case-insensitive mount on Linux is not
+  checked and is corrected by the next walk. `insert_entry` builds a new list with
+  the `(Path, mtime)` entry where the walk's newest-first sort puts it,
+  replacing the same path's entry. `add_folder` copies both folder sets. The
+  batch is stored only when no walk started and no drop happened while it
+  ran (a walk started after the report lists the file itself); `walked_at`
+  is untouched, so the 30 s refresh still walks and corrects any drift, and
+  `walk_root` keeps the patched list object when that walk finds the same.
+  Tests compare every added listing with a real walk (`_walked`).
+- **When it walks instead.** The root is marked dirty (`mark_root_dirty`,
+  `_mark_dirty`) when the add cannot be exact: a walk is running (it may have
+  passed the folder: the trailing walk), the path cannot be sliced, the
+  `lstat` or the spelling read fails, the stored spelling differs, another
+  file has the same mtime (a walk orders those by its
+  visit order), the listing is at `MAX_GALLERY_FILES`, or the batch raised.
+  A file the walk's filters exclude is neither added nor walked. A root
+  without a listing, or a dropped one, is walked by its next read. A dirty
+  root gets one background walk, no sooner than `rewalk_interval` =
+  `min(15, max(5, 5 × last walk's duration))` seconds after the previous walk
+  started. `_schedule_walk` never arms a timer while a walk runs (the walk's
+  end re-checks `dirty`: the trailing walk), arms at most one per root and
+  never sooner than 0.5 s, and keeps the earlier deadline when the stale
+  refresh and a dirty root both want one; every walk start (read, Rescan,
+  warm-up or timer) cancels it and forgets the pending adds. A failed walk
+  clears `dirty`; a cancelled walk starts no trailing walk. When the output
+  roots change (`reset_gallery_roots_cache`) every record is `retired`: its
+  timer is cancelled and no add, mark, timer or trailing walk touches it
+  until a reader or the warm-up asks for that root again (the monitor keeps
+  watching a removed root until restart). Tests patch
+  `REWALK_FLOOR`/`REWALK_CAP` and run the pending timer's callback by hand
+  (`_fire`) instead of waiting for it, and hold an add batch in the executor
+  (`_hold_adds`) to race it with a walk, a drop or the cleanup.
+- **Workspace caches after an add.** A patched listing shares every
+  unchanged entry object with the one before it, so `listing_delta` finds
+  the change by identity (a walk builds new tuples and is rebuilt in full,
+  as is any change of more than `MAX_DELTA` entries). The per-file values
+  build only the added files (`_workspace_listed_step`), the newest order
+  places them by bisection (`_newest_step`, only when the per-file cache
+  still holds exactly the values this call built: a page read and the warm
+  build run in executor threads at once, and an order labelled with older
+  values than it holds would add a file twice), the favorites lookup is copied
+  and extended (`_favorite_listing_step`, rebuilt when a key collides), and
+  the other orders, wanted paths and locators rebuild lazily. On a synthetic
+  20,000-file listing a one-file add costs about 3 ms in the executor and
+  15 ms for the warm build, against about 155 ms + 80 ms for a walk and a
+  full build (`test_a_warm_build_after_an_add_builds_only_the_added_values`
+  counts the values built and the sort keys read).
 - **Measuring it.** `tools/vendor/perf/images_load_probe.mjs` is a maintainer
   tool, never run in CI. After `npm ci --prefix tools/vendor` and
   `npx --prefix tools/vendor playwright install chromium`, run

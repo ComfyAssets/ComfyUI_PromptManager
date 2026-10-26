@@ -10,10 +10,12 @@ import io
 import json
 import os
 import re
+import stat
 import subprocess  # nosec B404 - ffmpeg frames through run_encoder, fixed argv
+import sys
 import time as _time
 import urllib.parse
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left, bisect_right, insort
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -589,6 +591,10 @@ def _workspace_key(entry: tuple, order: str) -> tuple:
     return (mtime, entry.name, entry.tie, entry.index)
 
 
+def _newest_key(entry: _Listed) -> tuple:
+    return _workspace_key(entry, "newest")
+
+
 def _rated_key(entry: _Listed, rank: int) -> tuple:
     """Highest rated: rating 5..1, linked unrated (0), unlinked (-1); then newest."""
     return (-rank, *_workspace_key(entry, "rating"))
@@ -764,6 +770,34 @@ def _favorite_relative_key(relative: str) -> str:
     return _path_flavor.normcase(relative).replace(_path_flavor.sep, "/")
 
 
+def _listing_posix(root, prefix, path) -> str:
+    """*path*'s POSIX spelling below *root* (*prefix*: ``join(root, "")``)."""
+    text = str(path)
+    if text.startswith(prefix):
+        relative = text[len(prefix) :]
+        return relative if os.sep == "/" else relative.replace(os.sep, "/")
+    return path.relative_to(root).as_posix()
+
+
+def _favorite_listing_step(root, listing, added, removed) -> dict | None:
+    """*listing* after a patched listing's change, or None to rebuild it.
+
+    Only when every removed file is added again under the same spelling (a
+    rewritten output) and no added file's key is already taken by another
+    spelling: the full build keeps the first spelling in listing order.
+    """
+    prefix = os.path.join(str(root), "")
+    spellings = {_listing_posix(root, prefix, path) for path, _mtime in added}
+    if any(_listing_posix(root, prefix, path) not in spellings for path, _ in removed):
+        return None
+    listing = dict(listing)
+    for posix in spellings:
+        known = listing.setdefault(_favorite_relative_key(posix), posix)
+        if known != posix:
+            return None
+    return listing
+
+
 def _favorite_root_key(root) -> str:
     """Server-side identity of a gallery root: its real, case-normalized path.
 
@@ -825,6 +859,91 @@ def _walk_media(output_path, max_files):
         for entry in reversed(dirs):
             if not entry.is_symlink():
                 stack.append((entry.path, rel_parts + (entry.name,)))
+
+
+def _settled_entry(root, relative):
+    """``(Path, mtime)`` of a settled output as a walk would list it.
+
+    *relative* is its part below *root* (``gallery_listing.relative_part``).
+    None when a walk would not list it (``_walk_media``'s filters, and every
+    folder on the way must be listable); raises ``OSError`` when that cannot
+    be told (the file is gone or unreadable, or its on-disk spelling differs
+    or cannot be read). Blocking: run it in the executor.
+    """
+    path = Path(os.path.join(os.fspath(root), relative))
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or stat.S_ISDIR(info.st_mode):
+        return None
+    # Before the name filters: they compare the walk's (stored) spelling.
+    on_disk = _on_disk_path(path)
+    if on_disk is not None and not on_disk.endswith(os.sep + relative):
+        raise OSError(f"{relative} is spelled differently on disk")
+    *folders, name = relative.split(os.sep)
+    if _name_suffix(name).lower() not in MEDIA_EXTENSIONS:
+        return None
+    if "thumbnails" in folders or len(folders) > MAX_SCAN_DEPTH:
+        return None
+    folder = os.fspath(root)
+    for part in ("", *folders):
+        folder = os.path.join(folder, part) if part else folder
+        if not os.access(folder, os.R_OK | os.X_OK):
+            return None  # the walk cannot list this folder
+    return path, info.st_mtime
+
+
+def _on_disk_path(path, platform=None):
+    """The file's path as its folders store the names, where that can differ.
+
+    Windows and macOS file systems ignore case. Windows' ``realpath`` gives
+    the stored case, but keeps the given one when it cannot open the file;
+    macOS' ``realpath`` always keeps the given one. A walk lists the names as
+    stored, so an add checks them: Windows through ``GetFinalPathNameByHandle``
+    (``nt._getfinalpathname``), macOS through ``F_GETPATH``. Raises OSError
+    when it cannot be read; None elsewhere (case-sensitive file systems).
+    """
+    platform = platform or sys.platform
+    if platform == "win32":
+        import nt
+
+        return nt._getfinalpathname(os.fspath(path))
+    if platform != "darwin":
+        return None
+    import fcntl
+
+    # Non-blocking: a FIFO named like an image must not hold the executor.
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    try:
+        raw = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
+    finally:
+        os.close(descriptor)
+    return os.fsdecode(raw.split(b"\0", 1)[0])
+
+
+def _patch_listing(root, files, folders, with_ancestors, relatives):
+    """The listing with each settled output in *relatives* added (blocking).
+
+    Returns ``(files, folders, with_ancestors, unresolved)``; *files* is the
+    same list when nothing changed. ``unresolved`` is True when an output
+    could not be placed exactly, so the root needs a walk.
+    """
+    unresolved = False
+    for relative in relatives:
+        try:
+            entry = _settled_entry(root, relative)
+        except OSError:
+            unresolved = True
+            continue
+        if entry is None:
+            continue  # a walk would not list it either
+        patched = gallery_listing.insert_entry(files, entry, MAX_GALLERY_FILES)
+        if patched is None:
+            unresolved = True
+        elif patched is not files:
+            files = patched
+            folders, with_ancestors = gallery_listing.add_folder(
+                root, entry[0], folders, with_ancestors
+            )
+    return files, folders, with_ancestors, unresolved
 
 
 def _iter_media_files(output_path, max_files):
@@ -1408,6 +1527,7 @@ class ImageRoutesMixin:
         even if a previous listing exists.
         """
         record = self._root_listing(output_path)
+        record.retired = False  # a configured root: read, so listened to
         needed = record.walk_seq + 1 if fresh else 0
         discarded = 0
         while True:
@@ -1433,28 +1553,172 @@ class ImageRoutesMixin:
                     )
 
     def _refresh_if_stale(self, output_path, record):
-        """Walk a stale listing again, REFRESH_DELAY after this read (on the loop).
+        """Ask for a background walk when the listing is stale or dirty.
 
-        At most one pending refresh per root, none while a walk runs.
+        A stale listing (older than REFRESH_AFTER) is walked REFRESH_DELAY
+        after this read, so the walk does not share the GIL with the page's
+        own requests; a dirty one as soon as its interval allows.
         """
         age = _time.monotonic() - (record.walked_at or 0.0)
-        if age < gallery_listing.REFRESH_AFTER:
+        if age >= gallery_listing.REFRESH_AFTER:
+            self._schedule_walk(output_path, gallery_listing.REFRESH_DELAY)
+        elif record.dirty:
+            self._schedule_walk(output_path)
+
+    def output_settled(self, path):
+        """The monitor settled an output at *path*: list it (on the loop).
+
+        *path* is resolved by the monitor's thread (``notify_output_settled``).
+        A root with a stored listing and no walk running gets the file added
+        in the executor (``_run_adds``), without a walk. Every other root
+        holding it is marked dirty (``mark_root_dirty``): one with a walk
+        running gets the trailing walk, as that walk may have passed the
+        file's folder already.
+        """
+        for key, record in self._settled_records(path):
+            relative = None
+            if (
+                record.files is not None
+                and record.flight is None
+                and record.resolved_root is not None
+            ):
+                relative = gallery_listing.relative_part(record.resolved_root, path)
+            if relative is None:
+                self._mark_dirty(key, record)
+                continue
+            record.pending_adds.append(relative)
+            if record.add_task is None:
+                task = asyncio.get_running_loop().create_task(
+                    self._run_adds(Path(key), record)
+                )
+                record.add_task = task
+                self._listing_tasks.add(task)
+                task.add_done_callback(self._listing_tasks.discard)
+
+    def mark_root_dirty(self, path):
+        """A settled output at *path*: walk every root holding it again (on the loop).
+
+        *path* is resolved by the monitor's thread (``notify_output_settled``),
+        so this does no file I/O: it compares ``normcase`` strings with each
+        walk's ``resolved_root``. Only roots with a listing, or a walk running,
+        are marked; a root without either is walked by its next read anyway.
+        """
+        for key, record in self._settled_records(path):
+            self._mark_dirty(key, record)
+
+    def _settled_records(self, path):
+        """``(key, record)`` of every listed or walking root holding *path*."""
+        if self._listings_closed:
+            return []
+        found = []
+        for key, record in list(self._root_listings.items()):
+            if record.retired or (record.files is None and record.flight is None):
+                continue
+            resolved = record.resolved_root or os.path.normcase(key)
+            if gallery_listing.root_contains(resolved, path):
+                found.append((key, record))
+        return found
+
+    def _mark_dirty(self, key, record):
+        if self._listings_closed or record.retired:
             return
-        if record.flight is not None or record.rewalk_handle is not None:
+        if record.files is None and record.flight is None:
+            return  # walked by its next read anyway
+        record.dirty = True
+        self._schedule_walk(Path(key))
+
+    async def _run_adds(self, root, record):
+        """Add the root's pending settled outputs to its listing (on the loop).
+
+        Each batch is placed in the executor against the stored listing, and
+        stored only when no walk started and no drop happened meanwhile: a
+        walk started after the outputs settled lists them itself, and a
+        dropped listing is walked by its next read. An output that cannot be
+        placed exactly marks the root dirty instead.
+        """
+        key = str(root)
+        try:
+            while record.pending_adds:
+                relatives, record.pending_adds = record.pending_adds, []
+                if record.files is None or record.flight is not None:
+                    continue  # dropped, or a walk started after they settled
+                base, generation, seq = record.files, record.generation, record.walk_seq
+                files, folders, with_ancestors, unresolved = (
+                    await self._run_in_executor(
+                        _patch_listing,
+                        root,
+                        base,
+                        record.folders,
+                        record.folders_with_ancestors,
+                        relatives,
+                    )
+                )
+                if self._listings_closed or record.retired:
+                    return
+                if record.generation != generation or record.walk_seq != seq:
+                    continue
+                if files is not base:
+                    record.files = files
+                    record.folders = folders
+                    record.folders_with_ancestors = with_ancestors
+                    record.patched += 1
+                    self._schedule_workspace_warm()
+                if unresolved:
+                    self._mark_dirty(key, record)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.logger.warning(f"Could not add a new output to the listing: {exc}")
+            record.pending_adds = []
+            self._mark_dirty(key, record)
+        finally:
+            record.add_task = None
+
+    def _schedule_walk(self, output_path, delay=0.0):
+        """Start or defer a background walk of *output_path* (on the loop).
+
+        - A walk is running: nothing; its end re-checks ``dirty``.
+        - Otherwise the walk is due *delay* from now, and never sooner than
+          ``rewalk_interval`` after the previous walk started. Due now: start
+          it. Later: one deferred walk per root, at least MIN_REWALK_DELAY
+          away; when one is already pending, the earlier deadline wins.
+        Every walk start cancels the pending one (``_start_walk``).
+        """
+        if self._listings_closed:
             return
-        record.rewalk_handle = asyncio.get_running_loop().call_later(
-            gallery_listing.REFRESH_DELAY, self._delayed_walk, output_path, record
+        record = self._root_listing(output_path)
+        if record.flight is not None or record.retired:
+            return
+        now = _time.monotonic()
+        due = now + delay
+        if record.last_started_at is not None:
+            interval = gallery_listing.rewalk_interval(record.last_duration)
+            due = max(due, record.last_started_at + interval)
+        if due <= now:
+            self._start_walk(output_path, record)
+            return
+        wait = max(gallery_listing.MIN_REWALK_DELAY, due - now)
+        loop = asyncio.get_running_loop()
+        handle = record.rewalk_handle
+        if handle is not None:
+            if handle.when() - loop.time() <= wait:
+                return  # the pending walk comes first
+            handle.cancel()
+        record.rewalk_handle = loop.call_later(
+            wait, self._delayed_walk, output_path, record
         )
 
     def _delayed_walk(self, output_path, record):
-        record.rewalk_handle = None
-        self._schedule_walk(output_path)
+        """The deferred walk's timer: clear the handle first, then walk.
 
-    def _schedule_walk(self, output_path):
-        """Start a background walk of *output_path* unless one is running."""
-        record = self._root_listing(output_path)
-        if record.flight is None:
-            self._start_walk(output_path, record)
+        It was armed for a stale or dirty listing at the earliest moment the
+        interval allowed. Only a walk start clears either reason, and every
+        start cancels this timer, so when it fires the walk is still due.
+        """
+        record.rewalk_handle = None
+        if self._listings_closed or record.flight is not None or record.retired:
+            return
+        self._start_walk(output_path, record)
 
     def _start_walk(self, output_path, record):
         """Start the root's one walk; returns its flight future (on the loop)."""
@@ -1462,7 +1726,11 @@ class ImageRoutesMixin:
         self._listing_loop = loop
         handle, record.rewalk_handle = record.rewalk_handle, None
         if handle is not None:
-            handle.cancel()  # this walk is the refresh it was waiting to start
+            handle.cancel()  # this walk is the one it was waiting to start
+        # This walk lists every output reported so far.
+        record.dirty = False
+        record.pending_adds = []
+        record.last_started_at = _time.monotonic()
         record.walk_seq += 1
         flight = loop.create_future()
         record.flight = flight
@@ -1482,11 +1750,14 @@ class ImageRoutesMixin:
         error never reaches a future nobody awaits.
         """
         outcome = None
+        cancelled = False
+        started = record.last_started_at
         try:
-            files, folders, with_ancestors = await self._run_in_executor(
+            files, folders, with_ancestors, resolved = await self._run_in_executor(
                 walk_root, self._scan_gallery_files_sync, output_path, record.files
             )
         except asyncio.CancelledError:
+            cancelled = True
             outcome = WalkOutcome.failed(RuntimeError(WALK_STOPPED))
             raise
         except Exception as exc:
@@ -1496,11 +1767,15 @@ class ImageRoutesMixin:
                     f"Could not list output folder {output_path}: {exc}"
                 )
             record.failing = True
+            # Retried by the 30 s rule, not by a trailing walk.
+            record.dirty = False
             outcome = WalkOutcome.failed(exc)
         else:
             record.failing = False
+            record.resolved_root = resolved
             if record.generation == generation:
                 changed = files is not record.files
+                record.patched = 0
                 record.files = files
                 record.folders = folders
                 record.folders_with_ancestors = with_ancestors
@@ -1512,10 +1787,14 @@ class ImageRoutesMixin:
             else:
                 outcome = WalkOutcome.discarded()
         finally:
+            record.last_duration = _time.monotonic() - started
             if record.flight is flight:
                 record.flight = None
             if not flight.done():
                 flight.set_result(outcome)
+            if record.dirty and not cancelled:
+                # An output settled during this walk: the trailing walk.
+                self._schedule_walk(output_path)
 
     async def get_output_images(self, request):
         """Get all images from ComfyUI output folder(s)."""
@@ -1644,6 +1923,10 @@ class ImageRoutesMixin:
         cached = self._workspace_listed_cache.get(key)
         if cached is not None and cached[0] is files:
             return cached[1]
+        if cached is not None:
+            delta = gallery_listing.listing_delta(cached[0], files)
+            if delta is not None:
+                return self._workspace_listed_step(key, cached, files, delta)
         previous = cached[2] if cached is not None else {}
         listed = []
         for path, mtime in files:
@@ -1663,7 +1946,42 @@ class ImageRoutesMixin:
                 self._workspace_card_cache[key] = {
                     file: facts for file, facts in cards.items() if file in lookup
                 }
-        self._workspace_listed_cache[key] = (files, listed, lookup)
+        self._workspace_listed_cache[key] = (files, listed, lookup, None)
+        return listed
+
+    def _workspace_listed_step(self, key, cached, files, delta) -> list:
+        """The _Listed values after a few files were added or replaced.
+
+        A listing patched by a settled output (``output_settled``) shares
+        every other entry with the cached one, so only the added files are
+        built; the order of the values does not matter (every sort is a total
+        order). The step ``(previous values, added, removed)`` lets the sort
+        orders follow it the same way (``_workspace_orders``).
+        """
+        index, root = key[0], Path(key[1])
+        _files, old_listed, old_lookup, _step = cached
+        added, removed = delta
+        if not added and not removed:
+            self._workspace_listed_cache[key] = (files, old_listed, old_lookup, None)
+            return old_listed
+        lookup = dict(old_lookup)
+        gone = [lookup.pop(item) for item in removed if item in lookup]
+        fresh = [_listed(path, mtime, root, index) for path, mtime in added]
+        for entry in fresh:
+            lookup[(entry.path, entry.mtime)] = entry
+        if gone:
+            gone_ids = {id(entry) for entry in gone}
+            listed = [entry for entry in old_listed if id(entry) not in gone_ids]
+            cards = self._workspace_card_cache.get(key)
+            if cards:
+                self._workspace_card_cache[key] = {
+                    file: facts for file, facts in cards.items() if file in lookup
+                }
+        else:
+            listed = list(old_listed)
+        listed.extend(fresh)
+        step = (old_listed, fresh, gone)
+        self._workspace_listed_cache[key] = (files, listed, lookup, step)
         return listed
 
     def _workspace_orders(self, listings: list[tuple]) -> dict:
@@ -1678,13 +1996,53 @@ class ImageRoutesMixin:
             old is new for old, new in zip(cached[0], parts, strict=True)
         ):
             return cached[1]
-        newest = sorted(
-            (entry for part in parts for entry in part),
-            key=lambda entry: _workspace_key(entry, "newest"),
-        )
+        newest = None
+        if cached is not None:
+            newest = self._newest_step(listings, parts, cached)
+        if newest is None:
+            newest = sorted(
+                (entry for part in parts for entry in part),
+                key=_newest_key,
+            )
+        # The other orders, the wanted paths and the locators follow lazily.
         orders = {"newest": newest}
         self._workspace_order_cache[key] = (parts, orders)
         return orders
+
+    def _newest_step(self, listings, parts, cached) -> list | None:
+        """The cached newest order with each part's last step applied, or None.
+
+        Only when every changed part is exactly the value list this call
+        built (*parts*) and one step (``_workspace_listed_step``) past the
+        part the cached order was built from: the added values are placed by
+        bisection instead of sorting the whole listing again. Page reads and
+        the warm build run in executor threads at once, so the per-file cache
+        may already hold a newer step than *parts*; then this sorts in full.
+        """
+        old_parts, orders = cached
+        added, gone = [], []
+        for (index, root, _files), part, old in zip(
+            listings, parts, old_parts, strict=True
+        ):
+            if part is old:
+                continue
+            listed = self._workspace_listed_cache.get((index, str(root)))
+            if listed is None or listed[1] is not part:
+                return None
+            step = listed[3]
+            if step is None or step[0] is not old:
+                return None
+            added.extend(step[1])
+            gone.extend(step[2])
+        newest = orders["newest"]
+        if gone:
+            gone_ids = {id(entry) for entry in gone}
+            newest = [entry for entry in newest if id(entry) not in gone_ids]
+        else:
+            newest = list(newest)
+        for entry in added:
+            insort(newest, entry, key=_newest_key)
+        return newest
 
     def _workspace_wanted(self, listings: list[tuple]) -> frozenset:
         """The selected listing's normalized paths (cached with its orders)."""
@@ -2967,18 +3325,19 @@ class ImageRoutesMixin:
         cached = self._favorite_listing_cache.get(cache_key)
         if cached is not None and cached[0] is files:
             return cached[1]
-        # From the path strings, as _listed does: relative_to per file was the
-        # largest cost of a cold first open (#348).
-        prefix = os.path.join(str(root), "")
-        listing = {}
-        for path, _mtime in files:
-            text = str(path)
-            if text.startswith(prefix):
-                relative = text[len(prefix) :]
-                posix = relative if os.sep == "/" else relative.replace(os.sep, "/")
-            else:
-                posix = path.relative_to(root).as_posix()
-            listing.setdefault(_favorite_relative_key(posix), posix)
+        listing = None
+        if cached is not None:
+            delta = gallery_listing.listing_delta(cached[0], files)
+            if delta is not None:
+                listing = _favorite_listing_step(root, cached[1], *delta)
+        if listing is None:
+            # From the path strings, as _listed does: relative_to per file was
+            # the largest cost of a cold first open (#348).
+            prefix = os.path.join(str(root), "")
+            listing = {}
+            for path, _mtime in files:
+                posix = _listing_posix(root, prefix, path)
+                listing.setdefault(_favorite_relative_key(posix), posix)
         self._favorite_listing_cache[cache_key] = (files, listing)
         return listing
 

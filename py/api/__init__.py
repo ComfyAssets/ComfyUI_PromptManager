@@ -362,8 +362,11 @@ class PromptManagerAPI(
         # background walks refreshing them (py/api/gallery_listing.py, #348).
         self._root_listings: dict[str, RootListing] = {}
         self._listing_tasks: set = set()
-        # The loop the walks run on, set by the first walk.
+        # The loop the walks run on, set by the startup warm-up or the first
+        # walk; the monitor's thread hops onto it (notify_output_settled).
         self._listing_loop = None
+        # Set by cleanup_gallery_listings: no background walk starts after it.
+        self._listings_closed = False
         # The workspace caches rebuilt behind a stored walk that changed the
         # listing, once the host's startup warm-up has run (#348).
         self._workspace_warm_enabled = False
@@ -492,7 +495,7 @@ class PromptManagerAPI(
         """The shared listing record of one output root (created empty)."""
         return self._root_listings.setdefault(str(root), RootListing())
 
-    def invalidate_gallery_cache(self):
+    def invalidate_gallery_cache(self, retire=False):
         """Drop every root's listing, so the next read waits for a new walk.
 
         Called after files are deleted through the app (duplicate cleanup and
@@ -503,6 +506,9 @@ class PromptManagerAPI(
         _workspace_listed and _card_facts); its sort orders are dropped, as
         the walk replaces them anyway, and so is the favorites lookup, which
         holds the old list.
+
+        ``retire`` (the roots changed): no background walk of a root starts
+        again until a reader or the warm-up asks for it.
         """
         loop = self._listing_loop
         if loop is not None and loop.is_running() and _running_loop() is not loop:
@@ -513,7 +519,7 @@ class PromptManagerAPI(
 
             def drop():
                 try:
-                    self._drop_listings()
+                    self._drop_listings(retire)
                 finally:
                     dropped.set()
 
@@ -521,11 +527,19 @@ class PromptManagerAPI(
             if not dropped.wait(_OFF_LOOP_DROP_WAIT):
                 self.logger.warning("The Images listing drop is still queued")
             return
-        self._drop_listings()
+        self._drop_listings(retire)
 
-    def _drop_listings(self):
+    def _drop_listings(self, retire=False):
         for record in list(self._root_listings.values()):
             record.drop()
+            if retire:
+                # The roots changed: a removed root must not come back through
+                # a pending timer, a trailing walk or a monitor mark.
+                record.retired = True
+                record.dirty = False
+                handle, record.rewalk_handle = record.rewalk_handle, None
+                if handle is not None:
+                    handle.cancel()
         self._workspace_order_cache = {}
         self._favorite_listing_cache = {}
 
@@ -539,15 +553,36 @@ class PromptManagerAPI(
         # Each stored walk that changes a listing then rebuilds the workspace's
         # per-file values, orders and favorites behind it (_warm_workspace).
         self._workspace_warm_enabled = True
+        self._listing_loop = asyncio.get_running_loop()
+        self._listings_closed = False
         try:
             for root in self._get_all_output_dirs():
+                self._root_listing(root).retired = False
                 self._schedule_walk(root)
         except Exception as e:
             self.logger.warning(f"Could not warm the Images listing: {e}")
 
+    def notify_output_settled(self, path):
+        """The image monitor settled an output at *path* (any thread).
+
+        Called on the monitor's worker thread with the resolved path. It only
+        hands the path to the event loop (``output_settled``) and never
+        touches a listing from this thread; before the loop is known, or once
+        the listings are cleaned up, it does nothing.
+        """
+        loop = self._listing_loop
+        if loop is None or self._listings_closed or not loop.is_running():
+            return
+        try:
+            loop.call_soon_threadsafe(self.output_settled, path)
+        except RuntimeError:
+            pass  # the loop closed meanwhile (shutdown)
+
     async def cleanup_gallery_listings(self, app=None):
         """Stop the background listing walks (aiohttp on_cleanup)."""
         self._workspace_warm_enabled = False
+        # No mark, deferred walk or trailing walk starts a walk from now on.
+        self._listings_closed = True
         # Before any await, so no delayed refresh can start a walk meanwhile.
         for record in self._root_listings.values():
             handle, record.rewalk_handle = record.rewalk_handle, None
@@ -571,7 +606,7 @@ class PromptManagerAPI(
 
     def reset_gallery_roots_cache(self):
         """Drop every cached listing and derived workspace value (roots changed)."""
-        self.invalidate_gallery_cache()
+        self.invalidate_gallery_cache(retire=True)
         self._workspace_listed_cache = {}
         self._workspace_card_cache = {}
 

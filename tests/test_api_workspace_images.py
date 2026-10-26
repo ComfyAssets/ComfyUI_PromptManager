@@ -188,6 +188,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         newest = self.api._workspace_order_cache[key][1]["newest"]
         favorites = self.api._favorite_listing_cache[str(self.output_dir)]
         record.walked_at -= gallery_listing.REFRESH_AFTER + 1
+        record.last_started_at -= gallery_listing.REFRESH_AFTER + 1
         with patch.object(
             self.api,
             "_scan_gallery_files_sync",
