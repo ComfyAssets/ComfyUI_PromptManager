@@ -2351,6 +2351,10 @@ class TestRootScopeServing(ImageAPITestCase):
                 await self.assert_no_access(path, scope=token)
 
 
+# Seconds any single wait in the shared-listing tests may take.
+_HANG_LIMIT = 30
+
+
 class _GatedScan:
     """Wraps the real scan, counts calls and can hold one call after it listed.
 
@@ -2404,8 +2408,13 @@ class TestSharedListing(ImageAPITestCase):
         self.addCleanup(self.scan.release_all)
 
     async def _json(self, method, path, **kwargs):
-        resp = await self.client.request(method, path, **kwargs)
-        return resp.status, await resp.json()
+        # Bounded, like every wait in this class: a stuck walk fails the test
+        # with a traceback instead of hanging the whole run.
+        async def call():
+            resp = await self.client.request(method, path, **kwargs)
+            return resp.status, await resp.json()
+
+        return await asyncio.wait_for(call(), _HANG_LIMIT)
 
     def _record(self):
         return self.api._root_listings[str(self.output_dir)]
@@ -2418,8 +2427,12 @@ class TestSharedListing(ImageAPITestCase):
 
     async def _settle(self):
         """Wait for every background walk this API started."""
-        while self.api._listing_tasks:
-            await asyncio.gather(*list(self.api._listing_tasks))
+
+        async def settle():
+            while self.api._listing_tasks:
+                await asyncio.gather(*list(self.api._listing_tasks))
+
+        await asyncio.wait_for(settle(), _HANG_LIMIT)
 
     async def test_concurrent_cold_readers_share_one_walk(self):
         make_png(self.output_dir / "sub" / "a.png")
