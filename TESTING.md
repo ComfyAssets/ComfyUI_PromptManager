@@ -3974,9 +3974,17 @@ counts it, so dropping it back on the editor keeps it on `text`. Wildcard links 
 frontend Primitive before it is typed) are not steered.
 
 The frontend's legacy Primitive is virtual: it writes its value into the target widget,
-which the editor text no longer is. The `graphToPrompt` wrapper and the queue hook put
-the Primitive's value (through virtual reroutes) into the queued `text`/`negative_text`,
-so a Primitive drives the text as before, also in workflows saved before #343. A linked
+which the editor text no longer is. For the editors' detached inputs the `graphToPrompt`
+wrapper puts the Primitive's value (through virtual reroutes, also inside subgraphs, where
+the queued id is `<subgraph node>:<inner node>`) into the queued `text`/`negative_text`,
+resolved as the host resolves a value written into the widget: the Primitive's text
+replacement when its "Run widget replace on values" option is on, then the hidden widget's
+own serializer (dynamic prompts: `{red|blue}` becomes one choice). Each queued output is
+filled once (the queue hook only fills an output that did not come through the wrapper),
+so a wildcard is drawn once per run. Inputs still bound to their widget (the Classic
+nodes) are left as the host resolved them; as on main, the Classic text widget's own
+serializer queues its text as written, wildcards included. A Primitive drives the text as
+before, also in workflows saved before #343. A linked
 Classic text box gives its canvas row back while linked (the core keeps an empty gap) and
 gets its size back on disconnect. The metadata parsers map a known node's positional
 widget values through its widget table when its widget-bound inputs do not line up with
@@ -3990,9 +3998,11 @@ in the workflow for when the link is disconnected. That includes the Classic nod
 which used to save `null` under a link.
 
 - `tests/js/text-links.test.js`: socket exposure, drop preference (exact STRING, moved
-  links), box hit-test, Primitive values through reroutes, stored values, the Classic row.
+  links), box hit-test, Primitive values through reroutes, replacement and the widget
+  serializer (bound inputs left to the host), stored values, the Classic row.
 - `tests/test_generation_params.py` (`workflow-only-detached-*` cases, with JS parity
-  vectors): editor text inputs without widget bindings keep their positional values.
+  vectors): editor text inputs without widget bindings keep their positional values, and so
+  does a core KSampler whose only widget-bound input (`cfg`) is out of schema order.
 - `tests/browser/{focused,pair,classic}-node.spec.mjs`: the linked note, typed text
   kept through save and configure (also with a workflow's widget binding restored), the
   Classic "use prompt" guard while linked.
@@ -4003,11 +4013,15 @@ which used to save `null` under a link.
   `workflow-before-343-primitive.json` were serialized by the pre-#343 code on the pinned
   host and must load unchanged; the second one's legacy Primitives keep driving the text
   through a real Run. Also: a Primitive dropped on the Main prompt box and a string on the
-  Negative prompt box, a moved link released on the editor body, and paste, clone and undo.
+  Negative prompt box, a moved link released on the editor body, paste, clone and undo, a
+  legacy Primitive inside a subgraph, and wildcard Primitives on every node type queued
+  through a real Run as one choice, the same one another `graphToPrompt` wrapper sees.
 - `tests/comfyui/execution-text-link.spec.mjs` (execution host): workflows built by the
   real frontend through the sockets, with text from `PrimitiveString`, the legacy
   Primitive or through `PreviewAny`, for PromptManager, PromptManagerText, Focused, Split
-  and the Pair (positive, negative, both, neither linked, and a Primitive negative). The linked text is saved, counted once, recorded as
+  and the Pair (positive, negative, both, neither linked, and a Primitive negative). A
+  wildcard Primitive on PromptManager and Focused saves and counts the one choice that was
+  queued. The linked text is saved, counted once, recorded as
   the run's raw positive/negative, and after a scan the run's image links to it. Text
   only known at run time (`PreviewAny`) cannot be read from the image; the case only
   requires that it is never linked to another prompt (its attribution from the recorded

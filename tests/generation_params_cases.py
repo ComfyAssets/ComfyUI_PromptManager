@@ -312,6 +312,22 @@ def _detached_editor_text(pair):
     }
 
 
+def _core_widget_input_out_of_order():
+    """#343 review R4: a core KSampler whose only widget input is ``cfg``.
+
+    Older frontends saved only converted or linked widget inputs, so the list
+    is not a prefix of the schema and carries no named values; the positional
+    values must still land on the schema's names.
+    """
+    workflow = _detached_editor_text(False)
+    sampler = workflow["nodes"][-1]
+    sampler["inputs"] = sampler["inputs"] + [
+        {"name": "cfg", "widget": {"name": "cfg"}, "link": None}
+    ]
+    sampler["widgets_values"] = [9, "fixed", 30, 4.5, "dpmpp_2m", "karras", 1]
+    return workflow
+
+
 def _nested(depth):
     """A value nested ``depth`` arrays deep, as a crafted file can hold."""
     value = ["leaf", 7]
@@ -459,6 +475,9 @@ CASES = {
     "workflow-only": case(workflow=_workflow_only()),
     "workflow-only-detached-editor-text": case(workflow=_detached_editor_text(False)),
     "workflow-only-detached-pair-text": case(workflow=_detached_editor_text(True)),
+    "workflow-only-core-widget-input-out-of-order": case(
+        workflow=_core_widget_input_out_of_order()
+    ),
     "overwritten-prompt-manager-text": case(
         {
             "4": CHECKPOINT,

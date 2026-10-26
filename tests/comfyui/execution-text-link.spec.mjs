@@ -150,6 +150,24 @@ for (const kind of ['PromptManager', 'PromptManagerText', 'PromptManagerFocused'
     }
 }
 
+// A legacy Primitive's wildcard is drawn once when the workflow is queued: the run saves and counts that one choice.
+for (const kind of ['PromptManager', 'PromptManagerFocused']) {
+    test(`${kind} saves and counts the one choice a wildcard legacy Primitive queued (#343 re-review R1)`, async ({ execution, page }) => {
+        test.setTimeout(90000);
+        const stem = unique(`Wildcard ${kind}`);
+        const evidence = await run(execution, page, { kind, positive: { typed: 'Typed under the link', text: `${stem} {alpha|beta}`, via: 'legacy' } });
+        const queuedText = evidence.output[evidence.promptNode].inputs.text;
+        // The Classic node keeps its widget binding: the host applies the Primitive, and its text widget queues the text
+        // as written once its own serializer is installed (50 ms after creation), as on main.
+        const choices = [`${stem} alpha`, `${stem} beta`, ...(kind === 'PromptManager' ? [`${stem} {alpha|beta}`] : [])];
+        expect(choices).toContain(queuedText);
+        expect(evidence.context.positive.raw).toBe(queuedText);
+        expect(evidence.usage).toEqual([{ role: 'positive', run_count: 1 }]);
+        const saved = await (await execution.request.get(`/prompt_manager/library/${evidence.context.positive_prompt_id}`)).json();
+        expect(saved.positive.text).toBe(queuedText);
+    });
+}
+
 for (const [label, linked, negativeVia] of [['positive', ['text'], 'primitive'], ['negative', ['negative_text'], 'primitive'],
     ['both', ['text', 'negative_text'], 'primitive'], ['neither', [], 'primitive'], ['negative from a legacy Primitive', ['negative_text'], 'legacy']]) {
     test(`PromptManagerPair with ${label} linked saves, counts and records the pair and links its images`, async ({ execution, page }) => {

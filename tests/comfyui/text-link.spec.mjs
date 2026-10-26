@@ -164,11 +164,14 @@ async function addEditors(page) {
 
 /** The prompt a Run sends to the server, through the real app.queuePrompt path. */
 async function runPrompt(page) {
-    const sent = new Promise(resolve => page.route('**/prompt', async route => {
+    let captured;
+    const sent = new Promise(resolve => { captured = resolve; });
+    // Installed before the run starts, so the POST can never reach the real host.
+    await page.route('**/prompt', async route => {
         if (route.request().method() !== 'POST') return route.fallback();
-        resolve(route.request().postDataJSON().prompt);
+        captured(route.request().postDataJSON().prompt);
         return route.fulfill({ json: { prompt_id: 'captured', number: 1, node_errors: {} } });
-    }));
+    });
     await page.evaluate(async () => { const { app } = await import('/scripts/app.js'); await app.queuePrompt(0, 1); });
     const prompt = await sent;
     await page.unroute('**/prompt');
@@ -200,6 +203,70 @@ test('a legacy Primitive dropped on an editor box or socket drives the text it s
     expect((await queued(page, ids.focused)).text).toBe('Changed in the Primitive');
     await page.evaluate(async ({ focused }) => { const { app } = await import('/scripts/app.js'); const node = app.graph.getNodeById(focused); node.disconnectInput(node.inputs.findIndex(input => input.name === 'text')); }, ids);
     expect((await queued(page, ids.focused)).text).toBe('Typed focused');
+});
+
+test('a wildcard legacy Primitive queues one resolved choice, drawn once per run, on every PromptManager node (#343 re-review R1)', async ({ page }) => {
+    const choices = `{${Array.from({ length: 10 }, (_, index) => `c${index}`).join('|')}}`;
+    const ids = await page.evaluate(async choices => {
+        const { app } = await import('/scripts/app.js');
+        const add = (type, x, y) => { const node = LiteGraph.createNode(type); app.graph.add(node); node.pos = [x, y]; return node; };
+        // [node, input, Primitive value, its "Run widget replace on values" option]
+        const targets = [['PromptManagerFocused', 'text', `Focused ${choices}`, false], ['PromptManagerSplit', 'text', `Split %date:yyyy% ${choices}`, true],
+            ['PromptManagerPair', 'negative_text', `Pair ${choices}`, false], ['PromptManager', 'text', `Classic ${choices}`, false],
+            ['PromptManagerText', 'text', `Text ${choices}`, false]];
+        const ids = {};
+        targets.forEach(([type, name, value, replace], index) => {
+            const node = add(type, 500, index * 800);
+            const primitive = add('PrimitiveNode', 20, index * 800);
+            if (!primitive.connect(0, node, node.inputs.findIndex(input => input.name === name))) throw new Error(`no Primitive link to ${type}.${name}`);
+            primitive.widgets[0].value = value;
+            primitive.properties['Run widget replace on values'] = replace;
+            ids[type] = [String(node.id), name];
+        });
+        // What another extension's graphToPrompt wrapper sees must be what the server gets.
+        const inner = app.graphToPrompt;
+        const seen = window.__pmSeen = [];
+        app.graphToPrompt = async function (...args) { const result = await inner.apply(this, args); seen.push(structuredClone(result.output)); return result; };
+        // Each draw takes the next choice, so a second draw for the same text always changes it.
+        const random = Math.random;
+        let draw = 0;
+        Math.random = () => ((draw++ % 10) + .5) / 10;
+        window.__pmRestore = () => { app.graphToPrompt = inner; Math.random = random; };
+        return ids;
+    }, choices);
+    const prompt = await runPrompt(page);
+    const seen = await page.evaluate(() => { window.__pmRestore(); return window.__pmSeen; });
+    expect(seen).toHaveLength(1);
+    const year = String(new Date().getFullYear());
+    const stems = { PromptManagerFocused: 'Focused', PromptManagerSplit: `Split ${year}`, PromptManagerPair: 'Pair', PromptManager: 'Classic', PromptManagerText: 'Text' };
+    // The Classic nodes keep their widget binding, so the host applies the Primitive and #343 leaves the value alone.
+    // As on main, their text widget's own serializer (installed 50 ms after creation) queues the text as written.
+    const classic = new Set(['PromptManager', 'PromptManagerText']);
+    for (const [type, [id, name]] of Object.entries(ids)) {
+        const value = prompt[id].inputs[name];
+        const expected = classic.has(type) ? `(?:c\\d|${choices.replace(/[{}|]/g, '\\$&')})` : 'c\\d';
+        expect(value, type).toMatch(new RegExp(`^${stems[type]} ${expected}$`));
+        expect(value, `${type}: one draw per run`).toBe(seen[0][id].inputs[name]);
+    }
+});
+
+test('a legacy Primitive inside a subgraph drives the inner editor text it shows as linked (#343 re-review R2)', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+        const { app } = await import('/scripts/app.js');
+        const add = (type, x, y) => { const node = LiteGraph.createNode(type); app.graph.add(node); node.pos = [x, y]; return node; };
+        const focused = add('PromptManagerFocused', 500, 40);
+        focused.widgets.find(widget => widget.name === 'text').value = 'Typed under the link';
+        const primitive = add('PrimitiveNode', 20, 40);
+        if (!primitive.connect(0, focused, focused.inputs.findIndex(input => input.name === 'text'))) throw new Error('no Primitive link');
+        const { node } = app.graph.convertToSubgraph(new Set([focused, primitive]));
+        const inner = node.subgraph.nodes.find(item => item.type === 'PromptManagerFocused');
+        // The value the user gives the Primitive inside the subgraph.
+        node.subgraph.nodes.find(item => item.type === 'PrimitiveNode').widgets[0].value = 'Inner {only choice}';
+        return { host: String(node.id), inner: String(inner.id), linked: inner.inputs.find(input => input.name === 'text').link != null };
+    });
+    expect(result.linked).toBe(true);
+    const prompt = await runPrompt(page);
+    expect(prompt[`${result.host}:${result.inner}`]?.inputs.text).toBe('Inner only choice');
 });
 
 test('a workflow saved before #343 with legacy Primitives on editor text keeps running their values (#343 review I1)', async ({ page }) => {

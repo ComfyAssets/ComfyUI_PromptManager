@@ -229,19 +229,37 @@ function syncPromptManagerWidgets() {
 }
 
 /**
- * #343: a legacy frontend Primitive linked to a PromptManager text input runs with the Primitive's value.
+ * #343: a legacy frontend Primitive linked to a PromptManager editor text input runs with the Primitive's value.
  * The Primitive writes into the target's widget, but the editor text inputs are no longer bound to their hidden
- * widgets, so the queued value would otherwise be the hidden typed text while the editor says "linked".
+ * widgets, so the queued value would otherwise be the hidden typed text while the editor says "linked". Inputs still
+ * bound to a widget (the Classic nodes) are left as the host resolved them.
+ *
+ * A wildcard (`{red|blue}`) draws a new choice each time it is resolved, so each queued output is filled once: by the
+ * graphToPrompt wrapper, or by the queue hook when a caller queues an output that did not come through it.
  */
-function applyPrimitiveText(output) {
-  const nodes = app.graph?._nodes || app.graph?.nodes || [];
-  if (!output) return;
-  for (const node of nodes) {
-    const inputs = promptManagerTypes.has(node.type) ? output[node.id]?.inputs : null;
+const primitiveTextApplied = new WeakSet();
+const MAX_SUBGRAPH_DEPTH = 32;
+
+/** Every node with the id it is queued under: a node inside a subgraph is `<subgraph node id>:<inner id>`. */
+function* queuedNodes(graph, prefix = '', depth = 0) {
+  for (const node of graph?._nodes || graph?.nodes || []) {
+    yield [`${prefix}${node.id}`, node];
+    if (depth < MAX_SUBGRAPH_DEPTH && node.isSubgraphNode?.() && node.subgraph) {
+      yield* queuedNodes(node.subgraph, `${prefix}${node.id}:`, depth + 1);
+    }
+  }
+}
+
+async function applyPrimitiveText(output) {
+  if (!output || typeof output !== 'object' || primitiveTextApplied.has(output)) return;
+  primitiveTextApplied.add(output);
+  const replaceText = window.comfyAPI?.utils?.applyTextReplacements;
+  for (const [id, node] of queuedNodes(app.graph)) {
+    const inputs = promptManagerTypes.has(node.type) ? output[id]?.inputs : null;
     if (!inputs) continue;
     for (const name of ['text', 'negative_text']) {
       if (Array.isArray(inputs[name])) continue;
-      const value = primitiveTextValue(node, name);
+      const value = await primitiveTextValue(node, name, { replaceText });
       if (value !== undefined) inputs[name] = value;
     }
   }
@@ -263,7 +281,7 @@ app.registerExtension({
     app.graphToPrompt = async function(...args) {
       syncPromptManagerWidgets();
       const result = await originalGraphToPrompt(...args);
-      applyPrimitiveText(result?.output);
+      await applyPrimitiveText(result?.output);
       return result;
     };
 
@@ -291,7 +309,7 @@ app.registerExtension({
         }
       }
 
-      applyPrimitiveText(output);
+      await applyPrimitiveText(output);
       return originalQueuePrompt(number, { output, workflow }, ...rest);
     };
   },

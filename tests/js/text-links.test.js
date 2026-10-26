@@ -90,28 +90,68 @@ test('a link being moved off a text input leaves it free, as the frontend counts
     assert.equal(preferredTextSlot(legacy, 'STRING', ['text']).slot.name, 'text', 'object-keyed link tables too');
 });
 
-test('a legacy frontend Primitive feeding a text input supplies its value (#343 review I1)', async () => {
-    const {primitiveTextValue} = await source;
+function primitiveGraph() {
     const nodes = new Map();
     const links = new Map();
     const graph = {getNodeById:id => nodes.get(id), getLink:id => links.get(id)};
     const add = (id, node) => { nodes.set(id, {id, graph, ...node}); return nodes.get(id); };
+    return {graph, nodes, links, add};
+}
+
+test('a legacy frontend Primitive feeding a detached text input supplies its value (#343 review I1)', async () => {
+    const {primitiveTextValue} = await source;
+    const {nodes, links, add} = primitiveGraph();
     const target = add(1, {inputs:[{name:'text',link:10},{name:'negative_text',link:11},{name:'prepend_text',link:12},{name:'category',link:null}]});
     add(2, {type:'PrimitiveNode', isVirtualNode:true, widgets:[{value:'From the primitive'}]});
     add(3, {type:'Reroute', isVirtualNode:true, inputs:[{link:13}]});
     add(4, {type:'PrimitiveNode', isVirtualNode:true, widgets:[{value:42}]});
     add(5, {type:'PrimitiveStringMultiline', widgets:[{value:'a real node'}]});
     links.set(10, {origin_id:2}); links.set(11, {origin_id:3}); links.set(13, {origin_id:4}); links.set(12, {origin_id:5});
-    assert.equal(primitiveTextValue(target, 'text'), 'From the primitive');
-    assert.equal(primitiveTextValue(target, 'negative_text'), '42', 'through a virtual reroute');
-    assert.equal(primitiveTextValue(target, 'prepend_text'), undefined, 'a real node is serialized as a link');
-    assert.equal(primitiveTextValue(target, 'category'), undefined, 'not linked');
-    assert.equal(primitiveTextValue(target, 'missing'), undefined);
+    assert.equal(await primitiveTextValue(target, 'text'), 'From the primitive');
+    assert.equal(await primitiveTextValue(target, 'negative_text'), '42', 'through a virtual reroute');
+    assert.equal(await primitiveTextValue(target, 'prepend_text'), undefined, 'a real node is serialized as a link');
+    assert.equal(await primitiveTextValue(target, 'category'), undefined, 'not linked');
+    assert.equal(await primitiveTextValue(target, 'missing'), undefined);
     nodes.get(2).widgets = [];
-    assert.equal(primitiveTextValue(target, 'text'), undefined, 'a primitive without its widget yet');
+    assert.equal(await primitiveTextValue(target, 'text'), undefined, 'a primitive without its widget yet');
     links.set(13, {origin_id:3});
-    assert.equal(primitiveTextValue(target, 'negative_text'), undefined, 'a reroute cycle ends');
-    assert.equal(primitiveTextValue({inputs:[{name:'text',link:1}]}, 'text'), undefined, 'no graph');
+    assert.equal(await primitiveTextValue(target, 'negative_text'), undefined, 'a reroute cycle ends');
+    assert.equal(await primitiveTextValue({inputs:[{name:'text',link:1}]}, 'text'), undefined, 'no graph');
+});
+
+test('an input still bound to its widget is left to the host, which applies the Primitive itself (#343 re-review R1)', async () => {
+    const {primitiveTextValue} = await source;
+    const {links, add} = primitiveGraph();
+    const target = add(1, {inputs:[{name:'text',link:10,widget:{name:'text'}}], widgets:[{name:'text',value:'typed'}]});
+    add(2, {type:'PrimitiveNode', isVirtualNode:true, widgets:[{value:'{red|blue}'}]});
+    links.set(10, {origin_id:2});
+    assert.equal(await primitiveTextValue(target, 'text'), undefined);
+});
+
+test('a detached input runs the Primitive value the way the host runs a widget value: replace, then the widget serializer (#343 re-review R1)', async () => {
+    const {primitiveTextValue} = await source;
+    const {graph, links, add} = primitiveGraph();
+    const calls = [];
+    const widget = {name:'text', value:'typed under the link', serializeValue(...args) { calls.push([this.value, args.length]); return this.value.replace('{alpha|beta}', 'alpha'); }};
+    const target = add(1, {inputs:[{name:'text',link:10},{name:'negative_text',link:11}], widgets:[widget]});
+    const primitive = add(2, {type:'PrimitiveNode', isVirtualNode:true, properties:{'Run widget replace on values':false}, widgets:[{value:'a %year% {alpha|beta} car'}]});
+    add(3, {type:'PrimitiveNode', isVirtualNode:true, properties:{'Run widget replace on values':true}, widgets:[{value:'no serializer %year%'}]});
+    links.set(10, {origin_id:2}); links.set(11, {origin_id:3});
+    const replaced = [];
+    const replaceText = (from, value) => { replaced.push(from); return value.replace('%year%', '2026'); };
+    assert.equal(await primitiveTextValue(target, 'text', {replaceText}), 'a %year% alpha car', 'replace stays off unless the Primitive asks for it');
+    assert.deepEqual(calls, [['a %year% {alpha|beta} car', 0]], 'serialized once, without a node, so widgets_values is not touched');
+    assert.equal(widget.value, 'typed under the link', 'the typed text is restored');
+    primitive.properties['Run widget replace on values'] = true;
+    assert.equal(await primitiveTextValue(target, 'text', {replaceText}), 'a 2026 alpha car');
+    assert.deepEqual(replaced, [graph]);
+    assert.equal(await primitiveTextValue(target, 'negative_text', {replaceText}), 'no serializer 2026', 'no widget serializer: the replaced value');
+    assert.equal(await primitiveTextValue(target, 'negative_text'), 'no serializer %year%', 'no replacer: the value as is');
+    const failing = () => { throw new Error('not this host'); };
+    assert.equal(await primitiveTextValue(target, 'negative_text', {replaceText:failing}), 'no serializer %year%', 'a replacer that fails leaves the value');
+    widget.serializeValue = () => { throw new Error('broken serializer'); };
+    await assert.rejects(primitiveTextValue(target, 'text'), /broken serializer/);
+    assert.equal(widget.value, 'typed under the link', 'restored even when the serializer throws');
 });
 
 test('installing the preference wraps findInputByType and restores nothing it did not own', async () => {

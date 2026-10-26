@@ -59,29 +59,59 @@ export function preferredTextSlot(node, type, names) {
 }
 
 const MAX_VIRTUAL_HOPS = 32;
+const REPLACE_OPTION = 'Run widget replace on values';
 
-/**
- * The value a legacy frontend Primitive (a virtual node) supplies to a linked text input, following virtual
- * reroutes; undefined when the input is unlinked or its source is a real node (serialized as a link).
- *
- * A Primitive writes its value into the target's widget before the workflow is queued. The editor text inputs
- * are no longer bound to their hidden widgets, so the queue path fills the value in instead (#343 review I1).
- */
-export function primitiveTextValue(node, name) {
-    const input = node?.inputs?.find(item => item.name === name);
-    const graph = node?.graph;
-    if (input?.link == null || !graph) return undefined;
-    let link = linkOf(graph, input.link);
+/** The legacy frontend Primitive (a virtual node) at the source of a link, following virtual reroutes. */
+function primitiveSource(graph, id) {
+    let link = linkOf(graph, id);
     for (let hop = 0; link && hop < MAX_VIRTUAL_HOPS; hop++) {
         const origin = graph.getNodeById?.(link.origin_id);
         if (!origin?.isVirtualNode) return undefined;
-        if (origin.type === 'PrimitiveNode') {
-            const value = origin.widgets?.[0]?.value;
-            return value == null ? undefined : String(value);
-        }
+        if (origin.type === 'PrimitiveNode') return origin;
         link = linkOf(graph, origin.inputs?.[0]?.link);
     }
     return undefined;
+}
+
+/** A widget's queued value for `value`: its own serializer (the host's dynamic prompts) without touching its text. */
+function serializeAs(widget, value) {
+    if (typeof widget?.serializeValue !== 'function') return value;
+    const typed = widget.value;
+    widget.value = value;
+    try {
+        // No node argument: the host would also write the result into the workflow's widgets_values.
+        return widget.serializeValue();
+    } finally {
+        widget.value = typed;
+    }
+}
+
+/**
+ * The value a legacy frontend Primitive supplies to a linked editor text input, resolved the way the host resolves a
+ * value the Primitive writes into a widget: its text replacement when its "Run widget replace on values" option is on,
+ * then the input's own widget serializer (`{red|blue}` becomes one choice). Undefined when the input is unlinked, its
+ * source is a real node (serialized as a link), or the input is still bound to its widget, where the host already
+ * applied the Primitive (#343 re-review R1).
+ *
+ * The editor text inputs are no longer bound to their hidden widgets, so the Primitive cannot write into them and the
+ * queue path fills the value in instead (#343 review I1). Each call draws a new wildcard choice: call it once per run.
+ */
+export async function primitiveTextValue(node, name, {replaceText} = {}) {
+    const input = node?.inputs?.find(item => item.name === name);
+    const graph = node?.graph;
+    if (input?.link == null || input.widget || !graph) return undefined;
+    const primitive = primitiveSource(graph, input.link);
+    let value = primitive?.widgets?.[0]?.value;
+    if (value == null) return undefined;
+    value = String(value);
+    if (value && primitive.properties?.[REPLACE_OPTION] && replaceText) {
+        try {
+            value = replaceText(graph, value);
+        } catch (error) {
+            console.warn('[PromptManager] text replacement skipped for a linked Primitive', error);
+        }
+    }
+    return serializeAs(node.widgets?.find(widget => widget.name === name), value);
 }
 
 /** A link dropped on the editor body (not on a socket) fills the main prompt first, then the negative. */
