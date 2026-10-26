@@ -23,6 +23,9 @@ WATCHDOG_ENV = ("PM_TEST_HANG_LIMIT", "PM_TEST_SHUTDOWN_LIMIT")
 def run_suite(folder, extra_env=None, *args, verbosity=("-v",)):
     """Run the runner on ``folder`` and return the completed process."""
     env = {k: v for k, v in os.environ.items() if k not in WATCHDOG_ENV}
+    # Windows writes a piped stderr in the ANSI codepage; ask for the UTF-8
+    # this helper decodes, so non-ASCII values and paths survive.
+    env["PYTHONIOENCODING"] = "utf-8"
     env.update(extra_env or {})
     command = [sys.executable, "-m", "tests.run_suite", "-s", str(folder)]
     return subprocess.run(
