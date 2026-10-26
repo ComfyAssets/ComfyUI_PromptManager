@@ -924,12 +924,12 @@ db.model.backup_database("backup_prompts.db")
 ```bash
 cd ComfyUI_PromptManager
 pip install -r requirements-dev.txt
-python -m unittest discover -s tests          # Python (what CI runs)
+python -m tests.run_suite                      # Python (what CI runs: unittest discovery plus a hang watchdog)
 node --test tests/js/*.test.js                 # frontend pure modules
-python -m coverage run -m unittest discover -s tests && python -m coverage combine && python -m coverage report
+python -m coverage run -m tests.run_suite && python -m coverage combine && python -m coverage report
 ```
 
-CI runs the suite on Linux, Windows and macOS for Python 3.10 to 3.12 with an 85% coverage gate. Tests that delete a database file first check that nothing in the process still holds it open (`tests/open_handles.py`), so a connection leak fails on Linux the way it would on Windows.
+CI runs the suite on Linux, Windows and macOS for Python 3.10 to 3.13 with an 85% coverage gate. `python -m unittest discover -s tests` still works; see `TESTING.md` ("Time limits and hangs") for the watchdog. Tests that delete a database file first check that nothing in the process still holds it open (`tests/open_handles.py`), so a connection leak fails on Linux the way it would on Windows.
 
 ### Code Style
 
