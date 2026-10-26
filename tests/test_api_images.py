@@ -3229,6 +3229,10 @@ class TestSharedListing(ImageAPITestCase):
         self.api.mark_root_dirty(self._output("b.png"))
         self.assertTrue(record.dirty)
         self.api._scan_gallery_files_sync = _raise
+        # Moved back, so the failed walk's start is later even on a coarse
+        # monotonic clock (Windows ticks every ~15.6 ms).
+        record.last_started_at -= 1000
+        record.last_duration = None
         started = record.last_started_at
         with self.assertLogs(self.api.logger, "WARNING"):
             self._fire(record)
@@ -4097,7 +4101,8 @@ class TestSharedListing(ImageAPITestCase):
         f1 = gallery_listing.insert_entry(f0, (root / "n1.png", 5000.0), 100)
         f2 = gallery_listing.insert_entry(f1, (root / "n2.png", 6000.0), 100)
         self.api._workspace_orders([(0, root, f0)])
-        self.api._workspace_listed(0, root, f1)  # the warm build of add 1
+        key = (0, str(root))
+        built_from_f0 = self.api._workspace_listed_cache[key]
         real = self.api._workspace_listed
         armed = [True]
 
@@ -4105,15 +4110,18 @@ class TestSharedListing(ImageAPITestCase):
             values = real(index, part_root, files)
             if armed[0] and files is f1:
                 armed[0] = False
-                # Another executor thread reads f2 in full meanwhile.
-                self.api._workspace_orders([(0, root, f2)])
+                # Another executor thread read the f0 values before this one
+                # stored f1's, and stores its f2 step (from f0) only now.
+                self.api._workspace_listed_cache[key] = built_from_f0
+                real(index, part_root, f2)
             return values
 
         with patch.object(self.api, "_workspace_listed", side_effect=listed):
             stale = self.api._workspace_orders([(0, root, f1)])["newest"]
         self.assertEqual([entry.path for entry in stale], [p for p, _m in f1])
-        newest = self.api._workspace_orders([(0, root, f2)])["newest"]
-        self.assertEqual([entry.path for entry in newest], [p for p, _m in f2])
+        for files in (f1, f2, f1, f2):
+            newest = self.api._workspace_orders([(0, root, files)])["newest"]
+            self.assertEqual([entry.path for entry in newest], [p for p, _m in files])
 
     def test_a_roots_change_during_an_order_build_sorts_in_full(self):
         root = self.output_dir

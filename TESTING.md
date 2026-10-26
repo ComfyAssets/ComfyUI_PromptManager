@@ -350,7 +350,8 @@ hold a walk open with a gated scan instead of sleeping.
   (`_patch_listing`): `_settled_entry` applies the walk's filters
   (not a symlink or folder by `lstat`, `_name_suffix` in `MEDIA_EXTENSIONS`,
   no `thumbnails` folder, at most `MAX_SCAN_DEPTH` folders, every folder on
-  the way listable by `os.access`). Where names fold case the stored
+  the way listable by `os.access`, which on Windows ignores ACLs: a folder
+  whose ACL denies listing is added there and corrected by the next walk). Where names fold case the stored
   spelling must match first, as the filters compare it: Windows through
   `nt._getfinalpathname` (its `realpath` keeps the given case when it cannot
   open the file), macOS through `F_GETPATH` on a non-blocking open (a FIFO
