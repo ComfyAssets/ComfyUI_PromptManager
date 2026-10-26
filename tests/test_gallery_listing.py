@@ -80,13 +80,14 @@ class FolderSetsTests(unittest.TestCase):
         self.assertEqual(folders, {os.path.join("a", "b")})
         self.assertEqual(with_ancestors, {os.path.join("a", "b"), "a"})
 
-    def test_a_file_outside_the_root_string_still_gets_its_folder(self):
-        root = Path("/out")
-        odd = Path("/out/./x/y.png")  # normalizes to /out/x/y.png
-        files = [(odd, 1.0)]
-        self.assertEqual(
-            folder_sets(root, files)[0], _legacy_subfolders(root, files, False)
-        )
+    def test_a_path_not_spelled_like_the_root_falls_back_to_relative_to(self):
+        # Windows folds case: the string prefix misses, relative_to matches.
+        root = PureWindowsPath("C:/Out")
+        files = [(PureWindowsPath("c:/out/x/y.png"), 1.0)]
+        folders, with_ancestors = folder_sets(root, files)
+        self.assertEqual(folders, {"x"})
+        self.assertEqual(folders, _legacy_subfolders(root, files, False))
+        self.assertEqual(with_ancestors, _legacy_subfolders(root, files, True))
 
 
 class SameListingTests(unittest.TestCase):

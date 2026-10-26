@@ -2052,6 +2052,9 @@ class TestOutputScanHelpers(ImageAPITestCase):
             "b/thumbnails/u.png",
             "e/.hidden.png",
             "e/f.jpeg",
+            "e/..png",
+            "e/...webp",
+            "e/g.",
         ):
             make_png(output / rel)
         try:
@@ -2065,6 +2068,11 @@ class TestOutputScanHelpers(ImageAPITestCase):
             capped = list(images_module._iter_media_files(output, 3))
         self.assertEqual(listed, expected)
         self.assertEqual(capped, expected[:3])
+        # Path.suffix of Python 3.10-3.13, which CI and hosts run (3.14 changed
+        # it): "..png" has the suffix ".png", ".png" and "g." have none.
+        names = {path.name for path in listed}
+        self.assertTrue({"..png", "...webp", ".hidden.png"} <= names, names)
+        self.assertFalse({"g.", "notes.txt"} & names, names)
         self.assertTrue(all(isinstance(path, Path) for path in listed))
 
     def test_gallery_scan_reads_each_file_type_and_mtime_from_scandir(self):
@@ -2436,7 +2444,10 @@ def _reference_iter_media_files(output_path, max_files):
         if len(rel_parts) >= images_module.MAX_SCAN_DEPTH:
             dirs[:] = []
         for name in sorted(files):
-            if Path(name).suffix.lower() not in images_module.MEDIA_EXTENSIONS:
+            # Path.suffix as Python 3.10-3.13 computed it (3.14 changed it).
+            dot = name.rfind(".")
+            suffix = name[dot:] if 0 < dot < len(name) - 1 else ""
+            if suffix.lower() not in images_module.MEDIA_EXTENSIONS:
                 continue
             if (root_path / name).is_symlink():
                 continue
@@ -3025,7 +3036,23 @@ class TestSharedListing(ImageAPITestCase):
             release.set()
             await self._settle()
         self.assertEqual(built, [1, 3])
+        self.assertEqual(self.scan.calls, 3)  # two stored walks, one more build
         self.assertTrue(self._workspace_ready())
+
+    async def test_a_build_that_cannot_list_the_roots_only_warns(self):
+        make_png(self.output_dir / "a.png")
+        await self._warmed()
+
+        def broken():
+            raise RuntimeError("no roots")
+
+        self.api._get_all_output_dirs = broken
+        with self.assertLogs(self.api.logger, "WARNING") as logs:
+            self.api._schedule_workspace_warm()
+            task = self.api._workspace_warm_task
+            await asyncio.wait([task])
+        self.assertIsNone(task.exception())
+        self.assertTrue(any("Images page" in line for line in logs.output))
 
     async def test_cleanup_stops_a_running_workspace_build(self):
         make_png(self.output_dir / "a.png")

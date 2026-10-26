@@ -772,6 +772,17 @@ def _favorite_root_key(root) -> str:
     return _favorite_relative_key(os.path.realpath(str(root)))
 
 
+def _name_suffix(name):
+    """``Path(name).suffix`` as Python 3.10-3.13 compute it.
+
+    The last ``.``-part unless the dot is the first or last character, so
+    ``..png`` is ``.png`` and ``.png`` has none. Spelled out because 3.14
+    changed ``Path.suffix`` and ``os.path.splitext`` differs for leading dots.
+    """
+    dot = name.rfind(".")
+    return name[dot:] if 0 < dot < len(name) - 1 else ""
+
+
 def _walk_media(output_path, max_files):
     """Yield the ``os.DirEntry`` of each media file under *output_path*.
 
@@ -801,7 +812,7 @@ def _walk_media(output_path, max_files):
         except OSError:
             continue  # as os.walk: an unreadable folder is skipped
         for entry in sorted(files, key=lambda item: item.name):
-            if os.path.splitext(entry.name)[1].lower() not in MEDIA_EXTENSIONS:
+            if _name_suffix(entry.name).lower() not in MEDIA_EXTENSIONS:
                 continue
             if entry.is_symlink():
                 continue  # never read through a link out of the output tree
@@ -1330,10 +1341,10 @@ class ImageRoutesMixin:
     async def _warm_workspace(self):
         while True:
             self._workspace_warm_again = False
-            listings = self._stored_listings()
-            if listings is None:
-                return  # a root has no listing yet; its walk asks again
             try:
+                listings = self._stored_listings()
+                if listings is None:
+                    return  # a root has no listing yet; its walk asks again
                 await self._run_in_executor(self._build_workspace_caches, listings)
             except Exception as e:
                 self.logger.warning(f"Could not prepare the Images page: {e}")
