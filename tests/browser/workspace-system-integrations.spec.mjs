@@ -381,7 +381,8 @@ test('saved pairs block the import: the review explains it and offers only Close
     await openIntegrations(page);
     await enable(page);
     await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
-    expect((await gridOf(page))[2]).toEqual(['Protected', '1 imported prompt used by saved pairs']);
+    // gridOf reads once; poll until the review has rendered its rows.
+    await expect.poll(async () => (await gridOf(page))[2]).toEqual(['Protected', '1 imported prompt used by saved pairs']);
     await expect(dialog(page).locator('p.small')).toHaveText(
         'Delete or change the saved pairs that use these prompts, then review the import again. Nothing was changed.');
     expect(await dialog(page).locator('.dialog-actions button').allTextContents()).toEqual(['Close']);
