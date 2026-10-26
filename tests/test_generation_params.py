@@ -82,6 +82,26 @@ class TracesPrompts(unittest.TestCase):
         self.assertEqual(result["positivePrompt"], "the real positive")
         self.assertEqual(result["negativePrompt"], "the real negative")
 
+    def test_core_sampler_with_an_out_of_order_widget_input_keeps_positions(self):
+        # #343 review R4: only ``cfg`` is widget-bound, so the bound names are not
+        # a schema prefix; the values follow the KSampler schema positions.
+        result = run("workflow-only-core-widget-input-out-of-order")
+        self.assertEqual(
+            (result["seed"], result["steps"], result["cfgScale"], result["sampler"]),
+            (9, 30, 4.5, "dpmpp_2m"),
+        )
+
+    def test_editor_text_inputs_without_widget_bindings_keep_their_positions(self):
+        # #343: Focused/Split/Pair text inputs are plain sockets. The widget-bound
+        # inputs that remain (category, tags, search_text) must not shift the
+        # positional widget values onto the wrong names.
+        result = run("workflow-only-detached-editor-text")
+        self.assertEqual(result["positivePrompt"], "a detached positive")
+        self.assertEqual(result["negativePrompt"], "plain negative")
+        result = run("workflow-only-detached-pair-text")
+        self.assertEqual(result["positivePrompt"], "a detached positive")
+        self.assertEqual(result["negativePrompt"], "a detached negative")
+
 
 class ChoosesTheSampler(unittest.TestCase):
     def test_first_sampler_follows_javascript_key_order(self):

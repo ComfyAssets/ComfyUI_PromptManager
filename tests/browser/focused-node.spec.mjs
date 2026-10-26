@@ -26,7 +26,8 @@ test.beforeEach(async({page,browserName})=>{
         window.fixtureApp={registerExtension(extension){this.extension=extension;},ui:{settings:new EventTarget()},graph:{setDirtyCanvas(){}},canvas:{}};
         await import('/extensions/promptmanager/prompt_manager.js');
         class Node {
-            constructor(){this.widgets=['text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')}));this.inputs=['clip','prepend_text','append_text'].map(name=>({name,link:null}));this.properties={};this.size=[550,700];}
+            constructor(){this.widgets=['text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')}));this.inputs=[...['clip','prepend_text','append_text'].map(name=>({name,type:name==='clip'?'CLIP':'STRING',link:null})),...['text','category','tags','search_text'].map(name=>({name,type:'STRING',link:null,widget:{name}}))];this.properties={};this.size=[550,700];}
+            findInputByType(type){const index=this.inputs.findIndex(input=>input.type===type&&input.link==null);return index<0?undefined:{index,slot:this.inputs[index]};}
             addWidget(type,name,value,callback,options){const widget={type,name,value,callback,options};this.widgets.push(widget);return widget;}
             addDOMWidget(name,type,element){const host=document.createElement('div');host.style.height='650px';host.className='fixture-dom-widget';host.append(element);document.body.append(host);return {element};}
             setSize(size){this.size=size;}setDirtyCanvas(){}
@@ -246,11 +247,37 @@ test(`${variant} restores workflow values and disclosures and protects connected
     await page.evaluate(()=>{const saved=node.serialize();node.configure(saved);});
     await expect(page.getByLabel('Category',{exact:true})).toBeVisible();
     await expect(page.getByLabel('Category',{exact:true})).toHaveValue('Saved category');
-    await page.evaluate(()=>{node.inputs.push({name:'text',link:9});node.onConnectionsChange();});
+    await page.evaluate(()=>{node.inputs.find(input=>input.name==='text').link=9;node.onConnectionsChange();});
     await expect(page.getByRole('textbox',{name:'Main prompt',exact:true})).toBeHidden();
-    await expect(page.getByText('Text is supplied by an upstream connection.',{exact:true})).toBeVisible();
+    await expect(page.getByText('Main prompt comes from a link. Your typed text is kept for when you disconnect it.',{exact:true})).toBeVisible();
     await page.evaluate(()=>{node.inputs.find(input=>input.name==='text').link=null;node.onConnectionsChange();});
     await expect(page.getByRole('textbox',{name:'Main prompt',exact:true})).toHaveValue('Saved draft');
+});
+
+test(`${variant} offers text as a link socket, keeps typed text while linked and through a reload (#343)`,async({page})=>{
+    const sockets=()=>page.evaluate(()=>Object.fromEntries(node.inputs.map(input=>[input.name,input.widget?.name??null])));
+    // The hidden text widget no longer owns the input, so the host draws it as a socket; the other widget inputs are unchanged.
+    expect(await sockets()).toEqual({clip:null,prepend_text:null,append_text:null,text:null,category:'category',tags:'tags',search_text:'search_text'});
+    expect(await page.evaluate(()=>node.findInputByType('STRING').slot.name)).toBe('text');
+    expect(await page.evaluate(()=>node.findInputByType('CLIP').slot.name)).toBe('clip');
+    const main=page.getByRole('textbox',{name:'Main prompt',exact:true});
+    await main.fill('Typed main');
+    await page.evaluate(()=>{node.inputs.find(input=>input.name==='text').link=21;node.onConnectionsChange();});
+    await expect(main).toBeHidden();
+    const note=page.getByText('Main prompt comes from a link. Your typed text is kept for when you disconnect it.',{exact:true});
+    await expect(note).toBeVisible();
+    await expect(page.locator('[data-composed-preview]')).toHaveText('[text supplied by connection]');
+    // A second STRING link dropped on the editor falls back to the frontend's own choice.
+    expect(await page.evaluate(()=>node.findInputByType('STRING').slot.name)).toBe('prepend_text');
+    // An older saved workflow brings the widget binding back with its inputs: configure exposes the socket again.
+    const saved=await page.evaluate(()=>{const saved=node.serialize();node.inputs.find(input=>input.name==='text').widget={name:'text'};node.configure(saved);return saved;});
+    expect(saved.widgets_values[0]).toBe('Typed main');
+    expect((await sockets()).text).toBeNull();
+    await expect(note).toBeVisible();
+    await page.evaluate(()=>{node.inputs.find(input=>input.name==='text').link=null;node.onConnectionsChange();});
+    await expect(main).toBeVisible();
+    await expect(main).toHaveValue('Typed main');
+    await expect(note).toBeHidden();
 });
 
 test(`${variant} searches quoted tags with Enter and explicitly loads metadata`, async ({page}) => {

@@ -244,6 +244,90 @@ def _workflow_only():
     }
 
 
+def _detached_editor_text(pair):
+    """#343: editor text inputs are sockets, not widget inputs; no named values."""
+    names = ["text"] + (["negative_text"] if pair else [])
+    sockets = [
+        {"name": "clip", "link": 3},
+        {"name": "prepend_text", "link": None},
+        {"name": "append_text", "link": None},
+    ]
+    sockets += [{"name": name, "link": None} for name in names]
+    sockets += [
+        {"name": name, "widget": {"name": name}, "link": None}
+        for name in ("category", "tags", "search_text")
+    ]
+    editor = {
+        "id": 6,
+        "type": "PromptManagerPair" if pair else "PromptManagerFocused",
+        "mode": 0,
+        "inputs": sockets,
+        "widgets_values": ["a detached positive"]
+        + (["a detached negative"] if pair else [])
+        + ["a category", "a tag", "", "", ""],
+    }
+    negative = (
+        []
+        if pair
+        else [
+            {
+                "id": 7,
+                "type": "CLIPTextEncode",
+                "mode": 0,
+                "inputs": [{"name": "clip", "link": 5}],
+                "widgets_values": ["plain negative"],
+            }
+        ]
+    )
+    return {
+        "nodes": [
+            {
+                "id": 4,
+                "type": "CheckpointLoaderSimple",
+                "mode": 0,
+                "inputs": [],
+                "widgets_values": ["example.safetensors"],
+            },
+            editor,
+            *negative,
+            {
+                "id": 3,
+                "type": "KSampler",
+                "mode": 0,
+                "inputs": [
+                    {"name": "model", "link": 1},
+                    {"name": "positive", "link": 8},
+                    {"name": "negative", "link": 4},
+                ],
+                "widgets_values": [7, "fixed", 12, 5, "euler", "normal", 1],
+            },
+        ],
+        "links": [
+            [1, 4, 0, 3, 0, "MODEL"],
+            [3, 4, 1, 6, 0, "CLIP"],
+            [5, 4, 1, 7, 0, "CLIP"],
+            [8, 6, 0, 3, 1, "CONDITIONING"],
+            [4, 6 if pair else 7, 1 if pair else 0, 3, 2, "CONDITIONING"],
+        ],
+    }
+
+
+def _core_widget_input_out_of_order():
+    """#343 review R4: a core KSampler whose only widget input is ``cfg``.
+
+    Older frontends saved only converted or linked widget inputs, so the list
+    is not a prefix of the schema and carries no named values; the positional
+    values must still land on the schema's names.
+    """
+    workflow = _detached_editor_text(False)
+    sampler = workflow["nodes"][-1]
+    sampler["inputs"] = sampler["inputs"] + [
+        {"name": "cfg", "widget": {"name": "cfg"}, "link": None}
+    ]
+    sampler["widgets_values"] = [9, "fixed", 30, 4.5, "dpmpp_2m", "karras", 1]
+    return workflow
+
+
 def _nested(depth):
     """A value nested ``depth`` arrays deep, as a crafted file can hold."""
     value = ["leaf", 7]
@@ -389,6 +473,11 @@ CASES = {
         }
     ),
     "workflow-only": case(workflow=_workflow_only()),
+    "workflow-only-detached-editor-text": case(workflow=_detached_editor_text(False)),
+    "workflow-only-detached-pair-text": case(workflow=_detached_editor_text(True)),
+    "workflow-only-core-widget-input-out-of-order": case(
+        workflow=_core_widget_input_out_of_order()
+    ),
     "overwritten-prompt-manager-text": case(
         {
             "4": CHECKPOINT,

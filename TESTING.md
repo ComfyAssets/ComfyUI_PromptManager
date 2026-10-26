@@ -4058,6 +4058,85 @@ same as a file the scan could not attribute, so the file stays on disk and in th
 gallery as unlinked, and its favorite and tags (kept by file) are untouched. Every
 run prints this. Queue-linked batch images can't be proven after the fact and read
 `unlink`, so review before applying. Stop ComfyUI first.
+## Linked prompt text (#343)
+
+A link drives `text` on every PromptManager node, and `negative_text` on the Pair,
+as it drives any core widget. The Focused, Split and Pair editors hide their widgets,
+and the frontend only draws a widget's socket while the widget is visible, so
+`web/js/text-links.js` detaches those two inputs from their hidden widgets. They become
+ordinary sockets; the schema, widget order and saved `widgets_values` do not change. A
+link dropped on a prompt box (or its link note) fills that box's input: Nodes 2.0 resolves
+it through the box's `.lg-node-widget` and `[data-slot-key]`, Classic through the node's
+`getInputOnPos`. An exact STRING link dropped elsewhere on the editor fills the main prompt
+first, then the negative, before the frontend's own choice (it used to pick `prepend_text`,
+which caused #342). A link being moved off a text input counts as free, as the frontend
+counts it, so dropping it back on the editor keeps it on `text`. Wildcard links (a
+frontend Primitive before it is typed) are not steered.
+
+The frontend's legacy Primitive is virtual: it writes its value into the target widget,
+which the editor text no longer is. For the editors' detached inputs the `graphToPrompt`
+wrapper puts the Primitive's value (through virtual reroutes, also inside subgraphs, where
+the queued id is `<subgraph node>:<inner node>`) into the queued `text`/`negative_text`,
+resolved as the host resolves a value written into the widget: the Primitive's text
+replacement when its "Run widget replace on values" option is on, then the hidden widget's
+own serializer (dynamic prompts: `{red|blue}` becomes one choice). Each queued output is
+filled once (the queue hook only fills an output that did not come through the wrapper),
+so a wildcard is drawn once per run. Inputs still bound to their widget (the Classic
+nodes) are left as the host resolved them; as on main, the Classic text widget's own
+serializer queues its text as written, wildcards included (specs wait on the node's
+`_pmTextSerializerReady` before queuing). A Primitive drives the text as before, also in
+workflows saved before #343. On every Run the host logs "Invalid widget or widget name"
+for a Primitive wired to a detached editor input: its own widget write finds no widget
+binding there. That is expected and harmless. A linked
+Classic text box gives its canvas row back while linked (the core keeps an empty gap) and
+gets its size back on disconnect. The metadata parsers map a known node's positional
+widget values through its widget table when its widget-bound inputs do not line up with
+it (the editors' text inputs are sockets now).
+
+Not covered, by ruling: linking a subgraph input to an inner editor's `text` gives the
+subgraph a plain STRING socket, not a promoted typeable widget as a core widget input
+would. The socket was unreachable before #343, so nothing regressed.
+While linked, each editor says the value comes from a link, and the typed text is kept
+in the workflow for when the link is disconnected. That includes the Classic nodes,
+which used to save `null` under a link.
+
+- `tests/js/text-links.test.js`: socket exposure, drop preference (exact STRING, moved
+  links), box hit-test, Primitive values through reroutes, replacement and the widget
+  serializer (bound inputs left to the host), stored values, the Classic row.
+- `tests/test_generation_params.py` (`workflow-only-detached-*` cases, with JS parity
+  vectors): editor text inputs without widget bindings keep their positional values, and so
+  does a core KSampler whose only widget-bound input (`cfg`) is out of schema order.
+- `tests/browser/{focused,pair,classic}-node.spec.mjs`: the linked note, typed text
+  kept through save and configure (also with a workflow's widget binding restored), the
+  Classic "use prompt" guard while linked.
+- `tests/comfyui/text-link.spec.mjs` (both startup projects): a real mouse drag of a
+  STRING output onto each node's prompt box (and onto the Pair's negative socket); the
+  link, the note and the typed text survive renderer switches both ways, a reload,
+  disconnect and node removal. `fixtures/workflow-before-343.json` and
+  `workflow-before-343-primitive.json` were serialized by the pre-#343 code on the pinned
+  host and must load unchanged; the second one's legacy Primitives keep driving the text
+  through a real Run. Also: a Primitive dropped on the Main prompt box and a string on the
+  Negative prompt box, a moved link released on the editor body, paste, clone and undo, a
+  legacy Primitive inside a subgraph, and wildcard Primitives on every node type queued
+  through a real Run as one choice, the same one another `graphToPrompt` wrapper sees.
+- `tests/comfyui/execution-text-link.spec.mjs` (execution host): workflows built by the
+  real frontend through the sockets, with text from `PrimitiveString`, the legacy
+  Primitive or through `PreviewAny`, for PromptManager, PromptManagerText, Focused, Split
+  and the Pair (positive, negative, both, neither linked, and a Primitive negative). A
+  wildcard Primitive on PromptManager (queued as written) and Focused (one choice) saves
+  and counts what was queued. The linked text is saved, counted once, recorded as
+  the run's raw positive/negative, and after a scan the run's image links to it. Text
+  only known at run time (`PreviewAny`) cannot be read from the image; the case only
+  requires that it is never linked to another prompt (its attribution from the recorded
+  run belongs to #342).
+
+```sh
+node --test tests/js/text-links.test.js
+npm run --prefix tools/vendor test:workflows -- classic-node.spec.mjs focused-node.spec.mjs pair-node.spec.mjs \
+  --project chromium --project touch --project firefox --project webkit
+PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:comfyui -- text-link
+PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:executions -- execution-text-link
+```
 
 ## Durable execution ledger
 

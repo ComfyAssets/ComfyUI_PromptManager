@@ -190,6 +190,57 @@
   "expected": {
    "ok": true,
    "result": {
+    "cfgScale": 5,
+    "checkpoint": "example.safetensors",
+    "negativePrompt": "plain negative",
+    "positivePrompt": "a detached positive",
+    "sampler": "euler",
+    "seed": 7,
+    "steps": 12
+   }
+  },
+  "name": "case:workflow-only-detached-editor-text",
+  "prompt": null,
+  "workflow": "{\"nodes\": [{\"id\": 4, \"type\": \"CheckpointLoaderSimple\", \"mode\": 0, \"inputs\": [], \"widgets_values\": [\"example.safetensors\"]}, {\"id\": 6, \"type\": \"PromptManagerFocused\", \"mode\": 0, \"inputs\": [{\"name\": \"clip\", \"link\": 3}, {\"name\": \"prepend_text\", \"link\": null}, {\"name\": \"append_text\", \"link\": null}, {\"name\": \"text\", \"link\": null}, {\"name\": \"category\", \"widget\": {\"name\": \"category\"}, \"link\": null}, {\"name\": \"tags\", \"widget\": {\"name\": \"tags\"}, \"link\": null}, {\"name\": \"search_text\", \"widget\": {\"name\": \"search_text\"}, \"link\": null}], \"widgets_values\": [\"a detached positive\", \"a category\", \"a tag\", \"\", \"\", \"\"]}, {\"id\": 7, \"type\": \"CLIPTextEncode\", \"mode\": 0, \"inputs\": [{\"name\": \"clip\", \"link\": 5}], \"widgets_values\": [\"plain negative\"]}, {\"id\": 3, \"type\": \"KSampler\", \"mode\": 0, \"inputs\": [{\"name\": \"model\", \"link\": 1}, {\"name\": \"positive\", \"link\": 8}, {\"name\": \"negative\", \"link\": 4}], \"widgets_values\": [7, \"fixed\", 12, 5, \"euler\", \"normal\", 1]}], \"links\": [[1, 4, 0, 3, 0, \"MODEL\"], [3, 4, 1, 6, 0, \"CLIP\"], [5, 4, 1, 7, 0, \"CLIP\"], [8, 6, 0, 3, 1, \"CONDITIONING\"], [4, 7, 0, 3, 2, \"CONDITIONING\"]]}"
+ },
+ {
+  "expected": {
+   "ok": true,
+   "result": {
+    "cfgScale": 5,
+    "checkpoint": "example.safetensors",
+    "negativePrompt": "a detached negative",
+    "positivePrompt": "a detached positive",
+    "sampler": "euler",
+    "seed": 7,
+    "steps": 12
+   }
+  },
+  "name": "case:workflow-only-detached-pair-text",
+  "prompt": null,
+  "workflow": "{\"nodes\": [{\"id\": 4, \"type\": \"CheckpointLoaderSimple\", \"mode\": 0, \"inputs\": [], \"widgets_values\": [\"example.safetensors\"]}, {\"id\": 6, \"type\": \"PromptManagerPair\", \"mode\": 0, \"inputs\": [{\"name\": \"clip\", \"link\": 3}, {\"name\": \"prepend_text\", \"link\": null}, {\"name\": \"append_text\", \"link\": null}, {\"name\": \"text\", \"link\": null}, {\"name\": \"negative_text\", \"link\": null}, {\"name\": \"category\", \"widget\": {\"name\": \"category\"}, \"link\": null}, {\"name\": \"tags\", \"widget\": {\"name\": \"tags\"}, \"link\": null}, {\"name\": \"search_text\", \"widget\": {\"name\": \"search_text\"}, \"link\": null}], \"widgets_values\": [\"a detached positive\", \"a detached negative\", \"a category\", \"a tag\", \"\", \"\", \"\"]}, {\"id\": 3, \"type\": \"KSampler\", \"mode\": 0, \"inputs\": [{\"name\": \"model\", \"link\": 1}, {\"name\": \"positive\", \"link\": 8}, {\"name\": \"negative\", \"link\": 4}], \"widgets_values\": [7, \"fixed\", 12, 5, \"euler\", \"normal\", 1]}], \"links\": [[1, 4, 0, 3, 0, \"MODEL\"], [3, 4, 1, 6, 0, \"CLIP\"], [5, 4, 1, 7, 0, \"CLIP\"], [8, 6, 0, 3, 1, \"CONDITIONING\"], [4, 6, 1, 3, 2, \"CONDITIONING\"]]}"
+ },
+ {
+  "expected": {
+   "ok": true,
+   "result": {
+    "cfgScale": 4.5,
+    "checkpoint": "example.safetensors",
+    "negativePrompt": "plain negative",
+    "positivePrompt": "a detached positive",
+    "sampler": "dpmpp_2m",
+    "seed": 9,
+    "steps": 30
+   }
+  },
+  "name": "case:workflow-only-core-widget-input-out-of-order",
+  "prompt": null,
+  "workflow": "{\"nodes\": [{\"id\": 4, \"type\": \"CheckpointLoaderSimple\", \"mode\": 0, \"inputs\": [], \"widgets_values\": [\"example.safetensors\"]}, {\"id\": 6, \"type\": \"PromptManagerFocused\", \"mode\": 0, \"inputs\": [{\"name\": \"clip\", \"link\": 3}, {\"name\": \"prepend_text\", \"link\": null}, {\"name\": \"append_text\", \"link\": null}, {\"name\": \"text\", \"link\": null}, {\"name\": \"category\", \"widget\": {\"name\": \"category\"}, \"link\": null}, {\"name\": \"tags\", \"widget\": {\"name\": \"tags\"}, \"link\": null}, {\"name\": \"search_text\", \"widget\": {\"name\": \"search_text\"}, \"link\": null}], \"widgets_values\": [\"a detached positive\", \"a category\", \"a tag\", \"\", \"\", \"\"]}, {\"id\": 7, \"type\": \"CLIPTextEncode\", \"mode\": 0, \"inputs\": [{\"name\": \"clip\", \"link\": 5}], \"widgets_values\": [\"plain negative\"]}, {\"id\": 3, \"type\": \"KSampler\", \"mode\": 0, \"inputs\": [{\"name\": \"model\", \"link\": 1}, {\"name\": \"positive\", \"link\": 8}, {\"name\": \"negative\", \"link\": 4}, {\"name\": \"cfg\", \"widget\": {\"name\": \"cfg\"}, \"link\": null}], \"widgets_values\": [9, \"fixed\", 30, 4.5, \"dpmpp_2m\", \"karras\", 1]}], \"links\": [[1, 4, 0, 3, 0, \"MODEL\"], [3, 4, 1, 6, 0, \"CLIP\"], [5, 4, 1, 7, 0, \"CLIP\"], [8, 6, 0, 3, 1, \"CONDITIONING\"], [4, 7, 0, 3, 2, \"CONDITIONING\"]]}"
+ },
+ {
+  "expected": {
+   "ok": true,
+   "result": {
     "cfgScale": 7,
     "checkpoint": "example.safetensors",
     "negativePrompt": "the real negative",
