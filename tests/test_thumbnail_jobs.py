@@ -345,6 +345,20 @@ class TestThumbnailJob(ThumbnailJobCase):
             sizes[quality] = thumb.stat().st_size
         self.assertLess(sizes["low"], sizes["high"])
 
+    async def test_a_job_keeps_the_listing_and_the_next_page_shows_the_preview(self):
+        make_png(self.output_dir / "a.png", size=(64, 64))
+        url = "/prompt_manager/images/output?mode=workspace"
+        before = (await (await self.client.get(url)).json())["images"][0]
+        files = self.api._root_listings[str(self.output_dir)].files
+        status, body = await self._start(mode="missing")
+        self.assertEqual(status, 202)
+        await self._finished(body["job"]["id"])
+        # Previews are not part of the listing (#348): no rewalk is forced.
+        self.assertIs(self.api._root_listings[str(self.output_dir)].files, files)
+        after = (await (await self.client.get(url)).json())["images"][0]
+        self.assertNotIn("v=", before["thumbnail_url"])
+        self.assertIn("v=", after["thumbnail_url"])
+
     async def test_no_output_folder_fails_the_job(self):
         self.api._get_all_output_dirs = lambda: []
         _, body = await self._start()

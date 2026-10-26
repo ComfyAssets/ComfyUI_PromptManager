@@ -22,6 +22,15 @@ from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
 from .jobs import MAX_OUTCOME_ROWS, THUMBNAILS_JOB_KIND
+from . import gallery_listing
+from .gallery_listing import (
+    DISCARDED,
+    FAILED,
+    MAX_DISCARDED_WALKS,
+    WALK_STOPPED,
+    WalkOutcome,
+    walk_root,
+)
 from . import thumbnail_settings
 from .thumbnail_encode import (
     PREVIEW_HELD,
@@ -1296,16 +1305,107 @@ class ImageRoutesMixin:
         return found
 
     async def _get_gallery_files(self, output_path):
-        """Get gallery files with per-directory TTL cache."""
-        now = _time.monotonic()
-        key = str(output_path)
-        cached = self._gallery_cache.get(key)
-        if cached and (now - cached[1]) < self._gallery_cache_ttl:
-            return cached[0]
+        """The shared listing of one output root: ``[(path, mtime)]``, newest first."""
+        return (await self._listing(output_path)).files
 
-        files = await self._run_in_executor(self._scan_gallery_files_sync, output_path)
-        self._gallery_cache[key] = (files, now)
-        return files
+    async def _listing(self, output_path, *, fresh=False):
+        """The shared ``RootListing`` of *output_path*, with a listing (#348).
+
+        A listing that exists is returned at once; when it is older than
+        ``REFRESH_AFTER`` one background walk replaces it. With no listing,
+        the caller waits for the root's single walk. ``fresh`` (Rescan) waits
+        for a walk that started after this call, and raises when it fails
+        even if a previous listing exists.
+        """
+        record = self._root_listing(output_path)
+        needed = record.walk_seq + 1 if fresh else 0
+        discarded = 0
+        while True:
+            if record.files is not None and record.stored_seq >= needed:
+                if not fresh:
+                    self._refresh_if_stale(output_path, record)
+                return record
+            flight = record.flight
+            if flight is None:
+                flight = self._start_walk(output_path, record)
+            joined = record.walk_seq
+            # Shielded: a client that goes away never cancels a shared walk.
+            outcome = await asyncio.shield(flight)
+            if joined < needed:
+                continue  # an older walk ended; Rescan needs a newer one
+            if outcome.kind == FAILED:
+                raise outcome.error
+            if outcome.kind == DISCARDED:
+                discarded += 1
+                if discarded >= MAX_DISCARDED_WALKS:
+                    raise RuntimeError(
+                        "The output listing kept changing while it was read"
+                    )
+
+    def _refresh_if_stale(self, output_path, record):
+        age = _time.monotonic() - (record.walked_at or 0.0)
+        if age >= gallery_listing.REFRESH_AFTER:
+            self._schedule_walk(output_path)
+
+    def _schedule_walk(self, output_path):
+        """Start a background walk of *output_path* unless one is running."""
+        record = self._root_listing(output_path)
+        if record.flight is None:
+            self._start_walk(output_path, record)
+
+    def _start_walk(self, output_path, record):
+        """Start the root's one walk; returns its flight future (on the loop)."""
+        loop = asyncio.get_running_loop()
+        record.walk_seq += 1
+        flight = loop.create_future()
+        record.flight = flight
+        task = loop.create_task(
+            self._run_walk(
+                output_path, record, flight, record.generation, record.walk_seq
+            )
+        )
+        self._listing_tasks.add(task)
+        task.add_done_callback(self._listing_tasks.discard)
+        return flight
+
+    async def _run_walk(self, output_path, record, flight, generation, seq):
+        """Walk in the executor, then store, discard or fail (on the loop).
+
+        The flight is always resolved with a WalkOutcome, never failed, so an
+        error never reaches a future nobody awaits.
+        """
+        outcome = None
+        try:
+            files, folders, with_ancestors = await self._run_in_executor(
+                walk_root, self._scan_gallery_files_sync, output_path, record.files
+            )
+        except asyncio.CancelledError:
+            outcome = WalkOutcome.failed(RuntimeError(WALK_STOPPED))
+            raise
+        except Exception as exc:
+            record.walked_at = _time.monotonic()
+            if not record.failing:
+                self.logger.warning(
+                    f"Could not list output folder {output_path}: {exc}"
+                )
+            record.failing = True
+            outcome = WalkOutcome.failed(exc)
+        else:
+            record.failing = False
+            if record.generation == generation:
+                record.files = files
+                record.folders = folders
+                record.folders_with_ancestors = with_ancestors
+                record.walked_at = _time.monotonic()
+                record.stored_seq = seq
+                outcome = WalkOutcome.stored()
+            else:
+                outcome = WalkOutcome.discarded()
+        finally:
+            if record.flight is flight:
+                record.flight = None
+            if not flight.done():
+                flight.set_result(outcome)
 
     async def get_output_images(self, request):
         """Get all images from ComfyUI output folder(s)."""
@@ -1832,17 +1932,18 @@ class ImageRoutesMixin:
             )
 
     async def rescan_gallery(self, request):
-        """Forget the cached listing and rewalk every output root now.
+        """Rewalk every output root now and answer with the new listing.
 
-        The listing is cached for ``_gallery_cache_ttl`` seconds; the gallery's
-        Rescan button needs files added or removed on disk to show up at once.
+        Readers are served the shared listing and refresh it in the
+        background (``gallery_listing.REFRESH_AFTER``); the gallery's Rescan
+        button needs files added or removed on disk to show up at once, so it
+        waits for a walk that started after the click and fails when it does.
         """
         try:
-            self.invalidate_gallery_cache()
             output_dirs = list(self._get_all_output_dirs())
             total = 0
             for output_path in output_dirs:
-                total += len(await self._get_gallery_files(output_path))
+                total += len((await self._listing(output_path, fresh=True)).files)
             return web.json_response(
                 {"success": True, "total": total, "roots": len(output_dirs)}
             )
@@ -1853,20 +1954,14 @@ class ImageRoutesMixin:
             )
 
     async def _root_subfolders(self, output_path, include_ancestors):
-        """The distinct folders holding listed files under one output root."""
-        subfolders = set()
-        for f, _mtime in await self._get_gallery_files(output_path):
-            rel_dir = str(f.relative_to(output_path).parent)
-            if rel_dir and rel_dir != ".":
-                subfolders.add(rel_dir)
+        """The distinct folders holding listed files under one output root.
+
+        Built with the walk, in the executor (gallery_listing.folder_sets).
+        """
+        listing = await self._listing(output_path)
         if include_ancestors:
-            ancestors = set()
-            for folder in subfolders:
-                parts = folder.replace("\\", "/").split("/")
-                for i in range(1, len(parts)):
-                    ancestors.add("/".join(parts[:i]))
-            subfolders.update(ancestors)
-        return subfolders
+            return listing.folders_with_ancestors
+        return listing.folders
 
     async def get_gallery_subfolders(self, request):
         """Get distinct subfolders from gallery output directories.
@@ -1940,7 +2035,6 @@ class ImageRoutesMixin:
             result = await self._run_in_executor(
                 self._generate_gallery_thumbnails_sync, output_dirs
             )
-            self.invalidate_gallery_cache()
             return web.json_response(result)
 
         except Exception as e:
@@ -2416,7 +2510,6 @@ class ImageRoutesMixin:
             cleared_count, cleared_size = await self._run_in_executor(
                 self._clear_gallery_thumbnails_sync, output_dirs
             )
-            self.invalidate_gallery_cache()
 
             def format_size(bytes_size: int) -> str:
                 size = float(bytes_size)

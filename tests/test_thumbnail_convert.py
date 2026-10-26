@@ -85,6 +85,14 @@ class TestConvertOutdated(ConvertCase):
         )
         self.assertEqual(self.api._jobs.list(), [])
 
+    async def test_conversion_keeps_the_listing(self):
+        self._legacy("a")
+        await self.client.get("/prompt_manager/images/output?mode=workspace")
+        files = self.api._root_listings[str(self.output_dir)].files
+        _summary, job = await self._convert()
+        self.assertEqual(job.state, "finished")
+        self.assertIs(self.api._root_listings[str(self.output_dir)].files, files)
+
     async def test_converts_from_the_source_and_removes_the_old_preview(self):
         old = self._legacy("a")
         original = (self.output_dir / "a.png").read_bytes()

@@ -175,7 +175,6 @@ class ThumbnailConvertMixin:
             job.log_line(f"Conversion finished · {NOTHING_OUTDATED.lower()}")
             return "finished"
         totals, left = await self._convert_in_batches(job, options, plan, output_dirs)
-        self.invalidate_gallery_cache()
         if totals["stopped"]:
             job.update(status_line=FORMAT_CHANGED.format(converted=totals["converted"]))
             job.log_line(

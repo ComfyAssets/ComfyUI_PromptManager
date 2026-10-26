@@ -171,6 +171,38 @@ class TestWorkspaceImages(ImageAPITestCase):
         self.assertIsNone(second["next_cursor"])
         self.assertEqual(second["total"], 4)
 
+    async def test_an_unchanged_refresh_keeps_the_listing_and_derived_caches(self):
+        from py.api import gallery_listing
+
+        self.media("a.png", 300)
+        self.media("b.png", 200)
+        _, first = await self.get()
+        response = await self.client.put(
+            "/prompt_manager/images/favorite",
+            json={"root_index": 0, "path": "a.png"},
+        )
+        self.assertEqual(response.status, 200)
+        record = self.api._root_listings[str(self.output_dir)]
+        files = record.files
+        key = ((0, str(self.output_dir)),)
+        newest = self.api._workspace_order_cache[key][1]["newest"]
+        favorites = self.api._favorite_listing_cache[str(self.output_dir)]
+        record.walked_at -= gallery_listing.REFRESH_AFTER + 1
+        with patch.object(
+            self.api,
+            "_scan_gallery_files_sync",
+            wraps=self.api._scan_gallery_files_sync,
+        ) as scan:
+            await self.get()  # served at once; one background walk runs
+            while self.api._listing_tasks:
+                await asyncio.gather(*list(self.api._listing_tasks))
+            _, again = await self.get()
+        self.assertEqual(scan.call_count, 1)
+        self.assertIs(record.files, files)
+        self.assertIs(self.api._workspace_order_cache[key][1]["newest"], newest)
+        self.assertIs(self.api._favorite_listing_cache[str(self.output_dir)], favorites)
+        self.assertEqual(again["total"], first["total"])
+
     async def test_filters_apply_before_limit_and_sorts_are_complete(self):
         self.media("folder/Zebra.png", 200)
         self.media("folder/apple.png", 300)

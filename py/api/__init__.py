@@ -47,6 +47,7 @@ from .review_events import ReviewEventsMixin
 from .saved_views import SavedViewRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
+from .gallery_listing import WALK_STOPPED, RootListing, WalkOutcome
 from .admin import AdminRoutesMixin
 from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
@@ -344,8 +345,10 @@ class PromptManagerAPI(
         self._captures_closed = False
         self._cached_output_dir = None  # Lazy-cached by _find_comfyui_output_dir()
         self._html_cache = {}  # Cached HTML file contents keyed by path
-        self._gallery_cache = {}  # dict: path_str -> (files, timestamp)
-        self._gallery_cache_ttl = 30  # Cache TTL in seconds
+        # One shared listing per output root, keyed by str(root), and the
+        # background walks refreshing them (py/api/gallery_listing.py, #348).
+        self._root_listings: dict[str, RootListing] = {}
+        self._listing_tasks: set = set()
         # Workspace listing values and sort orders derived from a cached scan
         # (py/api/images.py _workspace_listed/_workspace_orders).
         self._workspace_listed_cache = {}
@@ -465,19 +468,53 @@ class PromptManagerAPI(
             return await loop.run_in_executor(None, call)
         return await loop.run_in_executor(None, func, *args)
 
-    def invalidate_gallery_cache(self):
-        """Invalidate the cached gallery file listing.
+    def _root_listing(self, root) -> RootListing:
+        """The shared listing record of one output root (created empty)."""
+        return self._root_listings.setdefault(str(root), RootListing())
 
-        Called by the image monitor when new files are detected. The workspace
-        keeps its per-file values and card facts, so the next request rebuilds
-        only new or changed files (see ImageRoutesMixin._workspace_listed and
-        _card_facts); its sort orders
-        are dropped, as the rescan replaces them anyway, and so is the
-        favorites lookup, which holds the old scan list.
+    def invalidate_gallery_cache(self):
+        """Drop every root's listing, so the next read waits for a new walk.
+
+        Called after files are deleted through the app (duplicate cleanup and
+        the legacy duplicate delete), never for thumbnail writes. A walk
+        running now is not stored (its generation moved on). The workspace
+        keeps its per-file values and card facts, so the next request
+        rebuilds only new or changed files (see ImageRoutesMixin.
+        _workspace_listed and _card_facts); its sort orders are dropped, as
+        the walk replaces them anyway, and so is the favorites lookup, which
+        holds the old list.
         """
-        self._gallery_cache = {}
+        for record in self._root_listings.values():
+            record.drop()
         self._workspace_order_cache = {}
         self._favorite_listing_cache = {}
+
+    async def warm_gallery_listings(self, app=None):
+        """Start one background walk per output root (aiohttp on_startup).
+
+        Registered by the root ``__init__.py``, so the first Images open after
+        ComfyUI starts finds the listing built. It never fails startup: a
+        root that cannot be walked is retried by the first read.
+        """
+        try:
+            for root in self._get_all_output_dirs():
+                self._schedule_walk(root)
+        except Exception as e:
+            self.logger.warning(f"Could not warm the Images listing: {e}")
+
+    async def cleanup_gallery_listings(self, app=None):
+        """Stop the background listing walks (aiohttp on_cleanup)."""
+        tasks = list(self._listing_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._listing_tasks.clear()
+        # A walk cancelled before its first step never ran its own cleanup.
+        for record in self._root_listings.values():
+            flight, record.flight = record.flight, None
+            if flight is not None and not flight.done():
+                flight.set_result(WalkOutcome.failed(RuntimeError(WALK_STOPPED)))
 
     def reset_gallery_roots_cache(self):
         """Drop every cached listing and derived workspace value (roots changed)."""

@@ -235,6 +235,53 @@ change the budget in the spec with a reason) in a follow-up PR. Never rerun it t
 green. It is not a required check, and it cannot be one while it skips pull
 requests (`.github/branch-protection.json`).
 
+## Images listing cache (#348)
+
+`/prompt_manager/images/output`, `/prompt_manager/gallery/subfolders` and
+`POST /prompt_manager/gallery/rescan` read one shared listing per output root
+(`RootListing` in `py/api/gallery_listing.py`, `_listing` in
+`py/api/images.py`). The tests are `tests/test_gallery_listing.py` (pure
+helpers) and `TestSharedListing` in `tests/test_api_images.py` (routes); they
+hold a walk open with a gated scan instead of sleeping.
+
+- **Single flight.** At most one walk per root runs at a time; every reader
+  that needs that root while it runs waits for it (shielded, so a client that
+  disconnects never cancels it). The walk, the comparison with the previous
+  listing and both folder sets run in the executor (`walk_root`). A walk that
+  finds the same `(path, mtime)` list keeps the previous list object, so the
+  favorites lookup and the sort orders are not rebuilt.
+- **30 s background refresh.** A listing older than `REFRESH_AFTER` (30 s) is
+  served at once and one background walk replaces it. Files added or removed
+  by hand therefore show up one open later than before; Rescan shows them at
+  once.
+- **Blocking invalidation after deletes.** Duplicate cleanup and the legacy
+  duplicate delete still call `invalidate_gallery_cache()`: the listing is
+  dropped and the next read waits for a walk, so a deleted file is never
+  listed. A walk running during the drop is discarded (the record's
+  `generation` outlives every drop); a cold reader gives up with a 500 after 3
+  discarded walks in a row. Thumbnail writes (jobs, conversion, the legacy
+  generate and clear routes) no longer drop the listing: thumbnail URLs are
+  computed per request.
+- **Startup warm-up.** The root `__init__.py` registers
+  `api.warm_gallery_listings` on the host's `on_startup`, which starts one
+  background walk per root, and `api.cleanup_gallery_listings` on
+  `on_cleanup`, which cancels running walks. A warm-up failure never stops
+  startup; the first read retries.
+- **Failures and Rescan.** `walk_root` opens the root with `os.scandir` first,
+  so a deleted or unreadable root fails the walk instead of listing nothing.
+  A failed walk keeps the previous listing, logs one warning per streak of
+  failures and is retried at most once per `REFRESH_AFTER`; a reader with no
+  listing gets a 500. Rescan waits for a walk that started after the click
+  (by walk number, not by clock), Rescans clicked during one walk share the
+  next, and a failed walk is a 500 even when a previous listing exists.
+- **Measuring it.** `tools/vendor/perf/images_load_probe.mjs` is a maintainer
+  tool, never run in CI. After `npm ci --prefix tools/vendor` and
+  `npx --prefix tools/vendor playwright install chromium`, run
+  `node tools/vendor/perf/images_load_probe.mjs http://127.0.0.1:8188` against
+  a running ComfyUI. It prints the time to the first decoded thumbnail, the
+  time to network idle and the 10 slowest requests, from a fresh browser
+  context each run.
+
 ## Windows portability preflight
 
 Before changing paths, SQLite, streams, restore or cleanup:
