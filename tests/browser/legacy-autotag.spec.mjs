@@ -87,3 +87,66 @@ test('a failed download closes the modal and says so', async ({ page, request })
     await expect(status.getByRole('button', { name: 'Download', exact: true })).toBeVisible();
     expect((await downloads(request)).map(job => job.state)).toEqual(['failed']);
 });
+
+// (wd14-vit is not downloaded in these tests: beforeEach marks it so the download tests can offer it.)
+// The gallery's batch reader keyed on `data.status` values the server never sends, so its modal never moved or
+// closed (#328 Problem 5). It now reads `type` frames as the admin page does.
+async function watchProgress(page) {
+    await page.evaluate(() => {
+        window.progressSeen = [];
+        const node = document.getElementById('autoTagProgressPercent');
+        new MutationObserver(() => window.progressSeen.push(node.textContent))
+            .observe(node, { childList: true, characterData: true, subtree: true });
+    });
+}
+
+async function runGalleryBatch(page) {
+    await page.locator('#autoTagBtn').click();
+    await page.locator('input[name="autoTagModel"][value="wd14-swinv2"]').check();
+    await watchProgress(page);
+    const done = page.waitForResponse(response => response.url().includes('/prompt_manager/autotag/start'));
+    await page.locator('#startAutoTagBtn').click();
+    await done;
+    await expect(page.locator('#autoTagProgressModal')).toBeHidden();
+    await expect(page.getByText(/^Auto tagging complete! Applied tags to \d+ prompts\.$/)).toBeVisible();
+}
+
+test('gallery batch modal counts progress and closes on complete', async ({ page, request }) => {
+    await page.goto('/prompt_manager/gallery');
+    await runGalleryBatch(page);
+    const seen = await page.evaluate(() => window.progressSeen);
+    // The fixture's prompts are already tagged, so the batch skips them; its progress frames still move the bar.
+    expect(seen).toContain('95%');
+    expect((await downloads(request)).length).toBe(0);
+});
+
+test('admin review opens the first image', async ({ page }) => {
+    await page.goto('/prompt_manager/admin');
+    await page.locator('#autoTagBtn').click();
+    await page.locator('input[name="autoTagModel"][value="wd14-swinv2"]').check();
+    await page.locator('#startReviewBtn').click();
+    // The first image's prompt is already tagged: confirm a new pass, then the review opens on that image.
+    await page.locator('#retagConfirmBtn').click();
+    await expect(page.locator('#autoTagReviewModal')).toBeVisible();
+    await expect(page.locator('#reviewImageName')).not.toHaveText(/^(image_name\.png|Unknown|)$/);
+    await expect(page.getByText('Failed to start review mode')).toHaveCount(0);
+});
+
+test('gallery unload works and is refused while the gate is held', async ({ page, request }) => {
+    await page.goto('/prompt_manager/gallery');
+    await runGalleryBatch(page); // keeps the model in memory
+    await page.locator('#autoTagBtn').click();
+    const unload = page.locator('#unloadModelBtn');
+    await expect(unload).toBeVisible();
+
+    // A held download owns the model gate: Unload is refused with the server's error.
+    const held = await request.post('/prompt_manager/jobs/model-download', { data: { model_type: 'gguf' } });
+    expect(held.status()).toBe(202);
+    await unload.click();
+    await expect(page.getByText(/^Failed to unload model: A tagging model is busy/)).toBeVisible();
+
+    await post(request, '/__test__/tagging/download', { mode: 'succeed' });
+    await expect.poll(async () => (await downloads(request)).map(job => job.state)).toEqual(['finished']);
+    await unload.click();
+    await expect(page.getByText('WD14-SWINV2 model unloaded successfully')).toBeVisible();
+});
