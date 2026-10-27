@@ -140,6 +140,36 @@ class TestScratchSeeder(unittest.TestCase):
         self.assertEqual(self.api.note, "set by the seed")
         self.assertIs(self.api.db, self.live)
 
+    def test_cache_drops_wait_until_the_rows_are_published(self):
+        seen = []
+
+        def invalidate_gallery_cache(retire=False):
+            with self.live.model.get_connection() as conn:
+                count = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+            seen.append((count, retire))
+
+        self.api.invalidate_gallery_cache = invalidate_gallery_cache
+
+        def seed(api):
+            reseed(api)
+            api.invalidate_gallery_cache(retire=True)
+            self.assertEqual(seen, [], "not dropped while live has the old rows")
+
+        self.seeder.run(seed)
+        self.assertEqual(seen, [(30, True)])
+
+    def test_a_failing_seed_drops_no_cache(self):
+        seen = []
+        self.api.invalidate_gallery_cache = lambda: seen.append(True)
+
+        def broken(api):
+            api.invalidate_gallery_cache()
+            raise ValueError("seed failed")
+
+        with self.assertRaises(ValueError):
+            self.seeder.run(broken)
+        self.assertEqual(seen, [])
+
     def test_a_failing_seed_leaves_live_untouched(self):
         before = digests(self.live)
 

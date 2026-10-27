@@ -34,6 +34,8 @@ T = TypeVar("T")
 # proof, tests/browser/reset_equivalence.py, compares both ways).
 SEED_ON_LIVE_ENV = "PM_TEST_SEED_ON_LIVE"
 SCRATCH_SCHEMA = "reset_seed"
+# API calls a seed makes that must see the published rows (see _SeedApi).
+DEFERRED_CALLS = frozenset({"invalidate_gallery_cache"})
 # Linux's shared-memory tmpfs (present in the Playwright image and on runners).
 MEMORY_ROOT = Path("/dev/shm")
 # The largest fixtures' scratch copy is about 8 MB (database plus a WAL that
@@ -93,13 +95,25 @@ def table_digests(conn: sqlite3.Connection, schema: str = "main") -> dict[str, s
 
 
 class _SeedApi:
-    """The live API, except that ``db`` is the scratch database."""
+    """The live API, except that ``db`` is the scratch database.
+
+    Cache drops the seed asks for (``DEFERRED_CALLS``) are recorded and made
+    after the publish: dropped earlier, a request in between would cache the
+    live database's old rows again.
+    """
 
     def __init__(self, api: Any, db: Any) -> None:
         object.__setattr__(self, "_api", api)
         object.__setattr__(self, "db", db)
+        object.__setattr__(self, "deferred", [])
 
     def __getattr__(self, name: str) -> Any:
+        if name in DEFERRED_CALLS:
+
+            def record(*args: Any, **kwargs: Any) -> None:
+                self.deferred.append((name, args, kwargs))
+
+            return record
         return getattr(self._api, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -138,7 +152,8 @@ class ScratchSeeder:
         with target.using():
             live.backup(target)
         before = table_digests(target)
-        result = seed(_SeedApi(self._api, scratch))
+        target_api = _SeedApi(self._api, scratch)
+        result = seed(target_api)
         target = self._scratch_connection(scratch)
         if target.in_transaction:
             raise RuntimeError("the seed left a scratch transaction open")
@@ -149,6 +164,8 @@ class ScratchSeeder:
         if live.execute("PRAGMA data_version").fetchone()[0] != version:
             raise RuntimeError("the live database changed while the seed ran")
         self._publish(live, scratch.model.db_path, changed, version)
+        for name, args, kwargs in target_api.deferred:
+            getattr(self._api, name)(*args, **kwargs)
         return result
 
     def _scratch_database(self):
