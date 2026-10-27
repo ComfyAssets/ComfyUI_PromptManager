@@ -32,6 +32,7 @@ from PIL import Image  # noqa: E402
 
 import py.api.images as images_module  # noqa: E402
 import py.api.thumbnail_auto as auto  # noqa: E402
+from tests.background_stops import close_handler, stop_monitor  # noqa: E402
 from py.api.jobs import THUMBNAILS_JOB_KIND  # noqa: E402
 
 SERVE = "/prompt_manager/images/serve/"
@@ -980,6 +981,7 @@ class TestMonitorQueuesThumbnails(AutoThumbnailCase):
         from utils.image_monitor import ImageGenerationHandler
 
         handler = ImageGenerationHandler(self.api.db, unittest.mock.MagicMock())
+        self.addCleanup(close_handler, self, handler)
         handler.processing_delay = 0
         handler.settle_interval = 0
         return handler
@@ -1022,7 +1024,7 @@ class TestMonitorQueuesThumbnails(AutoThumbnailCase):
             monitor.set_thumbnail_queue(None)
             self.assertIsNone(monitor.handler.thumbnail_queue)
         finally:
-            monitor.stop_monitoring()
+            stop_monitor(self, monitor)
 
 
 class TestScanHandsOffThumbnails(AutoThumbnailCase):

@@ -8,6 +8,7 @@ import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.background_stops import close_handler  # noqa: E402
 from database.operations import PromptDatabase
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
@@ -52,6 +53,7 @@ class LinkingTestCase(unittest.TestCase):
         )
 
     def tearDown(self):
+        close_handler(self, self.handler)  # and the tracker's cleanup thread
         self.db.close_all()  # Windows cannot unlink an open database file
         for path in (
             self.image,

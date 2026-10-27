@@ -642,6 +642,8 @@ class HistoryWriterTests(unittest.TestCase):
                 == "succeeded"
             )
             self.assertTrue(writer.submit(self.start_command(2)))
+            # Drain first: the 2 s bound is not under test here (#370).
+            drain_writer(writer)
             self.assertTrue(writer.close(2))
         self.assertEqual(len(set(threads)), 1)
         self.assertNotEqual(threads[0], threading.get_ident())

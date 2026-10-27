@@ -5,10 +5,12 @@ Tests PromptTracker, PromptExecutionContext, and the singleton
 get_prompt_tracker. Uses a mock db_manager to avoid database deps.
 """
 
+import logging
 import os
 import sys
 import time
 import threading
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -310,6 +312,94 @@ class TestPromptQueue(unittest.TestCase):
             popped_ids.append(ctx["id"])
 
         self.assertEqual(popped_ids, ids)
+
+
+def _real_tracker():
+    """A PromptTracker built by its own ``__init__``, so its cleanup thread runs."""
+    mock_db = MagicMock()
+    mock_db.get_prompt_by_hash.return_value = None
+    return PromptTracker(mock_db)
+
+
+class TestTrackerShutdown(unittest.TestCase):
+    """The cleanup thread stops on a signal and is joined within a bound (#301)."""
+
+    def test_shutdown_stops_the_cleanup_thread_within_the_bound(self):
+        tracker = _real_tracker()
+        thread = tracker.cleanup_thread
+        self.assertTrue(thread.is_alive())
+        self.assertEqual(thread.name, "PromptManagerPromptCleanup")
+
+        self.assertTrue(tracker.shutdown())
+        self.assertFalse(thread.is_alive())
+
+    def test_shutdown_is_idempotent(self):
+        tracker = _real_tracker()
+        self.assertTrue(tracker.shutdown())
+        self.assertTrue(tracker.shutdown())
+
+    def test_cleanup_error_wait_is_interruptible(self):
+        import utils.prompt_tracker as tracker_mod
+
+        real_time = time.time
+        calls = {"n": 0}
+
+        def failing_once():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("clock unavailable")
+            return real_time()
+
+        stub = types.SimpleNamespace(
+            time=failing_once, sleep=time.sleep, monotonic=time.monotonic
+        )
+        logged = threading.Event()
+        logger = logging.getLogger("prompt_manager.prompt_tracker")
+        real_error = logger.error
+
+        def error(*args, **kwargs):
+            real_error(*args, **kwargs)
+            logged.set()
+
+        with (
+            patch.object(tracker_mod, "time", stub),
+            patch.object(logger, "error", side_effect=error),
+        ):
+            tracker = _real_tracker()
+            self.addCleanup(tracker.shutdown)
+            self.assertTrue(logged.wait(30), "the cleanup error was never logged")
+            # The thread is now in its 60 s error wait.
+            self.assertTrue(tracker.shutdown())
+        self.assertFalse(tracker.cleanup_thread.is_alive())
+
+    def test_tracker_works_after_shutdown(self):
+        tracker = _real_tracker()
+        self.assertTrue(tracker.shutdown())
+        tracker.set_current_prompt("still tracked", {"prompt_id": 9})
+        self.assertEqual(tracker.pop_next_prompt()["id"], 9)
+
+    def test_shutdown_of_a_tracker_built_without_init(self):
+        self.assertTrue(_make_tracker().shutdown())
+
+    def test_shutdown_on_the_cleanup_thread_only_signals(self):
+        tracker = _real_tracker()
+        self.addCleanup(lambda: self.assertTrue(tracker.shutdown()))
+        result = {}
+        with patch.object(tracker, "cleanup_thread", threading.current_thread()):
+            result["value"] = tracker.shutdown()
+        self.assertFalse(result["value"])
+        self.assertTrue(tracker._stop.is_set())
+
+    def test_shutdown_reports_a_thread_still_running(self):
+        tracker = _real_tracker()
+        self.assertTrue(tracker.shutdown())
+        busy = MagicMock()
+        busy.is_alive.return_value = True
+        tracker.cleanup_thread = busy
+        with self.assertLogs("prompt_manager.prompt_tracker", "WARNING") as logs:
+            self.assertFalse(tracker.shutdown(timeout=0.05))
+        busy.join.assert_called_once_with(0.05)
+        self.assertIn("prompt cleanup thread still running", "\n".join(logs.output))
 
 
 if __name__ == "__main__":
