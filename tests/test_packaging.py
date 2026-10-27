@@ -26,27 +26,9 @@ def _read(name):
 
 
 def _pyproject():
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover - exercised on 3.10 only
-        tomllib = None
-    text = _read("pyproject.toml")
-    if tomllib is not None:
-        return tomllib.loads(text)
-    # Minimal fallback for 3.10: pull the dependency list out with a regex.
-    match = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.S)
-    deps = re.findall(r'"([^"]*)"', match.group(1)) if match else []
-    return {
-        "project": {
-            "dependencies": deps,
-            "requires-python": (
-                re.search(r'requires-python\s*=\s*"([^"]+)"', text).group(1)
-                if "requires-python" in text
-                else None
-            ),
-        },
-        "build-system": {} if "[build-system]" in text else None,
-    }
+    import tomllib
+
+    return tomllib.loads(_read("pyproject.toml"))
 
 
 class PyprojectContract(unittest.TestCase):
@@ -65,8 +47,8 @@ class PyprojectContract(unittest.TestCase):
         }
         self.assertEqual(deps, wanted)
 
-    def test_requires_python_floor_is_3_10(self):
-        self.assertEqual(_pyproject()["project"]["requires-python"], ">=3.10")
+    def test_requires_python_floor_is_3_12(self):
+        self.assertEqual(_pyproject()["project"]["requires-python"], ">=3.12")
 
     def test_build_system_is_declared(self):
         self.assertIsNotNone(_pyproject().get("build-system"))

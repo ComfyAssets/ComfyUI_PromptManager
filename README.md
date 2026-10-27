@@ -1,7 +1,7 @@
 # ComfyUI Prompt Manager
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-compatible-green.svg)
 ![Tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Tests/badge.svg)
 ![Code Quality](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Code%20Quality/badge.svg)
@@ -933,7 +933,7 @@ node --test tests/js/*.test.js                 # frontend pure modules
 python -m coverage run -m tests.run_suite && python -m coverage combine && python -m coverage report
 ```
 
-CI runs the suite on Linux, Windows and macOS for Python 3.10 to 3.13 with an 85% coverage gate. `python -m unittest discover -s tests` still works; see `TESTING.md` ("Time limits and hangs") for the watchdog. Tests that delete a database file first check that nothing in the process still holds it open (`tests/open_handles.py`), so a connection leak fails on Linux the way it would on Windows.
+CI runs the suite on Linux, Windows and macOS for Python 3.12 to 3.14 with an 85% coverage gate. `python -m unittest discover -s tests` still works; see `TESTING.md` ("Time limits and hangs") for the watchdog. Tests that delete a database file first check that nothing in the process still holds it open (`tests/open_handles.py`), so a connection leak fails on Linux the way it would on Windows.
 
 ### Code Style
 
