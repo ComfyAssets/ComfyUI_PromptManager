@@ -26,6 +26,7 @@ env:
 # Measured 2026-10-26 on runs 40257217681 (3be0ada), 40240706568 (fb9134f), 40228167328 (f9835aa):
 #   py matrix, slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
 #     (ubuntu 5m27s-6m27s, macos 6m14s-8m30s, windows 11m42s-15m54s)
+#     3.10 left the matrix and 3.14 joined it in #356; re-measure after three green main runs.
 #   real ComfyUI compatibility: 13m32s / 8m55s / 11m46s -> 24 min
 #   coverage gate (85%): 7m26s / 7m22s / 7m54s -> 15 min
 #   perf budget 30s / 29s / 27s, black and flake8 39s / 37s / 39s,
@@ -39,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v7
