@@ -603,6 +603,24 @@ def hooked_app():
     )
 
 
+WAIT_SECONDS = 30  # ceiling for every Event wait (TESTING.md test rules)
+
+
+def start_busy_worker(package, folder, name="busy.png"):
+    """The image worker alive in its processing delay."""
+    handler = package._global_image_monitor.handler
+    if handler is None:
+        raise AssertionError("the package's monitor did not start")
+    handler.processing_delay = 3600
+    # Outside the watched folder, so the observer does not schedule it first.
+    path = os.path.join(folder, name)
+    with open(path, "wb") as image:
+        image.write(b"x" * 16)
+    if not handler.schedule(path) or not handler._worker.is_alive():
+        raise AssertionError("the image worker did not start")
+    return handler._worker
+
+
 class PackageTeardownCase(unittest.TestCase):
     """Each test loads its own package (#301): the teardown runs once."""
 
@@ -631,54 +649,83 @@ class PackageTeardownCase(unittest.TestCase):
         return package
 
     def busy_worker(self, package, name="busy.png"):
-        """The image worker alive in its processing delay."""
-        handler = package._global_image_monitor.handler
-        self.assertIsNotNone(handler, "the package's monitor did not start")
-        handler.processing_delay = 3600
-        # Outside the watched folder, so the observer does not schedule it first.
-        path = os.path.join(self.tmp.name, name)
-        with open(path, "wb") as image:
-            image.write(b"x" * 16)
-        self.assertTrue(handler.schedule(path))
-        self.assertTrue(handler._worker.is_alive())
-        return handler._worker
+        return start_busy_worker(package, self.tmp.name, name)
+
+    def hold_a_preview(self, package, *, advance, kill_releases):
+        """A preview worker held inside a fake encode that tracks a fake
+        ffmpeg, and a package clock that the monitor step moves by
+        ``advance`` seconds. Cleanups release the encode first."""
+        # Not the watched folder. Real path for both the file and the root:
+        # macOS /var vs /private/var, Windows short names.
+        previews = os.path.realpath(os.path.join(self.tmp.name, "previews"))
+        os.makedirs(previews)
+        from PIL import Image
+
+        image = os.path.join(previews, "held.png")
+        Image.new("RGB", (8, 8), "red").save(image)
+        held = types.SimpleNamespace(
+            entered=threading.Event(),
+            release=threading.Event(),
+            killed=threading.Event(),
+            stop_seen=[],
+            timeouts=[],
+            now=[100.0],
+        )
+
+        class FakeFfmpeg:
+            def poll(self):  # _track keeps only processes still running
+                return None
+
+            def kill(self):
+                held.killed.set()
+                if kill_releases:
+                    held.release.set()
+
+        def held_encode(src, dst, settings, is_video, *, stop, guard, track):
+            track(FakeFfmpeg())
+            held.entered.set()
+            held.release.wait(WAIT_SECONDS)
+            held.stop_seen.append(stop())
+            return {"action": "skipped"}
+
+        api = package.api
+        monitor = package._global_image_monitor
+        real_stop = monitor.stop_monitoring
+        real_close = api.close_auto_thumbnails
+
+        def stop_then_advance(timeout):
+            ok = real_stop(timeout)
+            held.now[0] += advance
+            return ok
+
+        def recorded_close(final=False, timeout=None):
+            held.timeouts.append(timeout)
+            return real_close(final=final, timeout=timeout)
+
+        for target, name, value in (
+            (api, "_get_all_output_dirs", lambda: [Path(previews)]),
+            (api, "_generate_one", held_encode),
+            (api, "close_auto_thumbnails", recorded_close),
+            (monitor, "stop_monitoring", stop_then_advance),
+            (package, "_clock", lambda: held.now[0]),
+        ):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.assertEqual(api.queue_capture_thumbnail(image), "queued")
+        self.addCleanup(held.release.set)
+        self.assertTrue(held.entered.wait(WAIT_SECONDS), "the encode never started")
+        held.thumbnailer = api._auto_thumbnailer  # the teardown drops the API's
+        held.worker = held.thumbnailer._worker
+        # Cleanups run newest first: release the encode, then join the worker
+        # (even when an assertion failed first), then end the patches.
+        self.addCleanup(held.worker.join, WAIT_SECONDS)
+        self.addCleanup(held.release.set)
+        self.assertTrue(held.worker.is_alive())
+        return held
 
 
 class TestPackageTeardown(PackageTeardownCase):
-    def test_teardown_stops_every_part_once(self):
-        package = self.load()
-        monitor = package._global_image_monitor
-        observer = monitor.observer
-        tracker_thread = package._global_prompt_tracker.cleanup_thread
-        worker = self.busy_worker(package)
-
-        with self.assertLogs("prompt_manager.init", "INFO") as logs:
-            result = package._stop_background_work()
-
-        self.assertEqual(result, {"monitor": True, "thumbnails": True, "tracker": True})
-        self.assertEqual(list(result), ["monitor", "thumbnails", "tracker"])
-        self.assertIn("Background work stopped in", "\n".join(logs.output))
-        self.assertIn("monitor=ok thumbnails=ok tracker=ok", "\n".join(logs.output))
-        self.assertFalse(worker.is_alive())
-        self.assertFalse(observer.is_alive())
-        self.assertFalse(tracker_thread.is_alive())
-        result["monitor"] = False  # a copy: the stored result is unchanged
-        with mock.patch.object(monitor, "stop_monitoring") as again:
-            self.assertEqual(
-                package._stop_background_work(),
-                {"monitor": True, "thumbnails": True, "tracker": True},
-            )
-        again.assert_not_called()
-
-    def test_teardown_detaches_the_monitor_callbacks(self):
-        package = self.load()
-        monitor = package._global_image_monitor
-        self.assertIsNotNone(monitor.review_recorder)
-        package._stop_background_work()
-        self.assertIsNone(monitor.review_recorder)
-        self.assertIsNone(monitor.thumbnail_queue)
-        self.assertIsNone(monitor.output_listener)
-
     def test_an_image_in_hand_queues_no_preview_during_teardown(self):
         package = self.load()
         monitor = package._global_image_monitor
@@ -712,11 +759,17 @@ class TestPackageTeardown(PackageTeardownCase):
         self.assertIsNone(seen["worker"])
         self.assertTrue(all(result.values()), result)
 
-    def test_teardown_removes_its_atexit_callback(self):
+    def test_teardown_kills_ffmpeg_and_stops_the_preview_worker(self):
         package = self.load()
-        with mock.patch("atexit.unregister", wraps=atexit.unregister) as unregister:
-            package._stop_background_work()
-        unregister.assert_called_once_with(package._stop_background_work)
+        held = self.hold_a_preview(package, advance=4.0, kill_releases=True)
+
+        result = package._stop_background_work()
+
+        self.assertTrue(held.killed.is_set())
+        self.assertEqual(held.timeouts, [6.0])  # min(30, 10 - 4)
+        self.assertTrue(result["thumbnails"], result)
+        self.assertFalse(held.worker.is_alive())
+        self.assertEqual(held.stop_seen, [True])
 
     def test_on_cleanup_runs_the_teardown(self):
         app = hooked_app()
@@ -749,6 +802,74 @@ class TestPackageTeardown(PackageTeardownCase):
         )
 
 
+class ListHandler(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(f"{record.levelname}:{record.getMessage()}")
+
+
+class TestPackageTeardownOnce(PackageTestCase):
+    """The tests that only observe one plain teardown share one package.
+
+    The teardown runs once, so it runs here in ``setUpClass`` (per-test
+    ``assertLogs`` cannot wrap it); the tests read what it recorded.
+    """
+
+    package_name = "pm_teardown_once"
+
+    @classmethod
+    def setUpClass(cls):
+        with contextlib.redirect_stdout(io.StringIO()):
+            super().setUpClass()
+        package = cls.package
+        cls.monitor = package._global_image_monitor
+        cls.observer = cls.monitor.observer
+        cls.tracker_thread = package._global_prompt_tracker.cleanup_thread
+        cls.worker = start_busy_worker(package, cls.tmp.name)
+        cls.recorder_before = cls.monitor.review_recorder
+        logger = logging.getLogger("prompt_manager.init")
+        handler, level = ListHandler(), logger.level
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)  # otherwise set by the config
+        try:
+            with mock.patch("atexit.unregister", wraps=atexit.unregister) as unregister:
+                cls.result = package._stop_background_work()
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(level)
+        cls.log = "\n".join(handler.lines)
+        cls.unregister_calls = unregister.call_args_list
+
+    def test_teardown_stops_every_part_once(self):
+        expected = {"monitor": True, "thumbnails": True, "tracker": True}
+        self.assertEqual(self.result, expected)
+        self.assertEqual(list(self.result), ["monitor", "thumbnails", "tracker"])
+        self.assertIn("Background work stopped in", self.log)
+        self.assertIn("monitor=ok thumbnails=ok tracker=ok", self.log)
+        self.assertFalse(self.worker.is_alive())
+        self.assertFalse(self.observer.is_alive())
+        self.assertFalse(self.tracker_thread.is_alive())
+        copy = self.package._stop_background_work()
+        copy["monitor"] = False  # a copy: the stored result is unchanged
+        with mock.patch.object(self.monitor, "stop_monitoring") as again:
+            self.assertEqual(self.package._stop_background_work(), expected)
+        again.assert_not_called()
+
+    def test_teardown_detaches_the_monitor_callbacks(self):
+        self.assertIsNotNone(self.recorder_before)
+        self.assertIsNone(self.monitor.review_recorder)
+        self.assertIsNone(self.monitor.thumbnail_queue)
+        self.assertIsNone(self.monitor.output_listener)
+
+    def test_teardown_removes_its_atexit_callback(self):
+        self.assertEqual(
+            self.unregister_calls, [mock.call(self.package._stop_background_work)]
+        )
+
+
 class TestPackageTeardownFailures(PackageTeardownCase):
     """A failing step never skips the later ones (design D14, R2)."""
 
@@ -774,6 +895,50 @@ class TestPackageTeardownFailures(PackageTeardownCase):
 
     def test_second_interrupt_does_not_skip_the_tracker(self):
         self.assert_tracker_stops_after(KeyboardInterrupt())
+
+    def test_an_interrupt_between_steps_still_records_the_teardown(self):
+        package = self.load(require_stopped=False)
+        real_step = package._teardown_step
+
+        def interrupted_before_the_previews(name, stop, logger):
+            if name == "the preview worker":
+                raise KeyboardInterrupt  # outside the step's own try
+            return real_step(name, stop, logger)
+
+        with (
+            mock.patch.object(
+                package, "_teardown_step", interrupted_before_the_previews
+            ),
+            mock.patch("atexit.unregister", wraps=atexit.unregister) as unregister,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            package._stop_background_work()
+        expected = {"monitor": True, "thumbnails": False, "tracker": False}
+        self.assertEqual(package._background_work_result, expected)
+        unregister.assert_called_once_with(package._stop_background_work)
+        with mock.patch.object(
+            package._global_image_monitor, "stop_monitoring"
+        ) as again:
+            self.assertEqual(package._stop_background_work(), expected)
+        again.assert_not_called()
+
+    def test_teardown_reports_a_preview_worker_still_held(self):
+        package = self.load(require_stopped=False)
+        held = self.hold_a_preview(package, advance=9.95, kill_releases=False)
+
+        with self.assertLogs("prompt_manager.init", "WARNING") as logs:
+            result = package._stop_background_work()
+
+        self.assertTrue(held.killed.is_set())
+        self.assertEqual(len(held.timeouts), 1)
+        self.assertAlmostEqual(held.timeouts[0], 0.05, places=6)
+        self.assertTrue(held.thumbnailer.closed)
+        self.assertFalse(result["thumbnails"], result)
+        self.assertRegex("\n".join(logs.output), r"not stopped in time .*thumbnails")
+        held.release.set()
+        held.worker.join(WAIT_SECONDS)
+        self.assertFalse(held.worker.is_alive())
+        self.assertEqual(held.stop_seen, [True])
 
     def test_teardown_shares_one_deadline(self):
         package = self.load(require_stopped=False)

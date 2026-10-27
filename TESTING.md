@@ -282,11 +282,12 @@ PromptManager's own background threads stop through one package teardown,
 works against one 10 s deadline. Each step gets the smaller of its own bound
 and the time left. The steps, in order:
 
-1. Detach the monitor's callbacks (Needs review recorder, preview queue,
-   Images listing listener).
-2. `ImageMonitor.stop_monitoring` closes the image handler, which joins the
-   image worker (5 s). It then calls watchdog's `observer.stop()`, which is
-   not bounded here, and joins the observer (5 s).
+1. Refuse new previews (`refuse_auto_thumbnails()`), then detach the
+   monitor's callbacks (Needs review recorder, preview queue, Images listing
+   listener).
+2. `ImageMonitor.stop_monitoring` works against one 5 s deadline. Closing the
+   image handler joins the image worker; watchdog's `observer.stop()` (not
+   bounded here) and the observer join get what is left, which can be 0 s.
 3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s) and
    kills ffmpeg.
 4. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
@@ -295,7 +296,11 @@ A failing step, or a second Ctrl+C, is logged with its traceback and does not
 skip the later steps. A clean run logs one INFO line to PromptManager's log:
 `Background work stopped in 0.4 s: monitor=ok thumbnails=ok tracker=ok`. If
 any part is still running, one WARNING goes to the console:
-`Background work not stopped in time (10.0 s): monitor`.
+`Background work not stopped in time (10.0 s): monitor`. A Ctrl+C that lands
+between two steps (each step catches its own) is re-raised after the result is
+stored, with the parts not reached False, and the `atexit` callback is
+removed: the later steps are skipped, no summary line is logged, and a later
+call returns that result and runs nothing.
 
 ComfyUI never runs aiohttp's `on_cleanup` hooks, because it never calls
 `runner.cleanup()`. So `atexit` is the live host's path. It runs on Ctrl+C

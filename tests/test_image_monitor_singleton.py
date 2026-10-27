@@ -365,10 +365,38 @@ class TestStartStop(unittest.TestCase):
     def test_stop_monitoring_reports_an_observer_stop_that_raised(self):
         fake = FakeObserver(stop_error=OSError("descriptor gone"))
         self._start_with(fake)
+        fake.stopped = True  # its thread has ended; stop() still raises
         with self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs:
             self.assertFalse(self.monitor.stop_monitoring())
-        self.assertIn("Error while stopping image monitoring", "\n".join(logs.output))
+        text = "\n".join(logs.output)
+        self.assertIn("Error while stopping image monitoring", text)
+        self.assertNotIn("watchdog observer still running", text)
         fake.stop_error = None  # tearDown's stop calls stop() again
+
+    def test_the_still_running_warning_names_the_time_the_join_got(self):
+        fake = FakeObserver(stay_alive=True)
+        handler = self._start_with(fake)
+        now = [100.0]
+        recorded_close = handler.close
+
+        def close_that_uses_the_deadline(timeout=im_mod.WORKER_JOIN_SECONDS):
+            ok = recorded_close(timeout)
+            now[0] += 5.0  # a busy worker took the whole deadline
+            return ok
+
+        handler.close = close_that_uses_the_deadline
+        with (
+            patch.object(
+                im_mod, "time", types.SimpleNamespace(monotonic=lambda: now[0])
+            ),
+            self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs,
+        ):
+            self.assertFalse(self.monitor.stop_monitoring(timeout=5.0))
+        self.assertEqual(fake.calls[-1], ("join", 0.0))
+        self.assertIn(
+            "watchdog observer still running after 0.0 s", "\n".join(logs.output)
+        )
+        fake.stay_alive = False  # it ends; tearDown's stop waits for it
 
     def test_stop_monitoring_without_an_observer_returns_true(self):
         self.assertTrue(self.monitor.stop_monitoring())
