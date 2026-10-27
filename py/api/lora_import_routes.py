@@ -5,9 +5,12 @@ it lists the LoraManager metadata files and parses them, and counts the
 current imports, those a saved pair uses and the example images an import
 would download. It writes nothing and requests nothing. It answers a
 ``Plan`` (the maintenance plan's shape, ``py/api/maintenance.py``) plus
-``{lora_files, with_metadata, current_imports, blocked_by_pairs,
-planned_downloads, network:{planned_downloads, api_key}}``. A plan that saved
-pairs block carries no token (nothing can be applied).
+``{lora_files, with_metadata, skipped, with_local_media, current_imports,
+blocked_by_pairs, planned_downloads, network:{planned_downloads, api_key},
+layout}`` (#355: ``layout`` says which LoraManager settings file, storage mode
+and library the import read, and ``error`` when they cannot be used). A plan
+that saved pairs block, or whose layout is unusable, carries no token
+(nothing can be applied).
 
 ``POST /prompt_manager/lora/import/apply {token}`` starts the job (202
 ``{job}``): kind ``lora_import``, titled "LoRA reference import", admission
@@ -31,6 +34,7 @@ import sqlite3
 from aiohttp import web
 
 from .. import lora_import, lora_utils
+from .inspection_service import SERVABLE_EXTENSIONS
 from .job_routes import busy_response
 from .jobs import LORA_IMPORT_JOB_KIND, JobBusy
 from .maintenance import (
@@ -152,8 +156,9 @@ class LoraImportRoutesMixin:
             return None, ("lora-path", _LORA_PATH_ERROR)
         return allowed, None
 
-    async def stage_lora_import(self, files, *, on_record=None, cancelled=None):
-        """Stage ``files`` off the loop: records, skips and download counts."""
+    async def stage_lora_import(self, discovery, *, on_record=None, cancelled=None):
+        """Stage ``discovery``'s sidecars off the loop: records, skips and
+        download counts."""
         from ..config import IntegrationConfig
 
         cache_dir = await self._run_in_executor(lora_utils.get_lora_image_cache_dir)
@@ -166,9 +171,10 @@ class LoraImportRoutesMixin:
 
         return await self._run_in_executor(
             lambda: lora_import.stage(
-                files,
+                discovery,
                 cache_dir,
                 IntegrationConfig.CIVITAI_API_KEY,
+                media_extensions=SERVABLE_EXTENSIONS,
                 on_record=report,
                 cancelled=cancelled or (lambda: False),
                 logger=self.logger,
@@ -176,8 +182,8 @@ class LoraImportRoutesMixin:
         )
 
     async def lora_files_unchanged(self, lm_path, expected):
-        """Whether the metadata files under ``lm_path`` still fingerprint as
-        ``expected`` (listed again, so an added file counts too)."""
+        """Whether LoraManager's sidecars for ``lm_path`` still fingerprint as
+        ``expected`` (found again, so an added file counts too)."""
 
         def current():
             return lora_import.fingerprint(lora_import.discover(lm_path))
@@ -220,8 +226,22 @@ class LoraImportRoutesMixin:
             cache_dir = await self._run_in_executor(
                 lambda: lora_utils.get_lora_image_cache_dir(create=False)
             )
-            found = await self._run_in_executor(lora_import.preview, lm_path, cache_dir)
+            found = await self._run_in_executor(
+                lora_import.preview, lm_path, cache_dir, SERVABLE_EXTENSIONS
+            )
             state = await self._run_in_executor(db.category_import_state, CATEGORY)
+        except OSError as error:
+            # A folder discovery cannot list refuses the import (it must not
+            # replace the collection with part of it): say which one.
+            self.logger.warning(
+                f"LoRA import review: a folder could not be listed: {error}"
+            )
+            return _failure(
+                f"A LoRA folder could not be listed ({self._public_error(error)}). "
+                "Nothing was changed.",
+                500,
+                "folder-unreadable",
+            )
         except Exception:
             self.logger.exception("LoRA import preview failed")
             return _failure("The LoRA import could not be reviewed.", 500)
@@ -248,7 +268,9 @@ class LoraImportRoutesMixin:
             return _failure("The LoRA import could not be reviewed.", 500)
         token = None
         expires_at = None
-        if not blocked:
+        layout = found["layout"]
+        # An unusable LoraManager layout found nothing it may replace with.
+        if not blocked and layout["error"] is None:
             payload = {
                 "path": lm_path,
                 "fingerprint": found["fingerprint"],
@@ -280,6 +302,9 @@ class LoraImportRoutesMixin:
                 "expires_at": expires_at,
                 "lora_files": found["lora_files"],
                 "with_metadata": found["with_metadata"],
+                "skipped": found["skipped"],
+                "with_local_media": found["with_local_media"],
+                "layout": layout,
                 "current_imports": current,
                 "blocked_by_pairs": blocked,
                 "planned_downloads": downloads,
@@ -342,8 +367,8 @@ class LoraImportRoutesMixin:
             store.discard(token)
             return _failure(INTEGRATION_CHANGED, 409, "plan-changed")
         try:
-            files = await self._run_in_executor(lora_import.discover, lm_path)
-            now = await self._run_in_executor(lora_import.fingerprint, files)
+            discovery = await self._run_in_executor(lora_import.discover, lm_path)
+            now = await self._run_in_executor(lora_import.fingerprint, discovery)
             backup = self._backup_promised(plan)
             _disk, short, _size = await self._run_in_executor(
                 disk_plan, db.model.db_path, backup=backup, vacuum=False
@@ -367,9 +392,14 @@ class LoraImportRoutesMixin:
                 lora_import.JOB_TITLE,
                 admission="records",
                 cancellable=True,
-                scope={"operation": LORA_OPERATION, "lora_files": len(files)},
+                scope={
+                    "operation": LORA_OPERATION,
+                    "lora_files": len(discovery.sidecars),
+                },
                 groups=lora_import.GROUPS,
-                runner=lambda job: self._run_lora_import(job, db, plan, files, backup),
+                runner=lambda job: self._run_lora_import(
+                    job, db, plan, discovery, backup
+                ),
             )
         except JobBusy as busy:
             return busy_response(busy)
@@ -378,8 +408,8 @@ class LoraImportRoutesMixin:
 
     # ── the job ───────────────────────────────────────────────────────
 
-    async def _run_lora_import(self, job, db, plan, files, backup_on):
-        total = len(files)
+    async def _run_lora_import(self, job, db, plan, discovery, backup_on):
+        total = len(discovery.sidecars)
         job.update(total=total, status_line="Preparing LoRA records")
         job.log_line(f"Found {_count(total, 'LoRA metadata file')}")
 
@@ -393,7 +423,7 @@ class LoraImportRoutesMixin:
 
         try:
             staged = await self.stage_lora_import(
-                files, on_record=on_record, cancelled=lambda: job.cancelled
+                discovery, on_record=on_record, cancelled=lambda: job.cancelled
             )
         except lora_import.ImportCancelled:
             job.log_line(f"{CANCELLED} {CACHE_NOTE}")

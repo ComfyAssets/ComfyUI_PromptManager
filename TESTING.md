@@ -86,6 +86,18 @@ timer that "usually" covers a frame is a race on a loaded runner. Library
 virtualization specs settle with `libraryObservation.settled()` (two consecutive
 frames with no Library frame queued). To look for such races, repeat a spec under
 load (`--workers 8 --repeat-each 10`, and in the image with `--cpus=1` or `2`).
+CPU limits do not reproduce disk-bound timeouts (backup, restore). For those,
+throttle writes in the image: with rootful Docker on a host with cgroup v2, add
+`--device-write-iops /dev/<disk>:20` to the `docker run`, where `<disk>` is the
+whole disk (not a partition) holding Docker's data root, because the test server
+keeps its database in the container's `/tmp`. On a plain partition,
+`lsblk -no pkname "$(df --output=source "$(docker info -f '{{.DockerRootDir}}')" | tail -1)"`
+prints it; on LVM or LUKS, `lsblk -s` walks down to the disk. A spec that waits
+on a timer then fails at its 5 s expect. A spec that waits on the response can
+still fail at the 30 s test timeout when several workers share the throttled
+disk; that means the disk is too slow for the test budget, not that the spec is
+wrong.
+
 On unsupported Linux
 distributions, browser system dependencies may need manual installation. For a
 quick browser run, use `test:workflows -- --project chromium`.
@@ -3410,14 +3422,40 @@ refused while a restore runs; the review is a request lease ("LoRA import review
 accepts the optional `expected_revision`. LoraManager detection also searches every
 `custom_nodes` folder ComfyUI registers through `folder_paths` (#144), main folder first.
 
+**Where LoraManager keeps its files (#355).** `py/lora_manager_layout.py` repeats
+LoraManager's rules without importing it (`tests/test_lora_manager_layout.py`). The
+settings file is `<LORA_MANAGER_SETTINGS_DIR>/settings.json`, else the plugin's own
+`settings.json` when portable mode is on (`LORA_MANAGER_PORTABLE` `1`/`0` decides, other
+values are ignored; otherwise the JSON value `use_portable_settings: true`), else
+`platformdirs.user_config_dir("ComfyUI-LoRA-Manager")`. It is read as UTF-8, at most 5 MB,
+and only seven keys are kept (`SETTINGS_KEYS`); a missing file means LoraManager's
+defaults. Discovery: in `alongside` mode every LoRA root is searched and a sidecar is kept
+when `<base>.safetensors` exists beside it; in `centralized` mode only the sidecar root is
+searched and a sidecar is kept when its `file_path` exists inside a LoRA root (unparseable
+ones are skipped by name). `lora_files` counts the metadata files seen, `with_metadata`
+the kept, readable LoRAs and `skipped` the rest. Media per LoRA, without repeats: the
+preview (`preview_url`, else LoraManager's `PREVIEW_EXTENSIONS` order), then every file in
+`<example-images root>[/<library>]/<sha256>/` in natural order; a leading video yields to the
+first still. A file counts only with a servable extension and inside the guarded media
+roots. CivitAI downloads run only for a LoRA without local media. The folder guard keeps a
+settings folder only when it exists and is neither a filesystem root (`/`, `C:\`, a UNC
+share root) nor the home folder or one of its ancestors (realpath + `normcase`). An
+unusable layout (no install, unreadable / non-JSON / non-object / oversized settings, no
+`platformdirs`, a missing or refused centralized sidecar root) gives a review without a
+token ("LoraManager settings: not usable: <reason>. Nothing was changed."), a legacy scan
+error with that reason, the default LoRA roots for serving, and trigger words from the
+default roots in alongside mode. `tests/run_suite.py` and `tests/browser/server.py` point
+`LORA_MANAGER_SETTINGS_DIR` at a disposable folder, so no test reads the developer's real
+LoraManager settings; tests that call `load_layout` inject their own folder too.
+
 `tests/browser/workspace_integrations_fixture.py` (`/__test__/integrations/*`) makes a fake
 LoraManager install and LoRA folder under the server's temp root, holds or fails the
 import, saves a blocking pair and answers CivitAI downloads with a stub opener, so no
 test reaches the network.
 
 ```sh
-python3 -m unittest tests.test_lora_import tests.test_api_lora tests.test_lora_database \
-  tests.test_lora_utils -v
+python3 -m unittest tests.test_lora_manager_layout tests.test_lora_import tests.test_api_lora \
+  tests.test_lora_database tests.test_lora_utils -v
 node --test tests/js/workspace-system-integrations.test.js tests/js/prompt-bridge-adapter.test.js
 npm run --prefix tools/vendor test:workflows -- workspace-system-integrations.spec.mjs \
   system-integrations-concept.spec.mjs \

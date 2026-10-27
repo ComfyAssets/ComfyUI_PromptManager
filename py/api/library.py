@@ -234,9 +234,22 @@ class LibraryRoutesMixin:
         )
 
     def _library_media(
-        self, records: list[dict], roots: list[Path], *, linked: bool = True
+        self,
+        records: list[dict],
+        roots: list[Path],
+        *,
+        linked: bool = True,
+        outputs: int | None = None,
     ) -> list[dict]:
+        """Workspace descriptors for a prompt's linked media under ``roots``.
+
+        Roots from index ``outputs`` on are linked-only (LoRA media, #355):
+        their media keeps its rooted identity, but gets no preview file (the
+        card loads the original; a video shows its label), no favorite star
+        and is marked ``linked_only`` (no Tag action).
+        """
         page = []
+        linked_only = set()
         for record in records:
             try:
                 raw_path = Path(record["image_path"])
@@ -250,10 +263,25 @@ class LibraryRoutesMixin:
                     canonical_root = _canonical(root)
                     if path.is_relative_to(canonical_root):
                         page.append((path, 0, canonical_root, index))
+                        if outputs is not None and index >= outputs:
+                            relative = path.relative_to(canonical_root).as_posix()
+                            linked_only.add((index, relative))
                         break
             except (OSError, ValueError, RuntimeError):
                 continue
-        return self._format_workspace_page(page, linked=linked)
+        images = self._format_workspace_page(page, linked=linked)
+        for image in images:
+            if (image["root_index"], image["path"]) in linked_only:
+                image["thumbnail_url"] = None
+                image["thumbnail_ready"] = False
+                image["linked_only"] = True
+                image.pop("favorite", None)
+        return images
+
+    def _library_roots(self) -> tuple[list[Path], int]:
+        """``(roots, number of output roots)`` for a prompt's linked media."""
+        outputs = list(self._get_all_output_dirs())
+        return self._media_roots(outputs), len(outputs)
 
     @pair_response
     async def get_library_options(self, request: web.Request) -> web.Response:
@@ -294,13 +322,13 @@ class LibraryRoutesMixin:
             return result, records
 
         result, records = await self._run_in_executor(read)
-        roots = list(self._get_all_output_dirs())
 
         def previews() -> None:
+            roots, outputs = self._library_roots()
             for parent in result["items"]:
                 # Previews belong to their parent; a per-parent link read is N+1.
                 parent["previews"] = self._library_media(
-                    records[parent["id"]], roots, linked=False
+                    records[parent["id"]], roots, linked=False, outputs=outputs
                 )
 
         await self._run_in_executor(previews)
@@ -342,9 +370,9 @@ class LibraryRoutesMixin:
         result, records = await self._run_in_executor(read)
         if result is None:
             return _missing()
-        roots = list(self._get_all_output_dirs())
+        roots, outputs = await self._run_in_executor(self._library_roots)
         result["positive"]["previews"] = await self._run_in_executor(
-            self._library_media, records, roots
+            lambda: self._library_media(records, roots, outputs=outputs)
         )
         return web.json_response({"success": True, **result})
 
@@ -358,7 +386,7 @@ class LibraryRoutesMixin:
         archive = _archive_scope(request)
         limit = _page_limit(request)
         cursor = request.query.get("cursor")
-        roots = list(self._get_all_output_dirs())
+        roots, outputs = await self._run_in_executor(self._library_roots)
         canonical_roots = [str(_canonical(root)) for root in roots]
 
         def read() -> dict | None:
@@ -391,7 +419,7 @@ class LibraryRoutesMixin:
         if result is None:
             return _missing()
         result["images"] = await self._run_in_executor(
-            self._library_media, result["images"], roots
+            lambda: self._library_media(result["images"], roots, outputs=outputs)
         )
         return web.json_response({"success": True, **result})
 

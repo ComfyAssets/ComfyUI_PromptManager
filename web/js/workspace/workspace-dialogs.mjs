@@ -429,7 +429,7 @@ function requireGrid(grid) {
  * primary (`ca-primary`, or the concept's `danger` when `primary.danger`). The primary closes the dialog, then calls
  * `onStart()`; `onDismiss()` runs once when the dialog closes any other way (Cancel, ×, Escape, a replacing dialog, the
  * page leaving), so a staged review is discarded (S9). Returns `{setValue(term, text)}` for a grid value that follows
- * an option.
+ * an option, and `{setTitle(term, text)}` for a value's hover title.
  */
 export function openReviewDialog({ scope, title, heading = null, grid, options = [], sentence = null, backup = null,
     cancelLabel, primary, onStart, trigger = null, onDismiss = null }) {
@@ -474,6 +474,10 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
         setValue(term, text) {
             const dd = values.get(term);
             if (dd) dd.textContent = text;
+        },
+        setTitle(term, text) {
+            const dd = values.get(term);
+            if (dd) dd.title = text;
         },
     };
 }

@@ -483,10 +483,14 @@ If you use [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manag
 
 Click **Import LoRA Data** in the settings panel to start the import. A progress popup shows real-time status as each LoRA is processed:
 
-- Scans all LoRA directories (including `extra_model_paths.yaml` paths) for metadata
-- Downloads example images from CivitAI as 512px thumbnails
+- Reads LoRA Manager's own settings the way LoRA Manager does: from the folder in `LORA_MANAGER_SETTINGS_DIR`, from the plugin's `settings.json` in portable mode, or from your user config folder, and only the keys that say where its files are
+- Finds each LoRA's metadata in both storage modes: beside the model (the default) or in the central sidecar folder, and imports only LoRAs whose model file still exists in a LoRA folder (the review says how many metadata files it skipped)
+- Links LoRA Manager's preview (including `.preview.webp` and video previews) and every downloaded example image and video where they are, without copying them
+- Downloads example images from CivitAI as 512px thumbnails only for LoRAs that have no local image
 - Creates a prompt entry for each LoRA with trigger words, example prompts, and preview images
 - All imported LoRAs are tagged with `lora-manager` category for easy filtering
+
+The System › Integrations review names the settings it read (source, storage mode and LoRA Manager library) and counts metadata files, LoRAs and LoRAs with local images. If LoRA Manager's settings cannot be used, it says why and nothing is changed.
 
 ![LoRA Results](images/pm-lora-filtered.png)
 

@@ -257,6 +257,18 @@ async function chooseRestore(page, file) {
     await page.locator('#restoreFileInput').setInputFiles(file);
 }
 
+// Confirms the chosen restore and waits for the server's answer, not for a timer: a restore is disk-bound and can take
+// longer than an expect timeout on a slow runner (#359). The modal closes only after that answer.
+async function confirmRestoreAndWait(page) {
+    const restored = page.waitForResponse(response => response.url().endsWith('/prompt_manager/restore'));
+    await page.locator('#confirmRestore').click();
+    const response = await restored;
+    const body = await response.text();
+    expect(response.status(), body).toBe(200);
+    expect(JSON.parse(body)).toMatchObject({ success: true, prompt_count: 2, backup_created: expect.any(String) });
+    await expect(page.locator('#restoreModal')).toBeHidden();
+}
+
 function confirmNextDialog(page, accept, message) {
     page.once('dialog', async dialog => {
         expect(dialog.type()).toBe('confirm');
@@ -287,12 +299,7 @@ test('downloaded backup restores deleted prompts, tags, and image links through 
     expect(await promptSnapshot(request)).not.toEqual(before);
     await chooseRestore(page, backup);
     confirmNextDialog(page, true, backup.name);
-    const restored = page.waitForResponse(response => response.url().endsWith('/prompt_manager/restore'));
-    await page.locator('#confirmRestore').click();
-    const response = await restored;
-    expect(response.ok()).toBe(true);
-    expect(await response.json()).toMatchObject({ success: true, prompt_count: 2, backup_created: expect.any(String) });
-    await expect(page.locator('#restoreModal')).toBeHidden();
+    await confirmRestoreAndWait(page);
     await expect(page.locator('.prompt-text')).toHaveCount(2);
     await page.reload();
     await expect(page.locator('.prompt-text').filter({ hasText: 'Cat portrait' })).toBeVisible();
@@ -335,8 +342,7 @@ test('restore validation and cancellation preserve live data and allow a valid r
     expect(await promptSnapshot(request)).toEqual(before);
     await page.locator('#restoreFileInput').setInputFiles(backup);
     confirmNextDialog(page, true, backup.name);
-    await page.locator('#confirmRestore').click();
-    await expect(page.locator('#restoreModal')).toBeHidden();
+    await confirmRestoreAndWait(page);
     expect(await promptSnapshot(request)).toEqual(before);
 });
 
@@ -356,8 +362,7 @@ test('backup and restore recover from interrupted network requests without losin
     await expect(page.locator('#restoreModal')).toBeVisible();
     expect(await promptSnapshot(request)).toEqual(before);
     confirmNextDialog(page, true, backup.name);
-    await page.locator('#confirmRestore').click();
-    await expect(page.locator('#restoreModal')).toBeHidden();
+    await confirmRestoreAndWait(page);
     expect(await promptSnapshot(request)).toEqual(before);
 });
 

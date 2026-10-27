@@ -1,18 +1,26 @@
-"""The staged LoRA reference import (#221, #249 System S10).
+"""The staged LoRA reference import (#221, #249 System S10, #355).
 
-The import reads LoraManager's ``*.metadata.json`` files and turns each LoRA
-into one prompt of the ``lora-manager`` category, tagged with its name and
-trigger words and linked to its preview images. It runs in three stages, and
-only the last writes to the database:
+The import reads LoraManager's ``*.metadata.json`` sidecars and turns each
+LoRA into one prompt of the ``lora-manager`` category, tagged with its name and
+trigger words and linked to its images. It runs in three stages, and only the
+last writes to the database:
 
-1. **discover**: list the metadata files (``discover``) and fingerprint them
-   (path, size and modification time; ``fingerprint``). ``preview`` adds the
-   counts a review shows. Nothing is written and nothing is requested.
-2. **stage**: read each file and build its record; CivitAI example images are
-   downloaded into the image cache first (best effort, counted). A cancelled
-   or failed stage leaves the database untouched; downloaded images stay in
-   the cache.
-3. **replace**: the files are listed and fingerprinted once more (a file
+1. **discover**: read LoraManager's settings the way LoraManager does
+   (``py/lora_manager_layout.py``: the settings file from the environment
+   folder, the portable plugin file or the user config folder; the LoRA
+   roots, the storage mode, the sidecar and example-images roots) and find
+   the sidecars (``discover``). In ``alongside`` mode a sidecar beside its
+   model is kept when ``<base>.safetensors`` exists; in ``centralized`` mode
+   every sidecar under the sidecar root is kept when its ``file_path`` names
+   a model inside a LoRA root. ``fingerprint`` covers the kept sidecars (path,
+   size and modification time) and the layout; ``preview`` adds the counts a
+   review shows. Nothing is written and nothing is requested.
+2. **stage**: read each sidecar and build its record. Its LoraManager preview
+   and example images are linked where they are (``local_media``); only a
+   LoRA without any local image downloads its CivitAI example images into the
+   image cache first (best effort, counted). A cancelled or failed stage
+   leaves the database untouched; downloaded images stay in the cache.
+3. **replace**: the sidecars are found and fingerprinted once more (a file
    changed, removed or added while staging aborts the import), then
    ``PromptDatabase.replace_category_prompts`` swaps the old collection for
    the staged records in one transaction (or changes nothing).
@@ -24,9 +32,15 @@ Both the System job (``POST /lora/import/apply``) and the legacy ``POST
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import AbstractSet, Callable, Dict, List, Optional
 
 from . import lora_utils
+from .lora_manager_layout import (
+    Discovery,
+    discover_sidecars,
+    layout_summary,
+    local_media,
+)
 
 try:
     from ..utils.hashing import generate_prompt_hash
@@ -37,35 +51,44 @@ LORA_CATEGORY = "lora-manager"
 JOB_TITLE = "LoRA reference import"
 # The job's outcome groups, in its counter-tile order.
 GROUPS = ("imported", "linked", "skipped", "downloaded", "download_errors", "errors")
-METADATA_SUFFIX = "*.metadata.json"
 
 
 class ImportCancelled(Exception):
     """The import was cancelled while staging; nothing was written."""
 
 
-def discover(lora_manager_path: str) -> List[Path]:
-    """Every LoRA metadata file, sorted and without repeats.
+def discover(lora_manager_path: Optional[str]) -> Discovery:
+    """The sidecars of every LoRA whose model exists inside a LoRA root.
 
-    Raises whatever listing a folder raised: a discovery that cannot see
-    every folder must not replace the collection with part of it.
+    ``lora_manager_path`` is resolved as the integration resolves it (an
+    install under ``custom_nodes``; empty means auto-detection). Raises
+    whatever listing a folder raised: a discovery that cannot see every
+    folder must not replace the collection with part of it.
     """
-    seen = set()
-    files = []
-    for folder in lora_utils.find_lora_directories(lora_manager_path):
-        for path in Path(folder).rglob(METADATA_SUFFIX):
-            key = str(path)
-            if key not in seen:
-                seen.add(key)
-                files.append(path)
-    files.sort(key=str)
-    return files
+    return discover_sidecars(lora_utils.lora_manager_layout(lora_manager_path))
 
 
-def fingerprint(files: List[Path]) -> str:
-    """What a review saw of ``files``: each path, size and modification time."""
+def fingerprint(discovery: Discovery) -> str:
+    """What a review saw: the layout, then each kept sidecar's path, size and
+    modification time (a LoraManager save that changes unrelated settings
+    leaves it as it was)."""
+    layout = discovery.layout
     digest = hashlib.sha256()
-    for path in files:
+    for value in (
+        layout.settings_path,
+        layout.source,
+        layout.error,
+        layout.mode,
+        "\0".join(layout.lora_roots),
+        layout.sidecar_root,
+        layout.example_images_root,
+        layout.library,
+    ):
+        digest.update(f"{value}\n".encode("utf-8", "surrogatepass"))
+    for name in discovery.unreadable:
+        digest.update(f"unreadable\0{name}\n".encode("utf-8", "surrogatepass"))
+    for sidecar in discovery.sidecars:
+        path = sidecar.metadata_path
         try:
             stat = path.stat()
             entry = f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\n"
@@ -75,31 +98,48 @@ def fingerprint(files: List[Path]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def preview(lora_manager_path: str, cache_dir: Path) -> Dict:
+def preview(
+    lora_manager_path: Optional[str],
+    cache_dir: Path,
+    media_extensions: AbstractSet[str],
+) -> Dict:
     """The review's counts (blocking; reads only, requests nothing).
 
-    ``{lora_files, with_metadata, planned_downloads, fingerprint, names}``:
-    the metadata files found, those that parse, the example images an import
-    would download (not yet in the cache) and the first LoRA names.
+    ``{lora_files, with_metadata, skipped, with_local_media,
+    planned_downloads, fingerprint, names, layout}``: the metadata files
+    seen, the kept LoRAs whose sidecar parses, the rest, the LoRAs with a
+    local image, the CivitAI images an import would download for the LoRAs
+    without one (not yet in the cache), the first LoRA names and what the
+    layout says (``layout_summary``).
     """
-    files = discover(lora_manager_path)
+    discovery = discover(lora_manager_path)
+    layout = discovery.layout
     with_metadata = 0
+    with_local_media = 0
     planned = 0
     names = []
-    for path in files:
-        metadata = lora_utils.read_lora_metadata(path)
+    for sidecar in discovery.sidecars:
+        metadata = lora_utils.read_lora_metadata(sidecar.metadata_path)
         if not metadata:
             continue
         with_metadata += 1
-        planned += lora_utils.planned_civitai_downloads(metadata, path, cache_dir)
+        if local_media(sidecar, metadata, layout, media_extensions):
+            with_local_media += 1
+        else:
+            planned += lora_utils.planned_civitai_downloads(
+                metadata, sidecar.metadata_path, cache_dir
+            )
         if len(names) < 50:
             names.append(lora_utils.get_model_name_from_metadata(metadata))
     return {
-        "lora_files": len(files),
+        "lora_files": discovery.scanned,
         "with_metadata": with_metadata,
+        "skipped": discovery.scanned - with_metadata,
+        "with_local_media": with_local_media,
         "planned_downloads": planned,
-        "fingerprint": fingerprint(files),
+        "fingerprint": fingerprint(discovery),
         "names": names,
+        "layout": layout_summary(layout, Path.home()),
     }
 
 
@@ -131,35 +171,45 @@ class StagedImport:
 
 
 def stage(
-    files: List[Path],
+    discovery: Discovery,
     cache_dir: Path,
     api_key: str = "",
     *,
+    media_extensions: AbstractSet[str],
     on_record: Optional[Callable[[int, Dict, "StagedImport"], None]] = None,
     cancelled: Callable[[], bool] = lambda: False,
     logger=None,
 ) -> StagedImport:
-    """Read each file and build its record, downloading its example images.
+    """Read each sidecar and build its record with its images.
 
-    Blocking. A file that cannot be read, or whose record fails to build, is
-    skipped by its name. ``cancelled()`` is asked before each file (raises
-    ImportCancelled); ``on_record(index, record_or_None, staged)`` follows
-    each one.
+    Blocking. Local images (``local_media``) come first; a LoRA without any
+    downloads its CivitAI example images. A sidecar that cannot be read, or
+    whose record fails to build, is skipped by its name, as are the
+    centralized sidecars discovery could not parse. ``cancelled()`` is asked
+    before each sidecar (raises ImportCancelled); ``on_record(index,
+    record_or_None, staged)`` follows each one.
     """
-    staged = StagedImport(total=len(files))
-    for index, path in enumerate(files):
+    sidecars = discovery.sidecars
+    staged = StagedImport(total=len(sidecars))
+    staged.skipped.extend(discovery.unreadable)
+    for index, sidecar in enumerate(sidecars):
         if cancelled():
             raise ImportCancelled()
         record = None
+        path = sidecar.metadata_path
         metadata = lora_utils.read_lora_metadata(path)
         if not metadata:
             staged.skipped.append(path.name)
         else:
             try:
-                local = lora_utils.get_preview_images_from_metadata(metadata, path)
-                remote = lora_utils.download_civitai_images(
-                    metadata, path, cache_dir, api_key, stats=staged.stats
+                local = local_media(
+                    sidecar, metadata, discovery.layout, media_extensions
                 )
+                remote = []
+                if not local:
+                    remote = lora_utils.download_civitai_images(
+                        metadata, path, cache_dir, api_key, stats=staged.stats
+                    )
                 images = list(dict.fromkeys([*local, *remote]))
                 record = build_record(metadata, path, images)
                 staged.records.append(record)

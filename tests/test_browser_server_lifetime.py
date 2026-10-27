@@ -79,5 +79,21 @@ class TestBrowserServerLifetime(unittest.TestCase):
             process.wait(timeout=1)
 
 
+class TestBrowserServerLoraIsolation(unittest.TestCase):
+    """#355: page tests never read the developer's LoraManager settings."""
+
+    def test_settings_folder_is_inside_the_server_root(self):
+        from unittest.mock import patch
+
+        from tests.browser.server import isolate_lora_manager_settings
+
+        with tempfile.TemporaryDirectory() as root:
+            with patch.dict(os.environ, {"LORA_MANAGER_SETTINGS_DIR": "/real/one"}):
+                folder = isolate_lora_manager_settings(Path(root))
+                self.assertEqual(os.environ["LORA_MANAGER_SETTINGS_DIR"], str(folder))
+            self.assertEqual(folder.parent, Path(root))
+            self.assertTrue(folder.is_dir())
+
+
 if __name__ == "__main__":
     unittest.main()

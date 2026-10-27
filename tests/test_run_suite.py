@@ -152,6 +152,30 @@ class RunSuiteTests(unittest.TestCase):
         result = run_suite(self.folder, None, "-p", "check_*.py")
         self.assertEqual(result.returncode, 1, result.stderr)
 
+    def test_lora_manager_settings_read_a_disposable_folder(self):
+        # #355: no test reads the developer's real LoraManager settings.
+        record = self.folder / "seen.txt"
+        self.write(
+            "test_probe_lora.py",
+            f"""
+            import os
+            import unittest
+
+            class Probe(unittest.TestCase):
+                def test_isolated(self):
+                    folder = os.environ["LORA_MANAGER_SETTINGS_DIR"]
+                    with open({str(record)!r}, "w", encoding="utf-8") as handle:
+                        handle.write(folder)
+                    self.assertTrue(os.path.isdir(folder))
+                    self.assertEqual(os.listdir(folder), [])
+            """,
+        )
+        result = run_suite(self.folder, {"LORA_MANAGER_SETTINGS_DIR": "/real/one"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        folder = record.read_text(encoding="utf-8")
+        self.assertNotEqual(folder, "/real/one")
+        self.assertFalse(os.path.exists(folder), "removed when the run ends")
+
     def test_empty_folder_exits_five(self):
         result = run_suite(self.folder)
         self.assertEqual(result.returncode, 5, result.stderr)

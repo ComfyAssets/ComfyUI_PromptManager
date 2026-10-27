@@ -322,7 +322,7 @@ test('a partial save made from Integrations keeps its outcome when Sources opens
 
 test('Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107)',
     async ({ page, request }) => {
-        await lora(request, { loras: 3, civitai: true, previous: 2 });
+        await lora(request, { loras: 3, civitai: true, preview: false, previous: 2 });
         const previews = [];
         const applies = [];
         page.on('request', item => {
@@ -339,13 +339,17 @@ test('Review import shows replacement, blocked items and network effects with th
         await expect(dialog(page).locator('#modal-body > h3')).toHaveText('LoRA reference data');
         expect(previews).toEqual([{}]);
         expect(await gridOf(page)).toEqual([
+            ['LoraManager', 'environment settings · alongside storage · library default'],
             ['Scope', 'Replace 2 imported prompts with 3 LoRAs'],
-            ['Found', '3 metadata files · 3 readable'],
+            ['Found', '3 metadata files · 3 LoRAs · 0 with local images'],
             ['Protected', 'Nothing is protected'],
             ['Network', 'Downloads up to 3 example images from CivitAI'],
             ['Backup', 'Create and verify before changes (browser.db.backup_<date and time>)'],
             ['Media on disk', 'No files are removed; image links are replaced'],
         ]);
+        // #355: the settings file the server read is the LoraManager row's hover title.
+        await expect(dialog(page).locator('dl.meta-grid > div').first().locator('dd'))
+            .toHaveAttribute('title', /lora-manager-settings[\/\\]settings\.json$/);
         await expect(dialog(page).locator('details > summary')).toHaveText('LoRAs found (3)');
         await expect(dialog(page).locator('.notice h3')).toHaveText('Back up the database first (recommended)');
         await expect(dialog(page).locator('p.small').last()).toContainText('stay in the image cache');
@@ -382,12 +386,57 @@ test('saved pairs block the import: the review explains it and offers only Close
     await enable(page);
     await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
     // gridOf reads once; poll until the review has rendered its rows.
-    await expect.poll(async () => (await gridOf(page))[2]).toEqual(['Protected', '1 imported prompt used by saved pairs']);
+    await expect.poll(async () => (await gridOf(page))[3]).toEqual(['Protected', '1 imported prompt used by saved pairs']);
     await expect(dialog(page).locator('p.small')).toHaveText(
         'Delete or change the saved pairs that use these prompts, then review the import again. Nothing was changed.');
     expect(await dialog(page).locator('.dialog-actions button').allTextContents()).toEqual(['Close']);
     await dialog(page).getByRole('button', { name: 'Close', exact: true }).click();
     await expect(dialog(page)).toHaveCount(0);
+});
+
+test('unusable LoraManager settings: the review says why and offers only Close (#355)', async ({ page, request }) => {
+    await lora(request, { previous: 1, settings: 'invalid' });
+    await openIntegrations(page);
+    await enable(page);
+    const before = await serverJson(request, '/__test__/integrations/state');
+    await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
+    await expect.poll(async () => (await gridOf(page))[0])
+        .toEqual(['LoraManager', 'Not usable: the settings file is not valid JSON']);
+    await expect(dialog(page).locator('p.small')).toHaveText(
+        'LoraManager settings: not usable: the settings file is not valid JSON. Nothing was changed.');
+    expect(await dialog(page).locator('.dialog-actions button').allTextContents()).toEqual(['Close']);
+    await dialog(page).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    expect(await serverJson(request, '/__test__/integrations/state')).toEqual(before);
+});
+
+test('imported LoRA previews show on the Library card and open in the inspector and viewer (#355 G6)', async ({ page, request }) => {
+    await lora(request, { loras: 1 });
+    await openIntegrations(page);
+    await enable(page);
+    await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
+    await dialog(page).getByRole('button', { name: 'Start import', exact: true }).click();
+    await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+    expect((await ended(request, page.url().split('/').pop())).state).toBe('finished');
+    await page.goto(`${workspace}#/library`);
+    const card = page.locator('#workspace-main article.prompt-card').filter({ hasText: 'Style 01' });
+    const cover = card.locator('.card-art img');
+    await expect(cover).toHaveAttribute('src', /\/prompt_manager\/images\/serve\/style_01\.png\?root=\d+&root_scope=[0-9a-f]{64}$/);
+    await expect.poll(() => cover.evaluate(node => node.complete && node.naturalWidth)).toBeGreaterThan(0);
+    await expect(card.locator('.card-art')).not.toContainText('No available image previews');
+    // The prompt's gallery: Info inspects the file and the viewer opens it; no Tag action or star for LoRA media.
+    await card.getByRole('button', { name: 'Explore history', exact: true }).click();
+    const item = page.getByRole('region', { name: 'Shared gallery', exact: true }).locator('article[data-image-key]').first();
+    await expect(item.getByRole('button', { name: 'Tag or auto-tag style_01.png', exact: true })).toHaveCount(0);
+    await expect(item.locator('.star-button')).toHaveCount(0);
+    await item.getByRole('button', { name: 'Inspect style_01.png', exact: true }).click();
+    const inspector = page.getByRole('complementary', { name: 'Selected image details', exact: true });
+    await expect(inspector).toContainText('style_01.png');
+    await item.getByRole('button', { name: 'Open style_01.png', exact: true }).click();
+    await expect(page.locator('dialog[open] .viewer-canvas img')).toBeVisible();
+    await expect.poll(() => page.locator('dialog[open] .viewer-canvas img').evaluate(node => node.complete && node.naturalWidth))
+        .toBeGreaterThan(0);
+    await page.keyboard.press('Escape');
 });
 
 test('a failed import keeps old imports and its job says so', async ({ page, request }) => {
@@ -408,7 +457,7 @@ test('a failed import keeps old imports and its job says so', async ({ page, req
 });
 
 test('the import can be cancelled while it downloads; then nothing is written', async ({ page, request }) => {
-    await lora(request, { loras: 2, civitai: true, previous: 1 });
+    await lora(request, { loras: 2, civitai: true, preview: false, previous: 1 });
     await openIntegrations(page);
     await enable(page);
     const before = await serverJson(request, '/__test__/integrations/state');
