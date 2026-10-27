@@ -9,6 +9,10 @@
  *   apply** (D90, ruling T3-bulk): **Apply automatically** starts the job, **Review each image** starts the browser
  *   review session (images-tagging-review.mjs). A model that is not downloaded keeps Start disabled and says why.
  *
+ * - **All N matching** (#392, D135): with `filter` (the listing's, images-state.mjs `listingFilter`) and `count` (its
+ *   total), both send the filter instead of the targets and the server resolves it, up to 10,000 images. Review each
+ *   image walks images in the browser, so it is not offered.
+ *
  * The toast says the job started (the Activity store's "Tagging started." / "Auto-tagging started."), or why it did
  * not: a running record-changing job (named, with its link), a held model, a refused body. Activity shows progress.
  * The selection stays either way. When a started job ends having tagged files, `onTagged(keys)` re-reads them.
@@ -26,6 +30,9 @@ import { showWorkspaceToast } from './toast.mjs';
 export const IMAGE_TAG_JOB = 'image-tags';
 export const MAX_BULK_IMAGES = 500;
 export const TOO_MANY = 'Select at most 500 images.';
+// #392: a filter start resolves on the server (py/api/images.py MAX_LISTING_SELECTION).
+export const MAX_FILTER_IMAGES = 10000;
+export const TOO_MANY_MATCHING = 'Narrow the view to at most 10,000 images.';
 export const NO_TAGS = 'Enter at least one tag.'; // D118
 export const ADD_DIALOG = Object.freeze({title: 'Tag selected images', label: 'Tags, separated by commas', action: 'Apply'});
 export const AUTO_TITLE = 'Auto-tag selected images';
@@ -51,6 +58,16 @@ function el(tag, text, className) {
 export function bulkTargets(images) {
     if (images.length > MAX_BULK_IMAGES) return null;
     return images.map(imageTarget).filter(Boolean);
+}
+
+/**
+ * The job body's images: `{filter}` for all matching (null over MAX_FILTER_IMAGES), else `{targets}` (null over 500).
+ * Returns `[images, refusal]`, the refusal being the toast to show.
+ */
+function jobImages(images, filter, count) {
+    if (filter) return count > MAX_FILTER_IMAGES ? [null, TOO_MANY_MATCHING] : [{filter}, null];
+    const targets = bulkTargets(images);
+    return targets ? [{targets}, null] : [null, TOO_MANY];
 }
 
 /** The Add tags field's names, deduplicated as the Tag image dialog's manual field is. */
@@ -107,13 +124,13 @@ function followTagged({store, scope, job, images, onTagged}) {
  * to no names keeps the dialog and its text, and reports NO_TAGS on the field (D118). `openInput` is the dialog seam.
  */
 export function openAddTags({scope, store, images, trigger, onTagged = () => {}, notify = showWorkspaceToast,
-    openInput = openInputDialog}) {
-    const targets = bulkTargets(images);
-    if (!targets) { notify(TOO_MANY); return; }
+    openInput = openInputDialog, filter = null, count = images.length}) {
+    const [chosen, refusal] = jobImages(images, filter, count);
+    if (refusal) { notify(refusal); return; }
     openInput({scope, trigger, ...ADD_DIALOG, validate: text => (parseBulkTags(text).length ? null : NO_TAGS),
         onApply: async text => {
         const tags = parseBulkTags(text);
-        const job = await startTagJob({store, scope, body: {mode: 'add', targets, tags}, notify});
+        const job = await startTagJob({store, scope, body: {mode: 'add', ...chosen, tags}, notify});
         if (job) followTagged({store, scope, job, images, onTagged});
     }});
 }
@@ -141,15 +158,16 @@ function applyChoice(onChange) {
  * Auto-tag selected (D85): the model panel, How to apply (D90), Cancel and Start. Start validates the fields as
  * Generate does, then starts the job or the review session over `images` (the checked files, taken now).
  */
-export function openAutoTag({api, scope, store, images, trigger, onTagged = () => {}, notify = showWorkspaceToast}) {
-    const targets = bulkTargets(images);
-    if (!targets) { notify(TOO_MANY); return; }
+export function openAutoTag({api, scope, store, images, trigger, onTagged = () => {}, notify = showWorkspaceToast,
+    filter = null, count = images.length}) {
+    const [chosen, refusal] = jobImages(images, filter, count);
+    if (refusal) { notify(refusal); return; }
     const listed = images.filter(imageTarget);
     const local = createScope();
     const options = createTaggingOptionsController({api});
     // D85: the Tag image dialog's model panel without Generate; its Suggestions field is the job's count (D91).
     const {element: panel, validate} = renderModelPanel({scope: local, controller: options,
-        heading: `Auto-tag ${countOf(listed.length, 'image')}`, generate: false}); // D118
+        heading: `Auto-tag ${countOf(filter ? count : listed.length, 'image')}`, generate: false}); // D118
     let choice = APPLY_CHOICES[0];
     const actions = el('div', undefined, 'dialog-actions');
     const cancel = createButton('Cancel');
@@ -159,7 +177,8 @@ export function openAutoTag({api, scope, store, images, trigger, onTagged = () =
     const status = el('div', undefined, 'small');
     status.id = 'tag-generation-status';
     status.setAttribute('role', 'status');
-    const choices = applyChoice(next => { choice = next; start.textContent = next.action; }); // D90
+    // D90; all matching (D135) has no Review each image, which walks images in the browser.
+    const choices = filter ? null : applyChoice(next => { choice = next; start.textContent = next.action; });
     const render = state => {
         if (status.textContent !== state.unavailable) status.textContent = state.unavailable;
         if (state.canStart) start.removeAttribute('aria-disabled');
@@ -178,11 +197,11 @@ export function openAutoTag({api, scope, store, images, trigger, onTagged = () =
             return;
         }
         closeWorkspaceDialog();
-        startTagJob({store, scope, body: {mode: 'auto', targets, ...request}, notify}).then(job => {
+        startTagJob({store, scope, body: {mode: 'auto', ...chosen, ...request}, notify}).then(job => {
             if (job) followTagged({store, scope, job, images: listed, onTagged});
         });
     });
-    openContentDialog({scope, title: AUTO_TITLE, nodes: [panel, choices, status, actions], trigger, onClose: () => {
+    openContentDialog({scope, title: AUTO_TITLE, nodes: [panel, choices, status, actions].filter(Boolean), trigger, onClose: () => {
         document.getElementById('modal')?.classList.remove('tagging-modal');
         local.dispose();
         options.dispose();

@@ -142,6 +142,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
    absolute. Columns and gap still come from the concept's `.image-grid` tracks. */
 .image-grid { position: relative; /* D3 */ }
 .image-grid > .media-card { position: absolute; }
+/* #392 D135: a long-press on a card selects it, so no image callout (iOS) takes the press. */
+#image-grid > .media-card { -webkit-touch-callout: none; }
 /* #249 D3: a list row's info keeps its own height so it can be measured; centred, it looks as the stretched concept row.
    #249 D31: it may also shrink below a long nowrap title (the h3 ellipsis then applies, as in the grid). */
 .list-grid .media-info { align-self: center; min-width: 0; /* D3, D31 */ }

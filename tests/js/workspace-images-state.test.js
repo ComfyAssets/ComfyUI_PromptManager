@@ -494,3 +494,11 @@ test('defaults apply to a new visit but not to the current view or a saved view'
     assert.deepEqual(initialImagesView({}), { layout: 'grid', density: 'comfortable' });
     assert.deepEqual(initialImagesView({ preferences: {} }), { layout: 'grid', density: 'comfortable' });
 });
+
+test('listingFilter is the listing query as an object, without paging (#392)', async () => {
+    const { listingFilter } = await source;
+    assert.deepEqual(listingFilter({q:'cat', root:'1', subfolder:'a/b', category:'Animals', tags:[' x ','y'], media:'video', sort:'oldest', favorites:true}),
+        {q:'cat', root:'1', subfolder:'a/b', category:'Animals', tags:'x,y', media:'video', sort:'oldest', favorites:'1'});
+    assert.deepEqual(listingFilter({root:'all', q:'', tags:[], media:'all'}), {sort:'newest'});
+    assert.throws(() => listingFilter({sort:'sideways'}), TypeError);
+});

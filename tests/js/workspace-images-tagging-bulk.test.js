@@ -196,3 +196,29 @@ test('a preset starts the Tag image dialog on the chosen model and options', asy
     assert.throws(() => createImageTaggingController({ api, target, preset: { model: 'gguf', options: { instructions: '' } } }), TypeError);
     assert.throws(() => createImageTaggingController({ api, target, preset: { model: 'gguf', options: { nope: 1 } } }), TypeError);
 });
+
+test('all matching sends the listing filter instead of targets, up to 10,000 images (#392)', async () => {
+    const { openAddTags, openAutoTag, MAX_FILTER_IMAGES, TOO_MANY_MATCHING } = module();
+    assert.equal(MAX_FILTER_IMAGES, 10000);
+    assert.equal(TOO_MANY_MATCHING, 'Narrow the view to at most 10,000 images.');
+    const toasts = [], posted = [], tagged = [];
+    let ended = null;
+    const store = { start: async (kind, body) => { posted.push([kind, body]); return { job: { id: JOB_ID, state: 'running' } }; },
+        find: () => ended, subscribe: () => () => {} };
+    const filter = { q: 'cat', sort: 'newest' };
+    // The loaded images can be more than 500: the filter, not the identities, is sent.
+    const loaded = Array.from({ length: 600 }, (_, index) => image(`bulk/${index}.png`));
+    let dialog = null;
+    openAddTags({ scope: pageScope(), store, images: loaded, filter, count: 1234, notify: text => toasts.push(text),
+        onTagged: keys => tagged.push(keys.size), openInput: args => { dialog = args; } });
+    assert.ok(dialog, 'the Add tags dialog opens');
+    ended = { id: JOB_ID, state: 'finished', counters: { tagged: 3 } };
+    await dialog.onApply('sunset');
+    assert.deepEqual(posted, [['image-tags', { mode: 'add', filter, tags: ['sunset'] }]]);
+    // The loaded files are read again when the job tagged any.
+    assert.deepEqual(tagged, [600]);
+    openAddTags({ scope: pageScope(), store, images: loaded, filter, count: 10001, notify: text => toasts.push(text),
+        openInput: () => assert.fail('no dialog over the cap') });
+    openAutoTag({ api: {}, scope: pageScope(), store, images: loaded, filter, count: 10001, notify: text => toasts.push(text) });
+    assert.deepEqual(toasts, [TOO_MANY_MATCHING, TOO_MANY_MATCHING]);
+});

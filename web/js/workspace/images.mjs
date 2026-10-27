@@ -1,5 +1,5 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, initialImagesView } from './images-state.mjs';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, initialImagesView, listingFilter } from './images-state.mjs';
 import { createImageCard } from './image-card.mjs';
 import { layoutImages, visibleImages, gridMetrics, stacksCardInfo } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
@@ -254,8 +254,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     body.append(collection, details);
     // The checked cards and the concept's selection bar (#249 D8), between the filter row and the gallery layout. The
     // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
-    const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state.items, focusFallback,
-        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys)});
+    const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state?.items ?? [], focusFallback,
+        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys),
+        // #392 "Select all N matching": the listing's total and its filter, as the server lists them.
+        getListing:() => ({total:state?.total ?? 0, hasMore:Boolean(state?.hasMore), positiveCount:state?.positiveCount ?? null}),
+        // A Source filter carries its root's scope, so a renumbered source is refused (source-changed), not acted on.
+        getFilter:() => {
+            const filter = listingFilter(filters), scope = state?.items[0]?.root_scope;
+            return filter.root !== undefined && typeof scope === 'string' ? {...filter, root_scope:scope} : filter;
+        }});
     if (bar) main.append(bar.element);
     main.append(body);
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
@@ -386,8 +393,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const columns = geometry.columns;
         const target = { Home: 0, End: state.items.length - 1, ArrowRight: index + 1,
             ArrowLeft: index - 1, ArrowDown: index + columns, ArrowUp: index - columns }[event.key];
-        if (target !== undefined) { event.preventDefault(); focusImage(Math.max(0, Math.min(state.items.length - 1, target))); }
-        else if (event.key === 'Tab') {
+        if (target !== undefined) {
+            event.preventDefault();
+            const next = Math.max(0, Math.min(state.items.length - 1, target));
+            focusImage(next);
+            // D135: Shift extends the selection from the anchor (this card when there is none) to the new card.
+            if (event.shiftKey && bar) bar.extend(card.dataset.imageKey, imageKey(state.items[next]));
+        } else if (bar && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'a') {
+            event.preventDefault();
+            bar.selectAll();
+        } else if (bar && event.key === 'Escape' && bar.hasSelection()) {
+            event.preventDefault();
+            bar.clear();
+        } else if (event.key === 'Tab') {
             const backward = event.shiftKey && event.target.matches('.image-open');
             const forward = !event.shiftKey && event.target.closest('.image-card-actions');
             const adjacent = backward ? index - 1 : index + 1;
@@ -462,6 +480,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (replaced && selection !== null && !itemIndexes.has(selection)) dropSelection();
         if (replaced) bar?.retain(key => itemIndexes.has(key));
         state = next;
+        bar?.listingChanged();
         if (!embedded) {
             setText(count, countLine(next));
             setText(captionDay, captionDate(next.items, filters.sort));

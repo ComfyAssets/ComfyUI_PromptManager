@@ -56,6 +56,16 @@ function queryFor(filters, batchSize) {
     return query.toString();
 }
 
+/**
+ * The listing's filter as the bulk routes take it (#392 "Select all N matching"): the same parameters the listing
+ * query carries, as an object of strings, without `mode`, `limit` and `cursor`.
+ */
+export function listingFilter(filters) {
+    const query = new URLSearchParams(queryFor(filters, 1));
+    query.delete('mode'); query.delete('limit');
+    return Object.fromEntries(query);
+}
+
 function validatePage(page, cursor) {
     if (!page || !Array.isArray(page.images) || !Number.isSafeInteger(page.total) || page.total < 0 ||
         typeof page.has_more !== 'boolean' ||

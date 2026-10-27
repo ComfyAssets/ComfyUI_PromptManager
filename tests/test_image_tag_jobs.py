@@ -11,6 +11,7 @@ engine is B2's fake service.
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import unittest
@@ -802,3 +803,108 @@ class TestFixRound(ImageTagJobTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFilterStart(ImageTagJobTestCase):
+    """#392: "Select all N matching" starts the job with the listing filter."""
+
+    async def test_filter_start_tags_every_matching_file_in_listing_order(self):
+        for number in range(6):
+            path = self.png(f"bulk/{number:02}.png", color=(number, 1, 1))
+            os.utime(path, (100 + number, 100 + number))
+        self.png("other/x.png")
+
+        job = await self.run_job(
+            {
+                "mode": "add",
+                "filter": {"subfolder": "bulk", "sort": "oldest"},
+                "tags": ["picked"],
+            }
+        )
+
+        self.assertEqual(job.scope, {"mode": "add", "images": 6})
+        self.assertEqual(job.counters["tagged"], 6)
+        self.assertEqual(
+            [path for path, _detail in self.rows(job, "tagged")],
+            [f"bulk/{number:02}.png" for number in range(6)],
+        )
+        self.assertEqual(self.stored("bulk/03.png")["tags"], ["picked"])
+        self.assertEqual(self.stored("other/x.png")["tags"], [])
+
+    async def test_auto_filter_start_runs_the_model_on_the_matching_files(self):
+        self.png("bulk/a.png")
+        self.png("other/b.png", color=(1, 2, 3))
+
+        job = await self.run_job(
+            {
+                "mode": "auto",
+                "filter": {"subfolder": "bulk"},
+                "model_type": "wd14-vit",
+                "options": dict(WD14),
+            }
+        )
+
+        self.assertEqual(job.scope["images"], 1)
+        self.assertEqual(job.counters["tagged"], 1)
+        self.assertEqual(self.stored("other/b.png")["tags"], [])
+
+    async def test_filter_with_no_match_is_refused_without_a_job(self):
+        self.png("a.png")
+
+        status, data = await self.start(
+            {"mode": "add", "filter": {"subfolder": "missing"}, "tags": ["x"]}
+        )
+
+        self.assertEqual((status, data["code"]), (400, "no-images"))
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_filter_over_the_cap_is_refused_without_a_job(self):
+        from py.api import image_tag_jobs
+
+        for number in range(3):
+            self.png(f"{number}.png", color=(number, 0, 0))
+        with patch.object(image_tag_jobs, "MAX_FILTER_TARGETS", 2):
+            status, data = await self.start(
+                {"mode": "add", "filter": {}, "tags": ["x"]}
+            )
+
+        self.assertEqual((status, data["code"]), (400, "too-many-images"))
+        self.assertEqual(self.api._jobs.list(), [])
+        self.assertEqual(image_tag_jobs.MAX_FILTER_TARGETS, 10_000)
+
+    async def test_filter_bodies_are_validated(self):
+        self.png("a.png")
+        target = self.target("a.png")
+        for body in (
+            {"mode": "add", "filter": {}, "targets": [target], "tags": ["x"]},
+            {"mode": "add", "filter": "all", "tags": ["x"]},
+            {"mode": "add", "filter": {"sort": "sideways"}, "tags": ["x"]},
+            {"mode": "add", "filter": {"cursor": "x"}, "tags": ["x"]},
+            {"mode": "add", "filter": {"root": "7"}, "tags": ["x"]},
+            {"mode": "add", "filter": {}, "tags": []},
+        ):
+            with self.subTest(body=body):
+                status, data = await self.start(body)
+                self.assertEqual(status, 400, data)
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_a_filter_whose_source_was_renumbered_is_refused(self):
+        self.png("a.png")
+        scope = self.target("a.png")["root_scope"]
+
+        job = await self.run_job(
+            {"mode": "add", "filter": {"root": "0", "root_scope": scope}, "tags": ["x"]}
+        )
+        self.assertEqual(job.counters["tagged"], 1)
+        status, data = await self.start(
+            {
+                "mode": "add",
+                "filter": {"root": "0", "root_scope": "f" * 64},
+                "tags": ["x"],
+            }
+        )
+        self.assertEqual((status, data["code"]), (409, "source-changed"))
+        status, data = await self.start(
+            {"mode": "add", "filter": {"root_scope": scope}, "tags": ["x"]}
+        )
+        self.assertEqual(status, 400, data)

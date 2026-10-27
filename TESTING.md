@@ -1245,7 +1245,8 @@ Recorded deviations on this page (spec §8):
   `#bulkbar` shows "N selected" and only the real actions in the concept's order (Add
   tags, then D85's Auto-tag selected, Set category, Export metadata, Clear). Add to
   collection waits for collections; "Remove links…" is dropped. (Amended by #249 PR D:
-  Add tags ships, see "Bulk tagging from the selection bar".) The selection survives Load more and
+  Add tags ships, see "Bulk tagging from the selection bar"; #392 adds range, keyboard,
+  touch and "all N matching" selection, see "Selecting many images", D135.) The selection survives Load more and
   bounded re-mounting and is cleared whenever the collection is replaced (search,
   category, sort, Filters, source change, rescan, reload). A return to Images restores
   the saved collection unreplaced and keeps its selection; a full page reload starts
@@ -1718,6 +1719,65 @@ busy". Units:
 | Suggestions count in the bulk dialog | D91 |
 | Copy without a concept line: no tags, start fallbacks, the panel heading | D118 |
 | Activity item and job view for image tagging jobs | D89 (plan D66) |
+
+### Selecting many images (#392)
+
+**D135** (beyond the concept, which draws only the per-card checkbox): Images selects
+like a file manager, in Grid, List (where the concept hides the checkbox) and Masonry,
+over every loaded batch. The selection is a set of image keys in display order, so
+ranges include cards that bounded rendering has unmounted.
+
+- Clicking a checkbox toggles it, and that image becomes the anchor. Ctrl/Cmd+click
+  anywhere on a card (image, star, Info, Tag) also toggles it and makes it the anchor;
+  nothing opens, inspects or changes the favorite.
+- Shift+click on a card selects the range from the anchor to it. Shift+click on a
+  checkbox gives its range the box's new state, so it can clear a range. The anchor
+  stays where it is. Without an anchor, the clicked image becomes the anchor.
+- In the grid, Ctrl/Cmd+A selects every loaded image; in the search box it keeps its
+  text meaning. Shift+Arrow, Shift+Home and Shift+End move focus as the plain keys do,
+  then select from the anchor (the starting card when there is none) to the new card.
+  Escape in the grid clears the selection. Escape in the bar clears it too, and focus
+  moves to the heading, as after Clear.
+- Touch: a 500 ms long-press (at most 10 px of movement) selects the card and turns on
+  touch selection mode. The context menu during the press and the click after it are
+  swallowed, and the card has no image callout. Taps then toggle cards until the
+  selection is empty. A keyboard Enter or Space keeps its plain meaning.
+- A plain click keeps its meaning: the image opens the viewer, and Info inspects.
+- When every loaded image is checked and the listing has more, the bar offers
+  **Select all N matching** right after the count. Pressing it gives **All N matching
+  selected**: later batches arrive checked, and unchecking any image goes back to the
+  loaded images minus that one. Clear, Escape, and a new search, filter, sort or rescan
+  end it. A refresh after a tag save keeps it. Return visits keep the loaded images,
+  and the offer shows again.
+- In that mode, Add tags and Auto-tag selected start the `image-tags` job with
+  `filter` (the listing's own query as an object: `q`, `subfolder`, `category`,
+  `tags`, `root`, `media`, `sort`, `favorites`, and with a Source the loaded root's
+  `root_scope`) instead of `targets`. The server resolves the filter at start, in
+  listing order, using the listing's own admission code (`_admitted_entries`). That
+  means "all matching" when the action starts: an output written since then that
+  matches is included. A `root_scope` that no longer names its root (the sources were
+  renumbered) answers 409 `source-changed`. The limit is 10,000 images (`MAX_LISTING_SELECTION`).
+  Over the limit, the client toasts "Narrow the view to at most 10,000 images." and the
+  server answers 400 `too-many-images`. No match is 400 `no-images`. Auto-tag in this
+  mode does not offer Review each image, because the review walks images in the
+  browser. Set category posts `{images_filter, category}` to `/prompt_manager/bulk/category`.
+  The server sets the category on the distinct linked positives and answers
+  `prompt_count` and `skipped`. A listing whose `positive_count` is 0 toasts the
+  nothing-linked sentence and opens no dialog, and over 10,000 matches it toasts the
+  limit sentence. Export metadata reads every image in
+  the browser, so it is `aria-disabled` in this mode, and its `title` says why.
+
+Tests: `tests/browser/workspace-images.spec.mjs` ("Shift+click selects a range across
+an appended batch in Grid, List and Masonry", "Ctrl/Cmd+click toggles a card without
+opening it, and a plain click still opens the viewer", "Ctrl/Cmd+A, Select all N
+matching and Add tags tag every matching image on the server", "Shift+arrow keys extend
+the selection from the focused card, and Escape in the bar clears it", "a touch
+long-press starts selection mode, taps then toggle, and an empty selection ends it");
+units `tests/js/workspace-images-multiselect.test.js`,
+`tests/js/workspace-images-tagging-bulk.test.js` ("all matching sends the listing
+filter instead of targets"), `tests/js/workspace-images-state.test.js`
+(`listingFilter`); Python `tests/test_image_tag_jobs.py` (`TestFilterStart`) and
+`tests/test_api_workspace_images.py` (`TestListingFilterSelection`).
 
 Native image tagging (#249 PR B routes, PR C UI): `POST
 /prompt_manager/image-annotations/observe` (capture one listed file, its saved set and
