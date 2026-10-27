@@ -47,8 +47,8 @@ class PyprojectContract(unittest.TestCase):
         }
         self.assertEqual(deps, wanted)
 
-    def test_requires_python_floor_is_3_11(self):
-        self.assertEqual(_pyproject()["project"]["requires-python"], ">=3.11")
+    def test_requires_python_floor_is_3_12(self):
+        self.assertEqual(_pyproject()["project"]["requires-python"], ">=3.12")
 
     def test_build_system_is_declared(self):
         self.assertIsNotNone(_pyproject().get("build-system"))
