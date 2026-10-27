@@ -58,6 +58,8 @@ function measureDiagnostics([mainSelector, lineFormat]) {
     const toolbarItem = node => ({ name: name(node), text: node.localName === 'select' || node.localName === 'input' ? null : text(node),
         for: node.localName === 'label' ? node.htmlFor : null, id: node.id || null,
         options: node.localName === 'select' ? [...node.options].map(option => option.textContent) : null,
+        // The chosen option, so a wrong default level is noticed.
+        selected: node.localName === 'select' ? node.selectedOptions[0]?.textContent ?? null : null,
         input: node.localName === 'input' ? [node.type, node.min, node.max, node.value] : null,
         className: node.localName === 'button' ? node.className : null });
     const surfaces = [...layout.querySelectorAll(':scope > section.surface')];
@@ -190,9 +192,10 @@ function mapDiagnosticsConcept(reference, { report, files, stats }) {
                     // D109: all six minimum levels (the concept has three).
                     { ...level, options: ['All levels', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] },
                     // D109: the added Lines control, 1–500, default 100.
-                    { name: 'label.small', text: 'Lines', for: 'log-limit', id: null, options: null, input: null, className: null },
-                    { name: 'input', text: null, for: null, id: 'log-limit', options: null, input: ['number', '1', '500', '100'],
+                    { name: 'label.small', text: 'Lines', for: 'log-limit', id: null, options: null, selected: null, input: null,
                         className: null },
+                    { name: 'input', text: null, for: null, id: 'log-limit', options: null, selected: null,
+                        input: ['number', '1', '500', '100'], className: null },
                     refresh,
                     // D109: the active log, not a sample.
                     { ...download, text: 'Download log' },
@@ -358,6 +361,10 @@ test('diagnostics comparison detects mutations', async ({ page, request }) => {
     await page.evaluate(() => { const select = document.querySelector('#workspace-main #log-level'); select.append(select.options[1]); });
     expect(await paths()).toEqual(expect.arrayContaining(['surfaces.1.toolbar.1.options.1']));
     await page.evaluate(() => { const select = document.querySelector('#workspace-main #log-level'); select.insertBefore(select.options[5], select.options[1]); });
+    // A wrong default level.
+    await page.evaluate(() => { document.querySelector('#workspace-main #log-level').value = 'INFO'; });
+    expect(await paths()).toEqual(['surfaces.1.toolbar.1.selected']);
+    await page.evaluate(() => { document.querySelector('#workspace-main #log-level').value = ''; });
     // A primary Refresh.
     await page.evaluate(() => { document.querySelectorAll('#workspace-main .toolbar > button')[0].classList.add('ca-primary'); });
     expect(await paths()).toEqual(expect.arrayContaining(['surfaces.1.toolbar.4.className']));

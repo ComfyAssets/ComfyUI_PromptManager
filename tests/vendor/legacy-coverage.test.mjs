@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { COLUMNS, STATUSES, declaredTitles, parseControl, parseCoverageTable, readCoverageTable, rowProblems }
-    from '../../tools/vendor/legacy-coverage.mjs';
+import { COLUMNS, CONTROL_EXEMPTIONS, STATUSES, declaredTitles, parseControl, parseCoverageTable, readCoverageTable,
+    rowProblems } from '../../tools/vendor/legacy-coverage.mjs';
 
 // TESTING.md "Legacy System capability coverage" (#249 System S12, #329): every legacy System capability names an
 // owner, a known status, a well-formed native control and a test its file really declares.
@@ -42,17 +42,29 @@ test('a title that appears only in a comment does not count', () => {
     const declared = `${commented}\nfor (const theme of THEMES) {\n    test('clears the logs', async ({ page }) => {});\n}\n`;
     assert.deepEqual(rowProblems(ROW, declaring(declared)), []);
     // Escaped quotes, template literals, modifiers and a title on the next line are declarations too.
-    const titles = declaredTitles("test('a gate\\'s refusal', () => {});\ntest.skip(`b`, () => {});\nit(\n    'c', () => {});",
+    const titles = declaredTitles("test('a gate\\'s refusal', () => {});\ntest.only(`b`, () => {});\nit(\n    'c', () => {});",
         'x.test.js');
     assert.deepEqual([...titles], ["a gate's refusal", 'b', 'c']);
+    // A block comment that starts after code on a line, and a `//` or `/*` inside a string or a regular expression.
+    const trailing = [
+        "const url = 'http://host/*'; /* test('clears the logs', () => {});",
+        "test('clears the logs', () => {}); */",
+        "const pattern = /['\"`]\\/\\*/;",
+        "test('after the pattern', () => {});",
+    ].join('\n');
+    assert.deepEqual([...declaredTitles(trailing, 'x.spec.mjs')], ['after the pattern']);
     // Python: only a real `def test_…` counts, never a commented one.
-    const python = '# def test_report_lists_config_only_keys(self):\nclass T:\n    def test_other(self):\n        pass\n';
-    assert.deepEqual([...declaredTitles(python, 'test_x.py')], ['test_other']);
+    const python = ['# def test_report_lists_config_only_keys(self):', 'class T:', '    \"\"\"Example:', '',
+        '    def test_in_a_docstring(self):', '    \"\"\"', '    def test_other(self):', '        def test_nested():',
+        '            pass', 'def test_module():', '    pass', ''].join('\n');
+    assert.deepEqual([...declaredTitles(python, 'test_x.py')], ['test_other', 'test_module']);
 });
 
 test('a malformed native control cell fails', () => {
     assert.deepEqual(parseControl('`diagnostics` · button · "Clear all logs…"'),
-        { section: 'diagnostics', role: 'button', name: 'Clear all logs…' });
+        { section: 'diagnostics', role: 'button', name: 'Clear all logs…', row: null });
+    assert.deepEqual(parseControl('`maintenance` · button · "Review plan" · in "Duplicate prompt text"'),
+        { section: 'maintenance', role: 'button', name: 'Review plan', row: 'Duplicate prompt text' });
     assert.equal(parseControl('—'), null);
     for (const [cell, message] of [
         ['diagnostics · button · "Clear all logs…"', /malformed/],
@@ -71,4 +83,34 @@ test('a malformed native control cell fails', () => {
     // The table itself must keep its six columns.
     assert.throws(() => parseCoverageTable(`### Legacy System capability coverage\n\n| Capability | Owner |\n| --- | --- |\n`), /columns/);
     assert.deepEqual(COLUMNS, ['Capability', 'Legacy anchor', 'Owner', 'Status', 'Native control', 'Test']);
+});
+
+test('a skipped test does not prove a capability', () => {
+    for (const modifier of ['skip', 'fixme', 'fail']) {
+        assert.deepEqual(rowProblems(ROW, declaring(`test.${modifier}('clears the logs', async () => {});`)),
+            ['clear.spec.mjs only skips "clears the logs"'], modifier);
+    }
+    for (const modifier of ['only', 'slow']) {
+        assert.deepEqual(rowProblems(ROW, declaring(`test.${modifier}('clears the logs', async () => {});`)), [], modifier);
+    }
+    // A running declaration beside a skipped one counts.
+    assert.deepEqual(rowProblems(ROW, declaring("test.skip('clears the logs', () => {});\ntest('clears the logs', () => {});")), []);
+});
+
+test('a covered row names its native control unless it is exempt', () => {
+    const source = declaring("test('clears the logs', () => {});");
+    assert.deepEqual(rowProblems({ ...ROW, 'Native control': '—' }, source), ['a covered row names no native control']);
+    for (const status of ['kept in legacy', 'approved removal']) {
+        assert.deepEqual(rowProblems({ ...ROW, Status: status, 'Native control': '—' }, source), [], status);
+    }
+    const [exempt] = Object.keys(CONTROL_EXEMPTIONS);
+    assert.deepEqual(rowProblems({ ...ROW, Capability: exempt, 'Native control': '—' }, source), []);
+    // Every exemption has a reason and names a covered row of the table that has no control.
+    const rows = readCoverageTable();
+    for (const [capability, reason] of Object.entries(CONTROL_EXEMPTIONS)) {
+        assert.ok(reason.length > 20, capability);
+        const row = rows.find(item => item.Capability === capability);
+        assert.ok(row, `${capability} is in the table`);
+        assert.deepEqual([row.Status, row['Native control']], ['covered', '—']);
+    }
 });

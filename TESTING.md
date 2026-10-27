@@ -3819,16 +3819,28 @@ S12, #329). Status is `covered` (a native control replaces it), `kept in legacy`
 on the legacy page, which keeps working) or `approved removal` (a ruling retired it). Native
 control is `` `<section>` · <role> · "<accessible name>" ``, `<section>` a System hash id
 and `<role>` one of button, combobox, switch, slider, spinbutton, textbox, group, status or
-term; it is `—` when the owner is a legacy page, a ruling or another page. Test is the exact
-title of a declared test, then its file. Anchors are line numbers on `main` at this PR.
+term, followed by ` · in "<row title>"` when several rows of the section share the name.
+Every `covered` row names one, except the rows in `CONTROL_EXEMPTIONS`
+(`tools/vendor/legacy-coverage.mjs`), each with its reason: today only "Gallery per-image
+auto-tag / review", which the Images selection bar owns, not a System section. A row that
+is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
+file. Anchors are line numbers on `main` at this PR.
 
-`tests/vendor/legacy-coverage.test.mjs` (with `tools/vendor/legacy-coverage.mjs`) fails
-on a row with no owner, a status outside the three, a malformed Native control cell, a
-control on a row that is not `covered`, or a test title its file does not declare (`test(`,
-`it(` or `def test_`; a title that appears only in a comment does not count). CI running
+`tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
+- no owner, or a status outside the three;
+- a malformed Native control cell;
+- a covered row without a control (unless exempt), or a control on a row that is not
+  covered;
+- a test title its file does not declare: `test(` or `it(` (`.only` and `.slow` count),
+  or a `def test_` at function or method indentation;
+- a title whose test is only declared with `.skip`, `.fixme` or `.fail`.
+
+A title that appears only in a comment or a Python docstring does not count. CI running
 those tests green is what proves them. `every covered legacy System capability has its
 native control` (workspace-system.spec) opens each covered row's section and finds the
-control by role and accessible name.
+control by role and accessible name, inside its row when the cell names one. The shared
+"Review plan" of the per-operation review row and the Sources "Refresh" of the monitoring
+list stay unscoped: any row's control proves them.
 
 | Capability | Legacy anchor | Owner | Status | Native control | Test |
 | --- | --- | --- | --- | --- | --- |
@@ -3847,11 +3859,11 @@ control by role and accessible name.
 | Library export | `py/api/library.py:223` | S9 Backup & export | covered | `backups` · button · "Export JSON" | Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103) (workspace-system-backups.spec.mjs) |
 | Diagnostics run | `admin.html:171,659`; `admin.js:1984` | S12 Diagnostics | covered | `diagnostics` · button · "Run checks" | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
 | Synthetic image-link test | `admin.html:662`; `admin.js:2101` | S12 Diagnostics | covered | `diagnostics` · button · "Create test link…" | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
-| Maintenance cleanup_duplicates, vacuum, cleanup_orphaned_images, prune_orphaned_prompts | `admin.html:692–748`; `admin.js:1834` | S6/S7 Maintenance | covered | `maintenance` · button · "Review plan" | Apply reviewed operation closes, toasts, opens the job in Activity (workspace-system-maintenance.spec.mjs) |
+| Maintenance cleanup_duplicates, vacuum, cleanup_orphaned_images, prune_orphaned_prompts | `admin.html:692–748`; `admin.js:1834` | S6/S7 Maintenance | covered | `maintenance` · button · "Review plan" · in "Duplicate prompt text" | Apply reviewed operation closes, toasts, opens the job in Activity (workspace-system-maintenance.spec.mjs) |
 | Maintenance check_hash_duplicates, check_consistency | `admin.html:692–748`; `admin.js:1834` | S2 Health report (Maintenance notice, D123) | covered | `maintenance` · button · "Run health checks" | Run health checks opens Health report and updates metric 4 (workspace-system.spec.mjs) |
 | Maintenance statistics (database info) | `admin.html:692–748`; `admin.js:1834` | S12 Diagnostics | covered | `diagnostics` · term · "Database" | meta-grid shows real database and source status, the pinned Viewer.js version and the host renderers (workspace-system-diagnostics.spec.mjs) |
 | Maintenance select all / clear all / run | `admin.html:754–762`; `admin.js:1822–1833` | S7 per-operation review | covered | `maintenance` · button · "Review plan" | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
-| Prompt cleanup `/cleanup` | `py/api/admin.py:620` | S6/S7 Maintenance | covered | `maintenance` · button · "Review plan" | test_duplicate_prompts_plan_counts_the_legacy_groups (test_maintenance_plans.py) |
+| Prompt cleanup `/cleanup` | `py/api/admin.py:620` | S6/S7 Maintenance | covered | `maintenance` · button · "Review plan" · in "Duplicate prompt text" | test_duplicate_prompts_plan_counts_the_legacy_groups (test_maintenance_plans.py) |
 | Database backup | `admin.html:179,824`; `admin.js:2139,2454` | S9 Backup & export | covered | `backups` · button · "Back up" | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
 | Restore from file | `admin.html:183,616–642`; `admin.js:2177–2248` | S8/S9 Backup & export | covered | `backups` · button · "Review restore…" | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
 | Metadata scan with progress, cancel, pill | `admin.html:187,805–865`; `admin.js:2336–2500` | S4 Sources | covered | `sources` · button · "Review scan" | Review scan opens the shared Review metadata scan with all sources (workspace-system-sources.spec.mjs) |
@@ -3870,10 +3882,10 @@ control by role and accessible name.
 | Batch auto-tag output images | `admin.html:191,1210,1279–1318`; `admin.js:3748–3840` | S11 Auto-tagging | covered | `tagging` · button · "Review" | Tag output images reviews the scope and starts a batch job (workspace-system-tagging.spec.mjs) |
 | Batch review loop | `admin.html:1206,1218–1364`; `admin.js:3841–4172` | S11 + image-tagging plan | covered | `tagging` · button · "Preview tagging review" | Preview tagging review opens the Tag image dialog for the selected image (workspace-system-tagging.spec.mjs) |
 | Gallery per-image auto-tag / review | `gallery.html:601,605`; `gallery.js:3506,3674–3753` | Image-tagging plan (selection bar) | covered | — | Auto-tag selected with Apply automatically runs a job with the chosen model, thresholds and suggestion count (workspace-tagging-bulk.spec.mjs) |
-| Gallery thumbnail generation | `gallery.js:1852,1967` | S5/S7 | covered | `sources` · button · "Review options" | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
-| Clear server thumbnails | `gallery.js:2175–2192` | S7 Maintenance | covered | `maintenance` · button · "Review options" | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
-| Browser cache clear | `gallery.js:2194–2207` | S7 Maintenance | covered | `maintenance` · button · "Review plan" | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
-| Refresh file listing | `gallery.js:2209` | S4 Sources | covered | `sources` · button · "Refresh" | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
+| Gallery thumbnail generation | `gallery.js:1852,1967` | S5/S7 | covered | `sources` · button · "Review options" · in "Thumbnail generation" | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
+| Clear server thumbnails | `gallery.js:2175–2192` | S7 Maintenance | covered | `maintenance` · button · "Review options" · in "Thumbnail cache" | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
+| Browser cache clear | `gallery.js:2194–2207` | S7 Maintenance | covered | `maintenance` · button · "Review plan" · in "Metadata cache" | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
+| Refresh file listing | `gallery.js:2209` | S4 Sources | covered | `sources` · button · "Refresh" · in "Refresh files" | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
 | Duplicate image scan, review, delete | `gallery.js:2234–2577` | S6/S7 Maintenance | covered | `maintenance` · button · "Find duplicates" | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
 | Default view mode, image quality | `gallery-settings.js:26–27` | S3 Appearance | covered | `appearance` · combobox · "Default layout" | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
 | Auto-load metadata, cache metadata, show file paths | `gallery-settings.js:31–33` | S3 Appearance | covered | `appearance` · switch · "Load metadata on selection" | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
