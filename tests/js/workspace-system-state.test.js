@@ -341,6 +341,22 @@ test('a host save names the settings that apply after a restart (D128)', async (
     assert.equal(drafts.statusText(), 'Unsaved changes.');
 });
 
+test('a host save refused for one setting says the server reason and names no source (S11 CUJ 2a)', async () => {
+    const { INVALID_SETTING_CODE } = await source;
+    const domains = adapters({ host: { autotag_general_threshold: 0.35 } });
+    const drafts = await loaded(domains);
+    const message = 'General-tag confidence must be between 0 and 1.';
+    domains.outcome.host = () => { throw Object.assign(new Error(message), { code: INVALID_SETTING_CODE }); };
+    drafts.set('host', 'autotag_general_threshold', 1.5);
+    assert.deepEqual(await drafts.save(), { browser: 'clean', host: 'failed', runtime: 'clean', invalid: { source: null, message } });
+    assert.equal(drafts.statusText(), message);
+    assert.equal(drafts.invalidSource(), null);
+    assert.deepEqual([...drafts.failed('host')], ['autotag_general_threshold']);
+    assert.equal(drafts.get('host', 'autotag_general_threshold'), 1.5);
+    drafts.set('host', 'autotag_general_threshold', 0.4);
+    assert.equal(drafts.statusText(), 'Unsaved changes.');
+});
+
 test('a host save refused for one source says the server reason and names it until the next edit', async () => {
     const domains = adapters({ host: { gallery_root_paths: ['output', 'output/gone'] } });
     const drafts = await loaded(domains);
