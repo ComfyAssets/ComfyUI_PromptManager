@@ -3440,7 +3440,8 @@ preview (`preview_url`, else LoraManager's `PREVIEW_EXTENSIONS` order), then eve
 `<example-images root>[/<library>]/<sha256>/` in natural order; a leading video yields to the
 first still. A file counts only with a servable extension and inside the guarded media
 roots. Only an absolute `preview_url` is used; a relative one is skipped with a DEBUG line
-naming the sidecar. CivitAI downloads run only for a LoRA without local media; a record's
+naming the sidecar. A sidecar that is not valid UTF-8 JSON is skipped like any unreadable
+one (#362). CivitAI downloads run only for a LoRA without local media; a record's
 images are linked in reverse order, so its first image (the cover) is the newest link and
 the card image. The folder guard keeps a folder from the settings, and each of ComfyUI's
 default LoRA folders (`models/loras`, `extra_model_paths.yaml`, `folder_paths`), only when
@@ -3480,8 +3481,10 @@ during the load, LoraManager's in-place write, FAT/HFS+ coarse times), every wat
 could be checked (any `stat` error but not-found, and an offline Windows share, is "cannot
 validate"), the settings were readable, and no `clear()` ran meanwhile (generation
 counter). Hits take no lock; concurrent misses each load. A finished import (System job or
-legacy scan, both through `replace_lora_imports`) clears it; the integration-off check and
-the configured-path rule run before it. `serve_image` builds the allow-list in the
+legacy scan, both through `replace_lora_imports`) clears it. The integration-off check runs
+before it, and the configured-path rule (a configured path that is not an install under
+`custom_nodes` adds no folders) on its result; a hit also needs the same home folder, which
+the guard compares against. `serve_image` builds the allow-list in the
 executor. The cache writes one INFO line, "LoraManager layout changed: <source> settings,
 <mode> storage, <n> media folders", when a stored layout differs from the last one logged.
 The review, Start, the legacy scan and the trigger cache read the layout fresh. Image route

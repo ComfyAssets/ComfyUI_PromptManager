@@ -429,7 +429,9 @@ test('Rebuild all is explicit and the plan line says every preview is regenerate
     await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
     expect(seen.starts).toEqual([{ mode: 'rebuild' }]);
     const id = page.url().split('/').pop();
-    await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.state).toBe('finished');
+    // Rebuild regenerates all 24 previews with real image work: on a busy CI
+    // runner that took over 5 s (12 of 24 done at the default poll budget).
+    await expect.poll(async () => (await serverJson(request, `/prompt_manager/jobs/${id}`)).job.state, { timeout: 30000 }).toBe('finished');
 });
 
 test('a plan that cannot be read says so; Start still starts', async ({ page }) => {

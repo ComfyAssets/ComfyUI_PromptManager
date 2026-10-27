@@ -6,7 +6,8 @@ the LoraManager install, reading its plugin settings file and its settings
 file, and resolving every folder. ``LayoutCache`` keeps the last result and
 reuses it while all of these hold:
 
-- the key (the configured install path, stripped) is the same;
+- the key (the configured install path, stripped) and the home folder the
+  folder guard compares against are the same;
 - the entry is younger than ``MAX_AGE_SECONDS`` (monotonic clock);
 - the plugin settings file and the settings file have the same signature
   (``st_mtime_ns``, ``st_size``, or ``MISSING``) as when it was stored;
@@ -34,6 +35,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 from .lora_manager_layout import UNREADABLE, LoraManagerLayout, _canonical
@@ -56,6 +58,7 @@ logger = logging.getLogger("prompt_manager.lora_layout_cache")
 @dataclass(frozen=True)
 class _Entry:
     key: str
+    home: str
     install: Optional[str]
     layout: LoraManagerLayout
     signatures: Tuple[Tuple[str, object], ...]
@@ -78,6 +81,7 @@ class LayoutCache:
         monotonic: Callable[[], float] = time.monotonic,
         stat=os.stat,
         pathmod=os.path,
+        home: Callable[[], str] = lambda: str(Path.home()),
     ):
         self._resolve = resolve
         self._load = load
@@ -85,6 +89,7 @@ class LayoutCache:
         self._monotonic = monotonic
         self._stat = stat
         self._pathmod = pathmod
+        self._home = home
         self._entry: Optional[_Entry] = None
         self._generation = 0
         self._lock = threading.Lock()
@@ -96,8 +101,9 @@ class LayoutCache:
     def get(self, configured: str) -> Tuple[Optional[str], LoraManagerLayout]:
         """``(install, layout)`` for the configured path ("" auto-detects)."""
         key = (configured or "").strip()
+        home = self._home()
         entry = self._entry
-        if entry is not None and self._valid(entry, key):
+        if entry is not None and self._valid(entry, key, home):
             return entry.install, entry.layout
         with self._lock:
             if entry is not None and self._entry is entry:
@@ -114,7 +120,7 @@ class LayoutCache:
             return install, layout
         if layout.error == UNREADABLE or self._racy(signatures, self._wall_ns()):
             return install, layout
-        stored = _Entry(key, install, layout, signatures, self._monotonic())
+        stored = _Entry(key, home, install, layout, signatures, self._monotonic())
         changed = False
         with self._lock:
             if self._generation == generation:
@@ -152,8 +158,8 @@ class LayoutCache:
 
     # ── validation ──────────────────────────────────────────────────
 
-    def _valid(self, entry: _Entry, key: str) -> bool:
-        if entry.key != key:
+    def _valid(self, entry: _Entry, key: str, home: str) -> bool:
+        if entry.key != key or entry.home != home:
             return False
         if self._monotonic() - entry.stored_at >= MAX_AGE_SECONDS:
             return False

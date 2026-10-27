@@ -164,6 +164,17 @@ class ValidationTests(CacheTestCase):
         self.assertEqual(self.resolved, ["", "other"])
         self.assertEqual(len(self.loaded), 2)
 
+    def test_a_different_home_folder_reloads(self):
+        # The folder guard compares against the home folder: a cached layout
+        # must not outlive a change of it.
+        home = {"value": str(self.tmp / "home-a")}
+        cache = self.cache(home=lambda: home["value"])
+        cache.get("")
+        cache.get("")
+        home["value"] = str(self.tmp / "home-b")
+        cache.get("")
+        self.assertEqual(len(self.loaded), 2)
+
     def test_configured_path_is_stripped_for_the_key_and_the_resolver(self):
         cache = self.cache()
         cache.get("  x ")
