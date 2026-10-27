@@ -688,6 +688,59 @@ class FolderGuardTests(unittest.TestCase):
         )
         self.assertIsNone(layout_module._guard_folder(str(self.tmp), str(self.tmp)))
 
+    def test_ancestors_of_home_are_rejected(self):
+        # Security review (#355): a settings folder that contains the home
+        # folder would serve every user's files.
+        home = self.tmp / "home" / "me"
+        inside = home / "loras"
+        inside.mkdir(parents=True)
+        guard = layout_module._guard_folder
+        self.assertIsNone(guard(str(self.tmp / "home"), str(home)))
+        self.assertIsNone(guard(str(self.tmp), str(home)))
+        self.assertIsNone(guard(str(home), str(home)))
+        self.assertEqual(guard(str(inside), str(home)), os.path.normcase(str(inside)))
+        # A sibling sharing the name prefix is not an ancestor.
+        sibling = self.tmp / "home" / "me2"
+        sibling.mkdir()
+        self.assertEqual(guard(str(sibling), str(home)), os.path.normcase(str(sibling)))
+
+    def test_windows_ancestors_of_home_are_rejected(self):
+        self.assertIsNone(self.guard_nt("C:\\Users", home="C:\\Users\\me"))
+        self.assertIsNone(self.guard_nt("c:/users/", home="C:\\Users\\me"))
+        self.assertEqual(
+            self.guard_nt("C:\\Users\\me\\Loras", home="C:\\Users\\me"),
+            "c:\\users\\me\\loras",
+        )
+        self.assertEqual(
+            self.guard_nt("C:\\Users\\meta", home="C:\\Users\\me"),
+            "c:\\users\\meta",
+        )
+
+    def test_settings_folders_that_contain_home_are_not_served(self):
+        home = self.tmp / "home" / "me"
+        home.mkdir(parents=True)
+        settings = self.tmp / "settings"
+        settings.mkdir()
+        (settings / "settings.json").write_text(
+            json.dumps(
+                {
+                    "folder_paths": {"loras": [str(self.tmp / "home")]},
+                    "example_images_path": str(self.tmp),
+                }
+            )
+        )
+        with patch.object(layout_module.Path, "home", return_value=home):
+            layout = load_layout(
+                str(self.tmp),
+                default_roots=lambda: [],
+                environ={"LORA_MANAGER_SETTINGS_DIR": str(settings)},
+                user_config_dir=lambda: str(self.tmp / "unused"),
+            )
+        self.assertIsNone(layout.error)
+        self.assertEqual(layout.lora_roots, ())
+        self.assertIsNone(layout.example_images_root)
+        self.assertEqual(layout.media_roots, ())
+
     def test_missing_folders_add_nothing(self):
         self.assertIsNone(layout_module._guard_folder(str(self.tmp / "x"), "/home"))
         self.assertIsNone(

@@ -161,15 +161,17 @@ def _guard_folder(
 ) -> Optional[str]:
     """The canonical form of ``path`` when it may be read and served, else None.
 
-    Kept only when it is a folder, not a filesystem root and not the home
-    folder itself.
+    Kept only when it is a folder, not a filesystem root, and neither the
+    home folder nor one of its ancestors (``/home``, ``C:\\Users``: a
+    security review ruled that a folder holding the home folder must never
+    be read or served).
     """
     isdir = isdir or os.path.isdir
     try:
         canonical = _canonical(path, pathmod)
         if not isdir(canonical) or _is_filesystem_root(canonical, pathmod):
             return None
-        if canonical == _canonical(home, pathmod):
+        if _inside(home, (canonical,), pathmod):
             return None
     except (OSError, ValueError):
         return None
