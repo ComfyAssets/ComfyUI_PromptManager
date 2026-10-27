@@ -46,6 +46,9 @@ MAX_AGE_SECONDS = 30
 
 # The signature of a watched file that does not exist (a valid state).
 MISSING = object()
+# ERROR_BAD_NETPATH and ERROR_BAD_NET_NAME, which Windows raises as
+# FileNotFoundError.
+_OFFLINE_SHARE_ERRORS = frozenset({53, 67})
 
 logger = logging.getLogger("prompt_manager.lora_layout_cache")
 
@@ -160,7 +163,11 @@ class LayoutCache:
     def _signature(self, path: str):
         try:
             result = self._stat(path)
-        except (FileNotFoundError, NotADirectoryError):
+        except (FileNotFoundError, NotADirectoryError) as error:
+            # Windows reports an offline share as "not found": that is a
+            # temporary failure, not a missing file.
+            if getattr(error, "winerror", None) in _OFFLINE_SHARE_ERRORS:
+                raise _CannotValidate(path) from error
             return MISSING
         except (OSError, ValueError) as error:
             raise _CannotValidate(path) from error

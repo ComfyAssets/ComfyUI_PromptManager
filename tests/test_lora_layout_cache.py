@@ -31,6 +31,10 @@ from py.lora_layout_cache import (
 from py.lora_manager_layout import UNREADABLE, LoraManagerLayout, _canonical
 
 SECOND_NS = 10**9
+# NTFS keeps modification times in 100 ns steps and FAT in 2 s steps: every
+# time a test sets is a whole millisecond, and a test whose file system rounds
+# it anyway skips (``set_mtime``).
+TICK_NS = 10**6
 
 
 def make_layout(settings_path=None, media_roots=(), error=None, source="user config"):
@@ -52,7 +56,7 @@ class CacheTestCase(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()).resolve()
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(shutil.rmtree, self.tmp)
         self.install_dir = self.tmp / "custom_nodes" / "ComfyUI-Lora-Manager"
         self.install_dir.mkdir(parents=True)
         self.plugin_settings = self.install_dir / "settings.json"
@@ -60,9 +64,9 @@ class CacheTestCase(unittest.TestCase):
         self.settings.parent.mkdir()
         self.root_dir = self.tmp / "loras"
         self.root_dir.mkdir()
-        # The wall clock is an hour past every file written here, so nothing
-        # is racy unless a test sets a recent modification time.
-        self.now_ns = time.time_ns() + 3600 * SECOND_NS
+        # Files are written ten minutes before the injected wall clock, so
+        # nothing is racy unless a test sets a recent modification time.
+        self.now_ns = time.time_ns() // TICK_NS * TICK_NS
         self.mono = 1000.0
         self.resolved = []
         self.loaded = []
@@ -76,7 +80,12 @@ class CacheTestCase(unittest.TestCase):
     def write(self, path, text, mtime_ns=None):
         Path(path).write_text(text, encoding="utf-8")
         stamp = mtime_ns if mtime_ns is not None else self.now_ns - 600 * SECOND_NS
+        self.set_mtime(path, stamp)
+
+    def set_mtime(self, path, stamp):
         os.utime(path, ns=(stamp, stamp))
+        if os.stat(path).st_mtime_ns != stamp:
+            self.skipTest("this file system rounds modification times")
 
     def resolve(self, key):
         self.resolved.append(key)
@@ -117,8 +126,7 @@ class ValidationTests(CacheTestCase):
     def test_settings_mtime_change_reloads_once(self):
         cache = self.cache()
         cache.get("")
-        stamp = self.settings.stat().st_mtime_ns + 1
-        os.utime(self.settings, ns=(stamp, stamp))
+        self.set_mtime(self.settings, self.settings.stat().st_mtime_ns + TICK_NS)
         cache.get("")
         cache.get("")
         self.assertEqual(len(self.loaded), 2)
@@ -176,13 +184,13 @@ class ValidationTests(CacheTestCase):
         self.assertEqual(len(self.loaded), 3)
 
     def test_racy_boundary(self):
-        # Exactly RACY_SECONDS old is trusted; one nanosecond newer is not.
+        # Exactly RACY_SECONDS old is trusted; anything newer is not.
         boundary = self.now_ns - RACY_SECONDS * SECOND_NS
-        self.write(self.settings, "{}", mtime_ns=boundary + 1)
+        self.write(self.settings, "{}", mtime_ns=boundary + TICK_NS)
         cache = self.cache()
         cache.get("")
         self.assertIsNone(cache._entry)
-        os.utime(self.settings, ns=(boundary, boundary))
+        self.set_mtime(self.settings, boundary)
         cache.get("")
         self.assertIsNotNone(cache._entry)
 
@@ -294,14 +302,85 @@ class ValidationTests(CacheTestCase):
         cache.get("")
         self.assertEqual(len(self.loaded), 2)
 
-    def test_a_root_that_no_longer_resolves_reloads(self):
+    def test_a_root_whose_realpath_fails_reloads(self):
         cache = self.cache()
         cache.get("")
         with patch.object(
-            cache_module, "_canonical", side_effect=OSError("unreachable share")
+            cache_module, "_canonical", side_effect=OSError("realpath failed")
         ):
             cache.get("")
         self.assertEqual(len(self.loaded), 2)
+
+    def test_a_stat_value_error_cannot_validate(self):
+        def stat(path):
+            raise ValueError("embedded null character in path")
+
+        cache = self.cache(stat=stat)
+        cache.get("")
+        self.assertIsNone(cache._entry)
+
+    def test_not_a_directory_is_missing(self):
+        def stat(path):
+            raise NotADirectoryError(20, "Not a directory", path)
+
+        cache = self.cache(stat=stat)
+        cache.get("")
+        self.assertTrue(
+            all(value is MISSING for _path, value in cache._entry.signatures)
+        )
+        cache.get("")
+        self.assertEqual(len(self.loaded), 1)
+
+    def test_an_offline_windows_share_cannot_validate(self):
+        def stat(path):
+            error = FileNotFoundError(2, "The network path was not found", path)
+            error.winerror = 53
+            raise error
+
+        cache = self.cache(stat=stat)
+        cache.get("")
+        self.assertIsNone(cache._entry)
+
+    def test_a_failed_reload_leaves_no_stale_entry(self):
+        failing = {"on": False}
+
+        def load(install):
+            self.loaded.append(install)
+            if failing["on"]:
+                raise RuntimeError("boom")
+            return self.layout
+
+        cache = self.cache(load=load)
+        cache.get("")
+        self.mono += MAX_AGE_SECONDS
+        failing["on"] = True
+        with self.assertRaises(RuntimeError):
+            cache.get("")
+        self.assertIsNone(cache._entry)
+
+    def test_a_resolve_failure_propagates_and_stores_nothing(self):
+        def resolve(key):
+            raise RuntimeError("boom")
+
+        cache = self.cache(resolve=resolve)
+        with self.assertRaises(RuntimeError):
+            cache.get("")
+        self.assertIsNone(cache._entry)
+
+    def test_without_a_settings_path_only_the_plugin_file_is_watched(self):
+        self.layout = make_layout(media_roots=self.layout.media_roots)
+        cache = self.cache()
+        cache.get("")
+        self.assertEqual(
+            [path for path, _sig in cache._entry.signatures],
+            [os.path.join(self.install, "settings.json")],
+        )
+
+    def test_portable_settings_are_watched_once(self):
+        self.layout = make_layout(settings_path=self.install_dir / "settings.json")
+        cache = self.cache()
+        cache.get("")
+        self.assertEqual(len(cache._entry.signatures), 1)
 
     def test_a_load_failure_propagates_and_stores_nothing(self):
         calls = []
@@ -345,6 +424,8 @@ class ValidationTests(CacheTestCase):
             return SimpleNamespace(st_mtime_ns=self.now_ns - 600 * SECOND_NS, st_size=2)
 
         install = _canonical("C:\\ComfyUI\\custom_nodes\\LM", ntpath)
+        # The hit check needs ntpath's realpath to be idempotent here.
+        self.assertEqual(install, _canonical(install, ntpath))
         self.layout = make_layout(
             settings_path=PureWindowsPath(
                 "C:\\ComfyUI\\custom_nodes\\lm\\SETTINGS.JSON"
