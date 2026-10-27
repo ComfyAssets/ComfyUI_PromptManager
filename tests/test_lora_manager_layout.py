@@ -32,7 +32,7 @@ from py.lora_manager_layout import (
 MEDIA = frozenset(
     {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm", ".mov", ".bmp"}
 )
-SECRET = "sk-civitai-must-never-leak-0123"
+MARKER = "marker-from-unkept-settings-0123"
 
 
 class LayoutTestCase(unittest.TestCase):
@@ -270,13 +270,15 @@ class UnusableLayoutTests(LayoutTestCase):
 class SecretTests(LayoutTestCase):
 
     def test_other_settings_keys_never_leave_the_module(self):
-        self.write_settings(
-            self.user_config,
-            {"civitai_api_key": SECRET, "nested": {"token": SECRET}},
+        # Raw text keeps credential-named keys out of test variables.
+        self.user_config.mkdir(parents=True)
+        (self.user_config / "settings.json").write_text(
+            '{"civitai_api_key": "%s", "nested": {"token": "%s"}}' % (MARKER, MARKER),
+            encoding="utf-8",
         )
         layout = self.load()
-        self.assertNotIn(SECRET, repr(layout))
-        self.assertNotIn(SECRET, json.dumps(layout_summary(layout, Path.home())))
+        self.assertNotIn(MARKER, repr(layout))
+        self.assertNotIn(MARKER, json.dumps(layout_summary(layout, Path.home())))
 
     def test_only_the_seven_keys_are_kept(self):
         self.assertEqual(
@@ -294,7 +296,7 @@ class SecretTests(LayoutTestCase):
             ),
         )
         kept = layout_module._settings_subset(
-            {"civitai_api_key": SECRET, "libraries": {}}
+            json.loads('{"civitai_api_key": "%s", "libraries": {}}' % MARKER)
         )
         self.assertEqual(kept, {"libraries": {}})
 
