@@ -691,6 +691,32 @@ class TestFixRound(ImageTagJobTestCase):
             ],
         )
 
+    async def test_an_ended_job_shows_no_time_left(self):
+        """#379 live check: a finished or cancelled job never says "min left"."""
+        for index in range(3):
+            self.png(f"f{index}.png", color=(index, 7, 7))
+        clock = iter([0.0, 0.0, 120.0, 240.0])
+        with patch(
+            "py.api.image_tag_jobs._monotonic", side_effect=lambda: next(clock, 240.0)
+        ):
+            job = await self.run_job(self.auto_body([f"f{i}.png" for i in range(3)]))
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(job.status_line, "Auto-tag finished · 3 files processed")
+
+        self.png("g0.png", color=(1, 1, 1))
+        self.png("g1.png", color=(2, 2, 2))
+        entered, proceed = threading.Event(), threading.Event()
+        self.tagger.block = (entered, proceed)
+        job = await self.start_ok(self.auto_body(["g0.png", "g1.png"]))
+        await self.wait_for(entered)
+        await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
+        self.tagger.block = None
+        proceed.set()
+        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(job.status_line, "Auto-tag cancelled · 1 file processed")
+        self.assertNotIn("left", job.status_line)
+
     def maximal_target(self, number):
         """A distinct target whose path is 1024 non-ASCII code points long."""
         head = f"{number:03d}/" + ("界" * 200 + "/") * 5

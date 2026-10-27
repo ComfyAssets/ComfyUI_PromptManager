@@ -15,10 +15,11 @@
  *   value (the toast names it). D132: the concept's two simulated job buttons are "Download" (or
  *   "Download again" for a model on disk), which starts the `model_download` Activity job and opens it, and "Unload",
  *   a direct `POST /autotag/unload` (enabled while a model is loaded; a busy model's refusal names the operation).
- * - D134: the `.operation` "Tag output images" › "Review" previews the prompt-tag batch
- *   (`POST /autotag/batch/preview`, read-only) and shows it in the shared review dialog with the D55 backup box; "Start
- *   tagging" runs the cancellable `autotag` Activity job. A review that cannot start (Replace after review, a short
- *   disk, nothing to tag) offers only Cancel and says why.
+ * - D134: the `.operation` "Tag output images" › "Review" previews the per-image batch (#379,
+ *   `POST /autotag/batch/preview`, read-only: image counts and a time estimate) and shows it in the shared review dialog
+ *   with the D55 backup box; "Start tagging" runs the cancellable `autotag` Activity job, which tags each output image
+ *   from its own pixels and never a prompt. A review that cannot start (Replace after review, a short disk, no image,
+ *   nothing to tag) offers only Cancel and says why.
  *
  * Every value is a host draft saved by the one Save row (system.mjs); every listener sits on the section's scope.
  */
@@ -44,7 +45,7 @@ export const REVIEW_TITLE = 'Review tag output images';
 export const BATCH_TITLE = 'Tag output images';
 export const START_LABEL = 'Start tagging';
 export const INTRO = 'One tagging configuration for images and prompt-library actions. Every result can be reviewed before applying.';
-export const BATCH_DESCRIPTION = 'Add tags to each prompt from its linked output images with the model above. Review the scope first.';
+export const BATCH_DESCRIPTION = 'Tag each output image from its own pixels with the model above. Prompts are not changed. Review the scope first.';
 export const SUGGESTIONS_DESCRIPTION = 'From 1 to 100: the most suggestions Generate shows for one image.';
 
 /** D132: the engines in the concept's order, with the labels and sizes the server states when it cannot be read. */
@@ -97,8 +98,12 @@ export const SETTING_PROBLEMS = Object.freeze({
 export const characters = text => [...String(text ?? '')].length;
 
 export const REPLACE_NOTE = 'Replacing tags needs a review of each image. Use Preview tagging review, or choose Skip or Merge for a batch run.';
-export const NOTHING_TO_TAG = 'Every prompt with an output image is already tagged.';
-export const NO_LINKED_IMAGES = 'No output image is linked to a prompt yet, so there is nothing to tag.';
+export const NOTHING_TO_TAG = 'Every output image is already auto-tagged.';
+export const NO_IMAGES = 'The output folders contain no images to tag.';
+/** The Time row's tails (#379): where WD14 runs, and the language models, which have no estimate. */
+export const TIME_ON_CPU = ' on a processor; a graphics card can be faster.';
+export const TIME_ON_GPU = ' on the graphics card.';
+export const TIME_UNKNOWN = 'Language-model engines take longer per image. Activity shows the time left once tagging starts.';
 export const STATUS_UNREAD = 'The model status is still being read. Try again in a moment.';
 export const SETTINGS_UNREAD = 'The settings are still being read. Try again in a moment.';
 export const UNLOAD_FAILED = 'The tagging model could not be unloaded. Try again.';
@@ -254,19 +259,40 @@ export async function startJob({ activity, scope, kind, body, what, notify = sho
 /** The existing-tags policy's label. */
 export const existingLabel = value => EXISTING_OPTIONS.find(([id]) => id === value)?.[1] ?? String(value ?? '');
 
-/** D134: the review's rows from the server's preview and the drafts it was made with. */
+/**
+ * DEC11 (#379): a whole number of minutes as the review's Time text: "about m min" under 90, then "about H h M min",
+ * or "about H h" on the hour.
+ */
+export function durationText(minutes) {
+    const m = Math.max(1, Math.ceil(Number.isFinite(minutes) ? minutes : 1));
+    if (m < 90) return `about ${m} min`;
+    const hours = Math.floor(m / 60);
+    const rest = m % 60;
+    return rest === 0 ? `about ${hours} h` : `about ${hours} h ${rest} min`;
+}
+
+/** The review's Time row: the preview's `estimate_seconds` where WD14 runs (`estimate_device`), else the sentence. */
+export function timeText(plan) {
+    const seconds = plan?.estimate_seconds;
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return TIME_UNKNOWN;
+    return durationText(Math.ceil(seconds / 60)) + (plan.estimate_device === 'gpu' ? TIME_ON_GPU : TIME_ON_CPU);
+}
+
+/** D134: the review's rows from the server's preview and the drafts it was made with (image counts, #379). */
 export function batchGrid(plan, values) {
     const id = plan.model?.type ?? values.autotag_model_type;
-    const settings = CLASSIFIERS.has(id)
+    let settings = CLASSIFIERS.has(id)
         ? `General ${values.autotag_general_threshold} · Character ${values.autotag_character_threshold}`
         : `Template of ${number(characters(values.autotag_template))} characters`;
+    // The saved count the run uses (the preview's), not an unsaved draft.
+    if (Number.isSafeInteger(plan.suggestion_limit)) settings += ` · up to ${number(plan.suggestion_limit)} tags per image`;
     return [
         ['Model', `${modelLabel(id, plan.model)} · ${modelSize(id, plan.model)}`],
         ['Existing tags', existingLabel(plan.existing ?? values.autotag_existing)],
-        ['Images linked', number(plan.images)],
-        ['Prompts', number(plan.prompts)],
-        ['Already tagged', number(plan.already_tagged)],
-        ['Prompts to tag', `up to ${number(plan.to_tag)}`],
+        ['Images', number(plan.images)],
+        ['Already auto-tagged', number(plan.already_tagged)],
+        ['Images to tag', `about ${number(plan.to_tag)}`],
+        ['Time', timeText(plan)],
         ['Settings', settings],
         ['Backup', backupText(plan.backup)],
     ];
@@ -291,13 +317,13 @@ export function batchCloseNote(plan) {
     if (plan.review_required === true) return REPLACE_NOTE;
     if (plan.model?.downloaded === false) return notDownloaded(modelLabel(plan.model.type, plan.model));
     if (plan.disk?.sufficient === false) return diskShortNote(plan.disk);
-    if (!Number.isSafeInteger(plan.prompts) || plan.prompts === 0) return NO_LINKED_IMAGES;
+    if (!Number.isSafeInteger(plan.images) || plan.images === 0) return NO_IMAGES;
     if (plan.to_tag === 0) return NOTHING_TO_TAG;
     return null;
 }
 
-export const BATCH_SENTENCE = 'Nothing is written until you start. Missing files and files outside the output folders are '
-    + 'counted, so the prompts to tag are an upper bound; Activity reports what was tagged.';
+export const BATCH_SENTENCE = 'Nothing is written until you start. The number to tag is an estimate: images changed since '
+    + 'they were tagged are tagged again, and missing files are skipped. Activity reports what was tagged.';
 
 /** The Cancel-only review: the counts and why the batch cannot start (CUJ 5), in the shared close-only shell. */
 export function openBatchCloseOnly({ scope, trigger, grid, note }) {

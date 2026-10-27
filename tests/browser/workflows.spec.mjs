@@ -42,8 +42,13 @@ test('actual gallery form saves a prompt that the admin page can edit and reload
     await page.locator(`[data-action="edit"][data-prompt-id="${id}"]`).click();
     const editor = page.locator(`.prompt-text[data-id="${id}"]`);
     await editor.fill('Browser edited portrait');
+    // The page shows the edit at once and saves it after: reload only once the save answered (a reload that wins the
+    // race abandons the PUT, as seen on WebKit in CI).
+    const savedEdit = page.waitForResponse(item => item.request().method() === 'PUT'
+        && item.url().endsWith(`/prompt_manager/prompts/${id}`));
     await editor.press('Enter');
     await expect(page.locator('.prompt-text').filter({ hasText: 'Browser edited portrait' })).toBeVisible();
+    expect((await savedEdit).ok()).toBe(true);
     await page.reload();
     await expect(page.locator('.prompt-text').filter({ hasText: 'Browser edited portrait' })).toBeVisible();
     const saved = await request.post('/prompt_manager/save', { data: { text: 'Browser saved landscape' } });
