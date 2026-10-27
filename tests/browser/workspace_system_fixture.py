@@ -105,6 +105,9 @@ def register_system_commands(app, routes, api, root: Path):
         PromptManagerConfig.THUMBNAIL_FORMAT,
         PromptManagerConfig.THUMBNAIL_QUALITY,
         PromptManagerConfig.THUMBNAIL_EDGE,
+        # The Recovery policy toggle (workspace-system-backups) saves it at
+        # runtime; a later spec on the same server reads it (#369 CI).
+        PromptManagerConfig.SAFETY_BACKUP,
     )
     from py.api import thumbnail_encode
 
@@ -143,6 +146,7 @@ def register_system_commands(app, routes, api, root: Path):
             PromptManagerConfig.THUMBNAIL_FORMAT,
             PromptManagerConfig.THUMBNAIL_QUALITY,
             PromptManagerConfig.THUMBNAIL_EDGE,
+            PromptManagerConfig.SAFETY_BACKUP,
         ) = host_values
         thumbnail_encode.reset_encoders()
         image_monitor._monitor_instance = monitor
