@@ -619,6 +619,12 @@ class AutoThumbnailMixin:
                 )
             return self._auto_thumbnailer
 
+    def refuse_auto_thumbnails(self):
+        """Refuse every later capture without stopping the worker yet (the
+        package teardown, before ``close_auto_thumbnails(final=True)``)."""
+        with AutoThumbnailMixin._auto_thumbnailer_lock:
+            self._auto_thumbnails_shut = True
+
     def close_auto_thumbnails(self, final=False, timeout=None):
         """Stop the capture worker and the view pool, and forget them.
 

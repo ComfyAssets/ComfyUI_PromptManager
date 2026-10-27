@@ -35,12 +35,16 @@ CHILD = textwrap.dedent("""
     state = {}
 
     def report():
+        from watchdog.utils import BaseThread
+
         package = state.get("package")
         result = getattr(package, "_background_work_result", None)
+        # The image worker, the tracker, and watchdog's observer and emitters.
         alive = sorted(
             t.name
             for t in threading.enumerate()
             if t.name in ("PromptManagerImageWorker", "PromptManagerPromptCleanup")
+            or isinstance(t, BaseThread)
         )
         print("PM_EXIT_REPORT " + json.dumps({"result": result, "alive": alive}))
         sys.stdout.flush()
@@ -83,16 +87,26 @@ class TestPackageExit(unittest.TestCase):
                 handle.write(CHILD)
             env = dict(os.environ)
             env.pop("PROMPT_MANAGER_CONFIG_PATH", None)
+            # The child's library and log file live in its own folder, never
+            # in the checkout's logs/ (which this runner may hold open) or a
+            # data folder the caller set.
+            env["PROMPT_MANAGER_DATA_DIR"] = tmp
             env["PYTHONIOENCODING"] = "utf-8"
-            completed = subprocess.run(
-                [sys.executable, script, ROOT, tmp],
-                cwd=ROOT,
-                env=env,
-                capture_output=True,
-                timeout=CHILD_CEILING_SECONDS,
-                encoding="utf-8",
-                errors="replace",
-            )
+            try:
+                completed = subprocess.run(
+                    [sys.executable, script, ROOT, tmp],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    timeout=CHILD_CEILING_SECONDS,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except subprocess.TimeoutExpired as hung:
+                self.fail(
+                    f"the child did not exit within {CHILD_CEILING_SECONDS} s\n"
+                    f"stdout:\n{hung.stdout}\nstderr:\n{hung.stderr}"
+                )
             # Leaving the block removes the folder: on Windows that fails
             # if the child left a handle open, which it cannot once it exited,
             # so the check here is that the child exited at all.
@@ -105,6 +119,8 @@ class TestPackageExit(unittest.TestCase):
         ]
         self.assertEqual(len(reports), 1, detail)
         report = json.loads(reports[0])
+        # "thumbnails" is True here because no preview worker started; its
+        # close result is tested in test_thumbnail_auto and test_init_package.
         self.assertEqual(
             report["result"],
             {"monitor": True, "thumbnails": True, "tracker": True},
@@ -117,6 +133,7 @@ class TestPackageExit(unittest.TestCase):
             "Traceback",
             "Background work not stopped in time",
             "still running after",
+            "Error while stopping",
         ):
             self.assertNotIn(text, completed.stderr, detail)
 

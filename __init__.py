@@ -250,6 +250,18 @@ def _teardown_step(name, stop, logger):
         return False
 
 
+def _teardown_logger():
+    """PromptManager's init logger; the standard one if that cannot load."""
+    try:
+        from .utils.logging_config import get_logger
+
+        return get_logger("prompt_manager.init")
+    except Exception:
+        import logging
+
+        return logging.getLogger("prompt_manager.init")
+
+
 def _stop_background_work():
     """Stop the image monitor, the preview worker and the prompt cleanup
     thread against one TEARDOWN_SECONDS deadline, once.
@@ -259,14 +271,10 @@ def _stop_background_work():
     copy of the first result.
     """
     global _background_work_result
-    from .utils.image_monitor import OBSERVER_JOIN_SECONDS
-    from .utils.logging_config import get_logger
-    from .utils.prompt_tracker import TRACKER_JOIN_SECONDS
-
     with _background_work_lock:
         if _background_work_result is not None:
             return dict(_background_work_result)
-        logger = get_logger("prompt_manager.init")
+        logger = _teardown_logger()
         began = _clock()
         deadline = began + TEARDOWN_SECONDS
 
@@ -282,8 +290,14 @@ def _stop_background_work():
         if monitor is not None:
 
             def stop_monitor():
+                from .utils.image_monitor import OBSERVER_JOIN_SECONDS
+
                 # Callbacks first: an image in hand queues no preview into a
-                # closing preview worker.
+                # closing preview worker. The worker may have read the queue
+                # callback already, so the API refuses new previews too (at
+                # exit, Python 3.12+ refuses to start their worker thread).
+                if thumbnails is not None:
+                    thumbnails.refuse_auto_thumbnails()
                 monitor.set_review_recorder(None)
                 monitor.set_thumbnail_queue(None)
                 monitor.set_output_listener(None)
@@ -293,20 +307,26 @@ def _stop_background_work():
                 "the image monitor", stop_monitor, logger
             )
         if thumbnails is not None:
-            from .py.api.thumbnail_auto import CLOSE_WAIT_SECONDS
+
+            def close_previews():
+                from .py.api.thumbnail_auto import CLOSE_WAIT_SECONDS
+
+                return thumbnails.close_auto_thumbnails(
+                    final=True, timeout=left(CLOSE_WAIT_SECONDS)
+                )
 
             result["thumbnails"] = _teardown_step(
-                "the preview worker",
-                lambda: thumbnails.close_auto_thumbnails(
-                    final=True, timeout=left(CLOSE_WAIT_SECONDS)
-                ),
-                logger,
+                "the preview worker", close_previews, logger
             )
         if tracker is not None:
+
+            def stop_tracker():
+                from .utils.prompt_tracker import TRACKER_JOIN_SECONDS
+
+                return tracker.shutdown(left(TRACKER_JOIN_SECONDS))
+
             result["tracker"] = _teardown_step(
-                "the prompt cleanup thread",
-                lambda: tracker.shutdown(left(TRACKER_JOIN_SECONDS)),
-                logger,
+                "the prompt cleanup thread", stop_tracker, logger
             )
         elapsed = _clock() - began
         failed = [name for name, ok in result.items() if not ok]

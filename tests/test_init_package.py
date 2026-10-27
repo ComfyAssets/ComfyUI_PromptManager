@@ -18,6 +18,7 @@ import threading
 import types
 import unittest
 import unittest.mock as mock
+from pathlib import Path
 
 from aiohttp import web
 
@@ -677,6 +678,39 @@ class TestPackageTeardown(PackageTeardownCase):
         self.assertIsNone(monitor.review_recorder)
         self.assertIsNone(monitor.thumbnail_queue)
         self.assertIsNone(monitor.output_listener)
+
+    def test_an_image_in_hand_queues_no_preview_during_teardown(self):
+        package = self.load()
+        monitor = package._global_image_monitor
+        real_stop = monitor.stop_monitoring
+        image = os.path.join(self.output_dir, "in_hand.png")
+        from PIL import Image
+
+        Image.new("RGB", (8, 8), "red").save(image)
+        seen = {}
+
+        def stop_with_an_image_in_hand(timeout):
+            # The worker read ``thumbnail_queue`` before the detach and now
+            # hands its finished image over (at exit, Python 3.12+ refuses a
+            # new thread here and logs a traceback).
+            seen["queued"] = package.api.queue_capture_thumbnail(image)
+            seen["worker"] = package.api._auto_thumbnailer
+            return real_stop(timeout)
+
+        with (
+            mock.patch.object(
+                package.api,
+                "_get_all_output_dirs",
+                return_value=[Path(os.path.realpath(self.output_dir))],
+            ),
+            mock.patch.object(
+                monitor, "stop_monitoring", side_effect=stop_with_an_image_in_hand
+            ),
+        ):
+            result = package._stop_background_work()
+        self.assertEqual(seen["queued"], "skipped")
+        self.assertIsNone(seen["worker"])
+        self.assertTrue(all(result.values()), result)
 
     def test_teardown_removes_its_atexit_callback(self):
         package = self.load()
