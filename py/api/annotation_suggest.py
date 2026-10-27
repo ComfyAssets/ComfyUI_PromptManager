@@ -10,7 +10,7 @@ filesystem or the database.
 
 import math
 
-from ..config import (  # noqa: F401 - re-exported for the suggest route
+from ..tagging_defaults import (  # noqa: F401 - re-exported for the route
     LLM_MODEL_TYPES as LLM_MODELS,
     MAX_INSTRUCTION_BYTES,
     MAX_INSTRUCTION_CHARS,

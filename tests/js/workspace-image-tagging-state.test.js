@@ -216,6 +216,20 @@ test('dialog starts on the saved model unless a preset or the user chose one', a
     await settle();
     assert.equal(picked.state.model, 'hf', 'the user picked a model before the read landed');
 
+    // A pick made while the models read is still in flight wins over the saved model that lands after it.
+    const gate = deferred();
+    const late = harness(defaultRoutes({ [`GET ${MODELS}`]: () => gate.promise }));
+    const racing = createImageTaggingController({ api: late.api, target: TARGET, source: 'images' });
+    const opening = racing.open();
+    await settle();
+    assert.equal(racing.state.phase, 'observing');
+    racing.setModel('wd14-vit');
+    gate.resolve(response(200, models({ model_type: 'gguf' })));
+    await opening;
+    await settle();
+    assert.equal(racing.state.model, 'wd14-vit');
+    racing.dispose();
+
     const { c: unknown } = await opened({ [`GET ${MODELS}`]: () => response(200, models({ model_type: 'wd14-convnext' })) });
     assert.equal(unknown.state.model, 'wd14-swinv2');
 

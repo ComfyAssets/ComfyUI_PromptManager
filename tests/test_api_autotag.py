@@ -1885,8 +1885,10 @@ class TestTagOutputImagesPreview(BatchJobTestCase):
             )
 
         before = snapshot()
-        resp = await self._preview()
-        self.assertEqual(resp.status, 200, await resp.text())
+        with patch("PIL.Image.open") as image_open:
+            resp = await self._preview()
+            self.assertEqual(resp.status, 200, await resp.text())
+        image_open.assert_not_called()  # opens no image file
         self.assertEqual(snapshot(), before)
         self.assertEqual(self.service.generate_calls, [])
         self.assertEqual(self.service.load_calls, [])
@@ -2117,7 +2119,19 @@ class TestTagOutputImagesJob(BatchJobTestCase):
             await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
             self.assertTrue(model_gate.holder().startswith("autotag-job:"))
             legacy = await self.client.post("/prompt_manager/autotag/start")
-            self.assertEqual(legacy.status, 409)
+            # Both legacy pages read a stream: the refusal is one error frame
+            # that names the running job.
+            self.assertEqual(legacy.status, 200)
+            self.assertEqual(
+                self._sse_events(await legacy.text()),
+                [
+                    {
+                        "type": "error",
+                        "status": "error",
+                        "message": "Tag output images already running",
+                    }
+                ],
+            )
             unload = await self.client.post("/prompt_manager/autotag/unload")
             self.assertEqual((await unload.json())["operation"], "Tag output images")
         finally:
@@ -2298,3 +2312,42 @@ class TestLegacyBatchFrames(BatchJobTestCase):
                 },
             ],
         )
+
+
+class TestTagOutputImagesEdges(BatchJobTestCase):
+
+    async def test_cancel_during_backup_loads_no_model(self):
+        from py.config import PromptManagerConfig
+
+        self._seed()
+        PromptManagerConfig.SAFETY_BACKUP = True
+        started, proceed = threading.Event(), threading.Event()
+
+        def slow_backup(model, label="backup"):
+            started.set()
+            proceed.wait(30)
+            return "prompts.db.backup_x"
+
+        with patch("py.api.maintenance.take_safety_backup", side_effect=slow_backup):
+            resp = await self._start_job(existing="merge")
+            job = self.api._jobs.get((await resp.json())["job"]["id"])
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
+            proceed.set()
+            await asyncio.wait_for(asyncio.shield(job.task), 30)
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(self.service.load_calls, [])
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_unexpected_error_fails_the_job_with_a_reason(self):
+        self._seed()
+        with patch.object(
+            self.api.db, "autotag_batch_candidates", side_effect=[[], RuntimeError("x")]
+        ):
+            job = await self._run_job(existing="merge")
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(
+            job.status_line,
+            "An internal error occurred. Check server logs for details.",
+        )
+        self.assertIsNone(model_gate.holder())

@@ -507,7 +507,7 @@ class AutotagRoutesMixin:
         ``custom_prompt`` instead), ``cancelled`` (checked before each image:
         a cancelled run returns without a ``complete`` frame) and
         ``on_item(index, total, group, image_path, detail)`` (one outcome per
-        image, ``BATCH_DETAILS``).
+        image, ``SKIP_DETAILS`` for the skips).
         """
         model_type = opts["model_type"]
         keep_in_memory = opts["keep_in_memory"]
@@ -518,6 +518,8 @@ class AutotagRoutesMixin:
             yield {"type": "error", "message": f"Model {model_type} not downloaded"}
             return
 
+        if cancelled():
+            return
         yield {"type": "progress", "progress": 0, "status": "Loading model..."}
         run = self._gated_runner(opts.get("gate_owner"))
         try:
@@ -725,7 +727,9 @@ class AutotagRoutesMixin:
         # never runs beside a scan, restore or the workspace tagging job.
         busy = self._jobs.blocker(AUTOTAG_BATCH_JOB_KIND, admission="records")
         if busy is not None:
-            if busy.kind == AUTOTAG_BATCH_JOB_KIND:  # unchanged payload
+            # A second legacy batch keeps its JSON 409; the workspace's Tag
+            # output images job (cancellable) is named in a stream frame.
+            if busy.kind == AUTOTAG_BATCH_JOB_KIND and not busy.cancellable:
                 return web.json_response(
                     {"success": False, "error": _BUSY_ERROR}, status=409
                 )
@@ -971,6 +975,18 @@ class AutotagRoutesMixin:
         ok, _backup = await self._safety_backup_step(job, self.db, backup_on)
         if not ok:
             return
+        try:
+            await self._tag_output_images(service, opts, job)
+        except Exception:
+            self.logger.exception("Tag output images failed")
+            job.update(status_line=_INTERNAL_ERROR)
+            job.log_line(f"Tagging failed · {_INTERNAL_ERROR}")
+            job.finish("failed")
+        finally:
+            if backup_on:
+                await self._prune_backup_pool(job, self.db)
+
+    async def _tag_output_images(self, service, opts, job):
         roots = _scan_roots(self._get_all_output_dirs())
         job.log_line(
             f"Tagging started · {job.scope['label']} · "
@@ -999,28 +1015,25 @@ class AutotagRoutesMixin:
             job.publish({"type": "progress", "progress": job.progress})
 
         final = None
-        try:
-            async for event in self._autotag_batch_events(
-                service,
-                {**opts, "cancelled": lambda: job.cancelled, "on_item": on_item},
-            ):
-                if event.get("type") in ("complete", "error"):
-                    final = event
-            if final is None and job.cancelled:
-                job.update(status_line=BATCH_CANCELLED)
-                job.log_line(BATCH_CANCELLED)
-                job.finish("cancelled")
-            elif final is not None and final["type"] == "error":
-                job.update(status_line=final["message"])
-                job.log_line(f"Tagging failed · {final['message']}")
-                job.finish("failed")
-            else:
-                done = f"Tagged {_plural(job.counters.get('tagged', 0), 'prompt')}"
-                job.update(status_line=done, progress=100)
-                job.log_line(done)
-                job.finish("finished")
-        finally:
-            await self._prune_backup_pool(job, self.db)
+        async for event in self._autotag_batch_events(
+            service,
+            {**opts, "cancelled": lambda: job.cancelled, "on_item": on_item},
+        ):
+            if event.get("type") in ("complete", "error"):
+                final = event
+        if final is not None and final["type"] == "error":
+            job.update(status_line=final["message"])
+            job.log_line(f"Tagging failed · {final['message']}")
+            job.finish("failed")
+        elif job.cancelled:  # a cancel wins over a run that then completed
+            job.update(status_line=BATCH_CANCELLED)
+            job.log_line(BATCH_CANCELLED)
+            job.finish("cancelled")
+        else:
+            done = f"Tagged {_plural(job.counters.get('tagged', 0), 'prompt')}"
+            job.update(status_line=done, progress=100)
+            job.log_line(done)
+            job.finish("finished")
 
     def _gated_runner(self, owner):
         """Executor calls under the model gate *owner* holds (plain when None)."""

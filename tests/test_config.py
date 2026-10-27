@@ -464,11 +464,17 @@ class TestAutotagConfig(unittest.TestCase):
                     "existing": "skip",
                     "general_threshold": 0.35,
                     "character_threshold": 0.85,
-                    "template": config_module.DEFAULT_TAG_TEMPLATE,
                     "suggestion_limit": 10,
                 }
             },
         )
+        # The built-in template is not written; a saved one is.
+        self.config_class.TEMPLATE = "Saved."
+        self.assertEqual(
+            PromptManagerConfig.get_config()["autotag"]["defaults"]["template"],
+            "Saved.",
+        )
+        self.config_class.TEMPLATE = config_module.DEFAULT_TAG_TEMPLATE
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "config.json")
             PromptManagerConfig.update_config(
@@ -530,7 +536,10 @@ class TestAutotagConfig(unittest.TestCase):
                             PromptManagerConfig.load_from_file(path)
                     self.assertEqual(len(logs.records), 1, logs.output)
                     self.assertIn(f"autotag.defaults.{key}", logs.output[0])
-                    loaded = PromptManagerConfig.get_config()["autotag"]["defaults"]
+                    loaded = {
+                        k: getattr(self.config_class, attr)
+                        for k, (attr, _v, _d) in self.config_class._KEYS.items()
+                    }
                     self.assertEqual(loaded, dict(good, **{key: fallback[key]}))
 
     def test_tagging_validators_moved_with_their_messages(self):

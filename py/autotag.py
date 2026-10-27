@@ -28,9 +28,19 @@ except ImportError:
 # The tag template and thresholds live with the saved tagging defaults
 # (#328), so config.py never imports PIL.
 try:
-    from .config import DEFAULT_TAG_TEMPLATE, AutotagConfig
+    from .tagging_defaults import DEFAULT_TAG_TEMPLATE
 except ImportError:
-    from py.config import DEFAULT_TAG_TEMPLATE, AutotagConfig
+    from py.tagging_defaults import DEFAULT_TAG_TEMPLATE
+
+
+def _autotag_config():
+    """The saved defaults; imported late, as config needs ComfyUI's server."""
+    try:
+        from .config import AutotagConfig
+    except ImportError:
+        from py.config import AutotagConfig
+    return AutotagConfig
+
 
 # Try to import logging from utils, fallback to standard logging
 try:
@@ -204,12 +214,12 @@ class AutoTagService:
     @property
     def wd14_general_threshold(self) -> float:
         """The saved General-tag confidence (``autotag.defaults``)."""
-        return AutotagConfig.GENERAL_THRESHOLD
+        return _autotag_config().GENERAL_THRESHOLD
 
     @property
     def wd14_character_threshold(self) -> float:
         """The saved Character-tag confidence (``autotag.defaults``)."""
-        return AutotagConfig.CHARACTER_THRESHOLD
+        return _autotag_config().CHARACTER_THRESHOLD
 
     def get_models_status(self) -> Dict[str, Dict[str, Any]]:
         """Get availability status for all model types.
@@ -852,12 +862,12 @@ class AutoTagService:
             gen_thresh = (
                 general_threshold
                 if general_threshold is not None
-                else AutotagConfig.GENERAL_THRESHOLD
+                else _autotag_config().GENERAL_THRESHOLD
             )
             char_thresh = (
                 character_threshold
                 if character_threshold is not None
-                else AutotagConfig.CHARACTER_THRESHOLD
+                else _autotag_config().CHARACTER_THRESHOLD
             )
             return self._generate_wd14(
                 session, tags_list, image, gen_thresh, char_thresh
