@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from contextlib import ExitStack
 from pathlib import Path, PurePath
@@ -3459,8 +3460,13 @@ class TestSharedListing(ImageAPITestCase):
         record = await self._listed()
         self._interval(30)
         # The interval ends in a few milliseconds: still never a zero delay.
-        record.last_started_at = images_module._time.monotonic() - 29.99
-        self.api.mark_root_dirty(self._output("b.png"))
+        # The module's clock is held, so a slow runner cannot pass the end
+        # of the interval between these lines (the walk would start at once).
+        now = images_module._time.monotonic()
+        record.last_started_at = now - 29.99
+        held = types.SimpleNamespace(monotonic=lambda: now)
+        with patch.object(images_module, "_time", held):
+            self.api.mark_root_dirty(self._output("b.png"))
         handle = record.rewalk_handle
         self.assertIsNotNone(handle)
         self.assertGreaterEqual(self._remaining(handle), 0.45)
