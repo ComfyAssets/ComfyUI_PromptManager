@@ -18,13 +18,21 @@ the suggestion worker and the storage call ``add_image_tags``. Files are
 handled one at a time and the job stops at a file boundary when cancelled,
 keeping what it already wrote. Rows and log lines carry root-relative paths
 and public root labels only.
+
+Auto-tag marks each image it ran the model on as auto-tagged (#379), with the
+union of its tags. The ``autotag`` job ("Tag output images", started by
+``POST /jobs/autotag``) runs the same per-file loop over every still image the
+output folders list (:meth:`ImageTagJobsMixin._run_autotag_batch`): image
+tags only, never a prompt tag or prompt text.
 """
 
 import asyncio
+import dataclasses
 import functools
 import os
 import time
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from aiohttp import web
 
@@ -45,10 +53,17 @@ from .annotations import (
     _submit,
     _target,
 )
-from .autotag_routes import model_busy_response
-from .images import _public_path
+from .autotag_routes import BATCH_CANCELLED, MODEL_BUSY_ERROR, model_busy_response
+from .images import _current_fingerprint, _listing_posix, _public_path
 from .job_routes import busy_response
-from .jobs import IMAGE_TAG_GROUP_NAMES, IMAGE_TAG_JOB_KIND, JobBusy
+from .jobs import (
+    AUTOTAG_BATCH_JOB_KIND,
+    AUTOTAG_GROUP_NAMES,
+    IMAGE_TAG_GROUP_NAMES,
+    IMAGE_TAG_JOB_KIND,
+    JobBusy,
+)
+from .maintenance import disk_plan, short_space_message
 from .prompts import bad_request
 
 try:
@@ -107,6 +122,14 @@ READ_FAILED = "The file could not be read."
 SOURCE_CHANGED = "The source changed. Refresh the image collection."
 STORAGE_RESTORED = "Prompt storage was restored; start the job again."
 BUSY_RETRY = "The file could not be read now. Run the job again for it."
+# Tag output images (#379): the per-image batch.
+ALREADY_AUTOTAGGED = "Already auto-tagged"
+LISTING_FAILED = "The output folders could not be listed. Try again."
+LISTING_STATUS = "Listing output images…"
+_INTERNAL_ERROR = "An internal error occurred. Check server logs for details."
+# The pre-pass stats and looks up this many targets at a time, checking for a
+# cancel between chunks.
+PREPASS_CHUNK = 500
 
 _monotonic = time.monotonic  # the job's clock (a test can fake it)
 
@@ -246,12 +269,117 @@ async def _capacity_retried(job, attempt):
     return await attempt()
 
 
+class Refusal(NamedTuple):
+    """Why a Tag output images start was refused.
+
+    ``response`` is the native route's JSON answer; ``message`` the sentence
+    a legacy stream frame carries.
+    """
+
+    status: int
+    code: str
+    message: str
+    response: web.Response
+
+
+@dataclass(frozen=True)
+class AutotagRun:
+    """What one Tag output images job runs with (validated at its start)."""
+
+    model_type: str
+    existing: str
+    options: dict
+    keep_in_memory: bool
+    backup_on: bool
+    owner: object
+
+
+@dataclass(frozen=True)
+class _BatchTarget:
+    """One still image of the batch: the job target and its private keys."""
+
+    target: tuple  # (root_index, root_scope, relative): the image-tags target
+    path: str  # the listed file, for the pre-pass stat (never sent out)
+    locator: str  # the image tag key: normcase(join(realpath(root), relative))
+    label: str  # the root's public label
+
+
+def _still_targets(api, index, root, files, seen: set) -> list:
+    """Worker thread: one root's listed still images as _BatchTargets.
+
+    Newest first (the listing's order). A locator an earlier root already
+    produced (overlapping roots) is dropped; ``seen`` collects them.
+    """
+    scope = api._gallery_root_scope(root, index)
+    label = _public_path(root)
+    real = os.path.realpath(root)
+    prefix = os.path.join(str(root), "")
+    found = []
+    for path, _mtime in files:
+        relative = _listing_posix(root, prefix, path)
+        if is_video_path(relative):
+            continue
+        locator = os.path.normcase(os.path.join(real, *relative.split("/")))
+        if locator in seen:
+            continue
+        seen.add(locator)
+        found.append(_BatchTarget((index, scope, relative), str(path), locator, label))
+    return found
+
+
+def _prepass_chunk(db, chunk, skip_marked: bool, max_file: int):
+    """Worker thread: ``(remaining, skips)`` for a chunk of _BatchTargets.
+
+    Stats each file (no open, no hash): gone is "File not found", over the
+    capture limit "Too large to verify"; under "Skip already tagged" a file
+    whose current bytes are marked is "Already auto-tagged". ``skips`` are
+    ``(target, detail)`` pairs in target order.
+    """
+    stats, skips, alive = {}, [], []
+    for item in chunk:
+        fingerprint = _current_fingerprint(item.path)
+        if fingerprint is None:
+            skips.append((item, FILE_NOT_FOUND))
+        elif fingerprint[0] > max_file:
+            skips.append((item, TOO_LARGE))
+        else:
+            stats[item.locator] = fingerprint
+            alive.append(item)
+    marked = db.autotag_state(stats) if skip_marked and stats else {}
+    remaining = []
+    for item in alive:
+        if marked.get(item.locator):
+            skips.append((item, ALREADY_AUTOTAGGED))
+        else:
+            remaining.append(item)
+    return remaining, skips
+
+
 def _load_model(service, model_type: str, use_gpu: bool) -> None:
     """Worker thread: load (or swap to) *model_type*; never downloads."""
     if service.is_model_loaded() and service.get_loaded_model_type() == model_type:
         return
     if service.load_model(model_type, use_gpu) is False:
         raise RuntimeError(f"{model_type} could not be loaded")
+
+
+def _refusal(status: int, code: str, message: str) -> Refusal:
+    response = web.json_response(
+        {"success": False, "code": code, "error": message}, status=status
+    )
+    return Refusal(status, code, message, response)
+
+
+def _busy_refusal(busy: JobBusy) -> Refusal:
+    title = getattr(busy.running, "title", "") or "Another job"
+    return Refusal(409, "busy", f"{title} already running", busy_response(busy))
+
+
+def _batch_cancelled(job) -> str:
+    """Say the batch was cancelled; its end state (the runner ends the job)."""
+    job.update(status_line=BATCH_CANCELLED)
+    job.log_line(BATCH_CANCELLED)
+    return "cancelled"
 
 
 class ImageTagJobsMixin:
@@ -301,6 +429,216 @@ class ImageTagJobsMixin:
             job.task.add_done_callback(lambda _task: model_gate.release(owner))
         return web.json_response({"success": True, "job": job.summary()}, status=202)
 
+    # -- Tag output images (#379) ---------------------------------------------
+
+    async def _autotag_targets(self) -> list:
+        """Every still image the output folders list, as _BatchTargets.
+
+        Root by root in configured order, each newest first (the shared
+        listing, ``_get_gallery_files``, used as it is even when stale). Videos
+        are not targets; a file under two overlapping roots is one target.
+        """
+        seen: set = set()
+        found = []
+        for index, root in enumerate(list(self._get_all_output_dirs())):
+            files = await self._get_gallery_files(root)
+            found.extend(
+                await self._run_in_executor(
+                    _still_targets, self, index, root, files, seen
+                )
+            )
+        return found
+
+    async def _start_autotag(
+        self, *, model_type, existing, options, keep_in_memory, title, owner_kind
+    ):
+        """Register a Tag output images job: ``(job, None)`` or ``(None, Refusal)``.
+
+        ``options`` are already validated (``validate_options``). The checks
+        run in this order: 409 ``model-unavailable``; 507
+        ``insufficient-space`` (only when the safety backup is on); 409
+        ``busy`` (another records job); 409 ``model-busy``. No await follows
+        the busy check. The gate is taken before the job registers and
+        released when the task ends, also before its runner ever starts.
+        """
+        from ..autotag import MODELS, get_autotag_service
+
+        backup_on = self._safety_backup_policy() == "on"
+        status = await self._run_in_executor(get_autotag_service().get_models_status)
+        _disk, short, _size = await self._run_in_executor(
+            functools.partial(
+                disk_plan, self.db.model.db_path, backup=backup_on, vacuum=False
+            )
+        )
+        label = MODELS[model_type]["label"]
+        if not (status.get(model_type) or {}).get("downloaded"):
+            message = (
+                f"{label} is not downloaded. Download it in System › Auto-tagging."
+            )
+            return None, _refusal(409, "model-unavailable", message)
+        if backup_on and short is not None:
+            return None, _refusal(507, "insufficient-space", short_space_message(short))
+        busy = self._jobs.blocker(AUTOTAG_BATCH_JOB_KIND, admission="records")
+        if busy is not None:
+            return None, _busy_refusal(JobBusy(busy))
+        owner = model_gate.new_owner(owner_kind)
+        if not model_gate.try_acquire(owner):
+            response = model_busy_response()
+            return None, Refusal(409, "model-busy", MODEL_BUSY_ERROR, response)
+        run = AutotagRun(
+            model_type, existing, options, keep_in_memory, backup_on, owner
+        )
+        try:
+            job = self._jobs.start(
+                AUTOTAG_BATCH_JOB_KIND,
+                title,
+                admission="records",
+                cancellable=True,
+                scope={"model_type": model_type, "existing": existing, "label": label},
+                groups=AUTOTAG_GROUP_NAMES,
+                runner=functools.partial(self._run_autotag_batch, run),
+            )
+        except BaseException as refused:
+            model_gate.release(owner)
+            if isinstance(refused, JobBusy):
+                return None, _busy_refusal(refused)
+            raise
+        job.task.add_done_callback(lambda _task: model_gate.release(owner))
+        return job, None
+
+    async def _run_autotag_batch(self, run: AutotagRun, job) -> None:
+        """The ``autotag`` job: backup, model, listing, pre-pass, per-image loop.
+
+        ``job.cancelled`` is checked between phases (and per pre-pass chunk
+        and per image). Each phase publishes ``{"type": "phase", "phase"}``.
+        With ``keep_in_memory`` false the model is unloaded under the gate.
+        The job ends only after that cleanup and the gate release, so a job
+        that reads as ended never still holds the gate.
+        """
+        state = "failed"
+        try:
+            state = await self._autotag_batch_phases(run, job)
+        except Exception:
+            self.logger.exception("Tag output images failed")
+            job.update(status_line=_INTERNAL_ERROR)
+            job.log_line(f"Tagging failed · {_INTERNAL_ERROR}")
+        finally:
+            try:
+                if not run.keep_in_memory:
+                    await self._unload_batch_model(run.owner)
+                if run.backup_on:
+                    await self._prune_backup_pool(job, self.db)
+            finally:
+                model_gate.release(run.owner)
+                job.publish({"type": state, "progress": job.progress})
+                job.finish(state)
+
+    async def _unload_batch_model(self, owner) -> None:
+        from ..autotag import get_autotag_service
+
+        service = get_autotag_service()
+        try:
+            if service.is_model_loaded():
+                await model_gate.run(owner, service.unload_model)
+        except Exception:
+            self.logger.exception("The tagging model could not be unloaded")
+
+    async def _autotag_batch_phases(self, run: AutotagRun, job) -> str:
+        """Run the phases; the job's end state (the caller ends the job)."""
+        job.publish({"type": "phase", "phase": "backup"})
+        ok, _backup = await self._safety_backup_step(job, self.db, run.backup_on)
+        if not ok:
+            return "failed"
+        if job.cancelled:
+            return _batch_cancelled(job)
+        job.publish({"type": "phase", "phase": "model"})
+        job.update(status_line="Loading the tagging model")
+        spec = _Spec("auto", (), model_type=run.model_type, options=run.options)
+        service = await self._prepare_tagging_model(job, spec, run.owner)
+        if service is None:
+            return "failed"
+        if job.cancelled:
+            return _batch_cancelled(job)
+        job.publish({"type": "phase", "phase": "listing"})
+        job.update(status_line=LISTING_STATUS)
+        epoch = await self._run_in_executor(self.db.get_execution_epoch)
+        try:
+            targets = await self._autotag_targets()
+        except Exception:
+            self.logger.exception("Tag output images could not list the outputs")
+            job.update(status_line=LISTING_FAILED)
+            job.log_line(f"! {LISTING_FAILED}")
+            return "failed"
+        total = len(targets)
+        job.scope["images"] = total
+        job.update(total=total)
+        policy = (
+            "skip images already auto-tagged" if run.existing == "skip" else "merge"
+        )
+        job.log_line(
+            f"Tagging started · {job.scope.get('label') or run.model_type} · "
+            f"{_plural(total, 'image')} · {policy}"
+        )
+        if job.cancelled:
+            return _batch_cancelled(job)
+        remaining = await self._autotag_prepass(job, targets, run.existing == "skip")
+        if remaining is None:
+            return _batch_cancelled(job)
+        done = total - len(remaining)
+        spec = dataclasses.replace(
+            spec, targets=tuple(item.target for item in remaining)
+        )
+        loop_run = _Run(job, spec, epoch, run.owner, service)
+        if not await self._tag_each_file(loop_run, done_before=done):
+            job.update(status_line=STORAGE_RESTORED)
+            job.log_line(f"Tagging stopped · {STORAGE_RESTORED}")
+            return "failed"
+        if job.cancelled:
+            return _batch_cancelled(job)
+        finished = f"Tagged {_plural(job.counters.get('tagged', 0), 'image')}"
+        job.update(status_line=finished, progress=100)
+        job.log_line(finished)
+        return "finished"
+
+    async def _autotag_prepass(self, job, targets, skip_marked: bool):
+        """The targets left for the model, or None when cancelled meanwhile.
+
+        Opens and hashes nothing: one stat per file and one indexed read per
+        chunk. Skips are counted with ``record_counted`` (exact counters, rows
+        up to the cap, no log line each).
+        """
+        max_file = self._capture_store().max_file
+        remaining, skipped = [], 0
+        total = len(targets)
+        for start in range(0, total, PREPASS_CHUNK):
+            if job.cancelled:
+                return None
+            chunk = targets[start : start + PREPASS_CHUNK]
+            left, skips = await self._run_in_executor(
+                _prepass_chunk, self.db, chunk, skip_marked, max_file
+            )
+            remaining.extend(left)
+            if skips:
+                job.record_counted(
+                    "skipped",
+                    len(skips),
+                    [
+                        {
+                            "path": item.target[2],
+                            "root": item.label,
+                            "root_index": item.target[0],
+                            "detail": detail,
+                        }
+                        for item, detail in skips
+                    ],
+                )
+                skipped += len(skips)
+                job.update(processed=skipped, progress=skipped * 100 // total)
+                job.publish({"type": "progress", "progress": job.progress})
+        if skipped:
+            job.log_line(f"Skipped {_plural(skipped, 'image')} before tagging")
+        return remaining
+
     # -- runner ----------------------------------------------------------------
 
     def _job_roots(self, targets) -> dict:
@@ -331,28 +669,39 @@ class ImageTagJobsMixin:
                     job.finish("failed")
                     return
             if not await self._tag_each_file(run):
+                job.update(status_line=STORAGE_RESTORED)
                 job.log_line(f"{verb} stopped · {STORAGE_RESTORED}")
                 job.finish("failed")
                 return
             state = "cancelled" if job.cancelled else "finished"
-            job.log_line(f"{verb} {state} · {_plural(job.processed, 'file')} processed")
+            # An ended job never keeps the loop's "about X min left" (#379).
+            ended = f"{verb} {state} · {_plural(job.processed, 'file')} processed"
+            job.update(status_line=ended)
+            job.log_line(ended)
             job.publish({"type": state, "progress": job.progress})
             job.finish(state)
         finally:
             if owner is not None:
                 model_gate.release(owner)
 
-    async def _tag_each_file(self, run: _Run) -> bool:
-        """Tag the targets in order; False when the job had to stop."""
-        job, total = run.job, len(run.spec.targets)
+    async def _tag_each_file(self, run: _Run, *, done_before: int = 0) -> bool:
+        """Tag the targets in order; False when the job had to stop.
+
+        ``done_before`` files were already counted (the batch's pre-pass): file
+        n of this loop is "file done_before + n" of the job, and the time left
+        uses this loop's rate only.
+        """
+        job, count = run.job, len(run.spec.targets)
+        total = done_before + count
         run.roots = await self._run_in_executor(self._job_roots, run.spec.targets)
         started = _monotonic()
         for number, target in enumerate(run.spec.targets, 1):
             if job.cancelled:
                 break
             # The scan's estimate (D56), with each finished file as one batch.
-            left = _time_left(number - 1, total, number - 1, _monotonic() - started)
-            job.update(status_line=f"Processing file {number:,} of {total:,}{left}")
+            left = _time_left(number - 1, count, number - 1, _monotonic() - started)
+            shown = done_before + number
+            job.update(status_line=f"Processing file {shown:,} of {total:,}{left}")
             job.publish({"type": "progress", "progress": job.progress})
             stopped = False
             try:
@@ -363,7 +712,7 @@ class ImageTagJobsMixin:
                 self.logger.exception("Image tagging failed for one file")
                 group, detail = "errors", SAVE_FAILED
             self._record_tag_outcome(run, target, group, detail)
-            job.update(processed=number, progress=number * 100 // total)
+            job.update(processed=shown, progress=shown * 100 // total)
             if stopped:
                 return False
         return True
@@ -439,9 +788,17 @@ class ImageTagJobsMixin:
             store.release(capture.token)
 
     async def _auto_tag_capture(self, run: _Run, store, capture, root, relative):
-        """Suggest on the capture, then union only onto the same current bytes."""
+        """Suggest on the capture, then union only onto the same current bytes.
+
+        The bytes are marked auto-tagged with the union, also when the model
+        returned no names; captured bytes no model can read are marked too
+        (and stay skipped), so a "Skip already tagged" run passes them by.
+        """
         if not capture.inferable:
-            return "skipped", NOT_A_STILL
+            group, detail = await self._union_image_tags(
+                capture, [], run.epoch, mark_autotagged=True
+            )
+            return (group, detail) if group == "errors" else ("skipped", NOT_A_STILL)
         if store.acquire(capture.token) is None:
             raise _JobStopped  # every capture was invalidated (restore)
         spec = run.spec
@@ -467,21 +824,30 @@ class ImageTagJobsMixin:
         if facts.locator != capture.locator or facts.sha256 != capture.sha256:
             return "skipped", FILE_CHANGED
         names = [str(name) for name, _score in pairs]
-        if not names:
-            return "unchanged", NO_NEW_TAGS
-        return await self._union_image_tags(facts, names, run.epoch)
+        return await self._union_image_tags(
+            facts, names, run.epoch, mark_autotagged=True
+        )
 
-    async def _union_image_tags(self, facts, tags: list, epoch: str):
-        """``add_image_tags`` on the verified bytes, as a (group, detail)."""
+    async def _union_image_tags(
+        self, facts, tags: list, epoch: str, *, mark_autotagged: bool = False
+    ):
+        """``add_image_tags`` on the verified bytes, as a (group, detail).
+
+        ``mark_autotagged`` (a model's result) marks the bytes auto-tagged in
+        the same write; then ``tags`` may be empty.
+        """
         try:
             receipt = await self._run_in_executor(
-                self.db.add_image_tags,
-                locator=facts.locator,
-                sha256=facts.sha256,
-                size=facts.size,
-                mtime_ns=facts.mtime_ns,
-                expected_epoch=epoch,
-                tags=tags,
+                functools.partial(
+                    self.db.add_image_tags,
+                    locator=facts.locator,
+                    sha256=facts.sha256,
+                    size=facts.size,
+                    mtime_ns=facts.mtime_ns,
+                    expected_epoch=epoch,
+                    tags=tags,
+                    mark_autotagged=mark_autotagged,
+                )
             )
         except LibraryCommandError as exc:
             if exc.code == "storage-changed":

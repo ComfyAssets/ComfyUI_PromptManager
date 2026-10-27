@@ -1683,6 +1683,9 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
     unchanged, `-` skipped and `!` error.
   - The progress line is the scan's: "Processing file N of M · about X min left", the
     estimate (D56's `_time_left`) shown once two files are done, each file one batch.
+    An ended job never keeps it: its status line becomes "<Add tags | Auto-tag>
+    <finished | cancelled> · N files processed" (or the storage-restored sentence),
+    pinned by `test_an_ended_job_shows_no_time_left` (#379 live check).
   - Download report saves `prompt-manager-image-tags-<YYYYMMDD-HHMM>.json`.
   - The start toasts are "Tagging started." / "Auto-tagging started." (D85); the end
     toasts follow the design's pattern with the job's counts, as the scan's: "<title>
@@ -3149,25 +3152,39 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   the persisted count the Tag image dialog's Suggestions field (D91) starts from. Pinned
   by the comparison's mapping (it inserts the row) and `defaults save through Save
   preferences and the Tag image dialog uses them`.
-- **D134** (Auto-tagging, S11, OQ2/OQ3/OQ7/OQ8): an `.operation` "Tag output images"
-  with "Review" follows `.row-actions`: the legacy prompt-tag batch. Review is
+- **D134** (Auto-tagging, S11, OQ2/OQ3/OQ7/OQ8; amended by #379): an `.operation` "Tag
+  output images" with "Review" follows `.row-actions`: the per-image batch (#379), whose
+  description reads "Tag each output image from its own pixels with the model above.
+  Prompts are not changed. Review the scope first.". Review is
   `aria-disabled` (the press explains) while the chosen engine is not downloaded or a
   value it uses is invalid; otherwise it posts `/autotag/batch/preview` with the drafted
   engine and policy (read-only) and opens "Review tag output images" in the concept's
   record-changing review (its `maintenancePlan` shell): `h3` "Tag output images", the
-  `dl.meta-grid` Model, Existing tags, Images linked, Prompts, Already tagged, Prompts
-  to tag ("up to N"), Settings ("General <g> · Character <c>" or "Template of N
-  characters") and Backup, the upper-bound sentence in the `p.small`, the D55 backup box
-  and Cancel / "Start tagging", which starts the cancellable `autotag` job and opens it.
-  Replace after review, a model not on disk, a short disk, no linked image and nothing to
-  tag each show the rows with only Cancel and the reason ("Replacing tags needs a review
-  of each image. Use Preview tagging review, or choose Skip or Merge for a batch run.",
-  "Every prompt with an output image is already tagged.", "Not enough free disk space:
-  the safety backup needs about X MB and Y MB is free. Nothing is written until there is
-  room.") in the close-only review Integrations shares (`openCloseOnlyReview`). Pinned by
+  `dl.meta-grid` Model, Existing tags, Images, Already auto-tagged, Images to tag
+  ("about N"), Time, Settings ("General <g> · Character <c>" or "Template of N
+  characters", then " · up to L tags per image" with the preview's saved
+  `suggestion_limit`) and Backup, the estimate sentence ("Nothing is written until you
+  start. The number to tag is an estimate: images changed since they were tagged are
+  tagged again, and missing files are skipped. Activity reports what was tagged.") in the
+  `p.small`, the D55 backup box and Cancel / "Start tagging", which starts the
+  cancellable `autotag` job and opens it. Time (DEC11) is `m = max(1,
+  ceil(estimate_seconds / 60))` read "about m min" under 90 and "about H h M min" (or
+  "about H h") from 90, followed by " on a processor; a graphics card can be faster."
+  or, when the preview says WD14 runs on CUDA, " on the graphics card."; the language
+  models read "Language-model engines take longer per image. Activity shows the time
+  left once tagging starts.". The option label "Skip already tagged" is the concept's;
+  for this batch it skips images already auto-tagged (hand tags do not count). Replace
+  after review, a model not on disk, a short disk, no image and nothing to tag each show
+  the rows with only Cancel and the reason ("Replacing tags needs a review of each
+  image. Use Preview tagging review, or choose Skip or Merge for a batch run.", "The
+  output folders contain no images to tag.", "Every output image is already
+  auto-tagged.", "Not enough free disk space: the safety backup needs about X MB and Y
+  MB is free. Nothing is written until there is room.") in the close-only review
+  Integrations shares (`openCloseOnlyReview`). Pinned by
   `tag output images review matches the concept`, its mutation check and `the
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
-  the batch tests of workspace-system-tagging.spec.
+  the batch tests of workspace-system-tagging.spec; the mutation check renames each grid
+  label in turn.
 - **D109** (Logs, S12, #329): the concept's Logs surface on the live server. The toolbar
   keeps "Level", Refresh and the download (renamed "Download log": the active log,
   `/logs/download/prompt_manager.log`, through the api client), with all six minimum
@@ -3775,19 +3792,45 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   `409 busy`; the legacy SSE route attaches to the same job and keeps its frames.
 - **Unload**: `POST /prompt_manager/autotag/unload` answers `{success, message}` or
   `409 model-busy`.
-- **Tag output images**: `POST /prompt_manager/autotag/batch/preview {model_type,
-  existing}` writes nothing and opens no file; it answers `images`, `prompts`,
-  `already_tagged`, `to_tag` (an upper bound), `model {type, label, size_label,
-  downloaded}`, `existing`, `review_required`, `backup {policy}` and `disk`. `POST
+- **Tag output images** (per image since #379; prompt tags and prompt text are never
+  written): its targets are every still image the output folders list (the Images
+  listing of each root, linked to a prompt or not; videos are not targets; a file under
+  two overlapping roots is one target). `POST /prompt_manager/autotag/batch/preview
+  {model_type, existing}` writes nothing and opens or stats no image file (it may wait
+  for the shared listing walk); it answers `images`, `already_tagged` (images with any
+  auto-tagged byte record), `to_tag` (`images − already_tagged` under Skip, `images`
+  under Merge; both estimates), `estimate_seconds` (WD14: `to_tag` × 1.6 s on the
+  processor or × `WD14_GPU_SECONDS_PER_IMAGE` when ONNX Runtime offers CUDA, see
+  `py/tagging_defaults.py`; `null` for GGUF and HF), `estimate_device` (`cpu`, `gpu`,
+  or `null`), `suggestion_limit` (the saved count the run uses), `model {type, label,
+  size_label, downloaded}`, `existing`, `review_required`, `backup {policy}` and
+  `disk`. `POST
   /prompt_manager/jobs/autotag {model_type, existing, options}` (WD14: both thresholds;
   GGUF/HF: `instructions`, the template) starts the cancellable `autotag` job (202),
   title "Tag output images", admission `records`, a safety backup by the policy first.
+  The job runs the `image-tags` loop (`_tag_each_file`) on each image: a capture, at
+  most `suggestion_limit` model tags, a re-hash, then a union into that image's tags
+  that also marks its bytes auto-tagged (`media_image_autotags`, one row per byte
+  record; an empty result and an unsupported still are marked too; File changed, File
+  not found, Too large to verify, read, inference and tag-limit errors are not). Phases,
+  each checked for Cancel: backup, model load, listing ("Listing output images…"), a
+  pre-pass that stats each file without opening it (gone: "File not found", over 256
+  MiB: "Too large to verify", under Skip a marked current record: "Already
+  auto-tagged"; counted with `record_counted`, rows up to the cap, no log line each),
+  then the loop ("Processing file {k + n} of {T}", the time left from the model's own
+  rate, D56 unchanged). It ends "Tagged N images", "Cancelled. Tags already added were
+  kept.", or failed with "Prompt storage was restored; start the job again.", "The
+  output folders could not be listed. Try again." or the model's refusal.
   Refusals: `400 review-required` (Replace after review never runs as a batch), `409
   model-unavailable` ("<label> is not downloaded. Download it in System ›
   Auto-tagging."), `507 insufficient-space`, `409 busy`, `409 model-busy`. The section
   toasts `model-busy` with its operation, the other three with the server's sentence,
   `busy` with the running job (D57), anything else "<what> could not start. Try again.".
   Outcomes: Tagged / Unchanged / Skipped / Errors (the `image-tags` descriptor, D111).
+  `tests/test_autotag_batch.py` pins it, including two images of one prompt getting
+  different tags with no `prompts` or `prompt_tags` row changed; the marks' schema group
+  is pinned by `tests/test_autotag_schema.py` (forward-only: one empty `WITHOUT ROWID`
+  table, optional in old backups, refused without the annotation group).
 
 No browser test downloads or runs a model: the injected `TestModel` answers, its
 `download_model` raises unless `/__test__/tagging/download {mode: hold | succeed |
@@ -3843,6 +3886,105 @@ The browser server writes its logs into `<server root>/logs`
 (`tests/browser/workspace_diagnostics_fixture.py`), whose hooks seed records with fixed
 times, rotated copies, a link (POSIX) and a user's `.bak`, and roll the copies over; no
 test reads or deletes a real log folder.
+
+`tests/browser/system-diagnostics-concept.spec.mjs` compares the section and its log
+cleanup review with the concept (dark and light, 1600x1100 and 390x844, no page scroll;
+both selects show their whole option at 320 wide). The fixture's `{mode: "concept"}` seed
+reproduces the concept's Logs sample: only its four buffer lines, a 1.4 MB active log with
+three rotated copies and console logging off, so those values are compared as the concept
+prints them. `mapDiagnosticsConcept` applies only D109 and D110, and `mapCleanupConcept`
+D100 (the shared `mapPlanConcept`) with D109's rule for this plan (no backup box, "Not
+needed: no library record changes", "Listed files"). The mutation check asserts that the
+unmapped difference is exactly the deviated paths. The comparison found that the Database
+line read `database_info.size_bytes`, a key the report does not have, so it always said
+"0 bytes"; it reads `database_size_bytes`, the key `get_database_info()` returns.
+
+### Legacy System capability coverage
+
+Every System capability of the legacy admin and gallery pages has an owner (#249 System
+S12, #329). Status is `covered` (a native control replaces it), `kept in legacy` (it stays
+on the legacy page, which keeps working) or `approved removal` (a ruling retired it). Native
+control is `` `<section>` · <role> · "<accessible name>" ``, `<section>` a System hash id
+and `<role>` one of button, combobox, switch, slider, spinbutton, textbox, group, status or
+term, followed by ` · in "<row title>"` when several rows of the section share the name.
+Every `covered` row names one, except the rows in `CONTROL_EXEMPTIONS`
+(`tools/vendor/legacy-coverage.mjs`), each with its reason: today only "Gallery per-image
+auto-tag / review", which the Images selection bar owns, not a System section. A row that
+is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
+file. Anchors are line numbers on `main` at this PR.
+
+`tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
+- no owner, or a status outside the three;
+- a malformed Native control cell;
+- a covered row without a control (unless exempt), or a control on a row that is not
+  covered;
+- a test title its file does not declare: `test(` or `it(` (`.only` and `.slow` count),
+  or a `def test_` at function or method indentation;
+- a title whose test is only declared with `.skip`, `.fixme` or `.fail`.
+
+A title that appears only in a comment or a Python docstring does not count. CI running
+those tests green is what proves them. `every covered legacy System capability has its
+native control` (workspace-system.spec) opens each covered row's section and finds the
+control by role and accessible name, inside its row when the cell names one. The shared
+"Review plan" of the per-operation review row and the Sources "Refresh" of the monitoring
+list stay unscoped: any row's control proves them.
+
+| Capability | Legacy anchor | Owner | Status | Native control | Test |
+| --- | --- | --- | --- | --- | --- |
+| Image scan directories add/remove | `admin.html:377–390`; `admin.js:200,1273–1323` | S4 Sources | covered | `sources` · button · "+ Add source" | Add source validates on the server, then marks the host draft dirty; Save persists (workspace-system-sources.spec.mjs) |
+| Currently monitoring list + Refresh | `admin.html:392–400`; `admin.js:1032` | S4 Sources | covered | `sources` · button · "Refresh" | watching only with a live observer; restart pending otherwise (workspace-system-sources.spec.mjs) |
+| Monitoring enabled | `py/config.py:212,248` | S4 Sources | covered | `sources` · switch · "Watch for new outputs" | Watch for new outputs saves monitoring_enabled; a restart applies it (workspace-system-sources.spec.mjs) |
+| Search results auto-hide `result_timeout` | `admin.html:407–412` | S3 Appearance | covered | `appearance` · spinbutton · "Node search auto-hide (seconds)" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
+| Web UI display mode | `admin.html:414–422` | S3 Appearance | covered | `appearance` · combobox · "Open from ComfyUI" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
+| Infinite scrolling default | `admin.html:424–430`; `admin.js:689–727` | Legacy prompt list (README continuous browsing); read-only in the report | kept in legacy | — | shouldLoadMore asks for the next page only near the bottom with pages left (list-state.test.js) |
+| Worker threads | `admin.html:437–445` | S4 Sources | covered | `sources` · slider · "Worker threads" | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
+| LoraManager badge, enable, path, trigger words, CivitAI key, clear key | `admin.html:448–490`; `admin.js:1052–1156` | S10 Integrations | covered | `integrations` · switch · "LoraManager integration" | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
+| LoRA data import with progress | `admin.html:492–498,517–541`; `admin.js:1157` | S10 Integrations | covered | `integrations` · button · "Review import" | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
+| Statistics | `admin.html:159`; `admin.js:1627` | S2 Overview | covered | `overview` · button · "Explore" | statistics dialog lists runs by category and library totals (workspace-system.spec.mjs) |
+| Export components JSON `/export` | `admin.html:163`; `admin.js:1607`; `py/api/prompts.py:238` | S9 Backup & export | covered | `backups` · button · "Export all prompts JSON" | Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103) (workspace-system-backups.spec.mjs) |
+| Saved pairs export | `py/api/pairs.py:84` | S9 Backup & export | covered | `backups` · button · "Export saved pairs JSON" | Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103) (workspace-system-backups.spec.mjs) |
+| Library export | `py/api/library.py:223` | S9 Backup & export | covered | `backups` · button · "Export JSON" | Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103) (workspace-system-backups.spec.mjs) |
+| Diagnostics run | `admin.html:171,659`; `admin.js:1984` | S12 Diagnostics | covered | `diagnostics` · button · "Run checks" | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
+| Synthetic image-link test | `admin.html:662`; `admin.js:2101` | S12 Diagnostics | covered | `diagnostics` · button · "Create test link…" | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
+| Maintenance cleanup_duplicates, vacuum, cleanup_orphaned_images, prune_orphaned_prompts | `admin.html:692–748`; `admin.js:1834` | S6/S7 Maintenance | covered | `maintenance` · button · "Review plan" · in "Duplicate prompt text" | Apply reviewed operation closes, toasts, opens the job in Activity (workspace-system-maintenance.spec.mjs) |
+| Maintenance check_hash_duplicates, check_consistency | `admin.html:692–748`; `admin.js:1834` | S2 Health report (Maintenance notice, D123) | covered | `maintenance` · button · "Run health checks" | Run health checks opens Health report and updates metric 4 (workspace-system.spec.mjs) |
+| Maintenance statistics (database info) | `admin.html:692–748`; `admin.js:1834` | S12 Diagnostics | covered | `diagnostics` · term · "Database" | meta-grid shows real database and source status, the pinned Viewer.js version and the host renderers (workspace-system-diagnostics.spec.mjs) |
+| Maintenance select all / clear all / run | `admin.html:754–762`; `admin.js:1822–1833` | S7 per-operation review | covered | `maintenance` · button · "Review plan" | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
+| Prompt cleanup `/cleanup` | `py/api/admin.py:620` | S6/S7 Maintenance | covered | `maintenance` · button · "Review plan" · in "Duplicate prompt text" | test_duplicate_prompts_plan_counts_the_legacy_groups (test_maintenance_plans.py) |
+| Database backup | `admin.html:179,824`; `admin.js:2139,2454` | S9 Backup & export | covered | `backups` · button · "Back up" | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
+| Restore from file | `admin.html:183,616–642`; `admin.js:2177–2248` | S8/S9 Backup & export | covered | `backups` · button · "Review restore…" | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
+| Metadata scan with progress, cancel, pill | `admin.html:187,805–865`; `admin.js:2336–2500` | S4 Sources | covered | `sources` · button · "Review scan" | Review scan opens the shared Review metadata scan with all sources (workspace-system-sources.spec.mjs) |
+| Rescan-required notice + dismiss | `admin.html:1367–1410`; `admin.js:991–1011` | S4 Sources | covered | `sources` · button · "Later" | notice Later persists the 3.2.0 dismissal (pm_update_notice_dismissed) without scanning (workspace-system-sources.spec.mjs) |
+| View logs with level and limit | `admin.html:195,885–907,974`; `admin.js:2579–2641` | S12 Logs | covered | `diagnostics` · combobox · "Level" | level filter is minimum-level over all six choices (workspace-system-diagnostics.spec.mjs) |
+| Log statistics | `admin.html:921–941`; `admin.js:2512` | S12 Logs | covered | `diagnostics` · status · "Log statistics" | log statistics show entries, errors, warnings, files and size (workspace-system-diagnostics.spec.mjs) |
+| Log files list and download | `admin.html:910,982–985`; `admin.js:2545,2642,2679` | S12 Logs | covered | `diagnostics` · button · "Download log" | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
+| Clear/truncate logs | `admin.html:915`; `admin.js:2704` | S12 Logs | covered | `diagnostics` · button · "Clear all logs…" | Clear all logs states both counts, confirms first and reads everything again (workspace-system-diagnostics.spec.mjs) |
+| Rotated-log cleanup (new, #329) | — | S12 Logs | covered | `diagnostics` · button · "Review log cleanup" | Review log cleanup lists only rotated copies and keeps the rest (workspace-system-diagnostics.spec.mjs) |
+| Set log level (incl. CRITICAL), console logging | `admin.html:948–966`; `admin.js:2530,2729` | S12 Logs | covered | `diagnostics` · combobox · "Runtime log level" | runtime level (including CRITICAL) and console logging save and say they apply until the server restarts (workspace-system-diagnostics.spec.mjs) |
+| Log file_logging / max_file_size / backup_count / buffer_size | `py/api/logging_routes.py:56,285–299` | S12 Logs (read-only) | covered | `diagnostics` · group · "Log files & retention" | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
+| Auto-tag model list with status | `admin.html:1095–1148`; `admin.js:3641` | S11 Auto-tagging | covered | `tagging` · combobox · "Tagging model" | model options are the four real engines with size and the description shows live status (workspace-system-tagging.spec.mjs) |
+| Auto-tag model download | `admin.html:1413–1438`; `admin.js:3680–3747`; `gallery.js:3412` | S11 Auto-tagging | covered | `tagging` · button · "Download" | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
+| Unload model | `gallery.js:3480` | S11 Auto-tagging | covered | `tagging` · button · "Unload" | Unload is enabled only while a model is loaded, and a held gate's refusal names the operation (workspace-system-tagging.spec.mjs) |
+| Tag template, WD14 thresholds, already-tagged mode | `admin.html:1150–1198`; `admin.js:3748` | S11 Auto-tagging | covered | `tagging` · combobox · "Existing tags" | defaults save through Save preferences and the Tag image dialog uses them (workspace-system-tagging.spec.mjs) |
+| Batch auto-tag output images | `admin.html:191,1210,1279–1318`; `admin.js:3748–3840` | S11 Auto-tagging | covered | `tagging` · button · "Review" | Tag output images reviews the images, tags each one and never a prompt (#379) (workspace-system-tagging.spec.mjs) |
+| Batch review loop | `admin.html:1206,1218–1364`; `admin.js:3841–4172` | S11 + image-tagging plan | covered | `tagging` · button · "Preview tagging review" | Preview tagging review opens the Tag image dialog for the selected image (workspace-system-tagging.spec.mjs) |
+| Gallery per-image auto-tag / review | `gallery.html:601,605`; `gallery.js:3506,3674–3753` | Image-tagging plan (selection bar) | covered | — | Auto-tag selected with Apply automatically runs a job with the chosen model, thresholds and suggestion count (workspace-tagging-bulk.spec.mjs) |
+| Gallery thumbnail generation | `gallery.js:1852,1967` | S5/S7 | covered | `sources` · button · "Review options" · in "Thumbnail generation" | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
+| Clear server thumbnails | `gallery.js:2175–2192` | S7 Maintenance | covered | `maintenance` · button · "Review options" · in "Thumbnail cache" | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
+| Browser cache clear | `gallery.js:2194–2207` | S7 Maintenance | covered | `maintenance` · button · "Review plan" · in "Metadata cache" | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
+| Refresh file listing | `gallery.js:2209` | S4 Sources | covered | `sources` · button · "Refresh" · in "Refresh files" | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
+| Duplicate image scan, review, delete | `gallery.js:2234–2577` | S6/S7 Maintenance | covered | `maintenance` · button · "Find duplicates" | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
+| Default view mode, image quality | `gallery-settings.js:26–27` | S3 Appearance | covered | `appearance` · combobox · "Default layout" | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
+| Auto-load metadata, cache metadata, show file paths | `gallery-settings.js:31–33` | S3 Appearance | covered | `appearance` · switch · "Load metadata on selection" | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
+| Video autoplay, mute, loop | `gallery-settings.js:40–42` | S3 Appearance | covered | `appearance` · switch · "Autoplay videos" | video defaults reach the viewer (workspace-system.spec.mjs) |
+| Image info on cards; sidebar collapsed | `gallery-settings.js:30,34` | S3 Appearance | covered | `appearance` · switch · "Show image details on cards" | added rows reach their consumers (workspace-system.spec.mjs) |
+| Reset gallery settings | `gallery.js:1813` | S3 Appearance | covered | `appearance` · button · "Reset" | reset restores defaults without touching other keys (workspace-system.spec.mjs) |
+| Lazy loading | `gallery-settings.js:25` | Legacy gallery (native always lazy) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
+| Results per page / grid columns / paged mode | `gallery-settings.js:28–29,35` | README continuous browsing | approved removal | — | numeric strings from <select> values are accepted and columns are clamped (gallery-settings.test.js) |
+| Startup thumbnail prompt | `gallery-settings.js:38–39`; `gallery.js:2578` | README; Overview thumbnail row | approved removal | — | thumbnail row reflects the status endpoint (workspace-system.spec.mjs) |
+| Client debug output `debugMode` | `gallery-settings.js:36` | Legacy gallery (S12-10) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
+| API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
+| config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
 
 ### Browser cache ownership (#222)
 

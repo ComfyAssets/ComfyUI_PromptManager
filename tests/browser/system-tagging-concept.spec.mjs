@@ -33,7 +33,7 @@ test.afterEach(async ({ page, request, browserName }) => {
 const PREVIEW_URL = '/prompt_manager/autotag/batch/preview';
 const MODEL_OPTIONS = ['WD14 SwinV2 · ~400 MB', 'WD14 ViT · ~400 MB', 'GGUF JoyCaption · ~4.5 GB', 'HuggingFace JoyCaption · ~16 GB'];
 const SUGGESTIONS = 'From 1 to 100: the most suggestions Generate shows for one image.';
-const BATCH = 'Add tags to each prompt from its linked output images with the model above. Review the scope first.';
+const BATCH = 'Tag each output image from its own pixels with the model above. Prompts are not changed. Review the scope first.';
 
 /** Runs in the page: Auto-tagging's surface under `mainSelector`: rows, field, actions, operation, geometry and tokens. */
 function measureTagging(mainSelector) {
@@ -272,11 +272,19 @@ function measureReview() {
 }
 
 const number = value => value.toLocaleString('en-US');
+/** DEC11 (#379): the Time row the preview's estimate reads as (WD14 on the test server's processor). */
+function timeRow(plan) {
+    const minutes = Math.max(1, Math.ceil(plan.estimate_seconds / 60));
+    const text = minutes < 90 ? `about ${minutes} min`
+        : `about ${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
+    return `${text} on a processor; a graphics card can be faster.`;
+}
 
 /**
- * D134: the server's batch preview in the concept's review: "Review tag output images" with "Tag output images" as its
- * `h3`, the model, policy, counts and settings in the concept's `dl.meta-grid` (Backup in the concept's wording), the
- * upper-bound sentence in the concept's `p.small`, the D55 backup box and Cancel / "Start tagging".
+ * D134 (#379): the server's batch preview in the concept's review: "Review tag output images" with "Tag output images"
+ * as its `h3`, the model, policy, image counts, time estimate and settings in the concept's `dl.meta-grid` (Backup in
+ * the concept's wording), the estimate sentence in the concept's `p.small`, the D55 backup box and Cancel / "Start
+ * tagging".
  */
 function mapBatchConcept(reference, plan) {
     const [cancel, start] = reference.actions.buttons;
@@ -286,13 +294,14 @@ function mapBatchConcept(reference, plan) {
         tree: ['h3', 'dl.meta-grid', 'p.small', 'div.notice', 'div.dialog-actions'],
         heading: { ...reference.heading, text: 'Tag output images' },
         grid: { ...reference.grid, rows: [['Model', 'WD14 SwinV2 · ~400 MB'], ['Existing tags', 'Merge with existing'],
-            ['Images linked', number(plan.images)], ['Prompts', number(plan.prompts)], ['Already tagged', number(plan.already_tagged)],
-            ['Prompts to tag', `up to ${number(plan.to_tag)}`], ['Settings', 'General 0.35 · Character 0.85'],
+            ['Images', number(plan.images)], ['Already auto-tagged', number(plan.already_tagged)],
+            ['Images to tag', `about ${number(plan.to_tag)}`], ['Time', timeRow(plan)],
+            ['Settings', `General 0.35 · Character 0.85 · up to ${number(plan.suggestion_limit)} tags per image`],
             ['Backup', 'Create and verify before changes']] },
         backup: { tree: ['div', 'div.row-actions'], text: [['h3', 'Back up the database first (recommended)'],
             ['p', 'Downloads a copy of the prompts database before this operation changes any records.']], buttons: ['Back up now'] },
-        note: { ...reference.note, text: 'Nothing is written until you start. Missing files and files outside the output folders '
-            + 'are counted, so the prompts to tag are an upper bound; Activity reports what was tagged.' },
+        note: { ...reference.note, text: 'Nothing is written until you start. The number to tag is an estimate: images changed '
+            + 'since they were tagged are tagged again, and missing files are skipped. Activity reports what was tagged.' },
         actions: { ...reference.actions, buttons: [cancel, { ...start, text: 'Start tagging' }] },
     };
 }
@@ -308,8 +317,8 @@ async function conceptReview(page, theme) {
 
 async function productionReview(page, theme) {
     await productionTagging(page, theme);
-    // Every concept-fixture prompt with an image is already tagged, so under the saved Skip there is nothing to start
-    // (the Cancel-only review). Merge reviews a batch with work: the full review the concept's shell is compared with.
+    // Merge reviews every listed still image (#379): a batch with work, the full review the concept's shell is compared
+    // with.
     await page.locator('#workspace-main #tag-existing').selectOption('merge');
     const answer = page.waitForResponse(response => response.url().endsWith(PREVIEW_URL));
     await page.locator('#workspace-main .operation').getByRole('button', { name: 'Review', exact: true }).click();
@@ -326,8 +335,9 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
         expect(concept.tree).toEqual(['p.demo-note', 'h3', 'dl.meta-grid', 'p.small', 'div.dialog-actions']);
         await page.screenshot({ path: testInfo.outputPath(`concept-plan-review-${theme}-${width}.png`) });
         const { plan, production } = await productionReview(page, theme);
-        // Under Merge every prompt with a linked image is tagged again: the batch has work to review.
+        // Under Merge every listed still image is tagged again: the batch has work to review.
         expect(plan.to_tag).toBeGreaterThan(0);
+        expect(plan.estimate_device).toBe('cpu');
         await page.screenshot({ path: testInfo.outputPath(`production-tagging-review-${theme}-${width}.png`) });
         expect(diffInventory(mapBatchConcept(concept, plan), production)).toEqual([]);
     });
@@ -372,9 +382,17 @@ test('tag output images review comparison detects mutations', async ({ page }) =
     const expected = mapBatchConcept(concept, plan);
     const paths = async () => diffInventory(expected, await page.evaluate(measureReview)).map(item => item.path);
     expect(await paths()).toEqual([]);
-    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[5].textContent = 'To tag'; });
-    expect(await paths()).toEqual(['grid.rows.5.0']);
-    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[5].textContent = 'Prompts to tag'; });
+    // Every label of the grid is compared (#379's rows included): a changed one is named by its row.
+    for (const [index, [term]] of expected.grid.rows.entries()) {
+        await page.evaluate(([at, label]) => {
+            document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[at].textContent = label;
+        }, [index, `${term}!`]);
+        expect(await paths()).toEqual([`grid.rows.${index}.0`]);
+        await page.evaluate(([at, label]) => {
+            document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[at].textContent = label;
+        }, [index, term]);
+    }
+    expect(await paths()).toEqual([]);
     const undoGrid = await mutate(page, { css: 'dialog#modal dl.meta-grid { column-gap: 3px; }' });
     expect(await paths()).toEqual(expect.arrayContaining(['grid.columnGap']));
     await undoGrid();

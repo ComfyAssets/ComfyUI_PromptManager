@@ -371,7 +371,10 @@ class ReviewSchemaTests(unittest.TestCase):
         self.require_module()
         for label, dropped in (
             ("annotations only", TABLES),
-            ("predates annotations", ANNOTATION_TABLES + TABLES),
+            (
+                "predates annotations",
+                ("media_image_autotags",) + ANNOTATION_TABLES + TABLES,
+            ),
         ):
             with self.subTest(label):
                 path = str(Path(self.temp.name) / f"{label.replace(' ', '-')}.db")
