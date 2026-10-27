@@ -20,8 +20,10 @@ instead of being overwritten (``PRAGMA data_version``).
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sqlite3
+import tempfile
 import weakref
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -32,6 +34,8 @@ T = TypeVar("T")
 # proof, tests/browser/reset_equivalence.py, compares both ways).
 SEED_ON_LIVE_ENV = "PM_TEST_SEED_ON_LIVE"
 SCRATCH_SCHEMA = "reset_seed"
+# Linux's shared-memory tmpfs (present in the Playwright image and on runners).
+MEMORY_ROOT = Path("/dev/shm")
 
 
 def _quote(name: str) -> str:
@@ -100,9 +104,18 @@ class _SeedApi:
 class ScratchSeeder:
     """Seed into a scratch copy and publish the changed tables in one commit."""
 
-    def __init__(self, api: Any, directory: Path, *, on_live: bool = False) -> None:
+    def __init__(
+        self,
+        api: Any,
+        directory: Path,
+        *,
+        on_live: bool = False,
+        memory_root: Path | None = MEMORY_ROOT,
+    ) -> None:
         self._api = api
-        self._directory = Path(directory)
+        self._fallback = Path(directory)
+        self._memory_root = memory_root
+        self._directory: Path | None = None
         self._on_live = on_live
         self._scratch = None
         self._unsynced: "weakref.WeakSet[sqlite3.Connection]" = weakref.WeakSet()
@@ -137,7 +150,7 @@ class ScratchSeeder:
         if self._scratch is None:
             from database.operations import PromptDatabase
 
-            self._directory.mkdir(parents=True, exist_ok=True)
+            self._directory = self._scratch_directory()
             self._scratch = PromptDatabase(str(self._directory / "seed.db"))
         return self._scratch
 
@@ -201,4 +214,18 @@ class ScratchSeeder:
         if self._scratch is not None:
             self._scratch.close_all()
             self._scratch = None
-        shutil.rmtree(self._directory, ignore_errors=True)
+        if self._directory is not None:
+            shutil.rmtree(self._directory, ignore_errors=True)
+            self._directory = None
+
+    def _scratch_directory(self) -> Path:
+        """A folder in memory (tmpfs) where there is one, else ``directory``.
+
+        Even unsynced, scratch writes on the runner's disk wait whenever the
+        kernel is writing back the pages they rewrite.
+        """
+        root = self._memory_root
+        if root is not None and root.is_dir() and os.access(root, os.W_OK):
+            return Path(tempfile.mkdtemp(prefix="pm-reset-", dir=root))
+        self._fallback.mkdir(parents=True, exist_ok=True)
+        return self._fallback

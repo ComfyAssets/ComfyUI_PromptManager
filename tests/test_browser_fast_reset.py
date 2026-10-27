@@ -70,7 +70,7 @@ class TestScratchSeeder(unittest.TestCase):
         self.addCleanup(assert_closed, self, self.tmp.name)
         self.live = self.database("live.db")
         self.api = types.SimpleNamespace(db=self.live, marker="live api")
-        self.seeder = ScratchSeeder(self.api, self.root / "scratch")
+        self.seeder = ScratchSeeder(self.api, self.root / "scratch", memory_root=None)
         self.addCleanup(self.seeder.close)
         # Rows from "earlier tests": AUTOINCREMENT positions have moved on.
         for index in range(5):
@@ -229,7 +229,9 @@ class TestScratchSeeder(unittest.TestCase):
         self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_on_live_mode_runs_the_seed_on_the_live_api(self):
-        seeder = ScratchSeeder(self.api, self.root / "unused", on_live=True)
+        seeder = ScratchSeeder(
+            self.api, self.root / "unused", on_live=True, memory_root=self.root
+        )
         self.addCleanup(seeder.close)
         expected = self.oracle(reseed)
         seen = []
@@ -239,6 +241,19 @@ class TestScratchSeeder(unittest.TestCase):
         self.assertIs(seen[0], self.api)
         self.assertEqual(digests(self.live), expected)
         self.assertFalse((self.root / "unused").exists())
+
+    def test_the_scratch_lives_under_the_memory_root_when_there_is_one(self):
+        memory = self.root / "memory"
+        memory.mkdir()
+        seeder = ScratchSeeder(self.api, self.root / "fallback", memory_root=memory)
+        self.addCleanup(seeder.close)
+        expected = self.oracle(reseed)
+        seeder.run(reseed)
+        self.assertEqual(digests(self.live), expected)
+        self.assertEqual(len(list(memory.glob("pm-reset-*/seed.db"))), 1)
+        self.assertFalse((self.root / "fallback").exists())
+        seeder.close()
+        self.assertEqual(list(memory.iterdir()), [])
 
     def test_close_releases_the_scratch_files(self):
         self.seeder.run(reseed)
