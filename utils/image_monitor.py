@@ -150,6 +150,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self._sealed_subscribed = False
         # Set by ``close``: no new work, no new worker, ever (#302).
         self._closed = False
+        # Workers a stop signalled that had not ended yet: every later stop
+        # waits for them again, so it never reports True too early.
+        self._finishing: List[threading.Thread] = []
 
     def on_created(self, event):
         """Handle filesystem creation events.
@@ -239,16 +242,23 @@ class ImageGenerationHandler(FileSystemEventHandler):
             worker, self._worker = self._worker, None
             work, self._work = self._work, queue.Queue()
             stop, self._stop = self._stop, threading.Event()
+            if worker is not None:
+                self._finishing.append(worker)
+            finishing = [w for w in self._finishing if w.is_alive()]
+            self._finishing = finishing
         stop.set()
-        if worker is None:
-            return True
-        if worker.is_alive():
+        if worker is not None and worker.is_alive():
             work.put(None)  # sentinel: wake a worker idle on an empty queue
-        if worker is threading.current_thread():
+        if threading.current_thread() in finishing:
             self.logger.debug("shutdown called on the image worker itself")
             return False
-        worker.join(timeout)
-        if worker.is_alive():
+        deadline = time.monotonic() + timeout
+        for thread in finishing:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        with self._pending_lock:
+            self._finishing = [w for w in self._finishing if w.is_alive()]
+            still_running = bool(self._finishing)
+        if still_running:
             self.logger.warning(
                 f"image worker still running after {timeout} s; "
                 "it stops after the image in hand"
@@ -566,7 +576,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self._awaiting.popitem(last=False)
 
     def _await_history(self, image_path: str) -> None:
-        """Re-check ``image_path`` once, history only, when its run is sealed."""
+        """Re-check ``image_path`` once, history only, when its run is sealed.
+
+        A closed handler re-checks nothing.
+        """
+        if self._closed:
+            return
         if not self._sealed_subscribed:
             subscribe_outputs_sealed(self._on_outputs_sealed)
             self._sealed_subscribed = True
@@ -624,6 +639,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         if self.schedule(image_path, HISTORY_ONLY):
             return
         with self._awaiting_lock:
+            # ``close`` sets the flag before ``shutdown`` clears this set, so
+            # a close that raced the refusal above is seen here.
+            if self._closed:
+                return
             self._history_due.pop(image_path, None)
             self._history_due[image_path] = None
             while len(self._history_due) > MAX_AWAITING_HISTORY:
@@ -922,6 +941,9 @@ class ImageMonitor:
         self.observer = None
         self.handler = None
         self.monitored_directories = []
+        # (observer, handler) pairs a stop left running: the next stop waits
+        # for them again instead of reporting True.
+        self._unfinished: List[Tuple[Any, Any]] = []
         self.logger = get_logger("prompt_manager.image_monitor")
         self.review_recorder: Optional[Callable[[str], str]] = None
         self.thumbnail_queue: Optional[Callable[[str], str]] = None
@@ -1055,41 +1077,63 @@ class ImageMonitor:
         Closes the handler first (its worker is joined and its dispatch
         returns at once), then stops the watchdog observer and joins it.
         watchdog's ``observer.stop()`` joins its emitters without a limit;
-        it counts against the deadline but is not bounded here. Safe to call
-        when monitoring never started and more than once.
+        it counts against the deadline but is not bounded here. A part an
+        earlier call left running is waited for again. Safe to call when
+        monitoring never started and more than once.
 
         Returns:
-            True when the worker and the observer have both ended.
+            True when every worker and observer it stopped has ended.
         """
         deadline = time.monotonic() + timeout
         observer, self.observer = self.observer, None
         handler, self.handler = self.handler, None
         self.monitored_directories = []
-        if observer is None:
+        pairs, self._unfinished = self._unfinished, []
+        if observer is not None:
+            pairs.append((observer, handler))
+        if not pairs:
             return True
 
         def remaining() -> float:
             return max(0.0, deadline - time.monotonic())
 
-        handler_ok = True
-        if handler is not None:
-            try:
-                handler_ok = handler.close(remaining())
-            except Exception as e:
-                handler_ok = False
-                self.logger.warning(f"Error while stopping the image worker: {e}")
-        stopped = True
+        for pair_observer, pair_handler in pairs:
+            handler_ok = self._close_handler(pair_handler, remaining())
+            observer_ok = self._stop_observer(pair_observer, remaining())
+            if not observer_ok:
+                self.logger.warning(
+                    f"watchdog observer still running after {timeout} s"
+                )
+            if not (handler_ok and observer_ok):
+                self._unfinished.append(
+                    (
+                        None if observer_ok else pair_observer,
+                        None if handler_ok else pair_handler,
+                    )
+                )
+        self.logger.debug("Image monitoring stopped")
+        return not self._unfinished
+
+    def _close_handler(self, handler, timeout: float) -> bool:
+        if handler is None:
+            return True
+        try:
+            return handler.close(timeout)
+        except Exception as e:
+            self.logger.warning(f"Error while stopping the image worker: {e}")
+            return False
+
+    def _stop_observer(self, observer, timeout: float) -> bool:
+        """``observer.stop()`` (safe to repeat), then a bounded join."""
+        if observer is None:
+            return True
         try:
             observer.stop()
-            observer.join(remaining())
+            observer.join(timeout)
         except Exception as e:
-            stopped = False
             self.logger.warning(f"Error while stopping image monitoring: {e}")
-        if observer.is_alive():
-            stopped = False
-            self.logger.warning(f"watchdog observer still running after {timeout} s")
-        self.logger.debug("Image monitoring stopped")
-        return handler_ok and stopped
+            return False
+        return not observer.is_alive()
 
     def detect_comfyui_output_dirs(self) -> list:
         """Auto-detect ComfyUI output directories.

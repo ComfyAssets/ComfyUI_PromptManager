@@ -350,6 +350,17 @@ class TestStartStop(unittest.TestCase):
             self.assertFalse(self.monitor.stop_monitoring(timeout=0.05))
         self.assertIn("watchdog observer still running", "\n".join(logs.output))
         self.assertFalse(self.monitor.is_monitoring)
+        fake.stay_alive = False  # it ends; tearDown's stop waits for it
+
+    def test_a_second_stop_monitoring_waits_for_the_observer(self):
+        fake = FakeObserver(stay_alive=True)
+        self._start_with(fake)
+        with self.assertLogs("prompt_manager.image_monitor", "WARNING"):
+            self.assertFalse(self.monitor.stop_monitoring(timeout=0.05))
+            self.assertFalse(self.monitor.stop_monitoring(timeout=0.05))
+        fake.stay_alive = False
+        self.assertTrue(self.monitor.stop_monitoring())
+        self.assertFalse(self.monitor._unfinished)
 
     def test_stop_monitoring_reports_an_observer_stop_that_raised(self):
         fake = FakeObserver(stop_error=OSError("descriptor gone"))
@@ -357,6 +368,7 @@ class TestStartStop(unittest.TestCase):
         with self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs:
             self.assertFalse(self.monitor.stop_monitoring())
         self.assertIn("Error while stopping image monitoring", "\n".join(logs.output))
+        fake.stop_error = None  # tearDown's stop calls stop() again
 
     def test_stop_monitoring_without_an_observer_returns_true(self):
         self.assertTrue(self.monitor.stop_monitoring())
@@ -495,6 +507,27 @@ class TestHandlerScheduling(unittest.TestCase):
         worker.join(30)
         self.assertFalse(worker.is_alive())
 
+    def test_a_second_stop_waits_for_a_worker_still_finishing(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def busy(path, prompt_snapshot=None):
+            entered.set()
+            release.wait(30)
+
+        self.handler.process_new_image = busy
+        self.handler.schedule(self._image("twice.png"))
+        worker = self.handler._worker
+        self.addCleanup(worker.join, 30)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(30), "the worker never took the image")
+
+        with self.assertLogs("prompt_manager.image_monitor", "WARNING"):
+            self.assertFalse(self.handler.close(timeout=0.05))
+            self.assertFalse(self.handler.close(timeout=0.05))
+        release.set()
+        self.assertTrue(self.handler.close(timeout=30))
+        self.assertFalse(worker.is_alive())
+
     def test_shutdown_on_the_worker_itself_only_signals(self):
         entered, result = threading.Event(), {}
 
@@ -530,10 +563,13 @@ class TestHandlerScheduling(unittest.TestCase):
             self.assertFalse(self.handler.schedule(path))
             # The image in hand can still ask for a history re-check and its
             # run can be sealed afterwards, on the history writer's thread.
+            self.handler._await_history(path)
+            self.assertEqual(self.handler.awaiting_history(), [])
             self._seal(self.handler, "late.png")
+            self.handler._schedule_recheck(path)
         self.assertIsNone(self.handler._worker)
         self.assertEqual(list(self.handler._history_due), [])
-        self.assertEqual(self._live_workers(), before)
+        self.assertEqual(self._live_workers() - before, set())
 
     def test_a_sealed_run_starts_a_worker_on_an_open_handler(self):
         self._image("open.png")
@@ -621,11 +657,14 @@ class TestCloseReleasesHandles(unittest.TestCase):
             Image.new("RGB", (8, 8), "red").save(path)
             try:
                 self.assertTrue(handler.schedule(path))
+                worker = handler._worker
                 self.assertTrue(done.wait(30), "the worker never processed the image")
             finally:
-                self.assertTrue(handler.close())
-                self.assertTrue(tracker.shutdown())
+                closed, shut = handler.close(), tracker.shutdown()
                 db.model.close_all()
+            self.assertTrue(closed)
+            self.assertTrue(shut)
+            self.assertFalse(worker.is_alive())
             assert_closed(self, folder)
 
 

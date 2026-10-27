@@ -383,7 +383,7 @@ class TestTrackerShutdown(unittest.TestCase):
 
     def test_shutdown_on_the_cleanup_thread_only_signals(self):
         tracker = _real_tracker()
-        self.addCleanup(tracker.shutdown)
+        self.addCleanup(lambda: self.assertTrue(tracker.shutdown()))
         result = {}
         with patch.object(tracker, "cleanup_thread", threading.current_thread()):
             result["value"] = tracker.shutdown()
