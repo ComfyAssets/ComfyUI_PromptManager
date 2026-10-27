@@ -164,7 +164,8 @@ test('defaults save through Save preferences and the Tag image dialog uses them'
 
 test('a refused value shows the server\'s message', async ({ page, request }) => {
     const before = (await serverJson(request, SETTINGS_URL)).settings;
-    await openTagging(page);
+    // An image is selected, so Preview tagging review is held back only by the invalid value below.
+    await selectThenOpen(page, FIRST);
     await page.locator('#threshold-general').fill('1.5');
     await page.locator('#threshold-general').press('Tab');
     await save(page).click();
@@ -173,13 +174,18 @@ test('a refused value shows the server\'s message', async ({ page, request }) =>
     // Nothing was written; the draft is kept for the next Save.
     expect((await serverJson(request, SETTINGS_URL)).settings.autotag_general_threshold).toBe(before.autotag_general_threshold);
     await expect(page.locator('#threshold-general')).toHaveValue('1.5');
-    // While the value is invalid, Preview tagging review explains instead of opening.
-    await actionOf(page, 'Preview tagging review').click();
+    // While the value is invalid, Preview tagging review is aria-disabled and explains instead of opening (Playwright
+    // waits on an aria-disabled control, so it is pressed from the keyboard, as a user can).
+    await expect(actionOf(page, 'Preview tagging review')).toHaveAttribute('aria-disabled', 'true');
+    await actionOf(page, 'Preview tagging review').focus();
+    await page.keyboard.press('Enter');
     await expect(toast(page)).toHaveText('General-tag confidence must be between 0 and 1.');
+    await expect(tagDialog(page)).toHaveCount(0);
     await page.locator('#threshold-general').fill('0.5');
     await page.locator('#threshold-general').press('Tab');
     await expect(page.locator('#threshold-general')).not.toHaveAttribute('aria-invalid', 'true');
     await expect(status(page)).toHaveText('Unsaved changes.');
+    await expect(actionOf(page, 'Preview tagging review')).not.toHaveAttribute('aria-disabled', 'true');
 });
 
 test('Download starts the job and Activity shows it without Cancel', async ({ page, request }) => {
@@ -341,7 +347,9 @@ test('a model that is not downloaded cannot be reviewed for a batch; the button 
     await openTagging(page);
     await page.locator('#tag-model').selectOption('gguf');
     await expect(reviewButton(page)).toHaveAttribute('aria-disabled', 'true');
-    await reviewButton(page).click();
+    // Playwright waits on an aria-disabled control: press it from the keyboard, as a user can.
+    await reviewButton(page).focus();
+    await page.keyboard.press('Enter');
     await expect(toast(page)).toHaveText('GGUF JoyCaption is not downloaded. Download it first.');
     await expect(dialog(page)).toHaveCount(0);
     expect(page.modelCalls.filter(call => call.includes('/batch/preview'))).toEqual([]);

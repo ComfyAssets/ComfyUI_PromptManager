@@ -285,7 +285,7 @@ function mapBatchConcept(reference, plan) {
         title: 'Review tag output images',
         tree: ['h3', 'dl.meta-grid', 'p.small', 'div.notice', 'div.dialog-actions'],
         heading: { ...reference.heading, text: 'Tag output images' },
-        grid: { ...reference.grid, rows: [['Model', 'WD14 SwinV2 · ~400 MB'], ['Existing tags', 'Skip already tagged'],
+        grid: { ...reference.grid, rows: [['Model', 'WD14 SwinV2 · ~400 MB'], ['Existing tags', 'Merge with existing'],
             ['Images linked', number(plan.images)], ['Prompts', number(plan.prompts)], ['Already tagged', number(plan.already_tagged)],
             ['Prompts to tag', `up to ${number(plan.to_tag)}`], ['Settings', 'General 0.35 · Character 0.85'],
             ['Backup', 'Create and verify before changes']] },
@@ -308,6 +308,9 @@ async function conceptReview(page, theme) {
 
 async function productionReview(page, theme) {
     await productionTagging(page, theme);
+    // Every concept-fixture prompt with an image is already tagged, so under the saved Skip there is nothing to start
+    // (the Cancel-only review). Merge reviews a batch with work: the full review the concept's shell is compared with.
+    await page.locator('#workspace-main #tag-existing').selectOption('merge');
     const answer = page.waitForResponse(response => response.url().endsWith(PREVIEW_URL));
     await page.locator('#workspace-main .operation').getByRole('button', { name: 'Review', exact: true }).click();
     const plan = await (await answer).json();
@@ -323,7 +326,7 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
         expect(concept.tree).toEqual(['p.demo-note', 'h3', 'dl.meta-grid', 'p.small', 'div.dialog-actions']);
         await page.screenshot({ path: testInfo.outputPath(`concept-plan-review-${theme}-${width}.png`) });
         const { plan, production } = await productionReview(page, theme);
-        // The concept fixture links images to prompts, some untagged: the batch has work to review.
+        // Under Merge every prompt with a linked image is tagged again: the batch has work to review.
         expect(plan.to_tag).toBeGreaterThan(0);
         await page.screenshot({ path: testInfo.outputPath(`production-tagging-review-${theme}-${width}.png`) });
         expect(diffInventory(mapBatchConcept(concept, plan), production)).toEqual([]);
