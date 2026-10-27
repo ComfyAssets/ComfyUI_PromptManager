@@ -3,9 +3,12 @@
 import hashlib
 import sqlite3
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     from tests.open_handles import assert_closed
@@ -13,6 +16,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from open_handles import assert_closed
 
 from database.operations import PromptDatabase
+from tests.browser import fast_reset
 from tests.browser.fast_reset import ScratchSeeder, table_digests
 
 
@@ -161,6 +165,59 @@ class TestScratchSeeder(unittest.TestCase):
             texts = [row[0] for row in conn.execute("SELECT text FROM prompts")]
         self.assertIn("written to live meanwhile", texts)
         self.assertNotIn("seeded 0", texts)
+
+    def test_a_write_open_during_the_seed_and_committed_later_fails_it(self):
+        other = self.database("live.db")
+        began, finished = threading.Event(), []
+
+        def write():
+            with other.model.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT INTO prompts (text, hash) VALUES ('concurrent', 'c')"
+                )
+                began.set()
+                time.sleep(0.5)  # the publish waits on this lock meanwhile
+            other.model.close()
+            finished.append(True)
+
+        writer = threading.Thread(target=write)
+
+        def racing(api):
+            reseed(api)
+            writer.start()
+            self.assertTrue(began.wait(10))
+
+        with self.assertRaisesRegex(RuntimeError, "changed while"):
+            self.seeder.run(racing)
+        writer.join()
+        self.assertEqual(finished, [True])
+        with self.live.model.get_connection() as conn:
+            texts = [row[0] for row in conn.execute("SELECT text FROM prompts")]
+        self.assertIn("concurrent", texts)
+        self.assertNotIn("seeded 0", texts)
+        self.assert_live_connection_restored()
+
+    def test_a_failed_publish_leaves_live_and_its_connection_as_they_were(self):
+        before = digests(self.live)
+        columns = fast_reset._columns
+
+        def broken_columns(conn, table, *schema):
+            # The publish asks for the live table's columns without a schema.
+            return columns(conn, table, *schema) if schema else ["no_such_column"]
+
+        with mock.patch.object(fast_reset, "_columns", broken_columns):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.seeder.run(reseed)
+        self.assertEqual(digests(self.live), before)
+        self.assert_live_connection_restored()
+
+    def assert_live_connection_restored(self):
+        conn = self.live.model.get_connection()
+        self.assertFalse(conn.in_transaction)
+        self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        names = [row[1] for row in conn.execute("PRAGMA database_list")]
+        self.assertEqual(names, ["main"])
 
     def test_the_live_connection_is_left_as_it_was(self):
         self.seeder.run(reseed)

@@ -130,7 +130,7 @@ class ScratchSeeder:
             raise RuntimeError("the seed changed the database schema")
         if live.execute("PRAGMA data_version").fetchone()[0] != version:
             raise RuntimeError("the live database changed while the seed ran")
-        self._publish(live, scratch.model.db_path, changed)
+        self._publish(live, scratch.model.db_path, changed, version)
         return result
 
     def _scratch_database(self):
@@ -150,33 +150,48 @@ class ScratchSeeder:
         return conn
 
     @staticmethod
-    def _publish(live: sqlite3.Connection, path: str, tables: list[str]) -> None:
+    def _publish(
+        live: sqlite3.Connection, path: str, tables: list[str], version: int
+    ) -> None:
+        """Replace ``tables`` with the scratch rows in one live transaction.
+
+        ``version`` is the live ``data_version`` read before the seed. It is
+        checked again under the write lock: a writer whose transaction was
+        open during the seed commits before ``BEGIN IMMEDIATE`` returns, and
+        its rows must fail the reset instead of being overwritten.
+        """
         if not tables:
             return
         foreign_keys = live.execute("PRAGMA foreign_keys").fetchone()[0]
         # Rows are copied as they are; no cascade may reach a table left alone.
         live.execute("PRAGMA foreign_keys = OFF")
-        live.execute(f"ATTACH DATABASE ? AS {SCRATCH_SCHEMA}", (path,))
         try:
-            live.execute("BEGIN IMMEDIATE")
+            live.execute(f"ATTACH DATABASE ? AS {SCRATCH_SCHEMA}", (path,))
             try:
-                for table in tables:
-                    columns = ", ".join(
-                        _quote(c) if c != "rowid" else "rowid"
-                        for c in _columns(live, table)
-                    )
-                    name = _quote(table)
-                    live.execute(f"DELETE FROM main.{name}")
-                    live.execute(
-                        f"INSERT INTO main.{name} ({columns}) "
-                        f"SELECT {columns} FROM {SCRATCH_SCHEMA}.{name}"
-                    )
-                live.commit()
-            except BaseException:
-                live.rollback()
-                raise
+                live.execute("BEGIN IMMEDIATE")
+                try:
+                    if live.execute("PRAGMA data_version").fetchone()[0] != version:
+                        raise RuntimeError(
+                            "the live database changed while the seed ran"
+                        )
+                    for table in tables:
+                        columns = ", ".join(
+                            _quote(c) if c != "rowid" else "rowid"
+                            for c in _columns(live, table)
+                        )
+                        name = _quote(table)
+                        live.execute(f"DELETE FROM main.{name}")
+                        live.execute(
+                            f"INSERT INTO main.{name} ({columns}) "
+                            f"SELECT {columns} FROM {SCRATCH_SCHEMA}.{name}"
+                        )
+                    live.commit()
+                except BaseException:
+                    live.rollback()
+                    raise
+            finally:
+                live.execute(f"DETACH DATABASE {SCRATCH_SCHEMA}")
         finally:
-            live.execute(f"DETACH DATABASE {SCRATCH_SCHEMA}")
             live.execute(f"PRAGMA foreign_keys = {int(foreign_keys)}")
 
     def close(self) -> None:
