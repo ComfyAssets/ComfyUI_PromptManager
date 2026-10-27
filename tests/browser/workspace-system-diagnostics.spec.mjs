@@ -123,6 +123,9 @@ test('meta-grid shows real database and source status, the pinned Viewer.js vers
         await expect(surface.locator('.meta-grid dt')).toHaveText(['Database', 'Sources', 'Viewer.js', 'Host renderers']);
         const images = report.checks.database.image_count;
         await expect(cell(page, 'Database')).toHaveText(new RegExp(`^Readable · [\\d.]+ (bytes|KB|MB|GB) · ${images.toLocaleString('en-US')} images?$`));
+        // The size is the database's real size (`database_size_bytes`), never a missing key read as 0.
+        expect(report.database_info.database_size_bytes).toBeGreaterThan(0);
+        await expect(cell(page, 'Database')).not.toContainText('· 0 bytes ·');
         const { configured, watching } = report.sources;
         await expect(cell(page, 'Sources')).toHaveText(configured
             ? `${configured} source${configured === 1 ? '' : 's'} · ${watching} watching`
