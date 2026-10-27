@@ -190,7 +190,8 @@ class TestPromptInspector(ImageAPITestCase):
                     "inputs": {"positive": ["5", 0], "negative": ["2", 0]},
                 }
             else:
-                source["1"]["class_type"] = "UnknownEncoder"
+                # No text and no links: nothing passes through it (#381).
+                source["1"] = {"class_type": "UnknownEncoder", "inputs": {"seed": 1}}
             png(
                 path,
                 prompt=source,
@@ -215,7 +216,7 @@ class TestPromptInspector(ImageAPITestCase):
             result["prompts"]["negative"], self.side("", "embedded-parameters")
         )
         source = graph()
-        source["2"]["class_type"] = "UnknownEncoder"
+        source["2"] = {"class_type": "UnknownEncoder", "inputs": {"seed": 1}}
         png(path, prompt=source)
         _, result = await self.inspect()
         self.assertEqual(result["prompts"]["positive"], self.side("portrait"))

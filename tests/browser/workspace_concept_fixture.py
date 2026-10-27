@@ -16,7 +16,6 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -34,6 +33,7 @@ from utils.execution_contexts import (
 from utils.execution_history_events import make_finish, make_start
 from utils.execution_outputs import OutputBundle, OutputReference, snapshot_output_roots
 from utils.pair_execution import EXECUTION_KEY
+from tests.browser.folder_trash import replace_folder
 
 if TYPE_CHECKING:
     from py.api import PromptManagerAPI
@@ -300,8 +300,7 @@ def _clear(api: PromptManagerAPI, root: Path) -> None:
         for table in _TABLES:
             conn.execute(f"DELETE FROM {table}")
     for name in ("output", "input"):
-        shutil.rmtree(root / name)
-        (root / name).mkdir()
+        replace_folder(root / name)
 
 
 def _record_run(

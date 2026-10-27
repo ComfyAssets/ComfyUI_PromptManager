@@ -1,6 +1,13 @@
-"""Logging API routes for PromptManager."""
+"""Logging API routes for PromptManager.
+
+Every route that names a log file goes through Rule R (#329,
+``utils/logging_config.py``): a download is served only for a regular,
+non-link file listed directly in the log folder, and Clear deletes only
+rotated copies. File work runs off the event loop.
+"""
 
 import os
+import stat
 
 from aiohttp import web
 
@@ -83,6 +90,41 @@ def _validate_log_config(data):
                 return None, f"{key} must be a boolean"
             clean[key] = value
     return clean, None
+
+
+def _read_log_bytes(path):
+    """The whole file at ``path``, opened without following a link (blocking).
+
+    The file is checked again through the open handle: a regular file with
+    one name and, when ``path`` carries it, the inode it was listed with. A
+    name swapped for a link or another file after it was listed, or a hard
+    link to a file elsewhere, is refused as missing. The handle is closed
+    before this returns.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # A FIFO swapped in after the listing must not block the executor thread.
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as error:
+        if getattr(os, "O_NOFOLLOW", 0) and os.path.islink(str(path)):
+            raise FileNotFoundError("Log file not found") from error
+        raise
+    listed_ino = getattr(path, "listed_ino", 0)
+    with os.fdopen(fd, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink > 1  # a hard link to a file elsewhere
+            or (listed_ino and opened.st_ino and opened.st_ino != listed_ino)
+        ):
+            raise FileNotFoundError("Log file not found")
+        return handle.read()
+
+
+def _download(logger_manager, filename):
+    """``bytes`` of a downloadable log file; FileNotFoundError otherwise."""
+    return _read_log_bytes(logger_manager.log_file_entry(filename))
 
 
 class LoggingRoutesMixin:
@@ -195,15 +237,15 @@ class LoggingRoutesMixin:
                     {"success": False, "error": "Invalid filename"}, status=400
                 )
 
-            log_file_path = logger_manager.log_dir / filename
-
-            if not log_file_path.exists():
+            try:
+                file_content = await self._run_in_executor(
+                    _download, logger_manager, filename
+                )
+            except FileNotFoundError:
+                # Missing, a link, a folder or not listed: all read as absent.
                 return web.json_response(
                     {"success": False, "error": "Log file not found"}, status=404
                 )
-
-            with open(log_file_path, "rb") as f:
-                file_content = f.read()
 
             return web.Response(
                 body=file_content,
@@ -224,7 +266,7 @@ class LoggingRoutesMixin:
         """Truncate all log files."""
         try:
             logger_manager = self._get_logger_manager()
-            results = logger_manager.truncate_logs()
+            results = await self._run_in_executor(logger_manager.truncate_logs)
 
             return web.json_response(
                 {
@@ -266,7 +308,7 @@ class LoggingRoutesMixin:
                 return web.json_response({"success": False, "error": error}, status=400)
 
             logger_manager = self._get_logger_manager()
-            logger_manager.update_config(clean)
+            await self._run_in_executor(logger_manager.update_config, clean)
 
             return web.json_response(
                 {

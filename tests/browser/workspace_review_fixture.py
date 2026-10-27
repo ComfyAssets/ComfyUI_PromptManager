@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
+from tests.browser.folder_trash import replace_folder
 
 if TYPE_CHECKING:
     from py.api import PromptManagerAPI
@@ -225,8 +226,7 @@ def seed_review(
             conn.execute(f"DELETE FROM {table}")
     api.close_annotation_captures()
     for name in ("output", "input"):
-        shutil.rmtree(root / name)
-        (root / name).mkdir()
+        replace_folder(root / name)
     shutil.rmtree(root / "temp" / "review", ignore_errors=True)
     output = root / "output"
     files = []

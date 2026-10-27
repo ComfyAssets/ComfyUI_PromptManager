@@ -745,11 +745,55 @@ with a literal true `strip_newlines` is `replace("\n", "").strip()`;
 (`N` = `inputcount`) after the literal delimiter unless missing or exactly `""`, and
 ignores later inputs. A linked setting is `unsupported-node`; a list output
 (`return_list` true or linked) and `PromptSearchList` are `runtime-value` ("Text is
-decided at run time"), never one list item. Unverified text nodes (LoRAfromText,
-RegexReplace, XYZPrompt, ImpactWildcardProcessor) stay `unsupported-node`. Every
+decided at run time"), never one list item. Every
 intermediate text is length-checked and charged to the scanned-character budget. If
 the table cannot be loaded, graph inspection is `unresolved` ("Inspection node
 semantics are unavailable") and ingestion is unaffected, because it never imports the table.
+Unknown nodes pass through (#381, maintainer-approved 2026-10-27; no per-node
+inventory): an output whose class the table, its `facts`, `lineage` and the code's
+adapters never name is read through, not refused. A `text` input is its text (the
+legacy encoder rule, so RegexReplace or LoRAfromText show their input text), except
+that a string output of a node with a seed input (`seed`, `noise_seed`,
+`sampling_mode.seed`) and no linked `conditioning`/`positive`/`negative` input is
+generated at run time (a language model such as TextGenerate, a wildcard):
+`runtime-value` naming it. Else, at output slot 0 or 1 of a node with a `positive` or
+`negative` input, only `positive` (slot 1, `negative`) is followed, nothing when it
+is not linked; else a linked `conditioning` alone; else every linked input except
+the table's `pass_through.skip_inputs` (core type inputs: model, clip, vae, image,
+latent, ...), each traced with kind `any`. A followed input with no text adds
+nothing; limits and selector choices propagate; another failure (`runtime-value`,
+`composite`, `malformed`) blocks, unless a PromptManager node was reached: this
+repository's own nodes are authoritative, and then only their texts count. One
+distinct text resolves; several make the sampler `ambiguous` "Several prompts reach
+the sampler" with one candidate per distinct outcome, in input order (at most 32,
+else `work-limit`). A PromptManagerPair's execution record is what ran: while its
+inputs are checked against it, a walk through an unknown node that fails, diverges
+or passes text through is unverifiable and never overrides the record. No text
+at all is `unsupported-node` naming the outermost unknown node. An unlisted output
+of a listed class (a sampler, a loader, a lineage node) stays `unsupported-node`, so
+the walk never reads another stage's prompt. `INSPECTION_RESOLVER_VERSION` is 2 for
+this rule; ingestion keeps the default profile (`RESOLVER_VERSION` 1). The legacy
+parity gate (`tests/test_legacy_parity_gate.py`) records, per corpus (the
+generation-params vectors, the inspection parity fixtures, the local resolver golden
+and selection cases, the unknown-node shapes in `tests/unknown_node_graphs.py`),
+every graph whose inspection positive equals the legacy parser's; a graph may join
+that list (`python3 -m tests.test_legacy_parity_gate --write`), never leave it. A graph
+may read differently from legacy only when `LEGACY_WRONG` there states why (legacy's
+first-sampler pick on a branch the file name identifies).
+Saver anchoring (#381): an inspected file's name (`path.name` on the server, the chosen
+file's name locally) anchors an unanchored inspection on the one node whose
+`filename_prefix` (literal, or traced as a string) has a last path part that makes the
+file's stem `<prefix>_<digits>` with an optional trailing `_`. That node's linked inputs
+are walked like a detailer's image ancestry, through any image node, and the listed
+samplers found are the candidates. No match, several matches, a walk that fails or no
+sampler found means no anchor: nothing is guessed and the file stays "several possible
+prompts". Ingestion ignores file names. Shared-conditioning stages: in a sampler's
+latent walk, an earlier sampler reading the very same conditioning links (positive and
+negative, or a guider; compared by node ID text and slot) is the same prompt, not an
+unattributed stage, when it is a plain first stage: not a detailer, no prompt override
+set, and no listed sampler in its own latent ancestry (else it stays unattributed) (`tests/test_resolver_saver_anchor.py`, shapes in
+`tests/saver_anchor_graphs.py` from the maintainer's `gpu_unlock_bench`, dataset and
+ANIMA runs; browser parity through the `anchor-*` cases, which carry `__file_name`).
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240

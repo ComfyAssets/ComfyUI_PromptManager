@@ -72,16 +72,24 @@ class TestHiresFixChain(unittest.TestCase):
     def test_an_unlisted_image_node_breaks_the_lineage(self):
         # The walk still finds the earlier sampler, but not through listed
         # pass-through nodes: the stages are never compared.
-        result = _inspect(shapes.hires_fix(filter_class="MysteryImageEffect"))
+        graph = shapes.hires_fix(
+            second_positive=shapes.POSITIVE, filter_class="MysteryImageEffect"
+        )
+        result = _inspect(graph)
         self.assertEqual(result["state"], "ambiguous")
         later = next(
             item for item in result["candidates"] if item["sampler_id"] == "20"
         )
         self.assertEqual(later["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
+        # Stages on the very same conditioning links are one prompt (#381).
+        result = _inspect(shapes.hires_fix(filter_class="MysteryImageEffect"))
+        self.assertEqual(result["state"], "resolved")
 
     def test_a_second_earlier_sampler_in_the_ancestry_stays_unattributed(self):
         graph = shapes.hires_fix()
-        graph["30"] = shapes.ksampler(["2", 0], ["3", 0], ["4", 0])
+        # Its own encoder: the same links would be one prompt (#381).
+        graph["33"] = shapes.encode(shapes.POSITIVE)
+        graph["30"] = shapes.ksampler(["33", 0], ["3", 0], ["4", 0])
         graph["31"] = {"class_type": "VAEDecode", "inputs": {"samples": ["30", 0]}}
         graph["32"] = {
             "class_type": "ImageBlend",
