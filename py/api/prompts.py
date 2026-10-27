@@ -1178,6 +1178,8 @@ class PromptRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": "Expected a JSON object"}, status=400
                 )
+            if "images_filter" in data:
+                return await self._bulk_category_by_filter(data)
             if not data.get("prompt_ids"):
                 return web.json_response(
                     {"success": False, "error": "No prompt IDs provided"}, status=400
@@ -1213,6 +1215,66 @@ class PromptRoutesMixin:
                 },
                 status=500,
             )
+
+    async def _bulk_category_by_filter(self, data: dict) -> web.Response:
+        """Set the category on every linked positive a listing filter admits.
+
+        #392 "Select all N matching": ``{images_filter, category}``, the filter
+        being the Images listing's own query (parse_listing_filter), resolved
+        now. The answer adds ``prompt_count`` (the distinct linked positives)
+        and ``skipped`` (matching images without one); none linked changes
+        nothing.
+        """
+        from .images import (
+            MAX_LISTING_SELECTION,
+            ListingSourceChanged,
+            parse_listing_filter,
+        )
+
+        def refused(message, **extra):
+            return web.json_response(
+                {"success": False, "error": message, **extra}, status=400
+            )
+
+        if set(data) != {"images_filter", "category"}:
+            return refused("Request must contain exactly category, images_filter")
+        category = data["category"]
+        try:
+            params = parse_listing_filter(data["images_filter"])
+            validate_category(category)
+            selection = await self.resolve_listing_filter(params)
+        except ListingSourceChanged:
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "source-changed",
+                    "error": "The source changed. Refresh the image collection.",
+                },
+                status=409,
+            )
+        except ValueError as exc:
+            return refused(str(exc))
+        if selection.truncated:
+            return refused(
+                f"Narrow the view to at most {MAX_LISTING_SELECTION:,} images.",
+                code="too-many-images",
+            )
+        category = (category or "").strip()
+        ids = selection.positive_ids
+        updated = (
+            await self._run_in_executor(self.db.bulk_set_category, ids, category)
+            if ids
+            else 0
+        )
+        return web.json_response(
+            {
+                "success": True,
+                "message": f"Set category for {updated} prompts",
+                "updated_count": updated,
+                "prompt_count": len(ids),
+                "skipped": selection.unlinked,
+            }
+        )
 
     def _all_prompts_for_export(self):
         """Every prompt, fetched in EXPORT_PAGE_SIZE pages (blocking)."""

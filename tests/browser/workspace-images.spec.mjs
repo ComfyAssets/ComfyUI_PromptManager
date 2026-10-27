@@ -2189,3 +2189,248 @@ test('scan for metadata opens the review dialog from Import', async ({ page, req
     await expect.poll(async () => (await (await request.get('/prompt_manager/jobs')).json()).jobs
         .map(job => [job.kind, job.state])).toEqual([['backup', 'finished']]);
 });
+
+// #392 (D135): file-manager selection beyond the concept's checkbox.
+const selectedCount = page => bulkbar(page).locator('.bulkbar > strong');
+const cardAt = (page, index) => page.locator(`article[data-image-key][data-index="${index}"]`);
+const boxAt = (page, index) => cardAt(page, index).getByRole('checkbox', { name: /^Select / });
+const checkedIndexes = page => page.locator('article[data-image-key]').evaluateAll(nodes => nodes
+    .filter(node => node.querySelector('.image-overlays input[type="checkbox"]').checked)
+    .map(node => Number(node.dataset.index)).sort((a, b) => a - b));
+const range = (from, to) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+async function bulkReset(page, request) {
+    await page.addInitScript(() => { window.IntersectionObserver = undefined; });
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 200 } })).toBeOK();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(40);
+}
+/** A touch press on `locator` the way a finger makes one: pointerdown, (held), pointerup. */
+const touchDown = locator => locator.evaluate(node => {
+    const { left, top } = node.getBoundingClientRect();
+    node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, pointerType: 'touch', clientX: left + 5, clientY: top + 5 }));
+});
+const touchUpAndClick = locator => locator.evaluate(node => {
+    node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, isPrimary: true, pointerType: 'touch' }));
+    // A tap's click counts one press (`detail` 1); a keyboard click (and `HTMLElement.click()`) counts none.
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+});
+async function touchTap(locator) {
+    await touchDown(locator);
+    await touchUpAndClick(locator);
+}
+
+test('Shift+click selects a range across an appended batch in Grid, List and Masonry', async ({ page, request }) => {
+    await bulkReset(page, request);
+    await page.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(caption(page)).toContainText('80 of 202 images');
+    for (const mode of ['Grid', 'List', 'Masonry']) {
+        await page.getByRole('group', { name: 'Image layout', exact: true }).getByRole('button', { name: mode, exact: true }).click();
+        // The anchor is the last image toggled on its own (List hides the concept's checkbox: the card carries it).
+        await cardAt(page, 3).locator('.media-info h3').click({ modifiers: ['ControlOrMeta'] });
+        await expect(selectedCount(page)).toHaveText('1 selected');
+        // The range runs into the second batch (index 40 on), and backwards from the same anchor.
+        await cardAt(page, 45).locator('.media-info h3').click({ modifiers: ['Shift'] });
+        await expect(selectedCount(page)).toHaveText('43 selected');
+        expect(await checkedIndexes(page)).toEqual(range(3, 45));
+        await cardAt(page, 0).locator('.media-info h3').click({ modifiers: ['Shift'] });
+        await expect(selectedCount(page)).toHaveText('46 selected');
+        expect(await checkedIndexes(page)).toEqual(range(0, 45));
+        await expect(page.locator('dialog[open]')).toHaveCount(0);
+        if (mode !== 'List') {
+            // A Shift+click on a checkbox gives its range the box's new state: here, unchecked.
+            await boxAt(page, 3).uncheck();
+            await boxAt(page, 10).click({ modifiers: ['Shift'] });
+            await expect(boxAt(page, 10)).not.toBeChecked();
+            await expect(selectedCount(page)).toHaveText('38 selected');
+            expect(await checkedIndexes(page)).toEqual([0, 1, 2, ...range(11, 45)]);
+        }
+        await bulkbar(page).getByRole('button', { name: 'Clear', exact: true }).click();
+        await expect(bulkbar(page)).toBeEmpty();
+    }
+});
+
+test('Ctrl/Cmd+click toggles a card without opening it, and a plain click still opens the viewer', async ({ page }) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const first = cards(page).first();
+    const inspectorBefore = await details(page).innerText();
+    await first.getByRole('button', { name: 'Open same.png', exact: true }).click({ modifiers: ['ControlOrMeta'] });
+    await expect(selectedCount(page)).toHaveText('1 selected');
+    await expect(checkbox(first, 'same.png')).toBeChecked();
+    await cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true }).click({ modifiers: ['ControlOrMeta'] });
+    await expect(selectedCount(page)).toHaveText('2 selected');
+    await star(first, 'same.png').click({ modifiers: ['ControlOrMeta'] });
+    await expect(selectedCount(page)).toHaveText('1 selected');
+    await expect(star(first, 'same.png')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    expect(await details(page).innerText()).toBe(inspectorBefore);
+    // A plain click keeps its meaning: the image opens the viewer.
+    await first.getByRole('button', { name: 'Open same.png', exact: true }).click();
+    await expect(page.locator('#viewer-dialog[open]')).toHaveCount(1);
+    await expect(selectedCount(page)).toHaveText('1 selected');
+});
+
+test('Ctrl/Cmd+A, Select all N matching and Add tags tag every matching image on the server', async ({ page, request }) => {
+    await bulkReset(page, request);
+    // Ctrl/Cmd+A in the search box stays the field's own.
+    await search(page).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await expect(bulkbar(page)).toBeEmpty();
+    await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await expect(selectedCount(page)).toHaveText('40 selected');
+    const offer = bulkbar(page).getByRole('button', { name: 'Select all 202 matching', exact: true });
+    await expect(offer).toBeVisible();
+    await expect(bulkbar(page).locator('.bulkbar > *').nth(1)).toHaveText('Select all 202 matching');
+    await offer.click();
+    await expect(selectedCount(page)).toHaveText('All 202 matching selected');
+    await expect(offer).toHaveCount(0);
+    await expect(bulkbar(page).getByRole('button', { name: 'Export metadata', exact: true })).toHaveAttribute('aria-disabled', 'true');
+    // A later batch arrives checked.
+    await page.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(caption(page)).toContainText('80 of 202 images');
+    await expect(boxAt(page, 70)).toBeChecked();
+    await expect(selectedCount(page)).toHaveText('All 202 matching selected');
+    // Unchecking one image leaves "all matching": the other loaded images stay selected.
+    await boxAt(page, 0).uncheck();
+    await expect(selectedCount(page)).toHaveText('79 selected');
+    await expect(bulkbar(page).getByRole('button', { name: 'Export metadata', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+    await cardAt(page, 1).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await bulkbar(page).getByRole('button', { name: 'Select all 202 matching', exact: true }).click();
+    await expect(selectedCount(page)).toHaveText('All 202 matching selected');
+    // Add tags sends the listing filter, not 202 identities, and the server tags every match.
+    await bulkbar(page).getByRole('button', { name: 'Add tags', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Tag selected images', exact: true });
+    await dialog.getByRole('textbox', { name: 'Tags, separated by commas', exact: true }).fill('picked392');
+    const started = page.waitForRequest(item => item.method() === 'POST' && new URL(item.url()).pathname === '/prompt_manager/jobs/image-tags');
+    await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect((await started).postDataJSON()).toEqual({ mode: 'add', filter: { sort: 'newest' }, tags: ['picked392'] });
+    await expect.poll(async () => (await (await request.get('/prompt_manager/images/output?mode=workspace&limit=1&tags=picked392')).json()).total,
+        { timeout: 20000 }).toBe(202);
+    await expect(selectedCount(page)).toHaveText('All 202 matching selected');
+    // Escape in the grid clears the selection.
+    await cardAt(page, 2).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('Escape');
+    await expect(bulkbar(page)).toBeEmpty();
+    await expect(boxAt(page, 2)).not.toBeChecked();
+});
+
+test('Shift+arrow keys extend the selection from the focused card, and Escape in the bar clears it', async ({ page, request }) => {
+    await bulkReset(page, request);
+    await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+ArrowRight');
+    await expect(cardAt(page, 2).getByRole('button', { name: /^Open / })).toBeFocused();
+    await expect(selectedCount(page)).toHaveText('3 selected');
+    expect(await checkedIndexes(page)).toEqual([0, 1, 2]);
+    // A plain arrow moves without selecting; Shift+End reaches the last loaded card from the same anchor.
+    await page.keyboard.press('ArrowRight');
+    await expect(selectedCount(page)).toHaveText('3 selected');
+    await page.keyboard.press('Shift+End');
+    await expect(selectedCount(page)).toHaveText('40 selected');
+    await bulkbar(page).getByRole('button', { name: 'Clear', exact: true }).focus();
+    await page.keyboard.press('Escape');
+    await expect(bulkbar(page)).toBeEmpty();
+    await expect(page.locator('#workspace-main h1')).toBeFocused();
+});
+
+test('a touch long-press starts selection mode, taps then toggle, and an empty selection ends it', async ({ page }, testInfo) => {
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(2);
+    const [first, second] = [cards(page).first(), cards(page).last()];
+    const open = card => card.getByRole('button', { name: 'Open same.png', exact: true });
+    await touchDown(open(first));
+    // The context menu of a held press belongs to the long press.
+    expect(await open(first).evaluate(node => !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))).toBe(true);
+    // Held: the long press selects the card once its delay passed.
+    await expect(selectedCount(page)).toHaveText('1 selected');
+    await touchUpAndClick(open(first));
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect(checkbox(first, 'same.png')).toBeChecked();
+    // Taps now toggle instead of opening.
+    if (testInfo.project.name === 'touch') await open(second).tap();
+    else await touchTap(open(second));
+    await expect(selectedCount(page)).toHaveText('2 selected');
+    // A keyboard Enter keeps its meaning in touch selection mode: the image opens.
+    await open(first).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#viewer-dialog[open]')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#viewer-dialog[open]')).toHaveCount(0);
+    await expect(selectedCount(page)).toHaveText('2 selected');
+    await touchTap(open(first));
+    await touchTap(open(second));
+    await expect(bulkbar(page)).toBeEmpty();
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    // The selection is empty, so touch selection mode ended: a tap opens the image again.
+    await touchTap(open(first));
+    await expect(page.locator('#viewer-dialog[open]')).toHaveCount(1);
+});
+
+test('all matching sets the category through the listing filter and survives a return visit as the loaded images', async ({ page, request }) => {
+    await bulkReset(page, request);
+    await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await bulkbar(page).getByRole('button', { name: 'Select all 202 matching', exact: true }).click();
+    // The offer left with its press: focus moves to the bar's first action.
+    await expect(bulkbar(page).getByRole('button', { name: 'Add tags', exact: true })).toBeFocused();
+    await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await expect(selectedCount(page)).toHaveText('All 202 matching selected');
+    // Export metadata waits for loaded images: a press does nothing.
+    const exportButton = bulkbar(page).getByRole('button', { name: 'Export metadata', exact: true });
+    await expect(exportButton).toHaveAttribute('title', 'Export metadata reads each image in the browser, so it works on loaded images only.');
+    // No match linked (a stubbed answer): the nothing-linked sentence, and the selection stays.
+    await page.route('**/prompt_manager/bulk/category', route => route.fulfill({ json: { success: true, updated_count: 0, prompt_count: 0, skipped: 202 } }), { times: 1 });
+    const categorize = page.getByRole('dialog', { name: 'Categorize selected images', exact: true });
+    await bulkbar(page).getByRole('button', { name: 'Set category', exact: true }).click();
+    await categorize.getByRole('textbox', { name: 'Category', exact: true }).fill('Bulk392');
+    await categorize.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(toast(page)).toHaveText("None of the selected images is linked to a saved prompt, so there is no prompt category to set.");
+    await expect(selectedCount(page)).toHaveText('All 202 matching selected');
+    // The real write: one request with the filter, every matching image's positive changes.
+    await bulkbar(page).getByRole('button', { name: 'Set category', exact: true }).click();
+    await categorize.getByRole('textbox', { name: 'Category', exact: true }).fill('Bulk392');
+    const posted = page.waitForRequest(item => item.method() === 'POST' && new URL(item.url()).pathname === '/prompt_manager/bulk/category');
+    await categorize.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect((await posted).postDataJSON()).toEqual({ images_filter: { sort: 'newest' }, category: 'Bulk392' });
+    await expect(toast(page)).toHaveText(/^Category set on \d+ prompts?\.$/);
+    await expect(bulkbar(page)).toBeEmpty();
+    const filtered = await (await request.get('/prompt_manager/images/output?mode=workspace&limit=1&category=Bulk392')).json();
+    expect(filtered.total).toBe(202);
+    // A return visit keeps "all matching" as the loaded images, and the offer shows again.
+    await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await bulkbar(page).getByRole('button', { name: 'Select all 202 matching', exact: true }).click();
+    await page.evaluate(() => { window.location.hash = '/overview'; });
+    await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.evaluate(() => { window.location.hash = '/images'; });
+    await expect(selectedCount(page)).toHaveText('40 selected');
+    await expect(bulkbar(page).getByRole('button', { name: 'Select all 202 matching', exact: true })).toBeVisible();
+    // Escape in the bar with nothing selected does nothing; with a selection it clears.
+    await bulkbar(page).getByRole('button', { name: 'Clear', exact: true }).focus();
+    await page.keyboard.press('Escape');
+    await expect(bulkbar(page)).toBeEmpty();
+});
+
+test('all matching over 10,000 images says so before any dialog or request', async ({ page, request }) => {
+    await page.route(url => url.pathname === '/prompt_manager/images/output' && url.searchParams.get('limit') !== '1', async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({ response, json: { ...body, total: 20002 } });
+    });
+    await bulkReset(page, request);
+    await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await bulkbar(page).getByRole('button', { name: 'Select all 20,002 matching', exact: true }).click();
+    await expect(selectedCount(page)).toHaveText('All 20,002 matching selected');
+    let posted = 0;
+    page.on('request', item => { if (item.method() === 'POST') posted += 1; });
+    for (const action of ['Set category', 'Add tags', 'Auto-tag selected']) {
+        await bulkbar(page).getByRole('button', { name: action, exact: true }).click();
+        await expect(toast(page)).toHaveText('Narrow the view to at most 10,000 images.');
+        await expect(page.locator('dialog[open]')).toHaveCount(0);
+    }
+    expect(posted).toBe(0);
+});

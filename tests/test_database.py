@@ -1398,50 +1398,6 @@ class TestModelHousekeeping(DatabaseTestCase):
         self.assertIsNot(self.db.model.get_connection(), failing)
 
 
-class TestAutotagBatchCandidates(DatabaseTestCase):
-    """#328: the batch's candidate read never loads workflow documents."""
-
-    def test_autotag_candidates_skip_workflow_data(self):
-        from utils.hashing import generate_prompt_hash
-
-        first = self.db.save_prompt(
-            text="a", tags=["one", "two"], prompt_hash=generate_prompt_hash("a")
-        )
-        second = self.db.save_prompt(text="b", prompt_hash=generate_prompt_hash("b"))
-        old = self.db.link_image_to_prompt(
-            first, "/out/a.png", {"workflow": {"big": "x" * 1000}}
-        )
-        new = self.db.link_image_to_prompt(second, "/out/b.png")
-        statements = []
-        conn = self.db.model.get_connection()  # this thread's own connection
-        conn.set_trace_callback(statements.append)
-        try:
-            rows = self.db.autotag_batch_candidates()
-        finally:
-            conn.set_trace_callback(None)
-        self.assertEqual(
-            rows[0],
-            {
-                "id": new,
-                "image_path": "/out/b.png",
-                "prompt_id": second,
-                "prompt_tags": [],
-            },
-        )
-        self.assertEqual(
-            {**rows[1], "prompt_tags": sorted(rows[1]["prompt_tags"])},
-            {
-                "id": old,
-                "image_path": "/out/a.png",
-                "prompt_id": first,
-                "prompt_tags": ["one", "two"],
-            },
-        )
-        self.assertEqual(len(rows), 2)
-        self.assertTrue(statements)
-        self.assertFalse(any("workflow_data" in sql for sql in statements))
-
-
 if __name__ == "__main__":
     unittest.main()
 

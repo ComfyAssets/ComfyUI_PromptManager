@@ -3560,19 +3560,24 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         } else if (data.type === 'complete') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
-                            this.showNotification(`Auto tagging complete! Applied tags to ${data.tagged || 0} prompts.`, 'success');
+                            this.showNotification(ImageHelpers.autotagCompleteMessage(data.tagged), 'success');
                             this.loadImages(); // Refresh the gallery
                         } else if (data.type === 'error') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
                             this.showNotification(`Auto tag error: ${data.message}`, 'error');
+                        } else if (data.type === 'cancelled') {
+                            // Cancelled in Prompt Manager's Activity (#379): as its own cancel.
+                            this.autoTagState.eventSource.close();
+                            this.hideModal("autoTagProgressModal");
+                            this.showNotification('Auto tagging cancelled', 'info');
                         }
                     };
 
-                    this.autoTagState.eventSource.onerror = () => {
+                    this.autoTagState.eventSource.onerror = (error) => {
                         this.autoTagState.eventSource.close();
                         this.hideModal("autoTagProgressModal");
-                        this.showNotification('Connection lost during auto tagging', 'error');
+                        this.showNotification((error && error.serverMessage) || 'Connection lost during auto tagging', 'error');
                     };
                 } catch (error) {
                     console.error('Auto tag error:', error);
@@ -3629,6 +3634,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 this.reviewRequest = request;
                 this.autoTagState.currentTags = [];
                 this.autoTagState.reviewPromptId = null;
+                this.autoTagState.reviewImage = null;
+                this.autoTagState.reviewSha256 = null;
                 if (this.autoTagState.reviewIndex >= this.autoTagState.reviewImages.length) {
                     this.hideModal("autoTagReviewModal");
                     this.showNotification('Review complete!', 'success');
@@ -3643,8 +3650,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('reviewTagsContainer').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
 
                 try {
-                    // Gallery entries come from /images/output: id is a path digest, so address by path
-                    const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
+                    // Gallery entries come from /images/output: id is a path digest, so address by path.
+                    // The gallery review always suggests (it never skipped tagged images, #379).
+                    const requestBody = ImageHelpers.autotagSingleBody(image, { ...this.autoTagState, existing: 'merge' });
 
                     const response = await ApiClient.fetchUrl('/prompt_manager/autotag/single', {
                         method: 'POST',
@@ -3657,6 +3665,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     if (this.reviewRequest !== request) return;
                     if (data.success) {
                         this.autoTagState.reviewPromptId = data.prompt_id ?? null;
+                        this.autoTagState.reviewImage = image;
+                        this.autoTagState.reviewSha256 = data.sha256 || null;
                         this.autoTagState.currentTags = data.tags;
                         this.renderReviewTags();
                     } else {
@@ -3697,14 +3707,10 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             async applyReviewTags() {
-                if (this.autoTagState.currentTags.length === 0) {
+                // #379: the reviewed tags go to this image (linked or not), never its prompt; an empty
+                // list still marks the image as reviewed by a tagging model.
+                if (!this.autoTagState.reviewSha256) {
                     this.skipReviewImage();
-                    return;
-                }
-
-                const promptId = this.autoTagState.reviewPromptId;
-                if (!promptId) {
-                    this.showNotification('This image has no linked prompt. Scan the output folder first.', 'warning');
                     return;
                 }
                 const request = this.reviewRequest;
@@ -3715,10 +3721,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     const response = await ApiClient.fetchUrl('/prompt_manager/autotag/apply', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            prompt_id: promptId,
-                            tags: this.autoTagState.currentTags
-                        })
+                        body: JSON.stringify(ImageHelpers.autotagApplyBody(
+                            this.autoTagState.reviewImage, this.autoTagState.reviewSha256, this.autoTagState.currentTags))
                     });
 
                     const data = await response.json();

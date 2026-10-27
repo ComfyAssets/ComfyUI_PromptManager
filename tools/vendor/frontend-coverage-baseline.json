@@ -275,6 +275,12 @@
     "functions": 85,
     "statements": 98
   },
+  "workspace/images-multiselect.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/images-selection.mjs": {
     "lines": 98,
     "branches": 93,

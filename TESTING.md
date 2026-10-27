@@ -1245,7 +1245,8 @@ Recorded deviations on this page (spec §8):
   `#bulkbar` shows "N selected" and only the real actions in the concept's order (Add
   tags, then D85's Auto-tag selected, Set category, Export metadata, Clear). Add to
   collection waits for collections; "Remove links…" is dropped. (Amended by #249 PR D:
-  Add tags ships, see "Bulk tagging from the selection bar".) The selection survives Load more and
+  Add tags ships, see "Bulk tagging from the selection bar"; #392 adds range, keyboard,
+  touch and "all N matching" selection, see "Selecting many images", D135.) The selection survives Load more and
   bounded re-mounting and is cleared whenever the collection is replaced (search,
   category, sort, Filters, source change, rescan, reload). A return to Images restores
   the saved collection unreplaced and keeps its selection; a full page reload starts
@@ -1721,6 +1722,65 @@ busy". Units:
 | Suggestions count in the bulk dialog | D91 |
 | Copy without a concept line: no tags, start fallbacks, the panel heading | D118 |
 | Activity item and job view for image tagging jobs | D89 (plan D66) |
+
+### Selecting many images (#392)
+
+**D135** (beyond the concept, which draws only the per-card checkbox): Images selects
+like a file manager, in Grid, List (where the concept hides the checkbox) and Masonry,
+over every loaded batch. The selection is a set of image keys in display order, so
+ranges include cards that bounded rendering has unmounted.
+
+- Clicking a checkbox toggles it, and that image becomes the anchor. Ctrl/Cmd+click
+  anywhere on a card (image, star, Info, Tag) also toggles it and makes it the anchor;
+  nothing opens, inspects or changes the favorite.
+- Shift+click on a card selects the range from the anchor to it. Shift+click on a
+  checkbox gives its range the box's new state, so it can clear a range. The anchor
+  stays where it is. Without an anchor, the clicked image becomes the anchor.
+- In the grid, Ctrl/Cmd+A selects every loaded image; in the search box it keeps its
+  text meaning. Shift+Arrow, Shift+Home and Shift+End move focus as the plain keys do,
+  then select from the anchor (the starting card when there is none) to the new card.
+  Escape in the grid clears the selection. Escape in the bar clears it too, and focus
+  moves to the heading, as after Clear.
+- Touch: a 500 ms long-press (at most 10 px of movement) selects the card and turns on
+  touch selection mode. The context menu during the press and the click after it are
+  swallowed, and the card has no image callout. Taps then toggle cards until the
+  selection is empty. A keyboard Enter or Space keeps its plain meaning.
+- A plain click keeps its meaning: the image opens the viewer, and Info inspects.
+- When every loaded image is checked and the listing has more, the bar offers
+  **Select all N matching** right after the count. Pressing it gives **All N matching
+  selected**: later batches arrive checked, and unchecking any image goes back to the
+  loaded images minus that one. Clear, Escape, and a new search, filter, sort or rescan
+  end it. A refresh after a tag save keeps it. Return visits keep the loaded images,
+  and the offer shows again.
+- In that mode, Add tags and Auto-tag selected start the `image-tags` job with
+  `filter` (the listing's own query as an object: `q`, `subfolder`, `category`,
+  `tags`, `root`, `media`, `sort`, `favorites`, and with a Source the loaded root's
+  `root_scope`) instead of `targets`. The server resolves the filter at start, in
+  listing order, using the listing's own admission code (`_admitted_entries`). That
+  means "all matching" when the action starts: an output written since then that
+  matches is included. A `root_scope` that no longer names its root (the sources were
+  renumbered) answers 409 `source-changed`. The limit is 10,000 images (`MAX_LISTING_SELECTION`).
+  Over the limit, the client toasts "Narrow the view to at most 10,000 images." and the
+  server answers 400 `too-many-images`. No match is 400 `no-images`. Auto-tag in this
+  mode does not offer Review each image, because the review walks images in the
+  browser. Set category posts `{images_filter, category}` to `/prompt_manager/bulk/category`.
+  The server sets the category on the distinct linked positives and answers
+  `prompt_count` and `skipped`. A listing whose `positive_count` is 0 toasts the
+  nothing-linked sentence and opens no dialog, and over 10,000 matches it toasts the
+  limit sentence. Export metadata reads every image in
+  the browser, so it is `aria-disabled` in this mode, and its `title` says why.
+
+Tests: `tests/browser/workspace-images.spec.mjs` ("Shift+click selects a range across
+an appended batch in Grid, List and Masonry", "Ctrl/Cmd+click toggles a card without
+opening it, and a plain click still opens the viewer", "Ctrl/Cmd+A, Select all N
+matching and Add tags tag every matching image on the server", "Shift+arrow keys extend
+the selection from the focused card, and Escape in the bar clears it", "a touch
+long-press starts selection mode, taps then toggle, and an empty selection ends it");
+units `tests/js/workspace-images-multiselect.test.js`,
+`tests/js/workspace-images-tagging-bulk.test.js` ("all matching sends the listing
+filter instead of targets"), `tests/js/workspace-images-state.test.js`
+(`listingFilter`); Python `tests/test_image_tag_jobs.py` (`TestFilterStart`) and
+`tests/test_api_workspace_images.py` (`TestListingFilterSelection`).
 
 Native image tagging (#249 PR B routes, PR C UI): `POST
 /prompt_manager/image-annotations/observe` (capture one listed file, its saved set and
@@ -3766,7 +3826,9 @@ threshold off that grid is refused ("General-tag confidence must be a multiple o
 0.05.", `validate_saved_threshold`; `draftProblem` holds back Preview tagging review and
 the batch Review with the same sentence) and falls back on load; an accepted one is
 stored exactly on the grid (#369). A per-request threshold keeps its own check: `/image-annotations/suggest` and
-`/jobs/autotag` take 0–1; the legacy `/autotag/single` and `/autotag/start` only require a number. `GET /autotag/models` reports the
+`/jobs/autotag` take 0–1; the legacy `/autotag/start` passes its options through
+`validate_options` and starts the `autotag` job titled "Tag output images (legacy page)";
+the legacy `/autotag/single` only requires a number. `GET /autotag/models` reports the
 saved values (`wd14_general_threshold`, `wd14_character_threshold`, `suggestion_limit`,
 `default_prompt`, `model_type`, `existing`), so the Tag image and Auto-tag selected
 dialogs start from them; a preset (the bulk review, Preview tagging review) wins.
@@ -3831,6 +3893,57 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   different tags with no `prompts` or `prompt_tags` row changed; the marks' schema group
   is pinned by `tests/test_autotag_schema.py` (forward-only: one empty `WITHOUT ROWID`
   table, optional in old backups, refused without the annotation group).
+
+- **The legacy pages (#379, PR 2)** write image tags, never prompt tags.
+  `POST /autotag/start` (the admin and gallery batch) reads `model_type`, `prompt`,
+  `skip_tagged` (Skip or Merge), `keep_in_memory` and the thresholds (else the saved
+  ones), checks them with `validate_options` (WD14: both thresholds; GGUF/HF:
+  `instructions` = the non-blank `prompt`, else the saved template; the saved
+  "Suggestions per image") and starts the `autotag` job "Tag output images (legacy
+  page)" (gate owner `legacy-batch`) through the native start, so the safety backup and
+  the disk check apply. A second legacy batch answers JSON 409 `{success: false, error:
+  "Auto-tagging is already running"}` (also when another legacy start wins the race past
+  that check); `SseStream` hands a non-2xx JSON `error` to `onerror` as `serverMessage`,
+  which both pages show instead of "Connection lost during auto tagging". Any other refusal (a job in the way: "<title>
+  already running", `model-unavailable`, `insufficient-space`, `model-busy`, a bad
+  option) is one `{type: "error", status: "error", message}` frame. The stream relays
+  the job: the phases as `{type: "progress", progress: 0 | 5 | 8, status: "Taking a
+  safety backup…" | "Loading model…" | "Listing output images…"}`, each image as
+  `{type: "progress", progress: 10 + progress × 85 / 100, status, processed, tagged,
+  skipped}` (at most every 0.5 s; `processed` = Tagged + Unchanged + Errors), and the end
+  as `complete` (`processed`, `tagged`, `skipped`, `errors`, `skipped_outside_roots: 0`,
+  `status` "Complete" or "No still images found", `model_status`, `model_loaded`),
+  `{type: "cancelled", message: "Cancelled. Tags already added were kept."}` or an
+  `error` frame with the job's status line. A job quiet for 5 s repeats its last frame,
+  and a closed stream cancels the job (the legacy pages have no other stop).
+  `POST /autotag/single` takes `existing` (`"skip"` or `"merge"`, default merge). Under
+  Skip, an image whose current bytes are auto-tagged answers `{success, already_tagged:
+  true, image_tags, prompt_id, filename}` after one stat, without the model gate.
+  Otherwise the image is captured and the model runs on the capture under the gate with
+  the saved cap; the answer adds `tags`, `sha256` (the captured bytes) and `image_tags`,
+  and `service.custom_prompt` is never set. Refusals: `409 model-unavailable`, `413
+  too-large`, `404 file-not-found`, `409 file-changed`, `503 busy`, `415 not-a-still`
+  (the image is marked), `409 model-busy`. `POST /autotag/apply` takes exactly
+  `{image_id, sha256, tags}` or `{path, root_index?, sha256, tags}` (64 KiB), re-hashes
+  the file and unions the tags into that image (`add_image_tags`, marked): `{success,
+  added_tags, total_tags}`; an empty list only marks the image. A body with `prompt_id`
+  is `400` "This page is out of date. Reload it."; a changed file `409 file-changed`
+  ("The image changed since its tags were generated."); a full set `409 tag-limit`; a
+  restore `409 storage-changed`. The admin review asks each image with Skip first: an
+  auto-tagged one shows "Image Already Auto-tagged" / "A tagging model already tagged
+  this image. Generate new tags?" with its image tags (Skip, Skip All Tagged, Re-tag asks
+  again with Merge); the gallery review always merges. Apply & Next sends the image and
+  its `sha256` (linked or not). The batch copy: "Skip images already auto-tagged",
+  "Auto tagging complete! Tagged N images." ("1 image"), and under both progress bars
+  "Closing this window stops tagging. Tags already added are kept. Prompt Manager's
+  Activity page shows the time left.". Pinned by `tests/test_autotag_legacy.py`,
+  `tests/js/image-helpers.test.js` and `legacy-autotag.spec`.
+- **Tag image dialog marks (DEC4).** A save after Generate suggestions ran on that
+  capture marks the image auto-tagged (also a replayed save, and a saved retry after
+  `tag-conflict`); a save without Generate does not. The API keeps the suggested capture
+  tokens; each new one drops the tokens whose capture is gone (`expires_in`, which never
+  resets a capture's idle clock), a release or a saved receipt drops its own, and
+  closing the captures clears them (`TestDialogMarks`).
 
 No browser test downloads or runs a model: the injected `TestModel` answers, its
 `download_model` raises unless `/__test__/tagging/download {mode: hold | succeed |

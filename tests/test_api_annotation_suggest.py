@@ -363,23 +363,20 @@ class TestModelGate(SuggestTestCase):
         prompt_id = self._save_prompt("batch prompt")
         self.api.db.link_image_to_prompt(prompt_id, str(self.output_dir / "sub/a.png"))
         started, proceed = threading.Event(), threading.Event()
-
-        def slow_generate(image_path, **kwargs):
-            started.set()
-            proceed.wait(WAIT)
-            return ["batch"]
-
-        self.tagger.generate_tags = slow_generate
+        # The legacy batch is the autotag job (#379): it suggests per image.
+        self.tagger.block = (started, proceed)
         batch = asyncio.ensure_future(
             self.client.post("/prompt_manager/autotag/start?model_type=wd14-vit")
         )
         try:
             await asyncio.get_running_loop().run_in_executor(None, started.wait, WAIT)
+            calls = len(self.tagger.calls)
             status, body = await self.suggest(self.suggest_body(observed, "gguf"))
             self.assertEqual((status, body["code"]), (409, "model-busy"))
-            self.assertEqual(self.tagger.calls, [])
+            self.assertEqual(len(self.tagger.calls), calls)
             self.assertEqual(self.tagger.loaded, "wd14-vit")  # not swapped
         finally:
+            self.tagger.block = None
             proceed.set()
             response = await batch
             await response.read()

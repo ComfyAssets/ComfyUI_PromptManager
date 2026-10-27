@@ -5,6 +5,7 @@ no network request is made.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -34,6 +35,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
+from py.api.autotag_routes import MODEL_BUSY_ERROR
 from py.api.jobs import JobBusy
 from utils.hashing import generate_prompt_hash
 
@@ -70,6 +72,7 @@ class FakeAutotagService:
         self.status_calls = 0
         self.status_threads = []
         self.status_paths = {}
+        self.suggest_calls = 0
 
     def get_models_status(self):
         self.status_calls += 1
@@ -114,6 +117,25 @@ class FakeAutotagService:
         if self.generate_error is not None:
             raise self.generate_error
         return list(self.tags)
+
+    def generate_tag_suggestions(
+        self,
+        image_path,
+        *,
+        limit,
+        prompt=None,
+        general_threshold=None,
+        character_threshold=None,
+    ):
+        """The suggestion entry point (#379): the fixed tags, at most ``limit``."""
+        self.suggest_calls += 1
+        tags = self.generate_tags(
+            image_path,
+            prompt=prompt,
+            general_threshold=general_threshold,
+            character_threshold=character_threshold,
+        )
+        return [(name, None) for name in tags[:limit]]
 
 
 class AutotagAPITestCase(AioHTTPTestCase):
@@ -175,8 +197,17 @@ class AutotagAPITestCase(AioHTTPTestCase):
         )
 
     def _make_image(self, directory, name="img.png"):
+        """A small, valid image (the legacy review captures and probes it)."""
+        from PIL import Image
+
         path = directory / name
-        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shade = sum(name.encode()) % 256
+        fmt = {".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP"}.get(
+            path.suffix.lower(), "PNG"
+        )
+        with Image.new("RGB", (4, 4), (shade, 64, 128)) as image:
+            image.save(path, fmt)
         return path
 
     def _link_image(self, prompt_id, path):
@@ -216,10 +247,9 @@ class TestAutotagSingleContainment(AutotagAPITestCase):
         self.assertEqual(data["tags"], ["1girl", "smile"])
         self.assertEqual(data["prompt_id"], prompt_id)
         self.assertEqual(len(self.service.generate_calls), 1)
-        self.assertEqual(
-            os.path.realpath(self.service.generate_calls[0][0]),
-            os.path.realpath(str(image)),
-        )
+        # #379: the model reads a private capture of the image, never the file.
+        self.assertNotIn(str(self.output_dir), self.service.generate_calls[0][0])
+        self.assertEqual(data["sha256"], hashlib.sha256(image.read_bytes()).hexdigest())
 
     async def test_path_inside_output_dir_is_tagged(self):
         image = self._make_image(self.output_dir)
@@ -449,238 +479,6 @@ class TestAutotagSideEffectRoutesArePostOnly(AutotagAPITestCase):
         self.assertTrue((await resp.json())["success"])
 
 
-class TestAutotagBatch(AutotagAPITestCase):
-    """Batch tagging over the DB image list with SSE progress reporting."""
-
-    def _seed(self):
-        """Three prompts: A (one image), B (two images), C (missing file)."""
-        a = self._save_prompt("prompt a")
-        b = self._save_prompt("prompt b")
-        c = self._save_prompt("prompt c")
-        self._link_image(a, self._make_image(self.output_dir, "a1.png"))
-        self._link_image(b, self._make_image(self.output_dir, "b1.png"))
-        self._link_image(b, self._make_image(self.output_dir, "b2.png"))
-        self._link_image(c, self.output_dir / "missing.png")
-        return a, b, c
-
-    async def _start(self, query="model_type=gguf", body=None):
-        if body is None:
-            resp = await self.client.request(
-                "POST", f"/prompt_manager/autotag/start?{query}"
-            )
-        else:
-            resp = await self._post_json(f"/prompt_manager/autotag/start?{query}", body)
-        return resp, self._sse_events(await resp.text())
-
-    async def test_batch_tags_each_prompt_once_and_reports_counts(self):
-        a, b, c = self._seed()
-
-        resp, events = await self._start()
-
-        self.assertEqual(resp.status, 200)
-        done = events[-1]
-        self.assertEqual(done["type"], "complete")
-        self.assertEqual(done["processed"], 2)
-        self.assertEqual(done["tagged"], 2)
-        self.assertEqual(done["skipped"], 2)
-        self.assertEqual(done["errors"], 0)
-        self.assertEqual(len(self.service.generate_calls), 2)
-        self.assertEqual(self.api.db.get_prompt_by_id(a)["tags"], ["1girl", "smile"])
-        self.assertEqual(self.api.db.get_prompt_by_id(b)["tags"], ["1girl", "smile"])
-        self.assertEqual(self.api.db.get_prompt_by_id(c)["tags"], [])
-        progress = [e for e in events if e["type"] == "progress"]
-        self.assertTrue(all(0 <= e["progress"] <= 100 for e in progress))
-        self.assertTrue(any("processed" in e for e in progress))
-
-    async def test_rows_outside_output_dirs_are_skipped_and_counted(self):
-        inside = self._save_prompt("inside")
-        outside = self._save_prompt("outside")
-        self._link_image(inside, self._make_image(self.output_dir, "in.png"))
-        secret = self._make_image(self.secret_dir, "password.png")
-        self._link_image(outside, secret)
-
-        _, events = await self._start()
-
-        done = events[-1]
-        self.assertEqual(done["type"], "complete")
-        self.assertEqual(done["processed"], 1)
-        self.assertEqual(done["tagged"], 1)
-        self.assertEqual(done["skipped"], 1)
-        self.assertEqual(done["skipped_outside_roots"], 1)
-        self.assertEqual(len(self.service.generate_calls), 1)
-        self.assertEqual(
-            os.path.realpath(self.service.generate_calls[0][0]),
-            os.path.realpath(str(self.output_dir / "in.png")),
-        )
-        self.assertEqual(self.api.db.get_prompt_by_id(outside)["tags"], [])
-        progress = [e for e in events if e["type"] == "progress" and "skipped" in e]
-        self.assertTrue(progress)
-        self.assertTrue(all("skipped_outside_roots" in e for e in progress))
-        body = json.dumps(events)
-        self.assertNotIn(str(self.secret_dir), body)
-
-    async def test_second_start_while_running_is_409(self):
-        self._seed()
-        started = threading.Event()
-        release = threading.Event()
-
-        def slow_generate(image_path, **kwargs):
-            started.set()
-            release.wait(5)
-            return ["slow"]
-
-        self.service.generate_tags = slow_generate
-        first = asyncio.ensure_future(self._start())
-        try:
-            await asyncio.get_event_loop().run_in_executor(None, started.wait, 5)
-            self.assertTrue(started.is_set())
-
-            resp = await self.client.request(
-                "POST", "/prompt_manager/autotag/start?model_type=gguf"
-            )
-
-            self.assertEqual(resp.status, 409)
-            self.assertEqual(
-                await resp.json(),
-                {"success": False, "error": "Auto-tagging is already running"},
-            )
-        finally:
-            release.set()
-            resp1, events = await first
-        self.assertEqual(resp1.status, 200)
-        self.assertEqual(events[-1]["type"], "complete")
-
-    async def test_lock_is_released_after_a_run(self):
-        self._seed()
-
-        resp1, _ = await self._start()
-        resp2, events = await self._start()
-
-        self.assertEqual(resp1.status, 200)
-        self.assertEqual(resp2.status, 200)
-        self.assertEqual(events[-1]["type"], "complete")
-
-    async def test_lock_is_released_when_the_run_fails(self):
-        self._seed()
-        self.service.load_error = RuntimeError("no model")
-
-        _, events = await self._start()
-        self.assertEqual(events[-1]["type"], "error")
-
-        self.service.load_error = None
-        resp, events = await self._start()
-        self.assertEqual(resp.status, 200)
-        self.assertEqual(events[-1]["type"], "complete")
-
-    async def test_already_tagged_prompts_are_skipped_unless_asked(self):
-        p = self._save_prompt("tagged", tags=["cat"])
-        self._link_image(p, self._make_image(self.output_dir, "t.png"))
-
-        _, events = await self._start("model_type=gguf&skip_tagged=true")
-        self.assertEqual(events[-1]["skipped"], 1)
-        self.assertEqual(self.service.generate_calls, [])
-
-        _, events = await self._start("model_type=gguf&skip_tagged=false")
-        self.assertEqual(events[-1]["tagged"], 1)
-        self.assertEqual(
-            self.api.db.get_prompt_by_id(p)["tags"], ["cat", "1girl", "smile"]
-        )
-
-    async def test_prompt_already_holding_the_tags_counts_as_skipped(self):
-        p = self._save_prompt("same", tags=["1girl", "smile"])
-        self._link_image(p, self._make_image(self.output_dir, "s.png"))
-
-        _, events = await self._start("model_type=gguf&skip_tagged=false")
-
-        self.assertEqual(events[-1]["skipped"], 1)
-        self.assertEqual(events[-1]["tagged"], 0)
-
-    async def test_generation_errors_are_counted_and_do_not_abort(self):
-        self._seed()
-        self.service.generate_error = RuntimeError("boom")
-
-        _, events = await self._start()
-
-        self.assertEqual(events[-1]["type"], "complete")
-        # a1, b1 and b2 each fail: a failed prompt is retried on its next image
-        self.assertEqual(events[-1]["errors"], 3)
-        self.assertEqual(events[-1]["tagged"], 0)
-
-    async def test_json_body_parameters_are_accepted(self):
-        self._seed()
-
-        _, events = await self._start(
-            "", {"model_type": "wd14-vit", "general_threshold": 0.5, "prompt": "p"}
-        )
-
-        self.assertEqual(events[-1]["type"], "complete")
-        self.assertEqual(self.service.load_calls, [("wd14-vit", True)])
-        self.assertEqual(self.service.generate_calls[0][2], 0.5)
-        self.assertEqual(self.service.custom_prompt, "p")
-
-    async def test_keep_in_memory_false_unloads_after_batch(self):
-        self._seed()
-
-        _, events = await self._start("model_type=gguf&keep_in_memory=false")
-
-        self.assertEqual(events[-1]["model_loaded"], False)
-        self.assertEqual(self.service.unload_calls, 1)
-
-    async def test_model_not_downloaded_is_an_error_event(self):
-        self.service.downloaded = False
-
-        _, events = await self._start()
-
-        self.assertEqual(events[-1]["type"], "error")
-        self.assertEqual(self.service.load_calls, [])
-
-    async def test_load_failure_is_an_error_event_without_details(self):
-        self.service.load_error = RuntimeError("/srv/models/secret.gguf is corrupt")
-
-        _, events = await self._start()
-
-        self.assertEqual(events[-1]["type"], "error")
-        self.assertNotIn("/srv/models", events[-1]["message"])
-
-    async def test_non_numeric_threshold_is_400(self):
-        resp = await self.client.request(
-            "POST", "/prompt_manager/autotag/start?general_threshold=abc"
-        )
-        self.assertEqual(resp.status, 400)
-
-    async def test_invalid_json_body_is_400(self):
-        resp = await self.client.request(
-            "POST",
-            "/prompt_manager/autotag/start",
-            data="{not json",
-            headers={"Content-Type": "application/json"},
-        )
-        self.assertEqual(resp.status, 400)
-
-    async def test_client_disconnect_stops_the_batch_and_unloads(self):
-        self._seed()
-        real_write = web.StreamResponse.write
-        state = {"writes": 0}
-
-        async def flaky_write(response, data):
-            state["writes"] += 1
-            if b"Processing " in data:
-                raise ConnectionResetError("Cannot write to closing transport")
-            return await real_write(response, data)
-
-        with patch.object(web.StreamResponse, "write", flaky_write):
-            try:
-                resp = await self.client.request(
-                    "POST", "/prompt_manager/autotag/start?keep_in_memory=false"
-                )
-                await resp.read()
-            except Exception:
-                pass
-
-        self.assertEqual(len(self.service.generate_calls), 1)
-        self.assertEqual(self.service.unload_calls, 1)
-
-
 class TestAutotagModelsAndDownloadErrors(AutotagAPITestCase):
 
     async def test_models_error_is_500(self):
@@ -834,7 +632,15 @@ class TestAutotagSingleEdgeCases(AutotagAPITestCase):
 
         self.assertEqual(resp.status, 200)
         self.assertEqual(self.service.load_calls, [("wd14-vit", True)])
-        self.assertEqual(self.service.custom_prompt, "terse")
+        # #379: the request's prompt is for this call only.
+        self.assertEqual(self.service.custom_prompt, "")
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {"path": str(image), "model_type": "gguf", "prompt": "terse"},
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self.service.generate_calls[-1][1], "terse")
+        self.assertEqual(self.service.custom_prompt, "")
 
     async def test_image_id_without_stored_path_is_404(self):
         prompt_id = self._save_prompt()
@@ -848,64 +654,6 @@ class TestAutotagSingleEdgeCases(AutotagAPITestCase):
                 "/prompt_manager/autotag/single", {"image_id": image_id}
             )
         self.assertEqual(resp.status, 404)
-
-
-class TestApplyAutotag(AutotagAPITestCase):
-
-    async def test_missing_prompt_id_is_400(self):
-        resp = await self._post_json("/prompt_manager/autotag/apply", {"tags": ["a"]})
-        self.assertEqual(resp.status, 400)
-
-    async def test_no_tags_is_a_noop(self):
-        resp = await self._post_json("/prompt_manager/autotag/apply", {"prompt_id": 1})
-        data = await resp.json()
-        self.assertTrue(data["success"])
-        self.assertEqual(data["message"], "No tags to apply")
-
-    async def test_unknown_prompt_is_404(self):
-        resp = await self._post_json(
-            "/prompt_manager/autotag/apply", {"prompt_id": 999, "tags": ["a"]}
-        )
-        self.assertEqual(resp.status, 404)
-
-    async def test_tags_are_merged_without_duplicates(self):
-        prompt_id = self._save_prompt(tags=["cat"])
-
-        resp = await self._post_json(
-            "/prompt_manager/autotag/apply",
-            {"prompt_id": prompt_id, "tags": ["cat", "dog"]},
-        )
-
-        data = await resp.json()
-        self.assertEqual(data["added_tags"], ["dog"])
-        self.assertEqual(data["total_tags"], 2)
-        self.assertEqual(
-            self.api.db.get_prompt_by_id(prompt_id)["tags"], ["cat", "dog"]
-        )
-
-    async def test_string_tags_from_db_are_split(self):
-        prompt_id = self._save_prompt()
-        with patch.object(
-            self.api.db,
-            "get_prompt_by_id",
-            return_value={"id": prompt_id, "tags": "cat, dog"},
-        ):
-            resp = await self._post_json(
-                "/prompt_manager/autotag/apply",
-                {"prompt_id": prompt_id, "tags": ["dog", "owl"]},
-            )
-        data = await resp.json()
-        self.assertEqual(data["added_tags"], ["owl"])
-        self.assertEqual(data["total_tags"], 3)
-
-    async def test_db_error_is_500(self):
-        with patch.object(
-            self.api.db, "get_prompt_by_id", side_effect=RuntimeError("db")
-        ):
-            resp = await self._post_json(
-                "/prompt_manager/autotag/apply", {"prompt_id": 1, "tags": ["a"]}
-            )
-        self.assertEqual(resp.status, 500)
 
 
 class TestAutotagErrorBodiesHideServerPaths(AutotagAPITestCase):
@@ -932,9 +680,12 @@ class TestAutotagErrorBodiesHideServerPaths(AutotagAPITestCase):
         await self._assert_hidden(resp)
 
     async def test_apply_error(self):
-        with patch.object(self.api.db, "get_prompt_by_id", side_effect=self._locked()):
+        image = self._make_image(self.output_dir)
+        digest = hashlib.sha256(image.read_bytes()).hexdigest()
+        with patch.object(self.api.db, "add_image_tags", side_effect=self._locked()):
             resp = await self._post_json(
-                "/prompt_manager/autotag/apply", {"prompt_id": 1, "tags": ["a"]}
+                "/prompt_manager/autotag/apply",
+                {"path": str(image), "sha256": digest, "tags": ["a"]},
             )
         await self._assert_hidden(resp)
 
@@ -1008,10 +759,13 @@ class TestLegacyRoutesShareTheModelGate(AutotagAPITestCase):
                     "POST", "/prompt_manager/autotag/download/gguf"
                 )
             )
-            await self._busy(
-                await self.client.request(
-                    "POST", "/prompt_manager/autotag/start?model_type=gguf"
-                )
+            # The legacy batch is read as a stream: one error frame (#379).
+            resp = await self.client.request(
+                "POST", "/prompt_manager/autotag/start?model_type=gguf"
+            )
+            self.assertEqual(
+                self._sse_events(await resp.text()),
+                [{"type": "error", "status": "error", "message": MODEL_BUSY_ERROR}],
             )
             await self._busy(
                 await self.client.request("POST", "/prompt_manager/autotag/unload")
@@ -1026,7 +780,7 @@ class TestLegacyRoutesShareTheModelGate(AutotagAPITestCase):
         self.assertEqual(self.service.unload_calls, 0)
         self.assertEqual(self.service.get_loaded_model_type(), "wd14-vit")
 
-        # A refused start released the batch lock: the next start runs.
+        # A refused start left no job behind: the next start runs.
         resp = await self.client.request(
             "POST", "/prompt_manager/autotag/start?model_type=gguf"
         )
@@ -1238,7 +992,7 @@ if __name__ == "__main__":
 
 
 class TestGalleryReviewContract(AutotagAPITestCase):
-    async def test_root_relative_gallery_targets_generate_and_apply_to_their_prompt(
+    async def test_root_relative_gallery_targets_generate_and_apply_to_their_image(
         self,
     ):
         second = self.tmp_root / "second-output"
@@ -1255,16 +1009,22 @@ class TestGalleryReviewContract(AutotagAPITestCase):
             self.assertEqual(response.status, 200)
             data = await response.json()
             self.assertEqual(data["prompt_id"], pid)
-            self.assertEqual(
-                self.service.generate_calls[-1][0], str((root / "same.png").resolve())
-            )
             response = await self._post_json(
                 "/prompt_manager/autotag/apply",
-                {"prompt_id": data["prompt_id"], "tags": data["tags"]},
+                {
+                    "path": "same.png",
+                    "root_index": index,
+                    "sha256": data["sha256"],
+                    "tags": data["tags"],
+                },
             )
             self.assertEqual(response.status, 200)
+            # The image's own tags; the prompt is never written (#379).
+            self.assertEqual(self.api.db.get_prompt_by_id(pid)["tags"], [])
+            locator = os.path.normcase(os.path.realpath(str(root / "same.png")))
             self.assertEqual(
-                set(self.api.db.get_prompt_by_id(pid)["tags"]), set(data["tags"])
+                self.api.db.read_image_tags(locator, data["sha256"])["tags"],
+                data["tags"],
             )
 
     async def test_gallery_unlinked_image_returns_no_prompt_id(self):
@@ -2056,108 +1816,6 @@ class TestTagOutputImagesJob(BatchJobTestCase):
         self.assertTrue(rows)
         inside = [row for row in rows if row["root_index"] == 0]
         self.assertTrue(inside)
-
-
-# The legacy batch's per-image frames over BatchJobTestCase's library, newest
-# first, with every throttle check passing (pinned from main's generator).
-GOLDEN_LEGACY_ROWS = [
-    {
-        "type": "progress",
-        "progress": 24,
-        "status": "Processing 1/6...",
-        "processed": 1,
-        "tagged": 1,
-        "skipped": 0,
-        "skipped_outside_roots": 0,
-    },
-    {
-        "type": "progress",
-        "progress": 38,
-        "status": "Skipping 2/6 (outside allowed directories)...",
-        "processed": 1,
-        "tagged": 1,
-        "skipped": 1,
-        "skipped_outside_roots": 1,
-    },
-    {
-        "type": "progress",
-        "progress": 52,
-        "status": "Skipping 3/6 (file missing)...",
-        "processed": 1,
-        "tagged": 1,
-        "skipped": 2,
-        "skipped_outside_roots": 1,
-    },
-    {
-        "type": "progress",
-        "progress": 66,
-        "status": "Processing 4/6...",
-        "processed": 2,
-        "tagged": 2,
-        "skipped": 2,
-        "skipped_outside_roots": 1,
-    },
-    {
-        "type": "progress",
-        "progress": 80,
-        "status": "Skipping 5/6 (prompt already processed)...",
-        "processed": 2,
-        "tagged": 2,
-        "skipped": 3,
-        "skipped_outside_roots": 1,
-    },
-    {
-        "type": "progress",
-        "progress": 95,
-        "status": "Skipping 6/6 (already tagged)...",
-        "processed": 2,
-        "tagged": 2,
-        "skipped": 4,
-        "skipped_outside_roots": 1,
-    },
-]
-
-
-class TestLegacyBatchFrames(BatchJobTestCase):
-
-    async def test_legacy_batch_events_unchanged(self):
-        """Golden frames of the legacy batch over the seeded library."""
-        self._seed()
-        ticks = iter(range(1000))  # every throttle check sees a second pass
-        with patch("py.api.autotag_routes._monotonic", side_effect=lambda: next(ticks)):
-            resp = await self.client.post(
-                "/prompt_manager/autotag/start?model_type=wd14-vit&skip_tagged=true"
-            )
-            frames = self._sse_events(await resp.text())  # the stream runs here
-        self.assertEqual(
-            frames,
-            [
-                {"type": "progress", "progress": 0, "status": "Loading model..."},
-                {
-                    "type": "progress",
-                    "progress": 5,
-                    "status": "Model loaded. Fetching all images from database...",
-                },
-                {
-                    "type": "progress",
-                    "progress": 10,
-                    "status": "Found 6 images. Processing...",
-                },
-                *GOLDEN_LEGACY_ROWS,
-                {
-                    "type": "complete",
-                    "progress": 100,
-                    "processed": 2,
-                    "tagged": 2,
-                    "skipped": 4,
-                    "errors": 0,
-                    "skipped_outside_roots": 1,
-                    "status": "Complete",
-                    "model_status": "Model kept in memory",
-                    "model_loaded": True,
-                },
-            ],
-        )
 
 
 class TestTagOutputImagesEdges(BatchJobTestCase):
