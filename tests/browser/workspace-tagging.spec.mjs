@@ -513,6 +513,41 @@ test('search finds an image by its image tag', async ({ page, request }) => {
     await expect(card(page, UNLINKED)).toBeVisible();
 });
 
+// #379 CUJ 8: the Tags filter finds images by their own image tags through the tag index; no prompt carries them, and
+// selecting a match shows its prompt. A linked prompt's tag still combines with the image tags.
+test('the Tags filter finds images by image tags only, and selecting one shows its prompt (#379)', async ({ page, request }) => {
+    await saveImageTags(request, FIRST, ['beach', '1girl', 'waves']);
+    await saveImageTags(request, SECOND, ['beach', 'waves']);
+    await saveImageTags(request, UNLINKED, ['beach', '1girl', 'waves', 'gulls']);
+    await page.goto(images);
+    await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(manifest.files.length);
+    const filters = page.locator('#workspace-main search.toolbar').getByRole('button', { name: /^Filters(?: · \d+)?$/ });
+    const refine = page.getByRole('dialog', { name: 'Refine this view', exact: true });
+    const applyTags = async value => {
+        await filters.click();
+        await refine.getByLabel('Tags', { exact: true }).fill(value);
+        const listing = page.waitForRequest(item => item.url().includes('/images/output?')
+            && new URL(item.url()).searchParams.get('tags') !== null);
+        await refine.getByRole('button', { name: 'Apply filters', exact: true }).click();
+        await listing;
+    };
+    await applyTags('beach, 1girl, waves');
+    // Every listed image whose image tags hold all three; SECOND lacks 1girl.
+    await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(2);
+    await expect(card(page, FIRST)).toBeVisible();
+    await expect(card(page, UNLINKED)).toBeVisible();
+    await expect(card(page, SECOND)).toHaveCount(0);
+    // The newest match is selected; the inspector shows its linked prompt.
+    await infoButton(page, FIRST).click();
+    await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
+    await expect(panel(page).locator('.panel-heading h2')).toHaveText(manifest.title);
+    // The linked positive's own tag combines: SECOND has beach and waves itself and minimal through its prompt.
+    await applyTags(`beach, waves, ${manifest.prompt_tags[0]}`);
+    await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(2);
+    await expect(card(page, FIRST)).toBeVisible();
+    await expect(card(page, SECOND)).toBeVisible();
+});
+
 // Task C4 rulings: a save re-reads the selected file's details without a loading flash, and under a Tags filter or a
 // search the loaded listing is re-read in place (scroll and selection kept while the file still matches).
 const cards = page => page.locator('.gallery-body article[data-image-key]');

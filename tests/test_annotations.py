@@ -430,7 +430,9 @@ class ReplaceImageTagsTests(AnnotationTestCase):
             self.assertTrue(
                 self.db.refresh_image_fingerprint(loc, DIGEST_A, SIZE, MTIME + 1)
             )
-            list(self.db.iter_image_tag_records())
+            self.assertEqual(
+                self.db.image_tag_locators(self.db.image_tag_ids(["img"], "")), {loc}
+            )
         self.assertEqual(self.db.get_prompt_by_id(prompt)["tags"], ["prompt-tag"])
 
 
@@ -551,14 +553,26 @@ class CurrentImageTagsTests(AnnotationTestCase):
         self.assertEqual(current, {locators[0]: ["z", "y"], locators[502]: ["x"]})
         lookups = [s for s in statements if "media_annotation_files" in s]
         self.assertEqual(len(lookups), 2)
+        # The tag search finds every record's file by tag id, and the empty
+        # set's file never.
         self.assertEqual(
-            list(self.db.iter_image_tag_records()),
-            [
-                (locators[0], SIZE, MTIME, ["z", "y"]),
-                (locators[250], SIZE, MTIME + 1, []),
-                (locators[502], SIZE, MTIME + 2, ["x"]),
-            ],
+            self.db.image_tag_locators(self.db.image_tag_ids(["z", "x"], "")),
+            {locators[0], locators[502]},
         )
+        self.assertEqual(
+            self.db.current_image_tags({locators[250]: (SIZE, MTIME + 1)}),
+            {locators[250]: []},
+        )
+
+    def test_tag_locators_cover_more_ids_than_one_chunk(self):
+        # A broad text search can match more than 500 names: every id's file
+        # comes back across the chunks.
+        locators = [self.locator(f"t{i:04}.png") for i in range(503)]
+        for i, loc in enumerate(locators):
+            self.replace(loc, tags=[f"name_{i:04}"])
+        ids = self.db.image_tag_ids([], "name_")
+        self.assertEqual(len(ids), 503)
+        self.assertEqual(self.db.image_tag_locators(ids), set(locators))
 
 
 class AutotagMarkTests(AnnotationTestCase):
