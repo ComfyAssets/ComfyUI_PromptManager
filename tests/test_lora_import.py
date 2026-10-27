@@ -959,6 +959,22 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
         self.assertEqual(job.scope["failure"], "plan-changed")
         clear.assert_not_called()
 
+    async def test_start_refused_when_a_skipped_sidecar_changed(self):
+        # #362 CUJ 4: the review counted the orphan as skipped.
+        self._two_loras()
+        orphan = self.loras / "orphan.metadata.json"
+        orphan.write_text(json.dumps({"model_name": "orphan"}))
+        resp, plan = await self._post(PREVIEW)
+        self.assertEqual(resp.status, 200, plan)
+        self.assertEqual((plan["lora_files"], plan["skipped"]), (3, 1))
+        before = _snapshot(self.api.db)
+        orphan.write_text(orphan.read_text() + "  ")
+        resp, body = await self._post(APPLY, {"token": plan["token"]})
+        self.assertEqual(resp.status, 409, body)
+        self.assertEqual(body["code"], "plan-changed")
+        self.assertEqual(self.api._jobs.list(), [])
+        self.assertEqual(_snapshot(self.api.db), before)
+
     async def test_a_pair_saved_after_the_review_blocks_the_job(self):
         self._two_loras()
         resp, plan = await self._post(PREVIEW)
@@ -1209,6 +1225,62 @@ class LoraImportStageTests(unittest.TestCase):
             }
         )
         self.assertNotEqual(lora_import.fingerprint(self.discover()), first)
+
+    # #362: a skipped sidecar is part of what the review counted.
+
+    def _assert_fingerprint_follows(self, change):
+        first = lora_import.fingerprint(self.discover())
+        self.assertEqual(lora_import.fingerprint(self.discover()), first)
+        change()
+        self.assertNotEqual(lora_import.fingerprint(self.discover()), first)
+
+    def _assert_add_edit_remove_change_it(self, path, text):
+        self._assert_fingerprint_follows(lambda: path.write_text(text))
+        self._assert_fingerprint_follows(
+            lambda: path.write_text(path.read_text() + "  ")
+        )
+        self._assert_fingerprint_follows(path.unlink)
+
+    def _centralized(self):
+        sidecars = self.tmp / "sidecars"
+        sidecars.mkdir()
+        self.settings_file(
+            {
+                "sidecar_storage_mode": "centralized",
+                "sidecar_storage_path": str(sidecars),
+            }
+        )
+        model = self.loras / "kept.safetensors"
+        model.write_bytes(b"m")
+        (sidecars / "kept.metadata.json").write_text(
+            json.dumps({"file_path": str(model)})
+        )
+        return sidecars
+
+    def test_fingerprint_follows_a_centralized_sidecar_whose_model_is_missing(self):
+        sidecars = self._centralized()
+        gone = self.loras / "gone.safetensors"
+        self._assert_add_edit_remove_change_it(
+            sidecars / "gone.metadata.json", json.dumps({"file_path": str(gone)})
+        )
+        self.assertEqual(len(self.discover().sidecars), 1)
+
+    def test_fingerprint_follows_a_checkpoint_sidecar_outside_the_lora_roots(self):
+        sidecars = self._centralized()
+        checkpoints = self.tmp / "checkpoints"
+        checkpoints.mkdir()
+        ckpt = checkpoints / "base.safetensors"
+        ckpt.write_bytes(b"c")
+        self._assert_add_edit_remove_change_it(
+            sidecars / "base.metadata.json", json.dumps({"file_path": str(ckpt)})
+        )
+
+    def test_fingerprint_follows_an_alongside_sidecar_without_its_model(self):
+        _write_metadata(self.loras, "kept")
+        self._assert_add_edit_remove_change_it(
+            self.loras / "orphan.metadata.json", json.dumps({"model_name": "orphan"})
+        )
+        self.assertEqual(len(self.discover().sidecars), 1)
 
     def test_fingerprint_follows_a_missing_file_between_stat_calls(self):
         meta = _write_metadata(self.loras, "one")

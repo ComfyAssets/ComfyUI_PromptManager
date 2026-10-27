@@ -501,6 +501,31 @@ class CentralizedDiscoveryTests(LayoutTestCase):
         self.assertEqual(discovery.scanned, 3)
         self.assertEqual(discovery.sidecars, [])
 
+    def test_every_scanned_file_is_listed_resolved_and_sorted(self):
+        # #362: the fingerprint covers every scanned sidecar, kept or skipped.
+        ckpt = self.model(self.checkpoints, "base")
+        alpha = self.model(self.loras, "alpha")
+        self.sidecar(self.sidecars / "z", "base", {"file_path": str(ckpt)})
+        self.sidecar(self.sidecars / "a", "alpha", {"file_path": str(alpha)})
+        self.sidecar(self.sidecars / "m", "nopath", {"model_name": "x"})
+        discovery = discover_sidecars(self.load())
+        files = discovery.scanned_files
+        self.assertIsInstance(files, tuple)
+        self.assertEqual(len(files), 3)
+        self.assertEqual(discovery.scanned, len(files))
+        self.assertEqual([str(f) for f in files], sorted(str(f) for f in files))
+        self.assertEqual(
+            [f.name for f in files],
+            [
+                f"alpha{METADATA_SUFFIX}",
+                f"nopath{METADATA_SUFFIX}",
+                f"base{METADATA_SUFFIX}",
+            ],
+        )
+        for path in files:
+            self.assertEqual(str(path), os.path.realpath(path))
+        self.assertEqual(len(discovery.sidecars), 1)
+
     def test_leftover_sidecars_beside_models_are_not_scanned(self):
         model = self.model(self.loras, "alpha")
         self.sidecar(self.loras, "alpha", {"file_path": str(model)})

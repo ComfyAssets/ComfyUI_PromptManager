@@ -126,12 +126,19 @@ class Sidecar:
 
 @dataclass(frozen=True)
 class Discovery:
-    """The sidecars kept, how many metadata files were seen, and those unread."""
+    """The sidecars kept, every metadata file seen, and those unread."""
 
     layout: LoraManagerLayout
     sidecars: List[Sidecar]
-    scanned: int
+    # Every ``*.metadata.json`` seen, kept or skipped: resolved, once each,
+    # sorted by ``str(path)``. The import's fingerprint covers all of them.
+    scanned_files: Tuple[Path, ...]
     unreadable: List[str]
+
+    @property
+    def scanned(self) -> int:
+        """How many metadata files were seen."""
+        return len(self.scanned_files)
 
 
 class _SettingsError(Exception):
@@ -482,13 +489,13 @@ def discover_sidecars(layout: LoraManagerLayout) -> Discovery:
     cannot see every folder must not replace the collection with part of it.
     """
     if layout.error is not None:
-        return Discovery(layout, [], 0, [])
+        return Discovery(layout, [], (), [])
     if layout.mode == MODE_CENTRALIZED:
         folders = [layout.sidecar_root]
     else:
         folders = list(layout.lora_roots)
     seen = set()
-    scanned = 0
+    scanned: List[Path] = []
     unreadable: List[str] = []
     sidecars = []
     for folder in folders:
@@ -498,12 +505,13 @@ def discover_sidecars(layout: LoraManagerLayout) -> Discovery:
             if key in seen:
                 continue
             seen.add(key)
-            scanned += 1
+            scanned.append(resolved)
             model = _model_for(resolved, layout, unreadable)
             if model is not None:
                 sidecars.append(Sidecar(resolved, Path(os.path.realpath(model))))
     sidecars.sort(key=lambda sidecar: str(sidecar.metadata_path))
-    return Discovery(layout, sidecars, scanned, unreadable)
+    scanned.sort(key=str)
+    return Discovery(layout, sidecars, tuple(scanned), unreadable)
 
 
 # ── images ──────────────────────────────────────────────────────────
