@@ -45,10 +45,12 @@ except ImportError:
         return logger
 
 
-# Model configurations - same as standalone_tagger.py
+# Model configurations - same as standalone_tagger.py. ``label`` is the short
+# name System, Activity and a 409 model-busy show (#328).
 MODELS = {
     "gguf": {
         "name": "GGUF (Recommended)",
+        "label": "GGUF JoyCaption",
         "description": "Quantized model, ~4.5GB, faster loading",
         "size": "~4.5GB",
         "repo": "mradermacher/llama-joycaption-beta-one-hf-llava-GGUF",
@@ -59,6 +61,7 @@ MODELS = {
     },
     "hf": {
         "name": "HuggingFace",
+        "label": "HuggingFace JoyCaption",
         "description": "Full precision model, ~16GB, higher quality",
         "size": "~16GB",
         "repo": "fancyfeast/llama-joycaption-beta-one-hf-llava",
@@ -66,6 +69,7 @@ MODELS = {
     },
     "wd14-swinv2": {
         "name": "WD14 SwinV2",
+        "label": "WD14 SwinV2",
         "description": "Fast classifier tagger, ~400MB, no prompt needed",
         "size": "~400MB",
         "repo": "SmilingWolf/wd-swinv2-tagger-v3",
@@ -75,6 +79,7 @@ MODELS = {
     },
     "wd14-vit": {
         "name": "WD14 ViT",
+        "label": "WD14 ViT",
         "description": "Fast classifier tagger, ~400MB, ViT architecture",
         "size": "~400MB",
         "repo": "SmilingWolf/wd-vit-tagger-v3",

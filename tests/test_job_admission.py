@@ -460,7 +460,7 @@ class TestLegacyRoutesHoldTheRegistry(_LegacyHoldCase):
     async def test_second_legacy_autotag_batch_keeps_its_json_409(self):
         from py.api.autotag_routes import _BUSY_ERROR
 
-        self._run_job("autotag", "Auto-tag images (legacy page)")
+        self._run_job("autotag", "Tag output images (legacy page)")
         resp = await self.client.request(
             "POST", "/prompt_manager/autotag/start", json={}
         )

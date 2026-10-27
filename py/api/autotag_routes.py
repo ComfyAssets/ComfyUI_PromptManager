@@ -1,14 +1,18 @@
 """AutoTag API routes for PromptManager."""
 
 import asyncio
+import contextlib
+import functools
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from .jobs import AUTOTAG_BATCH_JOB_KIND
+from .job_routes import busy_response
+from .jobs import AUTOTAG_BATCH_JOB_KIND, MODEL_DOWNLOAD_JOB_KIND, JobBusy
 from .prompts import thumbnail_url_for
 from . import thumbnail_settings
 from .. import model_gate
@@ -22,12 +26,84 @@ MODEL_BUSY_ERROR = (
 )
 
 
+# Who holds the model gate, as a 409 model-busy names it (``operation``). An
+# owner is ``"<kind>:<uuid>"`` (``model_gate.new_owner``); a download names
+# its own job, whose title says which model.
+MODEL_DOWNLOAD_OWNER_KIND = "model-download"
+OWNER_LABELS = {
+    "autotag-job": "Tag output images",
+    "legacy-batch": "Tag output images (legacy page)",
+    "legacy-single": "Tagging one image (legacy page)",
+    "legacy-unload": "Unloading the tagging model",
+    "image-tag-job": "Auto-tag selected images",
+    "image-annotations": "Generate suggestions",
+}
+ANOTHER_OPERATION = "Another tagging operation"
+_DOWNLOAD_FAILED = "The download failed. Check server logs for details."
+# POST /jobs/model-download carries only {model_type}.
+MODEL_DOWNLOAD_BODY_MAX = 1024
+# The running download's gate owner and job title. Only one download runs at a
+# time and each needs the gate, so a new start replaces the entry.
+_download_titles = {}
+
+
+def _holder_label(holder: Optional[str]) -> str:
+    if not holder:
+        return ANOTHER_OPERATION
+    kind = holder.split(":", 1)[0]
+    if kind == MODEL_DOWNLOAD_OWNER_KIND:
+        return _download_titles.get(holder, ANOTHER_OPERATION)
+    return OWNER_LABELS.get(kind, ANOTHER_OPERATION)
+
+
 def model_busy_response() -> web.Response:
-    """``409 model-busy``: another operation holds the shared model gate."""
+    """``409 model-busy``: another operation holds the shared model gate.
+
+    ``operation`` names the holder (``OWNER_LABELS``), or "Another tagging
+    operation" when the gate was freed meanwhile or the kind is unknown.
+    """
     return web.json_response(
-        {"success": False, "code": "model-busy", "error": MODEL_BUSY_ERROR},
+        {
+            "success": False,
+            "code": "model-busy",
+            "error": MODEL_BUSY_ERROR,
+            "operation": _holder_label(model_gate.holder()),
+        },
         status=409,
     )
+
+
+_SIZE = re.compile(r"^(~?[0-9.]+)\s*([KMGT]?B)$")
+
+
+def size_label(size: str) -> str:
+    """The engine table's size with a space before the unit (``~400 MB``)."""
+    match = _SIZE.match(str(size or "").strip())
+    return f"{match.group(1)} {match.group(2)}" if match else str(size or "")
+
+
+def public_models(status: dict, loaded_type: Optional[str]) -> dict:
+    """Each engine model's public entry: names and sizes from ``MODELS``, the
+    flags from ``status``; never a path (``model_path`` is dropped)."""
+    from ..autotag import MODELS
+
+    models = {}
+    for model_type, config in MODELS.items():
+        flags = status.get(model_type) or {}
+        entry = {
+            "name": config["name"],
+            "label": config["label"],
+            "description": config["description"],
+            "size": config["size"],
+            "size_label": size_label(config["size"]),
+            "downloaded": bool(flags.get("downloaded")),
+            "loaded": loaded_type == model_type,
+        }
+        for key in ("model_exists", "mmproj_exists"):
+            if key in flags:
+                entry[key] = bool(flags[key])
+        models[model_type] = entry
+    return models
 
 
 # Only these may be handed to the tagging engine or listed by the scanner.
@@ -63,6 +139,11 @@ def path_is_within(candidate, root) -> bool:
     except (OSError, RuntimeError, ValueError):
         return False
     return child != parent and child.is_relative_to(parent)
+
+
+async def _single(event):
+    """A stream of one event."""
+    yield event
 
 
 async def _refusal(title):
@@ -110,15 +191,18 @@ class AutotagRoutesMixin:
             from ..config import AutotagConfig
 
             service = get_autotag_service()
-            models_status = service.get_models_status()
+            # Off the loop: the HuggingFace check walks the whole HF cache.
+            status = await self._run_in_executor(service.get_models_status)
+            loaded = service.is_model_loaded()
+            loaded_type = service.get_loaded_model_type() if loaded else None
 
             return web.json_response(
                 {
                     "success": True,
-                    "models": models_status,
+                    "models": public_models(status, loaded_type),
                     "default_prompt": service.default_prompt,
-                    "model_loaded": service.is_model_loaded(),
-                    "loaded_model_type": service.get_loaded_model_type(),
+                    "model_loaded": loaded,
+                    "loaded_model_type": loaded_type,
                     "wd14_general_threshold": service.wd14_general_threshold,
                     "wd14_character_threshold": service.wd14_character_threshold,
                     "suggestion_limit": AutotagConfig.suggestion_limit(),
@@ -159,55 +243,156 @@ class AutotagRoutesMixin:
         return response
 
     async def download_autotag_model(self, request):
-        """Download an AutoTag model with streaming progress (POST only)."""
+        """Download a tagging model, streaming the legacy events (POST only).
+
+        The download is the model_download Activity job: this request
+        attaches to a running download of the same model or starts one, and
+        streams the legacy frames until the job ends. A client disconnect
+        ends only the stream; the download goes on. A running download of
+        another model answers 409 model-busy (it holds the gate).
+        """
+        from ..autotag import MODELS, get_autotag_service
+
         model_type = request.match_info.get("model_type")
-        owner = model_gate.new_owner("legacy-download")
-
-        async def events():
-            try:
-                from ..autotag import get_autotag_service
-
-                service = get_autotag_service()
-                if model_type not in service.models_config:
-                    yield {
-                        "type": "error",
-                        "message": f"Invalid model type: {model_type}",
-                    }
-                    return
-
-                yield {
-                    "type": "progress",
-                    "progress": 0,
-                    "status": "Starting download...",
-                }
-
-                def progress_callback(status: str, progress: float):
-                    pass
-
-                success = await model_gate.run(
-                    owner, service.download_model, model_type, progress_callback
-                )
-                if success:
-                    yield {
-                        "type": "complete",
-                        "progress": 100,
-                        "status": "Download complete",
-                    }
-                else:
-                    yield {"type": "error", "message": "Download failed"}
-            except Exception:
-                self.logger.exception("Download model error")
-                yield {
-                    "type": "error",
-                    "message": _INTERNAL_ERROR,
-                }
-
-        if not model_gate.try_acquire(owner):
-            return model_busy_response()
+        if model_type not in MODELS:
+            invalid = {"type": "error", "message": f"Invalid model type: {model_type}"}
+            return await self._stream_sse(request, _single(invalid))
         try:
-            return await self._stream_sse(request, events())
-        finally:
+            job = self._jobs.active(MODEL_DOWNLOAD_JOB_KIND)
+            if job is not None and job.scope.get("model_type") != model_type:
+                return model_busy_response()
+            if job is None:
+                job, refusal = self._start_model_download(
+                    model_type, get_autotag_service()
+                )
+                if refusal is not None:
+                    return refusal
+        except Exception:
+            self.logger.exception("Download model error")
+            failed = {"type": "error", "message": _INTERNAL_ERROR}
+            return await self._stream_sse(request, _single(failed))
+        return await self._stream_sse(request, self._download_frames(job))
+
+    @staticmethod
+    async def _download_frames(job):
+        """The legacy download frames for job: start, then its end."""
+        yield {"type": "progress", "progress": 0, "status": "Starting download..."}
+        async with contextlib.aclosing(job.events()) as events:
+            async for _payload in events:
+                pass
+        if job.state == "finished":
+            yield {"type": "complete", "progress": 100, "status": "Download complete"}
+        else:
+            yield {"type": "error", "message": "Download failed"}
+
+    # ── model download job (#328) ───────────────────────────────────────
+
+    async def start_model_download_job(self, request):
+        """``POST /jobs/model-download {model_type}``: 202 with the job.
+
+        400 for a bad body, 409 ``busy`` while a download (or an exclusive
+        job) runs, 409 ``model-busy`` while another operation holds the gate.
+        """
+        data, error = await self._read_json_body(
+            request, max_bytes=MODEL_DOWNLOAD_BODY_MAX
+        )
+        if error is not None:
+            return error
+        if set(data) != {"model_type"}:
+            return self._bad_request("The body must be exactly {model_type}")
+        from ..autotag import MODELS, get_autotag_service
+
+        model_type = data["model_type"]
+        if not isinstance(model_type, str) or model_type not in MODELS:
+            return self._bad_request(
+                "model_type must be one of " + ", ".join(sorted(MODELS))
+            )
+        try:
+            job, refusal = self._start_model_download(model_type, get_autotag_service())
+        except Exception as e:
+            self.logger.exception("Model download start error")
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
+        if refusal is not None:
+            return refusal
+        return web.json_response({"success": True, "job": job.summary()}, status=202)
+
+    def _start_model_download(self, model_type, service):
+        """Register the download job: ``(job, None)`` or ``(None, refusal)``.
+
+        Synchronous (no await between the checks and the start). The gate is
+        taken before the job registers and released when the runner ends,
+        also when the task is cancelled before the runner ever starts.
+        """
+        from ..autotag import MODELS
+
+        busy = self._jobs.blocker(MODEL_DOWNLOAD_JOB_KIND, admission="read")
+        if busy is not None:
+            return None, busy_response(JobBusy(busy))
+        owner = model_gate.new_owner(MODEL_DOWNLOAD_OWNER_KIND)
+        if not model_gate.try_acquire(owner):
+            return None, model_busy_response()
+        config = MODELS[model_type]
+        label = config["label"]
+        title = f"Tagging model download · {label}"
+        _download_titles.clear()
+        _download_titles[owner] = title
+        try:
+            job = self._jobs.start(
+                MODEL_DOWNLOAD_JOB_KIND,
+                title,
+                admission="read",
+                cancellable=False,
+                scope={
+                    "model_type": model_type,
+                    "label": label,
+                    "size_label": size_label(config["size"]),
+                },
+                runner=functools.partial(
+                    self._run_model_download, service, model_type, owner
+                ),
+            )
+        except BaseException as refused:
+            # JobBusy, or anything else the registry raised: give the gate back.
             model_gate.release(owner)
+            _download_titles.pop(owner, None)
+            if isinstance(refused, JobBusy):
+                return None, busy_response(refused)
+            raise
+
+        def ended(_task):
+            model_gate.release(owner)
+            if model_gate.holder() != owner:  # not while a thread still runs
+                _download_titles.pop(owner, None)
+
+        job.task.add_done_callback(ended)
+        return job, None
+
+    async def _run_model_download(self, service, model_type, owner, job):
+        label = job.scope["label"]
+        job.update(status_line=f"Downloading {label} ({job.scope['size_label']})")
+        job.log_line(f"Download started: {label}")
+        job.publish({"type": "status", "status": job.status_line})
+        try:
+            ok = await model_gate.run(owner, service.download_model, model_type, None)
+        except Exception:
+            self.logger.exception(f"Tagging model download failed: {model_type}")
+            ok = False
+        finally:
+            # Before the job ends, so a reader that sees the end finds the
+            # gate free (a running download thread defers the release).
+            model_gate.release(owner)
+        if ok:
+            job.update(status_line=f"Downloaded {label}")
+            job.log_line(f"Download finished: {label}")
+            job.publish({"type": "status", "status": job.status_line})
+            job.finish("finished")
+            return
+        job.update(status_line=_DOWNLOAD_FAILED)
+        job.log_line(f"Download failed: {label}")
+        job.publish({"type": "status", "status": job.status_line})
+        job.finish("failed")
 
     async def _read_start_params(self, request) -> Optional[dict]:
         """Merge query-string and optional JSON-body parameters for autotag/start.
@@ -467,7 +652,7 @@ class AutotagRoutesMixin:
             return await self._stream_sse(request, _refusal(busy.title))
         async with self._jobs.hold(
             AUTOTAG_BATCH_JOB_KIND,
-            "Auto-tag images (legacy page)",
+            OWNER_LABELS["legacy-batch"],
             admission="records",
         ) as job:
             response = await self._start_autotag_batch(request, opts, events)
