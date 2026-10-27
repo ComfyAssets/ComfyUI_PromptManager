@@ -31,6 +31,22 @@ class TestSamplerLessPrompt(unittest.TestCase):
             graph = _guided(**{"1": {"class_type": "Enc", "inputs": {"text": value}}})
             self.assertEqual(sampler_less_prompt(graph)["state"], "absent", value)
 
+    def test_number_like_words_are_prompts(self):
+        for value in ("nan", "inf", "Infinity", "1_000"):
+            graph = _guided(**{"1": {"class_type": "Enc", "inputs": {"text": value}}})
+            self.assertEqual(sampler_less_prompt(graph)["text"], value)
+
+    def test_an_own_node_with_unreadable_text_beside_another_text_is_ambiguous(self):
+        graph = _guided(
+            **{
+                "1": {"class_type": "PromptManager", "inputs": {"text": ["5", 0]}},
+                "5": {"class_type": "LLM", "inputs": {"seed": 3}},
+                "2": {"class_type": "Enc", "inputs": {"text": "<lora:x:1>"}},
+                "3": {"class_type": "Sink", "inputs": {"c": ["2", 0]}},
+            }
+        )
+        self.assertEqual(sampler_less_prompt(graph)["state"], "ambiguous")
+
     def test_unhashable_class_type_is_an_unknown_node_not_a_crash(self):
         graph = _guided(**{"1": {"class_type": ["x"], "inputs": {"text": "a fox"}}})
         self.assertEqual(sampler_less_prompt(graph)["text"], "a fox")

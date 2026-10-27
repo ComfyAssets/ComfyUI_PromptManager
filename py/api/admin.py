@@ -1758,14 +1758,18 @@ class AdminRoutesMixin:
             # No node takes a positive or negative input (a guider or wrapper
             # graph): the one wired text, never a guess (#252).
             found = sampler_less_prompt(canonical["prompt"])
-            if found["state"] != "resolved":
+            prompt_text = found["text"]
+            if prompt_text is None and isinstance(canonical.get("parameters"), str):
+                # A metadata saver also wrote A1111 text: its positive prompt.
+                parsed = self._parse_comfyui_prompt(metadata)["positive_prompt"]
+                prompt_text = parsed.strip() if parsed and parsed.strip() else None
+            if prompt_text is None:
                 linked = self._link_recorded_run(
                     media_file, canonical, detailed, history
                 )
                 if linked is not None:
                     return linked
                 return "unresolved" if found["state"] == "ambiguous" else "found"
-            prompt_text = found["text"]
         else:
             prompt_text = self._parse_comfyui_prompt(metadata)["positive_prompt"]
             if not (prompt_text and prompt_text.strip()):

@@ -410,5 +410,42 @@ class TestSamplerLessScan(AdminAPITestCase):
                 {"id": 6, "type": "CLIPTextEncode", "widgets_values": ["stale text"]}
             ]
         }
-        self.assertIn(self._scanned("stale.png", g, workflow), ("found", "unresolved"))
+        self.assertEqual(self._scanned("stale.png", g, workflow), "unresolved")
         self.assertEqual(self._texts(), [])
+
+    def test_a_lora_loaders_trigger_word_output_is_not_its_text(self):
+        # The encoder reads the loader's trigger-word output (slot 2), not its
+        # text input: the prompt is unknown, never the "<lora:...>" syntax.
+        g = flux_graph(text=["50", 2])
+        g["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "text": "<lora:style:1.00>"},
+        }
+        g["22"]["inputs"]["model"] = ["50", 0]
+        self.assertEqual(self._scanned("trigger.png", g), "unresolved")
+        self.assertEqual(self._texts(), [])
+
+    def test_a_seeded_text_node_holds_a_template_not_the_prompt(self):
+        g = flux_graph(text=["80", 0])
+        g["80"] = {
+            "class_type": "RandomPrompt",
+            "inputs": {"text": "a {red|blue} fox", "seed": 5},
+        }
+        self.assertEqual(self._scanned("random.png", g), "unresolved")
+        self.assertEqual(self._texts(), [])
+
+    def test_a1111_parameters_beside_an_undecided_graph_are_read(self):
+        # Metadata savers write both; the old scan read the A1111 positive.
+        g = flux_graph()
+        g["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "text": "<lora:style:1.00>"},
+        }
+        g["22"]["inputs"]["model"] = ["50", 0]
+        meta = {
+            "prompt": json.dumps(g),
+            "parameters": "a red fox\nNegative prompt: blur\nSteps: 20",
+        }
+        path = self.output_dir / "saver.png"
+        self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
+        self.assertEqual(self._texts(), ["a red fox"])
