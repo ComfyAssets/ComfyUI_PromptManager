@@ -113,7 +113,12 @@ MIN_HOME_NAME = 3
 
 
 def _home_patterns():
-    """Patterns for the home folder: in full, without its root, and its name."""
+    """``(pattern, paths_only)`` for the home folder: in full, rootless, its name.
+
+    Accepted residual risk: only this process's own home folder is known, so
+    another user's home (an output folder under /home/<them> while ComfyUI
+    runs as a service account) can still be named by a report path.
+    """
     home = os.path.expanduser("~")
     if not home or home == "~" or len(home) < 4 or home in ("/", "\\"):
         return ()
@@ -122,13 +127,17 @@ def _home_patterns():
     for spelling in (relative, relative.replace("\\", "/")):
         if "/" in spelling or "\\" in spelling:
             spellings.add(spelling)
+    patterns = [
+        (re.compile(_PART.format(re.escape(spelling)), re.IGNORECASE), False)
+        for spelling in spellings
+    ]
     name = re.split(r"[\\/]", relative)[-1] if relative else ""
     if len(name) >= MIN_HOME_NAME:
-        spellings.add(name)
-    return tuple(
-        re.compile(_PART.format(re.escape(spelling)), re.IGNORECASE)
-        for spelling in spellings
-    )
+        # The bare name only inside a path ("info/x"), not a word ("INFO").
+        patterns.append(
+            (re.compile(_PART.format(re.escape(name)), re.IGNORECASE), True)
+        )
+    return tuple(patterns)
 
 
 def scrub(report, key):
@@ -143,7 +152,11 @@ def scrub(report, key):
             if (
                 _looks_absolute(value)
                 or (key and key in value)
-                or any(home.search(value) for home in homes)
+                or any(
+                    pattern.search(value)
+                    for pattern, paths_only in homes
+                    if not paths_only or "/" in value or "\\" in value
+                )
             ):
                 count += 1
                 return REMOVED

@@ -300,6 +300,13 @@ class TestReport(DiagnosticsReportTestCase):
             "output",
         )
 
+    def test_the_home_folder_name_is_removed_only_from_paths(self):
+        with mock.patch.object(
+            diagnostics_report.os.path, "expanduser", return_value="/home/info"
+        ):
+            cleaned = scrub({"level": "INFO", "p": "logs/info/x", "redacted": 0}, None)
+        self.assertEqual(cleaned, {"level": "INFO", "p": "[removed]", "redacted": 1})
+
     def test_scrub_removes_the_home_folder_name(self):
         with mock.patch.object(
             diagnostics_report.os.path, "expanduser", return_value="/home/someone"
