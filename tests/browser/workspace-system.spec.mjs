@@ -1,6 +1,7 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
 import { seedConcept } from './concept-inventory.mjs';
+import { readCoverageTable, parseControl } from '../../tools/vendor/legacy-coverage.mjs';
 
 // System › Overview (#249 System S2 Task 6) on the concept-shaped real fixture: the metrics, rows, Statistics dialog and
 // Health report read the server, never sample values (D93, D95, D96). The hooks are workspace_system_fixture.py's.
@@ -794,3 +795,40 @@ test('reset restores defaults without touching other keys', async ({ page }) => 
     expect(stored).toEqual({ gridColumns: 5, defaultLimit: 200, thumbnailPromptDismissed: 'kept', workspaceLayout: 'grid',
         videoMute: true, showImageInfo: true });
 });
+
+// TESTING.md "Legacy System capability coverage" (#249 System S12, #329): each `covered` row's native control is on its
+// System section, found by role and accessible name (a `term` by its text, a disclosure by its summary). Collapsed
+// `details` are opened first, so a control inside one counts once it is shown. tests/vendor/legacy-coverage.test.mjs
+// checks the rest of each row.
+test('every covered legacy System capability has its native control', async ({ page, request }) => {
+    // Download is offered for a model that is not on disk ("Download again" otherwise): the selected default's file is
+    // missing here.
+    await expect(await request.post('/__test__/tagging/models', { data: { unavailable: ['wd14-swinv2'] } })).toBeOK();
+    try {
+        await findControls(page);
+    } finally {
+        await request.post('/__test__/tagging/reset', { data: {} });
+    }
+});
+
+async function findControls(page) {
+    const controls = readCoverageTable().filter(row => row.Status === 'covered')
+        .map(row => ({ capability: row.Capability, ...parseControl(row['Native control']) })).filter(row => row.section);
+    expect(controls.length).toBeGreaterThan(40);
+    const sections = [...new Set(controls.map(row => row.section))];
+    for (const section of sections) {
+        await page.goto(`${workspace}#/system/${section}`);
+        const main = page.locator('#workspace-main');
+        await expect(layoutOf(page).locator(':scope > *').first()).toBeVisible();
+        for (const details of await main.locator('details:not([open]) > summary').all()) await details.click();
+        for (const { capability, role, name } of controls.filter(row => row.section === section)) {
+            const exact = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+            // A `dt` (term) and a `details` disclosure (group) have no name from content: the term's text, the summary's.
+            const control = role === 'term' ? main.getByRole('term').filter({ hasText: exact })
+                : role === 'group' ? main.locator('details').filter({ has: page.locator(':scope > summary', { hasText: exact }) })
+                    .or(main.getByRole('group', { name, exact: true }))
+                    : main.getByRole(role, { name, exact: true });
+            await expect(control.first(), `${capability}: ${section} · ${role} · "${name}"`).toBeVisible();
+        }
+    }
+}
