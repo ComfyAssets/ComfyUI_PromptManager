@@ -133,3 +133,19 @@ class TestReviewFindings(unittest.TestCase):
                     file_name="dup_00001_.png",
                 )
                 self.assertNotEqual(result["state"], "resolved")
+
+
+class TestPlainFirstStage(unittest.TestCase):
+    def test_only_a_plain_first_stage_is_skipped(self):
+        expected = {
+            "no-latent": "resolved",
+            "literal-latent": "unresolved",
+            "missing-latent": "unresolved",
+            "cyclic-latent": "unresolved",
+            "stage-shaped": "unresolved",
+            "detailer": "unresolved",
+        }
+        for kind, state in expected.items():
+            with self.subTest(kind=kind):
+                result = _inspect(shapes.first_stage_variant(kind), "final_00003_.png")
+                self.assertEqual(result["state"], state, result["reason"])

@@ -179,3 +179,38 @@ def deep_prefixes(chain):
         previous = f"p{index}"
     graph["q"] = {"class_type": "DisplayText", "inputs": {"text": ["p0", 0]}}
     return graph
+
+
+def first_stage_variant(kind):
+    """``two_stage_same_conditioning`` whose first stage (63) is not plain.
+
+    ``no-latent`` drops its latent input (still plain); ``literal-latent``,
+    ``missing-latent``, ``cyclic-latent``, ``stage-shaped`` and ``detailer``
+    each make it something other than a plain first stage, so the later
+    stage stays unattributed.
+    """
+    graph = two_stage_same_conditioning()
+    inputs = graph["63"]["inputs"]
+    if kind == "no-latent":
+        del inputs["latent_image"]
+    elif kind == "literal-latent":
+        inputs["latent_image"] = "latent"
+    elif kind == "missing-latent":
+        inputs["latent_image"] = ["999", 0]
+    elif kind == "cyclic-latent":
+        graph["70"] = {"class_type": "VendorLatentOp", "inputs": {"samples": ["63", 0]}}
+        inputs["latent_image"] = ["70", 0]
+    elif kind == "stage-shaped":
+        graph["70"] = {
+            "class_type": "VendorSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["90", 0],
+                "latent_image": ["2", 0],
+            },
+        }
+        inputs["latent_image"] = ["70", 0]
+    elif kind == "detailer":
+        graph["63"]["class_type"] = "FaceDetailer"
+        inputs["image"] = ["30", 0]
+    return graph

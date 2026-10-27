@@ -924,7 +924,7 @@ def golden_cases():
         from tests import saver_anchor_graphs as anchor
     except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
         import saver_anchor_graphs as anchor
-    for name, graph, file_name in (
+    for name, graph, file_name in [
         ("branch-3", anchor.branch_bench(), "s45_branch_3_00002_.png"),
         ("branch-unanchored", anchor.branch_bench(), None),
         ("branch-no-match", anchor.branch_bench(), "photo_00001_.png"),
@@ -948,7 +948,17 @@ def golden_cases():
             anchor.hidden_earlier_prompt(override=True),
             "out_00001_.png",
         ),
-    ):
+    ] + [
+        (f"first-stage-{kind}", anchor.first_stage_variant(kind), "final_00003_.png")
+        for kind in (
+            "no-latent",
+            "literal-latent",
+            "missing-latent",
+            "cyclic-latent",
+            "stage-shaped",
+            "detailer",
+        )
+    ]:
         cases[f"anchor-{name}"] = {"prompt": _dump(graph)}
         if file_name is not None:
             cases[f"anchor-{name}"][FILE_NAME] = file_name

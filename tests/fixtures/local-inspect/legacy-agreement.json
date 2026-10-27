@@ -33,6 +33,7 @@
   "f23"
  ],
  "local_resolver": [
+  "anchor-first-stage-no-latent",
   "anchor-same-links",
   "anchor-same-links-unanchored",
   "built-chars",
