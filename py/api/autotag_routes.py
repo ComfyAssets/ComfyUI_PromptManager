@@ -728,8 +728,8 @@ class AutotagRoutesMixin:
         busy = self._jobs.blocker(AUTOTAG_BATCH_JOB_KIND, admission="records")
         if busy is not None:
             # A second legacy batch keeps its JSON 409; the workspace's Tag
-            # output images job (cancellable) is named in a stream frame.
-            if busy.kind == AUTOTAG_BATCH_JOB_KIND and not busy.cancellable:
+            # output images job is named in a stream frame.
+            if busy.kind == AUTOTAG_BATCH_JOB_KIND and busy.title != AUTOTAG_JOB_TITLE:
                 return web.json_response(
                     {"success": False, "error": _BUSY_ERROR}, status=409
                 )
