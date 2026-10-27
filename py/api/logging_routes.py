@@ -95,9 +95,11 @@ def _validate_log_config(data):
 def _read_log_bytes(path):
     """The whole file at ``path``, opened without following a link (blocking).
 
-    The file is checked again through the open handle (a regular file), so a
-    name swapped for a link after it was listed is refused as missing. The
-    handle is closed before this returns.
+    The file is checked again through the open handle: a regular file with
+    one name and, when ``path`` carries it, the inode it was listed with. A
+    name swapped for a link or another file after it was listed, or a hard
+    link to a file elsewhere, is refused as missing. The handle is closed
+    before this returns.
     """
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -106,8 +108,14 @@ def _read_log_bytes(path):
         if getattr(os, "O_NOFOLLOW", 0) and os.path.islink(str(path)):
             raise FileNotFoundError("Log file not found") from error
         raise
+    listed_ino = getattr(path, "listed_ino", 0)
     with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        opened = os.fstat(handle.fileno())
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink > 1  # a hard link to a file elsewhere
+            or (listed_ino and opened.st_ino and opened.st_ino != listed_ino)
+        ):
             raise FileNotFoundError("Log file not found")
         return handle.read()
 

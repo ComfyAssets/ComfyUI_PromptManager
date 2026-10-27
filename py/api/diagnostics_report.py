@@ -9,11 +9,12 @@ the configuration keys that only ``config.json`` holds. It never copies
 ``PromptManagerConfig.get_config()``: no path leaf is listed, and the CivitAI
 key is reported only as ``has_civitai_api_key``.
 
-Every path in the report goes through ``report_path``: relative to ComfyUI
-(or another public anchor), else ``"outside ComfyUI"``, never a basename
-that could be a user name. As a backstop, ``scrub`` replaces any string that
-still looks like an absolute path, holds the saved key or the home folder,
-and counts each replacement in ``redacted`` (0 for a correct builder).
+Every path in the report goes through ``report_path``: relative to the
+closest public anchor that is not a filesystem root, else ``"outside
+ComfyUI"``, never a basename that could be a user name. As a backstop,
+``scrub`` replaces any string that still looks like an absolute path, holds
+the saved key or the home folder (with or without its root), and counts each
+replacement in ``redacted`` (0 for a correct builder).
 
 The report opens the database, so it takes a registry lease: it is refused
 (409 ``busy``) while an ``exclusive`` job (a restore) runs, and a restore
@@ -61,10 +62,14 @@ def report_path(path):
         canonical = Path(os.path.normcase(os.path.realpath(str(path))))
     except (OSError, ValueError):
         return OUTSIDE
-    for anchor in GalleryConfig.path_anchors():
-        if canonical.is_relative_to(Path(anchor)):
-            return canonical.relative_to(Path(anchor)).as_posix() or "."
-    return OUTSIDE
+    # The closest anchor wins; a filesystem root (an output folder directly
+    # under / or D:\\) never does, or every path would read as public.
+    anchors = [Path(anchor) for anchor in GalleryConfig.path_anchors()]
+    anchors = [a for a in anchors if a.parent != a and canonical.is_relative_to(a)]
+    if not anchors:
+        return OUTSIDE
+    anchor = max(anchors, key=lambda a: len(a.parts))
+    return canonical.relative_to(anchor).as_posix() or "."
 
 
 def _looks_absolute(text):
@@ -81,7 +86,14 @@ def _home_spellings():
     home = os.path.expanduser("~")
     if not home or len(home) < 4 or home in ("/", "\\"):
         return ()
-    return tuple({home, home.replace("\\", "/")})
+    spellings = {home, home.replace("\\", "/")}
+    # Also without its root or drive ("home/vito"), as a path made relative
+    # to a filesystem root would spell it; only with two parts or more.
+    relative = os.path.splitdrive(home)[1].lstrip("\\/")
+    for spelling in (relative, relative.replace("\\", "/")):
+        if "/" in spelling or "\\" in spelling:
+            spellings.add(spelling)
+    return tuple(spellings)
 
 
 def scrub(report, key):

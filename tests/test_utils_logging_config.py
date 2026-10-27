@@ -4,6 +4,7 @@ import logging
 import ntpath
 import os
 import pathlib
+import stat
 import sys
 import tempfile
 import threading
@@ -644,6 +645,36 @@ class TestRotatedCopyRule(IsolatedLoggerTestCase):
             self.assertTrue(os.path.islink(self._path("prompt_manager.log.4")))
             with open(target, "rb") as handle:
                 self.assertEqual(handle.read(), b"secret " * 1000)
+
+    @unittest.skipIf(os.name == "nt", "Windows cannot rename a log that is open")
+    def test_truncate_never_empties_a_renamed_log_the_handler_still_writes(self):
+        # The user renamed the active log to keep it; the handler still has it
+        # open. Clear must empty the new prompt_manager.log, not the kept copy.
+        self.logger.info("worth keeping")
+        kept = os.path.join(self.log_dir, "saved_copy.txt")
+        os.rename(self._path("prompt_manager.log"), kept)
+        with open(kept, "rb") as handle:
+            before = handle.read()
+        self._write("prompt_manager.log", b"fresh active log\n")
+        result = self.manager.truncate_logs()
+        self.assertEqual(result["errors"], [])
+        with open(kept, "rb") as handle:
+            self.assertTrue(handle.read().startswith(before))
+        with open(self._path("prompt_manager.log"), "rb") as handle:
+            self.assertEqual(handle.read(), b"")
+
+    def test_name_surrogate_reparse_points_are_links_and_placeholders_are_not(self):
+        regular = stat.S_IFREG | 0o644
+        path = self._write("prompt_manager.log.3")
+        for tag, is_link in (
+            (0xA000001D, True),  # WSL symlink
+            (0xA0000003, True),  # mount point (junction)
+            (0x9000001A, False),  # OneDrive cloud placeholder: a regular file
+            (0, False),
+        ):
+            with self.subTest(tag=hex(tag)):
+                st = mock.Mock(st_mode=regular, st_reparse_tag=tag)
+                self.assertIs(logging_config._is_link(path, st), is_link)
 
     def test_truncate_with_file_logging_off_never_creates_the_active_log(self):
         self.manager.update_config({"file_logging": False})

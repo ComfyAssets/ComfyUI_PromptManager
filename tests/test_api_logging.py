@@ -433,6 +433,37 @@ class TestLogFilesAndDownload(LoggingAPITestCase):
         self.assertEqual(resp.status, 404)
         self.assertNotIn("the key", body)
 
+    async def test_download_refuses_a_hard_link(self):
+        secret = Path(self.tmpdir) / "secret.txt"
+        secret.write_text("the key")
+        try:
+            os.link(secret, self.log_dir / "prompt_manager.log.3")
+        except (OSError, NotImplementedError):  # pragma: no cover
+            self.skipTest("this filesystem cannot create hard links")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/prompt_manager.log.3"
+        )
+        self.assertEqual(resp.status, 404)
+        self.assertNotIn("the key", await resp.text())
+
+    async def test_download_refuses_a_file_swapped_after_it_was_listed(self):
+        (self.log_dir / "prompt_manager.log.2").write_text("listed")
+        other = Path(self.tmpdir) / "other.txt"
+        other.write_text("swapped in")
+        real_entry = self.manager.log_file_entry
+
+        def entry_then_swap(name):
+            path = real_entry(name)
+            os.replace(other, path)  # another file now has the listed name
+            return path
+
+        self.manager.log_file_entry = entry_then_swap
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/prompt_manager.log.2"
+        )
+        self.assertEqual(resp.status, 404)
+        self.assertNotIn("swapped in", await resp.text())
+
     async def test_download_reads_off_the_loop(self):
         (self.log_dir / "prompt_manager.log").write_bytes(b"line\n")
         seen = []

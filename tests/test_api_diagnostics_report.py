@@ -26,7 +26,7 @@ sys.modules.setdefault("server", _mock_server)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from py.api import admin, diagnostics_report  # noqa: E402
-from py.api.diagnostics_report import report_path, scrub  # noqa: E402
+from py.api.diagnostics_report import OUTSIDE, report_path, scrub  # noqa: E402
 from py.config import (
     GalleryConfig,
     IntegrationConfig,
@@ -209,6 +209,25 @@ class TestReport(DiagnosticsReportTestCase):
         )
         self.assertEqual(report_path(""), "")
         self.assertEqual(report_path(None), "")
+
+    def test_a_filesystem_root_anchor_never_makes_a_path_public(self):
+        # --output-directory /renders makes "/" an anchor; a path outside
+        # ComfyUI must still read "outside ComfyUI", never "home/<user>/...".
+        root = os.path.abspath(os.sep)
+        anchors = [str(self.comfy_dir), root]
+        with mock.patch.object(GalleryConfig, "path_anchors", return_value=anchors):
+            self.assertEqual(
+                report_path(os.path.join(str(self.outside_dir), "x")), OUTSIDE
+            )
+            self.assertEqual(
+                report_path(os.path.join(str(self.comfy_dir), "output")), "output"
+            )
+
+    def test_scrub_removes_the_home_folder_without_its_root(self):
+        home = os.path.expanduser("~")
+        relative = os.path.splitdrive(home)[1].lstrip("\\/").replace("\\", "/")
+        cleaned = scrub({"a": f"{relative}/area/prompts.db", "redacted": 0}, None)
+        self.assertEqual(cleaned, {"a": "[removed]", "redacted": 1})
 
     def test_scrub_removes_a_leaked_path_and_counts_it(self):
         leaked = {

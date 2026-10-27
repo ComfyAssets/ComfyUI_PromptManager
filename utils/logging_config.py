@@ -49,8 +49,21 @@ def _rotated_number(name: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+# Windows reparse tags with the name-surrogate bit name another file or
+# folder (symlinks, junctions, WSL symlinks); cloud placeholders do not.
+_NAME_SURROGATE = 0x20000000
+
+
 def _is_link(path: str, st: os.stat_result) -> bool:
+    if getattr(st, "st_reparse_tag", 0) & _NAME_SURROGATE:
+        return True
     return stat.S_ISLNK(st.st_mode) or os.path.isjunction(path)
+
+
+class LogFilePath(type(Path())):
+    """A listed log file's path, with the inode it had when it was listed."""
+
+    listed_ino = 0
 
 
 def _kind(name: str, path: str, st: os.stat_result) -> str:
@@ -124,8 +137,19 @@ def log_file_entry(log_dir, name) -> Path:
         if row["name"] == name and row["kind"] in ("active", "rotated", "other"):
             if row["_dir"]:
                 break
-            return Path(log_dir) / row["name"]
+            entry = LogFilePath(log_dir, row["name"])
+            entry.listed_ino = row["ino"]
+            return entry
     raise FileNotFoundError("Log file not found")
+
+
+def _stream_is(stream, ino: int) -> bool:
+    """Whether ``stream`` is open on the file with inode ``ino`` (0: unknown)."""
+    try:
+        open_ino = os.fstat(stream.fileno()).st_ino
+    except (OSError, ValueError, AttributeError):
+        return False
+    return not (ino and open_ino and open_ino != ino)
 
 
 def _error_text(error: BaseException) -> str:
@@ -467,7 +491,7 @@ class PromptManagerLogger:
         for handler in reversed(held):
             handler.release()
 
-    def _truncate_main_log(self, log_file: Path) -> None:
+    def _truncate_main_log(self, log_file: Path, expected_ino: int = 0) -> None:
         """Empty the main log through the handler that writes to it.
 
         Opening the file a second time with ``"w"`` leaves the handler's own
@@ -476,6 +500,10 @@ class PromptManagerLogger:
         the next record rolls the file over. Truncating the handler's stream
         keeps position and size in step. Without a handler on it (file logging
         off) the existing file is emptied in place, never through a link.
+
+        A handler whose open stream is not the listed file (``expected_ino``:
+        the user renamed the log, which the handler still writes to) is left
+        alone: the file under the active name is emptied instead.
         """
         handled = False
         target = os.path.normcase(os.path.realpath(str(log_file)))
@@ -485,6 +513,8 @@ class PromptManagerLogger:
             if stream is None or base is None:
                 continue
             if os.path.normcase(os.path.realpath(base)) != target:
+                continue
+            if not _stream_is(stream, expected_ino):
                 continue
             handler.acquire()
             try:
@@ -575,7 +605,7 @@ class PromptManagerLogger:
                     path = os.path.join(self.log_dir, row["name"])
                     try:
                         if row["kind"] == "active":
-                            self._truncate_main_log(Path(path))
+                            self._truncate_main_log(Path(path), row["ino"])
                         else:
                             os.unlink(path)
                         results["truncated"].append(row["name"])
