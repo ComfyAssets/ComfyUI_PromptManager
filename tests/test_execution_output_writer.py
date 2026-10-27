@@ -572,6 +572,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
                 self.assertIs(replacement.context_budget, writer.context_budget)
                 self.assertIsNone(replacement.context_budget.reserve(8388608))
                 release.set()
+                # Drain first: the 2 s bound is not under test here (#370).
+                drain_writer(writer)
                 self.assertTrue(writer.close(2))
         finally:
             release.set()
@@ -613,6 +615,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
             writer.invalidate()
             self.assertEqual(writer.context_budget.charged_bytes, 0)
             release.set()
+        # Drain first: the 2 s bound is not under test here (#370).
+        drain_writer(writer)
         self.assertTrue(writer.close(2))
 
     def test_malformed_context_omission_preserves_independent_valid_output(self):
@@ -703,6 +707,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
                 release.set()
                 invalidator.join(BLOCK_SECONDS)
             self.assertFalse(invalidator.is_alive())
+            # Drain first: the 2 s bound is not under test here (#370).
+            drain_writer(writer)
             self.assertTrue(writer.close(2))
         self.assertEqual(
             self.db.get_execution_outputs(start.run_id)["state"], "complete"

@@ -356,6 +356,8 @@ class HistoryHooksTests(unittest.TestCase):
             self.assertGreaterEqual(time.monotonic() - began, 1.8)
             self.assertLess(time.monotonic() - began, CEILING_SECONDS)
             release.set()
+            # Drain first: the 2 s bound is not under test here (#370).
+            self.drain(registration)
             self.assertTrue(registration.dispose(2))
 
     def test_restore_disables_capture_and_clears_handles_before_fresh_epoch(self):
