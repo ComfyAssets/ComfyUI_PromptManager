@@ -169,7 +169,11 @@ class SettingsLookupTests(LayoutTestCase):
 
     def test_settings_dir_is_expanded_and_made_absolute(self):
         self.write_settings(self.env_dir, {})
-        self.environ["LORA_MANAGER_SETTINGS_DIR"] = os.path.relpath(self.env_dir)
+        # Relative to the process folder (relpath fails across Windows drives).
+        # The cleanup returns before the temp folder is removed (LIFO).
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.tmp)
+        self.environ["LORA_MANAGER_SETTINGS_DIR"] = self.env_dir.name
         self.assertEqual(self.load().settings_path, self.env_dir / "settings.json")
 
 
@@ -381,6 +385,35 @@ class ActiveLibraryTests(LayoutTestCase):
         self.assertEqual(layout.library, "comfyui")
         self.assertEqual(
             layout.example_images_root, os.path.normcase(str(self.examples))
+        )
+
+    def test_a_mixed_case_library_folder_keeps_its_example_images(self):
+        # Review finding: the library subfolder must be canonical like its
+        # root, or every example image fails the media check on Windows
+        # (normcase lowercases there; native proof is the Windows CI job).
+        self.write_settings(
+            self.user_config,
+            {
+                "libraries": {"Studio A": {}, "other": {}},
+                "active_library": "Studio A",
+                "example_images_path": str(self.examples),
+            },
+        )
+        image = self.examples / "Studio_A" / "abc" / "1.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"x")
+        model = self.default_loras / "m.safetensors"
+        model.write_bytes(b"m")
+        (self.default_loras / "m.metadata.json").write_text("{}")
+        layout = self.load()
+        self.assertEqual(
+            layout.example_images_root,
+            os.path.normcase(os.path.realpath(self.examples / "Studio_A")),
+        )
+        entry = discover_sidecars(layout).sidecars[0]
+        self.assertEqual(
+            local_media(entry, {"sha256": "ABC"}, layout, MEDIA),
+            [os.path.realpath(image)],
         )
 
     def test_a_missing_library_subfolder_means_no_example_images(self):
