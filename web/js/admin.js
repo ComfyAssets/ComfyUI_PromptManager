@@ -3689,6 +3689,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('downloadStatus').textContent = 'Preparing...';
                 document.getElementById('downloadProgressPercent').textContent = '0%';
                 document.getElementById('downloadProgressBar').style.width = '0%';
+                document.getElementById('downloadProgressBar').classList.remove('animate-pulse');
 
                 this.hideModal("autoTagModal");
                 this.showModal("autoTagDownloadModal");
@@ -3699,18 +3700,21 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     this.autoTagState.downloadEventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
 
-                        if (data.status === 'downloading') {
-                            const percent = Math.round(data.progress * 100);
-                            document.getElementById('downloadStatus').textContent = data.message || 'Downloading...';
-                            document.getElementById('downloadProgressPercent').textContent = `${percent}%`;
-                            document.getElementById('downloadProgressBar').style.width = `${percent}%`;
-                        } else if (data.status === 'complete') {
+                        // The server sends `type` (progress / complete / error); the download is an
+                        // Activity job with no byte progress, so the bar is indeterminate (#328).
+                        if (data.type === 'progress') {
+                            document.getElementById('downloadStatus').textContent = 'Downloading\u2026';
+                            document.getElementById('downloadProgressPercent').textContent = '';
+                            const bar = document.getElementById('downloadProgressBar');
+                            bar.style.width = '100%';
+                            bar.classList.add('animate-pulse');
+                        } else if (data.type === 'complete') {
                             this.autoTagState.downloadEventSource.close();
                             this.hideModal("autoTagDownloadModal");
                             this.showModal("autoTagModal");
                             this.checkAutoTagModels();
                             this.showNotification('Model downloaded successfully!', 'success');
-                        } else if (data.status === 'error') {
+                        } else if (data.type === 'error') {
                             this.autoTagState.downloadEventSource.close();
                             this.hideModal("autoTagDownloadModal");
                             this.showModal("autoTagModal");

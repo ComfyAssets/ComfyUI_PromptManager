@@ -72,6 +72,8 @@ class TestModel:
     # Scored names the concept comparisons answer instead of the fixed list
     # (``/__test__/tagging/suggestions``); None keeps the fixed list.
     suggestions: list | None = None
+    # The engine's model table (``py/autotag.py`` MODELS), set at startup.
+    models_config: dict = {}
 
     def get_models_status(self) -> dict:
         return {
@@ -79,7 +81,7 @@ class TestModel:
                 "downloaded": name not in self.unavailable,
                 "loaded": self.loaded == name,
             }
-            for name in ("gguf", "hf", "wd14-vit", "wd14-convnext", "wd14-swinv2")
+            for name in self.models_config
         }
 
     def is_model_loaded(self) -> bool:
@@ -207,6 +209,7 @@ def create_app(root: Path) -> web.Application:
     from py import autotag
     from utils.hashing import generate_prompt_hash
 
+    TestModel.models_config = autotag.MODELS
     model = TestModel()
     autotag.get_autotag_service = lambda: model
     api = PromptManagerAPI()
