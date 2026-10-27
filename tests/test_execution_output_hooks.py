@@ -245,6 +245,8 @@ class OutputHooksTests(fixtures.unittest.TestCase):
         registration = self.register()
         self.dequeue(0)
         late = registration._task_done
+        # Drain first: the 2 s bound is not under test here (#370).
+        self.drain(registration)
         self.assertTrue(registration.dispose())
         thread = threading.Thread(
             target=lambda: late((0, history(), fixtures.status()), {})
