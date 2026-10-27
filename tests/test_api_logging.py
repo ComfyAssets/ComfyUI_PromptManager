@@ -464,6 +464,14 @@ class TestLogFilesAndDownload(LoggingAPITestCase):
         self.assertEqual(resp.status, 404)
         self.assertNotIn("swapped in", await resp.text())
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs are POSIX only")
+    async def test_download_refuses_a_fifo_without_blocking(self):
+        os.mkfifo(self.log_dir / "pipe.log")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/pipe.log"
+        )
+        self.assertEqual(resp.status, 404)
+
     async def test_download_reads_off_the_loop(self):
         (self.log_dir / "prompt_manager.log").write_bytes(b"line\n")
         seen = []

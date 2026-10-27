@@ -28,7 +28,7 @@ import os
 import platform
 import posixpath
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from aiohttp import web
 
@@ -52,6 +52,36 @@ MIN_KEY_LENGTH = 8
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
+def anchored_path(canonical, anchors, home, pathmod=os.path):
+    """``canonical`` relative to the closest usable anchor, else ``outside ComfyUI``.
+
+    All three are already canonical (``normcase``) in ``pathmod``'s spelling.
+    A filesystem root is never usable, nor is a strict ancestor of ``home``
+    (``/home``, ``C:\\Users``), whose relative paths would start with a user
+    name; so a path inside the home folder needs an anchor at or below it.
+    """
+    flavor = PureWindowsPath if pathmod is ntpath else PurePosixPath
+    target = flavor(canonical)
+    home_path = flavor(home) if home else None
+    usable = []
+    for anchor in map(flavor, anchors):
+        if anchor.parent == anchor:
+            continue
+        if home_path is not None and home_path != anchor:
+            if home_path.is_relative_to(anchor):
+                continue
+        if target.is_relative_to(anchor):
+            usable.append(anchor)
+    if not usable:
+        return OUTSIDE
+    anchor = max(usable, key=lambda a: len(a.parts))
+    return target.relative_to(anchor).as_posix() or "."
+
+
+def _canonical(path):
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
 def report_path(path):
     """``path`` relative to a public anchor (POSIX style), else ``outside ComfyUI``."""
     if not path:
@@ -59,17 +89,13 @@ def report_path(path):
     from ..config import GalleryConfig
 
     try:
-        canonical = Path(os.path.normcase(os.path.realpath(str(path))))
+        canonical = _canonical(path)
+        anchors = [_canonical(anchor) for anchor in GalleryConfig.path_anchors()]
+        home = os.path.expanduser("~")
+        home = _canonical(home) if home and home != "~" else None
     except (OSError, ValueError):
         return OUTSIDE
-    # The closest anchor wins; a filesystem root (an output folder directly
-    # under / or D:\\) never does, or every path would read as public.
-    anchors = [Path(anchor) for anchor in GalleryConfig.path_anchors()]
-    anchors = [a for a in anchors if a.parent != a and canonical.is_relative_to(a)]
-    if not anchors:
-        return OUTSIDE
-    anchor = max(anchors, key=lambda a: len(a.parts))
-    return canonical.relative_to(anchor).as_posix() or "."
+    return anchored_path(canonical, anchors, home)
 
 
 def _looks_absolute(text):
@@ -81,25 +107,34 @@ def _looks_absolute(text):
     )
 
 
-def _home_spellings():
-    """The home folder as it may be spelled in a string (never ``/`` itself)."""
+# The home folder is matched only as whole path parts, never inside a word.
+_PART = r"(?<![\w.-]){}(?![\w.-])"
+MIN_HOME_NAME = 3
+
+
+def _home_patterns():
+    """Patterns for the home folder: in full, without its root, and its name."""
     home = os.path.expanduser("~")
-    if not home or len(home) < 4 or home in ("/", "\\"):
+    if not home or home == "~" or len(home) < 4 or home in ("/", "\\"):
         return ()
     spellings = {home, home.replace("\\", "/")}
-    # Also without its root or drive ("home/vito"), as a path made relative
-    # to a filesystem root would spell it; only with two parts or more.
-    relative = os.path.splitdrive(home)[1].lstrip("\\/")
+    relative = os.path.splitdrive(home)[1].strip("\\/")
     for spelling in (relative, relative.replace("\\", "/")):
         if "/" in spelling or "\\" in spelling:
             spellings.add(spelling)
-    return tuple(spellings)
+    name = re.split(r"[\\/]", relative)[-1] if relative else ""
+    if len(name) >= MIN_HOME_NAME:
+        spellings.add(name)
+    return tuple(
+        re.compile(_PART.format(re.escape(spelling)), re.IGNORECASE)
+        for spelling in spellings
+    )
 
 
 def scrub(report, key):
     """``report`` with leaked paths and the key replaced, counted in ``redacted``."""
     key = key if isinstance(key, str) and len(key) >= MIN_KEY_LENGTH else None
-    homes = _home_spellings()
+    homes = _home_patterns()
     count = 0
 
     def clean(value):
@@ -108,7 +143,7 @@ def scrub(report, key):
             if (
                 _looks_absolute(value)
                 or (key and key in value)
-                or any(home in value for home in homes)
+                or any(home.search(value) for home in homes)
             ):
                 count += 1
                 return REMOVED

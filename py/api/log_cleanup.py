@@ -57,7 +57,11 @@ def size_label(size):
 
 def time_label(mtime_ns):
     """The local modification time as ``YYYY-MM-DD HH:MM``."""
-    return datetime.datetime.fromtimestamp(mtime_ns / 1e9).strftime("%Y-%m-%d %H:%M")
+    try:
+        moment = datetime.datetime.fromtimestamp(mtime_ns / 1e9)
+    except (OSError, OverflowError, ValueError):  # a time before 1970 on Windows
+        return "unknown time"
+    return moment.strftime("%Y-%m-%d %H:%M")
 
 
 def _count(count, singular, plural):

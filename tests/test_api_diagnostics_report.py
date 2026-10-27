@@ -34,9 +34,9 @@ from py.config import (
 )  # noqa: E402
 
 try:
-    from tests.test_api_admin import AdminAPITestCase  # noqa: E402
+    from tests.test_api_log_cleanup import LogCleanupTestCase  # noqa: E402
 except ImportError:  # discovered with tests/ as the top-level directory
-    from test_api_admin import AdminAPITestCase  # noqa: E402
+    from test_api_log_cleanup import LogCleanupTestCase  # noqa: E402
 
 REPORT = "/prompt_manager/system/diagnostics"
 KEY = "civitai-secret-0123456789abcdef"
@@ -102,7 +102,9 @@ def _strings(value):
             yield from _strings(item)
 
 
-class DiagnosticsReportTestCase(AdminAPITestCase):
+class DiagnosticsReportTestCase(LogCleanupTestCase):
+    """The admin app with its logger manager on a temporary log folder."""
+
     async def get_application(self):
         app = await super().get_application()
         saved = IntegrationConfig.get_config()
@@ -228,6 +230,85 @@ class TestReport(DiagnosticsReportTestCase):
         relative = os.path.splitdrive(home)[1].lstrip("\\/").replace("\\", "/")
         cleaned = scrub({"a": f"{relative}/area/prompts.db", "redacted": 0}, None)
         self.assertEqual(cleaned, {"a": "[removed]", "redacted": 1})
+
+    def test_the_home_folder_is_matched_as_a_whole_path_part(self):
+        with mock.patch.object(
+            diagnostics_report.os.path, "expanduser", return_value="/root"
+        ):
+            cleaned = scrub(
+                {
+                    "a": "output/rootfiles",
+                    "b": "output/root/x",
+                    "c": "see /root/x",
+                    "redacted": 0,
+                },
+                None,
+            )
+        self.assertEqual(cleaned["a"], "output/rootfiles")
+        # The home folder's name is a whole path part here: removed.
+        self.assertEqual(cleaned["b"], "[removed]")
+        self.assertEqual(cleaned["c"], "[removed]")
+        self.assertEqual(cleaned["redacted"], 2)
+
+    async def test_report_reads_only_the_temporary_log_folder(self):
+        self.write("prompt_manager.log.1", b"x" * 1234)
+        report, _text = await self.report()
+        stats = report["logging"]["stats"]
+        self.assertEqual(stats["log_files_count"], 2)
+        self.assertEqual(
+            stats["total_log_size"],
+            1234 + os.path.getsize(self.path("prompt_manager.log")),
+        )
+
+    def test_an_ancestor_of_home_is_never_an_anchor_on_linux(self):
+        anchored = diagnostics_report.anchored_path
+        home = "/home/someone"
+        anchors = ["/home", "/opt/ComfyUI"]
+        self.assertEqual(
+            anchored("/home/someone/renders/a.png", anchors, home, posixpath), OUTSIDE
+        )
+        self.assertEqual(
+            anchored("/home/other/renders", anchors, home, posixpath), OUTSIDE
+        )
+        self.assertEqual(
+            anchored("/opt/ComfyUI/output", anchors, home, posixpath), "output"
+        )
+
+    def test_an_ancestor_of_home_is_never_an_anchor_on_windows(self):
+        anchored = diagnostics_report.anchored_path
+        home = ntpath.normcase("C:\\Users\\someone")
+        anchors = [ntpath.normcase(a) for a in ("C:\\Users", "C:\\", "D:\\ComfyUI")]
+        path = ntpath.normcase("C:\\Users\\someone\\renders\\a.png")
+        self.assertEqual(anchored(path, anchors, home, ntpath), OUTSIDE)
+        inside = ntpath.normcase("D:\\ComfyUI\\output\\x")
+        self.assertEqual(anchored(inside, anchors, home, ntpath), "output/x")
+
+    def test_an_anchor_that_is_home_names_no_user(self):
+        anchored = diagnostics_report.anchored_path
+        home = "/home/someone"
+        self.assertEqual(
+            anchored("/home/someone/ComfyUI/output", [home], home, posixpath),
+            "ComfyUI/output",
+        )
+        self.assertEqual(
+            anchored(
+                "/home/someone/ComfyUI/output",
+                [home, "/home/someone/ComfyUI"],
+                home,
+                posixpath,
+            ),
+            "output",
+        )
+
+    def test_scrub_removes_the_home_folder_name(self):
+        with mock.patch.object(
+            diagnostics_report.os.path, "expanduser", return_value="/home/someone"
+        ):
+            cleaned = scrub(
+                {"a": "someone/renders", "b": "someones", "redacted": 0}, None
+            )
+        self.assertEqual(cleaned["a"], "[removed]")
+        self.assertEqual(cleaned["b"], "someones")
 
     def test_scrub_removes_a_leaked_path_and_counts_it(self):
         leaked = {

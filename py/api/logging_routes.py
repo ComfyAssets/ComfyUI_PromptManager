@@ -102,6 +102,8 @@ def _read_log_bytes(path):
     before this returns.
     """
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # A FIFO swapped in after the listing must not block the executor thread.
+    flags |= getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(str(path), flags)
     except OSError as error:

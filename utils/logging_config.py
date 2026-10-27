@@ -99,6 +99,10 @@ def scan_log_folder(log_dir) -> List[Dict[str, Any]]:
             kind = _kind(name, path, st)
         except OSError:
             continue
+        try:
+            modified = datetime.fromtimestamp(st.st_mtime).isoformat()
+        except (OSError, OverflowError, ValueError):  # a time before 1970 on Windows
+            modified = ""
         rows.append(
             {
                 "name": name,
@@ -106,8 +110,9 @@ def scan_log_folder(log_dir) -> List[Dict[str, Any]]:
                 "size": st.st_size,
                 "mtime_ns": st.st_mtime_ns,
                 "ino": st.st_ino,
-                "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                "modified": modified,
                 "_dir": stat.S_ISDIR(st.st_mode) and kind != "link",
+                "_regular": stat.S_ISREG(st.st_mode) and kind != "link",
             }
         )
     return rows
@@ -135,7 +140,7 @@ def log_file_entry(log_dir, name) -> Path:
         raise FileNotFoundError("Log file not found")
     for row in scan_log_folder(log_dir):
         if row["name"] == name and row["kind"] in ("active", "rotated", "other"):
-            if row["_dir"]:
+            if not row["_regular"]:  # a folder, FIFO, socket or device
                 break
             entry = LogFilePath(log_dir, row["name"])
             entry.listed_ino = row["ino"]

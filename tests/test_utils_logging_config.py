@@ -712,6 +712,21 @@ class TestRotatedCopyRule(IsolatedLoggerTestCase):
                 set(row), {"filename", "path", "size", "modified", "is_main", "kind"}
             )
 
+    def test_an_unreadable_timestamp_does_not_break_the_scan(self):
+        self._write("prompt_manager.log.1")
+        real = logging_config.datetime
+
+        class Clock:
+            @staticmethod
+            def fromtimestamp(value):
+                raise OSError(22, "Invalid argument")
+
+        with mock.patch.object(logging_config, "datetime", Clock):
+            rows = {r["name"]: r for r in self.manager.scan_log_folder()}
+        self.assertIs(logging_config.datetime, real)
+        self.assertEqual(rows["prompt_manager.log.1"]["kind"], "rotated")
+        self.assertEqual(rows["prompt_manager.log.1"]["modified"], "")
+
     def test_stats_exclude_links(self):
         self._write("prompt_manager.log.1", b"r" * 10)
         before = self.manager.get_log_stats()
