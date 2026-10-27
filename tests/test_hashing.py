@@ -12,6 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.background_stops import stop_tracker  # noqa: E402
 from utils.hashing import (
     generate_prompt_hash,
     is_duplicate_prompt,
@@ -49,6 +50,7 @@ class TestSingleHashImplementation(unittest.TestCase):
         db = mock.Mock()
         db.get_prompt_by_hash.return_value = {"id": 42}
         tracker = PromptTracker(db)
+        self.addCleanup(stop_tracker, self, tracker)
         tracker.set_current_prompt("  Hello World  ")
         db.get_prompt_by_hash.assert_called_once_with(
             generate_prompt_hash("  Hello World  ")

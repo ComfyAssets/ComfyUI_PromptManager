@@ -17,6 +17,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from open_handles import assert_closed
 
 from database.operations import PromptDatabase
+from tests.background_stops import close_handler
 from tests.test_api_images import ImageAPITestCase
 from tests.test_prompt_attribution import issue_graph, pair_evidence
 from tools import review_image_links as tool
@@ -158,8 +159,8 @@ class ReviewToolTests(ToolFixture):
 
     def test_conflicting_sources_are_left_to_the_maintainer(self):
         db = PromptDatabase(self.db_path)
+        handler = tool.ImageGenerationHandler(db, None)
         try:
-            handler = tool.ImageGenerationHandler(db, None)
             row = {
                 "id": 1,
                 "prompt_id": self.coffee,
@@ -170,6 +171,7 @@ class ReviewToolTests(ToolFixture):
             ):
                 verdict = tool.judge(db, handler, row, self.output)
         finally:
+            close_handler(self, handler)
             db.close_all()
         self.assertEqual(verdict["verdict"], "conflict")
 

@@ -136,13 +136,21 @@ class TestMonitorSingletonLifecycle(unittest.TestCase):
 
 
 class FakeObserver:
-    """Records what the monitor does with the watchdog observer."""
+    """Records what the monitor does with the watchdog observer.
 
-    def __init__(self):
+    ``calls`` lists ``stop`` and ``join`` in order (shared with a test's own
+    recorders when given); ``stay_alive`` keeps it alive after ``join``;
+    ``stop_error`` makes ``stop`` raise.
+    """
+
+    def __init__(self, calls=None, stay_alive=False, stop_error=None):
         self.scheduled = []
         self.started = False
         self.stopped = False
         self.joined = False
+        self.calls = calls if calls is not None else []
+        self.stay_alive = stay_alive
+        self.stop_error = stop_error
 
     def schedule(self, handler, path, recursive=False):
         self.scheduled.append((handler, path, recursive))
@@ -151,12 +159,18 @@ class FakeObserver:
         self.started = True
 
     def stop(self):
+        self.calls.append(("stop",))
+        if self.stop_error is not None:
+            raise self.stop_error
         self.stopped = True
 
     def join(self, timeout=None):
+        self.calls.append(("join", timeout))
         self.joined = True
 
     def is_alive(self):
+        if self.stay_alive:
+            return self.started
         return self.started and not self.stopped
 
 
@@ -171,6 +185,8 @@ class TestStartStop(unittest.TestCase):
         self.missing = os.path.join(self.tmp.name, "does-not-exist")
 
     def tearDown(self):
+        # Before the folder is removed (addCleanup runs after tearDown).
+        self.assertTrue(self.monitor.stop_monitoring())
         im_mod._monitor_instance = None
 
     def test_only_nonexistent_directories_leaves_monitoring_off(self):
@@ -225,9 +241,8 @@ class TestStartStop(unittest.TestCase):
         worker = handler._worker
         self.assertTrue(worker.is_alive())
 
-        self.monitor.stop_monitoring()
+        self.assertTrue(self.monitor.stop_monitoring())
 
-        worker.join(timeout=2)
         self.assertFalse(worker.is_alive())
         self.assertEqual(handler.pending_count(), 0)
         # A restart gets a fresh handler and observer
@@ -303,6 +318,49 @@ class TestStartStop(unittest.TestCase):
         self.assertEqual(self.monitor.monitored_directories, [self.tmp.name])
         self.monitor.stop_monitoring()
 
+    def _start_with(self, fake):
+        with patch.object(im_mod, "Observer", return_value=fake):
+            self.monitor.start_monitoring([self.tmp.name])
+        handler = self.monitor.handler
+        real_close = handler.close
+
+        def close(timeout=im_mod.WORKER_JOIN_SECONDS):
+            fake.calls.append(("close",))
+            return real_close(timeout)
+
+        handler.close = close
+        return handler
+
+    def test_stop_monitoring_joins_observer_and_worker(self):
+        fake = FakeObserver()
+        handler = self._start_with(fake)
+
+        self.assertTrue(self.monitor.stop_monitoring(timeout=3.0))
+
+        self.assertEqual([c[0] for c in fake.calls], ["close", "stop", "join"])
+        join_timeout = fake.calls[2][1]
+        self.assertIsNotNone(join_timeout)
+        self.assertLessEqual(join_timeout, 3.0)
+        self.assertTrue(handler._closed)
+
+    def test_stop_monitoring_reports_an_observer_still_running(self):
+        fake = FakeObserver(stay_alive=True)
+        self._start_with(fake)
+        with self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs:
+            self.assertFalse(self.monitor.stop_monitoring(timeout=0.05))
+        self.assertIn("watchdog observer still running", "\n".join(logs.output))
+        self.assertFalse(self.monitor.is_monitoring)
+
+    def test_stop_monitoring_reports_an_observer_stop_that_raised(self):
+        fake = FakeObserver(stop_error=OSError("descriptor gone"))
+        self._start_with(fake)
+        with self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs:
+            self.assertFalse(self.monitor.stop_monitoring())
+        self.assertIn("Error while stopping image monitoring", "\n".join(logs.output))
+
+    def test_stop_monitoring_without_an_observer_returns_true(self):
+        self.assertTrue(self.monitor.stop_monitoring())
+
 
 class FakeEvent:
     def __init__(self, path, is_directory=False):
@@ -334,6 +392,10 @@ class TestHandlerScheduling(unittest.TestCase):
         self.handler.process_new_image = lambda path, prompt_snapshot=None: (
             self.processed.append((path, prompt_snapshot))
         )
+
+    def tearDown(self):
+        # Before the folder is removed (addCleanup runs after tearDown).
+        self.assertTrue(self.handler.close())
 
     def _image(self, name, content=b"x" * 16):
         path = os.path.join(self.tmp.name, name)
@@ -399,23 +461,103 @@ class TestHandlerScheduling(unittest.TestCase):
         empty = self._image("empty.png", content=b"")
         self.assertFalse(self.handler.wait_until_settled(empty))
 
-    def test_shutdown_stops_the_worker_and_clears_pending(self):
+    def test_shutdown_joins_the_worker_within_the_bound(self):
         self.handler.processing_delay = 10  # keep the first image waiting
         self.handler.schedule(self._image("s1.png"))
         self.handler.schedule(self._image("s2.png"))
         worker = self.handler._worker
         self.assertTrue(worker.is_alive())
 
-        self.handler.shutdown()
+        self.assertTrue(self.handler.shutdown())
 
-        worker.join(timeout=2)
         self.assertFalse(worker.is_alive())
+        self.assertEqual(self.handler.pending_count(), 0)
+
+    def test_shutdown_reports_a_worker_still_busy(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def busy(path, prompt_snapshot=None):
+            entered.set()
+            release.wait(30)
+
+        self.handler.process_new_image = busy
+        self.handler.schedule(self._image("busy.png"))
+        worker = self.handler._worker
+        self.addCleanup(worker.join, 30)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(30), "the worker never took the image")
+
+        with self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs:
+            self.assertFalse(self.handler.shutdown(timeout=0.05))
+        self.assertIn("image worker still running", "\n".join(logs.output))
+
+        release.set()
+        worker.join(30)
+        self.assertFalse(worker.is_alive())
+
+    def test_shutdown_on_the_worker_itself_only_signals(self):
+        entered, result = threading.Event(), {}
+
+        def stop_from_inside(path, prompt_snapshot=None):
+            result["value"] = self.handler.shutdown()
+            entered.set()
+
+        self.handler.process_new_image = stop_from_inside
+        self.handler.schedule(self._image("self.png"))
+        worker = self.handler._worker
+        self.assertTrue(entered.wait(30), "the worker never took the image")
+        worker.join(30)
+        self.assertFalse(result["value"])
+        self.assertFalse(worker.is_alive())
+
+    def _live_workers(self):
+        return {
+            t for t in threading.enumerate() if t.name == "PromptManagerImageWorker"
+        }
+
+    def _seal(self, handler, name):
+        handler._await_history(os.path.join(self.tmp.name, name))
+        handler._on_outputs_sealed(
+            "run-1",
+            [{"folder_type": "output", "subfolder": "", "filename": name}],
+        )
+
+    def test_close_refuses_new_work(self):
+        path = self._image("late.png")
+        with patch.object(im_mod, "host_output_directory", return_value=self.tmp.name):
+            self.assertTrue(self.handler.close())
+            before = self._live_workers()
+            self.assertFalse(self.handler.schedule(path))
+            # The image in hand can still ask for a history re-check and its
+            # run can be sealed afterwards, on the history writer's thread.
+            self._seal(self.handler, "late.png")
+        self.assertIsNone(self.handler._worker)
+        self.assertEqual(list(self.handler._history_due), [])
+        self.assertEqual(self._live_workers(), before)
+
+    def test_a_sealed_run_starts_a_worker_on_an_open_handler(self):
+        self._image("open.png")
+        with patch.object(im_mod, "host_output_directory", return_value=self.tmp.name):
+            self._seal(self.handler, "open.png")
+        self.assertIsNotNone(self.handler._worker)
+        self.assertTrue(self.handler.close())
+
+    def test_close_is_idempotent(self):
+        self.handler.schedule(self._image("c1.png"))
+        self.assertTrue(self.handler.close())
+        self.assertTrue(self.handler.close())
+
+    def test_on_created_after_close_takes_no_lock(self):
+        self.assertTrue(self.handler.close())
+        self.handler.on_created(FakeEvent(self._image("after.png")))
+        self.tracker.keyed_snapshot.assert_not_called()
         self.assertEqual(self.handler.pending_count(), 0)
 
     def test_shutdown_is_idempotent_and_safe_before_start(self):
         fresh = im_mod.ImageGenerationHandler(MagicMock(), self.tracker)
-        fresh.shutdown()
-        fresh.shutdown()
+        self.assertTrue(fresh.shutdown())
+        self.assertTrue(fresh.shutdown())
+        self.assertTrue(fresh.close())
         self.handler.schedule(self._image("s3.png"))
         self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
         self.handler.shutdown()
@@ -434,7 +576,7 @@ class TestHandlerScheduling(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.handler.pending_count() == 0))
         self.assertIn(path, [p for p, _ in self.processed])
         self.assertIsNot(self.handler._worker, old_worker)
-        self.handler.shutdown()
+        self.assertTrue(self.handler.close())
 
     def test_processing_errors_do_not_kill_the_worker(self):
         def explode(path, prompt_snapshot=None):
@@ -449,6 +591,44 @@ class TestHandlerScheduling(unittest.TestCase):
         self.assertEqual(self.processed, [first, second])
 
 
+class TestCloseReleasesHandles(unittest.TestCase):
+    """``close`` joins the worker, so the test folder can be removed (#302)."""
+
+    def test_close_releases_handles(self):
+        from PIL import Image
+
+        from database.operations import PromptDatabase
+        from tests.open_handles import assert_closed
+        from utils.prompt_tracker import PromptTracker
+
+        with tempfile.TemporaryDirectory() as folder:
+            db = PromptDatabase(os.path.join(folder, "prompts.db"))
+            tracker = PromptTracker(db)
+            handler = im_mod.ImageGenerationHandler(db, tracker)
+            handler.processing_delay = 0
+            handler.settle_interval = 0.01
+            done = threading.Event()
+            real_process = handler.process_new_image
+
+            def process(path, prompt_snapshot=None):
+                try:
+                    real_process(path, prompt_snapshot=prompt_snapshot)
+                finally:
+                    done.set()
+
+            handler.process_new_image = process
+            path = os.path.join(folder, "real.png")
+            Image.new("RGB", (8, 8), "red").save(path)
+            try:
+                self.assertTrue(handler.schedule(path))
+                self.assertTrue(done.wait(30), "the worker never processed the image")
+            finally:
+                self.assertTrue(handler.close())
+                self.assertTrue(tracker.shutdown())
+                db.model.close_all()
+            assert_closed(self, folder)
+
+
 class TestOutputListener(unittest.TestCase):
     """Every settled output is reported to the Images listing (#348, PR 2)."""
 
@@ -456,7 +636,7 @@ class TestOutputListener(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.handler = im_mod.ImageGenerationHandler(MagicMock(), MagicMock())
-        self.addCleanup(self.handler.shutdown)
+        self.addCleanup(lambda: self.assertTrue(self.handler.close()))
         self.handler.processing_delay = 0
         self.handler.settle_interval = 0.01
         self.handler.process_new_image = lambda path, prompt_snapshot=None: None
@@ -549,7 +729,7 @@ class TestOutputListener(unittest.TestCase):
             self.assertIsNone(monitor.output_listener)
             self.assertIsNone(monitor.handler.output_listener)
         finally:
-            monitor.stop_monitoring()
+            self.assertTrue(monitor.stop_monitoring())
 
 
 class TestModuleIsolation(unittest.TestCase):

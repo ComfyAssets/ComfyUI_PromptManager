@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import library_move as lm  # noqa: E402
 from database import models  # noqa: E402
 from database.operations import PromptDatabase  # noqa: E402
+from tests.background_stops import close_handler  # noqa: E402
 from tests.open_handles import assert_closed  # noqa: E402
 from utils import library_location as ll  # noqa: E402
 from utils import usage_tracking  # noqa: E402
@@ -204,6 +205,7 @@ class TestBackgroundWritesSurviveTheSwitch(_MoveCase):
         image = os.path.join(self.comfy, "output", "late.png")
         writer_db = PromptDatabase(self.old_db)
         handler = ImageGenerationHandler(writer_db, mock.MagicMock())
+        self.addCleanup(close_handler, self, handler)
         started = threading.Event()
         probe = _CrossThreadCloseProbe()
         outcome = {}
@@ -256,6 +258,7 @@ class TestBackgroundWritesSurviveTheSwitch(_MoveCase):
 
         db = PromptDatabase(self.old_db)
         handler = ImageGenerationHandler(db, mock.MagicMock())
+        self.addCleanup(close_handler, self, handler)
         image = os.path.join(self.comfy, "output", "orphan.png")
         with mock.patch.object(handler, "logger") as log:
             handler.link_image_to_prompt(image, {"id": 99999}, {})

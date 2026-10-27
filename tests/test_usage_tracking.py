@@ -16,6 +16,7 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.background_stops import stop_tracker  # noqa: E402
 from database.operations import PromptDatabase
 from prompt_manager_base import PromptManagerBase
 from utils.hashing import generate_prompt_hash
@@ -596,6 +597,7 @@ class TestNodeRoles(DbTestCase):
 class TestTrackerQueueFlag(unittest.TestCase):
     def setUp(self):
         self.tracker = PromptTracker(mock.Mock())
+        self.addCleanup(stop_tracker, self, self.tracker)
 
     def test_push_to_queue_false_keeps_the_batch_queue_empty(self):
         self.tracker.set_current_prompt("a cat", {"prompt_id": 1}, push_to_queue=False)
