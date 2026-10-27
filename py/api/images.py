@@ -2414,7 +2414,9 @@ class ImageRoutesMixin:
             if not output_dirs:
                 return _forbidden("No allowed image directories configured")
             if len(outputs) <= int(root_param or 0):
-                return await self._serve_linked_only(output_dirs[0], filepath)
+                return await self._serve_linked_only(
+                    output_dirs[0], filepath, int(root_param), len(outputs)
+                )
 
             for output_path in output_dirs:
                 image_path = output_path / filepath
@@ -2446,7 +2448,31 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
-    async def _serve_linked_only(self, root, filepath):
+    def _is_recorded_media(self, path) -> bool:
+        """Whether the database records ``path`` as a linked image.
+
+        Imported local media is stored resolved; downloaded CivitAI images
+        keep the cache folder's own spelling (a symlinked or junctioned data
+        folder), so either spelling names the record.
+        """
+        spellings = dict.fromkeys([str(path), os.path.realpath(path)])
+        return any(
+            self.db.get_prompt_id_for_image(spelling) is not None
+            for spelling in spellings
+        )
+
+    async def _linked_only_error(self, index: int, outputs: int, path):
+        """The one gate for a LoRA-linked root (``_media_roots`` past the
+        ``outputs`` output folders, #355): only a file the database records
+        is served, inspected or revealed there; anything else is 403.
+        Output roots pass (None)."""
+        if index < outputs:
+            return None
+        if not await self._run_in_executor(self._is_recorded_media, path):
+            return _forbidden()
+        return None
+
+    async def _serve_linked_only(self, root, filepath, index, outputs):
         """A file under a LoRA-linked root, served only when it is recorded."""
         if _is_thumbnail_cache_path(filepath):
             return _forbidden()
@@ -2457,19 +2483,9 @@ class ImageRoutesMixin:
             return web.json_response(
                 {"success": False, "error": "Image file not found"}, status=404
             )
-
-        def recorded() -> bool:
-            # Imported local media is stored resolved; downloaded CivitAI
-            # images keep the cache folder's own spelling (a symlinked or
-            # junctioned data folder), so either names the record.
-            spellings = dict.fromkeys([str(image_path), os.path.realpath(image_path)])
-            return any(
-                self.db.get_prompt_id_for_image(spelling) is not None
-                for spelling in spellings
-            )
-
-        if not await self._run_in_executor(recorded):
-            return _forbidden()
+        denied = await self._linked_only_error(index, outputs, image_path)
+        if denied is not None:
+            return denied
         return self._file_response(image_path)
 
     async def rescan_gallery(self, request):
@@ -3326,8 +3342,9 @@ class ImageRoutesMixin:
         if error is not None:
             return error
         index, scope, relative = target
-        # A LoRA-linked root too (#355): Show in folder only opens a folder.
-        roots = await self._run_in_executor(self._media_roots)
+        # A LoRA-linked root too (#355), for the files the import linked only.
+        outputs = list(self._get_all_output_dirs())
+        roots = await self._run_in_executor(self._media_roots, outputs)
         error = self._gallery_scope_error(
             {"root_scope": scope, "root": str(index)}, roots
         )
@@ -3336,6 +3353,9 @@ class ImageRoutesMixin:
         root = roots[index]
         if Path(relative).suffix.lower() not in SERVABLE_EXTENSIONS:
             return _forbidden("Only media files can be shown")
+        denied = await self._linked_only_error(index, len(outputs), root / relative)
+        if denied is not None:
+            return denied
         gate = self._reveal_gate
         if not gate.try_enter():
             return web.json_response(
@@ -3457,8 +3477,10 @@ class ImageRoutesMixin:
         """Read prompt evidence for one explicitly rooted physical media file.
 
         The roots include LoRA-linked folders (``_media_roots``, #355), so the
-        inspector opens a LoRA import's media; it only reads them."""
-        roots = await self._run_in_executor(self._media_roots)
+        inspector opens a LoRA import's media (recorded files only); it only
+        reads them."""
+        outputs = list(self._get_all_output_dirs())
+        roots = await self._run_in_executor(self._media_roots, outputs)
         scope_error = self._gallery_scope_error(request.query, roots)
         if scope_error is not None:
             return scope_error
@@ -3483,6 +3505,8 @@ class ImageRoutesMixin:
             return _forbidden("Previews are not inspected; inspect the original")
         path = Path(roots[index]) / relative
         denied = _media_access_error(path, [roots[index]])
+        if denied is None:
+            denied = await self._linked_only_error(index, len(outputs), path)
         if denied is not None:
             return denied
         if not path.is_file():

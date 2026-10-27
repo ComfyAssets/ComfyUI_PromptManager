@@ -1082,6 +1082,19 @@ class TestLibraryLoraMedia(ImageAPITestCase):
         )
         self.assertEqual(response.status, 200, await response.text())
 
+    async def test_the_inspector_reads_only_linked_files_under_a_lora_root(self):
+        # Security review: a LoRA root exposes only the files the import linked.
+        self._imported()
+        make_png(self.lora_dir / "abc" / "unlinked.png")
+        scope = self.api._gallery_root_scope(self.lora_dir, 1)
+        for name, status in (("unlinked.png", 403), ("cover.png", 200)):
+            with self.subTest(name=name):
+                response = await self.client.get(
+                    "/prompt_manager/images/inspect/abc/" + name,
+                    params={"root": "1", "root_scope": scope},
+                )
+                self.assertEqual(response.status, status, await response.text())
+
     async def test_only_recorded_lora_media_is_served_by_path(self):
         self._imported()
         make_png(self.lora_dir / "abc" / "unlinked.png")

@@ -8,6 +8,7 @@ import ctypes
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -693,6 +694,27 @@ class TestRevealRoute(ImageAPITestCase):
         self.assertEqual(self.roots, [self.output_dir])
         # Its own worker, never ComfyUI's shared default executor (L1).
         self.assertTrue(self.threads[0].startswith("pm-reveal"), self.threads)
+
+    async def test_a_lora_root_reveals_only_linked_files(self):
+        # #355 security review: a LoRA root exposes only the files the import
+        # linked; any other file under it is refused before the opener runs.
+        lora = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, lora, True)
+        self.api._lora_image_dirs = lambda: [lora]
+        linked = make_png(lora / "abc" / "cover.png")
+        make_png(lora / "abc" / "unlinked.png")
+        self.api.db.link_image_to_prompt(self._save_prompt("lora"), str(linked))
+        scope = self.api._gallery_root_scope(lora, 1)
+        status, _data = await self.post(
+            {"root_index": 1, "root_scope": scope, "path": "abc/unlinked.png"}
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(self.opened, [])
+        status, data = await self.post(
+            {"root_index": 1, "root_scope": scope, "path": "abc/cover.png"}
+        )
+        self.assertEqual((status, data), (200, {"success": True}))
+        self.assertEqual(self.opened, [Path(os.path.realpath(linked))])
 
     async def test_target_changed_before_launch_is_404(self):
         make_png(self.output_dir / "sub" / "a.png")
