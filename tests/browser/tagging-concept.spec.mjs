@@ -236,7 +236,7 @@ test('paired Tag dialog captures', async ({ page, request }, testInfo) => {
     await expect(await request.post('/__test__/tagging/models', { data: { unavailable: ['wd14-swinv2'] } })).toBeOK();
     await openTagDialog(page, 'production', 'dark');
     await generateWith(page, 'production').catch(() => {});
-    await expect(status()).toHaveText('WD14 SwinV2 is not downloaded. Download it from the legacy Auto-tag page.');
+    await expect(status()).toHaveText('WD14 SwinV2 is not downloaded. Download it in System › Auto-tagging.');
     await shot('production-unavailable');
     await expect(await request.post('/__test__/tagging/models', { data: { unavailable: [] } })).toBeOK();
 

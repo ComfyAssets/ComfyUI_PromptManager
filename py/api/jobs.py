@@ -87,6 +87,8 @@ SCAN_GROUPS = {
 # Record-changing: it writes image tag sets and new vocabulary names.
 IMAGE_TAG_JOB_KIND = "image-tags"
 IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
+# Tag output images (#328) counts its prompts the same way.
+AUTOTAG_GROUP_NAMES = IMAGE_TAG_GROUP_NAMES
 
 # Thumbnail generation (#249 System S5): previews written, already fresh, failed.
 THUMBNAIL_GROUP_NAMES = ("generated", "skipped", "errors")
@@ -109,6 +111,8 @@ DUPLICATE_CLEANUP_JOB_KIND = "duplicate_cleanup"
 THUMBNAILS_JOB_KIND = "thumbnails"
 LORA_IMPORT_JOB_KIND = "lora_import"
 AUTOTAG_BATCH_JOB_KIND = "autotag"
+# A tagging model download (#328): read admission, not cancellable.
+MODEL_DOWNLOAD_JOB_KIND = "model_download"
 # Duplicate image files (#249 System S6, py/api/duplicate_files.py): the
 # find is a cancellable ``read`` job; the reviewed removal is ``records``.
 DUPLICATES_JOB_KIND = "duplicates"

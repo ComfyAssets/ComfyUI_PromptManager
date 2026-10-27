@@ -130,6 +130,14 @@ class JobRoutesMixin:
         async def start_image_tag_job_route(request):
             return await self.start_image_tag_job(request)
 
+        @routes.post("/prompt_manager/jobs/model-download")
+        async def start_model_download_job_route(request):
+            return await self.start_model_download_job(request)
+
+        @routes.post("/prompt_manager/jobs/autotag")
+        async def start_autotag_job_route(request):
+            return await self.start_autotag_job(request)
+
         @routes.post("/prompt_manager/jobs/thumbnails")
         async def start_thumbnail_job_route(request):
             return await self.start_thumbnail_job(request)

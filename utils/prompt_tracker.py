@@ -44,6 +44,9 @@ except ImportError:
     from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
 
+# How long ``PromptTracker.shutdown`` waits for the cleanup thread (#301).
+TRACKER_JOIN_SECONDS = 2.0
+
 
 class PromptTracker:
     """Thread-safe tracking of current prompt executions.
@@ -92,9 +95,12 @@ class PromptTracker:
             self.cleanup_interval = 300  # 5 minutes
             self.prompt_timeout = 600  # 10 minutes
 
-        # Start cleanup thread
+        # Start cleanup thread; ``shutdown`` sets ``_stop`` to end it.
+        self._stop = threading.Event()
         self.cleanup_thread = threading.Thread(
-            target=self._cleanup_expired_prompts, daemon=True
+            target=self._cleanup_expired_prompts,
+            name="PromptManagerPromptCleanup",
+            daemon=True,
         )
         self.cleanup_thread.start()
         self.logger.debug("PromptTracker initialization completed")
@@ -464,9 +470,10 @@ class PromptTracker:
 
         Runs continuously as a daemon thread, periodically removing expired
         prompt contexts from the global tracking dictionary. This prevents
-        memory leaks from accumulating old prompt data.
+        memory leaks from accumulating old prompt data. Every wait ends at
+        once when ``shutdown`` sets the stop event.
         """
-        while True:
+        while not self._stop.is_set():
             try:
                 current_time = time.time()
                 expired_ids = []
@@ -497,11 +504,37 @@ class PromptTracker:
                     if pruned:
                         self.logger.debug(f"Pruned {pruned} expired queue entries")
 
-                time.sleep(self.cleanup_interval)
+                if self._stop.wait(self.cleanup_interval):
+                    break
 
             except Exception as e:
                 self.logger.error(f"Error in cleanup thread: {e}")
-                time.sleep(60)  # Wait a minute before retrying
+                if self._stop.wait(60):  # Wait a minute before retrying
+                    break
+
+    def shutdown(self, timeout: float = TRACKER_JOIN_SECONDS) -> bool:
+        """Stop the cleanup thread and wait for it within ``timeout`` seconds.
+
+        Returns True when the thread has ended (or never existed). The tracker
+        keeps working afterwards; only the background pruning of expired
+        entries stops. Safe to call more than once. Called on the cleanup
+        thread itself it only signals and returns False.
+        """
+        stop = getattr(self, "_stop", None)
+        thread = getattr(self, "cleanup_thread", None)
+        if stop is None or thread is None:
+            return True  # built without __init__: no thread was started
+        stop.set()
+        if thread is threading.current_thread():
+            self.logger.debug("shutdown called on the prompt cleanup thread")
+            return False
+        thread.join(timeout)
+        if thread.is_alive():
+            self.logger.warning(
+                f"prompt cleanup thread still running after {timeout} s"
+            )
+            return False
+        return True
 
     def get_active_prompts(self) -> Dict[str, Dict[str, Any]]:
         """

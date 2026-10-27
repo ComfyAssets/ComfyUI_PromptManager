@@ -34,12 +34,17 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
+from py.api.jobs import JobBusy
 from utils.hashing import generate_prompt_hash
 
 try:  # guarded so a missing module fails assertions, not test loading
     from py import model_gate
 except ImportError:
     model_gate = None
+
+
+# The engine's four model types (py/autotag.py MODELS), in its own order.
+MODEL_TYPES = ("gguf", "hf", "wd14-swinv2", "wd14-vit")
 
 
 class FakeAutotagService:
@@ -56,15 +61,24 @@ class FakeAutotagService:
         self.default_prompt = "default prompt"
         self.wd14_general_threshold = 0.35
         self.wd14_character_threshold = 0.85
-        self.models_config = {"gguf": {}, "wd14-vit": {}}
+        self.models_config = {name: {} for name in MODEL_TYPES}
         self._loaded_type = None
         self.generate_error = None
         self.download_result = True
         self.load_error = None
+        # Call counters and the thread each status read ran on.
+        self.status_calls = 0
+        self.status_threads = []
+        self.status_paths = {}
 
     def get_models_status(self):
+        self.status_calls += 1
+        self.status_threads.append(threading.get_ident())
         return {
-            name: {"downloaded": self.downloaded, "model_path": None}
+            name: {
+                "downloaded": self.downloaded,
+                "model_path": self.status_paths.get(name),
+            }
             for name in self.models_config
         }
 
@@ -1055,7 +1069,9 @@ class TestLegacyRoutesShareTheModelGate(AutotagAPITestCase):
         self.assertIsNone(model_gate.holder())
 
         self.assertEqual(len(seen), 3)
-        self.assertTrue(all(owner and owner.startswith("legacy-") for owner in seen))
+        # The download runs as the model_download job, which owns the gate.
+        kinds = [owner.split(":", 1)[0] for owner in seen]
+        self.assertEqual(kinds, ["legacy-single", "legacy-single", "model-download"])
 
     async def test_validation_errors_win_over_the_gate(self):
         self.assertTrue(model_gate.try_acquire("test-holder"))
@@ -1288,3 +1304,1050 @@ class TestGalleryReviewContract(AutotagAPITestCase):
             "/prompt_manager/autotag/single", {"path": "link.png", "root_index": 0}
         )
         self.assertEqual(response.status, 403)
+
+
+def _strings(value):
+    """Every string inside a JSON value (keys included)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _absolute(text):
+    import ntpath
+    import posixpath
+    import re
+
+    return (
+        posixpath.isabs(text)
+        or ntpath.isabs(text)
+        or re.match(r"^[A-Za-z]:[\\/]", text) is not None
+    )
+
+
+class TestModelStatus(AutotagAPITestCase):
+    """GET /autotag/models: labels, sizes and the loaded flag, never a path."""
+
+    async def _models(self):
+        resp = await self.client.get("/prompt_manager/autotag/models")
+        self.assertEqual(resp.status, 200)
+        return await resp.json()
+
+    async def test_models_status_has_no_absolute_paths(self):
+        self.service.status_paths = {
+            "wd14-vit": "/srv/models/WD14-ViT/model.onnx",
+            "gguf": "C:\\models\\GGUF\\joycaption.gguf",
+            "hf": "D:/hf-cache/models--fancyfeast",
+        }
+        data = await self._models()
+        for model in data["models"].values():
+            self.assertNotIn("model_path", model)
+        leaked = [text for text in _strings(data) if _absolute(text)]
+        self.assertEqual(leaked, [])
+
+    async def test_models_status_adds_label_size_label_and_loaded(self):
+        self.service._loaded_type = "wd14-vit"
+        data = await self._models()
+        models = data["models"]
+        self.assertEqual(list(models), list(MODEL_TYPES))
+        self.assertEqual(
+            {name: (m["label"], m["size_label"]) for name, m in models.items()},
+            {
+                "gguf": ("GGUF JoyCaption", "~4.5 GB"),
+                "hf": ("HuggingFace JoyCaption", "~16 GB"),
+                "wd14-swinv2": ("WD14 SwinV2", "~400 MB"),
+                "wd14-vit": ("WD14 ViT", "~400 MB"),
+            },
+        )
+        self.assertEqual(
+            {name: m["loaded"] for name, m in models.items()},
+            {"gguf": False, "hf": False, "wd14-swinv2": False, "wd14-vit": True},
+        )
+        # Kept fields legacy pages and the workspace read.
+        for model in models.values():
+            self.assertTrue({"name", "description", "size", "downloaded"} <= set(model))
+        self.assertTrue(data["model_loaded"])
+        self.assertEqual(data["loaded_model_type"], "wd14-vit")
+
+    async def test_opening_models_never_loads_or_downloads(self):
+        await self._models()
+        self.assertEqual(self.service.status_calls, 1)
+        self.assertEqual(self.service.load_calls, [])
+        self.assertEqual(self.service.download_calls, [])
+        self.assertEqual(self.service.unload_calls, 0)
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_models_status_reads_off_the_event_loop(self):
+        await self._models()
+        self.assertEqual(len(self.service.status_threads), 1)
+        self.assertNotEqual(self.service.status_threads[0], threading.get_ident())
+
+
+class TestModelBusyNamesTheOperation(AutotagAPITestCase):
+    """A 409 model-busy names who holds the gate (``operation``)."""
+
+    LABELS = {
+        "autotag-job": "Tag output images",
+        "legacy-batch": "Tag output images (legacy page)",
+        "legacy-single": "Tagging one image (legacy page)",
+        "legacy-unload": "Unloading the tagging model",
+        "image-tag-job": "Auto-tag selected images",
+        "image-annotations": "Generate suggestions",
+    }
+
+    async def test_model_busy_names_the_operation(self):
+        self.service._loaded_type = "wd14-vit"
+        for kind, label in self.LABELS.items():
+            owner = model_gate.new_owner(kind)
+            self.assertTrue(model_gate.try_acquire(owner))
+            try:
+                resp = await self.client.post("/prompt_manager/autotag/unload")
+                data = await resp.json()
+            finally:
+                model_gate.release(owner)
+            self.assertEqual(resp.status, 409, kind)
+            self.assertEqual(data["code"], "model-busy", kind)
+            self.assertEqual(data["operation"], label, kind)
+            self.assertIn("busy", data["error"].lower())
+        self.assertEqual(self.service.unload_calls, 0)
+
+    async def test_unknown_or_freed_holder_is_another_operation(self):
+        from py.api.autotag_routes import model_busy_response
+
+        self.assertIsNone(model_gate.holder())
+        freed = json.loads(model_busy_response().body)
+        self.assertEqual(freed["operation"], "Another tagging operation")
+        self.assertTrue(model_gate.try_acquire("test-holder"))
+        try:
+            unknown = json.loads(model_busy_response().body)
+        finally:
+            model_gate.release("test-holder")
+        self.assertEqual(unknown["operation"], "Another tagging operation")
+
+    async def test_unload_during_generate_is_409_model_busy(self):
+        self.service._loaded_type = "wd14-vit"
+        owner = model_gate.new_owner("image-annotations")
+        self.assertTrue(model_gate.try_acquire(owner))
+        try:
+            resp = await self.client.post("/prompt_manager/autotag/unload")
+            data = await resp.json()
+        finally:
+            model_gate.release(owner)
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["operation"], "Generate suggestions")
+        self.assertEqual(self.service.unload_calls, 0)
+        self.assertEqual(self.service.get_loaded_model_type(), "wd14-vit")
+
+
+class DownloadJobTestCase(AutotagAPITestCase):
+    """Helpers for the ``model_download`` job: a download that waits for a
+    signal, so a test sees the job while it runs."""
+
+    TITLE = "Tagging model download · WD14 ViT"
+
+    def setUp(self):
+        super().setUp()
+        self.started = threading.Event()
+        self.proceed = threading.Event()
+
+    def _hold_download(self, result=True, error=None):
+        def download(model_type, progress_callback=None):
+            self.service.download_calls.append(model_type)
+            self.started.set()
+            self.proceed.wait(30)
+            if error is not None:
+                raise error
+            return result
+
+        self.service.download_model = download
+
+    async def _started(self):
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, self.started.wait, 30))
+
+    async def _start(self, model_type="wd14-vit"):
+        return await self._post_json(
+            "/prompt_manager/jobs/model-download", {"model_type": model_type}
+        )
+
+    async def _until(self, condition, limit=10):
+        """Yield to the loop until ``condition()`` holds (fails after ``limit`` s)."""
+        deadline = asyncio.get_running_loop().time() + limit
+        while not condition():
+            self.assertLess(asyncio.get_running_loop().time(), deadline)
+            await asyncio.sleep(0)
+
+    async def _ended(self, job_id):
+        job = self.api._jobs.get(job_id)
+        self.proceed.set()
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+        return job
+
+
+class TestModelDownloadJob(DownloadJobTestCase):
+
+    async def test_download_job_is_indeterminate_and_not_cancellable(self):
+        self._hold_download()
+        resp = await self._start()
+        self.assertEqual(resp.status, 202)
+        summary = (await resp.json())["job"]
+        try:
+            await self._started()
+            self.assertEqual(summary["kind"], "model_download")
+            self.assertEqual(summary["title"], self.TITLE)
+            self.assertFalse(summary["cancellable"])
+            self.assertEqual(summary["admission"], "read")
+            self.assertEqual(
+                summary["scope"],
+                {
+                    "model_type": "wd14-vit",
+                    "label": "WD14 ViT",
+                    "size_label": "~400 MB",
+                },
+            )
+            detail = (
+                await (
+                    await self.client.get(f"/prompt_manager/jobs/{summary['id']}")
+                ).json()
+            )["job"]
+            self.assertEqual((detail["progress"], detail["total"]), (0, 0))
+            self.assertEqual(detail["status_line"], "Downloading WD14 ViT (~400 MB)")
+            cancel = await self.client.post(
+                f"/prompt_manager/jobs/{summary['id']}/cancel"
+            )
+            self.assertFalse((await cancel.json())["cancellation_requested"])
+        finally:
+            job = await self._ended(summary["id"])
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(job.status_line, "Downloaded WD14 ViT")
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+        self.assertEqual(len(job.log), 2)
+
+    async def test_start_body_is_checked_before_anything_runs(self):
+        for body in (
+            {"model_type": "nope"},
+            {"model_type": "wd14-vit", "extra": 1},
+            {},
+            ["wd14-vit"],
+            {"model_type": 3},
+        ):
+            resp = await self._post_json("/prompt_manager/jobs/model-download", body)
+            self.assertEqual(resp.status, 400, body)
+        resp = await self._post_json(
+            "/prompt_manager/jobs/model-download",
+            {"model_type": "wd14-vit", "pad": "x" * 2048},
+        )
+        self.assertIn(resp.status, (400, 413))
+        self.assertEqual(self.service.download_calls, [])
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_second_download_is_409_busy(self):
+        self._hold_download()
+        first = (await (await self._start()).json())["job"]
+        try:
+            await self._started()
+            resp = await self._start("gguf")
+            data = await resp.json()
+            self.assertEqual(resp.status, 409)
+            self.assertEqual(data["code"], "busy")
+            self.assertEqual(data["running"]["title"], self.TITLE)
+        finally:
+            await self._ended(first["id"])
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+
+    async def test_download_holds_gate_until_runner_exits(self):
+        self._hold_download()
+        self.service._loaded_type = "wd14-swinv2"
+        first = (await (await self._start()).json())["job"]
+        try:
+            await self._started()
+            self.assertTrue(model_gate.holder().startswith("model-download:"))
+            resp = await self.client.post("/prompt_manager/autotag/unload")
+            data = await resp.json()
+            self.assertEqual(resp.status, 409)
+            self.assertEqual(data["operation"], self.TITLE)
+        finally:
+            await self._ended(first["id"])
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.service.unload_calls, 0)
+
+    async def test_download_releases_gate_when_start_is_refused(self):
+        class Running:
+            id = "other"
+            title = "Database restore"
+
+        with patch.object(self.api._jobs, "start", side_effect=JobBusy(Running())):
+            resp = await self._start()
+        self.assertEqual(resp.status, 409)
+        self.assertEqual((await resp.json())["code"], "busy")
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.service.download_calls, [])
+
+    async def test_gate_held_elsewhere_is_409_model_busy(self):
+        owner = model_gate.new_owner("image-annotations")
+        self.assertTrue(model_gate.try_acquire(owner))
+        try:
+            resp = await self._start()
+            data = await resp.json()
+        finally:
+            model_gate.release(owner)
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["operation"], "Generate suggestions")
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_failed_download_fails_the_job_without_paths(self):
+        for outcome in ({"result": False}, {"error": OSError("/srv/models is full")}):
+            self.started.clear()
+            self.proceed.clear()
+            self._hold_download(**outcome)
+            summary = (await (await self._start()).json())["job"]
+            await self._started()
+            job = await self._ended(summary["id"])
+            self.assertEqual(job.state, "failed", outcome)
+            self.assertEqual(
+                job.status_line, "The download failed. Check server logs for details."
+            )
+            report = await self.client.get(
+                f"/prompt_manager/jobs/{summary['id']}/report"
+            )
+            text = await report.text()
+            self.assertNotIn("/srv/models", text)
+            leaked = [s for s in _strings(json.loads(text)) if _absolute(s)]
+            self.assertEqual(leaked, [])
+            self.assertIsNone(model_gate.holder())
+
+
+class TestLegacyDownloadAttaches(DownloadJobTestCase):
+    """POST /autotag/download/{type}: the legacy stream rides on the job."""
+
+    GOLDEN_OK = [
+        {"type": "progress", "progress": 0, "status": "Starting download..."},
+        {"type": "complete", "progress": 100, "status": "Download complete"},
+    ]
+    GOLDEN_FAILED = [
+        {"type": "progress", "progress": 0, "status": "Starting download..."},
+        {"type": "error", "message": "Download failed"},
+    ]
+
+    async def test_legacy_download_events_unchanged(self):
+        resp = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._sse_events(await resp.text()), self.GOLDEN_OK)
+        # The gate is free by the time the stream says the download ended.
+        self.assertIsNone(model_gate.holder())
+        jobs = self.api._jobs.list()
+        self.assertEqual(
+            [(j.kind, j.title, j.state) for j in jobs],
+            [("model_download", self.TITLE, "finished")],
+        )
+
+        self.service.download_result = False
+        resp = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        self.assertEqual(self._sse_events(await resp.text()), self.GOLDEN_FAILED)
+
+    async def test_legacy_download_attaches_to_running_job(self):
+        self._hold_download()
+        summary = (await (await self._start()).json())["job"]
+        await self._started()
+        legacy = asyncio.ensure_future(
+            self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        )
+        try:
+            job = self.api._jobs.get(summary["id"])
+            await self._until(lambda: job.subscriber_count == 1)
+        finally:
+            await self._ended(summary["id"])
+        resp = await legacy
+        self.assertEqual(self._sse_events(await resp.text()), self.GOLDEN_OK)
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+        self.assertEqual(len(self.api._jobs.list()), 1)
+
+    async def test_legacy_download_of_other_type_is_409_model_busy(self):
+        self._hold_download()
+        summary = (await (await self._start()).json())["job"]
+        try:
+            await self._started()
+            resp = await self.client.post("/prompt_manager/autotag/download/gguf")
+            data = await resp.json()
+        finally:
+            await self._ended(summary["id"])
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "model-busy")
+        self.assertEqual(data["operation"], self.TITLE)
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+
+    async def test_legacy_disconnect_keeps_the_job_running(self):
+        self._hold_download()
+        resp = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        first = await resp.content.readline()
+        self.assertTrue(first.startswith(b"data: "))
+        await self._started()
+        resp.close()  # the page closed the modal
+        (job,) = self.api._jobs.list()
+        # The closed stream lets go of the job; the download goes on.
+        await self._until(lambda: job.subscriber_count == 0)
+        self.assertTrue(job.running)
+        self.assertTrue(model_gate.holder().startswith("model-download:"))
+        job = await self._ended(job.id)
+        self.assertEqual(job.state, "finished")
+        self.assertIsNone(model_gate.holder())
+
+    async def test_unexpected_start_error_keeps_each_route_shape(self):
+        with patch("py.autotag.get_autotag_service", side_effect=RuntimeError("x")):
+            legacy = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+            events = self._sse_events(await legacy.text())
+            native = await self._start()
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual(native.status, 500)
+        self.assertFalse((await native.json())["success"])
+        self.assertIsNone(model_gate.holder())
+
+
+class TestSavedTaggingDefaults(AutotagAPITestCase):
+    """#328: /models reports the saved defaults; legacy requests without
+    thresholds use the saved ones (OQ4)."""
+
+    def setUp(self):
+        super().setUp()
+        from py.config import AutotagConfig
+
+        self.config = AutotagConfig
+        for attr in (
+            "MODEL_TYPE",
+            "EXISTING",
+            "GENERAL_THRESHOLD",
+            "CHARACTER_THRESHOLD",
+            "TEMPLATE",
+            "SUGGESTION_LIMIT",
+        ):
+            self.addCleanup(setattr, AutotagConfig, attr, getattr(AutotagConfig, attr))
+
+    async def test_models_reports_saved_defaults(self):
+        from py.config import DEFAULT_TAG_TEMPLATE
+
+        data = await (await self.client.get("/prompt_manager/autotag/models")).json()
+        self.assertEqual(
+            {k: data[k] for k in ("model_type", "existing", "default_prompt")},
+            {
+                "model_type": "wd14-swinv2",
+                "existing": "skip",
+                "default_prompt": DEFAULT_TAG_TEMPLATE,
+            },
+        )
+        self.config.MODEL_TYPE = "gguf"
+        self.config.EXISTING = "replace_after_review"
+        self.config.GENERAL_THRESHOLD = 0.4
+        self.config.CHARACTER_THRESHOLD = 0.7
+        self.config.TEMPLATE = "Saved template"
+        self.config.SUGGESTION_LIMIT = 15
+        data = await (await self.client.get("/prompt_manager/autotag/models")).json()
+        self.assertEqual(
+            {
+                k: data[k]
+                for k in (
+                    "model_type",
+                    "existing",
+                    "wd14_general_threshold",
+                    "wd14_character_threshold",
+                    "default_prompt",
+                    "suggestion_limit",
+                )
+            },
+            {
+                "model_type": "gguf",
+                "existing": "replace_after_review",
+                "wd14_general_threshold": 0.4,
+                "wd14_character_threshold": 0.7,
+                "default_prompt": "Saved template",
+                "suggestion_limit": 15,
+            },
+        )
+
+    async def test_single_without_thresholds_uses_saved_ones(self):
+        image = self._make_image(self.output_dir)
+        self.config.GENERAL_THRESHOLD = 0.4
+        self.config.CHARACTER_THRESHOLD = 0.7
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {"path": str(image), "model_type": "wd14-vit"},
+        )
+        self.assertEqual(resp.status, 200)
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {
+                "path": str(image),
+                "model_type": "wd14-vit",
+                "general_threshold": 0.2,
+                "character_threshold": 0.3,
+            },
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(
+            [call[2:] for call in self.service.generate_calls],
+            [(0.4, 0.7), (0.2, 0.3)],
+        )
+
+    async def test_legacy_batch_without_thresholds_uses_saved_ones(self):
+        prompt = self._save_prompt("p")
+        self._link_image(prompt, self._make_image(self.output_dir, "a.png"))
+        self.config.GENERAL_THRESHOLD = 0.45
+        self.config.CHARACTER_THRESHOLD = 0.75
+        resp = await self.client.post(
+            "/prompt_manager/autotag/start?model_type=wd14-vit"
+        )
+        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
+        self.assertEqual(
+            [call[2:] for call in self.service.generate_calls], [(0.45, 0.75)]
+        )
+
+
+class BatchJobTestCase(AutotagAPITestCase):
+    """Fixtures for Tag output images: four prompts, five linked images.
+
+    ``tagged`` already has a real tag; ``fresh`` has two images (the second
+    is "handled by another image"); ``missing`` points at no file;
+    ``outside`` is a file outside the output folders; ``marked`` has only
+    bookkeeping markers (not a real tag).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from py.config import PromptManagerConfig
+
+        backup = PromptManagerConfig.SAFETY_BACKUP
+        self.addCleanup(setattr, PromptManagerConfig, "SAFETY_BACKUP", backup)
+        PromptManagerConfig.SAFETY_BACKUP = False
+
+    def _seed(self):
+        ids = {
+            "tagged": self._save_prompt("tagged prompt", tags=["existing"]),
+            "fresh": self._save_prompt("fresh prompt"),
+            "missing": self._save_prompt("missing prompt"),
+            "outside": self._save_prompt("outside prompt"),
+            "marked": self._save_prompt("marked prompt", tags=["auto-scanned"]),
+        }
+        self._link_image(ids["tagged"], self._make_image(self.output_dir, "t.png"))
+        self._link_image(ids["fresh"], self._make_image(self.output_dir, "f1.png"))
+        self._link_image(ids["fresh"], self._make_image(self.output_dir, "f2.png"))
+        self._link_image(ids["missing"], self.output_dir / "gone.png")
+        self._link_image(ids["outside"], self._make_image(self.secret_dir, "o.png"))
+        self._link_image(ids["marked"], self._make_image(self.output_dir, "m.png"))
+        return ids
+
+    def _tags(self, prompt_id):
+        return self.api.db.get_prompt_by_id(prompt_id)["tags"]
+
+    async def _preview(self, model_type="wd14-vit", existing="skip"):
+        return await self._post_json(
+            "/prompt_manager/autotag/batch/preview",
+            {"model_type": model_type, "existing": existing},
+        )
+
+    async def _start_job(self, existing="skip", model_type="wd14-vit", options=None):
+        if options is None:
+            options = (
+                {"general_threshold": 0.3, "character_threshold": 0.8}
+                if model_type.startswith("wd14")
+                else {"instructions": "Tags please."}
+            )
+        return await self._post_json(
+            "/prompt_manager/jobs/autotag",
+            {"model_type": model_type, "existing": existing, "options": options},
+        )
+
+    async def _run_job(self, **kwargs):
+        resp = await self._start_job(**kwargs)
+        self.assertEqual(resp.status, 202, await resp.text())
+        job = self.api._jobs.get((await resp.json())["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+        return job
+
+
+class TestTagOutputImagesPreview(BatchJobTestCase):
+
+    async def test_preview_writes_nothing(self):
+        ids = self._seed()
+        # The database and its WAL are byte-identical afterwards (-shm holds the
+        # WAL index, which any reader updates), and no prompt changed.
+        files = [self._temp_db.name + suffix for suffix in ("", "-wal")]
+
+        def snapshot():
+            return (
+                [Path(f).read_bytes() if os.path.exists(f) else None for f in files],
+                {pid: self._tags(pid) for pid in ids.values()},
+            )
+
+        before = snapshot()
+        with patch("PIL.Image.open") as image_open:
+            resp = await self._preview()
+            self.assertEqual(resp.status, 200, await resp.text())
+        image_open.assert_not_called()  # opens no image file
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(self.service.generate_calls, [])
+        self.assertEqual(self.service.load_calls, [])
+
+    async def test_preview_counts_skip_and_merge(self):
+        self._seed()
+        skip = await (await self._preview(existing="skip")).json()
+        self.assertEqual(
+            {k: skip[k] for k in ("images", "prompts", "already_tagged", "to_tag")},
+            {"images": 6, "prompts": 5, "already_tagged": 1, "to_tag": 4},
+        )
+        self.assertEqual(
+            skip["model"],
+            {
+                "type": "wd14-vit",
+                "label": "WD14 ViT",
+                "size_label": "~400 MB",
+                "downloaded": True,
+            },
+        )
+        self.assertEqual(skip["existing"], "skip")
+        self.assertFalse(skip["review_required"])
+        self.assertEqual(skip["backup"], {"policy": "off"})
+        self.assertEqual(
+            set(skip["disk"]), {"free_bytes", "required_bytes", "sufficient"}
+        )
+        merge = await (await self._preview(existing="merge")).json()
+        self.assertEqual(merge["to_tag"], 5)
+        leaked = [s for s in _strings(skip) if _absolute(s)]
+        self.assertEqual(leaked, [])
+
+    async def test_preview_flags_replace_as_review_required(self):
+        self._seed()
+        data = await (await self._preview(existing="replace_after_review")).json()
+        self.assertTrue(data["review_required"])
+        self.assertEqual(data["prompts"], 5)
+
+    async def test_preview_refuses_bad_bodies(self):
+        for body in (
+            {"model_type": "nope", "existing": "skip"},
+            {"model_type": "wd14-vit", "existing": "replace"},
+            {"model_type": "wd14-vit"},
+            {"model_type": "wd14-vit", "existing": "skip", "x": 1},
+        ):
+            resp = await self._post_json("/prompt_manager/autotag/batch/preview", body)
+            self.assertEqual(resp.status, 400, body)
+
+
+class TestTagOutputImagesJob(BatchJobTestCase):
+
+    async def test_job_refuses_replace_after_review(self):
+        self._seed()
+        resp = await self._start_job(existing="replace_after_review")
+        data = await resp.json()
+        self.assertEqual(resp.status, 400)
+        self.assertEqual(data["code"], "review-required")
+        self.assertEqual(
+            data["error"],
+            "Replacing tags needs a review of each image. Use Preview tagging "
+            "review, or choose Skip or Merge for a batch run.",
+        )
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_job_refuses_bad_options(self):
+        for options in (
+            {"general_threshold": 0.3},
+            {"general_threshold": 0.3, "character_threshold": 0.8, "use_gpu": True},
+            {
+                "general_threshold": 0.3,
+                "character_threshold": 0.8,
+                "suggestion_limit": 5,
+            },
+            {"general_threshold": 2, "character_threshold": 0.8},
+        ):
+            resp = await self._start_job(options=options)
+            self.assertEqual(resp.status, 400, options)
+        self.assertEqual(self.api._jobs.list(), [])
+        self.assertIsNone(model_gate.holder())
+
+    async def test_unavailable_model_is_409(self):
+        self.service.downloaded = False
+        resp = await self._start_job()
+        data = await resp.json()
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "model-unavailable")
+        self.assertEqual(
+            data["error"],
+            "WD14 ViT is not downloaded. Download it in System › Auto-tagging.",
+        )
+
+    async def test_job_writes_what_legacy_writes(self):
+        ids = self._seed()
+        await self._run_job(existing="skip")
+        native = {name: sorted(self._tags(pid)) for name, pid in ids.items()}
+        # The same library through the legacy batch, in a fresh database.
+        for name, pid in ids.items():
+            self.api.db.update_prompt_metadata(
+                pid,
+                tags=(
+                    ["existing"]
+                    if name == "tagged"
+                    else (["auto-scanned"] if name == "marked" else [])
+                ),
+            )
+        resp = await self.client.post(
+            "/prompt_manager/autotag/start?model_type=wd14-vit&skip_tagged=true"
+        )
+        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
+        legacy = {name: sorted(self._tags(pid)) for name, pid in ids.items()}
+        self.assertEqual(native, legacy)
+        self.assertEqual(native["tagged"], ["existing"])
+        self.assertEqual(native["fresh"], ["1girl", "smile"])
+
+    async def test_job_outcomes_follow_the_mapping(self):
+        ids = self._seed()
+        self.api.db.update_prompt_metadata(
+            ids["marked"], tags=["auto-scanned", "1girl", "smile"]
+        )
+
+        def details(job):
+            return {
+                group: sorted(row["detail"] for row in rows)
+                for group, rows in job.outcomes.items()
+            }
+
+        merged = await self._run_job(existing="merge")
+        self.assertEqual(merged.state, "finished")
+        self.assertEqual(
+            details(merged),
+            {
+                "tagged": ["Added 2 tags", "Added 2 tags"],
+                "unchanged": ["No new tags"],
+                "skipped": [
+                    "File not found",
+                    "Outside the output folders",
+                    "Prompt handled by another image",
+                ],
+                "errors": [],
+            },
+        )
+        self.assertEqual(merged.status_line, "Tagged 2 prompts")
+
+        skipped = await self._run_job(existing="skip")
+        self.assertEqual(details(skipped)["tagged"], [])
+        self.assertEqual(details(skipped)["skipped"].count("Prompt already tagged"), 3)
+        self.assertEqual(skipped.status_line, "Tagged 0 prompts")
+
+    async def test_tagging_errors_are_fixed_strings(self):
+        self._seed()
+        self.service.generate_error = RuntimeError("/srv/secret/model exploded")
+        job = await self._run_job(existing="merge")
+        self.assertTrue(job.outcomes["errors"])
+        self.assertEqual(
+            {r["detail"] for r in job.outcomes["errors"]}, {"Tagging failed"}
+        )
+        self.assertNotIn("/srv/secret", json.dumps(job.report()))
+
+    async def test_job_progress_is_determinate(self):
+        self._seed()
+        seen = []
+        original = self.service.generate_tags
+
+        def generate(*args, **kwargs):
+            job = self.api._jobs.active("autotag")
+            seen.append((job.processed, job.total))
+            return original(*args, **kwargs)
+
+        self.service.generate_tags = generate
+        job = await self._run_job(existing="merge")
+        self.assertEqual((job.processed, job.total, job.progress), (6, 6, 100))
+        self.assertTrue(all(total == 6 for _p, total in seen[1:]), seen)
+        self.assertTrue(job.cancellable)
+
+    async def test_job_cancel_stops_before_the_next_image_and_keeps_writes(self):
+        ids = self._seed()
+        started = threading.Event()
+        proceed = threading.Event()
+        calls = []
+
+        def slow(image_path, **kwargs):
+            calls.append(image_path)
+            started.set()
+            proceed.wait(30)
+            return ["slow"]
+
+        self.service.generate_tags = slow
+        resp = await self._start_job(existing="merge")
+        job = self.api._jobs.get((await resp.json())["job"]["id"])
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            cancel = await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
+            self.assertTrue((await cancel.json())["cancellation_requested"])
+        finally:
+            proceed.set()
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(job.status_line, "Cancelled. Tags already added were kept.")
+        self.assertEqual(len(calls), 1)
+        tagged = [n for n, pid in ids.items() if "slow" in self._tags(pid)]
+        self.assertEqual(len(tagged), 1)
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.service.unload_calls, 0)
+
+    async def test_job_refused_while_legacy_batch_holds(self):
+        async with self.api._jobs.hold(
+            "autotag", "Tag output images (legacy page)", admission="records"
+        ):
+            resp = await self._start_job()
+            data = await resp.json()
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "busy")
+        self.assertEqual(data["running"]["title"], "Tag output images (legacy page)")
+        self.assertIsNone(model_gate.holder())
+
+    async def test_legacy_refused_while_job_runs(self):
+        self._seed()
+        started, proceed = threading.Event(), threading.Event()
+
+        def slow(image_path, **kwargs):
+            started.set()
+            proceed.wait(30)
+            return ["slow"]
+
+        self.service.generate_tags = slow
+        resp = await self._start_job(existing="merge")
+        job = self.api._jobs.get((await resp.json())["job"]["id"])
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            self.assertTrue(model_gate.holder().startswith("autotag-job:"))
+            legacy = await self.client.post("/prompt_manager/autotag/start")
+            # Both legacy pages read a stream: the refusal is one error frame
+            # that names the running job.
+            self.assertEqual(legacy.status, 200)
+            self.assertEqual(
+                self._sse_events(await legacy.text()),
+                [
+                    {
+                        "type": "error",
+                        "status": "error",
+                        "message": "Tag output images already running",
+                    }
+                ],
+            )
+            unload = await self.client.post("/prompt_manager/autotag/unload")
+            self.assertEqual((await unload.json())["operation"], "Tag output images")
+        finally:
+            proceed.set()
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+
+    async def test_job_releases_gate_when_start_is_refused(self):
+        class Running:
+            id = "other"
+            title = "Database restore"
+
+        with patch.object(self.api._jobs, "start", side_effect=JobBusy(Running())):
+            resp = await self._start_job()
+        self.assertEqual(resp.status, 409)
+        self.assertIsNone(model_gate.holder())
+
+    async def test_model_busy_when_gate_held(self):
+        owner = model_gate.new_owner("image-annotations")
+        self.assertTrue(model_gate.try_acquire(owner))
+        try:
+            resp = await self._start_job()
+            data = await resp.json()
+        finally:
+            model_gate.release(owner)
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "model-busy")
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_backup_failure_aborts_before_write(self):
+        from py.config import PromptManagerConfig
+        from database.safety_backup import SafetyBackupFailed
+
+        ids = self._seed()
+        PromptManagerConfig.SAFETY_BACKUP = True
+        with patch(
+            "py.api.maintenance.take_safety_backup",
+            side_effect=SafetyBackupFailed("disk full"),
+        ):
+            job = await self._run_job(existing="merge")
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.scope.get("failure"), "backup-failed")
+        self.assertEqual(self.service.generate_calls, [])
+        self.assertEqual(self._tags(ids["fresh"]), [])
+
+    async def test_short_disk_is_507_insufficient_space(self):
+        from py.config import PromptManagerConfig
+
+        PromptManagerConfig.SAFETY_BACKUP = True
+        short = (
+            {"free_bytes": 1, "required_bytes": 10, "sufficient": False},
+            ("database folder", "the safety backup", 10, 1),
+            10,
+        )
+        with patch("py.api.autotag_routes.disk_plan", return_value=short):
+            resp = await self._start_job()
+        data = await resp.json()
+        self.assertEqual(resp.status, 507)
+        self.assertEqual(data["code"], "insufficient-space")
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_job_rows_carry_no_absolute_paths(self):
+        self._seed()
+        job = await self._run_job(existing="merge")
+        report = job.report()
+        self.assertEqual([s for s in _strings(report) if _absolute(s)], [])
+        rows = [row for rows in job.outcomes.values() for row in rows]
+        self.assertTrue(rows)
+        inside = [row for row in rows if row["root_index"] == 0]
+        self.assertTrue(inside)
+
+    async def test_native_batch_leaves_custom_prompt_unchanged(self):
+        self._seed()
+        self.service.custom_prompt = "legacy page prompt"
+        await self._run_job(existing="merge", model_type="gguf")
+        self.assertEqual(self.service.custom_prompt, "legacy page prompt")
+        prompts = {call[1] for call in self.service.generate_calls}
+        self.assertEqual(prompts, {"Tags please."})
+
+
+# The legacy batch's per-image frames over BatchJobTestCase's library, newest
+# first, with every throttle check passing (pinned from main's generator).
+GOLDEN_LEGACY_ROWS = [
+    {
+        "type": "progress",
+        "progress": 24,
+        "status": "Processing 1/6...",
+        "processed": 1,
+        "tagged": 1,
+        "skipped": 0,
+        "skipped_outside_roots": 0,
+    },
+    {
+        "type": "progress",
+        "progress": 38,
+        "status": "Skipping 2/6 (outside allowed directories)...",
+        "processed": 1,
+        "tagged": 1,
+        "skipped": 1,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 52,
+        "status": "Skipping 3/6 (file missing)...",
+        "processed": 1,
+        "tagged": 1,
+        "skipped": 2,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 66,
+        "status": "Processing 4/6...",
+        "processed": 2,
+        "tagged": 2,
+        "skipped": 2,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 80,
+        "status": "Skipping 5/6 (prompt already processed)...",
+        "processed": 2,
+        "tagged": 2,
+        "skipped": 3,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 95,
+        "status": "Skipping 6/6 (already tagged)...",
+        "processed": 2,
+        "tagged": 2,
+        "skipped": 4,
+        "skipped_outside_roots": 1,
+    },
+]
+
+
+class TestLegacyBatchFrames(BatchJobTestCase):
+
+    async def test_legacy_batch_events_unchanged(self):
+        """Golden frames of the legacy batch over the seeded library."""
+        self._seed()
+        ticks = iter(range(1000))  # every throttle check sees a second pass
+        with patch("py.api.autotag_routes._monotonic", side_effect=lambda: next(ticks)):
+            resp = await self.client.post(
+                "/prompt_manager/autotag/start?model_type=wd14-vit&skip_tagged=true"
+            )
+            frames = self._sse_events(await resp.text())  # the stream runs here
+        self.assertEqual(
+            frames,
+            [
+                {"type": "progress", "progress": 0, "status": "Loading model..."},
+                {
+                    "type": "progress",
+                    "progress": 5,
+                    "status": "Model loaded. Fetching all images from database...",
+                },
+                {
+                    "type": "progress",
+                    "progress": 10,
+                    "status": "Found 6 images. Processing...",
+                },
+                *GOLDEN_LEGACY_ROWS,
+                {
+                    "type": "complete",
+                    "progress": 100,
+                    "processed": 2,
+                    "tagged": 2,
+                    "skipped": 4,
+                    "errors": 0,
+                    "skipped_outside_roots": 1,
+                    "status": "Complete",
+                    "model_status": "Model kept in memory",
+                    "model_loaded": True,
+                },
+            ],
+        )
+
+
+class TestTagOutputImagesEdges(BatchJobTestCase):
+
+    async def test_cancel_during_backup_loads_no_model(self):
+        from py.config import PromptManagerConfig
+
+        self._seed()
+        PromptManagerConfig.SAFETY_BACKUP = True
+        started, proceed = threading.Event(), threading.Event()
+
+        def slow_backup(model, label="backup"):
+            started.set()
+            proceed.wait(30)
+            return "prompts.db.backup_x"
+
+        with patch("py.api.maintenance.take_safety_backup", side_effect=slow_backup):
+            resp = await self._start_job(existing="merge")
+            job = self.api._jobs.get((await resp.json())["job"]["id"])
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
+            proceed.set()
+            await asyncio.wait_for(asyncio.shield(job.task), 30)
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(self.service.load_calls, [])
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_unexpected_error_fails_the_job_with_a_reason(self):
+        self._seed()
+        with patch.object(
+            self.api.db, "autotag_batch_candidates", side_effect=[[], RuntimeError("x")]
+        ):
+            job = await self._run_job(existing="merge")
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(
+            job.status_line,
+            "An internal error occurred. Check server logs for details.",
+        )
+        self.assertIsNone(model_gate.holder())

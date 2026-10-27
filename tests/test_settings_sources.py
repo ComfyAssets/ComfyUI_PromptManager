@@ -976,3 +976,156 @@ class TestSourceFormError(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAutotagDefaultsSettings(SourcesTestCase):
+    """#328: the tagging defaults save through POST /settings like the others."""
+
+    ATTRS = (
+        "MODEL_TYPE",
+        "EXISTING",
+        "GENERAL_THRESHOLD",
+        "CHARACTER_THRESHOLD",
+        "TEMPLATE",
+        "SUGGESTION_LIMIT",
+    )
+    SAVED = {
+        "autotag_model_type": "gguf",
+        "autotag_existing": "merge",
+        "autotag_general_threshold": 0.4,
+        "autotag_character_threshold": 0.8,
+        "autotag_template": "Tags only.",
+        "autotag_suggestion_limit": 15,
+    }
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        from py.config import AutotagConfig
+
+        self.autotag = AutotagConfig
+        for attr in self.ATTRS:
+            self.addCleanup(setattr, AutotagConfig, attr, getattr(AutotagConfig, attr))
+
+    def _runtime(self):
+        return {attr: getattr(self.autotag, attr) for attr in self.ATTRS}
+
+    async def test_autotag_defaults_save_round_trip(self):
+        self._write_config({"custom": {"keep": True}})
+        revision = (await self._get())["revision"]
+        status, data = await self._post(
+            "/prompt_manager/settings", {"expected_revision": revision, **self.SAVED}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["restart_required_fields"], [])
+        saved = self._read_config()
+        self.assertEqual(
+            saved["autotag"]["defaults"],
+            {key[len("autotag_") :]: value for key, value in self.SAVED.items()},
+        )
+        self.assertEqual(saved["custom"], {"keep": True})
+        self.assertEqual(
+            self._runtime(),
+            {
+                "MODEL_TYPE": "gguf",
+                "EXISTING": "merge",
+                "GENERAL_THRESHOLD": 0.4,
+                "CHARACTER_THRESHOLD": 0.8,
+                "TEMPLATE": "Tags only.",
+                "SUGGESTION_LIMIT": 15,
+            },
+        )
+        settings = (await self._get())["settings"]
+        self.assertEqual({key: settings[key] for key in self.SAVED}, self.SAVED)
+
+    async def test_threshold_near_the_grid_is_saved_on_it(self):
+        """#369: a computed value a hair off the 0.05 grid is stored on it, so
+        every page's step check accepts what /settings and the file return."""
+        revision = (await self._get())["revision"]
+        status, data = await self._post(
+            "/prompt_manager/settings",
+            {"expected_revision": revision, "autotag_general_threshold": 0.1 + 0.2},
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(
+            repr(self._read_config()["autotag"]["defaults"]["general_threshold"]),
+            "0.3",
+        )
+        self.assertEqual(
+            repr((await self._get())["settings"]["autotag_general_threshold"]), "0.3"
+        )
+
+    async def test_stale_revision_changes_no_default(self):
+        revision = (await self._get())["revision"]
+        self._write_config({"custom": {"edited": "elsewhere"}})
+        before = (self._config_bytes(), self._runtime())
+        status, data = await self._post(
+            "/prompt_manager/settings", {"expected_revision": revision, **self.SAVED}
+        )
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["code"], "settings-changed")
+        self.assertEqual((self._config_bytes(), self._runtime()), before)
+
+    async def test_bad_default_message_names_the_setting(self):
+        cases = (
+            (
+                "autotag_general_threshold",
+                1.5,
+                "General-tag confidence must be between 0 and 1.",
+            ),
+            (
+                "autotag_general_threshold",
+                0.37,
+                "General-tag confidence must be a multiple of 0.05.",
+            ),
+            (
+                "autotag_character_threshold",
+                0.33,
+                "Character-tag confidence must be a multiple of 0.05.",
+            ),
+            (
+                "autotag_character_threshold",
+                "0.8",
+                "Character-tag confidence must be a finite number.",
+            ),
+            (
+                "autotag_character_threshold",
+                True,
+                "Character-tag confidence must be a finite number.",
+            ),
+            (
+                "autotag_model_type",
+                "wd14-convnext",
+                "Tagging model must be one of gguf, hf, wd14-swinv2, wd14-vit.",
+            ),
+            (
+                "autotag_existing",
+                "replace",
+                "Existing tags must be skip, merge or replace_after_review.",
+            ),
+            ("autotag_template", " ", "LLM tag template must be non-empty text."),
+            (
+                "autotag_template",
+                "x" * 4001,
+                "LLM tag template must be at most 4000 characters.",
+            ),
+            (
+                "autotag_suggestion_limit",
+                0,
+                "Suggestions per image must be a whole number from 1 to 100.",
+            ),
+            (
+                "autotag_suggestion_limit",
+                2.5,
+                "Suggestions per image must be a whole number from 1 to 100.",
+            ),
+        )
+        self._write_config({"custom": {"keep": True}})
+        before = (self._config_bytes(), self._runtime())
+        for key, value, message in cases:
+            with self.subTest(key=key, value=value):
+                status, data = await self._post(
+                    "/prompt_manager/settings", {**self.SAVED, key: value}
+                )
+                self.assertEqual(status, 400, data)
+                self.assertEqual(data["error"], message)
+                self.assertEqual((self._config_bytes(), self._runtime()), before)

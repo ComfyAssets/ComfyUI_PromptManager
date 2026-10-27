@@ -4,6 +4,8 @@ The package is loaded the way ComfyUI loads it (``__init__`` with relative
 imports) with ComfyUI's ``server`` and ``folder_paths`` modules stubbed.
 """
 
+import asyncio
+import atexit
 import contextlib
 import importlib.util
 import io
@@ -16,6 +18,7 @@ import threading
 import types
 import unittest
 import unittest.mock as mock
+from pathlib import Path
 
 from aiohttp import web
 
@@ -40,13 +43,20 @@ class FakePromptQueue:
         return self.results.pop(0) if self.results else None
 
 
-def fake_server_module():
-    """A ``server`` module whose PromptServer.instance accepts routes and hooks."""
+def fake_server_module(app=None, queue_task_done=False):
+    """A ``server`` module whose PromptServer.instance accepts routes and hooks.
+
+    ``app`` replaces the default app (one without aiohttp hooks);
+    ``queue_task_done`` gives the queue a ``task_done``, so history registers.
+    """
+    queue = FakePromptQueue()
+    if queue_task_done:
+        queue.task_done = lambda *a, **k: None
     instance = types.SimpleNamespace(
         routes=web.RouteTableDef(),
-        prompt_queue=FakePromptQueue(),
+        prompt_queue=queue,
         handlers=[],
-        app=types.SimpleNamespace(middlewares=[]),
+        app=app if app is not None else types.SimpleNamespace(middlewares=[]),
     )
     instance.add_on_prompt_handler = instance.handlers.append
     module = types.ModuleType("server")
@@ -92,7 +102,7 @@ def _import_package(name, db_path, output_dir, server=None):
             try:
                 spec.loader.exec_module(package)
             except BaseException:
-                cleanup_package(package)
+                cleanup_package(package, require_stopped=False)
                 raise
     finally:
         for key, module in saved.items():
@@ -103,20 +113,34 @@ def _import_package(name, db_path, output_dir, server=None):
     return package, server.PromptServer.instance
 
 
-def cleanup_package(package):
-    """Stop fixture-owned workers before releasing its other resources."""
+def cleanup_package(package, require_stopped=True):
+    """Stop fixture-owned workers before releasing its other resources.
+
+    The package's own teardown runs first (the reload case of #301); with
+    ``require_stopped`` every part it reports must have stopped. The direct
+    stops after it also cover an import that failed before the teardown
+    existed, and a test that made a teardown step fail on purpose.
+    """
+    teardown = getattr(package, "_stop_background_work", None)
+    if callable(teardown):
+        result = teardown()
+        if require_stopped:
+            assert all(result.values()), f"package teardown left work running: {result}"
+    monitor = getattr(package, "_global_image_monitor", None)
+    if monitor is not None:
+        assert monitor.stop_monitoring(), "package image monitor still running"
+    tracker = getattr(package, "_global_prompt_tracker", None)
+    if tracker is not None:
+        assert tracker.shutdown(), "package prompt cleanup thread still running"
     registration = getattr(package, "_history_registration", None)
     if registration is not None:
         assert registration.dispose(3), "package history worker leaked"
-    monitor = getattr(package, "_global_image_monitor", None)
-    if monitor is not None:
-        monitor.stop_monitoring()
     close_every_database()
     sys.modules.pop(package.__name__, None)
 
 
 @contextlib.contextmanager
-def load_package(name, db_path, output_dir, server=None):
+def load_package(name, db_path, output_dir, server=None, require_stopped=True):
     """Dispose package workers before closing its isolated logging handlers."""
     root_logger = logging.getLogger("prompt_manager")
     loggers = [root_logger] + [
@@ -144,7 +168,7 @@ def load_package(name, db_path, output_dir, server=None):
         try:
             yield package, instance
         finally:
-            cleanup_package(package)
+            cleanup_package(package, require_stopped=require_stopped)
     finally:
         current_loggers = [root_logger] + [
             logger
@@ -556,3 +580,241 @@ class TestPackageLoggerIsolation(unittest.TestCase):
         self.assert_logging_restored(
             captured["handlers"], captured["package"]._history_registration
         )
+
+
+PACKAGE_THREAD_NAMES = ("PromptManagerPromptCleanup", "PromptManagerImageWorker")
+
+
+def package_threads():
+    """Live threads this design owns: the tracker, the image worker, and the
+    watchdog observer and emitters (which have no name of their own)."""
+    from watchdog.utils import BaseThread
+
+    return {
+        thread
+        for thread in threading.enumerate()
+        if thread.name in PACKAGE_THREAD_NAMES or isinstance(thread, BaseThread)
+    }
+
+
+def hooked_app():
+    return types.SimpleNamespace(
+        middlewares=[], on_cleanup=[], on_startup=[], on_shutdown=[]
+    )
+
+
+class PackageTeardownCase(unittest.TestCase):
+    """Each test loads its own package (#301): the teardown runs once."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(lambda: self.assertEqual(open_handles_under(self.tmp.name), []))
+        self.output_dir = os.path.join(self.tmp.name, "output")
+        os.makedirs(self.output_dir)
+        self.db_path = os.path.join(self.tmp.name, "prompts.db")
+
+    def load(self, server=None, require_stopped=True, suffix=""):
+        name = f"pm_teardown_{self._testMethodName}{suffix}"
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        package, _ = stack.enter_context(
+            load_package(
+                name,
+                self.db_path,
+                self.output_dir,
+                server,
+                require_stopped=require_stopped,
+            )
+        )
+        return package
+
+    def busy_worker(self, package, name="busy.png"):
+        """The image worker alive in its processing delay."""
+        handler = package._global_image_monitor.handler
+        self.assertIsNotNone(handler, "the package's monitor did not start")
+        handler.processing_delay = 3600
+        # Outside the watched folder, so the observer does not schedule it first.
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "wb") as image:
+            image.write(b"x" * 16)
+        self.assertTrue(handler.schedule(path))
+        self.assertTrue(handler._worker.is_alive())
+        return handler._worker
+
+
+class TestPackageTeardown(PackageTeardownCase):
+    def test_teardown_stops_every_part_once(self):
+        package = self.load()
+        monitor = package._global_image_monitor
+        observer = monitor.observer
+        tracker_thread = package._global_prompt_tracker.cleanup_thread
+        worker = self.busy_worker(package)
+
+        with self.assertLogs("prompt_manager.init", "INFO") as logs:
+            result = package._stop_background_work()
+
+        self.assertEqual(result, {"monitor": True, "thumbnails": True, "tracker": True})
+        self.assertEqual(list(result), ["monitor", "thumbnails", "tracker"])
+        self.assertIn("Background work stopped in", "\n".join(logs.output))
+        self.assertIn("monitor=ok thumbnails=ok tracker=ok", "\n".join(logs.output))
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(observer.is_alive())
+        self.assertFalse(tracker_thread.is_alive())
+        result["monitor"] = False  # a copy: the stored result is unchanged
+        with mock.patch.object(monitor, "stop_monitoring") as again:
+            self.assertEqual(
+                package._stop_background_work(),
+                {"monitor": True, "thumbnails": True, "tracker": True},
+            )
+        again.assert_not_called()
+
+    def test_teardown_detaches_the_monitor_callbacks(self):
+        package = self.load()
+        monitor = package._global_image_monitor
+        self.assertIsNotNone(monitor.review_recorder)
+        package._stop_background_work()
+        self.assertIsNone(monitor.review_recorder)
+        self.assertIsNone(monitor.thumbnail_queue)
+        self.assertIsNone(monitor.output_listener)
+
+    def test_an_image_in_hand_queues_no_preview_during_teardown(self):
+        package = self.load()
+        monitor = package._global_image_monitor
+        real_stop = monitor.stop_monitoring
+        image = os.path.join(self.output_dir, "in_hand.png")
+        from PIL import Image
+
+        Image.new("RGB", (8, 8), "red").save(image)
+        seen = {}
+
+        def stop_with_an_image_in_hand(timeout):
+            # The worker read ``thumbnail_queue`` before the detach and now
+            # hands its finished image over (at exit, Python 3.12+ refuses a
+            # new thread here and logs a traceback).
+            seen["queued"] = package.api.queue_capture_thumbnail(image)
+            seen["worker"] = package.api._auto_thumbnailer
+            return real_stop(timeout)
+
+        with (
+            mock.patch.object(
+                package.api,
+                "_get_all_output_dirs",
+                return_value=[Path(os.path.realpath(self.output_dir))],
+            ),
+            mock.patch.object(
+                monitor, "stop_monitoring", side_effect=stop_with_an_image_in_hand
+            ),
+        ):
+            result = package._stop_background_work()
+        self.assertEqual(seen["queued"], "skipped")
+        self.assertIsNone(seen["worker"])
+        self.assertTrue(all(result.values()), result)
+
+    def test_teardown_removes_its_atexit_callback(self):
+        package = self.load()
+        with mock.patch("atexit.unregister", wraps=atexit.unregister) as unregister:
+            package._stop_background_work()
+        unregister.assert_called_once_with(package._stop_background_work)
+
+    def test_on_cleanup_runs_the_teardown(self):
+        app = hooked_app()
+        package = self.load(fake_server_module(app=app))
+        self.assertIs(app.on_cleanup[0], package._stop_background_work_on_cleanup)
+        self.assertIsNone(package._background_work_result)
+
+        async def run_cleanup():
+            for callback in list(app.on_cleanup):
+                await callback(app)
+
+        asyncio.run(run_cleanup())
+        self.assertEqual(
+            package._background_work_result,
+            {"monitor": True, "thumbnails": True, "tracker": True},
+        )
+
+    def test_teardown_runs_before_history_dispose_at_exit(self):
+        with mock.patch("atexit.register", wraps=atexit.register) as register:
+            package = self.load(fake_server_module(queue_task_done=True))
+        registered = [call.args[0] for call in register.call_args_list]
+        registration = package._history_registration
+        self.assertIsNotNone(registration, "history did not register")
+        self.assertIn(registration.dispose, registered)
+        self.assertIn(package._stop_background_work, registered)
+        # atexit runs newest first: the teardown before the history dispose.
+        self.assertGreater(
+            registered.index(package._stop_background_work),
+            registered.index(registration.dispose),
+        )
+
+
+class TestPackageTeardownFailures(PackageTeardownCase):
+    """A failing step never skips the later ones (design D14, R2)."""
+
+    def assert_tracker_stops_after(self, error):
+        package = self.load(require_stopped=False)
+        monitor = package._global_image_monitor
+        tracker_thread = package._global_prompt_tracker.cleanup_thread
+        with (
+            mock.patch.object(monitor, "stop_monitoring", side_effect=error),
+            self.assertLogs("prompt_manager.init", "WARNING") as logs,
+        ):
+            result = package._stop_background_work()
+        self.assertFalse(result["monitor"])
+        self.assertTrue(result["tracker"])
+        self.assertFalse(tracker_thread.is_alive())
+        text = "\n".join(logs.output)
+        self.assertIn("Background work not stopped in time", text)
+        self.assertRegex(text, r"not stopped in time \([0-9.]+ s\): monitor$")
+        self.assertIn("Traceback", text)
+
+    def test_teardown_step_failure_does_not_skip_later_steps(self):
+        self.assert_tracker_stops_after(RuntimeError("stop failed"))
+
+    def test_second_interrupt_does_not_skip_the_tracker(self):
+        self.assert_tracker_stops_after(KeyboardInterrupt())
+
+    def test_teardown_shares_one_deadline(self):
+        package = self.load(require_stopped=False)
+        now = [100.0]
+        seen = []
+
+        def step(timeout, **_):
+            seen.append(timeout)
+            now[0] += 6.0
+            return True
+
+        with (
+            mock.patch.object(package, "_clock", lambda: now[0]),
+            mock.patch.object(
+                package._global_image_monitor, "stop_monitoring", side_effect=step
+            ),
+            mock.patch.object(
+                package.api,
+                "close_auto_thumbnails",
+                side_effect=lambda final=False, timeout=None: step(timeout),
+            ),
+            mock.patch.object(
+                package._global_prompt_tracker, "shutdown", side_effect=step
+            ),
+        ):
+            package._stop_background_work()
+        self.assertEqual(seen, [5.0, 4.0, 0.0])
+
+
+class TestRepeatedLoads(PackageTeardownCase):
+    def test_repeated_loads_leave_no_threads(self):
+        for round_ in range(3):
+            before = package_threads()
+            with contextlib.redirect_stdout(io.StringIO()):
+                with load_package(
+                    f"pm_teardown_repeat_{round_}",
+                    self.db_path,
+                    self.output_dir,
+                ) as (package, _):
+                    self.busy_worker(package, f"busy_{round_}.png")
+                    started = package_threads() - before
+                    self.assertTrue(started, "the package started no thread")
+            left = {t for t in package_threads() - before if t.is_alive()}
+            self.assertEqual(left, set(), f"round {round_}")

@@ -23,6 +23,7 @@ try:
 except ImportError:  # discovered with tests/ as the top-level directory
     from open_handles import assert_closed
 
+from tests.background_stops import close_handler  # noqa: E402
 from database.operations import PromptDatabase
 from prompt_manager import PromptManager
 from prompt_manager_pair import PromptManagerPair
@@ -278,6 +279,7 @@ class MonitorCase(DatabaseCase):
         fd, self.image = tempfile.mkstemp(suffix=".png", dir=self.tmp.name)
         os.close(fd)
         self.handler = ImageGenerationHandler(self.db, self.tracker)
+        self.addCleanup(close_handler, self, self.handler)
         self.linked = []
         self.handler.link_image_to_prompt = lambda path, prompt, meta: (
             self.linked.append(prompt["id"])

@@ -47,11 +47,23 @@ _SETTINGS_FILE_KEYS = {
     "THUMBNAIL_FORMAT": ("thumbnails", "format"),
     "THUMBNAIL_QUALITY": ("thumbnails", "quality"),
     "THUMBNAIL_EDGE": ("thumbnails", "edge"),
+    # The one tagging configuration (#328), published to AutotagConfig.
+    "AUTOTAG_MODEL_TYPE": ("autotag", "defaults", "model_type"),
+    "AUTOTAG_EXISTING": ("autotag", "defaults", "existing"),
+    "AUTOTAG_GENERAL_THRESHOLD": ("autotag", "defaults", "general_threshold"),
+    "AUTOTAG_CHARACTER_THRESHOLD": ("autotag", "defaults", "character_threshold"),
+    "AUTOTAG_TEMPLATE": ("autotag", "defaults", "template"),
+    "AUTOTAG_SUGGESTION_LIMIT": ("autotag", "defaults", "suggestion_limit"),
 }
 # The thumbnail settings a running Convert outdated job fixes (#317).
 _THUMBNAIL_SETTINGS = ("THUMBNAIL_FORMAT", "THUMBNAIL_QUALITY", "THUMBNAIL_EDGE")
 # Attributes that live on GalleryConfig; the others on PromptManagerConfig.
 _GALLERY_SETTINGS = frozenset({"MONITORING_ENABLED"})
+# Attributes that live on AutotagConfig, named without the AUTOTAG_ prefix.
+_AUTOTAG_SETTINGS = frozenset(
+    name for name in _SETTINGS_FILE_KEYS if name.startswith("AUTOTAG_")
+)
+_AUTOTAG_PREFIX = "AUTOTAG_"
 SOURCE_CHANGE_JOB_KIND = "source_change"
 SOURCE_CHANGE_JOB_TITLE = "Source change"
 
@@ -151,6 +163,63 @@ def _set_nested(config, sections, key, value):
     config[sections[0]] = merged
 
 
+def _validate_autotag_settings(data):
+    """The ``autotag_*`` settings as ``{AUTOTAG_ATTR: value}``.
+
+    The first bad value raises ValueError with a message that names the
+    setting by its label in System › Auto-tagging.
+    """
+    from ..config import (
+        EXISTING_POLICIES,
+        MAX_SUGGESTION_LIMIT,
+        MODEL_TYPES,
+        validate_saved_threshold,
+        validate_template,
+    )
+
+    updates = {}
+    if "autotag_model_type" in data:
+        value = data["autotag_model_type"]
+        if not isinstance(value, str) or value not in MODEL_TYPES:
+            raise ValueError(
+                "Tagging model must be one of " + ", ".join(sorted(MODEL_TYPES)) + "."
+            )
+        updates["AUTOTAG_MODEL_TYPE"] = value
+    if "autotag_existing" in data:
+        value = data["autotag_existing"]
+        if not isinstance(value, str) or value not in EXISTING_POLICIES:
+            raise ValueError(
+                "Existing tags must be skip, merge or replace_after_review."
+            )
+        updates["AUTOTAG_EXISTING"] = value
+    for key, label in (
+        ("autotag_general_threshold", "General-tag confidence"),
+        ("autotag_character_threshold", "Character-tag confidence"),
+    ):
+        if key in data:
+            try:
+                value = validate_saved_threshold(label, data[key])
+            except ValueError as error:
+                raise ValueError(f"{error}.") from None
+            updates[key.upper()] = value
+    if "autotag_template" in data:
+        try:
+            updates["AUTOTAG_TEMPLATE"] = validate_template(
+                data["autotag_template"], "LLM tag template"
+            )
+        except ValueError as error:
+            raise ValueError(f"{error}.") from None
+    if "autotag_suggestion_limit" in data:
+        value = data["autotag_suggestion_limit"]
+        if type(value) is not int or not 1 <= value <= MAX_SUGGESTION_LIMIT:
+            raise ValueError(
+                "Suggestions per image must be a whole number from 1 to "
+                f"{MAX_SUGGESTION_LIMIT}."
+            )
+        updates["AUTOTAG_SUGGESTION_LIMIT"] = value
+    return updates
+
+
 async def _read_json(request):
     """Parse a JSON object body through the package's capped reader."""
     from . import _read_json_body
@@ -177,7 +246,7 @@ class SettingsRoutesMixin:
     async def get_settings(self, request):
         """Get current settings."""
         try:
-            from ..config import PromptManagerConfig, GalleryConfig
+            from ..config import AutotagConfig, PromptManagerConfig, GalleryConfig
 
             root_paths = [
                 self._public_path(d) for d in GalleryConfig.MONITORING_DIRECTORIES
@@ -203,6 +272,14 @@ class SettingsRoutesMixin:
                         "thumbnail_format": PromptManagerConfig.THUMBNAIL_FORMAT,
                         "thumbnail_quality": PromptManagerConfig.THUMBNAIL_QUALITY,
                         "thumbnail_edge": PromptManagerConfig.THUMBNAIL_EDGE,
+                        "autotag_model_type": AutotagConfig.MODEL_TYPE,
+                        "autotag_existing": AutotagConfig.EXISTING,
+                        "autotag_general_threshold": AutotagConfig.GENERAL_THRESHOLD,
+                        "autotag_character_threshold": (
+                            AutotagConfig.CHARACTER_THRESHOLD
+                        ),
+                        "autotag_template": AutotagConfig.TEMPLATE,
+                        "autotag_suggestion_limit": AutotagConfig.SUGGESTION_LIMIT,
                         "cpu_count": PromptManagerConfig.max_worker_threads(),
                         "gallery_root_paths": root_paths,
                         "gallery_root_path": root_paths[0] if root_paths else "",
@@ -425,7 +502,12 @@ class SettingsRoutesMixin:
         """
         from ..config import GalleryConfig, PromptManagerConfig
 
+        from ..config import AutotagConfig
+
         for name, value in updates.items():
+            if name in _AUTOTAG_SETTINGS:
+                setattr(AutotagConfig, name[len(_AUTOTAG_PREFIX) :], value)
+                continue
             owner = GalleryConfig if name in _GALLERY_SETTINGS else PromptManagerConfig
             setattr(owner, name, value)
         restart_fields = []
@@ -564,6 +646,7 @@ class SettingsRoutesMixin:
             updates["THUMBNAIL_EDGE"] = thumbnail_settings.validate_edge(
                 data["thumbnail_edge"]
             )
+        updates.update(_validate_autotag_settings(data))
         return updates
 
     def _parse_gallery_roots(self, data):

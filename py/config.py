@@ -563,17 +563,91 @@ class IntegrationConfig:
 DEFAULT_SUGGESTION_LIMIT = 10
 MAX_SUGGESTION_LIMIT = 100  # pinned to MAX_IMAGE_TAGS by tests/test_config.py
 
+# The tagging engines, options, template and validators (server-free, #328).
+try:
+    from .tagging_defaults import (  # noqa: F401 - re-exported
+        DEFAULT_TAG_TEMPLATE,
+        EXISTING_POLICIES,
+        LLM_MODEL_TYPES,
+        MAX_INSTRUCTION_BYTES,
+        MAX_INSTRUCTION_CHARS,
+        MODEL_TYPES,
+        WD14_MODEL_TYPES,
+        validate_saved_threshold,
+        validate_template,
+        validate_threshold,
+    )
+except ImportError:
+    from py.tagging_defaults import (  # noqa: F401 - re-exported
+        DEFAULT_TAG_TEMPLATE,
+        EXISTING_POLICIES,
+        LLM_MODEL_TYPES,
+        MAX_INSTRUCTION_BYTES,
+        MAX_INSTRUCTION_CHARS,
+        MODEL_TYPES,
+        WD14_MODEL_TYPES,
+        validate_saved_threshold,
+        validate_template,
+        validate_threshold,
+    )
+
+
+def _valid_model_type(value: Any) -> str:
+    if not isinstance(value, str) or value not in MODEL_TYPES:
+        raise ValueError("must be one of " + ", ".join(sorted(MODEL_TYPES)))
+    return value
+
+
+def _valid_existing(value: Any) -> str:
+    if not isinstance(value, str) or value not in EXISTING_POLICIES:
+        raise ValueError("must be one of " + ", ".join(EXISTING_POLICIES))
+    return value
+
+
+def _valid_suggestion_limit(value: Any) -> int:
+    if type(value) is not int or not 1 <= value <= MAX_SUGGESTION_LIMIT:
+        raise ValueError(f"must be an integer from 1 to {MAX_SUGGESTION_LIMIT}")
+    return value
+
 
 class AutotagConfig:
     """Persisted tagging defaults under ``autotag.defaults`` in config.json.
 
-    ``suggestion_limit`` is how many suggestions Generate returns (the top N
-    by score), an integer in ``1..MAX_SUGGESTION_LIMIT``. A hand-edited value
-    outside that range, or of another type, falls back to the default with a
-    warning rather than failing the load.
+    One tagging configuration (#328): the model, what a batch does with
+    prompts already tagged, the two WD14 thresholds, the language-model
+    template and how many suggestions Generate returns. Each key is checked
+    alone on load; a hand-edited value that fails its check falls back to
+    its default with one warning rather than failing the load.
     """
 
+    MODEL_TYPE = "wd14-swinv2"
+    EXISTING = "skip"
+    GENERAL_THRESHOLD = 0.35
+    CHARACTER_THRESHOLD = 0.85
+    TEMPLATE = DEFAULT_TAG_TEMPLATE
     SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
+
+    # config.json key -> (attribute, validator, default)
+    _KEYS = {
+        "model_type": ("MODEL_TYPE", _valid_model_type, "wd14-swinv2"),
+        "existing": ("EXISTING", _valid_existing, "skip"),
+        "general_threshold": (
+            "GENERAL_THRESHOLD",
+            lambda v: validate_saved_threshold("value", v),
+            0.35,
+        ),
+        "character_threshold": (
+            "CHARACTER_THRESHOLD",
+            lambda v: validate_saved_threshold("value", v),
+            0.85,
+        ),
+        "template": ("TEMPLATE", validate_template, DEFAULT_TAG_TEMPLATE),
+        "suggestion_limit": (
+            "SUGGESTION_LIMIT",
+            _valid_suggestion_limit,
+            DEFAULT_SUGGESTION_LIMIT,
+        ),
+    }
 
     @classmethod
     def suggestion_limit(cls) -> int:
@@ -587,7 +661,14 @@ class AutotagConfig:
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
-        return {"defaults": {"suggestion_limit": cls.SUGGESTION_LIMIT}}
+        """The saved defaults; the template only when it is not the built-in
+        one, so a later built-in template still reaches who never set one."""
+        defaults = {
+            key: getattr(cls, attr) for key, (attr, _v, _d) in cls._KEYS.items()
+        }
+        if defaults["template"] == DEFAULT_TAG_TEMPLATE:
+            del defaults["template"]
+        return {"defaults": defaults}
 
     @classmethod
     def update_config(cls, new_config: Any) -> None:
@@ -598,17 +679,18 @@ class AutotagConfig:
         if not isinstance(defaults, dict):
             config_logger.warning("Ignoring autotag.defaults that is not an object")
             return
-        if "suggestion_limit" not in defaults:
-            return
-        value = defaults["suggestion_limit"]
-        if cls.valid_suggestion_limit(value):
-            cls.SUGGESTION_LIMIT = value
-            return
-        config_logger.warning(
-            "autotag.defaults.suggestion_limit must be an integer from 1 to "
-            f"{MAX_SUGGESTION_LIMIT}; using {DEFAULT_SUGGESTION_LIMIT}"
-        )
-        cls.SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
+        for key, (attr, validate, default) in cls._KEYS.items():
+            if key not in defaults:
+                continue
+            try:
+                setattr(cls, attr, validate(defaults[key]))
+            except ValueError as error:
+                config_logger.warning(
+                    f"autotag.defaults.{key} {error}; using {default!r}"
+                    if key != "template"
+                    else f"autotag.defaults.template {error}; using the built-in one"
+                )
+                setattr(cls, attr, default)
 
 
 class PromptManagerConfig:

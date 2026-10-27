@@ -32,6 +32,7 @@ from PIL import Image  # noqa: E402
 
 import py.api.images as images_module  # noqa: E402
 import py.api.thumbnail_auto as auto  # noqa: E402
+from tests.background_stops import close_handler, stop_monitor  # noqa: E402
 from py.api.jobs import THUMBNAILS_JOB_KIND  # noqa: E402
 
 SERVE = "/prompt_manager/images/serve/"
@@ -737,10 +738,26 @@ class TestShutdown(AutoThumbnailCase):
             patch.object(auto, "CLOSE_WAIT_SECONDS", 0),
             self.assertLogs("prompt_manager.api", "WARNING") as logs,
         ):
-            self.api.close_auto_thumbnails()
+            self.assertFalse(self.api.close_auto_thumbnails())
         process.kill.assert_called_once()
         self.assertIn("still running", "\n".join(logs.output))
         release.set()
+
+    async def test_close_reports_an_ended_worker(self):
+        path = make_png(self.output_dir / "a.png", size=(64, 64))
+        self.api.queue_capture_thumbnail(str(path))
+        worker = self.api._auto_thumbnails()._worker
+        await self._idle()
+        loop = asyncio.get_running_loop()
+        closed = await loop.run_in_executor(
+            None, lambda: self.api.close_auto_thumbnails(timeout=WAIT)
+        )
+        self.assertTrue(closed)
+        self.assertFalse(worker.is_alive())
+
+    def test_close_without_a_thumbnailer_returns_true(self):
+        self.assertIsNone(self.api._auto_thumbnailer)
+        self.assertTrue(self.api.close_auto_thumbnails())
 
 
 class TestHistorySharesTheAdmission(AutoThumbnailCase):
@@ -980,6 +997,7 @@ class TestMonitorQueuesThumbnails(AutoThumbnailCase):
         from utils.image_monitor import ImageGenerationHandler
 
         handler = ImageGenerationHandler(self.api.db, unittest.mock.MagicMock())
+        self.addCleanup(close_handler, self, handler)
         handler.processing_delay = 0
         handler.settle_interval = 0
         return handler
@@ -1022,7 +1040,7 @@ class TestMonitorQueuesThumbnails(AutoThumbnailCase):
             monitor.set_thumbnail_queue(None)
             self.assertIsNone(monitor.handler.thumbnail_queue)
         finally:
-            monitor.stop_monitoring()
+            stop_monitor(self, monitor)
 
 
 class TestScanHandsOffThumbnails(AutoThumbnailCase):

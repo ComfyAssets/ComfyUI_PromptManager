@@ -19,8 +19,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PIL import Image
 
-from py import autotag
-from py.autotag import MODELS, AutoTagService
+# py.autotag reads its saved defaults from py.config, which imports ComfyUI's
+# ``server`` at load: stand in for it when this module runs alone.
+_mock_server = MagicMock()
+_mock_server.PromptServer.instance.routes = MagicMock()
+sys.modules.setdefault("server", _mock_server)
+
+from py import autotag  # noqa: E402
+from py.autotag import MODELS, AutoTagService  # noqa: E402
+from py.config import AutotagConfig  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -254,12 +261,19 @@ class TestWd14Thresholding(EngineTestCase):
         self.assertEqual(list(feeds.keys()), ["input"])
         self.assertEqual(tuple(feeds["input"].shape), (1, 8, 8, 3))
 
-    def test_service_threshold_setters_clamp(self):
-        service = self._loaded([0.0] * 6)
-        service.wd14_general_threshold = 1.7
-        service.wd14_character_threshold = -2
-        self.assertEqual(service.wd14_general_threshold, 1.0)
-        self.assertEqual(service.wd14_character_threshold, 0.0)
+    def test_service_thresholds_are_the_saved_defaults(self):
+        # #328: one configuration; the service has no thresholds of its own.
+        service = self._loaded([0.9, 0.3, 0.8, 0.99, 0.99, 0.5])
+        with (
+            patch.object(AutotagConfig, "GENERAL_THRESHOLD", 0.25),
+            patch.object(AutotagConfig, "CHARACTER_THRESHOLD", 0.75),
+        ):
+            self.assertEqual(
+                (service.wd14_general_threshold, service.wd14_character_threshold),
+                (0.25, 0.75),
+            )
+            tags = service.generate_tags(str(self.image_path))
+        self.assertEqual(tags, ["1girl", "hatsune_miku", "long_hair", "smile"])
 
 
 class TestGgufNormalisation(EngineTestCase):
@@ -369,10 +383,13 @@ class TestTagSuggestions(EngineTestCase):
 
     def test_thresholds_default_to_the_service_values(self):
         service = self._wd14()
-        service.wd14_general_threshold = 0.95
-        service.wd14_character_threshold = 0.95
-
-        suggestions = service.generate_tag_suggestions(str(self.image_path), limit=10)
+        with (
+            patch.object(AutotagConfig, "GENERAL_THRESHOLD", 0.95),
+            patch.object(AutotagConfig, "CHARACTER_THRESHOLD", 0.95),
+        ):
+            suggestions = service.generate_tag_suggestions(
+                str(self.image_path), limit=10
+            )
 
         self.assertEqual(suggestions, [("sandstone", 0.98), ("desert", 0.96)])
 

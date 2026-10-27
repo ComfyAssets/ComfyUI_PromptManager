@@ -246,7 +246,7 @@ test('unavailable model shows inline status and never downloads', async ({ page,
     await expect(await request.post('/__test__/tagging/models', { data: { unavailable: ['wd14-swinv2'] } })).toBeOK();
     await openTag(page);
     expect((await generated(page)).status()).toBe(409);
-    await expect(status(page)).toHaveText('WD14 SwinV2 is not downloaded. Download it from the legacy Auto-tag page.');
+    await expect(status(page)).toHaveText('WD14 SwinV2 is not downloaded. Download it in System › Auto-tagging.');
     await expect(chips(page)).toHaveCount(0);
     await expect(dialog(page).locator('#suggestion-count')).toHaveText('Not generated');
     // D116: Retry leads the actions while the controller allows it, and generates again.

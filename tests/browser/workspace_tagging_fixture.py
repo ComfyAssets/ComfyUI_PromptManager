@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -181,6 +182,28 @@ def register_tagging_commands(
     routes: web.RouteTableDef, api: PromptManagerAPI, root: Path, model
 ) -> None:
     """Register fixed seed, snapshot and fake-model commands; no paths or SQL input."""
+    # The fake download (``/__test__/tagging/download``): waits on ``event``,
+    # then answers ``result``. Every reset sets the event and puts back the
+    # model's raising default, so no test can leave a worker hanging.
+    # ``generation`` grows on every reset: a download a reset released (or one
+    # that timed out) fails without touching the next test's model state.
+    download = {"event": threading.Event(), "result": True, "generation": 0}
+
+    def restore_download() -> None:
+        download["generation"] += 1
+        download["event"].set()
+        model.__dict__.pop("download_model", None)
+
+    def fake_download(model_type: str, progress_callback=None) -> bool:
+        event, generation = download["event"], download["generation"]
+        released = event.wait(DOWNLOAD_HOLD_LIMIT_S)
+        if not released or download["generation"] != generation:
+            return False
+        if download["result"]:
+            model.unavailable = model.unavailable - {model_type}
+        return download["result"]
+
+    _set_defaults(model, DEFAULTS)  # the server starts on the standard ones
 
     @routes.post("/__test__/tagging/reset")
     async def reset(request: web.Request) -> web.Response:
@@ -195,6 +218,7 @@ def register_tagging_commands(
         model.unavailable = set()
         model.suggestions = None
         model.loaded = None
+        restore_download()
         _set_defaults(model, DEFAULTS)
         # A test that ends with the dialog open leaves its capture behind; drop
         # every capture so the next test starts below the store's limits.
@@ -221,6 +245,33 @@ def register_tagging_commands(
         ):
             raise web.HTTPBadRequest()
         model.unavailable = set(data["unavailable"])
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/tagging/download")
+    async def download_mode(request: web.Request) -> web.Response:
+        """Switch the model's download to a fake (never a real download).
+
+        ``{"mode": "hold"}``: the next download waits until a later
+        ``succeed`` or ``fail`` (or a reset) releases it. ``succeed`` and
+        ``fail`` release a held download with that result and answer every
+        later one at once. A successful fake marks the model downloaded.
+        """
+        data = await request.json() if request.can_read_body else None
+        if (
+            request.query
+            or not isinstance(data, dict)
+            or set(data) != {"mode"}
+            or data["mode"] not in ("hold", "succeed", "fail")
+        ):
+            raise web.HTTPBadRequest()
+        if data["mode"] == "hold":
+            download["event"].set()
+            download["event"] = threading.Event()
+            download["result"] = True
+        else:
+            download["result"] = data["mode"] == "succeed"
+            download["event"].set()
+        model.download_model = fake_download
         return web.json_response({"success": True})
 
     @routes.post("/__test__/tagging/suggestions")
@@ -273,18 +324,28 @@ def register_tagging_commands(
         return web.json_response({"captures": count})
 
 
+# A held fake download gives up after this long, whatever the test does.
+DOWNLOAD_HOLD_LIMIT_S = 60
+
 # The standard tagging defaults: WD14 general and character thresholds, and
 # the suggestion count (``AutotagConfig``).
 DEFAULTS = (0.35, 0.85, 10)
 
 
 def _set_defaults(model, values) -> None:
+    """Set the saved tagging defaults (``AutotagConfig``, #328); a reset also
+    puts back the saved model, batch policy and template (the fake model's
+    short instructions, which the concept comparisons show)."""
     from py.config import AutotagConfig
 
     general, character, limit = values
-    model.wd14_general_threshold = general
-    model.wd14_character_threshold = character
+    AutotagConfig.GENERAL_THRESHOLD = general
+    AutotagConfig.CHARACTER_THRESHOLD = character
     AutotagConfig.SUGGESTION_LIMIT = limit
+    if values == DEFAULTS:
+        AutotagConfig.MODEL_TYPE = "wd14-swinv2"
+        AutotagConfig.EXISTING = "skip"
+        AutotagConfig.TEMPLATE = model.default_prompt
 
 
 def _valid_defaults(data: object) -> bool:

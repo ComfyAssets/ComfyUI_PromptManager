@@ -129,9 +129,9 @@ test('a model that is not downloaded is named with the server sentence', () => {
     const { modelUnavailable } = state;
     assert.equal(modelUnavailable(null, 'wd14-vit'), '');
     assert.equal(modelUnavailable({ 'wd14-vit': { downloaded: true } }, 'wd14-vit'), '');
-    assert.equal(modelUnavailable({ 'wd14-vit': { downloaded: false } }, 'wd14-vit'), 'WD14 ViT is not downloaded. Download it from the legacy Auto-tag page.');
+    assert.equal(modelUnavailable({ 'wd14-vit': { downloaded: false } }, 'wd14-vit'), 'WD14 ViT is not downloaded. Download it in System › Auto-tagging.');
     assert.equal(modelUnavailable({ gguf: { downloaded: false, name: 'GGUF (Recommended)' } }, 'gguf'),
-        'GGUF (Recommended) is not downloaded. Download it from the legacy Auto-tag page.');
+        'GGUF (Recommended) is not downloaded. Download it in System › Auto-tagging.');
     assert.throws(() => modelUnavailable({}, 'nope'), TypeError);
 });
 

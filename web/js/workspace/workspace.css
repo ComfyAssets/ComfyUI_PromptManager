@@ -432,3 +432,10 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 @media (max-width: 700px) {
   #workspace-main .setting-row :is(#send-destination, #renderer) { max-width: 160px !important; /* D106 */ }
 }
+/* D132: at phone width the concept's 120px cap cuts every engine label ("WD14 SwinV2 · ~400 MB"); the Tagging model
+   select alone keeps its natural width there (its widest engine label) and, with no room beside the row text, wraps
+   under it. */
+@media (max-width: 700px) {
+  #workspace-main .setting-row:has(> #tag-model) { flex-wrap: wrap; /* D132 */ }
+  #workspace-main .setting-row #tag-model { flex-shrink: 0; max-width: 100% !important; /* D132 */ }
+}

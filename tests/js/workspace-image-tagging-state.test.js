@@ -197,6 +197,52 @@ test('instructions default to the server prompt', async () => {
     assert.equal(c.state.options.suggestion_limit, 7, 'the suggestion count survives a model change');
 });
 
+// #328: one tagging configuration. The dialogs start on the model saved in System › Auto-tagging, unless a preset
+// (a review session's choice) or the user already picked one; an unknown saved model keeps the first option.
+test('dialog starts on the saved model unless a preset or the user chose one', async () => {
+    const saved = { [`GET ${MODELS}`]: () => response(200, models({ model_type: 'gguf' })) };
+    const { c } = await opened(saved);
+    assert.equal(c.state.model, 'gguf');
+    assert.equal(c.state.options.instructions, DEFAULT_PROMPT);
+
+    const { c: preset } = await opened(saved, { preset: { model: 'wd14-vit', options: {} } });
+    assert.equal(preset.state.model, 'wd14-vit');
+
+    const { createImageTaggingController, createTaggingOptionsController } = await load();
+    const h = harness(defaultRoutes(saved));
+    const picked = createImageTaggingController({ api: h.api, target: TARGET, source: 'images' });
+    picked.setModel('hf');
+    await picked.open();
+    await settle();
+    assert.equal(picked.state.model, 'hf', 'the user picked a model before the read landed');
+
+    // A pick made while the models read is still in flight wins over the saved model that lands after it.
+    const gate = deferred();
+    const late = harness(defaultRoutes({ [`GET ${MODELS}`]: () => gate.promise }));
+    const racing = createImageTaggingController({ api: late.api, target: TARGET, source: 'images' });
+    const opening = racing.open();
+    await settle();
+    assert.equal(racing.state.phase, 'observing');
+    racing.setModel('wd14-vit');
+    gate.resolve(response(200, models({ model_type: 'gguf' })));
+    await opening;
+    await settle();
+    assert.equal(racing.state.model, 'wd14-vit');
+    racing.dispose();
+
+    const { c: unknown } = await opened({ [`GET ${MODELS}`]: () => response(200, models({ model_type: 'wd14-convnext' })) });
+    assert.equal(unknown.state.model, 'wd14-swinv2');
+
+    const options = createTaggingOptionsController({ api: harness(defaultRoutes(saved)).api });
+    await options.open();
+    assert.equal(options.state.model, 'gguf');
+    const chosen = createTaggingOptionsController({ api: harness(defaultRoutes(saved)).api });
+    chosen.setModel('wd14-vit');
+    await chosen.open();
+    assert.equal(chosen.state.model, 'wd14-vit');
+    for (const controller of [c, preset, picked, unknown, options, chosen]) controller.dispose();
+});
+
 test('an unreadable or malformed models read falls back to the documented defaults', async () => {
     for (const route of [() => fail(500, null), () => response(200, models({ default_prompt: 4, suggestion_limit: 0, wd14_general_threshold: 2, wd14_character_threshold: 'x' }))]) {
         const { c } = await opened({ [`GET ${MODELS}`]: route });
@@ -542,7 +588,7 @@ test('model-unavailable and model-busy set the status line only', async () => {
     await c.generate();
     const before = c.state;
     for (const [code, message] of [
-        ['model-unavailable', 'WD14 SwinV2 is not downloaded. Download it from the legacy Auto-tag page.'],
+        ['model-unavailable', 'WD14 SwinV2 is not downloaded. Download it in System › Auto-tagging.'],
         ['model-busy', 'A tagging model is busy with another operation. Try again when it finishes.'],
         ['unsupported-media', 'Images larger than 4096 px per side or 16,777,216 px are not supported.'],
     ]) {

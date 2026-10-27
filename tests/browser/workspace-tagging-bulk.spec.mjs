@@ -17,7 +17,7 @@ const chips = page => modal(page).locator('#tag-suggestions .chip.tag-suggestion
 const actionButtons = page => modal(page).locator('.dialog-actions button');
 const panel = page => page.getByRole('complementary', { name: 'Selected image details', exact: true });
 const tagRow = page => panel(page).locator('.detail-inner > .tags').last();
-const NOT_DOWNLOADED = 'WD14 SwinV2 is not downloaded. Download it from the legacy Auto-tag page.';
+const NOT_DOWNLOADED = 'WD14 SwinV2 is not downloaded. Download it in System › Auto-tagging.';
 
 test.beforeEach(async ({ page, request, browserName }) => {
     await startCoverage(page, browserName);
