@@ -3103,25 +3103,39 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   the persisted count the Tag image dialog's Suggestions field (D91) starts from. Pinned
   by the comparison's mapping (it inserts the row) and `defaults save through Save
   preferences and the Tag image dialog uses them`.
-- **D134** (Auto-tagging, S11, OQ2/OQ3/OQ7/OQ8): an `.operation` "Tag output images"
-  with "Review" follows `.row-actions`: the legacy prompt-tag batch. Review is
+- **D134** (Auto-tagging, S11, OQ2/OQ3/OQ7/OQ8; amended by #379): an `.operation` "Tag
+  output images" with "Review" follows `.row-actions`: the per-image batch (#379), whose
+  description reads "Tag each output image from its own pixels with the model above.
+  Prompts are not changed. Review the scope first.". Review is
   `aria-disabled` (the press explains) while the chosen engine is not downloaded or a
   value it uses is invalid; otherwise it posts `/autotag/batch/preview` with the drafted
   engine and policy (read-only) and opens "Review tag output images" in the concept's
   record-changing review (its `maintenancePlan` shell): `h3` "Tag output images", the
-  `dl.meta-grid` Model, Existing tags, Images linked, Prompts, Already tagged, Prompts
-  to tag ("up to N"), Settings ("General <g> · Character <c>" or "Template of N
-  characters") and Backup, the upper-bound sentence in the `p.small`, the D55 backup box
-  and Cancel / "Start tagging", which starts the cancellable `autotag` job and opens it.
-  Replace after review, a model not on disk, a short disk, no linked image and nothing to
-  tag each show the rows with only Cancel and the reason ("Replacing tags needs a review
-  of each image. Use Preview tagging review, or choose Skip or Merge for a batch run.",
-  "Every prompt with an output image is already tagged.", "Not enough free disk space:
-  the safety backup needs about X MB and Y MB is free. Nothing is written until there is
-  room.") in the close-only review Integrations shares (`openCloseOnlyReview`). Pinned by
+  `dl.meta-grid` Model, Existing tags, Images, Already auto-tagged, Images to tag
+  ("about N"), Time, Settings ("General <g> · Character <c>" or "Template of N
+  characters", then " · up to L tags per image" with the preview's saved
+  `suggestion_limit`) and Backup, the estimate sentence ("Nothing is written until you
+  start. The number to tag is an estimate: images changed since they were tagged are
+  tagged again, and missing files are skipped. Activity reports what was tagged.") in the
+  `p.small`, the D55 backup box and Cancel / "Start tagging", which starts the
+  cancellable `autotag` job and opens it. Time (DEC11) is `m = max(1,
+  ceil(estimate_seconds / 60))` read "about m min" under 90 and "about H h M min" (or
+  "about H h") from 90, followed by " on a processor; a graphics card can be faster."
+  or, when the preview says WD14 runs on CUDA, " on the graphics card."; the language
+  models read "Language-model engines take longer per image. Activity shows the time
+  left once tagging starts.". The option label "Skip already tagged" is the concept's;
+  for this batch it skips images already auto-tagged (hand tags do not count). Replace
+  after review, a model not on disk, a short disk, no image and nothing to tag each show
+  the rows with only Cancel and the reason ("Replacing tags needs a review of each
+  image. Use Preview tagging review, or choose Skip or Merge for a batch run.", "The
+  output folders contain no images to tag.", "Every output image is already
+  auto-tagged.", "Not enough free disk space: the safety backup needs about X MB and Y
+  MB is free. Nothing is written until there is room.") in the close-only review
+  Integrations shares (`openCloseOnlyReview`). Pinned by
   `tag output images review matches the concept`, its mutation check and `the
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
-  the batch tests of workspace-system-tagging.spec.
+  the batch tests of workspace-system-tagging.spec; the mutation check renames each grid
+  label in turn.
 - **D124** (inspector): with "Load metadata on selection" off, the Images panel and
   the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
   button instead of reading the file. The concept has no such state, so no concept
@@ -3680,19 +3694,45 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   `409 busy`; the legacy SSE route attaches to the same job and keeps its frames.
 - **Unload**: `POST /prompt_manager/autotag/unload` answers `{success, message}` or
   `409 model-busy`.
-- **Tag output images**: `POST /prompt_manager/autotag/batch/preview {model_type,
-  existing}` writes nothing and opens no file; it answers `images`, `prompts`,
-  `already_tagged`, `to_tag` (an upper bound), `model {type, label, size_label,
-  downloaded}`, `existing`, `review_required`, `backup {policy}` and `disk`. `POST
+- **Tag output images** (per image since #379; prompt tags and prompt text are never
+  written): its targets are every still image the output folders list (the Images
+  listing of each root, linked to a prompt or not; videos are not targets; a file under
+  two overlapping roots is one target). `POST /prompt_manager/autotag/batch/preview
+  {model_type, existing}` writes nothing and opens or stats no image file (it may wait
+  for the shared listing walk); it answers `images`, `already_tagged` (images with any
+  auto-tagged byte record), `to_tag` (`images − already_tagged` under Skip, `images`
+  under Merge; both estimates), `estimate_seconds` (WD14: `to_tag` × 1.6 s on the
+  processor or × `WD14_GPU_SECONDS_PER_IMAGE` when ONNX Runtime offers CUDA, see
+  `py/tagging_defaults.py`; `null` for GGUF and HF), `estimate_device` (`cpu`, `gpu`,
+  or `null`), `suggestion_limit` (the saved count the run uses), `model {type, label,
+  size_label, downloaded}`, `existing`, `review_required`, `backup {policy}` and
+  `disk`. `POST
   /prompt_manager/jobs/autotag {model_type, existing, options}` (WD14: both thresholds;
   GGUF/HF: `instructions`, the template) starts the cancellable `autotag` job (202),
   title "Tag output images", admission `records`, a safety backup by the policy first.
+  The job runs the `image-tags` loop (`_tag_each_file`) on each image: a capture, at
+  most `suggestion_limit` model tags, a re-hash, then a union into that image's tags
+  that also marks its bytes auto-tagged (`media_image_autotags`, one row per byte
+  record; an empty result and an unsupported still are marked too; File changed, File
+  not found, Too large to verify, read, inference and tag-limit errors are not). Phases,
+  each checked for Cancel: backup, model load, listing ("Listing output images…"), a
+  pre-pass that stats each file without opening it (gone: "File not found", over 256
+  MiB: "Too large to verify", under Skip a marked current record: "Already
+  auto-tagged"; counted with `record_counted`, rows up to the cap, no log line each),
+  then the loop ("Processing file {k + n} of {T}", the time left from the model's own
+  rate, D56 unchanged). It ends "Tagged N images", "Cancelled. Tags already added were
+  kept.", or failed with "Prompt storage was restored; start the job again.", "The
+  output folders could not be listed. Try again." or the model's refusal.
   Refusals: `400 review-required` (Replace after review never runs as a batch), `409
   model-unavailable` ("<label> is not downloaded. Download it in System ›
   Auto-tagging."), `507 insufficient-space`, `409 busy`, `409 model-busy`. The section
   toasts `model-busy` with its operation, the other three with the server's sentence,
   `busy` with the running job (D57), anything else "<what> could not start. Try again.".
   Outcomes: Tagged / Unchanged / Skipped / Errors (the `image-tags` descriptor, D111).
+  `tests/test_autotag_batch.py` pins it, including two images of one prompt getting
+  different tags with no `prompts` or `prompt_tags` row changed; the marks' schema group
+  is pinned by `tests/test_autotag_schema.py` (forward-only: one empty `WITHOUT ROWID`
+  table, optional in old backups, refused without the annotation group).
 
 No browser test downloads or runs a model: the injected `TestModel` answers, its
 `download_model` raises unless `/__test__/tagging/download {mode: hold | succeed |

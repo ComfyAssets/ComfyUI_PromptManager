@@ -13,7 +13,23 @@ LLM_MODEL_TYPES = frozenset({"gguf", "hf"})
 MODEL_TYPES = WD14_MODEL_TYPES | LLM_MODEL_TYPES
 MAX_INSTRUCTION_CHARS = 4000
 MAX_INSTRUCTION_BYTES = 16 * 1024
-# What a batch does with a prompt that already has tags (#328).
+# Tag output images' review estimate (#379): seconds per image for the WD14
+# engines, by where ONNX Runtime runs them. The processor figure is an upper
+# bound from the maintainer's cancelled CPU run (19 min / 697 images, backup,
+# model load and skips included). The graphics card figure is provisional
+# until PR 1's manual check measures Auto-tag selected on 100 images with CUDA;
+# it is corrected there when the measurement is off by more than a quarter.
+# The language-model engines have no figure.
+WD14_SECONDS_PER_IMAGE = 1.6
+WD14_GPU_SECONDS_PER_IMAGE = 0.25
+
+
+def wd14_seconds_per_image(device: str) -> float:
+    """The estimate's rate for ``"gpu"`` or ``"cpu"`` (anything else)."""
+    return WD14_GPU_SECONDS_PER_IMAGE if device == "gpu" else WD14_SECONDS_PER_IMAGE
+
+
+# What a batch does with an image that already has tags (#328, #379).
 EXISTING_POLICIES = ("skip", "merge", "replace_after_review")
 
 # The language-model tag template every page starts from until one is saved.

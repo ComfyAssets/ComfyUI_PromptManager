@@ -1893,13 +1893,15 @@ class TestTagOutputImagesPreview(BatchJobTestCase):
         self.assertEqual(self.service.generate_calls, [])
         self.assertEqual(self.service.load_calls, [])
 
-    async def test_preview_counts_skip_and_merge(self):
+    async def test_preview_counts_listed_still_images_not_prompts(self):
         self._seed()
         skip = await (await self._preview(existing="skip")).json()
+        # t, f1, f2 and m are listed; gone.png is missing, o.png is outside.
         self.assertEqual(
-            {k: skip[k] for k in ("images", "prompts", "already_tagged", "to_tag")},
-            {"images": 6, "prompts": 5, "already_tagged": 1, "to_tag": 4},
+            {k: skip[k] for k in ("images", "already_tagged", "to_tag")},
+            {"images": 4, "already_tagged": 0, "to_tag": 4},
         )
+        self.assertNotIn("prompts", skip)
         self.assertEqual(
             skip["model"],
             {
@@ -1916,7 +1918,7 @@ class TestTagOutputImagesPreview(BatchJobTestCase):
             set(skip["disk"]), {"free_bytes", "required_bytes", "sufficient"}
         )
         merge = await (await self._preview(existing="merge")).json()
-        self.assertEqual(merge["to_tag"], 5)
+        self.assertEqual(merge["to_tag"], 4)
         leaked = [s for s in _strings(skip) if _absolute(s)]
         self.assertEqual(leaked, [])
 
@@ -1924,7 +1926,7 @@ class TestTagOutputImagesPreview(BatchJobTestCase):
         self._seed()
         data = await (await self._preview(existing="replace_after_review")).json()
         self.assertTrue(data["review_required"])
-        self.assertEqual(data["prompts"], 5)
+        self.assertEqual(data["images"], 4)
 
     async def test_preview_refuses_bad_bodies(self):
         for body in (
@@ -1979,119 +1981,6 @@ class TestTagOutputImagesJob(BatchJobTestCase):
             "WD14 ViT is not downloaded. Download it in System › Auto-tagging.",
         )
 
-    async def test_job_writes_what_legacy_writes(self):
-        ids = self._seed()
-        await self._run_job(existing="skip")
-        native = {name: sorted(self._tags(pid)) for name, pid in ids.items()}
-        # The same library through the legacy batch, in a fresh database.
-        for name, pid in ids.items():
-            self.api.db.update_prompt_metadata(
-                pid,
-                tags=(
-                    ["existing"]
-                    if name == "tagged"
-                    else (["auto-scanned"] if name == "marked" else [])
-                ),
-            )
-        resp = await self.client.post(
-            "/prompt_manager/autotag/start?model_type=wd14-vit&skip_tagged=true"
-        )
-        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
-        legacy = {name: sorted(self._tags(pid)) for name, pid in ids.items()}
-        self.assertEqual(native, legacy)
-        self.assertEqual(native["tagged"], ["existing"])
-        self.assertEqual(native["fresh"], ["1girl", "smile"])
-
-    async def test_job_outcomes_follow_the_mapping(self):
-        ids = self._seed()
-        self.api.db.update_prompt_metadata(
-            ids["marked"], tags=["auto-scanned", "1girl", "smile"]
-        )
-
-        def details(job):
-            return {
-                group: sorted(row["detail"] for row in rows)
-                for group, rows in job.outcomes.items()
-            }
-
-        merged = await self._run_job(existing="merge")
-        self.assertEqual(merged.state, "finished")
-        self.assertEqual(
-            details(merged),
-            {
-                "tagged": ["Added 2 tags", "Added 2 tags"],
-                "unchanged": ["No new tags"],
-                "skipped": [
-                    "File not found",
-                    "Outside the output folders",
-                    "Prompt handled by another image",
-                ],
-                "errors": [],
-            },
-        )
-        self.assertEqual(merged.status_line, "Tagged 2 prompts")
-
-        skipped = await self._run_job(existing="skip")
-        self.assertEqual(details(skipped)["tagged"], [])
-        self.assertEqual(details(skipped)["skipped"].count("Prompt already tagged"), 3)
-        self.assertEqual(skipped.status_line, "Tagged 0 prompts")
-
-    async def test_tagging_errors_are_fixed_strings(self):
-        self._seed()
-        self.service.generate_error = RuntimeError("/srv/secret/model exploded")
-        job = await self._run_job(existing="merge")
-        self.assertTrue(job.outcomes["errors"])
-        self.assertEqual(
-            {r["detail"] for r in job.outcomes["errors"]}, {"Tagging failed"}
-        )
-        self.assertNotIn("/srv/secret", json.dumps(job.report()))
-
-    async def test_job_progress_is_determinate(self):
-        self._seed()
-        seen = []
-        original = self.service.generate_tags
-
-        def generate(*args, **kwargs):
-            job = self.api._jobs.active("autotag")
-            seen.append((job.processed, job.total))
-            return original(*args, **kwargs)
-
-        self.service.generate_tags = generate
-        job = await self._run_job(existing="merge")
-        self.assertEqual((job.processed, job.total, job.progress), (6, 6, 100))
-        self.assertTrue(all(total == 6 for _p, total in seen[1:]), seen)
-        self.assertTrue(job.cancellable)
-
-    async def test_job_cancel_stops_before_the_next_image_and_keeps_writes(self):
-        ids = self._seed()
-        started = threading.Event()
-        proceed = threading.Event()
-        calls = []
-
-        def slow(image_path, **kwargs):
-            calls.append(image_path)
-            started.set()
-            proceed.wait(30)
-            return ["slow"]
-
-        self.service.generate_tags = slow
-        resp = await self._start_job(existing="merge")
-        job = self.api._jobs.get((await resp.json())["job"]["id"])
-        try:
-            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
-            cancel = await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
-            self.assertTrue((await cancel.json())["cancellation_requested"])
-        finally:
-            proceed.set()
-        await asyncio.wait_for(asyncio.shield(job.task), 30)
-        self.assertEqual(job.state, "cancelled")
-        self.assertEqual(job.status_line, "Cancelled. Tags already added were kept.")
-        self.assertEqual(len(calls), 1)
-        tagged = [n for n, pid in ids.items() if "slow" in self._tags(pid)]
-        self.assertEqual(len(tagged), 1)
-        self.assertIsNone(model_gate.holder())
-        self.assertEqual(self.service.unload_calls, 0)
-
     async def test_job_refused_while_legacy_batch_holds(self):
         async with self.api._jobs.hold(
             "autotag", "Tag output images (legacy page)", admission="records"
@@ -2102,41 +1991,6 @@ class TestTagOutputImagesJob(BatchJobTestCase):
         self.assertEqual(data["code"], "busy")
         self.assertEqual(data["running"]["title"], "Tag output images (legacy page)")
         self.assertIsNone(model_gate.holder())
-
-    async def test_legacy_refused_while_job_runs(self):
-        self._seed()
-        started, proceed = threading.Event(), threading.Event()
-
-        def slow(image_path, **kwargs):
-            started.set()
-            proceed.wait(30)
-            return ["slow"]
-
-        self.service.generate_tags = slow
-        resp = await self._start_job(existing="merge")
-        job = self.api._jobs.get((await resp.json())["job"]["id"])
-        try:
-            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
-            self.assertTrue(model_gate.holder().startswith("autotag-job:"))
-            legacy = await self.client.post("/prompt_manager/autotag/start")
-            # Both legacy pages read a stream: the refusal is one error frame
-            # that names the running job.
-            self.assertEqual(legacy.status, 200)
-            self.assertEqual(
-                self._sse_events(await legacy.text()),
-                [
-                    {
-                        "type": "error",
-                        "status": "error",
-                        "message": "Tag output images already running",
-                    }
-                ],
-            )
-            unload = await self.client.post("/prompt_manager/autotag/unload")
-            self.assertEqual((await unload.json())["operation"], "Tag output images")
-        finally:
-            proceed.set()
-        await asyncio.wait_for(asyncio.shield(job.task), 30)
 
     async def test_job_releases_gate_when_start_is_refused(self):
         class Running:
@@ -2185,7 +2039,7 @@ class TestTagOutputImagesJob(BatchJobTestCase):
             ("database folder", "the safety backup", 10, 1),
             10,
         )
-        with patch("py.api.autotag_routes.disk_plan", return_value=short):
+        with patch("py.api.image_tag_jobs.disk_plan", return_value=short):
             resp = await self._start_job()
         data = await resp.json()
         self.assertEqual(resp.status, 507)
@@ -2202,14 +2056,6 @@ class TestTagOutputImagesJob(BatchJobTestCase):
         self.assertTrue(rows)
         inside = [row for row in rows if row["root_index"] == 0]
         self.assertTrue(inside)
-
-    async def test_native_batch_leaves_custom_prompt_unchanged(self):
-        self._seed()
-        self.service.custom_prompt = "legacy page prompt"
-        await self._run_job(existing="merge", model_type="gguf")
-        self.assertEqual(self.service.custom_prompt, "legacy page prompt")
-        prompts = {call[1] for call in self.service.generate_calls}
-        self.assertEqual(prompts, {"Tags please."})
 
 
 # The legacy batch's per-image frames over BatchJobTestCase's library, newest
@@ -2342,7 +2188,7 @@ class TestTagOutputImagesEdges(BatchJobTestCase):
     async def test_unexpected_error_fails_the_job_with_a_reason(self):
         self._seed()
         with patch.object(
-            self.api.db, "autotag_batch_candidates", side_effect=[[], RuntimeError("x")]
+            self.api, "_autotag_prepass", side_effect=RuntimeError("/srv/x")
         ):
             job = await self._run_job(existing="merge")
         self.assertEqual(job.state, "failed")

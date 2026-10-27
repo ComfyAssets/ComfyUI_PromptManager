@@ -315,22 +315,28 @@ test('Preview tagging review without a selection toasts the D115 sentence', asyn
     await expect(tagDialog(page)).toHaveCount(0);
 });
 
-test('Tag output images reviews the scope and starts a batch job', async ({ page, request }) => {
+test('Tag output images reviews the images, tags each one and never a prompt (#379)', async ({ page, request }) => {
     const before = await serverJson(request, '/__test__/tagging/snapshot');
     await openTagging(page);
-    // The fixture's one prompt is already tagged: under Merge it is tagged again with what its images give.
-    await page.locator('#tag-existing').selectOption('merge');
+    // The saved policy is Skip: no image is auto-tagged yet, so every listed still image is to tag.
     const previewed = page.waitForResponse(item => new URL(item.url()).pathname === PREVIEW_URL);
     await reviewButton(page).click();
     const answer = await previewed;
-    expect(answer.request().postDataJSON()).toEqual({ model_type: 'wd14-swinv2', existing: 'merge' });
+    expect(answer.request().postDataJSON()).toEqual({ model_type: 'wd14-swinv2', existing: 'skip' });
     const plan = await answer.json();
+    // Four still images (two linked, a copy, an unlinked one); the video is not a target.
+    expect([plan.images, plan.already_tagged, plan.to_tag]).toEqual([4, 0, 4]);
+    expect(plan.prompts).toBeUndefined();
     await expect(dialog(page).locator('#modal-title')).toHaveText('Review tag output images');
     await expect(dialog(page).locator('#modal-body > h3')).toHaveText('Tag output images');
-    expect(await gridOf(page)).toEqual([['Model', 'WD14 SwinV2 · ~400 MB'], ['Existing tags', 'Merge with existing'],
-        ['Images linked', String(plan.images)], ['Prompts', String(plan.prompts)], ['Already tagged', String(plan.already_tagged)],
-        ['Prompts to tag', `up to ${plan.to_tag}`], ['Settings', 'General 0.35 · Character 0.85'],
+    expect(await gridOf(page)).toEqual([['Model', 'WD14 SwinV2 · ~400 MB'], ['Existing tags', 'Skip already tagged'],
+        ['Images', '4'], ['Already auto-tagged', '0'], ['Images to tag', 'about 4'],
+        ['Time', 'about 1 min on a processor; a graphics card can be faster.'],
+        ['Settings', `General 0.35 · Character 0.85 · up to ${plan.suggestion_limit} tags per image`],
         ['Backup', 'Create and verify before changes']]);
+    await expect(dialog(page).locator('#modal-body > p.small')).toHaveText('Nothing is written until you start. The number to '
+        + 'tag is an estimate: images changed since they were tagged are tagged again, and missing files are skipped. '
+        + 'Activity reports what was tagged.');
     await expect(dialog(page).locator('#modal-body > .notice h3')).toHaveText('Back up the database first (recommended)');
     // The review wrote nothing.
     expect(await serverJson(request, '/__test__/tagging/snapshot')).toEqual(before);
@@ -338,15 +344,23 @@ test('Tag output images reviews the scope and starts a batch job', async ({ page
     const started = page.waitForResponse(item => new URL(item.url()).pathname === '/prompt_manager/jobs/autotag');
     await dialog(page).getByRole('button', { name: 'Start tagging', exact: true }).click();
     const start = await started;
-    expect(start.request().postDataJSON()).toEqual({ model_type: 'wd14-swinv2', existing: 'merge',
+    expect(start.request().postDataJSON()).toEqual({ model_type: 'wd14-swinv2', existing: 'skip',
         options: { general_threshold: 0.35, character_threshold: 0.85 } });
     const { job } = await start.json();
     await expect(page).toHaveURL(`${workspace}#/activity/${job.id}`);
     await expect(page.locator('#workspace-main h1')).toHaveText('Tag output images');
     const finished = await ended(request, job.id);
     expect(finished.state).toBe('finished');
-    const after = await serverJson(request, '/__test__/tagging/snapshot');
-    expect(after.prompt_tags.length).toBeGreaterThan(before.prompt_tags.length);
+    expect(finished.status_line).toBe('Tagged 4 images');
+    // Each image got its own tags; no prompt, pair or link row changed.
+    expect(await serverJson(request, '/__test__/tagging/snapshot')).toEqual(before);
+
+    // Under Skip every image is now auto-tagged: nothing to start.
+    await openTagging(page);
+    await reviewButton(page).click();
+    await expect(dialog(page).locator('#modal-body > p.small')).toHaveText('Every output image is already auto-tagged.');
+    expect((await gridOf(page)).slice(2, 5)).toEqual([['Images', '4'], ['Already auto-tagged', '4'], ['Images to tag', 'about 0']]);
+    await expect(dialog(page).locator('.dialog-actions button')).toHaveText(['Cancel']);
 });
 
 test('Replace after review shows only Cancel with the reason', async ({ page, request }) => {
@@ -355,18 +369,13 @@ test('Replace after review shows only Cancel with the reason', async ({ page, re
     await page.locator('#tag-existing').selectOption('replace_after_review');
     await reviewButton(page).click();
     await expect(dialog(page).locator('#modal-title')).toHaveText('Review tag output images');
-    expect((await gridOf(page)).map(([term]) => term)).toEqual(['Model', 'Existing tags', 'Images linked', 'Prompts', 'Already tagged',
-        'Prompts to tag', 'Settings', 'Backup']);
+    expect((await gridOf(page)).map(([term]) => term)).toEqual(['Model', 'Existing tags', 'Images', 'Already auto-tagged',
+        'Images to tag', 'Time', 'Settings', 'Backup']);
     await expect(dialog(page).locator('#modal-body > p.small')).toHaveText('Replacing tags needs a review of each image. '
         + 'Use Preview tagging review, or choose Skip or Merge for a batch run.');
     await expect(dialog(page).locator('.dialog-actions button')).toHaveText(['Cancel']);
     await dialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog(page)).toHaveCount(0);
-    // Under Skip the fixture's only prompt is already tagged: nothing to start either.
-    await page.locator('#tag-existing').selectOption('skip');
-    await reviewButton(page).click();
-    await expect(dialog(page).locator('#modal-body > p.small')).toHaveText('Every prompt with an output image is already tagged.');
-    await expect(dialog(page).locator('.dialog-actions button')).toHaveText(['Cancel']);
     expect(await serverJson(request, '/__test__/tagging/snapshot')).toEqual(before);
     expect((await serverJson(request, '/prompt_manager/jobs')).jobs.filter(item => item.kind === 'autotag')).toEqual([]);
 });

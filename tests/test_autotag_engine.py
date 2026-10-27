@@ -884,3 +884,29 @@ class TestImageConversion(EngineTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWd14Device(EngineTestCase):
+    """Where WD14 runs, for the Tag output images estimate (#379)."""
+
+    def test_loaded_session_answers_from_its_first_provider(self):
+        cpu = FakeOnnxSession([0.5] * len(WD14_TAGS))
+        service = self._service(("wd14", (cpu, WD14_TAGS)))
+        _touch_model_files(self.models_dir, "wd14-vit")
+        service.load_model("wd14-vit")
+        self.assertEqual(service.wd14_device(), "cpu")
+        cpu.get_providers = lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self.assertEqual(service.wd14_device(), "gpu")
+
+    def test_without_a_session_the_available_providers_answer(self):
+        service = self._service(None)
+        fake = types.SimpleNamespace(
+            get_available_providers=lambda: ["CUDAExecutionProvider"]
+        )
+        with patch.dict(sys.modules, {"onnxruntime": fake}):
+            self.assertEqual(service.wd14_device(), "gpu")
+        fake.get_available_providers = lambda: ["CPUExecutionProvider"]
+        with patch.dict(sys.modules, {"onnxruntime": fake}):
+            self.assertEqual(service.wd14_device(), "cpu")
+        with patch.dict(sys.modules, {"onnxruntime": None}):
+            self.assertEqual(service.wd14_device(), "cpu")

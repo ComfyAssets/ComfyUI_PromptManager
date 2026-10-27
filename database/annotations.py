@@ -19,6 +19,11 @@ links (``PromptDatabase._move_tag_links``).
 Cheap reads (spec amendment S1) treat a byte record as *current* only while
 the file's present ``(size, mtime_ns)`` equals the record's verified
 fingerprint; a file without a current record shows no image tags.
+
+A write made from a tagging model's result passes ``mark_autotagged`` (#379):
+the byte record is then marked auto-tagged (``media_image_autotags``) in the
+same transaction, so a mark never exists without the write it records. Hand
+tags never mark.
 """
 
 import re
@@ -34,6 +39,7 @@ from .annotation_schema import (
     MAX_LOCATOR_LENGTH,
     METADATA_TABLE,
 )
+from .autotag_schema import AUTOTAG_TABLE
 from .library_commands import _UUID, LibraryCommandError, _validate_epoch
 from .models import utc_now_iso
 from .vocabulary import validate_vocabulary_tag_name
@@ -95,6 +101,14 @@ _TAGS_OF = (
     f"SELECT mit.byte_id,t.name FROM {IMAGE_TAGS_TABLE} mit "  # nosec B608
     "JOIN tags t ON t.id=mit.tag_id WHERE mit.byte_id IN ({marks}) "
     "ORDER BY mit.byte_id,mit.position"
+)
+_MARK = f"INSERT OR IGNORE INTO {AUTOTAG_TABLE}(byte_id) VALUES(?)"  # nosec B608
+_MARKED_OF = (
+    f"SELECT byte_id FROM {AUTOTAG_TABLE} WHERE byte_id IN ({{marks}})"  # nosec B608
+)
+_MARKED_LOCATORS = (
+    f"SELECT DISTINCT f.locator FROM {AUTOTAG_TABLE} m "  # nosec B608
+    f"JOIN {BYTES_TABLE} b ON b.id=m.byte_id JOIN {FILES_TABLE} f ON f.id=b.file_id"
 )
 _RECORDS = (
     "SELECT f.locator,b.id,b.size,b.mtime_ns,t.name "  # nosec B608
@@ -301,14 +315,17 @@ class AnnotationOperations:
         expected_epoch: str,
         expected_tag_revision: int,
         tags: list,
+        mark_autotagged: bool = False,
     ) -> dict:
         """Replace the set of these exact bytes, guarded by epoch and revision.
 
         Creates the owner and byte record when the bytes are new (an explicit
         empty set is a real save). The identical set at the current revision,
         or one behind it (a lost-response retry), is ``replayed`` and writes
-        nothing; any other revision mismatch is ``tag-conflict`` with the
-        current set and no writes.
+        no tag; any other revision mismatch is ``tag-conflict`` with the
+        current set and no writes. ``mark_autotagged`` marks the bytes
+        auto-tagged on a saved or replayed receipt (the Tag image dialog's
+        save after Generate suggestions).
         """
         _validate_target(locator, sha256, size, mtime_ns)
         _validate_epoch(expected_epoch)
@@ -329,6 +346,8 @@ class AnnotationOperations:
             ):
                 if refingerprinted:
                     conn.execute(_BUMP_INDEX)
+                if mark_autotagged:
+                    conn.execute(_MARK, (byte_id,))
                 return _receipt(epoch, sha256, current, revision, True)
             if expected_tag_revision != revision:
                 raise AnnotationCommandError(
@@ -337,6 +356,8 @@ class AnnotationOperations:
                     {"sha256": sha256, "tags": current, "tag_revision": revision},
                 )
             revision = self._write_image_tags(conn, byte_id, tags)
+            if mark_autotagged:
+                conn.execute(_MARK, (byte_id,))
             return _receipt(epoch, sha256, tags, revision, False)
 
     def add_image_tags(
@@ -348,16 +369,22 @@ class AnnotationOperations:
         mtime_ns: int,
         expected_epoch: str,
         tags: list,
+        mark_autotagged: bool = False,
     ) -> dict:
         """Union ``tags`` into the set of these exact bytes, keeping stored spelling.
 
         ``added`` counts the names that were new (case-insensitively). A union
         over ``MAX_IMAGE_TAGS`` is ``tag-limit`` with the current set and no
         writes; a union that adds nothing to an existing record is ``replayed``.
+        ``mark_autotagged`` (a tagging model's result) also marks the bytes
+        auto-tagged, replayed or not; only such a call may pass no tags (the
+        model found none: the image is marked and its set is unchanged).
         """
         _validate_target(locator, sha256, size, mtime_ns)
         _validate_epoch(expected_epoch)
         tags = normalize_image_tags(tags)
+        if not tags and not mark_autotagged:
+            raise ValueError("tags must name at least one tag")
         with self._pair_transaction() as conn:
             epoch = self._library_epoch(conn, expected_epoch)
             now = utc_now_iso()
@@ -375,6 +402,8 @@ class AnnotationOperations:
                     epoch,
                     {"sha256": sha256, "tags": current, "tag_revision": revision},
                 )
+            if mark_autotagged:
+                conn.execute(_MARK, (byte_id,))
             if not created and not added:
                 if refingerprinted:
                     conn.execute(_BUMP_INDEX)
@@ -403,6 +432,41 @@ class AnnotationOperations:
                 conn.execute(_BUMP_INDEX)
             return cursor.rowcount > 0
 
+    @staticmethod
+    def _validated_stats(stats: object) -> dict:
+        if not isinstance(stats, dict):
+            raise ValueError(
+                "stats must map locators to (size, mtime_ns) integer pairs"
+            )
+        for locator, fingerprint in stats.items():
+            _validate_fingerprint(locator, fingerprint)
+        return stats
+
+    @staticmethod
+    def _current_byte_records(conn: sqlite3.Connection, stats: dict) -> dict:
+        """``{locator: byte_id}`` of each locator's current byte record.
+
+        The one rule every cheap read uses: a record is current while its
+        verified ``(size, mtime_ns)`` equals the file's present fingerprint
+        in ``stats``; the most recently verified wins (ties on ``(verified_at,
+        byte_id)``). A locator without a current record is left out. Lookups
+        go in chunks of 500 locators.
+        """
+        locators = list(stats)
+        chosen: dict[str, tuple[tuple[str, str], str]] = {}
+        for start in range(0, len(locators), _LOOKUP_CHUNK):
+            chunk = locators[start : start + _LOOKUP_CHUNK]
+            marks = ",".join("?" * len(chunk))
+            for locator, byte_id, size, mtime_ns, verified_at in conn.execute(
+                _FINGERPRINTS.format(marks=marks), chunk
+            ):
+                if (size, mtime_ns) != stats[locator]:
+                    continue
+                key = (verified_at, byte_id)
+                if locator not in chosen or key > chosen[locator][0]:
+                    chosen[locator] = (key, byte_id)
+        return {locator: byte_id for locator, (_key, byte_id) in chosen.items()}
+
     def current_image_tags(self, stats: dict) -> dict:
         """Image tags of the files whose current ``(size, mtime_ns)`` is verified.
 
@@ -411,29 +475,11 @@ class AnnotationOperations:
         exactly that verified fingerprint; the most recently verified record
         wins when several do. Lookups go in chunks of 500 locators.
         """
-        if not isinstance(stats, dict):
-            raise ValueError(
-                "stats must map locators to (size, mtime_ns) integer pairs"
-            )
-        for locator, fingerprint in stats.items():
-            _validate_fingerprint(locator, fingerprint)
-        locators = list(stats)
-        chosen: dict[str, tuple[tuple[str, str], str]] = {}
-        result: dict[str, list[str]] = {}
+        stats = self._validated_stats(stats)
         with self._annotation_read() as conn:
-            for start in range(0, len(locators), _LOOKUP_CHUNK):
-                chunk = locators[start : start + _LOOKUP_CHUNK]
-                marks = ",".join("?" * len(chunk))
-                for locator, byte_id, size, mtime_ns, verified_at in conn.execute(
-                    _FINGERPRINTS.format(marks=marks), chunk
-                ):
-                    if (size, mtime_ns) != stats[locator]:
-                        continue
-                    key = (verified_at, byte_id)
-                    if locator not in chosen or key > chosen[locator][0]:
-                        chosen[locator] = (key, byte_id)
-            owners = {byte_id: locator for locator, (_key, byte_id) in chosen.items()}
-            result = {locator: [] for locator in chosen}
+            current = self._current_byte_records(conn, stats)
+            owners = {byte_id: locator for locator, byte_id in current.items()}
+            result: dict[str, list[str]] = {locator: [] for locator in current}
             byte_ids = list(owners)
             for start in range(0, len(byte_ids), _LOOKUP_CHUNK):
                 chunk = byte_ids[start : start + _LOOKUP_CHUNK]
@@ -441,6 +487,34 @@ class AnnotationOperations:
                 for byte_id, name in conn.execute(_TAGS_OF.format(marks=marks), chunk):
                     result[owners[byte_id]].append(name)
         return result
+
+    def autotag_state(self, stats: dict) -> dict:
+        """``{locator: bool}``: is each file's current byte record auto-tagged?
+
+        ``stats`` as for :meth:`current_image_tags`, whose rule picks the
+        current record; a locator without one is False. One read snapshot.
+        """
+        stats = self._validated_stats(stats)
+        with self._annotation_read() as conn:
+            current = self._current_byte_records(conn, stats)
+            byte_ids = list(dict.fromkeys(current.values()))
+            marked: set[str] = set()
+            for start in range(0, len(byte_ids), _LOOKUP_CHUNK):
+                chunk = byte_ids[start : start + _LOOKUP_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                marked.update(
+                    row[0]
+                    for row in conn.execute(_MARKED_OF.format(marks=marks), chunk)
+                )
+        return {locator: current.get(locator) in marked for locator in stats}
+
+    def autotagged_locators(self) -> set:
+        """Locators with at least one auto-tagged byte record, current or not.
+
+        No fingerprint is checked (the Tag output images review's estimate).
+        """
+        with self._annotation_read() as conn:
+            return {row[0] for row in conn.execute(_MARKED_LOCATORS)}
 
     def iter_image_tag_records(self) -> Iterator[tuple[str, int, int, list[str]]]:
         """Stream every byte record as ``(locator, size, mtime_ns, tags)``.
