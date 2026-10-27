@@ -4238,8 +4238,17 @@ impact and command receipts report `image_count` / `images` /
 `(size, mtime_ns)` equals its verified fingerprint; an in-place rewrite that
 preserves both keeps the old set matching until the file is next observed. The
 Images Tags filter (a file matches when every tag is on its linked positive or
-its current image tag set) and `q` search stream the tagged records once and
-stat only the listed files whose records carry a filter tag or a `q` hit; the
+its current image tag set) and `q` search find their candidates through the tag
+index (#379), never by streaming every image tag row: `image_tag_ids` reads the
+tag names that tag at least one image (an `EXISTS` on `idx_media_image_tags_tag`)
+and keeps a name when it equals a Tags filter tag exactly or contains `q`
+case-folded; `image_tag_locators` reads the files carrying those ids (`tag_id IN`,
+500 ids a chunk). Only the listed ones among them are stat'ed, and only their
+current records count; a linked positive's prompt tags still combine with the
+image tags under a Tags filter. `test_indexed_candidates_equal_the_full_stream`
+compares the lookup with the old full stream (kept in the test as the reference)
+and `test_tag_search_reads_image_tags_only_by_tag_id` traces every statement; the
+
 inspector's `image_tags` facet (`current` / `none` / `unavailable`) uses the
 inspection's own stable stat (`tests/test_api_workspace_images.py`
 `TestWorkspaceImageTags`, `tests/test_api_prompt_inspector.py`). The

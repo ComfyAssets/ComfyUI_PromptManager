@@ -430,7 +430,9 @@ class ReplaceImageTagsTests(AnnotationTestCase):
             self.assertTrue(
                 self.db.refresh_image_fingerprint(loc, DIGEST_A, SIZE, MTIME + 1)
             )
-            list(self.db.iter_image_tag_records())
+            self.assertEqual(
+                self.db.image_tag_locators(self.db.image_tag_ids(["img"], "")), {loc}
+            )
         self.assertEqual(self.db.get_prompt_by_id(prompt)["tags"], ["prompt-tag"])
 
 
@@ -551,13 +553,15 @@ class CurrentImageTagsTests(AnnotationTestCase):
         self.assertEqual(current, {locators[0]: ["z", "y"], locators[502]: ["x"]})
         lookups = [s for s in statements if "media_annotation_files" in s]
         self.assertEqual(len(lookups), 2)
+        # The tag search finds every record's file by tag id, the empty set's
+        # file never, and each set keeps its position order.
         self.assertEqual(
-            list(self.db.iter_image_tag_records()),
-            [
-                (locators[0], SIZE, MTIME, ["z", "y"]),
-                (locators[250], SIZE, MTIME + 1, []),
-                (locators[502], SIZE, MTIME + 2, ["x"]),
-            ],
+            self.db.image_tag_locators(self.db.image_tag_ids(["z", "x"], "")),
+            {locators[0], locators[502]},
+        )
+        self.assertEqual(
+            self.db.current_image_tags({locators[250]: (SIZE, MTIME + 1)}),
+            {locators[250]: []},
         )
 
 

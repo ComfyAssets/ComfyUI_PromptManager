@@ -96,12 +96,16 @@ _TAGS_OF = (
     "JOIN tags t ON t.id=mit.tag_id WHERE mit.byte_id IN ({marks}) "
     "ORDER BY mit.byte_id,mit.position"
 )
-_RECORDS = (
-    "SELECT f.locator,b.id,b.size,b.mtime_ns,t.name "  # nosec B608
-    f"FROM {FILES_TABLE} f JOIN {BYTES_TABLE} b ON b.file_id=f.id "
-    f"LEFT JOIN {IMAGE_TAGS_TABLE} mit ON mit.byte_id=b.id "
-    "LEFT JOIN tags t ON t.id=mit.tag_id "
-    "ORDER BY f.locator,b.first_seen_at,b.id,mit.position"
+# Tag search (#379): the names that tag at least one image (the tag index
+# answers the EXISTS), then the locators carrying chosen names (by tag_id).
+_IMAGE_TAG_NAMES = (
+    "SELECT t.id,t.name FROM tags t WHERE EXISTS "  # nosec B608
+    f"(SELECT 1 FROM {IMAGE_TAGS_TABLE} mit WHERE mit.tag_id=t.id)"
+)
+_TAG_LOCATORS = (
+    f"SELECT DISTINCT f.locator FROM {IMAGE_TAGS_TABLE} mit "  # nosec B608
+    f"JOIN {BYTES_TABLE} b ON b.id=mit.byte_id "
+    f"JOIN {FILES_TABLE} f ON f.id=b.file_id WHERE mit.tag_id IN ({{marks}})"
 )
 
 
@@ -442,20 +446,32 @@ class AnnotationOperations:
                     result[owners[byte_id]].append(name)
         return result
 
-    def iter_image_tag_records(self) -> Iterator[tuple[str, int, int, list[str]]]:
-        """Stream every byte record as ``(locator, size, mtime_ns, tags)``.
+    def image_tag_ids(self, wanted, query: str) -> list[int]:
+        """Ids of the tag names on at least one image that a search wants.
 
-        One SELECT ordered by locator, then by the bytes' first sighting, with
-        each set's names in position order.
+        A name counts when it is in ``wanted`` exactly (the Tags filter) or
+        contains ``query`` case-folded (the text search; ``query`` is
+        already folded). One read of the names that tag an image.
         """
+        wanted = set(wanted)
         conn = self.model.get_connection()
-        current: tuple | None = None
-        for locator, byte_id, size, mtime_ns, name in conn.execute(_RECORDS):
-            if current is None or current[0] != byte_id:
-                if current is not None:
-                    yield current[1]
-                current = (byte_id, (locator, size, mtime_ns, []))
-            if name is not None:
-                current[1][3].append(name)
-        if current is not None:
-            yield current[1]
+        return [
+            tag_id
+            for tag_id, name in conn.execute(_IMAGE_TAG_NAMES)
+            if name in wanted or (query and query in name.casefold())
+        ]
+
+    def image_tag_locators(self, tag_ids) -> set[str]:
+        """Locators with any byte record (current or not) carrying one of
+        ``tag_ids``, through the tag index, in chunks of 500 ids."""
+        ids = list(dict.fromkeys(tag_ids))
+        found: set[str] = set()
+        with self._annotation_read() as conn:
+            for start in range(0, len(ids), _LOOKUP_CHUNK):
+                chunk = ids[start : start + _LOOKUP_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                found.update(
+                    row[0]
+                    for row in conn.execute(_TAG_LOCATORS.format(marks=marks), chunk)
+                )
+        return found

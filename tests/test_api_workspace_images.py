@@ -1831,6 +1831,39 @@ class TestWorkspaceCursorEncoding(unittest.TestCase):
                 self.assertEqual(_workspace_cursor_key(token, "scope", order), key)
 
 
+# The pre-#379 candidate read, kept as the differential reference for the
+# indexed lookup (`image_tag_ids` + `image_tag_locators`): every byte record
+# streamed with its tag names, a locator kept when any record's names are
+# relevant (`_image_tags_relevant`).
+_REFERENCE_RECORDS = (
+    "SELECT f.locator,b.id,t.name FROM media_annotation_files f "
+    "JOIN media_annotation_bytes b ON b.file_id=f.id "
+    "LEFT JOIN media_image_tags mit ON mit.byte_id=b.id "
+    "LEFT JOIN tags t ON t.id=mit.tag_id "
+    "ORDER BY f.locator,b.first_seen_at,b.id,mit.position"
+)
+
+
+def _image_tags_relevant(names, wanted, query):
+    if wanted and not wanted.isdisjoint(names):
+        return True
+    return bool(query) and any(query in name.casefold() for name in names)
+
+
+def reference_candidates(db, wanted, query):
+    """Locators the old full stream admitted for (``wanted``, ``query``)."""
+    records = {}
+    for locator, byte_id, name in db.model.get_connection().execute(_REFERENCE_RECORDS):
+        names = records.setdefault((locator, byte_id), [])
+        if name is not None:
+            names.append(name)
+    return {
+        locator
+        for (locator, _byte), names in records.items()
+        if _image_tags_relevant(names, set(wanted), query)
+    }
+
+
 class TestWorkspaceImageTags(ImageAPITestCase):
     """B3: image tags in the Tags filter and search (spec amendment S1)."""
 
@@ -2038,7 +2071,7 @@ class TestWorkspaceImageTags(ImageAPITestCase):
         leak = "no such table: media_annotation_files"
         with patch.object(
             self.api.db,
-            "iter_image_tag_records",
+            "image_tag_locators",
             side_effect=sqlite3.OperationalError(leak),
         ):
             # As a failed link read does under a Tags filter: a fixed coded
@@ -2055,6 +2088,119 @@ class TestWorkspaceImageTags(ImageAPITestCase):
         self.assertEqual(response.status, 200, body)
         self.assertEqual(self.names(body), ["dunes_by_name.png"])
         self.assertIn("image tags", "\n".join(logged.output))
+
+    def seed_differential(self):
+        """Mixed-case and underscore names, a stale record, an unlisted file."""
+        a = self.media("a.png", mtime=101)
+        b = self.media("b.png", mtime=102)
+        c = self.media("c.png", mtime=103)
+        self.tag(a, ["Beach", "long_hair", "1girl"])
+        self.tag(b, ["beach", "waves"])
+        self.tag(c, ["Sunset"])
+        # c's bytes change: its old record (Sunset) is stale, the new one current.
+        make_png(c, size=(5, 5))
+        os.utime(c, (104, 104))
+        self.tag(c, ["night_sky", "BEACH"])
+        outside = Path(self._output_tmp.name) / "elsewhere" / "x.png"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        make_png(outside)
+        self.tag(outside, ["beach", "outside_only"])
+
+    async def test_indexed_candidates_equal_the_full_stream(self):
+        self.seed_differential()
+        cases = [
+            (["beach"], ""),
+            (["Beach"], ""),
+            (["long_hair", "waves"], ""),
+            ([], "beach"),
+            ([], "hair"),
+            ([], "_"),
+            ([], "sun"),
+            (["nope"], "zzz"),
+            (["outside_only"], ""),
+            (["beach"], "night"),
+        ]
+        db = self.api.db
+        for wanted, query in cases:
+            with self.subTest(wanted=wanted, query=query):
+                indexed = set(db.image_tag_locators(db.image_tag_ids(wanted, query)))
+                self.assertEqual(indexed, reference_candidates(db, wanted, query))
+        # The API answers are the indexed lookup's: exact names under Tags, a
+        # case-folded substring under q, current records only.
+        _, body = await self.get(tags="beach")
+        self.assertEqual(sorted(self.names(body)), ["b.png"])
+        _, body = await self.get(q="beach")
+        self.assertEqual(sorted(self.names(body)), ["a.png", "b.png", "c.png"])
+        _, body = await self.get(q="sunset")
+        self.assertEqual(self.names(body), [])
+
+    async def test_tag_search_reads_image_tags_only_by_tag_id(self):
+        self.seed_differential()
+        statements = []
+        original = self.api.db.model.get_connection
+
+        def trace_connection():
+            connection = original()
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(
+            self.api.db.model, "get_connection", side_effect=trace_connection
+        ):
+            for params in ({"tags": "beach"}, {"q": "hair"}):
+                response, _ = await self.get(**params)
+                self.assertEqual(response.status, 200)
+        reads = [
+            sql
+            for sql in statements
+            if "media_image_tags" in sql and sql.lstrip().upper().startswith("SELECT")
+        ]
+        self.assertTrue(reads)
+        for sql in reads:
+            # Only a tag-id lookup, an EXISTS probe on the tag index, or the
+            # current records' own tags (byte_id IN) read the junction.
+            self.assertTrue(
+                "tag_id IN" in sql or "EXISTS" in sql or "byte_id IN" in sql, sql
+            )
+
+    @unittest.skipUnless(os.environ.get("PM_PERF") == "1", "timing run (PM_PERF=1)")
+    async def test_tag_search_timing(self):
+        """Linux timing for the PR body: 23,600 records, 10 tags each."""
+        import hashlib
+        import statistics
+        import time
+
+        db = self.api.db
+        epoch = db.get_execution_epoch()
+        names = [f"name_{n:04d}" for n in range(2000)]
+        root = os.path.realpath(self.output_dir)
+        for n in range(23_600):
+            path = self.output_dir / "perf" / f"{n:05d}.png"
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(b"x")
+            os.utime(path, (n + 1, n + 1))
+            stat = path.stat()
+            db.replace_image_tags(
+                locator=os.path.normcase(os.path.join(root, "perf", path.name)),
+                sha256=hashlib.sha256(str(n).encode()).hexdigest(),
+                size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+                expected_epoch=epoch,
+                expected_tag_revision=0,
+                tags=[names[(n * 7 + k) % 2000] for k in range(10)],
+            )
+        await self.get(limit=1)  # the listing, warm
+        for label, params in (
+            ("one tag", {"tags": "name_0042"}),
+            ("text", {"q": "e_1"}),
+        ):
+            times = []
+            for _ in range(5):
+                started = time.perf_counter()
+                response, _ = await self.get(limit=100, **params)
+                times.append(time.perf_counter() - started)
+                self.assertEqual(response.status, 200)
+            print(f"PM_PERF {label}: median {statistics.median(times) * 1000:.0f} ms")
 
     async def test_legacy_output_failure_logs_its_traceback(self):
         self.media("legacy.png", mtime=100)

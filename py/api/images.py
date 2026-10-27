@@ -575,12 +575,6 @@ def _current_fingerprint(path: Path) -> tuple[int, int] | None:
     return observed.st_size, observed.st_mtime_ns
 
 
-def _image_tags_relevant(names: list, wanted: set, query: str) -> bool:
-    if wanted and not wanted.isdisjoint(names):
-        return True
-    return bool(query) and any(query in name.casefold() for name in names)
-
-
 def _workspace_key(entry: tuple, order: str) -> tuple:
     """The keyset sort key of *entry* (a _Listed or a 4-tuple entry)."""
     if not isinstance(entry, _Listed):
@@ -2091,8 +2085,9 @@ class ImageRoutesMixin:
     def _image_tag_matches(self, listings: list[tuple], filters: dict) -> dict:
         """Normalized path -> _ImageTagMatch for files whose image tags count.
 
-        Streams the tagged byte records once and keeps only listed locators
-        carrying a filter tag or a ``q`` hit; only those candidates are
+        Looks the relevant tag names up (exact under Tags, a case-folded
+        substring for ``q``) and their files through the tag index, keeping
+        only listed locators; only those candidates are
         stat'ed (never every listed file), and a candidate's tags count only
         while a byte record is verified at its present ``(size, mtime_ns)``
         (spec amendment S1). Under a Tags filter the candidates' linked
@@ -2101,16 +2096,15 @@ class ImageRoutesMixin:
         tags, query, category = filters["tags"], filters["query"], filters["category"]
         wanted = set(tags)
         located = self._workspace_locators(listings)
+        # The tag index answers which files carry a relevant name (#379); no
+        # read streams every image tag row.
+        tag_ids = self.db.image_tag_ids(wanted, query)
         candidates = {}
-        records = self.db.iter_image_tag_records()
-        try:
-            for locator, _size, _mtime_ns, names in records:
+        if tag_ids:
+            for locator in self.db.image_tag_locators(tag_ids):
                 entry = located.get(locator)
-                if entry is not None and locator not in candidates:
-                    if _image_tags_relevant(names, wanted, query):
-                        candidates[locator] = entry
-        finally:
-            records.close()
+                if entry is not None:
+                    candidates[locator] = entry
         stats = {}
         for locator, entry in candidates.items():
             fingerprint = _current_fingerprint(entry.path)
