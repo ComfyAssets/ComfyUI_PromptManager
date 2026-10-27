@@ -1,6 +1,7 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
-import { SIZES, THEMES, seedConcept, openConcept, openProduction, diffInventory, mutate } from './concept-inventory.mjs';
+import { SIZES, THEMES, seedConcept, openConcept, openProduction, diffInventory, mutate, measureReview, mapPlanConcept }
+    from './concept-inventory.mjs';
 
 // #249 System S7 Task 20: System › Maintenance (app.js renderSystem 688–690), its plan dialog (`maintenancePlan`,
 // 953–958) for each operation and its duplicates dialog (`duplicates`, 1457–1461) against the immutable concept, on
@@ -103,47 +104,6 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
     });
 }
 
-/** Runs in the page: the open review dialog (plan or duplicates): its title, body and the concept's tokens. */
-function measureReview() {
-    const dialog = document.querySelector('dialog#modal[open]');
-    const css = (node, ...keys) => node ? Object.fromEntries(keys.map(key => [key, getComputedStyle(node)[key]])) : null;
-    const name = node => [node.localName, ...[...node.classList].sort()].join('.');
-    const text = node => node?.textContent.trim() ?? null;
-    const body = dialog.querySelector('#modal-body');
-    const grid = body.querySelector(':scope > dl.meta-grid');
-    const compare = body.querySelector('.compare-grid');
-    const item = compare?.querySelector('.compare-item');
-    const notes = [...body.querySelectorAll(':scope > p.small')];
-    const note = notes.at(-1);
-    const actions = body.querySelector(':scope > .dialog-actions');
-    return {
-        title: text(dialog.querySelector('#modal-title')),
-        tree: [...body.children].map(name),
-        heading: body.querySelector(':scope > h3') && { text: text(body.querySelector(':scope > h3')),
-            ...css(body.querySelector(':scope > h3'), 'fontSize', 'fontWeight', 'color', 'marginBottom') },
-        grid: grid && { rows: [...grid.children].map(row => [text(row.querySelector('dt')), text(row.querySelector('dd'))]),
-            ...css(grid, 'display', 'gridTemplateColumns', 'columnGap', 'rowGap'),
-            dt: css(grid.querySelector('dt'), 'fontSize', 'color', 'textTransform'), dd: css(grid.querySelector('dd'), 'fontSize', 'color') },
-        details: body.querySelector(':scope > details') && { summary: text(body.querySelector(':scope > details > summary')),
-            tree: [...body.querySelector(':scope > details').children].map(name) },
-        backup: body.querySelector(':scope > .notice') && { tree: [...body.querySelector(':scope > .notice').children].map(name),
-            text: [...body.querySelectorAll(':scope > .notice > div:first-child > *')].map(node => [node.localName, text(node)]),
-            buttons: [...body.querySelectorAll(':scope > .notice button')].map(text) },
-        compare: compare && { tree: [...compare.children].map(name), ...css(compare, 'display', 'gridTemplateColumns', 'columnGap'),
-            items: [...compare.children].map(entry => ({ tree: [...entry.children].map(name), label: text(entry.querySelector('label')),
-                checked: entry.querySelector('input[type=radio]').checked, image: entry.querySelector('img')?.className ?? null })),
-            item: css(item, 'paddingTop', 'paddingLeft', 'backgroundColor', 'borderTopWidth', 'borderTopColor', 'borderTopLeftRadius'),
-            image: css(item.querySelector('img'), 'width', 'objectFit'),
-            label: css(item.querySelector('label'), 'fontSize', 'color'),
-            radio: { name: item.querySelector('input[type=radio]').name.startsWith('keep-') ? 'keep-*' : 'other',
-                type: item.querySelector('input').type } },
-        note: note && { text: text(note), ...css(note, 'fontSize', 'color', 'marginTop') },
-        actions: { tree: [...actions.children].map(name), ...css(actions, 'display', 'justifyContent', 'columnGap', 'marginTop'),
-            buttons: [...actions.children].map(item => ({ text: text(item), className: item.className,
-                ...css(item, 'backgroundColor', 'color', 'fontSize', 'paddingTop', 'paddingLeft', 'borderTopColor') })) },
-    };
-}
-
 // The concept's plan names (`data-plan`) and production's operation, row and button for each.
 const PLANS = Object.freeze([
     ['duplicate prompts', 'duplicate_prompts', 'Duplicate prompt text'],
@@ -151,32 +111,6 @@ const PLANS = Object.freeze([
     ['unused prompt components', 'unused_components', 'Unused prompt components'],
     ['missing-file links', 'missing_links', 'Missing-file links'],
 ]);
-const BACKUP_BOX = Object.freeze({ tree: ['div', 'div.row-actions'], text: [['h3', 'Back up the database first (recommended)'],
-    ['p', 'Downloads a copy of the prompts database before this operation changes any records.']], buttons: ['Back up now'] });
-
-/**
- * D100: the server's plan in the concept's dialog: the operation's row title as its `h3` (the concept prints its
- * `data-plan` name), the four rows with the plan's values, the listed records (`details`), the hold line in the
- * concept's `p.small`, the D55 backup box before the actions, and "Apply reviewed operation". No sample note.
- */
-function mapPlanConcept(reference, title, plan) {
-    const backup = plan.backup.policy === 'off' ? 'No safety backup (the policy is off)'
-        : `Create and verify before changes (${plan.backup.destination_label})`;
-    const tree = ['h3', 'dl.meta-grid', ...(plan.details.length ? ['details'] : []), 'p.small', 'div.notice', 'div.dialog-actions'];
-    const [cancel, apply] = reference.actions.buttons;
-    return {
-        ...reference,
-        tree,
-        heading: { ...reference.heading, text: title },
-        grid: { ...reference.grid, rows: [['Scope', plan.scope.label],
-            ['Protected', plan.protected.reasons.length ? plan.protected.reasons.join(' · ') : 'Nothing is protected'],
-            ['Backup', backup], ['Media on disk', plan.media.label]] },
-        details: plan.details.length ? { summary: `Listed records (${plan.details.length})`, tree: ['summary', 'pre'] } : null,
-        backup: BACKUP_BOX,
-        note: { ...reference.note, text: 'Nothing changes until you apply. This review holds for 15 minutes.' },
-        actions: { ...reference.actions, buttons: [cancel, { ...apply, text: 'Apply reviewed operation' }] },
-    };
-}
 
 async function conceptPlan(page, theme, name) {
     await conceptMaintenance(page, theme);
