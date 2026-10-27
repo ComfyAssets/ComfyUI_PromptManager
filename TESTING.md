@@ -86,6 +86,18 @@ timer that "usually" covers a frame is a race on a loaded runner. Library
 virtualization specs settle with `libraryObservation.settled()` (two consecutive
 frames with no Library frame queued). To look for such races, repeat a spec under
 load (`--workers 8 --repeat-each 10`, and in the image with `--cpus=1` or `2`).
+CPU limits do not reproduce disk-bound timeouts (backup, restore). For those,
+throttle writes in the image: with rootful Docker on a host with cgroup v2, add
+`--device-write-iops /dev/<disk>:20` to the `docker run`, where `<disk>` is the
+whole disk (not a partition) holding Docker's data root, because the test server
+keeps its database in the container's `/tmp`. On a plain partition,
+`lsblk -no pkname "$(df --output=source "$(docker info -f '{{.DockerRootDir}}')" | tail -1)"`
+prints it; on LVM or LUKS, `lsblk -s` walks down to the disk. A spec that waits
+on a timer then fails at its 5 s expect. A spec that waits on the response can
+still fail at the 30 s test timeout when several workers share the throttled
+disk; that means the disk is too slow for the test budget, not that the spec is
+wrong.
+
 On unsupported Linux
 distributions, browser system dependencies may need manual installation. For a
 quick browser run, use `test:workflows -- --project chromium`.
