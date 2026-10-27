@@ -257,13 +257,20 @@ class AutotagRoutesMixin:
         if model_type not in MODELS:
             invalid = {"type": "error", "message": f"Invalid model type: {model_type}"}
             return await self._stream_sse(request, _single(invalid))
-        job = self._jobs.active(MODEL_DOWNLOAD_JOB_KIND)
-        if job is not None and job.scope.get("model_type") != model_type:
-            return model_busy_response()
-        if job is None:
-            job, refusal = self._start_model_download(model_type, get_autotag_service())
-            if refusal is not None:
-                return refusal
+        try:
+            job = self._jobs.active(MODEL_DOWNLOAD_JOB_KIND)
+            if job is not None and job.scope.get("model_type") != model_type:
+                return model_busy_response()
+            if job is None:
+                job, refusal = self._start_model_download(
+                    model_type, get_autotag_service()
+                )
+                if refusal is not None:
+                    return refusal
+        except Exception:
+            self.logger.exception("Download model error")
+            failed = {"type": "error", "message": _INTERNAL_ERROR}
+            return await self._stream_sse(request, _single(failed))
         return await self._stream_sse(request, self._download_frames(job))
 
     @staticmethod
@@ -300,7 +307,13 @@ class AutotagRoutesMixin:
             return self._bad_request(
                 "model_type must be one of " + ", ".join(sorted(MODELS))
             )
-        job, refusal = self._start_model_download(model_type, get_autotag_service())
+        try:
+            job, refusal = self._start_model_download(model_type, get_autotag_service())
+        except Exception as e:
+            self.logger.exception("Model download start error")
+            return web.json_response(
+                {"success": False, "error": self._public_error(e)}, status=500
+            )
         if refusal is not None:
             return refusal
         return web.json_response({"success": True, "job": job.summary()}, status=202)
@@ -340,10 +353,20 @@ class AutotagRoutesMixin:
                     self._run_model_download, service, model_type, owner
                 ),
             )
-        except JobBusy as refused:
+        except BaseException as refused:
+            # JobBusy, or anything else the registry raised: give the gate back.
             model_gate.release(owner)
-            return None, busy_response(refused)
-        job.task.add_done_callback(lambda _task: model_gate.release(owner))
+            _download_titles.pop(owner, None)
+            if isinstance(refused, JobBusy):
+                return None, busy_response(refused)
+            raise
+
+        def ended(_task):
+            model_gate.release(owner)
+            if model_gate.holder() != owner:  # not while a thread still runs
+                _download_titles.pop(owner, None)
+
+        job.task.add_done_callback(ended)
         return job, None
 
     async def _run_model_download(self, service, model_type, owner, job):

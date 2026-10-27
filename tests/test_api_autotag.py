@@ -1476,6 +1476,13 @@ class DownloadJobTestCase(AutotagAPITestCase):
             "/prompt_manager/jobs/model-download", {"model_type": model_type}
         )
 
+    async def _until(self, condition, limit=10):
+        """Yield to the loop until ``condition()`` holds (fails after ``limit`` s)."""
+        deadline = asyncio.get_running_loop().time() + limit
+        while not condition():
+            self.assertLess(asyncio.get_running_loop().time(), deadline)
+            await asyncio.sleep(0)
+
     async def _ended(self, job_id):
         job = self.api._jobs.get(job_id)
         self.proceed.set()
@@ -1633,6 +1640,8 @@ class TestLegacyDownloadAttaches(DownloadJobTestCase):
         resp = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
         self.assertEqual(resp.status, 200)
         self.assertEqual(self._sse_events(await resp.text()), self.GOLDEN_OK)
+        # The gate is free by the time the stream says the download ended.
+        self.assertIsNone(model_gate.holder())
         jobs = self.api._jobs.list()
         self.assertEqual(
             [(j.kind, j.title, j.state) for j in jobs],
@@ -1651,13 +1660,8 @@ class TestLegacyDownloadAttaches(DownloadJobTestCase):
             self.client.post("/prompt_manager/autotag/download/wd14-vit")
         )
         try:
-            # Wait until the legacy stream is subscribed to the running job.
             job = self.api._jobs.get(summary["id"])
-            for _ in range(300):
-                if job.subscriber_count:
-                    break
-                await asyncio.sleep(0.01)
-            self.assertEqual(job.subscriber_count, 1)
+            await self._until(lambda: job.subscriber_count == 1)
         finally:
             await self._ended(summary["id"])
         resp = await legacy
@@ -1687,11 +1691,20 @@ class TestLegacyDownloadAttaches(DownloadJobTestCase):
         await self._started()
         resp.close()  # the page closed the modal
         (job,) = self.api._jobs.list()
-        for _ in range(300):
-            if not job.subscriber_count:
-                break
-            await asyncio.sleep(0.01)
+        # The closed stream lets go of the job; the download goes on.
+        await self._until(lambda: job.subscriber_count == 0)
         self.assertTrue(job.running)
+        self.assertTrue(model_gate.holder().startswith("model-download:"))
         job = await self._ended(job.id)
         self.assertEqual(job.state, "finished")
+        self.assertIsNone(model_gate.holder())
+
+    async def test_unexpected_start_error_keeps_each_route_shape(self):
+        with patch("py.autotag.get_autotag_service", side_effect=RuntimeError("x")):
+            legacy = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+            events = self._sse_events(await legacy.text())
+            native = await self._start()
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual(native.status, 500)
+        self.assertFalse((await native.json())["success"])
         self.assertIsNone(model_gate.holder())

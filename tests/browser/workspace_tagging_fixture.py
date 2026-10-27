@@ -185,14 +185,20 @@ def register_tagging_commands(
     # The fake download (``/__test__/tagging/download``): waits on ``event``,
     # then answers ``result``. Every reset sets the event and puts back the
     # model's raising default, so no test can leave a worker hanging.
-    download = {"event": threading.Event(), "result": True}
+    # ``generation`` grows on every reset: a download a reset released (or one
+    # that timed out) fails without touching the next test's model state.
+    download = {"event": threading.Event(), "result": True, "generation": 0}
 
     def restore_download() -> None:
+        download["generation"] += 1
         download["event"].set()
         model.__dict__.pop("download_model", None)
 
     def fake_download(model_type: str, progress_callback=None) -> bool:
-        download["event"].wait(DOWNLOAD_HOLD_LIMIT_S)
+        event, generation = download["event"], download["generation"]
+        released = event.wait(DOWNLOAD_HOLD_LIMIT_S)
+        if not released or download["generation"] != generation:
+            return False
         if download["result"]:
             model.unavailable = model.unavailable - {model_type}
         return download["result"]
