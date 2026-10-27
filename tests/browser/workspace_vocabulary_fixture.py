@@ -7,10 +7,10 @@ in concept order, so tag creation order and category first use match the mock.
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from tests.browser.folder_trash import replace_folder
 
 if TYPE_CHECKING:
     from py.api import PromptManagerAPI
@@ -120,8 +120,7 @@ def seed_vocabulary(
         for table in _TABLES:
             conn.execute(f"DELETE FROM {table}")
     for name in ("output", "input"):
-        shutil.rmtree(root / name)
-        (root / name).mkdir()
+        replace_folder(root / name)
     epoch = db.get_execution_epoch()
     recipes = []
     for recipe in CONCEPT_RECIPES:
