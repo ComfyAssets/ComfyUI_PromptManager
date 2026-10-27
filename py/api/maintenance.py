@@ -2,7 +2,9 @@
 
 ``POST /prompt_manager/maintenance/preview {operation, options:{}}`` reviews
 one operation (``duplicate_prompts``, ``optimize``, ``unused_components`` or
-``missing_links``; ``database/maintenance.py``) off the event loop and
+``missing_links``; ``database/maintenance.py``; ``duplicate_files``,
+``py/api/duplicate_files.py``; ``rotated_logs``, the rotated log copies,
+``py/api/log_cleanup.py``, which has its own apply job) off the event loop and
 answers a ``Plan``: ``{success, token, operation, expires_at, scope:{count,
 label}, protected:{count, reasons}, backup:{policy, destination_label},
 media:{deletes_files, label}, details:[≤50 {label, detail}]}``. The preview
@@ -54,6 +56,7 @@ from aiohttp import web
 from .admin import _prune_safety_backups, _scan_location, _scan_roots
 from .job_routes import busy_response
 from .jobs import MAINTENANCE_JOB_KIND, JobBusy
+from .log_cleanup import ROTATED_LOGS
 from .maintenance_plans import PlanExpired, PlanUsed, ScopeTooLarge
 
 try:
@@ -83,7 +86,8 @@ MAINTENANCE_PREVIEW_LEASE = "Maintenance preview"
 DUPLICATE_PREVIEW_BODY_MAX = 1024 * 1024
 DUPLICATE_FILES = "duplicate_files"
 WORKFLOW_STORAGE = "workflow_storage"  # applied by py/api/workflow_storage.py
-PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES,)
+# rotated_logs (#329, py/api/log_cleanup.py) reviews log files, not records.
+PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES, ROTATED_LOGS)
 # Room left over beyond what a step writes, so a disk is never filled to 0.
 DISK_MARGIN_BYTES = 16 * 2**20
 # The concept's Maintenance row titles, which name each operation's job.
@@ -391,6 +395,8 @@ class MaintenanceRoutesMixin:
             return await self.preview_duplicate_files(options)
         if not isinstance(options, dict) or options:
             return _invalid(f"{operation} takes no options")
+        if operation == ROTATED_LOGS:
+            return await self.preview_log_cleanup()
         db = self.db
         identity = self._database_identity(db)
         try:
@@ -492,6 +498,17 @@ class MaintenanceRoutesMixin:
         if refused is not None:
             return refused
         store = self._maintenance_plans
+        if plan.operation == ROTATED_LOGS:
+            # Log files only: no database identity, backup or disk check.
+            try:
+                job = self._start_log_cleanup(plan)
+            except JobBusy as busy:
+                return busy_response(busy)  # the token stays usable
+            # Same loop turn as the peek and the start: the runner has not run.
+            store.consume(token, plan.operation, job_id=job.id)
+            return web.json_response(
+                {"success": True, "job": job.summary()}, status=202
+            )
         db = self.db
         if plan.db_identity != self._database_identity(db):
             store.discard(token)

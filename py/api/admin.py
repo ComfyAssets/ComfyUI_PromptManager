@@ -489,9 +489,29 @@ def _diagnose_dependencies():
     }
 
 
-def _diagnose_output_dirs(configured_dirs):
+def legacy_checks(db_path, public_path=None):
+    """The four checks of ``GET /diagnostics`` (blocking).
+
+    Shared with the diagnostic report (``py/api/diagnostics_report.py``),
+    which passes its own ``public_path`` so a folder outside ComfyUI is never
+    named.
+    """
+    from ..config import GalleryConfig
+
+    return {
+        "database": _diagnose_database(db_path),
+        "dependencies": _diagnose_dependencies(),
+        "comfyui_output": _diagnose_output_dirs(
+            GalleryConfig.MONITORING_DIRECTORIES, public_path
+        ),
+        "image_monitor": _diagnose_image_monitor(public_path),
+    }
+
+
+def _diagnose_output_dirs(configured_dirs, public_path=None):
     """Configured gallery roots, ComfyUI's output dir, or relative fallbacks."""
     _public_path, _ = _public_helpers()
+    _public_path = public_path or _public_path
     candidates = list(configured_dirs)
     try:
         import folder_paths
@@ -525,9 +545,10 @@ def _diagnose_output_dirs(configured_dirs):
     }
 
 
-def _diagnose_image_monitor():
+def _diagnose_image_monitor(public_path=None):
     """Status of the running image monitor, with public directory names."""
     _public_path, _public_error = _public_helpers()
+    _public_path = public_path or _public_path
     try:
         monitor = _current_image_monitor()
         if monitor is None:
@@ -1055,16 +1076,7 @@ class AdminRoutesMixin:
     async def run_diagnostics(self, request):
         """Run comprehensive system diagnostics and health checks."""
         try:
-            from ..config import GalleryConfig
-
-            results = {
-                "database": _diagnose_database(self.db.model.db_path),
-                "dependencies": _diagnose_dependencies(),
-                "comfyui_output": _diagnose_output_dirs(
-                    GalleryConfig.MONITORING_DIRECTORIES
-                ),
-                "image_monitor": _diagnose_image_monitor(),
-            }
+            results = legacy_checks(self.db.model.db_path)
             return web.json_response({"success": True, "diagnostics": results})
 
         except Exception as e:
