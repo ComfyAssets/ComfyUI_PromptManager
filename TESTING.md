@@ -3371,7 +3371,9 @@ workflow (README changelog).
 ### LoRA reference import contract (#221, #249 System S10)
 
 The LoRA import is staged (`py/lora_import.py`): discover the LoraManager
-`*.metadata.json` files and fingerprint them (path, size, modification time); stage each
+`*.metadata.json` files and fingerprint every scanned one, kept or skipped (path, size,
+modification time and whether it was kept, #362; a skipped sidecar added, removed or edited
+after the review refuses Start with `plan-changed`, `test_start_refused_when_a_skipped_sidecar_changed`); stage each
 record (CivitAI example images go into the image cache first, best effort, counted in
 `downloaded` / `download_errors`; each image is written to a temp file beside its cache
 entry and moved in place, so a half-written image is never seen as cached); the files are
@@ -3437,16 +3439,54 @@ the kept, readable LoRAs and `skipped` the rest. Media per LoRA, without repeats
 preview (`preview_url`, else LoraManager's `PREVIEW_EXTENSIONS` order), then every file in
 `<example-images root>[/<library>]/<sha256>/` in natural order; a leading video yields to the
 first still. A file counts only with a servable extension and inside the guarded media
-roots. CivitAI downloads run only for a LoRA without local media. The folder guard keeps a
-settings folder only when it exists and is neither a filesystem root (`/`, `C:\`, a UNC
-share root) nor the home folder or one of its ancestors (realpath + `normcase`). An
-unusable layout (no install, unreadable / non-JSON / non-object / oversized settings, no
-`platformdirs`, a missing or refused centralized sidecar root) gives a review without a
-token ("LoraManager settings: not usable: <reason>. Nothing was changed."), a legacy scan
-error with that reason, the default LoRA roots for serving, and trigger words from the
-default roots in alongside mode. `tests/run_suite.py` and `tests/browser/server.py` point
+roots. Only an absolute `preview_url` is used; a relative one is skipped with a DEBUG line
+naming the sidecar. CivitAI downloads run only for a LoRA without local media; a record's
+images are linked in reverse order, so its first image (the cover) is the newest link and
+the card image. The folder guard keeps a folder from the settings, and each of ComfyUI's
+default LoRA folders (`models/loras`, `extra_model_paths.yaml`, `folder_paths`), only when
+it exists and is neither a filesystem root (`/`, `C:\`, a UNC share root) nor the home
+folder or a folder that contains it (realpath + `normcase`); a refused default folder that
+exists is listed in the layout's `refused_defaults` and logged as one warning each time the
+refused set changes (`RefusedDefaultsTests`). An unusable layout (no install, unreadable /
+non-JSON / non-object / oversized settings, no `platformdirs`, a missing or refused
+centralized sidecar root, "the sidecar folder is a filesystem root, the home folder or a
+folder that contains it") gives a review without a token ("LoraManager settings: not
+usable: <reason>. Nothing was changed."), a legacy scan error with that reason, the default
+LoRA roots for serving (no example-images root), and trigger words from the default roots
+in alongside mode. A folder discovery cannot list answers the review with 500, code
+`folder-unreadable` ("A LoRA folder could not be listed (...). Nothing was changed.").
+`TriggerWordCache.load` never raises: an `OSError` is a warning, anything else is logged
+with its traceback (#362), both keep the previous map, and a running node retries a failed
+load only after 60 s (`TRIGGER_RETRY_SECONDS`). `tests/run_suite.py` and `tests/browser/server.py` point
 `LORA_MANAGER_SETTINGS_DIR` at a disposable folder, so no test reads the developer's real
 LoraManager settings; tests that call `load_layout` inject their own folder too.
+
+**Linked-only gate and the layout cache (#362).** While the integration is on, the LoRA
+allow-list (`ImagesMixin._lora_image_dirs`) is the layout's `media_roots` plus the CivitAI
+download cache, and `_media_roots(outputs)` appends it after the output folders for Library
+previews, the Library prompt detail, the per-prompt images page, `serve_output_image` for a
+root past the outputs, `inspect_image` and `reveal_image`. Under such a root only a file the
+database records as a linked image is served, inspected or revealed (`_linked_only_error`,
+by its given and its real path); anything else answers 403. Library responses mark that
+media `linked_only`: no preview file, no favorite, no Tag button. The allow-list's layout
+comes from `py/lora_layout_cache.py` (`tests/test_lora_layout_cache.py`, which injects the
+clocks, `stat` and `ntpath` and never sleeps): one entry keyed by the stripped configured
+path, reused while the plugin settings file's and the settings file's `(st_mtime_ns,
+st_size)` (or "missing") are unchanged, the install and every media root still resolve to
+themselves (a folder swapped for a symlink reloads and the guard runs again), and the entry
+is under `MAX_AGE_SECONDS` (30 s, monotonic clock) old. A load is stored only when no
+watched file was modified within `RACY_SECONDS` (3 s) of the load (git's racy rule: a write
+during the load, LoraManager's in-place write, FAT/HFS+ coarse times), every watched file
+could be checked (any `stat` error but not-found, and an offline Windows share, is "cannot
+validate"), the settings were readable, and no `clear()` ran meanwhile (generation
+counter). Hits take no lock; concurrent misses each load. A finished import (System job or
+legacy scan, both through `replace_lora_imports`) clears it; the integration-off check and
+the configured-path rule run before it. `serve_image` builds the allow-list in the
+executor. The cache writes one INFO line, "LoraManager layout changed: <source> settings,
+<mode> storage, <n> media folders", when a stored layout differs from the last one logged.
+The review, Start, the legacy scan and the trigger cache read the layout fresh. Image route
+tests clear the per-process cache in `ImageRouteCoverageCase.setUp`; `write_settings` in
+`TestLoraManagerMediaServing` back-dates its file 10 s so the first load is stored.
 
 `tests/browser/workspace_integrations_fixture.py` (`/__test__/integrations/*`) makes a fake
 LoraManager install and LoRA folder under the server's temp root, holds or fails the
@@ -3454,8 +3494,9 @@ import, saves a blocking pair and answers CivitAI downloads with a stub opener, 
 test reaches the network.
 
 ```sh
-python3 -m unittest tests.test_lora_manager_layout tests.test_lora_import tests.test_api_lora \
-  tests.test_lora_database tests.test_lora_utils -v
+python3 -m unittest tests.test_lora_layout_cache tests.test_lora_manager_layout \
+  tests.test_lora_import tests.test_api_lora tests.test_lora_database tests.test_lora_utils \
+  tests.test_api_images -v
 node --test tests/js/workspace-system-integrations.test.js tests/js/prompt-bridge-adapter.test.js
 npm run --prefix tools/vendor test:workflows -- workspace-system-integrations.spec.mjs \
   system-integrations-concept.spec.mjs \
