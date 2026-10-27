@@ -3966,6 +3966,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
 
                 document.getElementById('reviewImage').src = imageUrl;
+                // The record's file name, else the last segment of its path (#328: `filename` was never declared).
+                const filename = image.filename || String(image.image_path || image.path || '').split(/[\\/]/).pop();
                 document.getElementById('reviewImageName').textContent = filename || 'Unknown';
                 document.getElementById('reviewTagsVisible').innerHTML = '<div class="text-pm-secondary">Generating tags...</div>';
                 document.getElementById('reviewTagsHidden').innerHTML = '';
