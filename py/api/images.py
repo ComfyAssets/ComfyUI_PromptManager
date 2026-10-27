@@ -3367,12 +3367,16 @@ class ImageRoutesMixin:
                 status=429,
             )
         try:
-            return await self._reveal(relative, root)
+            return await self._reveal(relative, root, linked_only=index >= len(outputs))
         finally:
             gate.leave()
 
-    async def _reveal(self, relative: str, root: Path):
-        """Resolve and open, inside the reveal gate."""
+    async def _reveal(self, relative: str, root: Path, *, linked_only=False):
+        """Resolve and open, inside the reveal gate.
+
+        Under a LoRA-linked root the file that would open is checked again
+        (it may resolve through a path anchor): only a recorded one opens.
+        """
         try:
             path = await self._run_in_executor(self._reveal_path, relative, root)
         except (OSError, ValueError) as exc:
@@ -3383,6 +3387,10 @@ class ImageRoutesMixin:
             return _reveal_not_found()
         if path is None:
             return _reveal_not_found()
+        if linked_only and not await self._run_in_executor(
+            self._is_recorded_media, path
+        ):
+            return _forbidden()
         try:
             await asyncio.get_running_loop().run_in_executor(
                 reveal_executor(), self._reveal_opener, path, root

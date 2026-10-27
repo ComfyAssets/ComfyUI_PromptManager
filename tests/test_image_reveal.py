@@ -715,6 +715,19 @@ class TestRevealRoute(ImageAPITestCase):
         )
         self.assertEqual((status, data), (200, {"success": True}))
         self.assertEqual(self.opened, [Path(os.path.realpath(linked))])
+        # The file that would open is checked too, whatever the request named
+        # (a path anchor could resolve it elsewhere in the root).
+        other = make_png(lora / "abc" / "other.png")
+        from py.api.images import ImageRoutesMixin
+
+        with patch.object(
+            ImageRoutesMixin, "_resolve_client_media_path", return_value=other
+        ):
+            status, _data = await self.post(
+                {"root_index": 1, "root_scope": scope, "path": "abc/cover.png"}
+            )
+        self.assertEqual(status, 403)
+        self.assertEqual(len(self.opened), 1)
 
     async def test_target_changed_before_launch_is_404(self):
         make_png(self.output_dir / "sub" / "a.png")
