@@ -275,6 +275,72 @@ Start fixing as soon as a failed log shows the cause, but push the fix only afte
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
 so a push cancels the running jobs and can hide a second failure.
 
+## Background threads at exit
+
+PromptManager's own background threads stop through one package teardown,
+`_stop_background_work()` in `__init__.py` (#301, #302). It runs once and
+works against one 10 s deadline. Each step gets the smaller of its own bound
+and the time left. The steps, in order:
+
+1. Detach the monitor's callbacks (Needs review recorder, preview queue,
+   Images listing listener).
+2. `ImageMonitor.stop_monitoring` closes the image handler, which joins the
+   image worker (5 s). It then calls watchdog's `observer.stop()`, which is
+   not bounded here, and joins the observer (5 s).
+3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s) and
+   kills ffmpeg.
+4. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
+
+A failing step, or a second Ctrl+C, is logged with its traceback and does not
+skip the later steps. A clean run logs one INFO line to PromptManager's log:
+`Background work stopped in 0.4 s: monitor=ok thumbnails=ok tracker=ok`. If
+any part is still running, one WARNING goes to the console:
+`Background work not stopped in time (10.0 s): monitor`.
+
+ComfyUI never runs aiohttp's `on_cleanup` hooks, because it never calls
+`runner.cleanup()`. So `atexit` is the live host's path. It runs on Ctrl+C
+(`main.py` catches `KeyboardInterrupt` and returns) and on a normal exit.
+The teardown is registered after the execution history hook, so at exit
+(newest first) it runs before the history writer's 2 s dispose.
+It also runs from `on_cleanup` on hosts that do run it (our test servers) and
+from the tests' package unload (`cleanup_package`), and it removes its own
+`atexit` callback. Nothing runs when the process is killed: SIGTERM, a
+ComfyUI-Manager restart through `os.execv`, a closed Windows console, or
+ComfyUI Desktop stopping its server. SQLite's WAL journal covers those.
+
+Stop contract: `PromptTracker.shutdown(timeout)`,
+`ImageGenerationHandler.shutdown(timeout)` (restartable),
+`ImageGenerationHandler.close(timeout)` (final: `schedule()` refuses and a
+sealed run's re-check is dropped) and `ImageMonitor.stop_monitoring(timeout)`
+each signal their thread and join it within the bound. They return True only
+when it ended, and log a warning naming the part when it did not. Called on
+their own thread, they only signal.
+
+Test rules:
+
+- Every test that constructs a real `PromptTracker`, `ImageGenerationHandler`
+  or `ImageMonitor` ends with its final stop and an assertion
+  (`tests/background_stops.py`: `close_handler`, `stop_monitor`,
+  `stop_tracker`). The stop comes before the folder and databases are removed.
+  `tearDown` runs before `addCleanup` callbacks, so a class whose `tearDown`
+  removes files stops the thread there.
+- A test waits for a state through an `Event` set by the code under test, or
+  by a wrapper around it, with a 30 s ceiling. It never sleeps or polls for
+  that state.
+- A test that asserts "still running" first waits for an `entered` event
+  inside the held call, then stops with `timeout=0.05`.
+- A test that asserts a history writer's `dispose()`/`close()` is True right
+  after queuing work drains first (`drain_writer`), or holds the write itself
+  (#370).
+- Patch the module attribute of the code under test (for example
+  `utils.prompt_tracker.time`, or the package's `_clock`), or patch with
+  `wraps=`. Never replace a `time` or `atexit` function for the whole
+  process.
+- `tests/test_package_exit.py` runs a child process that imports the
+  package, leaves the image worker alive and returns. Its `atexit` reporter
+  checks the teardown's result. This is the interpreter path ComfyUI takes
+  after Ctrl+C, on all three OS.
+
 ## Performance budgets
 
 A spec performance budget gets two tests:

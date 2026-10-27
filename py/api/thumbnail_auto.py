@@ -488,10 +488,16 @@ class AutoThumbnailer:
                 f"Automatic preview failed for {src.name}", exc_info=True
             )
 
-    def close(self):
+    def close(self, timeout=None):
         """Stop the worker at its next file boundary (queued files are
-        dropped), kill a running ffmpeg and wait up to CLOSE_WAIT_SECONDS;
-        a worker still running after that is logged."""
+        dropped), kill a running ffmpeg and wait up to ``timeout`` seconds
+        (None: CLOSE_WAIT_SECONDS, read now); a worker still running after
+        that is logged.
+
+        Returns True when there was no worker or it ended; False when it is
+        still running, or when called on the worker itself (it only signals).
+        """
+        wait = CLOSE_WAIT_SECONDS if timeout is None else timeout
         with self._changed:
             self._closed = True
             self._queue.clear()
@@ -504,14 +510,18 @@ class AutoThumbnailer:
                 process.kill()
             except OSError:
                 pass
-        if worker is None or worker is threading.current_thread():
-            return
-        worker.join(CLOSE_WAIT_SECONDS)
+        if worker is None:
+            return True
+        if worker is threading.current_thread():
+            return False
+        worker.join(wait)
         if worker.is_alive():
             self._logger.warning(
                 "The automatic preview worker is still running after "
-                f"{CLOSE_WAIT_SECONDS} s; it stops at its next file"
+                f"{wait} s; it stops at its next file"
             )
+            return False
+        return True
 
     # ── waits (tests and shutdown; never timers) ──────────────────────
 
@@ -609,12 +619,19 @@ class AutoThumbnailMixin:
                 )
             return self._auto_thumbnailer
 
-    def close_auto_thumbnails(self, final=False):
+    def refuse_auto_thumbnails(self):
+        """Refuse every later capture without stopping the worker yet (the
+        package teardown, before ``close_auto_thumbnails(final=True)``)."""
+        with AutoThumbnailMixin._auto_thumbnailer_lock:
+            self._auto_thumbnails_shut = True
+
+    def close_auto_thumbnails(self, final=False, timeout=None):
         """Stop the capture worker and the view pool, and forget them.
 
-        Bounded (see AutoThumbnailer.close). ``final`` (the app's cleanup)
-        also keeps a late monitor event from starting a worker again; a
-        test reset passes False and the next use starts fresh ones.
+        Bounded by ``timeout`` (see AutoThumbnailer.close). ``final`` (the
+        package teardown) also keeps a late monitor event from starting a
+        worker again; a test reset passes False and the next use starts
+        fresh ones. Returns True when no capture worker is left running.
         """
         with AutoThumbnailMixin._auto_thumbnailer_lock:
             if final:
@@ -622,12 +639,14 @@ class AutoThumbnailMixin:
             thumbnailer, self._auto_thumbnailer = self._auto_thumbnailer, None
             pool, self._preview_pool_obj = self._preview_pool_obj, None
             self._preview_gate_obj = None
+        closed = True
         if thumbnailer is not None:
-            thumbnailer.close()
+            closed = thumbnailer.close(timeout)
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
         if final:
             shutdown_encoders()  # kill JPEG XL / ffmpeg encoders still running
+        return closed
 
     def _auto_thumbnail_failures(self):
         thumbnailer = self._auto_thumbnailer
