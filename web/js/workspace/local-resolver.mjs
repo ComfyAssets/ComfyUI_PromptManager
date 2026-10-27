@@ -52,7 +52,7 @@ import {
     sideOf,
     slotKey,
 } from './local-resolver-support.mjs';
-import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage } from './local-resolver-stages.mjs';
+import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage, stagesFrom } from './local-resolver-stages.mjs';
 import { parameters } from './local-parameters.mjs';
 
 export { SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
@@ -375,6 +375,40 @@ class GraphResolver {
         }
         if (isLink(pyGet(inputs, 'conditioning'))) return [inputs.get('conditioning')];
         return [...inputs].filter(([name, value]) => isLink(value) && !this.semantics.skipInputs.has(name)).map(([, value]) => value);
+    }
+
+    /** `saver_stages` (#381): the candidate samplers of the one saver whose prefix names the file, or null (never guessed). */
+    saverStages(fileName) {
+        const stem = fileStem(fileName);
+        if (stem === null) return null;
+        this.budget.reset(this.perCandidateVisits);
+        let found;
+        try {
+            const matches = [...this.graph].filter(([, node]) => this.writes(node, stem)).map(([id]) => id);
+            if (matches.length !== 1) return null;
+            const [, inputs] = this.node(matches[0]);
+            const values = [...inputs].filter(([name, value]) => name !== 'filename_prefix' && isLink(value)).map(([, value]) => value);
+            found = stagesFrom(this, matches[0], values);
+        } catch (error) {
+            if (error instanceof Unresolved || error instanceof Diverging) return null;
+            throw error;
+        }
+        const candidates = found.filter(id => this.samplerClasses.has(this.graph.get(id).get('class_type')));
+        return candidates.length ? candidates : null;
+    }
+
+    /** `writes`: whether a node's `filename_prefix` (literal or traced) names the file `stem`. */
+    writes(node, stem) {
+        if (!isDict(node) || !isDict(pyGet(node, 'inputs'))) return false;
+        let prefix = pyGet(node.get('inputs'), 'filename_prefix');
+        if (isLink(prefix)) {
+            try { prefix = this.text(prefix, 'string')[0]; } catch (error) {
+                if (error instanceof Unresolved || error instanceof Diverging) return false;
+                throw error;
+            }
+        }
+        if (typeof prefix !== 'string') return false;
+        return counterOf(prefix.replaceAll('\\', '/').split('/').at(-1), stem);
     }
 
     /** `through_unknown`: whether a followed path passes through a node no rule describes. */
@@ -769,8 +803,25 @@ function overwrittenPromptNodes(workflow, graph) {
     return found;
 }
 
-/** `_resolve` for an unanchored inspection (output_node_id None). */
-function resolve(metadata, semantics) {
+/** `_file_stem`: a file name's last path part without its extension, or null. */
+function fileStem(fileName) {
+    if (typeof fileName !== 'string' || !fileName) return null;
+    const base = fileName.replaceAll('\\', '/').split('/').at(-1);
+    const dot = base.lastIndexOf('.');
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    return stem || null;
+}
+
+/** `_counter_of`: whether `stem` is `prefix` + `_` + ASCII digits [+ `_`]. */
+function counterOf(prefix, stem) {
+    if (!prefix || !stem.startsWith(`${prefix}_`)) return false;
+    let rest = stem.slice(prefix.length + 1);
+    if (rest.endsWith('_')) rest = rest.slice(0, -1);
+    return rest !== '' && /^[0-9]+$/.test(rest);
+}
+
+/** `_resolve` for an unanchored inspection (output_node_id None); `fileName` anchors on its saver (#381). */
+function resolve(metadata, semantics, fileName = null) {
     if (!isDict(metadata) || !metadata.size) return result('absent', { reason: 'No parsed prompt metadata' });
     let graph;
     if (metadata.has('prompt')) graph = metadata.get('prompt');
@@ -784,7 +835,8 @@ function resolve(metadata, semantics) {
         overwritten = overwrittenPromptNodes(pyGet(metadata, 'workflow'), graph);
     }
     const resolver = new GraphResolver(graph, metadata.has('prompt') ? metadata : null, semantics, overwritten);
-    const samplerIds = finalStages(resolver, [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' &&
+    const anchored = fileName === null ? null : resolver.saverStages(fileName);
+    const samplerIds = anchored ?? finalStages(resolver, [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' &&
         resolver.samplerClasses.has(node.get('class_type'))).map(([id]) => id));
     if (!samplerIds.length) return noSampler(graph);
     if (samplerIds.length > 1) {
@@ -830,7 +882,7 @@ export function unreadableEvidence() {
  * local read found (`{prompt, workflow, parameters, comfyassets_prompt_pairs}` texts). `semantics` is
  * `compileSemantics(...)`'s table, or null when it could not be loaded.
  */
-export function resolveLocalEvidence(records, semantics) {
+export function resolveLocalEvidence(records, semantics, fileName = null) {
     const source = records !== null && typeof records === 'object' ? records : {};
     const metadata = new Map(Object.entries(source).filter(([key]) => ROLE_METADATA_KEYS.has(key)));
     const malformedResolution = { state: 'unresolved', sampler_id: null, reason: MALFORMED_EVIDENCE_REASON, reason_code: 'malformed', node: null };
@@ -850,7 +902,7 @@ export function resolveLocalEvidence(records, semantics) {
     }
     const workflow = mayHoldPromptManager(metadata) ? parsedWorkflow(source.workflow ?? null) : null;
     if (workflow !== null && metadata.has('prompt')) metadata.set('workflow', workflow);
-    const resolved = resolve(metadata, semantics);
+    const resolved = resolve(metadata, semantics, fileName);
     const state = resolved.state, prompts = {};
     for (const role of ['positive', 'negative']) {
         const side = resolved[role];

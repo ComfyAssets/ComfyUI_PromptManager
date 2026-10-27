@@ -40,7 +40,7 @@ const semantics = compileSemantics(JSON.parse(fs.readFileSync(path.join(here, '.
 const { extractGenerationFacts } = require(path.join(here, '..', '..', '..', 'web', 'js', 'comfy-metadata.js'));
 
 /** The local evidence for one set of record texts. */
-const resolved = records => ({ evidence: resolveLocalEvidence(records, semantics) });
+const resolved = (records, fileName = null) => ({ evidence: resolveLocalEvidence(records, semantics, fileName) });
 
 /** The local wire's evidence and six facts for one read (no legacy fill, as in the vectors' own harness). */
 function localPayload(read, file, classification) {
@@ -59,14 +59,14 @@ const output = {};
 for (const entry of JSON.parse(Buffer.concat(chunks).toString('utf8'))) {
     const { name } = entry;
     if (entry.mode === 'resolve') {
-        if (entry.records !== undefined) { output[name] = resolved(entry.records); continue; }
+        if (entry.records !== undefined) { output[name] = resolved(entry.records, entry.fileName ?? null); continue; }
         const blob = await fs.openAsBlob(entry.path);
         const { classification, result } = await readLocalFile(blob, { pngMetadata });
         const read = classification === null ? null : toInspectionRead(classification, result).read;
         if (classification === null) { output[name] = { unreadable: true }; continue; }
         // The evidence is the local wire's own (buildLocalPayload), and it equals resolveLocalEvidence of the records.
         const local = localPayload(result, { name: path.basename(entry.path), size: blob.size }, classification);
-        const direct = read === null ? unreadableEvidence() : resolved(read.records).evidence;
+        const direct = read === null ? unreadableEvidence() : resolved(read.records, path.basename(entry.path)).evidence;
         if (JSON.stringify(direct) !== JSON.stringify(local.evidence)) throw new Error(`${name}: the wire's roles are not the resolver's`);
         output[name] = read === null ? { unreadable: true, ...local } : local;
         continue;

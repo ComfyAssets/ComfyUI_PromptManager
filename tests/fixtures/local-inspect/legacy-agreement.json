@@ -33,6 +33,8 @@
   "f23"
  ],
  "local_resolver": [
+  "anchor-same-links",
+  "anchor-same-links-unanchored",
   "built-chars",
   "class-type-missing",
   "class-type-number",
@@ -62,6 +64,7 @@
   "select-detailer-no-sampler-upstream",
   "select-detailer-output-walk-exhausted",
   "select-detailer-same-prompt",
+  "select-edge-hires-fix-denoised-slot",
   "select-edge-hires-fix-lineage-cycle",
   "select-edge-hires-fix-two-refiners",
   "select-flux-concat",
@@ -70,6 +73,7 @@
   "select-hires-fix",
   "select-hires-fix-both-saved",
   "select-hires-fix-reroute",
+  "select-hires-fix-unlisted",
   "select-multistage-latent",
   "select-preview-dropped",
   "select-preview-through-bad-node",

@@ -45,7 +45,7 @@ def _parsed(value):
 
 
 def corpora() -> dict:
-    """Corpus name to ``{case name: (prompt graph, workflow or None)}``."""
+    """Corpus name to ``{case name: (prompt graph, workflow or None[, file])}``."""
     vectors = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
     named = {**cases.golden_cases(), **selection.selection_cases()}
     return {
@@ -58,7 +58,11 @@ def corpora() -> dict:
             for name in parity.COMMITTED
         },
         "local_resolver": {
-            name: (_parsed(records["prompt"]), _parsed(records.get("workflow")))
+            name: (
+                _parsed(records["prompt"]),
+                _parsed(records.get("workflow")),
+                records.get(cases.FILE_NAME),
+            )
             for name, records in named.items()
             if "prompt" in records
         },
@@ -78,21 +82,46 @@ def legacy_positive(graph, workflow):
     return None if text == NOT_FOUND else text
 
 
+def inspected(graph, workflow=None, file_name=None) -> dict:
+    """The inspection resolver's answer, anchored by ``file_name`` when given."""
+    metadata = {"prompt": graph}
+    if workflow is not None:
+        metadata["workflow"] = workflow
+    return resolver.resolve_prompt_pair(
+        metadata, profile=resolver.INSPECTION_PROFILE, file_name=file_name
+    )
+
+
+# Graphs where the legacy parser's positive is wrong and the inspector's
+# differs on purpose: (corpus, case) -> (the inspector's positive, why).
+LEGACY_WRONG = {
+    ("local_resolver", "anchor-branch-3"): (
+        "a red vintage car in the rain",
+        "legacy shows the first sampler's prompt for every branch; the file "
+        "name s45_branch_3_00002_ names branch 3's saver (gpu_unlock_bench)",
+    ),
+    ("local_resolver", "anchor-branch-linked"): (
+        "an old fishing boat at dawn",
+        "legacy shows branch 1; the traced prefix names branch 2's saver",
+    ),
+    ("local_resolver", "anchor-branch-unknown-saver"): (
+        "a cozy library with tall shelves",
+        "legacy shows branch 1; the file name names branch 4's saver",
+    ),
+}
+
+
 def agreeing(graphs: dict) -> list:
     """Names whose inspection positive equals the legacy parser's, sorted."""
     names = []
-    for name, (graph, workflow) in graphs.items():
+    for name, case in graphs.items():
+        graph, workflow = case[0], case[1]
         if not isinstance(graph, dict):
             continue
         expected = legacy_positive(graph, workflow)
         if expected is None:
             continue
-        metadata = {"prompt": graph}
-        if workflow is not None:
-            metadata["workflow"] = workflow
-        result = resolver.resolve_prompt_pair(
-            metadata, profile=resolver.INSPECTION_PROFILE
-        )
+        result = inspected(*case)
         positive = result["positive"]
         if (
             result["state"] == "resolved"
@@ -104,6 +133,22 @@ def agreeing(graphs: dict) -> list:
 
 
 class LegacyParityGateTest(unittest.TestCase):
+    def test_every_legacy_difference_is_stated(self):
+        """A graph may read differently from legacy only with a stated reason."""
+        all_graphs = corpora()
+        for (corpus, name), (expected, why) in LEGACY_WRONG.items():
+            with self.subTest(case=name, why=why):
+                case = all_graphs[corpus][name]
+                legacy = legacy_positive(case[0], case[1])
+                self.assertIsNotNone(legacy)
+                result = inspected(*case)
+                positive = result["positive"]
+                text = positive["text"] if isinstance(positive, dict) else None
+                if result["state"] != "resolved":
+                    text = None
+                self.assertEqual(text, expected)
+                self.assertNotEqual(text, legacy)
+
     def test_no_graph_leaves_the_legacy_agreement(self):
         recorded = json.loads(AGREEMENT_PATH.read_text(encoding="utf-8"))
         current = {name: agreeing(graphs) for name, graphs in corpora().items()}

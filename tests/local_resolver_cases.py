@@ -26,6 +26,8 @@ VECTORS_PATH = (
     / "local-inspect"
     / "resolver-vectors.json"
 )
+# A case may name the inspected file (#381 saver anchoring); it is no record.
+FILE_NAME = "__file_name"
 # Committed record sets stay small; the large bound cases are built at test time.
 MAX_VECTOR_CHARS = 20_000
 COMMITTED_FUZZ = (0, 60)
@@ -918,6 +920,32 @@ def golden_cases():
         **unknown_node_graphs.review_shapes(),
     }.items():
         cases[f"pass-through-{name}"] = records
+    try:
+        from tests import saver_anchor_graphs as anchor
+    except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
+        import saver_anchor_graphs as anchor
+    for name, graph, file_name in (
+        ("branch-3", anchor.branch_bench(), "s45_branch_3_00002_.png"),
+        ("branch-unanchored", anchor.branch_bench(), None),
+        ("branch-no-match", anchor.branch_bench(), "photo_00001_.png"),
+        ("branch-linked", anchor.linked_prefix_bench(), "s45_branch_2_00007_.png"),
+        (
+            "branch-unknown-saver",
+            anchor.branch_bench(saver="VendorSaveImage"),
+            "s45_branch_4_00001.webp",
+        ),
+        ("shared-prefix", anchor.shared_prefix(), "IMG_GEN_00371_.png"),
+        ("same-links", anchor.two_stage_same_conditioning(), "final_00003_.png"),
+        ("same-links-unanchored", anchor.two_stage_same_conditioning(), None),
+        (
+            "other-links",
+            anchor.two_stage_same_conditioning(["91", 0]),
+            "final_00003_.png",
+        ),
+    ):
+        cases[f"anchor-{name}"] = {"prompt": _dump(graph)}
+        if file_name is not None:
+            cases[f"anchor-{name}"][FILE_NAME] = file_name
     cases["parameters-only"] = {
         "parameters": "a fox\nNegative prompt: blur\nSteps: 20, Sampler: euler"
     }
@@ -1400,7 +1428,10 @@ def committed_vectors():
             "name": name,
             "records": records,
             "evidence": inspect_prompt_evidence(
-                records, None, profile=INSPECTION_PROFILE
+                {key: value for key, value in records.items() if key != FILE_NAME},
+                None,
+                profile=INSPECTION_PROFILE,
+                file_name=records.get(FILE_NAME),
             ),
         }
         for name, records in cases.items()

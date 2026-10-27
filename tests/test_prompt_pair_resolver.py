@@ -2665,11 +2665,13 @@ class TestLatentAncestry(unittest.TestCase):
             },
             {
                 "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+                # Its own encoder (#381: the same links would be one prompt).
+                "73": parity._enc(parity.POS),
                 "70": {
                     "class_type": "KSampler",
                     "inputs": {
                         "model": ["4", 0],
-                        "positive": ["6", 0],
+                        "positive": ["73", 0],
                         "negative": ["7", 0],
                         "latent_image": ["72", 0],
                     },
@@ -2972,9 +2974,14 @@ class TestLatentAncestry(unittest.TestCase):
         source["60"]["class_type"] = "UltimateSDUpscale"
         result = _inspect(source, output_node_id="9")
         self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
-        # Reached only through an unlisted image node, it stays unattributed.
+        # Reached only through an unlisted image node, it stays unattributed,
+        # unless both stages read the same conditioning links (#381).
         source["61"] = {"class_type": "MysteryFilter", "inputs": {"image": ["60", 0]}}
         source["5"]["inputs"]["pixels"] = ["61", 0]
+        result = _inspect(source, output_node_id="9")
+        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
+        source["74"] = parity._enc(parity.POS)
+        source["60"]["inputs"]["positive"] = ["74", 0]
         result = _inspect(source, output_node_id="9")
         self.assertEqual(result["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
 

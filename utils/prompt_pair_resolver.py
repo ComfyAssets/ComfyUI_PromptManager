@@ -1532,6 +1532,79 @@ class _GraphResolver:
             _link(inputs.get(key)) for key in stage_inputs["with_model"]
         )
 
+    def same_conditioning(self, first: str, second: str) -> bool:
+        """Whether two listed samplers read the very same conditioning links.
+
+        Compared by the sampler table's conditioning inputs (positive and
+        negative, or a custom sampler's guider): each a link, equal by node ID
+        text and slot. Then their prompt is one, whatever their stage order.
+        """
+        keys = []
+        for node_id in (first, second):
+            name, inputs = self.node(node_id)
+            conditioning = self.semantics.samplers[name]["conditioning"]
+            values = []
+            for role in sorted(conditioning):
+                value = inputs.get(conditioning[role])
+                if not _link(value):
+                    return False
+                values.append((role, str(value[0]), str(value[1])))
+            keys.append(tuple(values))
+        return keys[0] == keys[1]
+
+    def saver_stages(self, file_name: Any) -> Optional[list]:
+        """The candidate samplers of the one saver that wrote ``file_name``.
+
+        A saver is any node with a ``filename_prefix`` (literal, or traced as a
+        string) whose last path part makes the file's stem
+        ``<prefix>_<digits>`` with an optional trailing ``_`` (ComfyUI's and
+        VideoHelperSuite's counters). Exactly one saver must match; its
+        linked inputs are walked like a detailer's image ancestry. No match,
+        several, an unreadable walk or no candidate sampler is ``None``: the
+        file is then judged unanchored, never guessed (#381).
+        """
+        stem = _file_stem(file_name)
+        if stem is None:
+            return None
+        self.budget.reset(self.per_candidate_visits)
+        try:
+            matches = [
+                node_id
+                for node_id, node in self.graph.items()
+                if self.writes(node, stem)
+            ]
+            if len(matches) != 1:
+                return None
+            _, inputs = self.node(matches[0])
+            values = [
+                value
+                for name, value in inputs.items()
+                if name != "filename_prefix" and _link(value)
+            ]
+            found = self.stages_from(matches[0], values)
+        except (_Unresolved, _Diverging):
+            return None
+        candidates = [
+            node_id
+            for node_id in found
+            if self.graph[node_id]["class_type"] in self.sampler_classes
+        ]
+        return candidates or None
+
+    def writes(self, node: Any, stem: str) -> bool:
+        """Whether a node's ``filename_prefix`` names the file ``stem``."""
+        if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+            return False
+        prefix = node["inputs"].get("filename_prefix")
+        if _link(prefix):
+            try:
+                prefix = self.text(prefix, "string")[0]
+            except (_Unresolved, _Diverging):
+                return False
+        if not isinstance(prefix, str):
+            return False
+        return _counter_of(prefix.replace("\\", "/").split("/")[-1], stem)
+
     def upstream_stages(self, origin: str, value: Any) -> list:
         """Samplers reached from a detailer's image input, in breadth-first order.
 
@@ -1540,8 +1613,18 @@ class _GraphResolver:
         """
         if not _link(value):
             raise _Unresolved("Expected an image link", "malformed")
+        return self.stages_from(origin, [value])
+
+    def stages_from(self, origin: str, values: list) -> list:
+        """``upstream_stages`` from several start links, queued in order once."""
         found: list = []
-        queue, queued = self.walk_from(value)
+        queue: deque = deque()
+        queued: set = set()
+        for value in values:
+            start = str(value[0])
+            if start not in queued:
+                queued.add(start)
+                queue.append((start, 0))
         while queue:
             node_id, depth = queue.popleft()
             if node_id == origin:
@@ -1929,6 +2012,10 @@ class _GraphResolver:
                 if not traced:
                     lineage, traced = self.lineage_predecessor(value), True
                 if node_id != lineage:
+                    if self.same_conditioning(origin, node_id):
+                        # Same positive and negative links: the same prompt
+                        # whichever stage this is (#381).
+                        continue
                     # Not the one continued stage: no stage's prompt is chosen.
                     raise _Unresolved(MULTISTAGE_UNATTRIBUTED_REASON)
                 earlier = node_id
@@ -2062,6 +2149,26 @@ def _parameters(value: Any, max_text_length: int, inspection: bool = False) -> d
     return _result("resolved", positive_side, negative_side)
 
 
+def _file_stem(file_name: Any) -> Optional[str]:
+    """A file name's last path part without its extension, or ``None``."""
+    if not isinstance(file_name, str) or not file_name:
+        return None
+    base = file_name.replace("\\", "/").split("/")[-1]
+    dot = base.rfind(".")
+    stem = base[:dot] if dot > 0 else base
+    return stem or None
+
+
+def _counter_of(prefix: str, stem: str) -> bool:
+    """Whether ``stem`` is ``prefix`` + ``_`` + ASCII digits [+ ``_``]."""
+    if not prefix or not stem.startswith(prefix + "_"):
+        return False
+    rest = stem[len(prefix) + 1 :]
+    if rest.endswith("_"):
+        rest = rest[:-1]
+    return rest != "" and all("0" <= char <= "9" for char in rest)
+
+
 def _profile_with(
     profile: ResolverProfile,
     max_visits: Optional[int],
@@ -2106,6 +2213,7 @@ def resolve_prompt_pair(
     max_visits: Optional[int] = None,
     max_depth: Optional[int] = None,
     max_text_length: Optional[int] = None,
+    file_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve parsed metadata; a present API graph is authoritative over text.
 
@@ -2116,9 +2224,11 @@ def resolve_prompt_pair(
     ``sampler_id`` (the inspection profile first drops stages that only reach
     previews).
     ``profile`` selects the bounds; explicit ``max_*`` keywords override it.
+    ``file_name`` (inspection only, unanchored) anchors on the one saver that
+    wrote that file (``_GraphResolver.saver_stages``) when exactly one matches.
     """
     profile = _profile_with(profile, max_visits, max_depth, max_text_length)
-    result = _resolve(metadata, output_node_id, adapters, profile)
+    result = _resolve(metadata, output_node_id, adapters, profile, file_name)
     return _legacy_result(result) if profile.legacy else result
 
 
@@ -2171,6 +2281,7 @@ def _resolve(
     output_node_id: Optional[str],
     adapters: Optional[Mapping[Tuple[str, int], OutputAdapter]],
     profile: ResolverProfile,
+    file_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(metadata, dict) or not metadata:
         return _result("absent", reason="No parsed prompt metadata")
@@ -2226,14 +2337,19 @@ def _resolve(
                 "unresolved", reason=str(error), reason_code=error.code, node=error.node
             )
     else:
-        sampler_ids = [
+        anchored = (
+            resolver.saver_stages(file_name)
+            if semantics is not None and file_name is not None
+            else None
+        )
+        sampler_ids = anchored or [
             node_id
             for node_id, node in normalized.items()
             if isinstance(node, dict)
             and isinstance(node.get("class_type"), str)
             and node["class_type"] in resolver.sampler_classes
         ]
-        if semantics is not None:
+        if semantics is not None and anchored is None:
             sampler_ids = resolver.final_stages(sampler_ids)
     if not sampler_ids:
         return _no_sampler(normalized, profile)

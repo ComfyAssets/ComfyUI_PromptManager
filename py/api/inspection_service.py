@@ -129,8 +129,9 @@ def inspect_current_file(
         profile = (
             PREVIEW_INSPECTION_PROFILE if _in_host_temp(path) else INSPECTION_PROFILE
         )
+        # The file name anchors on the saver that wrote it (#381).
         evidence = inspect_prompt_evidence(
-            inspection.metadata, role_saved, profile=profile
+            inspection.metadata, role_saved, profile=profile, file_name=path.name
         )
     return {
         "file": {

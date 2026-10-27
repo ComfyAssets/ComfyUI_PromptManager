@@ -1118,8 +1118,17 @@ class LocalProjectionParityTests(unittest.TestCase):
         self.assertTrue({"parsed", "malformed", "limited"} <= seen)
 
 
-def _server_evidence(records):
-    return inspect_prompt_evidence(records, None, profile=INSPECTION_PROFILE)
+def _server_evidence(records, file_name=None):
+    return inspect_prompt_evidence(
+        records, None, profile=INSPECTION_PROFILE, file_name=file_name
+    )
+
+
+FILE_NAME = resolver_cases.FILE_NAME
+
+
+def _records(case):
+    return {key: value for key, value in case.items() if key != FILE_NAME}
 
 
 class LocalResolverParityTests(unittest.TestCase):
@@ -1143,7 +1152,12 @@ class LocalResolverParityTests(unittest.TestCase):
         observed = _run_oracle(
             self,
             [
-                {"name": name, "mode": "resolve", "records": records}
+                {
+                    "name": name,
+                    "mode": "resolve",
+                    "records": _records(records),
+                    "fileName": records.get(FILE_NAME),
+                }
                 for name, records in cases.items()
             ],
         )
@@ -1151,7 +1165,7 @@ class LocalResolverParityTests(unittest.TestCase):
         for name, records in cases.items():
             with self.subTest(case=name):
                 local = observed[name]
-                server = _server_evidence(records)
+                server = _server_evidence(_records(records), records.get(FILE_NAME))
                 answers[name] = server
                 self.assertEqual(
                     _canonical_bytes(local["evidence"]), _canonical_bytes(server)
@@ -1190,7 +1204,7 @@ class LocalResolverParityTests(unittest.TestCase):
                 # The single-chain subset (Task 8); the rest is Task 9's test below.
                 if not resolver_cases.single_chain(records):
                     continue
-                server = _server_evidence(records)
+                server = _server_evidence(records, Path(path).name)
                 self.assertEqual(
                     _canonical_bytes(local["evidence"]), _canonical_bytes(server)
                 )
@@ -1237,7 +1251,8 @@ class LocalResolverParityTests(unittest.TestCase):
                 local, expect = observed[name], vector["expect"]
                 try:
                     server = _server_evidence(
-                        read_inspection_file(files[name]).metadata
+                        read_inspection_file(files[name]).metadata,
+                        Path(files[name]).name,
                     )
                 except MetadataReadError:
                     server = unreadable_evidence()

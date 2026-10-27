@@ -534,6 +534,7 @@ def inspect_prompt_evidence(
     saved: dict | None = None,
     *,
     profile: ResolverProfile = INSPECTION_PROFILE,
+    file_name: str | None = None,
 ) -> dict:
     """Keep uncertainty visible; a saved association never replaces file evidence.
 
@@ -597,7 +598,7 @@ def inspect_prompt_evidence(
     if workflow is not None and "prompt" in canonical:
         # Only to recognize overwritten PromptManager text (R1); never a role.
         canonical["workflow"] = workflow
-    resolved = resolve_prompt_pair(canonical, profile=profile)
+    resolved = resolve_prompt_pair(canonical, profile=profile, file_name=file_name)
     state = resolved["state"]
     result = {}
     for role in ("positive", "negative"):

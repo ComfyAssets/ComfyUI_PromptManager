@@ -129,7 +129,16 @@ function compositeOf(resolver, value) {
 /** `upstream_stages`: samplers reached from a detailer's image input, breadth first; each node draws a visit. */
 function upstreamStages(resolver, origin, value) {
     if (!isLink(value)) throw new Unresolved('Expected an image link', 'malformed');
-    const found = [], start = String(value[0]), queue = [[start, 0]], queued = new Set([start]);
+    return stagesFrom(resolver, origin, [value]);
+}
+
+/** `stages_from`: `upstream_stages` from several start links, queued in order once. */
+export function stagesFrom(resolver, origin, values) {
+    const found = [], queue = [], queued = new Set();
+    for (const value of values) {
+        const start = String(value[0]);
+        if (!queued.has(start)) { queued.add(start); queue.push([start, 0]); }
+    }
     for (let head = 0; head < queue.length; head++) {
         const [nodeId, depth] = queue[head];
         if (nodeId === origin) throw new Unresolved('Cyclic sampler stage ancestry', 'malformed');
@@ -296,6 +305,23 @@ function lineagePredecessor(resolver, value) {
 }
 
 /** `latent_stages`: the one earlier sampler a latent continues, null for a single stage; else unattributed. */
+/** `same_conditioning`: whether two listed samplers read the very same conditioning links. */
+function sameConditioning(resolver, first, second) {
+    const keys = [];
+    for (const nodeId of [first, second]) {
+        const [name, inputs] = resolver.node(nodeId);
+        const conditioning = resolver.semantics.samplers.get(name).conditioning;
+        const values = [];
+        for (const role of Object.keys(conditioning).sort()) {
+            const value = pyGet(inputs, conditioning[role]);
+            if (!isLink(value)) return false;
+            values.push([role, String(value[0]), String(value[1])]);
+        }
+        keys.push(JSON.stringify(values));
+    }
+    return keys[0] === keys[1];
+}
+
 export function latentStages(resolver, origin, value) {
     if (!isLink(value)) throw new Unresolved('Unknown latent ancestry', 'malformed');
     const start = String(value[0]), queue = [[start, 0]], queued = new Set([start]);
@@ -308,7 +334,11 @@ export function latentStages(resolver, origin, value) {
         const [name, inputs] = resolver.node(nodeId);
         if (resolver.stageClasses.has(name)) {
             if (!traced) { lineage = lineagePredecessor(resolver, value); traced = true; }
-            if (nodeId !== lineage) throw new Unresolved(MULTISTAGE_UNATTRIBUTED_REASON);
+            if (nodeId !== lineage) {
+                // Same positive and negative links: the same prompt whichever stage this is (#381).
+                if (sameConditioning(resolver, origin, nodeId)) continue;
+                throw new Unresolved(MULTISTAGE_UNATTRIBUTED_REASON);
+            }
             earlier = nodeId;
             continue;
         }

@@ -777,7 +777,22 @@ parity gate (`tests/test_legacy_parity_gate.py`) records, per corpus (the
 generation-params vectors, the inspection parity fixtures, the local resolver golden
 and selection cases, the unknown-node shapes in `tests/unknown_node_graphs.py`),
 every graph whose inspection positive equals the legacy parser's; a graph may join
-that list (`python3 -m tests.test_legacy_parity_gate --write`), never leave it.
+that list (`python3 -m tests.test_legacy_parity_gate --write`), never leave it. A graph
+may read differently from legacy only when `LEGACY_WRONG` there states why (legacy's
+first-sampler pick on a branch the file name identifies).
+Saver anchoring (#381): an inspected file's name (`path.name` on the server, the chosen
+file's name locally) anchors an unanchored inspection on the one node whose
+`filename_prefix` (literal, or traced as a string) has a last path part that makes the
+file's stem `<prefix>_<digits>` with an optional trailing `_`. That node's linked inputs
+are walked like a detailer's image ancestry, through any image node, and the listed
+samplers found are the candidates. No match, several matches, a walk that fails or no
+sampler found means no anchor: nothing is guessed and the file stays "several possible
+prompts". Ingestion ignores file names. Shared-conditioning stages: in a sampler's
+latent walk, an earlier sampler reading the very same conditioning links (positive and
+negative, or a guider; compared by node ID text and slot) is the same prompt, not an
+unattributed stage (`tests/test_resolver_saver_anchor.py`, shapes in
+`tests/saver_anchor_graphs.py` from the maintainer's `gpu_unlock_bench`, dataset and
+ANIMA runs; browser parity through the `anchor-*` cases, which carry `__file_name`).
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240
