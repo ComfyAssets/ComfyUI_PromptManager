@@ -216,6 +216,7 @@ SEVERAL_SOURCES_REASON = "Several prompts reach the sampler"
 SELECTOR_BRANCHES_REASON = "Selector branches have different prompts"
 # Failures that bound the work: never skipped by a pass-through walk.
 _LIMIT_CODES = frozenset({"work-limit", "depth-limit", "text-limit"})
+_PASSED_UNVERIFIABLE = "Text passed through an unknown node is not verifiable"
 # Inputs that make an unknown node a conditioning transform, not a generator.
 _CONDITIONING_INPUTS = ("conditioning", "positive", "negative")
 # The first item of a pass-through divergence's 3-tuple choice key.
@@ -476,6 +477,8 @@ class _GraphResolver:
         self.latent_charged: set = set()
         # ``semantics`` (inspection) names the samplers and guiders it follows.
         self.semantics = semantics
+        # Nesting depth of execution-record checks (``passed``).
+        self.verifying = 0
         if semantics is None:
             self.sampler_classes = self.stage_classes = _SAMPLERS
         else:
@@ -881,9 +884,30 @@ class _GraphResolver:
     def passed(
         self, node_id: str, slot: int, kind: str, inputs: dict, depth: int
     ) -> Tuple[str, list, str]:
+        """``read_through``, except while checking an execution record.
+
+        A pair node's recorded text is what ran. While its inputs are checked
+        against the record (``execution_record``), any outcome of a walk through
+        an unknown node but running out of visits only means "cannot be read
+        statically" (``unsupported-node``, unverifiable), as before #381.
+        """
+        if not self.verifying:
+            return self.read_through(node_id, slot, kind, inputs, depth)
+        try:
+            return self.read_through(node_id, slot, kind, inputs, depth)
+        except _Diverging:
+            raise self.unsupported(_PASSED_UNVERIFIABLE, node_id) from None
+        except _Unresolved as error:
+            if error.code == "work-limit":
+                raise
+            raise self.unsupported(_PASSED_UNVERIFIABLE, node_id) from None
+
+    def read_through(
+        self, node_id: str, slot: int, kind: str, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
         """An output no rule describes passes its text through (#381).
 
-        A text output (kind ``string`` or ``any``) of a node with a seed input
+        A string output (kind ``string``) of a node with a seed input
         (``seed``, ``noise_seed``, ``sampling_mode.seed``) and no linked
         conditioning input is generated at run time (a language model, a
         wildcard or random line): ``runtime-value``, never its inputs. With a
@@ -898,7 +922,7 @@ class _GraphResolver:
         are a runtime choice with one candidate per text, in input order.
         """
         if (
-            kind != "conditioning"
+            kind == "string"
             and any(name.endswith("seed") for name in inputs)
             and not any(_link(inputs.get(name)) for name in _CONDITIONING_INPUTS)
         ):
@@ -939,15 +963,16 @@ class _GraphResolver:
     def pass_inputs(self, slot: int, inputs: dict) -> list:
         """The linked inputs an unknown node's output is read through.
 
-        Output slot 0 with a linked ``positive`` (slot 1, ``negative``) reads
-        only that input: the paired-conditioning convention, which the legacy
-        parser followed by role. A linked ``conditioning`` is read alone (the
+        Output slot 0 of a node with a ``positive`` or ``negative`` input reads
+        only ``positive`` (slot 1, ``negative``), nothing when that one is not
+        linked: the paired-conditioning convention, which the legacy parser
+        followed by role. A linked ``conditioning`` is read alone (the
         legacy order). Otherwise every linked input but the core type inputs
         (``pass_through.skip_inputs``: model, clip, image, ...) is read.
         """
-        for wanted, name in ((0, "positive"), (1, "negative")):
-            if slot == wanted and _link(inputs.get(name)):
-                return [inputs[name]]
+        if slot in (0, 1) and ("positive" in inputs or "negative" in inputs):
+            value = inputs.get(("positive", "negative")[slot])
+            return [value] if _link(value) else []
         if _link(inputs.get("conditioning")):
             return [inputs["conditioning"]]
         skipped = self.semantics.pass_through["skip_inputs"]
@@ -1160,12 +1185,9 @@ class _GraphResolver:
         if record is None:
             return None
         for name in ("text", "negative_text", "prepend_text", "append_text"):
+            self.verifying += 1
             try:
                 expected, followed, _ = self.text(inputs.get(name, ""), "string")
-            except _Diverging:
-                # Several texts passed through an unknown node (#381): the
-                # record is what ran, so it is not checked against them.
-                continue
             except _Unresolved as error:
                 if self.unverifiable(error):
                     value = inputs.get(name)
@@ -1186,6 +1208,8 @@ class _GraphResolver:
                             raise
                     continue
                 raise
+            finally:
+                self.verifying -= 1
             if self.semantics is not None and self.through_unknown(followed):
                 # A text passed through an unknown node may be transformed there.
                 continue
@@ -1736,6 +1760,12 @@ class _GraphResolver:
             self.choices = {}
         if all(item["state"] == "unresolved" for item in results):
             return results[0]
+        if several:
+            # Chained unknown nodes can offer one text twice: list it once.
+            unique: dict = {}
+            for item in results:
+                unique.setdefault(_outcome_key(item), item)
+            results = list(unique.values())
         if len({_outcome_key(item) for item in results}) == 1:
             return results[0]
         return _result(

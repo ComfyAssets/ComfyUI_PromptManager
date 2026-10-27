@@ -301,3 +301,91 @@ class TestGeneratedAndTransformedText(unittest.TestCase):
             },
         )
         self.assertEqual(_texts(_inspect(graph)), (POSITIVE, ""))
+
+
+class TestReviewFindings(unittest.TestCase):
+    """Shapes from the independent review of the first #381 commit."""
+
+    def _recorded(self, text_source: dict) -> dict:
+        graph = any_switch_graph()
+        graph["10"]["inputs"]["text"] = ["30", 0]
+        graph.update(text_source)
+        metadata = {
+            "prompt": graph,
+            "comfyassets_prompt_pairs": graphs.execution("10", graphs.GENERATED),
+        }
+        return resolve_prompt_pair(metadata, profile=resolver.INSPECTION_PROFILE)
+
+    def test_a_failing_walk_never_overrides_the_recorded_text(self):
+        sources = {
+            "missing": {"30": {"class_type": "XLLM", "inputs": {"src": ["99", 0]}}},
+            "composite": {
+                "30": {"class_type": "XLLM", "inputs": {"src": ["31", 0]}},
+                "31": {
+                    "class_type": "ConditioningCombine",
+                    "inputs": {
+                        "conditioning_1": ["32", 0],
+                        "conditioning_2": ["33", 0],
+                    },
+                },
+                "32": _encode(POSITIVE),
+                "33": _encode(OTHER),
+            },
+            "several": {
+                "30": {
+                    "class_type": "XLLM",
+                    "inputs": {"a": ["31", 0], "b": ["32", 0]},
+                },
+                "31": {"class_type": "PrimitiveString", "inputs": {"value": POSITIVE}},
+                "32": {"class_type": "PrimitiveString", "inputs": {"value": OTHER}},
+            },
+            "list-text": {"30": {"class_type": "XLLM", "inputs": {"text": [1, 2, 3]}}},
+        }
+        for name, source in sources.items():
+            with self.subTest(source=name):
+                result = self._recorded(source)
+                self.assertEqual(result["state"], "resolved", result["reason"])
+                self.assertEqual(_texts(result)[0], graphs.GENERATED)
+
+    def test_the_seed_rule_reads_only_string_outputs(self):
+        graph = _with(
+            any_switch_graph(any_01=["20", 0]),
+            **{
+                "20": {"class_type": "XNoise", "inputs": {"conditioning": ["21", 0]}},
+                "21": {
+                    "class_type": "XSeedEncode",
+                    "inputs": {"clip": ["7", 0], "text": OTHER, "seed": 3},
+                },
+            },
+        )
+        self.assertEqual(_texts(_inspect(graph))[0], OTHER)
+
+    def test_an_unlinked_role_input_adds_nothing(self):
+        graph = any_switch_graph()
+        graph["20"] = {
+            "class_type": "XApply",
+            "inputs": {"positive": ["21", 0], "negative_opt": ""},
+        }
+        graph["21"] = _encode(POSITIVE)
+        graph["17"]["inputs"]["positive"] = ["20", 0]
+        graph["17"]["inputs"]["negative"] = ["20", 1]
+        result = _inspect(graph)
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "unsupported-node")
+        self.assertEqual(result["node"], {"id": "20", "class_type": "XApply"})
+
+    def test_one_text_offered_twice_is_one_candidate(self):
+        graph = _with(
+            any_switch_graph(any_01=["20", 0], any_02=["23", 0]),
+            **{
+                "20": {"class_type": "XB", "inputs": {"p": ["21", 0], "q": ["22", 0]}},
+                "21": _encode(POSITIVE),
+                "22": _encode(OTHER),
+                "23": _encode(POSITIVE),
+            },
+        )
+        result = _inspect(graph)
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(
+            [_texts(item)[0] for item in result["candidates"]], [POSITIVE, OTHER]
+        )

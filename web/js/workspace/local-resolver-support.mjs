@@ -35,6 +35,7 @@ export const SELECTOR_BRANCHES_REASON = 'Selector branches have different prompt
 // Failures that bound the work: never skipped by a pass-through walk (`_LIMIT_CODES`).
 export const PASS_LIMIT_CODES = new Set(['work-limit', 'depth-limit', 'text-limit']);
 export const PASS_THROUGH = 'pass-through';
+export const PASSED_UNVERIFIABLE = 'Text passed through an unknown node is not verifiable';
 // Classes traced by code, not by the table (`_CODED_CLASSES`).
 export const CODED_CLASSES = ['Reroute', 'StringConcatenate', 'Text Concatenate'];
 export const IDENTICAL_BRANCHES_REASON = 'Every sampler branch uses the same prompt pair';

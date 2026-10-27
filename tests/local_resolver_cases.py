@@ -913,7 +913,10 @@ def golden_cases():
         import unknown_node_graphs
     for name, graph in unknown_node_graphs.shapes().items():
         add(f"pass-through-{name}", graph)
-    for name, records in unknown_node_graphs.recorded_shapes().items():
+    for name, records in {
+        **unknown_node_graphs.recorded_shapes(),
+        **unknown_node_graphs.review_shapes(),
+    }.items():
         cases[f"pass-through-{name}"] = records
     cases["parameters-only"] = {
         "parameters": "a fox\nNegative prompt: blur\nSteps: 20, Sampler: euler"

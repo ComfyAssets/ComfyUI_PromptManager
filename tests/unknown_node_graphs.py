@@ -257,3 +257,65 @@ def shapes():
             },
         ),
     }
+
+
+def review_shapes():
+    """Record sets for the review findings on the first #381 commit."""
+
+    def recorded(source):
+        graph = any_switch_graph()
+        graph["10"]["inputs"]["text"] = ["30", 0]
+        graph.update(source)
+        return {
+            "prompt": json.dumps(graph),
+            "comfyassets_prompt_pairs": execution("10", GENERATED),
+        }
+
+    seeded = with_nodes(
+        any_switch_graph(any_01=["20", 0]),
+        **{
+            "20": {"class_type": "XNoise", "inputs": {"conditioning": ["21", 0]}},
+            "21": {
+                "class_type": "XSeedEncode",
+                "inputs": {"clip": ["7", 0], "text": OTHER, "seed": 3},
+            },
+        },
+    )
+    unlinked = any_switch_graph()
+    unlinked["20"] = {
+        "class_type": "XApply",
+        "inputs": {"positive": ["21", 0], "negative_opt": ""},
+    }
+    unlinked["21"] = encode(POSITIVE)
+    unlinked["17"]["inputs"]["positive"] = ["20", 0]
+    unlinked["17"]["inputs"]["negative"] = ["20", 1]
+    twice = with_nodes(
+        any_switch_graph(any_01=["20", 0], any_02=["23", 0]),
+        **{
+            "20": {"class_type": "XB", "inputs": {"p": ["21", 0], "q": ["22", 0]}},
+            "21": encode(POSITIVE),
+            "22": encode(OTHER),
+            "23": encode(POSITIVE),
+        },
+    )
+    return {
+        "recorded-missing": recorded(
+            {"30": {"class_type": "XLLM", "inputs": {"src": ["99", 0]}}}
+        ),
+        "recorded-several": recorded(
+            {
+                "30": {
+                    "class_type": "XLLM",
+                    "inputs": {"a": ["31", 0], "b": ["32", 0]},
+                },
+                "31": {"class_type": "PrimitiveString", "inputs": {"value": POSITIVE}},
+                "32": {"class_type": "PrimitiveString", "inputs": {"value": OTHER}},
+            }
+        ),
+        "recorded-list-text": recorded(
+            {"30": {"class_type": "XLLM", "inputs": {"text": [1, 2, 3]}}}
+        ),
+        "seeded-encoder-behind-noise": {"prompt": json.dumps(seeded)},
+        "unlinked-role-input": {"prompt": json.dumps(unlinked)},
+        "one-text-twice": {"prompt": json.dumps(twice)},
+    }

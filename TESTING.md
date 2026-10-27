@@ -752,16 +752,23 @@ semantics are unavailable") and ingestion is unaffected, because it never import
 Unknown nodes pass through (#381, maintainer-approved 2026-10-27; no per-node
 inventory): an output whose class the table, its `facts`, `lineage` and the code's
 adapters never name is read through, not refused. A `text` input is its text (the
-legacy encoder rule, so RegexReplace or LoRAfromText show their input text). Else
-output slot 0 with a linked `positive` (slot 1, `negative`) follows only that input,
-else a linked `conditioning` alone, else every linked input except the table's
-`pass_through.skip_inputs` (core type inputs: model, clip, vae, image, latent, ...),
-each traced with kind `any`. A followed input with no text adds nothing; limits and
-selector choices propagate; another failure (`runtime-value`, `composite`,
-`malformed`) blocks, unless a PromptManager node was reached: this repository's own
-nodes are authoritative, and then only their texts count. One distinct text
-resolves; several make the sampler `ambiguous` "Several prompts reach the sampler"
-with one candidate per text, in input order (at most 32, else `work-limit`). No text
+legacy encoder rule, so RegexReplace or LoRAfromText show their input text), except
+that a string output of a node with a seed input (`seed`, `noise_seed`,
+`sampling_mode.seed`) and no linked `conditioning`/`positive`/`negative` input is
+generated at run time (a language model such as TextGenerate, a wildcard):
+`runtime-value` naming it. Else, at output slot 0 or 1 of a node with a `positive` or
+`negative` input, only `positive` (slot 1, `negative`) is followed, nothing when it
+is not linked; else a linked `conditioning` alone; else every linked input except
+the table's `pass_through.skip_inputs` (core type inputs: model, clip, vae, image,
+latent, ...), each traced with kind `any`. A followed input with no text adds
+nothing; limits and selector choices propagate; another failure (`runtime-value`,
+`composite`, `malformed`) blocks, unless a PromptManager node was reached: this
+repository's own nodes are authoritative, and then only their texts count. One
+distinct text resolves; several make the sampler `ambiguous` "Several prompts reach
+the sampler" with one candidate per distinct outcome, in input order (at most 32,
+else `work-limit`). A PromptManagerPair's execution record is what ran: while its
+inputs are checked against it, a walk through an unknown node that fails, diverges
+or passes text through is unverifiable and never overrides the record. No text
 at all is `unsupported-node` naming the outermost unknown node. An unlisted output
 of a listed class (a sampler, a loader, a lineage node) stays `unsupported-node`, so
 the walk never reads another stage's prompt. `INSPECTION_RESOLVER_VERSION` is 2 for

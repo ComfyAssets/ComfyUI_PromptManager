@@ -30,6 +30,7 @@ import {
     PASS_THROUGH,
     SELECTOR_BRANCHES_REASON,
     SEVERAL_SOURCES_REASON,
+    PASSED_UNVERIFIABLE,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
     ROLE_METADATA_KEYS,
@@ -82,6 +83,8 @@ class GraphResolver {
         this.latentWalks = new Map();
         this.latentCharged = new Set();
         this.semantics = semantics;
+        // Nesting depth of execution-record checks (`passed`).
+        this.verifying = 0;
         this.samplerClasses = new Set([...semantics.samplers].filter(([, entry]) => CANDIDATE_STRATEGIES.has(entry.strategy)).map(([name]) => name));
         this.stageClasses = new Set(semantics.samplers.keys());
         // `described`: an unlisted output of one of these stays `unsupported-node`; any other class passes through (#381).
@@ -317,11 +320,23 @@ class GraphResolver {
         return this.merged(nodeId, 0, parts);
     }
 
-    /** `passed` (#381): an output no rule describes passes its text through; PromptManager nodes are authoritative. */
+    /** `passed`: `readThrough`, except that while an execution record is checked any outcome but `work-limit` is unverifiable. */
     passed(nodeId, slot, kind, inputs, depth) {
-        // A text output of a node with a seed input is generated at run time (a language model, a wildcard).
+        if (!this.verifying) return this.readThrough(nodeId, slot, kind, inputs, depth);
+        try {
+            return this.readThrough(nodeId, slot, kind, inputs, depth);
+        } catch (error) {
+            if (error instanceof Unresolved && error.code === 'work-limit') throw error;
+            if (error instanceof Unresolved || error instanceof Diverging) throw this.unsupported(PASSED_UNVERIFIABLE, nodeId);
+            throw error;
+        }
+    }
+
+    /** `read_through` (#381): an output no rule describes passes its text through; PromptManager nodes are authoritative. */
+    readThrough(nodeId, slot, kind, inputs, depth) {
+        // A string output of a node with a seed input is generated at run time (a language model, a wildcard).
         // With a linked conditioning input it is a conditioning transform (noise) instead.
-        if (kind !== 'conditioning' && [...inputs.keys()].some(name => name.endsWith('seed')) &&
+        if (kind === 'string' && [...inputs.keys()].some(name => name.endsWith('seed')) &&
             !['conditioning', 'positive', 'negative'].some(name => isLink(pyGet(inputs, name)))) throw this.named(RUNTIME_REASON, 'runtime-value', nodeId);
         if (inputs.has('text')) {
             const traced = this.text(inputs.get('text'), 'string', depth + 1);
@@ -354,8 +369,9 @@ class GraphResolver {
 
     /** `pass_inputs`: the role input by output slot, else `conditioning`, else every linked non-type input. */
     passInputs(slot, inputs) {
-        for (const [wanted, name] of [[0, 'positive'], [1, 'negative']]) {
-            if (slot === wanted && isLink(pyGet(inputs, name))) return [inputs.get(name)];
+        if ((slot === 0 || slot === 1) && (inputs.has('positive') || inputs.has('negative'))) {
+            const value = pyGet(inputs, slot === 0 ? 'positive' : 'negative');
+            return isLink(value) ? [value] : [];
         }
         if (isLink(pyGet(inputs, 'conditioning'))) return [inputs.get('conditioning')];
         return [...inputs].filter(([name, value]) => isLink(value) && !this.semantics.skipInputs.has(name)).map(([, value]) => value);
@@ -489,11 +505,10 @@ class GraphResolver {
         if (record === null) return null;
         for (const name of ['text', 'negative_text', 'prepend_text', 'append_text']) {
             let expected, followed;
+            this.verifying += 1;
             try {
                 [expected, followed] = this.text(pyGet(inputs, name, ''), 'string');
             } catch (error) {
-                // Several texts passed through an unknown node (#381): the record is what ran.
-                if (error instanceof Diverging) continue;
                 if (error instanceof Unresolved && this.unverifiable(error)) {
                     const value = pyGet(inputs, name);
                     if (isLink(value)) {
@@ -505,6 +520,8 @@ class GraphResolver {
                     continue;
                 }
                 throw error;
+            } finally {
+                this.verifying -= 1;
             }
             // A text passed through an unknown node may be transformed there.
             if (this.throughUnknown(followed)) continue;
@@ -562,8 +579,8 @@ class GraphResolver {
     }
 
     branches(samplerId) {
-        const pending = [new Map()], results = [];
-        let several = false;
+        const pending = [new Map()];
+        let results = [], several = false;
         try {
             while (pending.length) {
                 this.choices = pending.shift();
@@ -583,6 +600,12 @@ class GraphResolver {
             this.choices = new Map();
         }
         if (results.every(item => item.state === 'unresolved')) return results[0];
+        if (several) {
+            // Chained unknown nodes can offer one text twice: list it once.
+            const unique = new Map();
+            for (const item of results) if (!unique.has(outcomeKey(item))) unique.set(outcomeKey(item), item);
+            results = [...unique.values()];
+        }
         if (new Set(results.map(outcomeKey)).size === 1) return results[0];
         return result('ambiguous', { samplerId, reason: several ? SEVERAL_SOURCES_REASON : SELECTOR_BRANCHES_REASON, candidates: results });
     }
