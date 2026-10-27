@@ -669,11 +669,15 @@ class ImageTagJobsMixin:
                     job.finish("failed")
                     return
             if not await self._tag_each_file(run):
+                job.update(status_line=STORAGE_RESTORED)
                 job.log_line(f"{verb} stopped · {STORAGE_RESTORED}")
                 job.finish("failed")
                 return
             state = "cancelled" if job.cancelled else "finished"
-            job.log_line(f"{verb} {state} · {_plural(job.processed, 'file')} processed")
+            # An ended job never keeps the loop's "about X min left" (#379).
+            ended = f"{verb} {state} · {_plural(job.processed, 'file')} processed"
+            job.update(status_line=ended)
+            job.log_line(ended)
             job.publish({"type": state, "progress": job.progress})
             job.finish(state)
         finally:

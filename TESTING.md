@@ -1639,6 +1639,9 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
     unchanged, `-` skipped and `!` error.
   - The progress line is the scan's: "Processing file N of M · about X min left", the
     estimate (D56's `_time_left`) shown once two files are done, each file one batch.
+    An ended job never keeps it: its status line becomes "<Add tags | Auto-tag>
+    <finished | cancelled> · N files processed" (or the storage-restored sentence),
+    pinned by `test_an_ended_job_shows_no_time_left` (#379 live check).
   - Download report saves `prompt-manager-image-tags-<YYYYMMDD-HHMM>.json`.
   - The start toasts are "Tagging started." / "Auto-tagging started." (D85); the end
     toasts follow the design's pattern with the job's counts, as the scan's: "<title>
