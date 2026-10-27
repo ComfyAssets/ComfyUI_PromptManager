@@ -17,6 +17,7 @@ from utils.execution_contexts import MAX_ATTEMPT_BYTES
 from utils.execution_output_capture import seal_outputs
 from utils.execution_outputs import snapshot_output_roots
 from utils.execution_history_writer import HistoryWriter
+from tests.history_waits import drain_writer
 
 try:
     from tests import test_execution_history_writer as fixtures
@@ -161,6 +162,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
         start = replace(self.start_command(), run_id=str(fixtures.uuid4()))
         self.assertTrue(writer.submit(start))
         self.finalization(writer, start)
+        # Drain first: the 2 s bound is not under test here (#370).
+        drain_writer(writer)
         self.assertTrue(writer.close(2))
         self.assertEqual(
             self.db.get_execution_run(start.run_id)["outcome"], "succeeded"

@@ -27,6 +27,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
 
 from PIL import Image, PngImagePlugin
 
+from tests.background_stops import close_handler, stop_monitor
 from database.operations import PromptDatabase
 from database.review_schema import canonical_evidence, evidence_digest
 from py.api import PromptManagerAPI
@@ -790,6 +791,7 @@ class TestReviewEdges(ReviewTestCase):
 class TestMonitorRecording(ReviewTestCase):
     def _handler(self):
         handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+        self.addCleanup(close_handler, self, handler)
         return handler
 
     def _linked_prompt(self, path):
@@ -953,7 +955,7 @@ class TestMonitorRecording(ReviewTestCase):
             monitor.set_review_recorder(None)
             self.assertIsNone(monitor.handler.review_recorder)
         finally:
-            monitor.stop_monitoring()
+            stop_monitor(self, monitor)
 
 
 if __name__ == "__main__":
@@ -1092,6 +1094,7 @@ class TestCaptureStoreShutdown(ReviewTestCase):
                 self._scan_record(path)
             # The monitor's pass records nothing, so it needs no store.
             handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+            self.addCleanup(close_handler, self, handler)
             handler.review_recorder = self.api.record_review_file
             handler._record_review(str(path))
             self.assertEqual(self.api.record_review_file(str(path)), "skipped")

@@ -24,6 +24,7 @@ from unittest.mock import patch
 from PIL import Image, PngImagePlugin
 
 from database.operations import PromptDatabase
+from tests.background_stops import close_handler
 from tests.history_waits import drain_writer
 from tests.test_api_admin import AdminAPITestCase
 from tests.test_api_images import ImageAPITestCase
@@ -224,6 +225,7 @@ class TestMonitorIngestsNonFiniteMetadata(StrictRows, unittest.TestCase):
         self.handler.logger.disabled = True
 
     def tearDown(self):
+        close_handler(self, self.handler)
         self.db.close_all()
         assert_closed(self, self.temp.name)
         self.temp.cleanup()

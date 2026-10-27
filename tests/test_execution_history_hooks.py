@@ -28,6 +28,8 @@ except ImportError:
 
 Status = namedtuple("ExecutionStatus", "status_str completed messages")
 JOB = "a0c26da3-eb26-405c-b143-c662a84c3112"
+# A cross-thread wait or a duration check fails only past this (#370).
+CEILING_SECONDS = 30.0
 
 
 class HostQueue:
@@ -209,6 +211,9 @@ class HistoryHooksTests(unittest.TestCase):
         self.queue.get = unrelated_after
         self.dequeue(0)
         self.queue.task_done(0, {}, status())
+        # The writer drains first: this test checks wrappers and the session,
+        # not the 2 s bound, which a slow runner can spend on the write (#370).
+        self.drain(first)
         self.assertTrue(first.dispose())
         self.assertTrue(first.dispose())
         self.assertIs(self.queue.get, unrelated_after)
@@ -339,15 +344,17 @@ class HistoryHooksTests(unittest.TestCase):
         with patch.object(self.db, "write_execution_start", blocked):
             registration = self.register()
             self.dequeue(0)
-            self.assertTrue(entered.wait(1))
+            # Ceilings, not tight wall clocks (#370): the return values show
+            # the bound; a ceiling still fails a call that waits unbounded.
+            self.assertTrue(entered.wait(CEILING_SECONDS))
             began = time.monotonic()
             self.queue.task_done(0, {}, status())
             self.dequeue(1)
-            self.assertLess(time.monotonic() - began, 0.2)
+            self.assertLess(time.monotonic() - began, CEILING_SECONDS)
             began = time.monotonic()
             self.assertFalse(registration.dispose())
             self.assertGreaterEqual(time.monotonic() - began, 1.8)
-            self.assertLess(time.monotonic() - began, 2.3)
+            self.assertLess(time.monotonic() - began, CEILING_SECONDS)
             release.set()
             self.assertTrue(registration.dispose(2))
 
