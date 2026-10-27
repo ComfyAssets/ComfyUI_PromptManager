@@ -23,7 +23,14 @@ import {
     MAX_JOIN_INPUTS,
     MAX_SUBGRAPH_DEPTH,
     MAX_WORKFLOW_NODES,
+    CODED_CLASSES,
     NO_SAMPLER_NAMES,
+    OWN_CLASSES,
+    PASS_LIMIT_CODES,
+    PASS_THROUGH,
+    SELECTOR_BRANCHES_REASON,
+    SEVERAL_SOURCES_REASON,
+    PASSED_UNVERIFIABLE,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
     ROLE_METADATA_KEYS,
@@ -45,7 +52,7 @@ import {
     sideOf,
     slotKey,
 } from './local-resolver-support.mjs';
-import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage } from './local-resolver-stages.mjs';
+import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage, stagesFrom } from './local-resolver-stages.mjs';
 import { parameters } from './local-parameters.mjs';
 
 export { SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
@@ -76,8 +83,13 @@ class GraphResolver {
         this.latentWalks = new Map();
         this.latentCharged = new Set();
         this.semantics = semantics;
+        // Nesting depth of execution-record checks (`passed`).
+        this.verifying = 0;
         this.samplerClasses = new Set([...semantics.samplers].filter(([, entry]) => CANDIDATE_STRATEGIES.has(entry.strategy)).map(([name]) => name));
         this.stageClasses = new Set(semantics.samplers.keys());
+        // `described`: an unlisted output of one of these stays `unsupported-node`; any other class passes through (#381).
+        this.described = new Set([...semantics.allClasses, ...[...semantics.lineage.keys()].map(key => key.split('\u0000')[0]),
+            ...[...ADAPTERS.keys()].map(key => key.split('\u0000')[0]), ...CODED_CLASSES, ...semantics.factClasses]);
     }
 
     node(nodeId) {
@@ -156,7 +168,7 @@ class GraphResolver {
                 [text, path, storageText] = this.text(inputs.get(keys[0]), kind, depth + 1);
                 this.inheritSource(nodeId, slot, [path]);
             } else if (adapted) {
-                if (adapted.kind !== kind) throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
+                if (kind !== 'any' && adapted.kind !== kind) throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
                 const evidence = name === 'PromptManagerPair' ? this.executionRecord(nodeId, inputs) : null;
                 if (evidence !== null) {
                     text = evidence[adapted.inputName === 'text' ? 'positive_text' : 'negative_effective_text'];
@@ -178,11 +190,13 @@ class GraphResolver {
                         if (omitted.length) this.omitting.add(slotKey(nodeId, slot));
                     }
                 }
-            } else if ((name === 'StringConcatenate' || name === 'Text Concatenate') && slot === 0 && kind === 'string') {
+            } else if ((name === 'StringConcatenate' || name === 'Text Concatenate') && slot === 0 && (kind === 'string' || kind === 'any')) {
                 [text, path] = this.concatenate(name, inputs, depth);
                 storageText = text;
             } else if (this.follows(name, slot, kind)) {
                 [text, path, storageText] = this.semantic(nodeId, name, slot, kind, inputs, depth);
+            } else if (!this.described.has(name)) {
+                [text, path, storageText] = this.passed(nodeId, slot, kind, inputs, depth);
             } else {
                 throw this.unsupported('Unsupported node semantics or output slot', nodeId);
             }
@@ -258,7 +272,7 @@ class GraphResolver {
         if (semantics.runtime.has(name)) return true;
         if (semantics.encoders.has(key) || semantics.strings.has(key)) return true;
         if (slot === 0 && semantics.selectors.has(name)) return true;
-        return kind === 'conditioning' && (semantics.conditioning.has(key) || (slot === 0 && semantics.composites.has(name)));
+        return (kind === 'conditioning' || kind === 'any') && (semantics.conditioning.has(key) || (slot === 0 && semantics.composites.has(name)));
     }
 
     semantic(nodeId, name, slot, kind, inputs, depth) {
@@ -267,11 +281,11 @@ class GraphResolver {
         for (const [table, expected, build] of [[semantics.encoders, 'conditioning', 'encoded'], [semantics.strings, 'string', 'stringed']]) {
             const listed = table.get(key);
             if (listed !== undefined) {
-                if (kind !== expected) throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
+                if (kind !== expected && kind !== 'any') throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
                 return this[build](nodeId, listed, inputs, depth);
             }
         }
-        const entry = kind === 'conditioning' ? semantics.conditioning.get(key) : undefined;
+        const entry = kind === 'conditioning' || kind === 'any' ? semantics.conditioning.get(key) : undefined;
         if (entry !== undefined && entry.strategy === 'zeroed') {
             this.textSources.set(slotKey(nodeId, slot), ZEROED_SOURCE);
             return ['', [], ''];
@@ -302,8 +316,112 @@ class GraphResolver {
             return traced;
         }
         const parts = ['true', 'false'].map(label => this.text(pyGet(inputs, branches[label]), kind, depth + 1));
-        if (parts[0][0] !== parts[1][0]) throw new Diverging(slotKey(String(condition[0]), condition[1]));
+        if (parts[0][0] !== parts[1][0]) throw new Diverging(slotKey(String(condition[0]), condition[1]), [true, false]);
         return this.merged(nodeId, 0, parts);
+    }
+
+    /** `passed`: `readThrough`, except that while an execution record is checked any outcome but `work-limit` is unverifiable. */
+    passed(nodeId, slot, kind, inputs, depth) {
+        if (!this.verifying) return this.readThrough(nodeId, slot, kind, inputs, depth);
+        try {
+            return this.readThrough(nodeId, slot, kind, inputs, depth);
+        } catch (error) {
+            if (error instanceof Unresolved && error.code === 'work-limit') throw error;
+            if (error instanceof Unresolved || error instanceof Diverging) throw this.unsupported(PASSED_UNVERIFIABLE, nodeId);
+            throw error;
+        }
+    }
+
+    /** `read_through` (#381): an output no rule describes passes its text through; PromptManager nodes are authoritative. */
+    readThrough(nodeId, slot, kind, inputs, depth) {
+        // A string output of a node with a seed input is generated at run time (a language model, a wildcard).
+        // With a linked conditioning input it is a conditioning transform (noise) instead.
+        if (kind === 'string' && [...inputs.keys()].some(name => name.endsWith('seed')) &&
+            !['conditioning', 'positive', 'negative'].some(name => isLink(pyGet(inputs, name)))) throw this.named(RUNTIME_REASON, 'runtime-value', nodeId);
+        if (inputs.has('text')) {
+            const traced = this.text(inputs.get('text'), 'string', depth + 1);
+            this.inheritSource(nodeId, slot, [traced[1]]);
+            return traced;
+        }
+        let found = [], blocking = null;
+        for (const value of this.passInputs(slot, inputs)) {
+            try {
+                found.push(this.text(value, 'any', depth + 1));
+            } catch (error) {
+                if (!(error instanceof Unresolved) || PASS_LIMIT_CODES.has(error.code)) throw error;
+                if (error.code !== 'unsupported-node' && blocking === null) blocking = error;
+            }
+        }
+        const owned = found.filter(traced => this.owned(traced[1]));
+        if (owned.length) found = owned;
+        else if (blocking !== null) throw blocking;
+        if (!found.length) throw this.unsupported('Unsupported node semantics or output slot', nodeId);
+        const texts = [...new Set(found.map(traced => traced[0]))];
+        if (texts.length === 1) return this.merged(nodeId, slot, found);
+        if (texts.length > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
+        // JSON escapes U+0000, so this never equals a selector's raw `slotKey` (Python: a 3-tuple vs a 2-tuple).
+        const key = JSON.stringify([PASS_THROUGH, nodeId, slot]);
+        if (!this.choices.has(key)) throw new Diverging(key, texts.map((_, index) => index), true);
+        this.tainted = true;
+        const chosen = texts[this.choices.get(key)];
+        return this.merged(nodeId, slot, found.filter(traced => traced[0] === chosen));
+    }
+
+    /** `pass_inputs`: the role input by output slot, else `conditioning`, else every linked non-type input. */
+    passInputs(slot, inputs) {
+        if ((slot === 0 || slot === 1) && (inputs.has('positive') || inputs.has('negative'))) {
+            const value = pyGet(inputs, slot === 0 ? 'positive' : 'negative');
+            return isLink(value) ? [value] : [];
+        }
+        if (isLink(pyGet(inputs, 'conditioning'))) return [inputs.get('conditioning')];
+        return [...inputs].filter(([name, value]) => isLink(value) && !this.semantics.skipInputs.has(name)).map(([, value]) => value);
+    }
+
+    /** `saver_stages` (#381): the candidate samplers of the one saver whose prefix names the file, or null (never guessed). */
+    saverStages(fileName) {
+        const stem = fileStem(fileName);
+        if (stem === null) return null;
+        this.budget.reset(this.perCandidateVisits);
+        let found;
+        try {
+            const matches = [...this.graph].filter(([, node]) => this.writes(node, stem)).map(([id]) => id);
+            if (matches.length !== 1) return null;
+            const [, inputs] = this.node(matches[0]);
+            const values = [...inputs].filter(([name, value]) => name !== 'filename_prefix' && isLink(value)).map(([, value]) => value);
+            found = stagesFrom(this, matches[0], values);
+        } catch (error) {
+            if (error instanceof Unresolved || error instanceof Diverging) return null;
+            throw error;
+        }
+        const candidates = found.filter(id => this.samplerClasses.has(this.graph.get(id).get('class_type')));
+        return candidates.length ? candidates : null;
+    }
+
+    /** `writes`: whether a node's `filename_prefix` (literal or traced) names the file `stem`. */
+    writes(node, stem) {
+        if (!isDict(node) || !isDict(pyGet(node, 'inputs'))) return false;
+        let prefix = pyGet(node.get('inputs'), 'filename_prefix');
+        if (isLink(prefix)) {
+            try { prefix = this.text(prefix, 'string')[0]; } catch (error) {
+                // An unfinished scan anchors nothing (never a guess): work-limit ends the match scan.
+                if (error instanceof Diverging || (error instanceof Unresolved && error.code !== 'work-limit')) return false;
+                throw error;
+            }
+        }
+        if (typeof prefix !== 'string') return false;
+        return counterOf(prefix.replaceAll('\\', '/').split('/').at(-1), stem);
+    }
+
+    /** `through_unknown`: whether a followed path passes through a node no rule describes. */
+    throughUnknown(path) {
+        this.scan(path.length);
+        return path.some(step => !this.described.has(this.node(step.node_id)[0]));
+    }
+
+    /** `owned`: whether a followed path passes through one of this repository's nodes. */
+    owned(path) {
+        this.scan(path.length);
+        return path.some(step => OWN_CLASSES.has(this.node(step.node_id)[0]));
     }
 
     merged(nodeId, slot, parts) {
@@ -421,9 +539,10 @@ class GraphResolver {
         const record = readPairExecution(this.metadata, nodeId);
         if (record === null) return null;
         for (const name of ['text', 'negative_text', 'prepend_text', 'append_text']) {
-            let expected;
+            let expected, followed;
+            this.verifying += 1;
             try {
-                expected = this.text(pyGet(inputs, name, ''), 'string')[0];
+                [expected, followed] = this.text(pyGet(inputs, name, ''), 'string');
             } catch (error) {
                 if (error instanceof Unresolved && this.unverifiable(error)) {
                     const value = pyGet(inputs, name);
@@ -436,7 +555,11 @@ class GraphResolver {
                     continue;
                 }
                 throw error;
+            } finally {
+                this.verifying -= 1;
             }
+            // A text passed through an unknown node may be transformed there.
+            if (this.throughUnknown(followed)) continue;
             if (name === 'prepend_text' || name === 'append_text') expected = pyStrip(expected);
             if (expected !== record[name]) throw new Unresolved('Execution evidence does not match recorded node inputs', 'malformed');
         }
@@ -491,7 +614,8 @@ class GraphResolver {
     }
 
     branches(samplerId) {
-        const pending = [new Map()], results = [];
+        const pending = [new Map()];
+        let results = [], several = false;
         try {
             while (pending.length) {
                 this.choices = pending.shift();
@@ -499,8 +623,9 @@ class GraphResolver {
                     results.push(stage(this, samplerId, new Set()));
                 } catch (error) {
                     if (!(error instanceof Diverging)) throw error;
-                    if (results.length + pending.length + 2 > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
-                    for (const choice of [true, false]) pending.push(new Map([...this.choices, [error.key, choice]]));
+                    if (results.length + pending.length + error.choices.length > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
+                    several = several || error.sources;
+                    for (const choice of error.choices) pending.push(new Map([...this.choices, [error.key, choice]]));
                 }
             }
         } catch (error) {
@@ -510,8 +635,14 @@ class GraphResolver {
             this.choices = new Map();
         }
         if (results.every(item => item.state === 'unresolved')) return results[0];
+        if (several) {
+            // Chained unknown nodes can offer one text twice: list it once.
+            const unique = new Map();
+            for (const item of results) if (!unique.has(outcomeKey(item))) unique.set(outcomeKey(item), item);
+            results = [...unique.values()];
+        }
         if (new Set(results.map(outcomeKey)).size === 1) return results[0];
-        return result('ambiguous', { samplerId, reason: 'Selector branches have different prompts', candidates: results });
+        return result('ambiguous', { samplerId, reason: several ? SEVERAL_SOURCES_REASON : SELECTOR_BRANCHES_REASON, candidates: results });
     }
 
     sides(samplerId) {
@@ -673,8 +804,25 @@ function overwrittenPromptNodes(workflow, graph) {
     return found;
 }
 
-/** `_resolve` for an unanchored inspection (output_node_id None). */
-function resolve(metadata, semantics) {
+/** `_file_stem`: a file name's last path part without its extension, or null. */
+function fileStem(fileName) {
+    if (typeof fileName !== 'string' || !fileName) return null;
+    const base = fileName.replaceAll('\\', '/').split('/').at(-1);
+    const dot = base.lastIndexOf('.');
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    return stem || null;
+}
+
+/** `_counter_of`: whether `stem` is `prefix` + `_` + ASCII digits [+ `_`]. */
+function counterOf(prefix, stem) {
+    if (!prefix || !stem.startsWith(`${prefix}_`)) return false;
+    let rest = stem.slice(prefix.length + 1);
+    if (rest.endsWith('_')) rest = rest.slice(0, -1);
+    return rest !== '' && /^[0-9]+$/.test(rest);
+}
+
+/** `_resolve` for an unanchored inspection (output_node_id None); `fileName` anchors on its saver (#381). */
+function resolve(metadata, semantics, fileName = null) {
     if (!isDict(metadata) || !metadata.size) return result('absent', { reason: 'No parsed prompt metadata' });
     let graph;
     if (metadata.has('prompt')) graph = metadata.get('prompt');
@@ -688,7 +836,8 @@ function resolve(metadata, semantics) {
         overwritten = overwrittenPromptNodes(pyGet(metadata, 'workflow'), graph);
     }
     const resolver = new GraphResolver(graph, metadata.has('prompt') ? metadata : null, semantics, overwritten);
-    const samplerIds = finalStages(resolver, [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' &&
+    const anchored = fileName === null ? null : resolver.saverStages(fileName);
+    const samplerIds = anchored ?? finalStages(resolver, [...graph].filter(([, node]) => isDict(node) && typeof pyGet(node, 'class_type') === 'string' &&
         resolver.samplerClasses.has(node.get('class_type'))).map(([id]) => id));
     if (!samplerIds.length) return noSampler(graph);
     if (samplerIds.length > 1) {
@@ -734,7 +883,7 @@ export function unreadableEvidence() {
  * local read found (`{prompt, workflow, parameters, comfyassets_prompt_pairs}` texts). `semantics` is
  * `compileSemantics(...)`'s table, or null when it could not be loaded.
  */
-export function resolveLocalEvidence(records, semantics) {
+export function resolveLocalEvidence(records, semantics, fileName = null) {
     const source = records !== null && typeof records === 'object' ? records : {};
     const metadata = new Map(Object.entries(source).filter(([key]) => ROLE_METADATA_KEYS.has(key)));
     const malformedResolution = { state: 'unresolved', sampler_id: null, reason: MALFORMED_EVIDENCE_REASON, reason_code: 'malformed', node: null };
@@ -754,7 +903,7 @@ export function resolveLocalEvidence(records, semantics) {
     }
     const workflow = mayHoldPromptManager(metadata) ? parsedWorkflow(source.workflow ?? null) : null;
     if (workflow !== null && metadata.has('prompt')) metadata.set('workflow', workflow);
-    const resolved = resolve(metadata, semantics);
+    const resolved = resolve(metadata, semantics, fileName);
     const state = resolved.state, prompts = {};
     for (const role of ['positive', 'negative']) {
         const side = resolved[role];

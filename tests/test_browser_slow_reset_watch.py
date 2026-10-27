@@ -221,12 +221,12 @@ class TestSlowResetOnTheServer(unittest.TestCase):
             self.assertRegex(
                 text, r"kernel: asyncio_\d+ \(0x[0-9a-f]{16}\) state \w, waiting in "
             )
-        # The plain reset's seed() waits on its first DELETE.
-        self.assertRegex(text, r"line \d+ in seed\n")
+        # The plain reset seeds a scratch copy (#384), then waits to publish it.
+        self.assertRegex(text, r"line \d+ in _publish\n")
         self.assertIn("POST /__test__/reset answered 200 after", text)
         self.assertRegex(
             text,
-            r"executor call create_app.<locals>.seed: queued \d+\.\d+s, ran \d+\.\d+s",
+            r"executor call ScratchSeeder.run: queued \d+\.\d+s, ran \d+\.\d+s",
         )
 
 

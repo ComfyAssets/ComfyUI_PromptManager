@@ -155,7 +155,9 @@ test('committed server answers equal the local evidence', () => {
         value !== null && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
     let compared = 0;
     for (const {name, records, evidence} of vectors) {
-        assert.deepEqual(canonical(resolver.resolveLocalEvidence(records, semantics)), canonical(evidence), name);
+        // A case may name the inspected file (`__file_name`, #381 saver anchoring); it is no record.
+        const {__file_name: fileName = null, ...roles} = records;
+        assert.deepEqual(canonical(resolver.resolveLocalEvidence(roles, semantics, fileName)), canonical(evidence), name);
         compared++;
     }
     assert.ok(compared > 280, `compared ${compared}`);

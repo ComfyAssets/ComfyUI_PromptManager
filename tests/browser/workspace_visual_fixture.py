@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import shutil
 from typing import TYPE_CHECKING
 
 from PIL import Image, ImageDraw
 from PIL.PngImagePlugin import PngInfo
 
 from utils.hashing import generate_prompt_hash
+from tests.browser.folder_trash import replace_folder
 
 if TYPE_CHECKING:
     from py.api import PromptManagerAPI
@@ -129,8 +129,7 @@ def seed_workspace_visual(api: PromptManagerAPI, root: Path) -> None:
         ):
             conn.execute(f"DELETE FROM {table}")
     for name in ("output", "input"):
-        shutil.rmtree(root / name)
-        (root / name).mkdir()
+        replace_folder(root / name)
     for parent_index, (positive, negatives) in enumerate(zip(_POSITIVES, _NEGATIVES)):
         category = ("Architecture", "Landscape", "Abstract")[parent_index % 3]
         tags = ["geometric", ("warm", "cool")[parent_index % 2]]

@@ -59,6 +59,7 @@ def _minimal():
             {"class": "VAEEncode", "slot": 0, "strategy": "continue", "input": "pixels"}
         ],
         "stage_inputs": {"shaped": ["positive"], "with_model": ["samples"]},
+        "pass_through": {"skip_inputs": ["clip"]},
         "facts": {
             "configuration_outputs": {},
             "model_outputs": {},
@@ -690,6 +691,18 @@ class ValidationTest(_TableCase):
             (lambda d: d["stage_inputs"].update(shaped="pipe"), "input name"),
             (lambda d: d["stage_inputs"].update(with_model=["positive"]), "both"),
             (lambda d: d["stage_inputs"].update(shaped=["model"]), "model"),
+            (lambda d: d.pop("pass_through"), "category"),
+            (lambda d: d["pass_through"].update(extra=["x"]), "pass_through"),
+            (lambda d: d["pass_through"].update(skip_inputs="clip"), "input name"),
+            (lambda d: d["pass_through"].update(skip_inputs=[]), "input name"),
+            (
+                lambda d: d["pass_through"].update(skip_inputs=["clip", "clip"]),
+                "repeated",
+            ),
+            (
+                lambda d: d["pass_through"].update(skip_inputs=["conditioning"]),
+                "carries text",
+            ),
             (
                 lambda d: d["facts"]["configuration_outputs"].update(
                     X={"kind": "sigmas", "fields": ["steps"], "type_fields": []}

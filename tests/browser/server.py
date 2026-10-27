@@ -19,8 +19,10 @@ from aiohttp.web_runner import GracefulExit
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from tests.browser.folder_trash import close_trash, replace_folder
 from tests.browser.request_hold import register_request_holds
 from tests.browser import slow_reset_watch
+from tests.browser.fast_reset import SEED_ON_LIVE_ENV, ScratchSeeder
 from tests.browser.workspace_activity_fixture import register_activity_commands
 from tests.browser.workspace_system_fixture import register_system_commands
 from tests.browser.workspace_integrations_fixture import (
@@ -232,6 +234,10 @@ def create_app(root: Path) -> web.Application:
     reset_logs = register_diagnostics_commands(app, routes, api, root)
     request_holds = register_request_holds(app, routes)
     slow_reset_watch.install(app, api)
+    # Resets seed a scratch copy and publish it in one commit (#384).
+    seeder = ScratchSeeder(
+        api, root / "reset-scratch", on_live=os.environ.get(SEED_ON_LIVE_ENV) == "1"
+    )
 
     async def canonical_asset(request: web.Request) -> web.Response:
         filename, content_type = CANONICAL_ASSETS[request.path]
@@ -245,6 +251,7 @@ def create_app(root: Path) -> web.Application:
         routes.get(path)(canonical_asset)
 
     def seed(
+        target,
         extra_images: int = 0,
         include_video: bool = False,
         prompt_inspector: bool = False,
@@ -252,7 +259,7 @@ def create_app(root: Path) -> web.Application:
         extra_prompts: int = 0,
         extra_variants: int = 0,
     ) -> None:
-        with api.db.model.get_connection() as conn:
+        with target.db.model.get_connection() as conn:
             for table in (
                 "saved_views",
                 "image_favorites",
@@ -271,8 +278,7 @@ def create_app(root: Path) -> web.Application:
             ):
                 conn.execute(f"DELETE FROM {table}")
         for name in ("output", "input"):
-            shutil.rmtree(root / name)
-            (root / name).mkdir()
+            replace_folder(root / name)
         for index, (directory, text, tag) in enumerate(
             [
                 ("output", "Cat portrait", "cats"),
@@ -315,28 +321,30 @@ def create_app(root: Path) -> web.Application:
                     image.save(image_path, pnginfo=info)
             stamp = time.time() - index * 10
             os.utime(image_path, (stamp, stamp))
-            pid = api.db.save_prompt(
+            pid = target.db.save_prompt(
                 text, tags=[tag], prompt_hash=generate_prompt_hash(text)
             )
-            api.db.link_image_to_prompt(pid, str(image_path))
+            target.db.link_image_to_prompt(pid, str(image_path))
             if index == 0:
                 video_prompt_id = pid
                 for number in range(extra_images):
                     extra = root / directory / "bulk" / f"{number:04}.png"
                     extra.parent.mkdir(exist_ok=True)
                     shutil.copyfile(image_path, extra)
-                    api.db.link_image_to_prompt(pid, str(extra))
+                    target.db.link_image_to_prompt(pid, str(extra))
         if native_library:
-            positive = api.db.get_prompt_by_hash(generate_prompt_hash("Cat portrait"))
+            positive = target.db.get_prompt_by_hash(
+                generate_prompt_hash("Cat portrait")
+            )
             positive_id = positive["id"]
-            api.db.update_prompt_metadata(
+            target.db.update_prompt_metadata(
                 positive_id, category="Animals", tags=["cats", "studio"]
             )
             variants = []
             for index, negative in enumerate(
                 ["blurry, watermark", "low quality", "low contrast", ""]
             ):
-                pair_id = api.db.save_prompt_pair(
+                pair_id = target.db.save_prompt_pair(
                     "Cat portrait",
                     negative,
                     title=f"Portrait variant {index + 1}",
@@ -344,28 +352,30 @@ def create_app(root: Path) -> web.Application:
                     tags=["studio"] if index == 0 else ["outdoors"],
                 )
                 variants.append(pair_id)
-            with api.db.model.get_connection() as conn:
+            with target.db.model.get_connection() as conn:
                 images = conn.execute(
                     "SELECT id FROM generated_images WHERE prompt_id=? ORDER BY id",
                     (positive_id,),
                 ).fetchall()
             for index, image in enumerate(images[:2]):
-                api.db.link_image_to_pair(
+                target.db.link_image_to_pair(
                     variants[index], image["id"], {"source": "fixture", "anchor": index}
                 )
-            api.db.link_image_to_pair(
+            target.db.link_image_to_pair(
                 variants[0], images[0]["id"], {"source": "fixture second evidence"}
             )
-            api.db.record_prompt_pair_use(variants[0], times=3)
+            target.db.record_prompt_pair_use(variants[0], times=3)
             for number in range(extra_variants):
-                api.db.save_prompt_pair("Cat portrait", f"Negative extra {number:04}")
+                target.db.save_prompt_pair(
+                    "Cat portrait", f"Negative extra {number:04}"
+                )
             legacy = root / "output" / "legacy-unassigned.png"
             shutil.copyfile(root / "output" / "shared" / "same.png", legacy)
-            api.db.link_image_to_prompt(positive_id, str(legacy))
-            api.db.save_prompt("Dog landscape", category="Animals", tags=["dogs"])
-            api.db.save_prompt_pair("Dual role portrait", "Cat portrait")
+            target.db.link_image_to_prompt(positive_id, str(legacy))
+            target.db.save_prompt("Dog landscape", category="Animals", tags=["dogs"])
+            target.db.save_prompt_pair("Dual role portrait", "Cat portrait")
             for number in range(extra_prompts):
-                api.db.save_prompt(
+                target.db.save_prompt(
                     f"Library extra {number:04}", category="Bulk", tags=["bulk"]
                 )
         if prompt_inspector:
@@ -386,8 +396,8 @@ def create_app(root: Path) -> web.Application:
         from py.api.thumbnail_settings import ThumbnailSettings
 
         # 150 px previews in the default format (#317 thumbnail settings).
-        api._generate_gallery_thumbnails_sync(
-            api._get_all_output_dirs(), ThumbnailSettings("webp", 80, 150)
+        target._generate_gallery_thumbnails_sync(
+            target._get_all_output_dirs(), ThumbnailSettings("webp", 80, 150)
         )
         if include_video:
             # Seed after thumbnail generation to exercise a real unthumbnailed video.
@@ -395,8 +405,8 @@ def create_app(root: Path) -> web.Application:
             shutil.copyfile(
                 Path(__file__).resolve().parents[1] / "fixtures" / "tiny.webm", video
             )
-            api.db.link_image_to_prompt(video_prompt_id, str(video))
-        api.invalidate_gallery_cache()
+            target.db.link_image_to_prompt(video_prompt_id, str(video))
+        target.invalidate_gallery_cache()
 
     history_fixture = None
 
@@ -442,7 +452,10 @@ def create_app(root: Path) -> web.Application:
             raise web.HTTPBadRequest()
         if chronological_history:
             manifest = await api._run_in_executor(
-                lambda: seed_workspace_history(api, root, history_runs=history_runs)
+                seeder.run,
+                lambda target: seed_workspace_history(
+                    target, root, history_runs=history_runs
+                ),
             )
             history_fixture = manifest
             return web.json_response({"success": True, **manifest})
@@ -500,25 +513,31 @@ def create_app(root: Path) -> web.Application:
             raise web.HTTPBadRequest()
         if workspace_visual:
             history_fixture = None
-            await api._run_in_executor(seed_workspace_visual, api, root)
+            await api._run_in_executor(
+                seeder.run, lambda target: seed_workspace_visual(target, root)
+            )
             return web.json_response({"success": True})
         if full_inspector:
             history_fixture = None
             await api._run_in_executor(
-                lambda: seed_workspace_inspector(
-                    api, root, extra_images=extra, include_video=include_video
-                )
+                seeder.run,
+                lambda target: seed_workspace_inspector(
+                    target, root, extra_images=extra, include_video=include_video
+                ),
             )
             return web.json_response({"success": True})
         history_fixture = None
         await api._run_in_executor(
-            seed,
-            extra,
-            include_video,
-            prompt_inspector,
-            native_library,
-            extra_prompts,
-            extra_variants,
+            seeder.run,
+            lambda target: seed(
+                target,
+                extra,
+                include_video,
+                prompt_inspector,
+                native_library,
+                extra_prompts,
+                extra_variants,
+            ),
         )
         return web.json_response({"success": True})
 
@@ -558,14 +577,15 @@ def create_app(root: Path) -> web.Application:
         reveal_stub.reset()
         history_fixture = None
         manifest = await api._run_in_executor(
-            lambda: seed_workspace_concept(
-                api,
+            seeder.run,
+            lambda target: seed_workspace_concept(
+                target,
                 root,
                 extra_images=data.get("extra_images", 0),
                 seedless_images=data.get("seedless_images", 0),
                 short_seedless=data.get("short_seedless", False),
                 now=data.get("now"),
-            )
+            ),
         )
         return web.json_response({"success": True, **manifest})
 
@@ -633,9 +653,12 @@ def create_app(root: Path) -> web.Application:
     async def cleanup(application: web.Application) -> None:
         # A scan of an ambiguous fixture file captures it for Needs review.
         api.close_annotation_captures()
+        seeder.close()
         api.db.close_all()
+        # Old media folders still waiting for deletion go before the temp root.
+        close_trash(root)
 
-    seed()
+    seed(api)
     # Open Needs review change streams end first, as on the real host.
     app.on_shutdown.append(api.close_review_events)
     app.on_cleanup.append(cleanup)
