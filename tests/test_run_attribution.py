@@ -12,7 +12,6 @@ from unittest import mock
 from database.run_attribution import (
     RecordedOutput,
     recorded_output,
-    recorded_output_node,
     stored_run_prompt,
 )
 from tests import test_execution_history_database as history_tests
@@ -195,7 +194,8 @@ class TestRecordedOutputNode(RecordedRuns, unittest.TestCase):
     setUp = TestStoredRunPrompt.setUp
 
     def node(self, path=None):
-        return recorded_output_node(self.db, path or self.image, self.output)
+        found = recorded_output(self.db, path or self.image, self.output)
+        return found.saver_id if found is not None else None
 
     def test_one_run_one_saver_names_the_saver(self):
         other = os.path.join(self.output, "sub", "img_00002_.png")
@@ -248,8 +248,8 @@ class TestRecordedOutputNode(RecordedRuns, unittest.TestCase):
         other = os.path.join(self.output, "sub", "other.png")
         Path(other).write_bytes(b"png")
         self.assertIsNone(self.node(other))
-        self.assertIsNone(recorded_output_node(self.db, self.image, None))
-        self.assertIsNone(recorded_output_node(self.db, "", self.output))
+        self.assertIsNone(recorded_output(self.db, self.image, None))
+        self.assertIsNone(recorded_output(self.db, "", self.output))
 
     def test_the_run_texts_recorded_at_execution_come_with_the_saver(self):
         self.record_run(
@@ -341,7 +341,7 @@ class TestRecordedOutputNode(RecordedRuns, unittest.TestCase):
         broken.model.get_connection.return_value.execute.side_effect = (
             sqlite3.OperationalError("no such table")
         )
-        self.assertIsNone(recorded_output_node(broken, self.image, self.output))
+        self.assertIsNone(recorded_output(broken, self.image, self.output))
 
 
 class TestScanUsesHistory(RecordedRuns, AdminAPITestCase):

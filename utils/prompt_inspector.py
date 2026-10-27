@@ -661,14 +661,16 @@ def inspect_prompt_evidence(
             file_name=file_name,
             recorded_saver_id=recorded_saver_id,
         )
-        if anchored["state"] not in _UNDECIDED and isinstance(
-            anchored["positive"], dict
-        ):
-            resolved, recorded = anchored, True
-    if resolved["state"] in _UNDECIDED and recorded_texts:
-        executed = _recorded_execution(resolved, recorded_texts)
-        if executed is not None:
-            return executed
+        # Only a result whose samplers history's saver chose is about this file.
+        if anchored.get("recorded_anchor") is True:
+            if anchored["state"] not in _UNDECIDED and isinstance(
+                anchored["positive"], dict
+            ):
+                resolved, recorded = anchored, True
+            elif recorded_texts:
+                executed = _recorded_execution(anchored, recorded_texts)
+                if executed is not None:
+                    return executed
     state = resolved["state"]
     result = {}
     for role in ("positive", "negative"):

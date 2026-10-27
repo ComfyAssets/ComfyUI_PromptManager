@@ -1601,6 +1601,11 @@ class _GraphResolver:
         several, an unreadable walk or no candidate sampler is ``None``: the
         file is then judged unanchored, never guessed (#381).
         """
+        match = self.saver_match(file_name)
+        return self.saver_walk(match) if match is not None else None
+
+    def saver_match(self, file_name: Any) -> Optional[str]:
+        """The one node whose ``filename_prefix`` names ``file_name``, or None."""
         stem = _file_stem(file_name)
         if stem is None:
             return None
@@ -1613,9 +1618,7 @@ class _GraphResolver:
             ]
         except (_Unresolved, _Diverging):
             return None
-        if len(matches) != 1:
-            return None
-        return self.saver_walk(matches[0])
+        return matches[0] if len(matches) == 1 else None
 
     def recorded_saver_stages(self, node_id: str) -> Optional[list]:
         """The candidate samplers of the save node recorded history names (#386).
@@ -2404,10 +2407,11 @@ def _resolve(
                 "unresolved", reason=str(error), reason_code=error.code, node=error.node
             )
     else:
-        anchored = None
+        anchored, by_record = None, False
         if semantics is not None and recorded_saver_id is not None:
-            anchored = resolver.recorded_saver_stages(str(recorded_saver_id))
-        if anchored is None and semantics is not None and file_name is not None:
+            anchored = _recorded_anchor(resolver, str(recorded_saver_id), file_name)
+            by_record = anchored is not None
+        elif semantics is not None and file_name is not None:
             anchored = resolver.saver_stages(file_name)
         sampler_ids = anchored or [
             node_id
@@ -2418,6 +2422,34 @@ def _resolve(
         ]
         if semantics is not None and anchored is None:
             sampler_ids = resolver.final_stages(sampler_ids)
+        if semantics is not None and recorded_saver_id is not None:
+            # The caller can tell whether history's saver chose the samplers.
+            return {
+                **_judge(resolver, sampler_ids, normalized, profile),
+                "recorded_anchor": by_record,
+            }
+    return _judge(resolver, sampler_ids, normalized, profile)
+
+
+def _recorded_anchor(
+    resolver: "_GraphResolver", saver_id: str, file_name: Optional[str]
+) -> Optional[list]:
+    """The samplers of the saver history recorded, or None (#386).
+
+    A file name that names a different saver contradicts history: no anchor.
+    """
+    named = resolver.saver_match(file_name) if file_name is not None else None
+    if named is not None and named != saver_id:
+        return None
+    return resolver.recorded_saver_stages(saver_id)
+
+
+def _judge(
+    resolver: "_GraphResolver",
+    sampler_ids: list,
+    normalized: dict,
+    profile: ResolverProfile,
+) -> Dict[str, Any]:
     if not sampler_ids:
         return _no_sampler(normalized, profile)
     if len(sampler_ids) > 1:

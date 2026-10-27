@@ -801,13 +801,16 @@ during that run (the #342 rules): the one output node that run reported it from 
 when several did) and, per sampler anchor, the effective texts PromptManager recorded
 at execution (a role only inferred from the graph is none). Only when the file alone
 leaves the prompt open (`ambiguous` or `unresolved`) the inspector resolves again
-anchored on that node (`recorded_saver_id`, walked like a file-name match), and keeps
-that result only when it names the positive (resolved, or a guider with no
-negative); its `graph-inferred` sides read `recorded-run` ("Recorded run" badge).
-Still open at one named sampler whose positive text was recorded (a language
-model's output feeding PromptManager), the recorded texts show as `execution`. A
-result the file resolves alone never changes; a lookup failure is logged and judges
-the file alone; local Inspect and ingestion are unchanged
+anchored on that node (`recorded_saver_id`, walked like a file-name match; a file
+name naming a different saver contradicts history and anchors nothing), and keeps
+that result only when history's saver chose its samplers (`recorded_anchor`) and it
+names the positive (resolved, or a guider with no negative); its `graph-inferred`
+sides read `recorded-run` ("Recorded run" badge, ranked below every "Workflow
+inferred" source). Still open at the one sampler that saver leads to, with that
+sampler's positive text recorded (a language model's output feeding PromptManager),
+the recorded texts show as `execution`. Outputs and texts are read in one
+transaction. A result the file resolves alone never changes; a lookup failure is
+logged and judges the file alone; local Inspect and ingestion are unchanged
 (`tests/test_recorded_saver_anchor.py`, `tests/test_run_attribution.py`,
 `tests/test_api_history_outputs.py`).
 

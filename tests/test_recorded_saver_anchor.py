@@ -158,6 +158,24 @@ class TestRecordedSaverInInspector(unittest.TestCase):
         )
         self.assertEqual(evidence["prompts"]["negative"]["status"], "absent")
 
+    def test_a_file_name_naming_another_saver_contradicts_history(self):
+        # The bench file name names branch 2's saver; history says branch 4's.
+        graph = shapes.branch_bench()
+        for index in (1, 3, 4):
+            graph[_saver(index)]["inputs"]["filename_prefix"] = "bench/run/shared"
+        result = _resolve(
+            graph, file_name="s45_branch_2_00001_.png", recorded_saver_id=_saver(4)
+        )
+        self.assertIs(result["recorded_anchor"], False)
+        evidence = _evidence(
+            shapes.shared_prefix(),
+            file_name="IMG_GEN_00001_.png",
+            recorded_saver_id=_saver(4),
+        )
+        self.assertEqual(
+            evidence["prompts"]["positive"]["text"], shapes.BRANCH_TEXTS[3]
+        )
+
     def test_a_file_that_resolves_alone_keeps_its_own_result(self):
         # The file name names branch 2; a recorded saver never overrides it.
         evidence = _evidence(
@@ -240,6 +258,35 @@ def text_generate_run():
     }
 
 
+def two_generated_branches():
+    """``text_generate_run`` plus a second generated branch saved by an unknown
+    saver and also previewed."""
+    graph = text_generate_run()
+    graph["31"] = {**graph["11"], "inputs": {**graph["11"]["inputs"]}}
+    graph["37"] = {
+        "class_type": "PromptManagerPair",
+        "inputs": {**graph["36"]["inputs"], "text": ["31", 0]},
+    }
+    graph["20"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            **graph["7"]["inputs"],
+            "positive": ["37", 0],
+            "negative": ["37", 1],
+        },
+    }
+    graph["21"] = {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["20", 0], "vae": ["1", 2]},
+    }
+    graph["22"] = {
+        "class_type": "Image Save",
+        "inputs": {"filename_prefix": "other", "images": ["21", 0]},
+    }
+    graph["23"] = {"class_type": "PreviewImage", "inputs": {"images": ["21", 0]}}
+    return graph
+
+
 class TestRecordedTexts(unittest.TestCase):
     """The texts PromptManager recorded at execution, per sampler of the run."""
 
@@ -269,6 +316,7 @@ class TestRecordedTexts(unittest.TestCase):
     def test_an_unrecorded_negative_stays_open(self):
         evidence = _evidence(
             text_generate_run(),
+            recorded_saver_id="9",
             recorded_texts={"7": {"positive": LLM_TEXT, "negative": None}},
         )
         self.assertEqual(evidence["prompts"]["positive"]["text"], LLM_TEXT)
@@ -285,24 +333,46 @@ class TestRecordedTexts(unittest.TestCase):
         ):
             with self.subTest(texts=texts):
                 self.assertEqual(
-                    _evidence(text_generate_run(), recorded_texts=texts), alone
+                    _evidence(
+                        text_generate_run(), recorded_saver_id="9", recorded_texts=texts
+                    ),
+                    alone,
                 )
 
-    def test_recorded_texts_never_replace_a_resolved_or_several_outcome(self):
-        texts = {"21": {"positive": LLM_TEXT, "negative": ""}}
-        resolved = _evidence(shapes.branch_bench(), file_name="s45_branch_2_00001_.png")
-        self.assertEqual(
-            _evidence(
-                shapes.branch_bench(),
-                file_name="s45_branch_2_00001_.png",
-                recorded_texts=texts,
-            ),
-            resolved,
-        )
-        several = _evidence(shapes.branch_bench())
-        self.assertEqual(
-            _evidence(shapes.branch_bench(), recorded_texts=texts), several
-        )
+    def test_texts_need_the_saver_history_recorded_to_lead_to_the_sampler(self):
+        texts = {"7": {"positive": LLM_TEXT, "negative": ""}}
+        alone = _evidence(text_generate_run())
+        for saver in (None, "missing", "2"):
+            with self.subTest(saver=saver):
+                self.assertEqual(
+                    _evidence(
+                        text_generate_run(),
+                        recorded_saver_id=saver,
+                        recorded_texts=texts,
+                    ),
+                    alone,
+                )
+
+    def test_texts_follow_the_recorded_saver_not_another_sampler(self):
+        # Review: the texts are those of the sampler history's saver leads to.
+        graph = two_generated_branches()
+        texts = {
+            "7": {"positive": "STAGE X TEXT", "negative": ""},
+            "20": {"positive": "STAGE Y TEXT", "negative": ""},
+        }
+        for saver, text, sampler in (
+            ("22", "STAGE Y TEXT", "20"),
+            ("9", "STAGE X TEXT", "7"),
+        ):
+            with self.subTest(saver=saver):
+                evidence = _evidence(
+                    graph,
+                    file_name="renamed_00001_.png",
+                    recorded_saver_id=saver,
+                    recorded_texts=texts,
+                )
+                self.assertEqual(evidence["prompts"]["positive"]["text"], text)
+                self.assertEqual(evidence["resolution"]["sampler_id"], sampler)
 
 
 if __name__ == "__main__":

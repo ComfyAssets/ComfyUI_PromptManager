@@ -198,6 +198,11 @@ test('a branch named by recorded run history shows the Recorded run badge', asyn
     try {
         assert.deepEqual(view.texts(n => n.className === 'chip blue'), ['Execution recorded']);
     } finally { view.done(); }
+    // A recorded branch whose negative left out a run-time part is still inferred from the workflow.
+    view = renderFull({...recorded, prompts:{...recorded.prompts, negative:{...recorded.prompts.negative, source:'runtime-parts-omitted'}}});
+    try {
+        assert.deepEqual(view.texts(n => n.className === 'chip blue'), ['Workflow inferred']);
+    } finally { view.done(); }
 });
 
 // #249 PR C Task C3 (D88): one chip row, the file's current image tags first, then D21's linked tags not already shown.

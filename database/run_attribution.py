@@ -281,23 +281,20 @@ def recorded_output(
     """
     if not image_path:
         return None
-    found = _recorded_runs(db, [image_path], output_root, path_style)
-    if image_path not in found:
-        return None
-    run_id, nodes = found[image_path]
-    saver = next(iter(nodes)) if len(nodes) == 1 else None
-    return RecordedOutput(saver, _recorded_texts(db, run_id))
-
-
-def recorded_output_node(
-    db: Any,
-    image_path: str,
-    output_root: Optional[str],
-    path_style: Optional[str] = None,
-) -> Optional[str]:
-    """The one output node history says wrote ``image_path``, else None."""
-    found = recorded_output(db, image_path, output_root, path_style)
-    return found.saver_id if found is not None else None
+    conn = db.model.get_connection()
+    own_transaction = not conn.in_transaction
+    if own_transaction:  # outputs and texts from one state of history
+        conn.execute("BEGIN")
+    try:
+        found = _recorded_runs(db, [image_path], output_root, path_style)
+        if image_path not in found:
+            return None
+        run_id, nodes = found[image_path]
+        saver = next(iter(nodes)) if len(nodes) == 1 else None
+        return RecordedOutput(saver, _recorded_texts(db, run_id))
+    finally:
+        if own_transaction:
+            conn.rollback()
 
 
 _LOGGER = logging.getLogger("prompt_manager.run_attribution")
@@ -315,8 +312,11 @@ def recorded_output_lookup(db: Any, *, close: bool = False) -> Callable[[Any], A
     def lookup(path: Any) -> Optional[RecordedOutput]:
         try:
             return recorded_output(db, str(path), host_output_directory())
-        except Exception:
+        except (sqlite3.Error, OSError, ValueError):
             _LOGGER.warning("Recorded run lookup failed", exc_info=True)
+            return None
+        except Exception:
+            _LOGGER.exception("Recorded run lookup failed unexpectedly")
             return None
         finally:
             if close:
