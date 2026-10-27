@@ -15,8 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
-from pathlib import Path, PureWindowsPath
 from dataclasses import replace
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import patch
 

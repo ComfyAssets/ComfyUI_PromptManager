@@ -224,6 +224,14 @@ class TestReadLoraMetadata(unittest.TestCase):
         result = read_lora_metadata(Path("/nonexistent/file.metadata.json"))
         self.assertIsNone(result)
 
+    def test_returns_none_for_a_file_that_is_not_utf8(self):
+        # #362: one malformed sidecar is skipped; it must not fail the whole
+        # trigger-word load (now logged with a traceback) or the review.
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bad.metadata.json"
+            path.write_bytes(b'{"model_name": "\xff\xfe"}')
+            self.assertIsNone(read_lora_metadata(path))
+
 
 class TestGetLoraImageCacheDir(unittest.TestCase):
     """Test get_lora_image_cache_dir — returns and creates cache path."""

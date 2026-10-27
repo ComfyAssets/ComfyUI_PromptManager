@@ -577,7 +577,7 @@ def _preview_candidates(sidecar: Sidecar, metadata: Dict) -> Iterator[str]:
             # LoraManager writes absolute paths; it would resolve a relative
             # one against its working directory, not the sidecar folder.
             logger.debug(
-                f"Relative preview_url skipped in {sidecar.metadata_path.name}"
+                "Relative preview_url skipped in %s", sidecar.metadata_path.name
             )
     base = sidecar.metadata_path.name[: -len(METADATA_SUFFIX)]
     for suffix in PREVIEW_EXTENSIONS:

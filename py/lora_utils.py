@@ -368,7 +368,7 @@ def read_lora_metadata(metadata_path: Path) -> Optional[Dict]:
     try:
         with open(metadata_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+    except (ValueError, OSError) as e:  # JSONDecodeError, UnicodeDecodeError
         logger.debug(f"Failed to read {metadata_path}: {e}")
         return None
 
