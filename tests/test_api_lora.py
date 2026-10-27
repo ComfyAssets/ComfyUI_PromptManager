@@ -70,8 +70,16 @@ class LoraAPITestCase(AioHTTPTestCase):
         # Never the repository's config.json (live user data): every save in
         # these tests goes to a file in this test's temp directory.
         self.config_file = self.tmp_root / "config.json"
+        # Never the developer's LoraManager settings either (#355): an empty
+        # settings folder of this test's own.
+        self.lm_settings = self.tmp_root / "lora-manager-settings"
+        self.lm_settings.mkdir()
         self._env_patch = patch.dict(
-            os.environ, {"PROMPT_MANAGER_CONFIG_PATH": str(self.config_file)}
+            os.environ,
+            {
+                "PROMPT_MANAGER_CONFIG_PATH": str(self.config_file),
+                "LORA_MANAGER_SETTINGS_DIR": str(self.lm_settings),
+            },
         )
         self._env_patch.start()
 
@@ -194,6 +202,8 @@ def _make_lora_manager(where):
 
 
 def _write_metadata(directory, stem, words=None, images=None, prompt=None):
+    """A LoraManager sidecar beside its model, as LoraManager names them:
+    ``<stem>.metadata.json`` next to ``<stem>.safetensors`` (#355)."""
     meta = {"file_name": f"{stem}.safetensors", "model_name": stem, "civitai": {}}
     if words is not None:
         meta["civitai"]["trainedWords"] = words
@@ -201,7 +211,8 @@ def _write_metadata(directory, stem, words=None, images=None, prompt=None):
         meta["civitai"]["images"] = [
             {"url": url, "meta": {"prompt": prompt} if prompt else {}} for url in images
         ]
-    path = directory / f"{stem}.safetensors.metadata.json"
+    (directory / f"{stem}.safetensors").write_bytes(b"model")
+    path = directory / f"{stem}.metadata.json"
     path.write_text(json.dumps(meta))
     return path
 
@@ -300,9 +311,7 @@ class TestLoraEnableRoute(LoraAPITestCase):
         _write_metadata(loras, "neon", words=["glow"])
         self.detect_mock.return_value = str(lm)
 
-        with patch.object(
-            lora_utils, "find_lora_directories", return_value=[str(loras)]
-        ):
+        with patch.object(lora_utils, "default_lora_roots", return_value=[str(loras)]):
             resp = await self._post_json(
                 "/prompt_manager/lora/enable",
                 {
@@ -848,9 +857,7 @@ class TestLoraScanRoute(LoraAPITestCase):
 
         cache_dir = self.tmp_root / "img_cache"
         with (
-            patch.object(
-                lora_utils, "find_lora_directories", return_value=[str(loras)]
-            ),
+            patch.object(lora_utils, "default_lora_roots", return_value=[str(loras)]),
             patch.object(
                 lora_utils, "get_lora_image_cache_dir", return_value=cache_dir
             ),
@@ -880,9 +887,10 @@ class TestLoraScanRoute(LoraAPITestCase):
             images=["https://civitai.com/a.png", "https://evil.example/b.png"],
             prompt="neon street",
         )
-        (loras / "neon.png").write_bytes(_png_bytes())
+        # No local image: its CivitAI images are downloaded (#355).
         _write_metadata(loras, "plain")
         (loras / "broken.metadata.json").write_text("{{{")
+        (loras / "broken.safetensors").write_bytes(b"model")
         existing_id = self.api.db.save_prompt(
             text="plain",
             category=None,
@@ -910,8 +918,56 @@ class TestLoraScanRoute(LoraAPITestCase):
         self.assertEqual(imported[0]["text"], "neon street")
         self.assertIn("lora:neon", imported[0]["tags"])
         self.assertIn("glow", imported[0]["tags"])
-        self.assertEqual(len(self.api.db.get_prompt_images(imported[0]["id"])), 2)
+        self.assertEqual(len(self.api.db.get_prompt_images(imported[0]["id"])), 1)
         self.assertEqual(len(self.api.db.get_prompt_images(existing_id)), 0)
+        # The unreadable sidecar is reported by its file name.
+        statuses = [e.get("status") for e in events if e.get("processed")]
+        self.assertIn("broken.metadata.json", statuses)
+
+    async def test_scan_links_local_media_without_downloading(self):
+        self._enable()
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(
+            loras, "neon", images=["https://civitai.com/a.png"], prompt="neon street"
+        )
+        (loras / "neon.preview.webp").write_bytes(b"x")
+
+        resp, events, opener_calls = await self._scan(loras)
+
+        self.assertEqual(events[-1]["imported"], 1)
+        self.assertEqual(opener_calls, [])
+        imported = self.api.db.search_prompts(category="lora-manager")
+        images = self.api.db.get_prompt_images(imported[0]["id"])
+        self.assertEqual(
+            [os.path.basename(i["image_path"]) for i in images], ["neon.preview.webp"]
+        )
+
+    async def test_scan_reports_unusable_settings_without_replacing(self):
+        self._enable()
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(loras, "neon")
+        (self.lm_settings / "settings.json").write_text("{not json")
+        old_id = self.api.db.save_prompt(
+            text="kept",
+            category="lora-manager",
+            tags=[],
+            rating=None,
+            prompt_hash=generate_prompt_hash("kept"),
+        )
+
+        resp, events, _ = await self._scan(loras)
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual(
+            events[-1]["message"],
+            "LoraManager settings: not usable: the settings file is not valid "
+            "JSON. Nothing was changed.",
+        )
+        kept = self.api.db.search_prompts(category="lora-manager")
+        self.assertEqual([p["id"] for p in kept], [old_id])
 
     async def test_save_failure_is_counted_as_skipped(self):
         self._enable()
@@ -949,9 +1005,7 @@ class TestLoraTriggerWordRoutes(LoraAPITestCase):
         loras.mkdir()
         _write_metadata(loras, "neon", words=["glow", "bright"])
 
-        with patch.object(
-            lora_utils, "find_lora_directories", return_value=[str(loras)]
-        ):
+        with patch.object(lora_utils, "default_lora_roots", return_value=[str(loras)]):
             resp = await self.client.request(
                 "GET", "/prompt_manager/lora/trigger-words?name=NEON"
             )
@@ -985,17 +1039,16 @@ class TestLoraTriggerWordRoutes(LoraAPITestCase):
         loras.mkdir()
         _write_metadata(loras, "neon", words=["glow"])
 
-        with patch.object(
-            lora_utils, "find_lora_directories", return_value=[str(loras)]
-        ):
+        with patch.object(lora_utils, "default_lora_roots", return_value=[str(loras)]):
             resp = await self.client.request(
                 "POST", "/prompt_manager/lora/refresh-cache"
             )
 
         data = await resp.json()
         self.assertTrue(data["success"])
-        # keyed by both the file_name stem and the metadata-file stem
-        self.assertEqual(data["loras_with_trigger_words"], 2)
+        # Keyed by the model name and the sidecar name, which are the same
+        # for LoraManager's alongside layout.
+        self.assertEqual(data["loras_with_trigger_words"], 1)
 
     async def test_refresh_error_is_500(self):
         IntegrationConfig.LORA_MANAGER_ENABLED = True

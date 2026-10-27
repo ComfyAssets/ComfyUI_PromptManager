@@ -50,6 +50,15 @@ _IMPORTS_CHANGED = (
 )
 
 
+class LoraSettingsUnusable(Exception):
+    """LoraManager's settings cannot be used; nothing was imported (#355)."""
+
+    def __init__(self, reason):
+        super().__init__(
+            f"LoraManager settings: not usable: {reason}. Nothing was changed."
+        )
+
+
 class LoraFilesChanged(Exception):
     """A metadata file changed, appeared or went while the legacy scan staged."""
 
@@ -398,13 +407,19 @@ class LoraIntegrationMixin:
             return
         if isinstance(error, PlanChanged):
             message = _IMPORTS_CHANGED
-        elif isinstance(error, LoraFilesChanged):
+        elif isinstance(error, (LoraFilesChanged, LoraSettingsUnusable)):
             message = str(error)
         else:
             message = self._public_error(error)
         if isinstance(
             error,
-            (PlanChanged, LoraFilesChanged, EmptyReplacement, PairDependencyError),
+            (
+                PlanChanged,
+                LoraFilesChanged,
+                LoraSettingsUnusable,
+                EmptyReplacement,
+                PairDependencyError,
+            ),
         ):
             self.logger.warning(f"LoRA scan refused: {message}")
         else:
@@ -432,8 +447,11 @@ class LoraIntegrationMixin:
                 "progress": 2,
             }
         )
-        files = await self._run_in_executor(lora_import.discover, lm_path)
-        total = len(files)
+        discovery = await self._run_in_executor(lora_import.discover, lm_path)
+        if discovery.layout.error is not None:
+            raise LoraSettingsUnusable(discovery.layout.error)
+        sidecars = discovery.sidecars
+        total = len(sidecars)
         await send_progress(
             {
                 "type": "progress",
@@ -443,7 +461,7 @@ class LoraIntegrationMixin:
             }
         )
 
-        reviewed = await self._run_in_executor(lora_import.fingerprint, files)
+        reviewed = await self._run_in_executor(lora_import.fingerprint, discovery)
         events = asyncio.Queue()
         state = await self._run_in_executor(
             self.db.category_import_state, lora_import.LORA_CATEGORY
@@ -467,7 +485,7 @@ class LoraIntegrationMixin:
                 )
                 if not existing:
                     counts["imported"] += 1
-            status = record["name"] if record else files[index].name
+            status = record["name"] if record else sidecars[index].metadata_path.name
             if record and record["images"]:
                 status += f" ({len(record['images'])} images)"
             await send_progress(
@@ -490,7 +508,7 @@ class LoraIntegrationMixin:
         stop = threading.Event()
         staging = asyncio.ensure_future(
             self.stage_lora_import(
-                files,
+                discovery,
                 on_record=on_record,
                 cancelled=lambda: stop.is_set() or disconnected(),
             )

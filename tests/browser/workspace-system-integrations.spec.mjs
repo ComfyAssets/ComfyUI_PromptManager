@@ -322,7 +322,7 @@ test('a partial save made from Integrations keeps its outcome when Sources opens
 
 test('Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107)',
     async ({ page, request }) => {
-        await lora(request, { loras: 3, civitai: true, previous: 2 });
+        await lora(request, { loras: 3, civitai: true, preview: false, previous: 2 });
         const previews = [];
         const applies = [];
         page.on('request', item => {
@@ -408,7 +408,7 @@ test('a failed import keeps old imports and its job says so', async ({ page, req
 });
 
 test('the import can be cancelled while it downloads; then nothing is written', async ({ page, request }) => {
-    await lora(request, { loras: 2, civitai: true, previous: 1 });
+    await lora(request, { loras: 2, civitai: true, preview: false, previous: 1 });
     await openIntegrations(page);
     await enable(page);
     const before = await serverJson(request, '/__test__/integrations/state');

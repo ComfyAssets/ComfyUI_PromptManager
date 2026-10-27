@@ -2296,13 +2296,23 @@ class ImageRoutesMixin:
             )
 
     def _lora_image_dirs(self):
-        """Extra directories served when the LoRA integration is enabled."""
+        """Extra directories served when the LoRA integration is enabled.
+
+        LoraManager's guarded LoRA roots, sidecar root and example-images
+        root (``lora_manager_layout.media_roots``, #355) and PromptManager's
+        CivitAI download cache. An unusable LoraManager layout gives the
+        default LoRA roots and the cache.
+        """
         try:
             from ..config import IntegrationConfig
 
             if not IntegrationConfig.LORA_MANAGER_ENABLED:
                 return []
-            from ..lora_utils import find_lora_directories, get_lora_image_cache_dir
+            from ..lora_utils import (
+                get_lora_image_cache_dir,
+                layout_for_install,
+                lora_manager_layout,
+            )
 
             lora_root = IntegrationConfig.LORA_MANAGER_PATH or ""
             if lora_root.strip():
@@ -2315,8 +2325,11 @@ class ImageRoutesMixin:
                 lora_root = resolve_lora_manager_path(lora_root)
                 if not lora_root:
                     return []
+                layout = layout_for_install(lora_root)
+            else:
+                layout = lora_manager_layout("")
 
-            dirs = [Path(d) for d in find_lora_directories(lora_root)]
+            dirs = [Path(d) for d in layout.media_roots]
             dirs.append(Path(get_lora_image_cache_dir()))
             return dirs
         except Exception:

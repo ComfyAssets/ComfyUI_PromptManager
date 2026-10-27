@@ -252,7 +252,7 @@ class LoraImportAPITestCase(LoraAPITestCase):
 
         self._patches = [
             patch.object(
-                lora_utils, "find_lora_directories", return_value=[str(self.loras)]
+                lora_utils, "default_lora_roots", return_value=[str(self.loras)]
             ),
             patch.object(
                 lora_utils, "get_lora_image_cache_dir", return_value=self.cache_dir
@@ -276,6 +276,8 @@ class LoraImportAPITestCase(LoraAPITestCase):
         await super().tearDownAsync()
 
     def _two_loras(self):
+        """``neon`` has only a CivitAI image (downloaded); ``plain`` has a
+        local preview (linked where it is, nothing downloaded)."""
         _write_metadata(
             self.loras,
             "neon",
@@ -283,8 +285,8 @@ class LoraImportAPITestCase(LoraAPITestCase):
             images=["https://civitai.com/a.png"],
             prompt="neon street",
         )
-        (self.loras / "neon.png").write_bytes(_png_bytes())
-        _write_metadata(self.loras, "plain")
+        _write_metadata(self.loras, "plain", images=["https://civitai.com/p.png"])
+        (self.loras / "plain.png").write_bytes(_png_bytes())
 
     async def _post(self, url, body=None):
         resp = await self._post_json(url, {} if body is None else body)
@@ -321,8 +323,34 @@ class LoraImportRouteTests(LoraImportAPITestCase):
 
         self.assertEqual(resp.status, 200, plan)
         self.assertEqual(
-            {k: plan[k] for k in ("lora_files", "with_metadata", "current_imports")},
-            {"lora_files": 3, "with_metadata": 2, "current_imports": 2},
+            {
+                k: plan[k]
+                for k in (
+                    "lora_files",
+                    "with_metadata",
+                    "skipped",
+                    "with_local_media",
+                    "current_imports",
+                )
+            },
+            {
+                "lora_files": 3,
+                "with_metadata": 2,
+                "skipped": 1,
+                "with_local_media": 1,
+                "current_imports": 2,
+            },
+        )
+        self.assertEqual(
+            plan["layout"],
+            {
+                "source": "environment",
+                "settings_file": str(self.lm_settings / "settings.json"),
+                "error": None,
+                "mode": "alongside",
+                "library": "default",
+                "example_images": False,
+            },
         )
         self.assertEqual(plan["blocked_by_pairs"], 0)
         self.assertEqual(plan["planned_downloads"], 1)
@@ -336,7 +364,82 @@ class LoraImportRouteTests(LoraImportAPITestCase):
         self.assertEqual(_size(db_path + "-shm"), shm)
         self.assertEqual(_snapshot(self.api.db), rows)
         self.assertNotIn(SECRET_KEY, json.dumps(plan))
-        self.assertNotIn(str(self.tmp_root), json.dumps(plan))
+        # The settings file is the only absolute path the review shows.
+        shown = dict(plan, layout=dict(plan["layout"], settings_file=None))
+        self.assertNotIn(str(self.tmp_root), json.dumps(shown))
+
+    async def test_unusable_settings_review_offers_no_token(self):
+        self._two_loras()
+        (self.lm_settings / "settings.json").write_text("[1, 2]")
+
+        resp, plan = await self._post(PREVIEW)
+
+        self.assertEqual(resp.status, 200, plan)
+        self.assertIsNone(plan["token"])
+        self.assertEqual(
+            plan["layout"]["error"], "the settings file is not a JSON object"
+        )
+        self.assertEqual((plan["lora_files"], plan["with_metadata"]), (0, 0))
+        self.assertEqual(self.requests, [])
+
+    async def test_centralized_review_counts_what_it_skips(self):
+        sidecars = self.tmp_root / "sidecars"
+        examples = self.tmp_root / "examples"
+        (self.lm_settings / "settings.json").write_text(
+            json.dumps(
+                {
+                    "sidecar_storage_mode": "centralized",
+                    "sidecar_storage_path": str(sidecars),
+                    "example_images_path": str(examples),
+                    "libraries": {"comfyui": {}},
+                    "active_library": "comfyui",
+                }
+            )
+        )
+        component = sidecars / "loras-0a1b2c3d"
+        component.mkdir(parents=True)
+        model = self.loras / "neon.safetensors"
+        model.write_bytes(b"m")
+        meta = {"model_name": "neon", "file_path": str(model), "sha256": "AB12"}
+        (component / "neon.metadata.json").write_text(json.dumps(meta))
+        (examples / "ab12").mkdir(parents=True)
+        (examples / "ab12" / "image_1.png").write_bytes(_png_bytes())
+        gone = dict(meta, file_path=str(self.loras / "gone.safetensors"))
+        (component / "gone.metadata.json").write_text(json.dumps(gone))
+        (component / "broken.metadata.json").write_text("{{{")
+
+        resp, plan = await self._post(PREVIEW)
+
+        self.assertEqual(resp.status, 200, plan)
+        self.assertEqual(
+            (
+                plan["lora_files"],
+                plan["with_metadata"],
+                plan["skipped"],
+                plan["with_local_media"],
+                plan["planned_downloads"],
+            ),
+            (3, 1, 2, 1, 0),
+        )
+        self.assertEqual(
+            (plan["layout"]["mode"], plan["layout"]["library"]),
+            ("centralized", "comfyui"),
+        )
+        self.assertTrue(plan["layout"]["example_images"])
+        resp, body = await self._post(APPLY, {"token": plan["token"]})
+        job = self.api._jobs.get(body["job"]["id"])
+        await job.task
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(
+            [row["detail"] for row in job.outcomes["skipped"]],
+            ["broken.metadata.json"],
+        )
+        imported = self.api.db.search_prompts(category=CATEGORY)
+        images = self.api.db.get_prompt_images(imported[0]["id"])
+        self.assertEqual(
+            [os.path.basename(i["image_path"]) for i in images], ["image_1.png"]
+        )
 
     async def test_preview_requires_the_integration(self):
         IntegrationConfig.LORA_MANAGER_ENABLED = False
@@ -358,7 +461,7 @@ class LoraImportRouteTests(LoraImportAPITestCase):
         self._two_loras()
         resp, plan = await self._post(PREVIEW)
         rows = _snapshot(self.api.db)
-        meta = self.loras / "plain.safetensors.metadata.json"
+        meta = self.loras / "plain.metadata.json"
         meta.write_text(meta.read_text() + " ")
 
         resp, body = await self._post(APPLY, {"token": plan["token"]})
@@ -397,7 +500,17 @@ class LoraImportRouteTests(LoraImportAPITestCase):
         imported = self.api.db.search_prompts(category=CATEGORY)
         self.assertEqual(sorted(p["text"] for p in imported), ["neon street", "plain"])
         neon = next(p for p in imported if p["text"] == "neon street")
-        self.assertEqual(len(self.api.db.get_prompt_images(neon["id"])), 2)
+        self.assertEqual(len(self.api.db.get_prompt_images(neon["id"])), 1)
+        # plain's local preview is linked where it is; its CivitAI image is not
+        # downloaded (#355).
+        plain = next(p for p in imported if p["text"] == "plain")
+        self.assertEqual(
+            [i["image_path"] for i in self.api.db.get_prompt_images(plain["id"])],
+            [os.path.realpath(self.loras / "plain.png")],
+        )
+        self.assertEqual(
+            [r.full_url for r in self.requests], ["https://civitai.com/a.png"]
+        )
         self.assertEqual(len(self.api.db.search_prompts(category="portraits")), 1)
         # The token is single-use.
         resp, body = await self._post(APPLY, {"token": plan["token"]})
@@ -409,7 +522,7 @@ class LoraImportRouteTests(LoraImportAPITestCase):
 
         # Legacy scan: discovery raises once the stream is open.
         with patch.object(
-            lora_utils, "find_lora_directories", side_effect=OSError("share gone")
+            lora_import, "discover_sidecars", side_effect=OSError("share gone")
         ):
             resp = await self.client.request("POST", SCAN)
             events = self._sse(await resp.text())
@@ -565,6 +678,7 @@ class LoraImportRouteTests(LoraImportAPITestCase):
     async def test_legacy_scan_events_unchanged_on_success(self):
         self._two_loras()
         (self.loras / "broken.metadata.json").write_text("{{{")
+        (self.loras / "broken.safetensors").write_bytes(b"model")
 
         resp = await self.client.request("POST", SCAN)
         events = self._sse(await resp.text())
@@ -853,13 +967,13 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
 
     async def test_files_changed_while_staging_fail_the_job(self):
         # I1: LoraManager rewrites a metadata file while the downloads run.
-        meta = self.loras / "plain.safetensors.metadata.json"
+        meta = self.loras / "plain.metadata.json"
         await self._change_during_download(
             lambda: meta.write_text(meta.read_text() + "  ")
         )
 
     async def test_a_file_removed_while_staging_fails_the_job(self):
-        meta = self.loras / "plain.safetensors.metadata.json"
+        meta = self.loras / "plain.metadata.json"
         await self._change_during_download(meta.unlink)
 
     async def test_a_file_added_while_staging_fails_the_job(self):
@@ -869,7 +983,7 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
         self._two_loras()
         before = _snapshot(self.api.db)
         self.gate = threading.Event()
-        meta = self.loras / "plain.safetensors.metadata.json"
+        meta = self.loras / "plain.metadata.json"
         resp = await self.client.request("POST", SCAN)
         loop = asyncio.get_running_loop()
         self.assertTrue(await loop.run_in_executor(None, self.downloading.wait, 10))
@@ -986,37 +1100,194 @@ class LoraImportRestoreTests(LoraImportAPITestCase):
 
 
 class LoraImportStageTests(unittest.TestCase):
+    """The stages over a disposable LoraManager install (#355)."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, True))
+        self.lm = _make_lora_manager(self.tmp / "custom_nodes")
+        self.loras = self.tmp / "loras"
+        self.loras.mkdir()
+        self.settings = self.tmp / "settings"
+        self.settings.mkdir()
+        self.roots = [str(self.loras)]
+        patchers = [
+            patch.object(
+                lora_utils,
+                "custom_nodes_directories",
+                return_value=[self.tmp / "custom_nodes"],
+            ),
+            patch.object(lora_utils, "default_lora_roots", lambda: list(self.roots)),
+            patch.dict(os.environ, {"LORA_MANAGER_SETTINGS_DIR": str(self.settings)}),
+        ]
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def settings_file(self, data):
+        (self.settings / "settings.json").write_text(json.dumps(data))
+
+    def discover(self):
+        return lora_import.discover(str(self.lm))
 
     def test_discover_sorts_and_drops_repeats(self):
-        a = self.tmp / "a"
-        b = self.tmp / "a" / "b"
+        a = self.loras / "a"
+        b = self.loras / "a" / "b"
         b.mkdir(parents=True)
         _write_metadata(b, "zeta")
         _write_metadata(a, "alpha")
-        with patch.object(
-            lora_utils, "find_lora_directories", return_value=[str(a), str(b)]
-        ):
-            files = lora_import.discover(str(self.tmp))
-        self.assertEqual([f.name for f in files][0], "alpha.safetensors.metadata.json")
-        self.assertEqual(len(files), 2)
+        self.roots = [str(a), str(b)]
+        discovery = self.discover()
+        names = [s.metadata_path.name for s in discovery.sidecars]
+        self.assertEqual(names, ["alpha.metadata.json", "zeta.metadata.json"])
+        self.assertEqual(discovery.scanned, 2)
+
+    def test_discover_without_an_install_finds_nothing(self):
+        _write_metadata(self.loras, "alpha")
+        discovery = lora_import.discover(str(self.tmp))
+        self.assertEqual(discovery.layout.error, "no LoraManager install found")
+        self.assertEqual(discovery.sidecars, [])
 
     def test_fingerprint_follows_size_and_mtime(self):
-        meta = _write_metadata(self.tmp, "one")
-        first = lora_import.fingerprint([meta])
-        self.assertEqual(lora_import.fingerprint([meta]), first)
+        meta = _write_metadata(self.loras, "one")
+        first = lora_import.fingerprint(self.discover())
+        self.assertEqual(lora_import.fingerprint(self.discover()), first)
         meta.write_text(meta.read_text() + " ")
-        self.assertNotEqual(lora_import.fingerprint([meta]), first)
+        self.assertNotEqual(lora_import.fingerprint(self.discover()), first)
+        changed = lora_import.fingerprint(self.discover())
         meta.unlink()
-        self.assertNotEqual(lora_import.fingerprint([meta]), first)
+        self.assertNotEqual(lora_import.fingerprint(self.discover()), changed)
+
+    def test_fingerprint_ignores_unrelated_settings(self):
+        _write_metadata(self.loras, "one")
+        self.settings_file({"civitai_api_key": "a"})
+        first = lora_import.fingerprint(self.discover())
+        self.settings_file({"civitai_api_key": "b", "theme": "dark"})
+        self.assertEqual(lora_import.fingerprint(self.discover()), first)
+        sidecars = self.tmp / "sidecars"
+        sidecars.mkdir()
+        self.settings_file(
+            {
+                "sidecar_storage_mode": "centralized",
+                "sidecar_storage_path": str(sidecars),
+            }
+        )
+        self.assertNotEqual(lora_import.fingerprint(self.discover()), first)
+
+    def test_fingerprint_follows_a_missing_file_between_stat_calls(self):
+        meta = _write_metadata(self.loras, "one")
+        discovery = self.discover()
+        first = lora_import.fingerprint(discovery)
+        meta.unlink()
+        self.assertNotEqual(lora_import.fingerprint(discovery), first)
 
     def test_stage_cancel_before_a_file_raises(self):
-        meta = _write_metadata(self.tmp, "one")
+        _write_metadata(self.loras, "one")
         with self.assertRaises(lora_import.ImportCancelled):
-            lora_import.stage([meta], self.tmp, cancelled=lambda: True)
+            lora_import.stage(
+                self.discover(),
+                self.tmp,
+                media_extensions=MEDIA,
+                cancelled=lambda: True,
+            )
+
+    def test_local_media_means_no_download(self):
+        _write_metadata(self.loras, "neon", images=["https://civitai.com/a.png"])
+        (self.loras / "neon.mp4").write_bytes(b"video")
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("a LoRA with local media downloads nothing")
+
+        with patch.object(lora_utils, "download_civitai_images", refuse):
+            staged = lora_import.stage(
+                self.discover(), self.tmp, media_extensions=MEDIA
+            )
+        self.assertEqual(staged.skipped, [])
+        self.assertEqual(
+            staged.records[0]["images"], [os.path.realpath(self.loras / "neon.mp4")]
+        )
+
+    def test_a_lora_without_local_media_downloads(self):
+        _write_metadata(self.loras, "neon", images=["https://civitai.com/a.png"])
+        calls = []
+
+        def download(metadata, path, cache_dir, api_key, stats=None):
+            calls.append(path.name)
+            return ["/cache/a.jpg"]
+
+        with patch.object(lora_utils, "download_civitai_images", download):
+            staged = lora_import.stage(
+                self.discover(), self.tmp, media_extensions=MEDIA
+            )
+        self.assertEqual(calls, ["neon.metadata.json"])
+        self.assertEqual(staged.records[0]["images"], ["/cache/a.jpg"])
+
+    def test_alongside_records_match_the_previous_import(self):
+        _write_metadata(
+            self.loras,
+            "neon",
+            words=["glow", "glow"],
+            images=["https://civitai.com/a.png"],
+            prompt="neon street",
+        )
+        (self.loras / "neon.png").write_bytes(b"x")
+        staged = lora_import.stage(self.discover(), self.tmp, media_extensions=MEDIA)
+        self.assertEqual(
+            staged.records,
+            [
+                {
+                    "name": "neon",
+                    "text": "neon street",
+                    "hash": generate_prompt_hash("neon street"),
+                    "tags": ["lora-manager", "lora:neon", "glow"],
+                    "images": [os.path.realpath(self.loras / "neon.png")],
+                }
+            ],
+        )
+
+    def test_preview_counts_local_media_and_downloads(self):
+        _write_metadata(self.loras, "local", images=["https://civitai.com/l.png"])
+        (self.loras / "local.webp").write_bytes(b"x")
+        _write_metadata(
+            self.loras,
+            "remote",
+            images=["https://civitai.com/r1.png", "https://civitai.com/r2.png"],
+        )
+        (self.loras / "orphan.metadata.json").write_text("{}")
+        found = lora_import.preview(str(self.lm), self.tmp / "cache", MEDIA)
+        self.assertEqual(
+            {
+                k: found[k]
+                for k in (
+                    "lora_files",
+                    "with_metadata",
+                    "skipped",
+                    "with_local_media",
+                    "planned_downloads",
+                )
+            },
+            {
+                "lora_files": 3,
+                "with_metadata": 2,
+                "skipped": 1,
+                "with_local_media": 1,
+                "planned_downloads": 2,
+            },
+        )
+        self.assertEqual(found["names"], ["local", "remote"])
+        self.assertEqual(found["layout"]["mode"], "alongside")
+
+    def test_preview_of_an_unusable_layout(self):
+        (self.settings / "settings.json").write_text("nope")
+        _write_metadata(self.loras, "one")
+        found = lora_import.preview(str(self.lm), self.tmp / "cache", MEDIA)
+        self.assertEqual(
+            found["layout"]["error"], "the settings file is not valid JSON"
+        )
+        self.assertEqual((found["lora_files"], found["with_metadata"]), (0, 0))
+
+
+MEDIA = frozenset({".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"})
 
 
 if __name__ == "__main__":

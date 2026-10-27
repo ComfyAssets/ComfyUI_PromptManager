@@ -1263,11 +1263,12 @@ class TestTriggerWordCache(unittest.TestCase):
                 "file_name": "my_lora.safetensors",
                 "civitai": {"trainedWords": ["trigger1", "trigger2"]},
             }
-            meta_path = Path(tmpdir) / "my_lora.safetensors.metadata.json"
+            meta_path = Path(tmpdir) / "my_lora.metadata.json"
             meta_path.write_text(json.dumps(meta))
+            (Path(tmpdir) / "my_lora.safetensors").write_bytes(b"m")
 
-            # Patch find_lora_directories to return our temp dir
-            with patch("py.lora_utils.find_lora_directories", return_value=[tmpdir]):
+            # No LoraManager install: the default LoRA folders, alongside.
+            with patch("py.lora_utils.default_lora_roots", return_value=[tmpdir]):
                 count = self.cache.load(tmpdir)
 
             self.assertTrue(self.cache.is_loaded)
@@ -1283,11 +1284,10 @@ class TestTriggerWordCache(unittest.TestCase):
                 "file_name": "MyLoRA.safetensors",
                 "civitai": {"trainedWords": ["word1"]},
             }
-            (Path(tmpdir) / "MyLoRA.safetensors.metadata.json").write_text(
-                json.dumps(meta)
-            )
+            (Path(tmpdir) / "MyLoRA.metadata.json").write_text(json.dumps(meta))
+            (Path(tmpdir) / "MyLoRA.safetensors").write_bytes(b"m")
 
-            with patch("py.lora_utils.find_lora_directories", return_value=[tmpdir]):
+            with patch("py.lora_utils.default_lora_roots", return_value=[tmpdir]):
                 self.cache.load(tmpdir)
 
             self.assertEqual(self.cache.get_trigger_words("mylora"), ["word1"])
@@ -1512,7 +1512,7 @@ class TestDetectLoraManager(unittest.TestCase):
             self.assertEqual(lora_utils.detect_lora_manager(), str(lm.resolve()))
 
 
-class TestFindLoraDirectories(unittest.TestCase):
+class TestDefaultLoraRoots(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -1520,7 +1520,7 @@ class TestFindLoraDirectories(unittest.TestCase):
         self.root = _make_comfy_root(self.tmp)
         self.lm = _make_lora_manager(self.root / "custom_nodes")
 
-    def test_collects_default_extra_runtime_and_metadata_dirs(self):
+    def test_collects_default_extra_and_runtime_dirs_only(self):
         extra_abs = self.tmp / "extra_abs"
         extra_abs.mkdir()
         (self.root / "rel_loras").mkdir()
@@ -1542,14 +1542,14 @@ class TestFindLoraDirectories(unittest.TestCase):
                 {"folder_paths": _FakeFolderPaths(str(self.root), [str(runtime)])},
             ),
         ):
-            dirs = lora_utils.find_lora_directories(str(self.lm))
+            dirs = lora_utils.default_lora_roots()
 
+        # #355: folders inside the LoraManager install are no longer roots.
         expected = {
             str((self.root / "models" / "loras").resolve()),
             str((self.root / "rel_loras").resolve()),
             str(extra_abs.resolve()),
             str(runtime.resolve()),
-            str(nested.resolve()),
         }
         self.assertEqual(set(dirs), expected)
         self.assertEqual(dirs, sorted(dirs))
@@ -1560,12 +1560,21 @@ class TestFindLoraDirectories(unittest.TestCase):
         (self.root / "extra_model_paths.yml").write_text("a: [unclosed\n")
         self.assertEqual(lora_utils._get_extra_lora_paths(self.root), [])
 
-    def test_without_root_only_metadata_dirs_are_found(self):
+    def test_without_root_nothing_is_found(self):
         with (
             patch.object(lora_utils, "find_comfyui_root", return_value=None),
             patch.dict(sys.modules, {"folder_paths": None}),
         ):
-            self.assertEqual(lora_utils.find_lora_directories(str(self.lm)), [])
+            self.assertEqual(lora_utils.default_lora_roots(), [])
+
+    def test_the_removed_helpers_are_gone(self):
+        for name in (
+            "find_lora_directories",
+            "get_preview_images_from_metadata",
+            "get_preview_image_from_metadata",
+            "get_example_images_dir",
+        ):
+            self.assertFalse(hasattr(lora_utils, name), name)
 
 
 class TestModelNameAndPreviews(unittest.TestCase):
@@ -1580,44 +1589,6 @@ class TestModelNameAndPreviews(unittest.TestCase):
         self.assertEqual(get_name({"civitai": {"model": {"name": "civ"}}}), "civ")
         self.assertEqual(get_name({"file_name": "f.safetensors"}), "f.safetensors")
         self.assertEqual(get_name({}), "unknown")
-
-    def test_preview_images_found_by_stem(self):
-        meta_path = self.tmp / "mylora.safetensors.metadata.json"
-        meta_path.write_text("{}")
-        (self.tmp / "mylora.png").write_bytes(b"x")
-        (self.tmp / "mylora.preview.jpg").write_bytes(b"x")
-
-        found = lora_utils.get_preview_images_from_metadata({}, meta_path)
-
-        self.assertEqual(
-            sorted(os.path.basename(f) for f in found),
-            ["mylora.png", "mylora.preview.jpg"],
-        )
-        self.assertEqual(
-            lora_utils.get_preview_image_from_metadata({}, meta_path), found[0]
-        )
-
-    def test_preview_uses_file_name_from_metadata(self):
-        meta_path = self.tmp / "other.metadata.json"
-        (self.tmp / "named.webp").write_bytes(b"x")
-        found = lora_utils.get_preview_images_from_metadata(
-            {"file_name": "named.safetensors"}, meta_path
-        )
-        self.assertEqual([os.path.basename(f) for f in found], ["named.webp"])
-        self.assertIsNone(lora_utils.get_preview_image_from_metadata({}, meta_path))
-
-    def test_example_images_dir(self):
-        self.assertIsNone(lora_utils.get_example_images_dir(str(self.tmp)))
-        nested = self.tmp / "user" / "example_images"
-        nested.mkdir(parents=True)
-        self.assertEqual(
-            lora_utils.get_example_images_dir(str(self.tmp)), str(nested.resolve())
-        )
-        direct = self.tmp / "example_images"
-        direct.mkdir()
-        self.assertEqual(
-            lora_utils.get_example_images_dir(str(self.tmp)), str(direct.resolve())
-        )
 
 
 class TestDownloadEdgeCases(unittest.TestCase):
@@ -1703,10 +1674,140 @@ class TestInjectTriggerWords(unittest.TestCase):
         (tmp / "named.metadata.json").write_text(
             json.dumps({"civitai": {"trainedWords": ["w"]}})
         )
+        for stem in ("bad", "nowords", "named"):
+            (tmp / f"{stem}.safetensors").write_bytes(b"m")
         cache = TriggerWordCache()
-        with patch.object(lora_utils, "find_lora_directories", return_value=[str(tmp)]):
+        with patch.object(lora_utils, "default_lora_roots", return_value=[str(tmp)]):
             self.assertEqual(cache.load(str(tmp)), 1)
         self.assertEqual(cache.get_trigger_words("named"), ["w"])
+
+
+class TestTriggerWordCacheLayout(unittest.TestCase):
+    """#355: trigger words come from the sidecars LoraManager really uses."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.custom_nodes = self.tmp / "custom_nodes"
+        self.lm = _make_lora_manager(self.custom_nodes)
+        self.loras = self.tmp / "loras"
+        self.loras.mkdir()
+        self.sidecars = self.tmp / "sidecars"
+        self.settings = self.tmp / "settings"
+        self.settings.mkdir()
+        patchers = [
+            patch.object(
+                lora_utils, "custom_nodes_directories", return_value=[self.custom_nodes]
+            ),
+            patch.object(lora_utils, "default_lora_roots", return_value=[]),
+            patch.dict(os.environ, {"LORA_MANAGER_SETTINGS_DIR": str(self.settings)}),
+        ]
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def centralized(self):
+        self.sidecars.mkdir(exist_ok=True)
+        (self.settings / "settings.json").write_text(
+            json.dumps(
+                {
+                    "sidecar_storage_mode": "centralized",
+                    "sidecar_storage_path": str(self.sidecars),
+                    "folder_paths": {"loras": [str(self.loras)]},
+                }
+            )
+        )
+
+    def sidecar(self, folder, stem, model, words):
+        folder.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "file_name": stem,
+            "file_path": str(model),
+            "civitai": {"trainedWords": words},
+        }
+        (folder / f"{stem}.metadata.json").write_text(json.dumps(meta))
+
+    def test_centralized_sidecars_are_read(self):
+        self.centralized()
+        model = self.loras / "neon.safetensors"
+        model.write_bytes(b"m")
+        self.sidecar(self.sidecars / "loras-0a1b2c3d", "neon", model, ["glow"])
+        # A leftover sidecar beside the model is not what LoraManager reads.
+        self.sidecar(self.loras, "neon", model, ["stale"])
+        cache = TriggerWordCache()
+        self.assertEqual(cache.load(str(self.lm)), 1)
+        self.assertEqual(cache.get_trigger_words("neon"), ["glow"])
+
+    def test_both_the_model_and_the_sidecar_name_are_keys(self):
+        self.centralized()
+        model = self.loras / "model_name.safetensors"
+        model.write_bytes(b"m")
+        self.sidecar(self.sidecars / "c", "sidecar_name", model, ["w"])
+        cache = TriggerWordCache()
+        self.assertEqual(cache.load(str(self.lm)), 2)
+        self.assertEqual(cache.get_trigger_words("model_name"), ["w"])
+        self.assertEqual(cache.get_trigger_words("sidecar_name"), ["w"])
+
+    def test_an_empty_path_means_auto_detection(self):
+        self.centralized()
+        model = self.loras / "neon.safetensors"
+        model.write_bytes(b"m")
+        self.sidecar(self.sidecars / "c", "neon", model, ["glow"])
+        cache = TriggerWordCache()
+        with patch.object(lora_utils, "detect_lora_manager", return_value=str(self.lm)):
+            self.assertEqual(cache.load(""), 1)
+
+    def test_an_unlistable_folder_keeps_the_previous_map(self):
+        cache = TriggerWordCache()
+        cache._cache = {"old": ["word"]}
+        cache._loaded = True
+        with (
+            patch.object(
+                lora_utils, "discover_sidecars", side_effect=OSError("share gone")
+            ),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING") as logs,
+        ):
+            self.assertEqual(cache.load(str(self.lm)), 1)
+        self.assertEqual(cache.get_trigger_words("old"), ["word"])
+        self.assertIn("share gone", "\n".join(logs.output))
+
+    def test_any_other_failure_never_raises(self):
+        cache = TriggerWordCache()
+        with (
+            patch.object(lora_utils, "load_layout", side_effect=RuntimeError("bad")),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING"),
+        ):
+            self.assertEqual(cache.load(str(self.lm)), 0)
+        self.assertFalse(cache.is_loaded)
+
+    def test_an_unusable_layout_falls_back_to_the_default_roots(self):
+        (self.settings / "settings.json").write_text("{not json")
+        model = self.loras / "neon.safetensors"
+        model.write_bytes(b"m")
+        self.sidecar(self.loras, "neon", model, ["glow"])
+        cache = TriggerWordCache()
+        with (
+            patch.object(
+                lora_utils, "default_lora_roots", return_value=[str(self.loras)]
+            ),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING") as logs,
+        ):
+            self.assertEqual(cache.load(str(self.lm)), 1)
+        self.assertEqual(cache.get_trigger_words("neon"), ["glow"])
+        self.assertIn("not valid JSON", "\n".join(logs.output))
+
+    def test_layout_wraps_the_install_and_the_default_roots(self):
+        with patch.object(
+            lora_utils, "default_lora_roots", return_value=[str(self.loras)]
+        ):
+            layout = lora_utils.lora_manager_layout(str(self.lm))
+        self.assertIsNone(layout.error)
+        self.assertEqual(layout.source, "environment")
+        self.assertIn(os.path.normcase(str(self.loras)), layout.lora_roots)
+        self.assertEqual(
+            lora_utils.lora_manager_layout(str(self.tmp)).error,
+            "no LoraManager install found",
+        )
 
 
 if __name__ == "__main__":

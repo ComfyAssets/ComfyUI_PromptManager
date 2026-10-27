@@ -315,6 +315,25 @@ class TestLoraTriggerWords(NodeTestCase):
             )
         cache.load.assert_called_once_with("/loras")
 
+    def test_a_failing_discovery_logs_and_the_node_still_runs(self):
+        # #355: the trigger cache reads LoraManager's folders while a node
+        # runs; a folder that cannot be listed must never stop the node.
+        from py import lora_utils
+
+        cache = lora_utils.get_trigger_cache()
+        cache.clear()
+        self.addCleanup(cache.clear)
+        with (
+            mock.patch.dict(sys.modules, {"py.config": fake_integration_config(True)}),
+            mock.patch.object(
+                lora_utils, "discover_sidecars", side_effect=OSError("share gone")
+            ),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING") as logs,
+        ):
+            text = self.node._inject_lora_trigger_words("a cat <lora:neon:1>")
+        self.assertEqual(text, "a cat <lora:neon:1>")
+        self.assertIn("share gone", "\n".join(logs.output))
+
 
 class TestPromptManagerEncoding(NodeTestCase):
     node_cls = PromptManager

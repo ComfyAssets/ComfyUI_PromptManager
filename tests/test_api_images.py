@@ -1317,7 +1317,8 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
             with (
                 patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
                 patch.object(IntegrationConfig, "LORA_MANAGER_PATH", ""),
-                patch("py.lora_utils.find_lora_directories", return_value=[lora]),
+                patch("py.lora_utils.detect_lora_manager", return_value=None),
+                patch("py.lora_utils.default_lora_roots", return_value=[lora]),
                 patch("py.lora_utils.get_lora_image_cache_dir", return_value=cache),
             ):
                 resp = await self.client.request(
@@ -1328,7 +1329,8 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
             with (
                 patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
                 patch.object(IntegrationConfig, "LORA_MANAGER_PATH", ""),
-                patch("py.lora_utils.find_lora_directories", side_effect=RuntimeError),
+                patch("py.lora_utils.detect_lora_manager", return_value=None),
+                patch("py.lora_utils.default_lora_roots", side_effect=RuntimeError),
             ):
                 resp = await self.client.request(
                     "GET", f"/prompt_manager/images/{image_id}/file"
@@ -1347,7 +1349,12 @@ class TestLoraManagerPathAllowList(ImageRouteCoverageCase):
         )
         stack.enter_context(patch.object(IntegrationConfig, "LORA_MANAGER_PATH", path))
         stack.enter_context(
-            patch("py.lora_utils.find_lora_directories", return_value=[lora])
+            patch("py.lora_utils.default_lora_roots", return_value=[lora])
+        )
+        # Never the developer's LoraManager settings (#355).
+        settings = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(
+            patch.dict(os.environ, {"LORA_MANAGER_SETTINGS_DIR": settings})
         )
         stack.enter_context(
             patch("py.lora_utils.get_lora_image_cache_dir", return_value=cache)
