@@ -1088,6 +1088,36 @@ test('a held legacy job and the health check show no tiles, no Results and no ma
     await expect(toast(page)).toHaveText('Health check finished.');
 });
 
+// #328: a tagging model download is a job of its own kind with no byte progress and no Cancel; Activity shows it
+// through the generic held view (its title, status line and an indeterminate bar), then its end toast.
+test('a held model download shows its title, an indeterminate bar and no Cancel; its end toast follows', async ({ page, request }) => {
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    const title = 'Tagging model download · WD14 ViT';
+    await expect(await request.post('/__test__/tagging/reset')).toBeOK();
+    await expect(await request.post('/__test__/tagging/download', { data: { mode: 'hold' } })).toBeOK();
+    try {
+        const response = await request.post('/prompt_manager/jobs/model-download', { data: { model_type: 'wd14-vit' } });
+        expect(response.status()).toBe(202);
+        const job = (await response.json()).job;
+        expect([job.kind, job.title, job.cancellable]).toEqual(['model_download', title, false]);
+        await page.goto(`${workspace}#/activity`);
+        const item = items(page).filter({ has: page.getByRole('link', { name: new RegExp(`${title}$`) }) });
+        await expect(item.locator('progress')).not.toHaveAttribute('value');
+        await expect(item.getByRole('button', { name: 'Cancel job', exact: true })).toHaveCount(0);
+        await item.getByRole('link').click();
+        await expect(heading(page).locator('h1')).toHaveText(title);
+        await expect(progressSection(page).locator('.panel-heading > span.small')).toHaveText('Downloading WD14 ViT (~400 MB)');
+        await expect(progressSection(page).locator('progress')).not.toHaveAttribute('value');
+        await expect(progressSection(page).locator('dl.stat-row')).toHaveCount(0);
+        await expect(heading(page).getByRole('button', { name: /^Cancel/ })).toHaveCount(0);
+        await expect(await request.post('/__test__/tagging/download', { data: { mode: 'succeed' } })).toBeOK();
+        await expect(toast(page)).toHaveText(`${title} finished.`);
+        await expect(heading(page).locator('p.muted')).toHaveText(/^Finished \d\d:\d\d$/);
+    } finally {
+        await request.post('/__test__/tagging/reset');
+    }
+});
+
 // S5 review I3: a thumbnail job with nothing to generate ends on the server's final line ("No previews to generate · N
 // already up to date"), never on a stale "Processing file 0 of 0" under the Completed chip.
 test('a finished thumbnail job with nothing to do says so', async ({ page, request }) => {

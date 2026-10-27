@@ -34,6 +34,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
+from py.api.jobs import JobBusy
 from utils.hashing import generate_prompt_hash
 
 try:  # guarded so a missing module fails assertions, not test loading
@@ -1068,7 +1069,9 @@ class TestLegacyRoutesShareTheModelGate(AutotagAPITestCase):
         self.assertIsNone(model_gate.holder())
 
         self.assertEqual(len(seen), 3)
-        self.assertTrue(all(owner and owner.startswith("legacy-") for owner in seen))
+        # The download runs as the model_download job, which owns the gate.
+        kinds = [owner.split(":", 1)[0] for owner in seen]
+        self.assertEqual(kinds, ["legacy-single", "legacy-single", "model-download"])
 
     async def test_validation_errors_win_over_the_gate(self):
         self.assertTrue(model_gate.try_acquire("test-holder"))
@@ -1440,3 +1443,255 @@ class TestModelBusyNamesTheOperation(AutotagAPITestCase):
         self.assertEqual(data["operation"], "Generate suggestions")
         self.assertEqual(self.service.unload_calls, 0)
         self.assertEqual(self.service.get_loaded_model_type(), "wd14-vit")
+
+
+class DownloadJobTestCase(AutotagAPITestCase):
+    """Helpers for the ``model_download`` job: a download that waits for a
+    signal, so a test sees the job while it runs."""
+
+    TITLE = "Tagging model download · WD14 ViT"
+
+    def setUp(self):
+        super().setUp()
+        self.started = threading.Event()
+        self.proceed = threading.Event()
+
+    def _hold_download(self, result=True, error=None):
+        def download(model_type, progress_callback=None):
+            self.service.download_calls.append(model_type)
+            self.started.set()
+            self.proceed.wait(30)
+            if error is not None:
+                raise error
+            return result
+
+        self.service.download_model = download
+
+    async def _started(self):
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, self.started.wait, 30))
+
+    async def _start(self, model_type="wd14-vit"):
+        return await self._post_json(
+            "/prompt_manager/jobs/model-download", {"model_type": model_type}
+        )
+
+    async def _ended(self, job_id):
+        job = self.api._jobs.get(job_id)
+        self.proceed.set()
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+        return job
+
+
+class TestModelDownloadJob(DownloadJobTestCase):
+
+    async def test_download_job_is_indeterminate_and_not_cancellable(self):
+        self._hold_download()
+        resp = await self._start()
+        self.assertEqual(resp.status, 202)
+        summary = (await resp.json())["job"]
+        try:
+            await self._started()
+            self.assertEqual(summary["kind"], "model_download")
+            self.assertEqual(summary["title"], self.TITLE)
+            self.assertFalse(summary["cancellable"])
+            self.assertEqual(summary["admission"], "read")
+            self.assertEqual(
+                summary["scope"],
+                {
+                    "model_type": "wd14-vit",
+                    "label": "WD14 ViT",
+                    "size_label": "~400 MB",
+                },
+            )
+            detail = (
+                await (
+                    await self.client.get(f"/prompt_manager/jobs/{summary['id']}")
+                ).json()
+            )["job"]
+            self.assertEqual((detail["progress"], detail["total"]), (0, 0))
+            self.assertEqual(detail["status_line"], "Downloading WD14 ViT (~400 MB)")
+            cancel = await self.client.post(
+                f"/prompt_manager/jobs/{summary['id']}/cancel"
+            )
+            self.assertFalse((await cancel.json())["cancellation_requested"])
+        finally:
+            job = await self._ended(summary["id"])
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(job.status_line, "Downloaded WD14 ViT")
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+        self.assertEqual(len(job.log), 2)
+
+    async def test_start_body_is_checked_before_anything_runs(self):
+        for body in (
+            {"model_type": "nope"},
+            {"model_type": "wd14-vit", "extra": 1},
+            {},
+            ["wd14-vit"],
+            {"model_type": 3},
+        ):
+            resp = await self._post_json("/prompt_manager/jobs/model-download", body)
+            self.assertEqual(resp.status, 400, body)
+        resp = await self._post_json(
+            "/prompt_manager/jobs/model-download",
+            {"model_type": "wd14-vit", "pad": "x" * 2048},
+        )
+        self.assertIn(resp.status, (400, 413))
+        self.assertEqual(self.service.download_calls, [])
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_second_download_is_409_busy(self):
+        self._hold_download()
+        first = (await (await self._start()).json())["job"]
+        try:
+            await self._started()
+            resp = await self._start("gguf")
+            data = await resp.json()
+            self.assertEqual(resp.status, 409)
+            self.assertEqual(data["code"], "busy")
+            self.assertEqual(data["running"]["title"], self.TITLE)
+        finally:
+            await self._ended(first["id"])
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+
+    async def test_download_holds_gate_until_runner_exits(self):
+        self._hold_download()
+        self.service._loaded_type = "wd14-swinv2"
+        first = (await (await self._start()).json())["job"]
+        try:
+            await self._started()
+            self.assertTrue(model_gate.holder().startswith("model-download:"))
+            resp = await self.client.post("/prompt_manager/autotag/unload")
+            data = await resp.json()
+            self.assertEqual(resp.status, 409)
+            self.assertEqual(data["operation"], self.TITLE)
+        finally:
+            await self._ended(first["id"])
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.service.unload_calls, 0)
+
+    async def test_download_releases_gate_when_start_is_refused(self):
+        class Running:
+            id = "other"
+            title = "Database restore"
+
+        with patch.object(self.api._jobs, "start", side_effect=JobBusy(Running())):
+            resp = await self._start()
+        self.assertEqual(resp.status, 409)
+        self.assertEqual((await resp.json())["code"], "busy")
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.service.download_calls, [])
+
+    async def test_gate_held_elsewhere_is_409_model_busy(self):
+        owner = model_gate.new_owner("image-annotations")
+        self.assertTrue(model_gate.try_acquire(owner))
+        try:
+            resp = await self._start()
+            data = await resp.json()
+        finally:
+            model_gate.release(owner)
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["operation"], "Generate suggestions")
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_failed_download_fails_the_job_without_paths(self):
+        for outcome in ({"result": False}, {"error": OSError("/srv/models is full")}):
+            self.started.clear()
+            self.proceed.clear()
+            self._hold_download(**outcome)
+            summary = (await (await self._start()).json())["job"]
+            await self._started()
+            job = await self._ended(summary["id"])
+            self.assertEqual(job.state, "failed", outcome)
+            self.assertEqual(
+                job.status_line, "The download failed. Check server logs for details."
+            )
+            report = await self.client.get(
+                f"/prompt_manager/jobs/{summary['id']}/report"
+            )
+            text = await report.text()
+            self.assertNotIn("/srv/models", text)
+            leaked = [s for s in _strings(json.loads(text)) if _absolute(s)]
+            self.assertEqual(leaked, [])
+            self.assertIsNone(model_gate.holder())
+
+
+class TestLegacyDownloadAttaches(DownloadJobTestCase):
+    """POST /autotag/download/{type}: the legacy stream rides on the job."""
+
+    GOLDEN_OK = [
+        {"type": "progress", "progress": 0, "status": "Starting download..."},
+        {"type": "complete", "progress": 100, "status": "Download complete"},
+    ]
+    GOLDEN_FAILED = [
+        {"type": "progress", "progress": 0, "status": "Starting download..."},
+        {"type": "error", "message": "Download failed"},
+    ]
+
+    async def test_legacy_download_events_unchanged(self):
+        resp = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._sse_events(await resp.text()), self.GOLDEN_OK)
+        jobs = self.api._jobs.list()
+        self.assertEqual(
+            [(j.kind, j.title, j.state) for j in jobs],
+            [("model_download", self.TITLE, "finished")],
+        )
+
+        self.service.download_result = False
+        resp = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        self.assertEqual(self._sse_events(await resp.text()), self.GOLDEN_FAILED)
+
+    async def test_legacy_download_attaches_to_running_job(self):
+        self._hold_download()
+        summary = (await (await self._start()).json())["job"]
+        await self._started()
+        legacy = asyncio.ensure_future(
+            self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        )
+        try:
+            # Wait until the legacy stream is subscribed to the running job.
+            job = self.api._jobs.get(summary["id"])
+            for _ in range(300):
+                if job.subscriber_count:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(job.subscriber_count, 1)
+        finally:
+            await self._ended(summary["id"])
+        resp = await legacy
+        self.assertEqual(self._sse_events(await resp.text()), self.GOLDEN_OK)
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+        self.assertEqual(len(self.api._jobs.list()), 1)
+
+    async def test_legacy_download_of_other_type_is_409_model_busy(self):
+        self._hold_download()
+        summary = (await (await self._start()).json())["job"]
+        try:
+            await self._started()
+            resp = await self.client.post("/prompt_manager/autotag/download/gguf")
+            data = await resp.json()
+        finally:
+            await self._ended(summary["id"])
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "model-busy")
+        self.assertEqual(data["operation"], self.TITLE)
+        self.assertEqual(self.service.download_calls, ["wd14-vit"])
+
+    async def test_legacy_disconnect_keeps_the_job_running(self):
+        self._hold_download()
+        resp = await self.client.post("/prompt_manager/autotag/download/wd14-vit")
+        first = await resp.content.readline()
+        self.assertTrue(first.startswith(b"data: "))
+        await self._started()
+        resp.close()  # the page closed the modal
+        (job,) = self.api._jobs.list()
+        for _ in range(300):
+            if not job.subscriber_count:
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue(job.running)
+        job = await self._ended(job.id)
+        self.assertEqual(job.state, "finished")
+        self.assertIsNone(model_gate.holder())
