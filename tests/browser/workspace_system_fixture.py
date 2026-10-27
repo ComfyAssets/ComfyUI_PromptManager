@@ -97,15 +97,25 @@ def register_system_commands(app, routes, api, root: Path):
     real_move = library_move.move_library
     keep = PromptManagerConfig.KEEP_LIBRARY_IN_NODE_FOLDER
     config_bytes = config_path.read_bytes() if config_path.exists() else None
-    host_values = (
-        PromptManagerConfig.RESULT_TIMEOUT,
-        PromptManagerConfig.WEBUI_DISPLAY_MODE,
-        PromptManagerConfig.WORKER_THREADS,
-        GalleryConfig.MONITORING_ENABLED,
-        PromptManagerConfig.THUMBNAIL_FORMAT,
-        PromptManagerConfig.THUMBNAIL_QUALITY,
-        PromptManagerConfig.THUMBNAIL_EDGE,
+    from py.api.settings_routes import (
+        _AUTOTAG_SETTINGS,
+        _GALLERY_SETTINGS,
+        _SETTINGS_FILE_KEYS,
     )
+
+    # Every value POST /settings can change, so a reset restores each one
+    # (a saved safety_backup=false once leaked into a later spec's review).
+    # The tagging settings are the tagging fixture's to reset.
+    host_values = {
+        (GalleryConfig if name in _GALLERY_SETTINGS else PromptManagerConfig, name): (
+            getattr(
+                GalleryConfig if name in _GALLERY_SETTINGS else PromptManagerConfig,
+                name,
+            )
+        )
+        for name in _SETTINGS_FILE_KEYS
+        if name not in _AUTOTAG_SETTINGS
+    }
     from py.api import thumbnail_encode
 
     monitor = getattr(image_monitor, "_monitor_instance", None)
@@ -135,15 +145,8 @@ def register_system_commands(app, routes, api, root: Path):
             unplugged.rmdir()
         GalleryConfig.MONITORING_DIRECTORIES = list(configured)
         api._health_report = None
-        (
-            PromptManagerConfig.RESULT_TIMEOUT,
-            PromptManagerConfig.WEBUI_DISPLAY_MODE,
-            PromptManagerConfig.WORKER_THREADS,
-            GalleryConfig.MONITORING_ENABLED,
-            PromptManagerConfig.THUMBNAIL_FORMAT,
-            PromptManagerConfig.THUMBNAIL_QUALITY,
-            PromptManagerConfig.THUMBNAIL_EDGE,
-        ) = host_values
+        for (owner, name), value in host_values.items():
+            setattr(owner, name, value)
         thumbnail_encode.reset_encoders()
         image_monitor._monitor_instance = monitor
         api.__dict__.pop("_library_resolver", None)
