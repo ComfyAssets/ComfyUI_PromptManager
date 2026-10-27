@@ -24,7 +24,7 @@ import { createButton } from '../shared/toolkit/core.js';
 import { createBridgeClient } from '../shared/toolkit/prompt-bridge.js';
 import { settingRow, operationRow } from './system-controls.mjs';
 import { HOST_UNAVAILABLE } from './system-appearance.mjs';
-import { closeWorkspaceDialog, openContentDialog, openReviewDialog } from './workspace-dialogs.mjs';
+import { openCloseOnlyReview, openReviewDialog } from './workspace-dialogs.mjs';
 import { BACKUP_COPY, applyPlan, backupText, planNote, protectedText, reviewRefusal } from './maintenance-review.mjs';
 import { downloadDatabaseBackup } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
@@ -232,26 +232,10 @@ function namesList(plan) {
     return [list];
 }
 
-/** The settings file (home shown as `~`) as the LoraManager row's hover title. */
-function settingsTitle(dd, plan) {
-    if (typeof plan.layout?.settings_file === 'string') dd.title = plan.layout.settings_file;
-}
-
 function closeOnly({ scope, trigger, plan, note }) {
-    const grid = el('dl', undefined, 'meta-grid');
-    for (const [term, value] of importGrid(plan)) {
-        const entry = el('div');
-        const dd = el('dd', value);
-        if (term === LAYOUT_TERM) settingsTitle(dd, plan);
-        entry.append(el('dt', term), dd);
-        grid.append(entry);
-    }
-    const close = createButton('Close');
-    close.addEventListener('click', () => closeWorkspaceDialog());
-    const actions = el('div', undefined, 'dialog-actions');
-    actions.append(close);
-    openContentDialog({ scope, trigger, title: IMPORT_TITLE, nodes: [el('h3', 'LoRA reference data'), grid, ...namesList(plan),
-        el('p', note, 'small'), actions] });
+    const titles = typeof plan.layout?.settings_file === 'string' ? { [LAYOUT_TERM]: plan.layout.settings_file } : {};
+    openCloseOnlyReview({ scope, trigger, title: IMPORT_TITLE, heading: 'LoRA reference data', grid: importGrid(plan),
+        options: namesList(plan), sentence: note, titles });
 }
 
 /** Show the reviewed import; Start applies exactly this token (D107). */

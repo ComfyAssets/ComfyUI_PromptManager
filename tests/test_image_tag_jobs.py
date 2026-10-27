@@ -310,7 +310,7 @@ class TestAutoTag(ImageTagJobTestCase):
         self.assertTrue(
             any(
                 line.endswith(
-                    "is not downloaded. Download it from the legacy Auto-tag page."
+                    "is not downloaded. Download it in System › Auto-tagging."
                 )
                 for line in job.log
             ),

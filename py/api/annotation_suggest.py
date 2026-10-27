@@ -24,7 +24,7 @@ _COMMON = frozenset({"suggestion_limit", "use_gpu"})
 _WD14_REQUIRED = frozenset({"general_threshold", "character_threshold"})
 _LLM_REQUIRED = frozenset({"instructions"})
 
-UNAVAILABLE_HINT = "Download it from the legacy Auto-tag page."
+UNAVAILABLE_HINT = "Download it in System › Auto-tagging."
 
 
 class OptionError(ValueError):
