@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
+from tests.browser.folder_trash import replace_folder
 
 if TYPE_CHECKING:
     from py.api import PromptManagerAPI
@@ -98,8 +99,7 @@ def seed_tagging(api: PromptManagerAPI, root: Path, extra_images: int = 0) -> di
         for table in _TABLES:
             conn.execute(f"DELETE FROM {table}")
     for name in ("output", "input"):
-        shutil.rmtree(root / name)
-        (root / name).mkdir()
+        replace_folder(root / name)
     output = root / "output"
     _png(output / FILES[0][0], (196, 140, 92))
     _png(output / FILES[1][0], (150, 110, 80))

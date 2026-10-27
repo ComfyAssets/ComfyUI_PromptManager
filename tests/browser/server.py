@@ -19,6 +19,7 @@ from aiohttp.web_runner import GracefulExit
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from tests.browser.folder_trash import close_trash, replace_folder
 from tests.browser.request_hold import register_request_holds
 from tests.browser import slow_reset_watch
 from tests.browser.fast_reset import SEED_ON_LIVE_ENV, ScratchSeeder
@@ -270,8 +271,7 @@ def create_app(root: Path) -> web.Application:
             ):
                 conn.execute(f"DELETE FROM {table}")
         for name in ("output", "input"):
-            shutil.rmtree(root / name)
-            (root / name).mkdir()
+            replace_folder(root / name)
         for index, (directory, text, tag) in enumerate(
             [
                 ("output", "Cat portrait", "cats"),
@@ -647,6 +647,8 @@ def create_app(root: Path) -> web.Application:
         api.close_annotation_captures()
         seeder.close()
         api.db.close_all()
+        # Old media folders still waiting for deletion go before the temp root.
+        close_trash(root)
 
     seed(api)
     # Open Needs review change streams end first, as on the real host.
