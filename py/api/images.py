@@ -2272,7 +2272,8 @@ class ImageRoutesMixin:
                 )
 
             image_path = Path(image["image_path"])
-            allowed_dirs = list(self._get_all_output_dirs()) + self._lora_image_dirs()
+            lora_dirs = await self._run_in_executor(self._lora_image_dirs)
+            allowed_dirs = list(self._get_all_output_dirs()) + lora_dirs
 
             denied = _media_access_error(image_path, allowed_dirs)
             if denied is not None:
@@ -2320,7 +2321,10 @@ class ImageRoutesMixin:
         LoraManager's guarded LoRA roots, sidecar root and example-images
         root (``lora_manager_layout.media_roots``, #355) and PromptManager's
         CivitAI download cache. An unusable LoraManager layout gives the
-        default LoRA roots and the cache.
+        default LoRA roots and the cache. The layout comes from the layout
+        cache (``lora_utils.cached_lora_manager_layout``, #362), which reloads
+        when LoraManager's settings files change; blocking, so the routes
+        call it in the executor.
         """
         try:
             from ..config import IntegrationConfig
@@ -2328,25 +2332,18 @@ class ImageRoutesMixin:
             if not IntegrationConfig.LORA_MANAGER_ENABLED:
                 return []
             from ..lora_utils import (
+                cached_lora_manager_layout,
                 get_lora_image_cache_dir,
-                layout_for_install,
-                lora_manager_layout,
             )
 
-            lora_root = IntegrationConfig.LORA_MANAGER_PATH or ""
-            if lora_root.strip():
+            configured = IntegrationConfig.LORA_MANAGER_PATH or ""
+            install, layout = cached_lora_manager_layout(configured)
+            if configured.strip() and install is None:
                 # A configured path comes from config.json, which can be hand
                 # edited: only a LoraManager install under custom_nodes may
                 # widen the serving allow-list. An empty path keeps the
                 # auto-detection, which itself only scans custom_nodes.
-                from ..lora_utils import resolve_lora_manager_path
-
-                lora_root = resolve_lora_manager_path(lora_root)
-                if not lora_root:
-                    return []
-                layout = layout_for_install(lora_root)
-            else:
-                layout = lora_manager_layout("")
+                return []
 
             dirs = [Path(d) for d in layout.media_roots]
             # Named, not made: listing and serving never create the cache.

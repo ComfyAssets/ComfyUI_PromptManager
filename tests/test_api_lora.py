@@ -876,6 +876,18 @@ class TestLoraScanRoute(LoraAPITestCase):
         resp = await self.client.request("POST", "/prompt_manager/lora/scan")
         self.assertEqual(resp.status, 400)
 
+    async def test_a_finished_scan_clears_the_layout_cache(self):
+        # #362: the legacy scan replaces through the same method.
+        self._enable()
+        loras = self.tmp_root / "loras"
+        loras.mkdir()
+        _write_metadata(loras, "plain")
+        (loras / "plain.png").write_bytes(_png_bytes())
+        with patch("py.lora_utils.clear_layout_cache") as clear:
+            resp, events, _calls = await self._scan(loras)
+        self.assertEqual(events[-1]["type"], "complete", events)
+        clear.assert_called_once_with()
+
     async def test_scan_imports_loras_with_images_and_links_existing(self):
         self._enable()
         loras = self.tmp_root / "loras"

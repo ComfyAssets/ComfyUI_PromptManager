@@ -194,8 +194,13 @@ class LoraImportRoutesMixin:
             return False
 
     async def replace_lora_imports(self, db, staged, *, expected_ids, allow_empty):
-        """Swap the collection for ``staged.records`` in one transaction."""
-        return await self._run_in_executor(
+        """Swap the collection for ``staged.records`` in one transaction.
+
+        Then the image routes' layout cache is dropped (#362): the import may
+        have linked files under a folder LoraManager created after the cache
+        stored its layout (its first example-image download creates one).
+        """
+        result = await self._run_in_executor(
             lambda: db.replace_category_prompts(
                 CATEGORY,
                 staged.records,
@@ -203,6 +208,8 @@ class LoraImportRoutesMixin:
                 allow_empty=allow_empty,
             )
         )
+        lora_utils.clear_layout_cache()
+        return result
 
     # ── preview ───────────────────────────────────────────────────────
 

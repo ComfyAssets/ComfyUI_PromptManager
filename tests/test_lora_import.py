@@ -529,6 +529,16 @@ class LoraImportRouteTests(LoraImportAPITestCase):
         resp, body = await self._post(APPLY, {"token": plan["token"]})
         self.assertEqual((resp.status, body["code"]), (409, "plan-used"))
 
+    async def test_a_finished_import_clears_the_layout_cache(self):
+        # #362: the import may link files under a folder LoraManager created
+        # after the image routes cached its layout.
+        self._two_loras()
+        with patch("py.lora_utils.clear_layout_cache") as clear:
+            _plan, job = await self._apply_reviewed()
+            await job.task
+        self.assertEqual(job.state, "finished", job.log)
+        clear.assert_called_once_with()
+
     async def test_discovery_failure_keeps_previous_imports(self):
         self._two_loras()
         before = _snapshot(self.api.db)
@@ -935,6 +945,19 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
         await job.task
         self.assertEqual((job.state, job.scope["failure"]), ("failed", "plan-changed"))
         self.assertEqual(_snapshot(self.api.db), before)
+
+    async def test_a_refused_import_keeps_the_layout_cache(self):
+        self._two_loras()
+        resp, plan = await self._post(PREVIEW)
+        self.api.db.save_prompt(
+            text="late", category=CATEGORY, prompt_hash=generate_prompt_hash("late")
+        )
+        with patch("py.lora_utils.clear_layout_cache") as clear:
+            resp, body = await self._post(APPLY, {"token": plan["token"]})
+            job = self.api._jobs.get(body["job"]["id"])
+            await job.task
+        self.assertEqual(job.scope["failure"], "plan-changed")
+        clear.assert_not_called()
 
     async def test_a_pair_saved_after_the_review_blocks_the_job(self):
         self._two_loras()

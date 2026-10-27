@@ -30,6 +30,7 @@ except ImportError:
 
 from dataclasses import replace
 
+from .lora_layout_cache import LayoutCache
 from .lora_manager_layout import (
     MODE_ALONGSIDE,
     METADATA_SUFFIX,
@@ -295,8 +296,33 @@ def layout_for_install(install: Optional[str]) -> LoraManagerLayout:
 
 
 def lora_manager_layout(lora_manager_path: Optional[str]) -> LoraManagerLayout:
-    """Where LoraManager keeps its files (``py/lora_manager_layout.py``)."""
+    """Where LoraManager keeps its files (``py/lora_manager_layout.py``).
+
+    A fresh read: the import review, Start, the legacy scan and the trigger
+    word cache use it. The image hot paths use ``cached_lora_manager_layout``.
+    """
     return layout_for_install(lora_manager_install(lora_manager_path))
+
+
+# The image hot paths' layout cache (#362). The lambdas look the functions up
+# when called, so a test that patches them here is seen by the cache.
+_layout_cache = LayoutCache(
+    lambda path: lora_manager_install(path),
+    lambda install: layout_for_install(install),
+)
+
+
+def cached_lora_manager_layout(
+    configured: Optional[str],
+) -> Tuple[Optional[str], LoraManagerLayout]:
+    """``(install, layout)`` for the configured path, from the layout cache
+    while LoraManager's settings files are unchanged (``py/lora_layout_cache.py``)."""
+    return _layout_cache.get(configured or "")
+
+
+def clear_layout_cache() -> None:
+    """Drop the cached layout (after an import linked files in new folders)."""
+    _layout_cache.clear()
 
 
 def _get_extra_lora_paths(comfyui_root: Path) -> List[Path]:
