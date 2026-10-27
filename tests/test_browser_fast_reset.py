@@ -1,7 +1,10 @@
 """Browser-test resets seed a scratch copy and publish it in one commit (#384)."""
 
 import hashlib
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -299,6 +302,27 @@ class TestScratchSeeder(unittest.TestCase):
             seeder.run(reseed)
         self.assertEqual(list(memory.iterdir()), [])
         self.assertTrue((self.root / "fallback" / "seed.db").exists())
+
+    @unittest.skipUnless(os.name == "posix", "process probe is POSIX only")
+    def test_scratch_folders_of_dead_servers_are_removed(self):
+        memory = self.root / "memory"
+        memory.mkdir()
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        orphan = memory / f"pm-reset-{dead.pid}-abc"
+        alive = memory / f"pm-reset-{os.getpid()}-def"
+        other = memory / "pm-reset-notapid"
+        for folder in (orphan, alive, other):
+            folder.mkdir()
+            (folder / "seed.db").write_bytes(b"x")
+        seeder = ScratchSeeder(self.api, self.root / "fallback", memory_root=memory)
+        self.addCleanup(seeder.close)
+        seeder.run(reseed)
+        self.assertFalse(orphan.exists())
+        self.assertTrue(alive.exists())
+        self.assertTrue(other.exists())
+        own = [p for p in memory.glob(f"pm-reset-{os.getpid()}-*") if p != alive]
+        self.assertEqual(len(own), 1)
 
     def test_close_releases_the_scratch_files(self):
         self.seeder.run(reseed)

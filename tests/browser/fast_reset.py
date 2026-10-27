@@ -43,6 +43,8 @@ MEMORY_ROOT = Path("/dev/shm")
 # the browsers and the other workers; with less free than this, the scratch
 # copy goes on disk instead.
 MEMORY_FREE_BYTES = 32 * 1024 * 1024
+# Scratch folders are named <prefix><owner pid>-<random>.
+SCRATCH_PREFIX = "pm-reset-"
 
 
 def _quote(name: str) -> str:
@@ -92,6 +94,31 @@ def table_digests(conn: sqlite3.Connection, schema: str = "main") -> dict[str, s
             digest.update(b"\n")
         result[table] = digest.hexdigest()
     return result
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # it exists but belongs to someone else
+    return True
+
+
+def remove_orphaned_scratch(root: Path) -> None:
+    """Remove scratch folders of servers that died without cleaning up.
+
+    A server killed outright (SIGKILL, a crash) never runs ``close``, and
+    tmpfs keeps its folder in memory until reboot. The folder name carries
+    the owner's process id; a folder whose process is gone is removed.
+    """
+    if os.name != "posix":
+        return  # os.kill(pid, 0) would terminate the process on Windows
+    for folder in root.glob(f"{SCRATCH_PREFIX}*-*"):
+        pid = folder.name[len(SCRATCH_PREFIX) :].split("-", 1)[0]
+        if pid.isdigit() and not _process_alive(int(pid)):
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 class _SeedApi:
@@ -247,12 +274,10 @@ class ScratchSeeder:
         kernel is writing back the pages they rewrite.
         """
         root = self._memory_root
-        if (
-            root is not None
-            and root.is_dir()
-            and os.access(root, os.W_OK)
-            and shutil.disk_usage(root).free >= MEMORY_FREE_BYTES
-        ):
-            return Path(tempfile.mkdtemp(prefix="pm-reset-", dir=root))
+        if root is not None and root.is_dir() and os.access(root, os.W_OK):
+            remove_orphaned_scratch(root)
+            if shutil.disk_usage(root).free >= MEMORY_FREE_BYTES:
+                prefix = f"{SCRATCH_PREFIX}{os.getpid()}-"
+                return Path(tempfile.mkdtemp(prefix=prefix, dir=root))
         self._fallback.mkdir(parents=True, exist_ok=True)
         return self._fallback
