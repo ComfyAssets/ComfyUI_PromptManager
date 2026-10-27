@@ -14,7 +14,11 @@ real log folder. Every route refuses a log folder outside the server root.
   more INFO records older still), ``active`` bytes into the active log,
   rotated copies ``prompt_manager.log.<n>`` of the listed sizes (fixed
   times), on POSIX a symlink ``prompt_manager.log.<n+1>`` to a file outside
-  the folder (``link``) and a user's ``prompt_manager.log.bak`` (``other``);
+  the folder (``link``) and a user's ``prompt_manager.log.bak`` (``other``).
+  ``{mode: "concept"}`` reproduces the concept's Logs sample (app.js 695)
+  for the comparison: the buffer holds only its four lines, the active log
+  is 1.4 MB with three rotated copies ("prompt_manager.log · 1.4 MB · rotated
+  copies: 3") and console logging is off, as the concept's toggle;
 - ``POST /__test__/logs/rotate`` rolls the copies over as the handler does
   (``.2`` → ``.3``, ``.1`` → ``.2``, a new ``.1``), so a reviewed plan no
   longer matches;
@@ -48,6 +52,10 @@ LEVEL_RECORDS = (
     ("09:30:03", logging.CRITICAL, "The database could not be opened"),
 )
 ROTATED_TIME = datetime.datetime(2026, 10, 25, 14, 2)
+# The concept's "prompt_manager.log · 1.4 MB · rotated copies: 3": the active
+# log stays under 1.45 MB while the server writes its own lines.
+CONCEPT_ACTIVE = int(1.4 * 1024 * 1024)
+CONCEPT_ROTATED = (3072, 2048, 1024)
 MAX_SEED_BYTES = 64 * 1024 * 1024
 DEFAULT_CONFIG = {
     "level": "INFO",
@@ -135,7 +143,25 @@ def register_diagnostics_commands(app, routes, api, root: Path):
         with manager._buffer_lock:
             manager._log_buffer.clear()
 
+    def seed_concept() -> None:
+        manager = _manager()
+        log_dir = folder()
+        manager.update_config({"console_logging": False})
+        with manager._buffer_lock:
+            manager._log_buffer.clear()
+        for index, (time_text, level, message) in enumerate(CONCEPT_RECORDS):
+            record = _record(time_text, level, message, index)
+            manager.add_to_buffer(record, record.getMessage())
+        with open(log_dir / ACTIVE, "ab") as handle:
+            handle.write(b"x" * CONCEPT_ACTIVE)
+        for number, size in enumerate(CONCEPT_ROTATED, start=1):
+            moment = ROTATED_TIME - datetime.timedelta(hours=number)
+            _touch(log_dir / f"{ACTIVE}.{number}", size, moment)
+
     def seed(data) -> None:
+        if data.get("mode") == "concept":
+            seed_concept()
+            return
         manager = _manager()
         log_dir = folder()
         with_records = data.get("records", True) is not False

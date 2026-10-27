@@ -112,7 +112,7 @@ export function databaseText(state) {
         const check = report?.checks?.database;
         if (check?.status !== 'ok') return `Not readable: ${check?.message || 'no answer from the database'}`;
         const images = Number.isSafeInteger(check.image_count) ? check.image_count : 0;
-        return `Readable · ${sizeText(report.database_info?.size_bytes)} · ${number(images)} ${noun(images, 'image')}`;
+        return `Readable · ${sizeText(report.database_info?.database_size_bytes)} · ${number(images)} ${noun(images, 'image')}`;
     });
 }
 

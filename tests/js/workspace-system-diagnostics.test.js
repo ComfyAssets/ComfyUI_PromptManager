@@ -14,7 +14,7 @@ const SYSTEM = fs.readFileSync(path.join(__dirname, '../../web/js/workspace/syst
 
 const REPORT = {
     checks: { database: { status: 'ok', prompt_count: 4210, has_images_table: true, image_count: 19956 } },
-    database_info: { database_path: 'user/__promptmanager/prompts.db', size_bytes: 1717986918 },
+    database_info: { database_path: 'user/__promptmanager/prompts.db', database_size_bytes: 1717986918 },
     sources: { configured: 2, effective: 2, watching: 2, unavailable: 0 },
     viewerjs: '1.15.2',
 };
@@ -45,7 +45,7 @@ test('database text covers readable, not readable, busy and loading', async () =
     const { databaseText, LOADING, UNREADABLE } = await diagnostics;
     assert.equal(databaseText({ report: REPORT }), 'Readable · 1.6 GB · 19,956 images');
     assert.equal(databaseText({ report: { ...REPORT, checks: { database: { status: 'ok', image_count: 1 } },
-        database_info: { size_bytes: 2048 } } }), 'Readable · 2.0 KB · 1 image');
+        database_info: { database_size_bytes: 2048 } } }), 'Readable · 2.0 KB · 1 image');
     assert.equal(databaseText({ report: { checks: { database: { status: 'error', message: 'Database error: locked' } } } }),
         'Not readable: Database error: locked');
     assert.equal(databaseText({ loading: true }), LOADING);

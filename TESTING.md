@@ -3800,6 +3800,18 @@ The browser server writes its logs into `<server root>/logs`
 times, rotated copies, a link (POSIX) and a user's `.bak`, and roll the copies over; no
 test reads or deletes a real log folder.
 
+`tests/browser/system-diagnostics-concept.spec.mjs` compares the section and its log
+cleanup review with the concept (dark and light, 1600x1100 and 390x844, no page scroll;
+both selects show their whole option at 320 wide). The fixture's `{mode: "concept"}` seed
+reproduces the concept's Logs sample: only its four buffer lines, a 1.4 MB active log with
+three rotated copies and console logging off, so those values are compared as the concept
+prints them. `mapDiagnosticsConcept` applies only D109 and D110, and `mapCleanupConcept`
+D100 (the shared `mapPlanConcept`) with D109's rule for this plan (no backup box, "Not
+needed: no library record changes", "Listed files"). The mutation check asserts that the
+unmapped difference is exactly the deviated paths. The comparison found that the Database
+line read `database_info.size_bytes`, a key the report does not have, so it always said
+"0 bytes"; it reads `database_size_bytes`, the key `get_database_info()` returns.
+
 ### Browser cache ownership (#222)
 
 The legacy gallery's Clear cache used to delete every localStorage key starting `pm_` or
