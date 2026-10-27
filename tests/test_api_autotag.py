@@ -1288,3 +1288,101 @@ class TestGalleryReviewContract(AutotagAPITestCase):
             "/prompt_manager/autotag/single", {"path": "link.png", "root_index": 0}
         )
         self.assertEqual(response.status, 403)
+
+
+class TestSavedTaggingDefaults(AutotagAPITestCase):
+    """#328: /models reports the saved defaults; legacy requests without
+    thresholds use the saved ones (OQ4)."""
+
+    def setUp(self):
+        super().setUp()
+        from py.config import AutotagConfig
+
+        self.config = AutotagConfig
+        for attr in (
+            "MODEL_TYPE",
+            "EXISTING",
+            "GENERAL_THRESHOLD",
+            "CHARACTER_THRESHOLD",
+            "TEMPLATE",
+            "SUGGESTION_LIMIT",
+        ):
+            self.addCleanup(setattr, AutotagConfig, attr, getattr(AutotagConfig, attr))
+
+    async def test_models_reports_saved_defaults(self):
+        from py.config import DEFAULT_TAG_TEMPLATE
+
+        data = await (await self.client.get("/prompt_manager/autotag/models")).json()
+        self.assertEqual(
+            {k: data[k] for k in ("model_type", "existing", "default_prompt")},
+            {
+                "model_type": "wd14-swinv2",
+                "existing": "skip",
+                "default_prompt": DEFAULT_TAG_TEMPLATE,
+            },
+        )
+        self.config.MODEL_TYPE = "gguf"
+        self.config.EXISTING = "replace_after_review"
+        self.config.GENERAL_THRESHOLD = 0.4
+        self.config.CHARACTER_THRESHOLD = 0.7
+        self.config.TEMPLATE = "Saved template"
+        self.config.SUGGESTION_LIMIT = 15
+        data = await (await self.client.get("/prompt_manager/autotag/models")).json()
+        self.assertEqual(
+            {
+                k: data[k]
+                for k in (
+                    "model_type",
+                    "existing",
+                    "wd14_general_threshold",
+                    "wd14_character_threshold",
+                    "default_prompt",
+                    "suggestion_limit",
+                )
+            },
+            {
+                "model_type": "gguf",
+                "existing": "replace_after_review",
+                "wd14_general_threshold": 0.4,
+                "wd14_character_threshold": 0.7,
+                "default_prompt": "Saved template",
+                "suggestion_limit": 15,
+            },
+        )
+
+    async def test_single_without_thresholds_uses_saved_ones(self):
+        image = self._make_image(self.output_dir)
+        self.config.GENERAL_THRESHOLD = 0.4
+        self.config.CHARACTER_THRESHOLD = 0.7
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {"path": str(image), "model_type": "wd14-vit"},
+        )
+        self.assertEqual(resp.status, 200)
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {
+                "path": str(image),
+                "model_type": "wd14-vit",
+                "general_threshold": 0.2,
+                "character_threshold": 0.3,
+            },
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(
+            [call[2:] for call in self.service.generate_calls],
+            [(0.4, 0.7), (0.2, 0.3)],
+        )
+
+    async def test_legacy_batch_without_thresholds_uses_saved_ones(self):
+        prompt = self._save_prompt("p")
+        self._link_image(prompt, self._make_image(self.output_dir, "a.png"))
+        self.config.GENERAL_THRESHOLD = 0.45
+        self.config.CHARACTER_THRESHOLD = 0.75
+        resp = await self.client.post(
+            "/prompt_manager/autotag/start?model_type=wd14-vit"
+        )
+        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
+        self.assertEqual(
+            [call[2:] for call in self.service.generate_calls], [(0.45, 0.75)]
+        )

@@ -65,6 +65,17 @@ def path_is_within(candidate, root) -> bool:
     return child != parent and child.is_relative_to(parent)
 
 
+def _thresholds_or_saved(general, character):
+    """The request's WD14 thresholds as floats; one it omits is the saved
+    default (``autotag.defaults``, OQ4). Raises ValueError/TypeError."""
+    from ..config import AutotagConfig
+
+    return (
+        AutotagConfig.GENERAL_THRESHOLD if general is None else float(general),
+        AutotagConfig.CHARACTER_THRESHOLD if character is None else float(character),
+    )
+
+
 async def _refusal(title):
     """The single error event of an auto-tag batch refused by another job."""
     message = f"{title} already running"
@@ -116,12 +127,15 @@ class AutotagRoutesMixin:
                 {
                     "success": True,
                     "models": models_status,
-                    "default_prompt": service.default_prompt,
+                    # The saved tagging defaults (#328, System › Auto-tagging).
+                    "default_prompt": AutotagConfig.TEMPLATE,
                     "model_loaded": service.is_model_loaded(),
                     "loaded_model_type": service.get_loaded_model_type(),
-                    "wd14_general_threshold": service.wd14_general_threshold,
-                    "wd14_character_threshold": service.wd14_character_threshold,
+                    "wd14_general_threshold": AutotagConfig.GENERAL_THRESHOLD,
+                    "wd14_character_threshold": AutotagConfig.CHARACTER_THRESHOLD,
                     "suggestion_limit": AutotagConfig.suggestion_limit(),
+                    "model_type": AutotagConfig.MODEL_TYPE,
+                    "existing": AutotagConfig.EXISTING,
                 }
             )
 
@@ -425,9 +439,11 @@ class AutotagRoutesMixin:
             "character_threshold": params.get("character_threshold"),
         }
         try:
-            for key in ("general_threshold", "character_threshold"):
-                if opts[key] is not None:
-                    opts[key] = float(opts[key])
+            opts["general_threshold"], opts["character_threshold"] = (
+                _thresholds_or_saved(
+                    opts["general_threshold"], opts["character_threshold"]
+                )
+            )
         except (ValueError, TypeError):
             return self._bad_request(
                 "general_threshold and character_threshold must be numeric"
@@ -607,10 +623,9 @@ class AutotagRoutesMixin:
             general_threshold = data.get("general_threshold")
             character_threshold = data.get("character_threshold")
             try:
-                if general_threshold is not None:
-                    general_threshold = float(general_threshold)
-                if character_threshold is not None:
-                    character_threshold = float(character_threshold)
+                general_threshold, character_threshold = _thresholds_or_saved(
+                    general_threshold, character_threshold
+                )
             except (ValueError, TypeError):
                 return self._bad_request(
                     "general_threshold and character_threshold must be numeric"

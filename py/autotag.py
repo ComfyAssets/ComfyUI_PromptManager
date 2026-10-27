@@ -25,6 +25,13 @@ except ImportError:
     from database.annotations import MAX_IMAGE_TAGS
     from database.vocabulary import validate_vocabulary_tag_name
 
+# The tag template and thresholds live with the saved tagging defaults
+# (#328), so config.py never imports PIL.
+try:
+    from .config import DEFAULT_TAG_TEMPLATE, AutotagConfig
+except ImportError:
+    from py.config import DEFAULT_TAG_TEMPLATE, AutotagConfig
+
 # Try to import logging from utils, fallback to standard logging
 try:
     from ..utils.logging_config import get_logger
@@ -85,17 +92,7 @@ MODELS = {
 }
 
 # Default prompts
-DEFAULT_PROMPT = (
-    "Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).\n"
-    "Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, "
-    "etc), age_approx (teen, young_woman), body_attributes, face_features, "
-    "hairstyle, appearance, clothing, accessories, pose, expression, action, "
-    "camera_angle, camera_shot, scene_composition (wide_shot, long_shot, "
-    "dutch_angle), environment, background_elements, lighting, mood.\n"
-    "Prioritize visual accuracy.\n"
-    "No sentences, no commentary, no captions. Only tags. Keep length short but "
-    "descriptive."
-)
+DEFAULT_PROMPT = DEFAULT_TAG_TEMPLATE
 
 # Upper bound of one suggestion request: the image tag set cap.
 MAX_SUGGESTION_LIMIT = MAX_IMAGE_TAGS
@@ -179,10 +176,6 @@ class AutoTagService:
         self._current_model_type: Optional[str] = None
         self._custom_prompt: str = DEFAULT_PROMPT
 
-        # WD14 threshold defaults
-        self._wd14_general_threshold: float = 0.35
-        self._wd14_character_threshold: float = 0.85
-
     @property
     def models_config(self) -> Dict[str, Dict[str, Any]]:
         """Get the models configuration dictionary."""
@@ -205,19 +198,13 @@ class AutoTagService:
 
     @property
     def wd14_general_threshold(self) -> float:
-        return self._wd14_general_threshold
-
-    @wd14_general_threshold.setter
-    def wd14_general_threshold(self, value: float):
-        self._wd14_general_threshold = max(0.0, min(1.0, value))
+        """The saved General-tag confidence (``autotag.defaults``)."""
+        return AutotagConfig.GENERAL_THRESHOLD
 
     @property
     def wd14_character_threshold(self) -> float:
-        return self._wd14_character_threshold
-
-    @wd14_character_threshold.setter
-    def wd14_character_threshold(self, value: float):
-        self._wd14_character_threshold = max(0.0, min(1.0, value))
+        """The saved Character-tag confidence (``autotag.defaults``)."""
+        return AutotagConfig.CHARACTER_THRESHOLD
 
     def get_models_status(self) -> Dict[str, Dict[str, Any]]:
         """Get availability status for all model types.
@@ -860,12 +847,12 @@ class AutoTagService:
             gen_thresh = (
                 general_threshold
                 if general_threshold is not None
-                else self._wd14_general_threshold
+                else AutotagConfig.GENERAL_THRESHOLD
             )
             char_thresh = (
                 character_threshold
                 if character_threshold is not None
-                else self._wd14_character_threshold
+                else AutotagConfig.CHARACTER_THRESHOLD
             )
             return self._generate_wd14(
                 session, tags_list, image, gen_thresh, char_thresh

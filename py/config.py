@@ -30,6 +30,7 @@ routes = server_instance.routes
 # Extension info
 extension_uri = None  # Will be set in __init__.py
 
+import math  # noqa: E402
 import os  # noqa: E402
 from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
@@ -563,17 +564,110 @@ class IntegrationConfig:
 DEFAULT_SUGGESTION_LIMIT = 10
 MAX_SUGGESTION_LIMIT = 100  # pinned to MAX_IMAGE_TAGS by tests/test_config.py
 
+# The tagging engines (``py/autotag.py`` MODELS) and the options they take.
+WD14_MODEL_TYPES = frozenset({"wd14-swinv2", "wd14-vit"})
+LLM_MODEL_TYPES = frozenset({"gguf", "hf"})
+MODEL_TYPES = WD14_MODEL_TYPES | LLM_MODEL_TYPES
+MAX_INSTRUCTION_CHARS = 4000
+MAX_INSTRUCTION_BYTES = 16 * 1024
+# What a batch does with a prompt that already has tags (#328).
+EXISTING_POLICIES = ("skip", "merge", "replace_after_review")
+
+# The language-model tag template every page starts from until one is saved.
+DEFAULT_TAG_TEMPLATE = (
+    "Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).\n"
+    "Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, "
+    "etc), age_approx (teen, young_woman), body_attributes, face_features, "
+    "hairstyle, appearance, clothing, accessories, pose, expression, action, "
+    "camera_angle, camera_shot, scene_composition (wide_shot, long_shot, "
+    "dutch_angle), environment, background_elements, lighting, mood.\n"
+    "Prioritize visual accuracy.\n"
+    "No sentences, no commentary, no captions. Only tags. Keep length short but "
+    "descriptive."
+)
+
+
+def validate_threshold(name: str, value: Any) -> float:
+    """A WD14 confidence threshold in [0, 1], or ValueError naming ``name``."""
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    if not 0 <= value <= 1:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return float(value)
+
+
+def validate_template(value: Any, name: str = "instructions") -> str:
+    """Non-empty language-model instructions within the character and byte
+    caps, or ValueError naming ``name``."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be non-empty text")
+    if len(value) > MAX_INSTRUCTION_CHARS:
+        raise ValueError(f"{name} must be at most {MAX_INSTRUCTION_CHARS} characters")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"{name} must be valid Unicode text") from None
+    if len(encoded) > MAX_INSTRUCTION_BYTES:
+        raise ValueError(f"{name} {'are' if name == 'instructions' else 'is'} too long")
+    return value
+
+
+def _valid_model_type(value: Any) -> str:
+    if not isinstance(value, str) or value not in MODEL_TYPES:
+        raise ValueError("must be one of " + ", ".join(sorted(MODEL_TYPES)))
+    return value
+
+
+def _valid_existing(value: Any) -> str:
+    if not isinstance(value, str) or value not in EXISTING_POLICIES:
+        raise ValueError("must be one of " + ", ".join(EXISTING_POLICIES))
+    return value
+
+
+def _valid_suggestion_limit(value: Any) -> int:
+    if type(value) is not int or not 1 <= value <= MAX_SUGGESTION_LIMIT:
+        raise ValueError(f"must be an integer from 1 to {MAX_SUGGESTION_LIMIT}")
+    return value
+
 
 class AutotagConfig:
     """Persisted tagging defaults under ``autotag.defaults`` in config.json.
 
-    ``suggestion_limit`` is how many suggestions Generate returns (the top N
-    by score), an integer in ``1..MAX_SUGGESTION_LIMIT``. A hand-edited value
-    outside that range, or of another type, falls back to the default with a
-    warning rather than failing the load.
+    One tagging configuration (#328): the model, what a batch does with
+    prompts already tagged, the two WD14 thresholds, the language-model
+    template and how many suggestions Generate returns. Each key is checked
+    alone on load; a hand-edited value that fails its check falls back to
+    its default with one warning rather than failing the load.
     """
 
+    MODEL_TYPE = "wd14-swinv2"
+    EXISTING = "skip"
+    GENERAL_THRESHOLD = 0.35
+    CHARACTER_THRESHOLD = 0.85
+    TEMPLATE = DEFAULT_TAG_TEMPLATE
     SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
+
+    # config.json key -> (attribute, validator, default)
+    _KEYS = {
+        "model_type": ("MODEL_TYPE", _valid_model_type, "wd14-swinv2"),
+        "existing": ("EXISTING", _valid_existing, "skip"),
+        "general_threshold": (
+            "GENERAL_THRESHOLD",
+            lambda v: validate_threshold("value", v),
+            0.35,
+        ),
+        "character_threshold": (
+            "CHARACTER_THRESHOLD",
+            lambda v: validate_threshold("value", v),
+            0.85,
+        ),
+        "template": ("TEMPLATE", validate_template, DEFAULT_TAG_TEMPLATE),
+        "suggestion_limit": (
+            "SUGGESTION_LIMIT",
+            _valid_suggestion_limit,
+            DEFAULT_SUGGESTION_LIMIT,
+        ),
+    }
 
     @classmethod
     def suggestion_limit(cls) -> int:
@@ -587,7 +681,11 @@ class AutotagConfig:
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:
-        return {"defaults": {"suggestion_limit": cls.SUGGESTION_LIMIT}}
+        return {
+            "defaults": {
+                key: getattr(cls, attr) for key, (attr, _v, _d) in cls._KEYS.items()
+            }
+        }
 
     @classmethod
     def update_config(cls, new_config: Any) -> None:
@@ -598,17 +696,18 @@ class AutotagConfig:
         if not isinstance(defaults, dict):
             config_logger.warning("Ignoring autotag.defaults that is not an object")
             return
-        if "suggestion_limit" not in defaults:
-            return
-        value = defaults["suggestion_limit"]
-        if cls.valid_suggestion_limit(value):
-            cls.SUGGESTION_LIMIT = value
-            return
-        config_logger.warning(
-            "autotag.defaults.suggestion_limit must be an integer from 1 to "
-            f"{MAX_SUGGESTION_LIMIT}; using {DEFAULT_SUGGESTION_LIMIT}"
-        )
-        cls.SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
+        for key, (attr, validate, default) in cls._KEYS.items():
+            if key not in defaults:
+                continue
+            try:
+                setattr(cls, attr, validate(defaults[key]))
+            except ValueError as error:
+                config_logger.warning(
+                    f"autotag.defaults.{key} {error}; using {default!r}"
+                    if key != "template"
+                    else f"autotag.defaults.template {error}; using the built-in one"
+                )
+                setattr(cls, attr, default)
 
 
 class PromptManagerConfig:
