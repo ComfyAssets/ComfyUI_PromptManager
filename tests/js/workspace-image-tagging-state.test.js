@@ -588,7 +588,7 @@ test('model-unavailable and model-busy set the status line only', async () => {
     await c.generate();
     const before = c.state;
     for (const [code, message] of [
-        ['model-unavailable', 'WD14 SwinV2 is not downloaded. Download it from the legacy Auto-tag page.'],
+        ['model-unavailable', 'WD14 SwinV2 is not downloaded. Download it in System › Auto-tagging.'],
         ['model-busy', 'A tagging model is busy with another operation. Try again when it finishes.'],
         ['unsupported-media', 'Images larger than 4096 px per side or 16,777,216 px are not supported.'],
     ]) {

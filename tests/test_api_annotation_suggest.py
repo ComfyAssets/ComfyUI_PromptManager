@@ -36,7 +36,7 @@ SUGGEST = "/prompt_manager/image-annotations/suggest"
 WAIT = 30.0
 WD14 = {"general_threshold": 0.35, "character_threshold": 0.85}
 LLM = {"instructions": "Generate tags."}
-UNAVAILABLE = "Download it from the legacy Auto-tag page."
+UNAVAILABLE = "Download it in System › Auto-tagging."
 
 SCORED = [("sandstone", 0.98), ("desert", 0.96)] + [
     (f"tag_{i:03d}", round(0.9 - i * 0.005, 4)) for i in range(150)

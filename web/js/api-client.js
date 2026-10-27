@@ -67,6 +67,12 @@
                 current.source.length > 0 && current.source.length <= 4096) {
                 this.source = current.source;
             }
+            // A model-busy answer names the operation that holds the tagging model (#328).
+            this.operation = null;
+            if (this.code === "model-busy" && current && typeof current.operation === "string" &&
+                current.operation.length > 0 && current.operation.length <= 200) {
+                this.operation = current.operation;
+            }
         }
     }
 

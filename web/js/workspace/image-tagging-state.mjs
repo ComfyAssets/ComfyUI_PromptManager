@@ -202,7 +202,7 @@ async function readDefaults(api, signal) {
     }
 }
 
-const UNAVAILABLE_HINT = 'Download it from the legacy Auto-tag page.';
+export const UNAVAILABLE_HINT = 'Download it in System › Auto-tagging.';
 /**
  * Why `model` cannot run, from the `/autotag/models` status (the server's own `model-unavailable` sentence), else ''
  * (downloaded, or the status is unknown: the job then reports a missing model itself).

@@ -18,7 +18,8 @@ import { selectedImage } from './images.mjs';
 import { onImageTagsSaved, openImageTagging } from './image-tagging.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
-const NO_SELECTION = 'Select an image in Images first.';
+/** D115: why Auto-tag images (and System › Auto-tagging's Preview tagging review) only explains without a selection. */
+export const NO_SELECTION = 'Select an image in Images first.';
 
 const COPY = {
     tags: {empty: 'No tags yet.', error: 'Tags could not be loaded. Nothing was changed.', more: 'Load more tags'},

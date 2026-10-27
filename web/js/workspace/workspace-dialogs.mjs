@@ -483,6 +483,35 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
 }
 
 /**
+ * A review that cannot start: the concept's record-changing review shell (`maintenancePlan`) with its `h3`, the
+ * `dl.meta-grid` rows, any `options` nodes, the reason as its `p.small` and a single dismissal (`closeLabel`). `titles`
+ * maps a grid term to its value's hover title. Used by Integrations (D107, "Close") and Auto-tagging (D134, "Cancel").
+ */
+export function openCloseOnlyReview({ scope, title, heading = null, grid, options = [], sentence, closeLabel = 'Close', titles = {},
+    trigger = null }) {
+    requireScope(scope);
+    requireGrid(grid);
+    for (const [name, text] of Object.entries({ title, sentence, closeLabel })) {
+        if (typeof text !== 'string' || !text) throw new TypeError(`The review needs its ${name}`);
+    }
+    const nodes = heading ? [el('h3', heading)] : [];
+    const list = el('dl', undefined, 'meta-grid');
+    for (const [term, value] of grid) {
+        const entry = el('div');
+        const dd = el('dd', value);
+        if (typeof titles[term] === 'string') dd.title = titles[term];
+        entry.append(el('dt', term), dd);
+        list.append(entry);
+    }
+    const close = createButton(closeLabel);
+    close.addEventListener('click', () => closeWorkspaceDialog());
+    const actions = el('div', undefined, 'dialog-actions');
+    actions.append(close);
+    nodes.push(list, ...options, el('p', sentence, 'small'), actions);
+    show(title, nodes, { scope, trigger });
+}
+
+/**
  * The concept's "Review metadata scan" (`scan-review`, D55). `sources` is the number of output folders the scan reads.
  * The scope is the concept's "New and unresolved files"; the "All files" checkbox (D58, the concept's `.setting-row`
  * switch, unchecked) switches the Scope value to "All files". `onBackup` runs the database backup (the button is
