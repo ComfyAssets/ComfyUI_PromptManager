@@ -225,3 +225,26 @@ test('a failed duplicate cleanup says the server reason (S7 review M3)', async (
     assert.equal(finishToast(failed), `Duplicate cleanup failed · ${reason}`);
     assert.equal(finishToast({ ...failed, status_line: '' }), 'Duplicate cleanup failed · 0 removed · 1 error');
 });
+
+// #328: Tag output images (`autotag`) reuses the image tagging view: Tagged / Unchanged / Skipped / Errors and Cancel.
+// The legacy page's hold of the same kind counts nothing and is not cancellable, so it keeps the generic held view.
+test('autotag gets Tagged / Unchanged / Skipped / Errors and Cancel; its legacy hold keeps the generic view', async () => {
+    const { kindOf, viewOf, canCancel } = await source;
+    const { startToast, finishToast } = await store;
+    const counters = { tagged: 3, unchanged: 1, skipped: 2, errors: 0 };
+    const batch = job({ kind: 'autotag', title: 'Tag output images', counters, scope: { images: 6 } });
+    const view = viewOf(batch);
+    assert.deepEqual(view.tiles.map(([group, label]) => [group, label]),
+        [['tagged', 'Tagged'], ['unchanged', 'Unchanged'], ['skipped', 'Skipped'], ['errors', 'Errors']]);
+    assert.equal(kindOf('autotag').pillVerb, 'Tagging');
+    assert.equal(kindOf('autotag').cancelLabel, 'Cancel tagging');
+    assert.equal(canCancel(batch), true);
+    assert.equal(startToast(batch), 'Tag output images started.');
+    assert.match(finishToast({ ...batch, state: 'finished', finished_at: 2 }), /^Tag output images finished/);
+
+    const held = job({ kind: 'autotag', title: 'Tag output images (legacy page)', counters: {}, cancellable: false,
+        progress: 0, processed: 0, total: 0 });
+    const legacy = viewOf(held);
+    assert.deepEqual([legacy.tiles, legacy.outcomes, [...legacy.openable]], [[], [], []]);
+    assert.equal(canCancel(held), false);
+});

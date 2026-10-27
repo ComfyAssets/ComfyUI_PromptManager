@@ -1145,8 +1145,10 @@ class TestEnvelopes(AnnotationAPITestCase):
             sorted(await self.json_of(resp)),
             [
                 "default_prompt",
+                "existing",  # #328 adds the saved batch policy and model
                 "loaded_model_type",
                 "model_loaded",
+                "model_type",
                 "models",
                 "success",
                 "suggestion_limit",  # B2 adds it (D68); nothing else changes

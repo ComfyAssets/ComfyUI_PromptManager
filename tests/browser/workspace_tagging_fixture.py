@@ -203,6 +203,8 @@ def register_tagging_commands(
             model.unavailable = model.unavailable - {model_type}
         return download["result"]
 
+    _set_defaults(model, DEFAULTS)  # the server starts on the standard ones
+
     @routes.post("/__test__/tagging/reset")
     async def reset(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else {}
@@ -331,12 +333,19 @@ DEFAULTS = (0.35, 0.85, 10)
 
 
 def _set_defaults(model, values) -> None:
+    """Set the saved tagging defaults (``AutotagConfig``, #328); a reset also
+    puts back the saved model, batch policy and template (the fake model's
+    short instructions, which the concept comparisons show)."""
     from py.config import AutotagConfig
 
     general, character, limit = values
-    model.wd14_general_threshold = general
-    model.wd14_character_threshold = character
+    AutotagConfig.GENERAL_THRESHOLD = general
+    AutotagConfig.CHARACTER_THRESHOLD = character
     AutotagConfig.SUGGESTION_LIMIT = limit
+    if values == DEFAULTS:
+        AutotagConfig.MODEL_TYPE = "wd14-swinv2"
+        AutotagConfig.EXISTING = "skip"
+        AutotagConfig.TEMPLATE = model.default_prompt
 
 
 def _valid_defaults(data: object) -> bool:

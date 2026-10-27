@@ -3547,29 +3547,25 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     this.autoTagState.eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
 
-                        if (data.status === 'loading_model') {
-                            document.getElementById('autoTagCurrentFile').textContent = 'Loading model...';
-                        } else if (data.status === 'processing') {
-                            const percent = Math.round((data.processed / data.total) * 100);
-                            document.getElementById('autoTagCurrentFile').textContent = data.current_file || 'Processing...';
-                            document.getElementById('autoTagProgressPercent').textContent = `${percent}%`;
-                            document.getElementById('autoTagProgressBar').style.width = `${percent}%`;
-                            document.getElementById('autoTagProcessed').textContent = data.processed;
-                            document.getElementById('autoTagApplied').textContent = data.tags_applied;
-                            document.getElementById('autoTagSkipped').textContent = data.skipped;
-                        } else if (data.status === 'complete') {
+                        // The server sends `type` frames, as the admin page reads them (#328).
+                        if (data.type === 'progress') {
+                            document.getElementById('autoTagCurrentFile').textContent = data.status || 'Processing...';
+                            document.getElementById('autoTagProgressPercent').textContent = `${data.progress || 0}%`;
+                            document.getElementById('autoTagProgressBar').style.width = `${data.progress || 0}%`;
+                            if (data.processed !== undefined) {
+                                document.getElementById('autoTagProcessed').textContent = data.processed;
+                                document.getElementById('autoTagApplied').textContent = data.tagged || 0;
+                                document.getElementById('autoTagSkipped').textContent = data.skipped || 0;
+                            }
+                        } else if (data.type === 'complete') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
-                            this.showNotification(`Auto tagging complete! Applied tags to ${data.tags_applied} prompts.`, 'success');
+                            this.showNotification(`Auto tagging complete! Applied tags to ${data.tagged || 0} prompts.`, 'success');
                             this.loadImages(); // Refresh the gallery
-                        } else if (data.status === 'error') {
+                        } else if (data.type === 'error') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
                             this.showNotification(`Auto tag error: ${data.message}`, 'error');
-                        } else if (data.status === 'cancelled') {
-                            this.autoTagState.eventSource.close();
-                            this.hideModal("autoTagProgressModal");
-                            this.showNotification('Auto tagging cancelled', 'info');
                         }
                     };
 

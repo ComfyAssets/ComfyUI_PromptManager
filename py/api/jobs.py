@@ -87,6 +87,8 @@ SCAN_GROUPS = {
 # Record-changing: it writes image tag sets and new vocabulary names.
 IMAGE_TAG_JOB_KIND = "image-tags"
 IMAGE_TAG_GROUP_NAMES = ("tagged", "unchanged", "skipped", "errors")
+# Tag output images (#328) counts its prompts the same way.
+AUTOTAG_GROUP_NAMES = IMAGE_TAG_GROUP_NAMES
 
 # Thumbnail generation (#249 System S5): previews written, already fresh, failed.
 THUMBNAIL_GROUP_NAMES = ("generated", "skipped", "errors")

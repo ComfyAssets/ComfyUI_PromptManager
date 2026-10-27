@@ -1708,3 +1708,646 @@ class TestLegacyDownloadAttaches(DownloadJobTestCase):
         self.assertEqual(native.status, 500)
         self.assertFalse((await native.json())["success"])
         self.assertIsNone(model_gate.holder())
+
+
+class TestSavedTaggingDefaults(AutotagAPITestCase):
+    """#328: /models reports the saved defaults; legacy requests without
+    thresholds use the saved ones (OQ4)."""
+
+    def setUp(self):
+        super().setUp()
+        from py.config import AutotagConfig
+
+        self.config = AutotagConfig
+        for attr in (
+            "MODEL_TYPE",
+            "EXISTING",
+            "GENERAL_THRESHOLD",
+            "CHARACTER_THRESHOLD",
+            "TEMPLATE",
+            "SUGGESTION_LIMIT",
+        ):
+            self.addCleanup(setattr, AutotagConfig, attr, getattr(AutotagConfig, attr))
+
+    async def test_models_reports_saved_defaults(self):
+        from py.config import DEFAULT_TAG_TEMPLATE
+
+        data = await (await self.client.get("/prompt_manager/autotag/models")).json()
+        self.assertEqual(
+            {k: data[k] for k in ("model_type", "existing", "default_prompt")},
+            {
+                "model_type": "wd14-swinv2",
+                "existing": "skip",
+                "default_prompt": DEFAULT_TAG_TEMPLATE,
+            },
+        )
+        self.config.MODEL_TYPE = "gguf"
+        self.config.EXISTING = "replace_after_review"
+        self.config.GENERAL_THRESHOLD = 0.4
+        self.config.CHARACTER_THRESHOLD = 0.7
+        self.config.TEMPLATE = "Saved template"
+        self.config.SUGGESTION_LIMIT = 15
+        data = await (await self.client.get("/prompt_manager/autotag/models")).json()
+        self.assertEqual(
+            {
+                k: data[k]
+                for k in (
+                    "model_type",
+                    "existing",
+                    "wd14_general_threshold",
+                    "wd14_character_threshold",
+                    "default_prompt",
+                    "suggestion_limit",
+                )
+            },
+            {
+                "model_type": "gguf",
+                "existing": "replace_after_review",
+                "wd14_general_threshold": 0.4,
+                "wd14_character_threshold": 0.7,
+                "default_prompt": "Saved template",
+                "suggestion_limit": 15,
+            },
+        )
+
+    async def test_single_without_thresholds_uses_saved_ones(self):
+        image = self._make_image(self.output_dir)
+        self.config.GENERAL_THRESHOLD = 0.4
+        self.config.CHARACTER_THRESHOLD = 0.7
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {"path": str(image), "model_type": "wd14-vit"},
+        )
+        self.assertEqual(resp.status, 200)
+        resp = await self._post_json(
+            "/prompt_manager/autotag/single",
+            {
+                "path": str(image),
+                "model_type": "wd14-vit",
+                "general_threshold": 0.2,
+                "character_threshold": 0.3,
+            },
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(
+            [call[2:] for call in self.service.generate_calls],
+            [(0.4, 0.7), (0.2, 0.3)],
+        )
+
+    async def test_legacy_batch_without_thresholds_uses_saved_ones(self):
+        prompt = self._save_prompt("p")
+        self._link_image(prompt, self._make_image(self.output_dir, "a.png"))
+        self.config.GENERAL_THRESHOLD = 0.45
+        self.config.CHARACTER_THRESHOLD = 0.75
+        resp = await self.client.post(
+            "/prompt_manager/autotag/start?model_type=wd14-vit"
+        )
+        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
+        self.assertEqual(
+            [call[2:] for call in self.service.generate_calls], [(0.45, 0.75)]
+        )
+
+
+class BatchJobTestCase(AutotagAPITestCase):
+    """Fixtures for Tag output images: four prompts, five linked images.
+
+    ``tagged`` already has a real tag; ``fresh`` has two images (the second
+    is "handled by another image"); ``missing`` points at no file;
+    ``outside`` is a file outside the output folders; ``marked`` has only
+    bookkeeping markers (not a real tag).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from py.config import PromptManagerConfig
+
+        backup = PromptManagerConfig.SAFETY_BACKUP
+        self.addCleanup(setattr, PromptManagerConfig, "SAFETY_BACKUP", backup)
+        PromptManagerConfig.SAFETY_BACKUP = False
+
+    def _seed(self):
+        ids = {
+            "tagged": self._save_prompt("tagged prompt", tags=["existing"]),
+            "fresh": self._save_prompt("fresh prompt"),
+            "missing": self._save_prompt("missing prompt"),
+            "outside": self._save_prompt("outside prompt"),
+            "marked": self._save_prompt("marked prompt", tags=["auto-scanned"]),
+        }
+        self._link_image(ids["tagged"], self._make_image(self.output_dir, "t.png"))
+        self._link_image(ids["fresh"], self._make_image(self.output_dir, "f1.png"))
+        self._link_image(ids["fresh"], self._make_image(self.output_dir, "f2.png"))
+        self._link_image(ids["missing"], self.output_dir / "gone.png")
+        self._link_image(ids["outside"], self._make_image(self.secret_dir, "o.png"))
+        self._link_image(ids["marked"], self._make_image(self.output_dir, "m.png"))
+        return ids
+
+    def _tags(self, prompt_id):
+        return self.api.db.get_prompt_by_id(prompt_id)["tags"]
+
+    async def _preview(self, model_type="wd14-vit", existing="skip"):
+        return await self._post_json(
+            "/prompt_manager/autotag/batch/preview",
+            {"model_type": model_type, "existing": existing},
+        )
+
+    async def _start_job(self, existing="skip", model_type="wd14-vit", options=None):
+        if options is None:
+            options = (
+                {"general_threshold": 0.3, "character_threshold": 0.8}
+                if model_type.startswith("wd14")
+                else {"instructions": "Tags please."}
+            )
+        return await self._post_json(
+            "/prompt_manager/jobs/autotag",
+            {"model_type": model_type, "existing": existing, "options": options},
+        )
+
+    async def _run_job(self, **kwargs):
+        resp = await self._start_job(**kwargs)
+        self.assertEqual(resp.status, 202, await resp.text())
+        job = self.api._jobs.get((await resp.json())["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+        return job
+
+
+class TestTagOutputImagesPreview(BatchJobTestCase):
+
+    async def test_preview_writes_nothing(self):
+        ids = self._seed()
+        # The database and its WAL are byte-identical afterwards (-shm holds the
+        # WAL index, which any reader updates), and no prompt changed.
+        files = [self._temp_db.name + suffix for suffix in ("", "-wal")]
+
+        def snapshot():
+            return (
+                [Path(f).read_bytes() if os.path.exists(f) else None for f in files],
+                {pid: self._tags(pid) for pid in ids.values()},
+            )
+
+        before = snapshot()
+        with patch("PIL.Image.open") as image_open:
+            resp = await self._preview()
+            self.assertEqual(resp.status, 200, await resp.text())
+        image_open.assert_not_called()  # opens no image file
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(self.service.generate_calls, [])
+        self.assertEqual(self.service.load_calls, [])
+
+    async def test_preview_counts_skip_and_merge(self):
+        self._seed()
+        skip = await (await self._preview(existing="skip")).json()
+        self.assertEqual(
+            {k: skip[k] for k in ("images", "prompts", "already_tagged", "to_tag")},
+            {"images": 6, "prompts": 5, "already_tagged": 1, "to_tag": 4},
+        )
+        self.assertEqual(
+            skip["model"],
+            {
+                "type": "wd14-vit",
+                "label": "WD14 ViT",
+                "size_label": "~400 MB",
+                "downloaded": True,
+            },
+        )
+        self.assertEqual(skip["existing"], "skip")
+        self.assertFalse(skip["review_required"])
+        self.assertEqual(skip["backup"], {"policy": "off"})
+        self.assertEqual(
+            set(skip["disk"]), {"free_bytes", "required_bytes", "sufficient"}
+        )
+        merge = await (await self._preview(existing="merge")).json()
+        self.assertEqual(merge["to_tag"], 5)
+        leaked = [s for s in _strings(skip) if _absolute(s)]
+        self.assertEqual(leaked, [])
+
+    async def test_preview_flags_replace_as_review_required(self):
+        self._seed()
+        data = await (await self._preview(existing="replace_after_review")).json()
+        self.assertTrue(data["review_required"])
+        self.assertEqual(data["prompts"], 5)
+
+    async def test_preview_refuses_bad_bodies(self):
+        for body in (
+            {"model_type": "nope", "existing": "skip"},
+            {"model_type": "wd14-vit", "existing": "replace"},
+            {"model_type": "wd14-vit"},
+            {"model_type": "wd14-vit", "existing": "skip", "x": 1},
+        ):
+            resp = await self._post_json("/prompt_manager/autotag/batch/preview", body)
+            self.assertEqual(resp.status, 400, body)
+
+
+class TestTagOutputImagesJob(BatchJobTestCase):
+
+    async def test_job_refuses_replace_after_review(self):
+        self._seed()
+        resp = await self._start_job(existing="replace_after_review")
+        data = await resp.json()
+        self.assertEqual(resp.status, 400)
+        self.assertEqual(data["code"], "review-required")
+        self.assertEqual(
+            data["error"],
+            "Replacing tags needs a review of each image. Use Preview tagging "
+            "review, or choose Skip or Merge for a batch run.",
+        )
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_job_refuses_bad_options(self):
+        for options in (
+            {"general_threshold": 0.3},
+            {"general_threshold": 0.3, "character_threshold": 0.8, "use_gpu": True},
+            {
+                "general_threshold": 0.3,
+                "character_threshold": 0.8,
+                "suggestion_limit": 5,
+            },
+            {"general_threshold": 2, "character_threshold": 0.8},
+        ):
+            resp = await self._start_job(options=options)
+            self.assertEqual(resp.status, 400, options)
+        self.assertEqual(self.api._jobs.list(), [])
+        self.assertIsNone(model_gate.holder())
+
+    async def test_unavailable_model_is_409(self):
+        self.service.downloaded = False
+        resp = await self._start_job()
+        data = await resp.json()
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "model-unavailable")
+        self.assertEqual(
+            data["error"],
+            "WD14 ViT is not downloaded. Download it in System › Auto-tagging.",
+        )
+
+    async def test_job_writes_what_legacy_writes(self):
+        ids = self._seed()
+        await self._run_job(existing="skip")
+        native = {name: sorted(self._tags(pid)) for name, pid in ids.items()}
+        # The same library through the legacy batch, in a fresh database.
+        for name, pid in ids.items():
+            self.api.db.update_prompt_metadata(
+                pid,
+                tags=(
+                    ["existing"]
+                    if name == "tagged"
+                    else (["auto-scanned"] if name == "marked" else [])
+                ),
+            )
+        resp = await self.client.post(
+            "/prompt_manager/autotag/start?model_type=wd14-vit&skip_tagged=true"
+        )
+        self.assertEqual(self._sse_events(await resp.text())[-1]["type"], "complete")
+        legacy = {name: sorted(self._tags(pid)) for name, pid in ids.items()}
+        self.assertEqual(native, legacy)
+        self.assertEqual(native["tagged"], ["existing"])
+        self.assertEqual(native["fresh"], ["1girl", "smile"])
+
+    async def test_job_outcomes_follow_the_mapping(self):
+        ids = self._seed()
+        self.api.db.update_prompt_metadata(
+            ids["marked"], tags=["auto-scanned", "1girl", "smile"]
+        )
+
+        def details(job):
+            return {
+                group: sorted(row["detail"] for row in rows)
+                for group, rows in job.outcomes.items()
+            }
+
+        merged = await self._run_job(existing="merge")
+        self.assertEqual(merged.state, "finished")
+        self.assertEqual(
+            details(merged),
+            {
+                "tagged": ["Added 2 tags", "Added 2 tags"],
+                "unchanged": ["No new tags"],
+                "skipped": [
+                    "File not found",
+                    "Outside the output folders",
+                    "Prompt handled by another image",
+                ],
+                "errors": [],
+            },
+        )
+        self.assertEqual(merged.status_line, "Tagged 2 prompts")
+
+        skipped = await self._run_job(existing="skip")
+        self.assertEqual(details(skipped)["tagged"], [])
+        self.assertEqual(details(skipped)["skipped"].count("Prompt already tagged"), 3)
+        self.assertEqual(skipped.status_line, "Tagged 0 prompts")
+
+    async def test_tagging_errors_are_fixed_strings(self):
+        self._seed()
+        self.service.generate_error = RuntimeError("/srv/secret/model exploded")
+        job = await self._run_job(existing="merge")
+        self.assertTrue(job.outcomes["errors"])
+        self.assertEqual(
+            {r["detail"] for r in job.outcomes["errors"]}, {"Tagging failed"}
+        )
+        self.assertNotIn("/srv/secret", json.dumps(job.report()))
+
+    async def test_job_progress_is_determinate(self):
+        self._seed()
+        seen = []
+        original = self.service.generate_tags
+
+        def generate(*args, **kwargs):
+            job = self.api._jobs.active("autotag")
+            seen.append((job.processed, job.total))
+            return original(*args, **kwargs)
+
+        self.service.generate_tags = generate
+        job = await self._run_job(existing="merge")
+        self.assertEqual((job.processed, job.total, job.progress), (6, 6, 100))
+        self.assertTrue(all(total == 6 for _p, total in seen[1:]), seen)
+        self.assertTrue(job.cancellable)
+
+    async def test_job_cancel_stops_before_the_next_image_and_keeps_writes(self):
+        ids = self._seed()
+        started = threading.Event()
+        proceed = threading.Event()
+        calls = []
+
+        def slow(image_path, **kwargs):
+            calls.append(image_path)
+            started.set()
+            proceed.wait(30)
+            return ["slow"]
+
+        self.service.generate_tags = slow
+        resp = await self._start_job(existing="merge")
+        job = self.api._jobs.get((await resp.json())["job"]["id"])
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            cancel = await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
+            self.assertTrue((await cancel.json())["cancellation_requested"])
+        finally:
+            proceed.set()
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(job.status_line, "Cancelled. Tags already added were kept.")
+        self.assertEqual(len(calls), 1)
+        tagged = [n for n, pid in ids.items() if "slow" in self._tags(pid)]
+        self.assertEqual(len(tagged), 1)
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.service.unload_calls, 0)
+
+    async def test_job_refused_while_legacy_batch_holds(self):
+        async with self.api._jobs.hold(
+            "autotag", "Tag output images (legacy page)", admission="records"
+        ):
+            resp = await self._start_job()
+            data = await resp.json()
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "busy")
+        self.assertEqual(data["running"]["title"], "Tag output images (legacy page)")
+        self.assertIsNone(model_gate.holder())
+
+    async def test_legacy_refused_while_job_runs(self):
+        self._seed()
+        started, proceed = threading.Event(), threading.Event()
+
+        def slow(image_path, **kwargs):
+            started.set()
+            proceed.wait(30)
+            return ["slow"]
+
+        self.service.generate_tags = slow
+        resp = await self._start_job(existing="merge")
+        job = self.api._jobs.get((await resp.json())["job"]["id"])
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            self.assertTrue(model_gate.holder().startswith("autotag-job:"))
+            legacy = await self.client.post("/prompt_manager/autotag/start")
+            # Both legacy pages read a stream: the refusal is one error frame
+            # that names the running job.
+            self.assertEqual(legacy.status, 200)
+            self.assertEqual(
+                self._sse_events(await legacy.text()),
+                [
+                    {
+                        "type": "error",
+                        "status": "error",
+                        "message": "Tag output images already running",
+                    }
+                ],
+            )
+            unload = await self.client.post("/prompt_manager/autotag/unload")
+            self.assertEqual((await unload.json())["operation"], "Tag output images")
+        finally:
+            proceed.set()
+        await asyncio.wait_for(asyncio.shield(job.task), 30)
+
+    async def test_job_releases_gate_when_start_is_refused(self):
+        class Running:
+            id = "other"
+            title = "Database restore"
+
+        with patch.object(self.api._jobs, "start", side_effect=JobBusy(Running())):
+            resp = await self._start_job()
+        self.assertEqual(resp.status, 409)
+        self.assertIsNone(model_gate.holder())
+
+    async def test_model_busy_when_gate_held(self):
+        owner = model_gate.new_owner("image-annotations")
+        self.assertTrue(model_gate.try_acquire(owner))
+        try:
+            resp = await self._start_job()
+            data = await resp.json()
+        finally:
+            model_gate.release(owner)
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["code"], "model-busy")
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_backup_failure_aborts_before_write(self):
+        from py.config import PromptManagerConfig
+        from database.safety_backup import SafetyBackupFailed
+
+        ids = self._seed()
+        PromptManagerConfig.SAFETY_BACKUP = True
+        with patch(
+            "py.api.maintenance.take_safety_backup",
+            side_effect=SafetyBackupFailed("disk full"),
+        ):
+            job = await self._run_job(existing="merge")
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.scope.get("failure"), "backup-failed")
+        self.assertEqual(self.service.generate_calls, [])
+        self.assertEqual(self._tags(ids["fresh"]), [])
+
+    async def test_short_disk_is_507_insufficient_space(self):
+        from py.config import PromptManagerConfig
+
+        PromptManagerConfig.SAFETY_BACKUP = True
+        short = (
+            {"free_bytes": 1, "required_bytes": 10, "sufficient": False},
+            ("database folder", "the safety backup", 10, 1),
+            10,
+        )
+        with patch("py.api.autotag_routes.disk_plan", return_value=short):
+            resp = await self._start_job()
+        data = await resp.json()
+        self.assertEqual(resp.status, 507)
+        self.assertEqual(data["code"], "insufficient-space")
+        self.assertIsNone(model_gate.holder())
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_job_rows_carry_no_absolute_paths(self):
+        self._seed()
+        job = await self._run_job(existing="merge")
+        report = job.report()
+        self.assertEqual([s for s in _strings(report) if _absolute(s)], [])
+        rows = [row for rows in job.outcomes.values() for row in rows]
+        self.assertTrue(rows)
+        inside = [row for row in rows if row["root_index"] == 0]
+        self.assertTrue(inside)
+
+    async def test_native_batch_leaves_custom_prompt_unchanged(self):
+        self._seed()
+        self.service.custom_prompt = "legacy page prompt"
+        await self._run_job(existing="merge", model_type="gguf")
+        self.assertEqual(self.service.custom_prompt, "legacy page prompt")
+        prompts = {call[1] for call in self.service.generate_calls}
+        self.assertEqual(prompts, {"Tags please."})
+
+
+# The legacy batch's per-image frames over BatchJobTestCase's library, newest
+# first, with every throttle check passing (pinned from main's generator).
+GOLDEN_LEGACY_ROWS = [
+    {
+        "type": "progress",
+        "progress": 24,
+        "status": "Processing 1/6...",
+        "processed": 1,
+        "tagged": 1,
+        "skipped": 0,
+        "skipped_outside_roots": 0,
+    },
+    {
+        "type": "progress",
+        "progress": 38,
+        "status": "Skipping 2/6 (outside allowed directories)...",
+        "processed": 1,
+        "tagged": 1,
+        "skipped": 1,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 52,
+        "status": "Skipping 3/6 (file missing)...",
+        "processed": 1,
+        "tagged": 1,
+        "skipped": 2,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 66,
+        "status": "Processing 4/6...",
+        "processed": 2,
+        "tagged": 2,
+        "skipped": 2,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 80,
+        "status": "Skipping 5/6 (prompt already processed)...",
+        "processed": 2,
+        "tagged": 2,
+        "skipped": 3,
+        "skipped_outside_roots": 1,
+    },
+    {
+        "type": "progress",
+        "progress": 95,
+        "status": "Skipping 6/6 (already tagged)...",
+        "processed": 2,
+        "tagged": 2,
+        "skipped": 4,
+        "skipped_outside_roots": 1,
+    },
+]
+
+
+class TestLegacyBatchFrames(BatchJobTestCase):
+
+    async def test_legacy_batch_events_unchanged(self):
+        """Golden frames of the legacy batch over the seeded library."""
+        self._seed()
+        ticks = iter(range(1000))  # every throttle check sees a second pass
+        with patch("py.api.autotag_routes._monotonic", side_effect=lambda: next(ticks)):
+            resp = await self.client.post(
+                "/prompt_manager/autotag/start?model_type=wd14-vit&skip_tagged=true"
+            )
+            frames = self._sse_events(await resp.text())  # the stream runs here
+        self.assertEqual(
+            frames,
+            [
+                {"type": "progress", "progress": 0, "status": "Loading model..."},
+                {
+                    "type": "progress",
+                    "progress": 5,
+                    "status": "Model loaded. Fetching all images from database...",
+                },
+                {
+                    "type": "progress",
+                    "progress": 10,
+                    "status": "Found 6 images. Processing...",
+                },
+                *GOLDEN_LEGACY_ROWS,
+                {
+                    "type": "complete",
+                    "progress": 100,
+                    "processed": 2,
+                    "tagged": 2,
+                    "skipped": 4,
+                    "errors": 0,
+                    "skipped_outside_roots": 1,
+                    "status": "Complete",
+                    "model_status": "Model kept in memory",
+                    "model_loaded": True,
+                },
+            ],
+        )
+
+
+class TestTagOutputImagesEdges(BatchJobTestCase):
+
+    async def test_cancel_during_backup_loads_no_model(self):
+        from py.config import PromptManagerConfig
+
+        self._seed()
+        PromptManagerConfig.SAFETY_BACKUP = True
+        started, proceed = threading.Event(), threading.Event()
+
+        def slow_backup(model, label="backup"):
+            started.set()
+            proceed.wait(30)
+            return "prompts.db.backup_x"
+
+        with patch("py.api.maintenance.take_safety_backup", side_effect=slow_backup):
+            resp = await self._start_job(existing="merge")
+            job = self.api._jobs.get((await resp.json())["job"]["id"])
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 30)
+            await self.client.post(f"/prompt_manager/jobs/{job.id}/cancel")
+            proceed.set()
+            await asyncio.wait_for(asyncio.shield(job.task), 30)
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(self.service.load_calls, [])
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_unexpected_error_fails_the_job_with_a_reason(self):
+        self._seed()
+        with patch.object(
+            self.api.db, "autotag_batch_candidates", side_effect=[[], RuntimeError("x")]
+        ):
+            job = await self._run_job(existing="merge")
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(
+            job.status_line,
+            "An internal error occurred. Check server logs for details.",
+        )
+        self.assertIsNone(model_gate.holder())
