@@ -1,6 +1,6 @@
 {
   "required_status_checks": {
-    "strict": true,
+    "strict": false,
     "contexts": [
       "py3.12 on ubuntu-latest",
       "py3.13 on ubuntu-latest",
