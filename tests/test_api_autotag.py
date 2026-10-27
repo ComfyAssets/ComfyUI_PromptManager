@@ -42,6 +42,10 @@ except ImportError:
     model_gate = None
 
 
+# The engine's four model types (py/autotag.py MODELS), in its own order.
+MODEL_TYPES = ("gguf", "hf", "wd14-swinv2", "wd14-vit")
+
+
 class FakeAutotagService:
     """Stand-in for AutoTagService that records calls and returns fixed tags."""
 
@@ -56,15 +60,24 @@ class FakeAutotagService:
         self.default_prompt = "default prompt"
         self.wd14_general_threshold = 0.35
         self.wd14_character_threshold = 0.85
-        self.models_config = {"gguf": {}, "wd14-vit": {}}
+        self.models_config = {name: {} for name in MODEL_TYPES}
         self._loaded_type = None
         self.generate_error = None
         self.download_result = True
         self.load_error = None
+        # Call counters and the thread each status read ran on.
+        self.status_calls = 0
+        self.status_threads = []
+        self.status_paths = {}
 
     def get_models_status(self):
+        self.status_calls += 1
+        self.status_threads.append(threading.get_ident())
         return {
-            name: {"downloaded": self.downloaded, "model_path": None}
+            name: {
+                "downloaded": self.downloaded,
+                "model_path": self.status_paths.get(name),
+            }
             for name in self.models_config
         }
 
@@ -1288,3 +1301,142 @@ class TestGalleryReviewContract(AutotagAPITestCase):
             "/prompt_manager/autotag/single", {"path": "link.png", "root_index": 0}
         )
         self.assertEqual(response.status, 403)
+
+
+def _strings(value):
+    """Every string inside a JSON value (keys included)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _absolute(text):
+    import ntpath
+    import posixpath
+    import re
+
+    return (
+        posixpath.isabs(text)
+        or ntpath.isabs(text)
+        or re.match(r"^[A-Za-z]:[\\/]", text) is not None
+    )
+
+
+class TestModelStatus(AutotagAPITestCase):
+    """GET /autotag/models: labels, sizes and the loaded flag, never a path."""
+
+    async def _models(self):
+        resp = await self.client.get("/prompt_manager/autotag/models")
+        self.assertEqual(resp.status, 200)
+        return await resp.json()
+
+    async def test_models_status_has_no_absolute_paths(self):
+        self.service.status_paths = {
+            "wd14-vit": "/srv/models/WD14-ViT/model.onnx",
+            "gguf": "C:\\models\\GGUF\\joycaption.gguf",
+            "hf": "D:/hf-cache/models--fancyfeast",
+        }
+        data = await self._models()
+        for model in data["models"].values():
+            self.assertNotIn("model_path", model)
+        leaked = [text for text in _strings(data) if _absolute(text)]
+        self.assertEqual(leaked, [])
+
+    async def test_models_status_adds_label_size_label_and_loaded(self):
+        self.service._loaded_type = "wd14-vit"
+        data = await self._models()
+        models = data["models"]
+        self.assertEqual(list(models), list(MODEL_TYPES))
+        self.assertEqual(
+            {name: (m["label"], m["size_label"]) for name, m in models.items()},
+            {
+                "gguf": ("GGUF JoyCaption", "~4.5 GB"),
+                "hf": ("HuggingFace JoyCaption", "~16 GB"),
+                "wd14-swinv2": ("WD14 SwinV2", "~400 MB"),
+                "wd14-vit": ("WD14 ViT", "~400 MB"),
+            },
+        )
+        self.assertEqual(
+            {name: m["loaded"] for name, m in models.items()},
+            {"gguf": False, "hf": False, "wd14-swinv2": False, "wd14-vit": True},
+        )
+        # Kept fields legacy pages and the workspace read.
+        for model in models.values():
+            self.assertTrue({"name", "description", "size", "downloaded"} <= set(model))
+        self.assertTrue(data["model_loaded"])
+        self.assertEqual(data["loaded_model_type"], "wd14-vit")
+
+    async def test_opening_models_never_loads_or_downloads(self):
+        await self._models()
+        self.assertEqual(self.service.status_calls, 1)
+        self.assertEqual(self.service.load_calls, [])
+        self.assertEqual(self.service.download_calls, [])
+        self.assertEqual(self.service.unload_calls, 0)
+        self.assertEqual(self.service.generate_calls, [])
+
+    async def test_models_status_reads_off_the_event_loop(self):
+        await self._models()
+        self.assertEqual(len(self.service.status_threads), 1)
+        self.assertNotEqual(self.service.status_threads[0], threading.get_ident())
+
+
+class TestModelBusyNamesTheOperation(AutotagAPITestCase):
+    """A 409 model-busy names who holds the gate (``operation``)."""
+
+    LABELS = {
+        "autotag-job": "Tag output images",
+        "legacy-batch": "Tag output images (legacy page)",
+        "legacy-single": "Tagging one image (legacy page)",
+        "legacy-unload": "Unloading the tagging model",
+        "image-tag-job": "Auto-tag selected images",
+        "image-annotations": "Generate suggestions",
+    }
+
+    async def test_model_busy_names_the_operation(self):
+        self.service._loaded_type = "wd14-vit"
+        for kind, label in self.LABELS.items():
+            owner = model_gate.new_owner(kind)
+            self.assertTrue(model_gate.try_acquire(owner))
+            try:
+                resp = await self.client.post("/prompt_manager/autotag/unload")
+                data = await resp.json()
+            finally:
+                model_gate.release(owner)
+            self.assertEqual(resp.status, 409, kind)
+            self.assertEqual(data["code"], "model-busy", kind)
+            self.assertEqual(data["operation"], label, kind)
+            self.assertIn("busy", data["error"].lower())
+        self.assertEqual(self.service.unload_calls, 0)
+
+    async def test_unknown_or_freed_holder_is_another_operation(self):
+        from py.api.autotag_routes import model_busy_response
+
+        self.assertIsNone(model_gate.holder())
+        freed = json.loads(model_busy_response().body)
+        self.assertEqual(freed["operation"], "Another tagging operation")
+        self.assertTrue(model_gate.try_acquire("test-holder"))
+        try:
+            unknown = json.loads(model_busy_response().body)
+        finally:
+            model_gate.release("test-holder")
+        self.assertEqual(unknown["operation"], "Another tagging operation")
+
+    async def test_unload_during_generate_is_409_model_busy(self):
+        self.service._loaded_type = "wd14-vit"
+        owner = model_gate.new_owner("image-annotations")
+        self.assertTrue(model_gate.try_acquire(owner))
+        try:
+            resp = await self.client.post("/prompt_manager/autotag/unload")
+            data = await resp.json()
+        finally:
+            model_gate.release(owner)
+        self.assertEqual(resp.status, 409)
+        self.assertEqual(data["operation"], "Generate suggestions")
+        self.assertEqual(self.service.unload_calls, 0)
+        self.assertEqual(self.service.get_loaded_model_type(), "wd14-vit")

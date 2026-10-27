@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Optional
@@ -22,12 +23,81 @@ MODEL_BUSY_ERROR = (
 )
 
 
+# Who holds the model gate, as a 409 model-busy names it (``operation``). An
+# owner is ``"<kind>:<uuid>"`` (``model_gate.new_owner``); a download names
+# its own job, whose title says which model.
+MODEL_DOWNLOAD_OWNER_KIND = "model-download"
+OWNER_LABELS = {
+    "autotag-job": "Tag output images",
+    "legacy-batch": "Tag output images (legacy page)",
+    "legacy-single": "Tagging one image (legacy page)",
+    "legacy-unload": "Unloading the tagging model",
+    "image-tag-job": "Auto-tag selected images",
+    "image-annotations": "Generate suggestions",
+}
+ANOTHER_OPERATION = "Another tagging operation"
+# The running download's gate owner and job title. Only one download runs at a
+# time and each needs the gate, so a new start replaces the entry.
+_download_titles = {}
+
+
+def _holder_label(holder: Optional[str]) -> str:
+    if not holder:
+        return ANOTHER_OPERATION
+    kind = holder.split(":", 1)[0]
+    if kind == MODEL_DOWNLOAD_OWNER_KIND:
+        return _download_titles.get(holder, ANOTHER_OPERATION)
+    return OWNER_LABELS.get(kind, ANOTHER_OPERATION)
+
+
 def model_busy_response() -> web.Response:
-    """``409 model-busy``: another operation holds the shared model gate."""
+    """``409 model-busy``: another operation holds the shared model gate.
+
+    ``operation`` names the holder (``OWNER_LABELS``), or "Another tagging
+    operation" when the gate was freed meanwhile or the kind is unknown.
+    """
     return web.json_response(
-        {"success": False, "code": "model-busy", "error": MODEL_BUSY_ERROR},
+        {
+            "success": False,
+            "code": "model-busy",
+            "error": MODEL_BUSY_ERROR,
+            "operation": _holder_label(model_gate.holder()),
+        },
         status=409,
     )
+
+
+_SIZE = re.compile(r"^(~?[0-9.]+)\s*([KMGT]?B)$")
+
+
+def size_label(size: str) -> str:
+    """The engine table's size with a space before the unit (``~400 MB``)."""
+    match = _SIZE.match(str(size or "").strip())
+    return f"{match.group(1)} {match.group(2)}" if match else str(size or "")
+
+
+def public_models(status: dict, loaded_type: Optional[str]) -> dict:
+    """Each engine model's public entry: names and sizes from ``MODELS``, the
+    flags from ``status``; never a path (``model_path`` is dropped)."""
+    from ..autotag import MODELS
+
+    models = {}
+    for model_type, config in MODELS.items():
+        flags = status.get(model_type) or {}
+        entry = {
+            "name": config["name"],
+            "label": config["label"],
+            "description": config["description"],
+            "size": config["size"],
+            "size_label": size_label(config["size"]),
+            "downloaded": bool(flags.get("downloaded")),
+            "loaded": loaded_type == model_type,
+        }
+        for key in ("model_exists", "mmproj_exists"):
+            if key in flags:
+                entry[key] = bool(flags[key])
+        models[model_type] = entry
+    return models
 
 
 # Only these may be handed to the tagging engine or listed by the scanner.
@@ -110,15 +180,18 @@ class AutotagRoutesMixin:
             from ..config import AutotagConfig
 
             service = get_autotag_service()
-            models_status = service.get_models_status()
+            # Off the loop: the HuggingFace check walks the whole HF cache.
+            status = await self._run_in_executor(service.get_models_status)
+            loaded = service.is_model_loaded()
+            loaded_type = service.get_loaded_model_type() if loaded else None
 
             return web.json_response(
                 {
                     "success": True,
-                    "models": models_status,
+                    "models": public_models(status, loaded_type),
                     "default_prompt": service.default_prompt,
-                    "model_loaded": service.is_model_loaded(),
-                    "loaded_model_type": service.get_loaded_model_type(),
+                    "model_loaded": loaded,
+                    "loaded_model_type": loaded_type,
                     "wd14_general_threshold": service.wd14_general_threshold,
                     "wd14_character_threshold": service.wd14_character_threshold,
                     "suggestion_limit": AutotagConfig.suggestion_limit(),
@@ -467,7 +540,7 @@ class AutotagRoutesMixin:
             return await self._stream_sse(request, _refusal(busy.title))
         async with self._jobs.hold(
             AUTOTAG_BATCH_JOB_KIND,
-            "Auto-tag images (legacy page)",
+            OWNER_LABELS["legacy-batch"],
             admission="records",
         ) as job:
             response = await self._start_autotag_batch(request, opts, events)
