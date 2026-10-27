@@ -5,9 +5,10 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
@@ -20,7 +21,9 @@ from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
+from py.api import logging_routes  # noqa: E402
 from py.api.logging_routes import LOG_CONFIG_KEYS  # noqa: E402
+from utils import logging_config  # noqa: E402
 
 
 class FakeLoggerManager:
@@ -38,10 +41,15 @@ class FakeLoggerManager:
         }
         self.update_calls = []
         self.logs = []
+        self.threads = {}
 
     def update_config(self, new_config):
+        self.threads["update_config"] = threading.current_thread()
         self.update_calls.append(dict(new_config))
         self.config.update(new_config)
+
+    def log_file_entry(self, name):
+        return logging_config.log_file_entry(self.log_dir, name)
 
     def get_config(self):
         return dict(self.config)
@@ -54,23 +62,36 @@ class FakeLoggerManager:
 
     def get_log_files(self):
         files = []
-        for path in sorted(self.log_dir.glob("*.log*")):
+        for row in sorted(
+            logging_config.scan_log_folder(self.log_dir), key=lambda r: r["name"]
+        ):
+            if row["_dir"]:
+                continue
             files.append(
                 {
-                    "filename": path.name,
-                    "path": str(path),
-                    "size": path.stat().st_size,
+                    "filename": row["name"],
+                    "path": str(self.log_dir / row["name"]),
+                    "size": row["size"],
                     "modified": "2026-10-07T00:00:00",
-                    "is_main": path.name == "prompt_manager.log",
+                    "is_main": row["kind"] == "active",
+                    "kind": row["kind"],
                 }
             )
         return files
 
     def truncate_logs(self):
+        """Rule R: empty the active log, delete rotated copies, keep the rest."""
+        self.threads["truncate_logs"] = threading.current_thread()
         truncated = []
-        for path in self.log_dir.glob("prompt_manager.log*"):
-            path.write_text("")
-            truncated.append(path.name)
+        for row in logging_config.scan_log_folder(self.log_dir):
+            path = self.log_dir / row["name"]
+            if row["kind"] == "active":
+                path.write_text("")
+            elif row["kind"] == "rotated":
+                path.unlink()
+            else:
+                continue
+            truncated.append(row["name"])
         return {"truncated": truncated, "errors": []}
 
     def get_log_stats(self):
@@ -378,11 +399,89 @@ class TestLogFilesAndDownload(LoggingAPITestCase):
         self.assertEqual(resp.status, 400)
 
     async def test_download_read_failure_is_500(self):
-        (self.log_dir / "dir.log").mkdir()
-        resp = await self.client.request("GET", "/prompt_manager/logs/download/dir.log")
+        # Rewritten (#329): a directory is now a 404; inject a read error.
+        (self.log_dir / "prompt_manager.log").write_bytes(b"x")
+        secret = os.path.join(self.tmpdir, "logs", "prompt_manager.log")
+
+        def fail(path):
+            raise PermissionError(13, "Permission denied", secret)
+
+        with patch.object(logging_routes, "_read_log_bytes", fail):
+            resp = await self.client.request(
+                "GET", "/prompt_manager/logs/download/prompt_manager.log"
+            )
         body = await resp.text()
         self.assertEqual(resp.status, 500)
         self.assertNotIn(self.tmpdir, body)
+
+    async def test_directory_download_is_404(self):
+        (self.log_dir / "dir.log").mkdir()
+        resp = await self.client.request("GET", "/prompt_manager/logs/download/dir.log")
+        self.assertEqual(resp.status, 404)
+
+    async def test_download_refuses_a_symlink(self):
+        secret = Path(self.tmpdir) / "secret.txt"
+        secret.write_text("the key")
+        try:
+            os.symlink(secret, self.log_dir / "prompt_manager.log.3")
+        except (OSError, NotImplementedError):  # pragma: no cover
+            self.skipTest("this account cannot create symlinks")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/prompt_manager.log.3"
+        )
+        body = await resp.text()
+        self.assertEqual(resp.status, 404)
+        self.assertNotIn("the key", body)
+
+    async def test_download_reads_off_the_loop(self):
+        (self.log_dir / "prompt_manager.log").write_bytes(b"line\n")
+        seen = []
+        real = logging_routes._read_log_bytes
+
+        def read(path):
+            seen.append(threading.current_thread())
+            return real(path)
+
+        with patch.object(logging_routes, "_read_log_bytes", read):
+            resp = await self.client.request(
+                "GET", "/prompt_manager/logs/download/prompt_manager.log"
+            )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(len(seen), 1)
+        self.assertIsNot(seen[0], threading.current_thread())
+
+    async def test_download_keeps_its_response_shape(self):
+        (self.log_dir / "prompt_manager.log.2").write_bytes(b"a\nb\n")
+        resp = await self.client.request(
+            "GET", "/prompt_manager/logs/download/prompt_manager.log.2"
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.content_type, "text/plain")
+        self.assertEqual(
+            resp.headers["Content-Disposition"],
+            'attachment; filename="prompt_manager.log.2"',
+        )
+        self.assertEqual(resp.headers["Content-Length"], "4")
+        self.assertEqual(await resp.read(), b"a\nb\n")
+
+    async def test_log_files_rows_carry_their_kind(self):
+        for name in (
+            "prompt_manager.log",
+            "prompt_manager.log.1",
+            "prompt_manager.log.bak",
+        ):
+            (self.log_dir / name).write_text("x")
+        resp = await self.client.request("GET", "/prompt_manager/logs/files")
+        data = await resp.json()
+        kinds = {row["filename"]: row["kind"] for row in data["files"]}
+        self.assertEqual(
+            kinds,
+            {
+                "prompt_manager.log": "active",
+                "prompt_manager.log.1": "rotated",
+                "prompt_manager.log.bak": "other",
+            },
+        )
 
 
 class TestTruncateConfigAndStats(LoggingAPITestCase):
@@ -394,6 +493,40 @@ class TestTruncateConfigAndStats(LoggingAPITestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(data["results"]["truncated"], ["prompt_manager.log"])
         self.assertEqual((self.log_dir / "prompt_manager.log").read_text(), "")
+
+    async def test_truncate_keeps_other_files(self):
+        for name in (
+            "prompt_manager.log",
+            "prompt_manager.log.1",
+            "prompt_manager.log.bak",
+        ):
+            (self.log_dir / name).write_text("data")
+        resp = await self.client.request("POST", "/prompt_manager/logs/truncate")
+        data = await resp.json()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(set(data), {"success", "message", "results"})
+        self.assertEqual(
+            sorted(data["results"]["truncated"]),
+            ["prompt_manager.log", "prompt_manager.log.1"],
+        )
+        self.assertEqual(
+            sorted(p.name for p in self.log_dir.iterdir()),
+            ["prompt_manager.log", "prompt_manager.log.bak"],
+        )
+
+    async def test_truncate_runs_off_the_loop(self):
+        resp = await self.client.request("POST", "/prompt_manager/logs/truncate")
+        self.assertEqual(resp.status, 200)
+        self.assertIsNot(
+            self.manager.threads["truncate_logs"], threading.current_thread()
+        )
+
+    async def test_update_config_runs_off_the_loop(self):
+        resp = await self._post_config({"level": "DEBUG"})
+        self.assertEqual(resp.status, 200)
+        self.assertIsNot(
+            self.manager.threads["update_config"], threading.current_thread()
+        )
 
     async def test_truncate_failure_is_500(self):
         def boom():

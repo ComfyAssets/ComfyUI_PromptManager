@@ -1,6 +1,7 @@
 """PromptManagerLogger: memory buffer, file rotation, level changes, truncation."""
 
 import logging
+import ntpath
 import os
 import pathlib
 import sys
@@ -11,13 +12,19 @@ import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import logging_config
-from utils.logging_config import (
+from utils import logging_config  # noqa: E402
+from utils.logging_config import (  # noqa: E402
     MemoryBufferHandler,
     PromptManagerLogger,
+    RotatedChanged,
     get_logger,
     get_logger_manager,
 )
+
+try:
+    from tests.open_handles import assert_closed  # noqa: E402
+except ImportError:  # discovered with tests/ as the top-level directory
+    from open_handles import assert_closed  # noqa: E402
 
 
 class IsolatedLoggerTestCase(unittest.TestCase):
@@ -32,6 +39,7 @@ class IsolatedLoggerTestCase(unittest.TestCase):
         with mock.patch.object(logging_config, "__file__", fake_file):
             self.manager = object.__new__(PromptManagerLogger)  # bypass singleton
             self.manager.__init__()
+        self.allowed_thread_names = set()
         self.manager.update_config({"console_logging": False})
         # Drop the "Updated logging configuration" entry.
         self.manager._log_buffer.clear()
@@ -53,12 +61,21 @@ class IsolatedLoggerTestCase(unittest.TestCase):
 
     def _filter_to_this_thread(self):
         this_thread = threading.get_ident()
+        # A test may let named helper threads of its own through too.
+        allowed_names = self.allowed_thread_names
+
+        def allowed(record):
+            return record.thread == this_thread or record.threadName in allowed_names
+
         for handler in self.manager.logger.handlers:
-            handler.addFilter(lambda record: record.thread == this_thread)
+            handler.filters.clear()
+            handler.addFilter(allowed)
 
     def _restore_global_logging(self):
         for handler in logging.getLogger("prompt_manager").handlers[:]:
             handler.close()
+        # Windows refuses to delete an open log: prove every handle is closed.
+        assert_closed(self, self.tmp.name)
         get_logger_manager()._setup_loggers()
         self.tmp.cleanup()
 
@@ -175,15 +192,14 @@ class TestFilesAndRotation(IsolatedLoggerTestCase):
 
     def test_unreadable_files_are_skipped_in_the_listing(self):
         self.logger.info("something")
-        original_stat = pathlib.Path.stat
+        original_lstat = os.lstat
 
-        def stat_failing_for_logs(path, *args, **kwargs):
-            if path.suffix == ".log":
+        def lstat_failing_for_logs(path, *args, **kwargs):
+            if str(path).endswith(".log"):
                 raise OSError("denied")
-            return original_stat(path, *args, **kwargs)
+            return original_lstat(path, *args, **kwargs)
 
-        with mock.patch.object(pathlib.Path, "stat", autospec=True) as stat:
-            stat.side_effect = stat_failing_for_logs
+        with mock.patch.object(logging_config.os, "lstat", lstat_failing_for_logs):
             self.assertEqual(self.manager.get_log_files(), [])
 
     def test_truncate_does_not_roll_the_log_over_while_deleting_backups(self):
@@ -228,10 +244,477 @@ class TestFilesAndRotation(IsolatedLoggerTestCase):
 
     def test_truncate_reports_files_it_cannot_remove(self):
         self._rotate()
-        with mock.patch.object(pathlib.Path, "unlink", side_effect=OSError("busy")):
+
+        def busy(path, *args, **kwargs):
+            raise PermissionError(13, "busy", str(path))
+
+        with mock.patch.object(logging_config.os, "unlink", busy):
             result = self.manager.truncate_logs()
         self.assertEqual(len(result["errors"]), 2)
         self.assertEqual(result["truncated"], ["prompt_manager.log"])
+        for error in result["errors"]:
+            self.assertNotIn(self.tmp.name, error)
+            self.assertRegex(error, r"prompt_manager\.log\.[12]")
+
+
+class TestRotatedCopyRule(IsolatedLoggerTestCase):
+    """Rule R (#329): only prompt_manager.log.<n> regular files are deletable."""
+
+    def setUp(self):
+        super().setUp()
+        self.logger.info("active log line")  # the active log exists
+        self.outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(self.outside)
+
+    def _path(self, name):
+        return os.path.join(self.log_dir, name)
+
+    def _write(self, name, data=b"rotated\n"):
+        with open(self._path(name), "wb") as handle:
+            handle.write(data)
+        return self._path(name)
+
+    def _symlink(self, name, target_name="secret.txt", data=b"secret " * 1000):
+        """A symlink in the log folder to a file outside it, or None."""
+        target = os.path.join(self.outside, target_name)
+        with open(target, "wb") as handle:
+            handle.write(data)
+        try:
+            os.symlink(target, self._path(name))
+        except (OSError, NotImplementedError):  # pragma: no cover - no privilege
+            return None
+        return target
+
+    def _require_symlink(self, name, **kwargs):
+        target = self._symlink(name, **kwargs)
+        if target is None:  # pragma: no cover - Windows without the privilege
+            self.skipTest("this account cannot create symlinks")
+        return target
+
+    def _kinds(self):
+        return {row["name"]: row["kind"] for row in self.manager.scan_log_folder()}
+
+    def _rotated_rows(self):
+        return [r for r in self.manager.scan_log_folder() if r["kind"] == "rotated"]
+
+    def _names(self):
+        return sorted(os.listdir(self.log_dir))
+
+    def _file_handler(self):
+        return next(
+            h
+            for h in self.manager.logger.handlers
+            if isinstance(h, logging.FileHandler)
+        )
+
+    def test_scan_classes_rotated_active_link_and_other(self):
+        for name in ("prompt_manager.log.1", "prompt_manager.log.2"):
+            self._write(name)
+        self._write("prompt_manager.log.3", b"x" * 3000)
+        for name in (
+            "prompt_manager.log.0",
+            "prompt_manager.log.01",
+            "prompt_manager.log.bak",
+            "prompt_manager.log.1.gz",
+            "prompt_manager.log.-1",
+            "notes.txt",
+        ):
+            self._write(name)
+        os.makedirs(self._path("prompt_manager.log.5"))
+        self._require_symlink("prompt_manager.log.4")
+        kinds = self._kinds()
+        self.assertEqual(
+            kinds,
+            {
+                "prompt_manager.log": "active",
+                "prompt_manager.log.1": "rotated",
+                "prompt_manager.log.2": "rotated",
+                "prompt_manager.log.3": "rotated",
+                "prompt_manager.log.0": "other",
+                "prompt_manager.log.01": "other",
+                "prompt_manager.log.bak": "other",
+                "prompt_manager.log.1.gz": "other",
+                "prompt_manager.log.-1": "other",
+                "notes.txt": "other",
+                "prompt_manager.log.5": "other",
+                "prompt_manager.log.4": "link",
+            },
+        )
+        row = next(
+            r
+            for r in self.manager.scan_log_folder()
+            if r["name"] == "prompt_manager.log.3"
+        )
+        self.assertEqual(
+            set(row), {"name", "kind", "size", "mtime_ns", "ino", "modified"}
+        )
+        stat = os.lstat(self._path("prompt_manager.log.3"))
+        self.assertEqual(row["size"], 3000)
+        self.assertEqual(row["mtime_ns"], stat.st_mtime_ns)
+        self.assertEqual(row["ino"], stat.st_ino)
+
+    def test_scan_matches_names_case_insensitively_on_windows(self):
+        self._write("PROMPT_MANAGER.LOG.2")
+        if os.name == "nt":  # pragma: no cover - native case folding
+            self.assertEqual(self._kinds()["PROMPT_MANAGER.LOG.2"], "rotated")
+            return
+        # POSIX names are case-sensitive: another file, never deleted.
+        self.assertEqual(self._kinds()["PROMPT_MANAGER.LOG.2"], "other")
+        with mock.patch.object(logging_config, "_name_key", ntpath.normcase):
+            self.assertEqual(self._kinds()["PROMPT_MANAGER.LOG.2"], "rotated")
+            result = self.manager.delete_rotated(self._rotated_rows())
+        self.assertEqual(result["removed"], ["PROMPT_MANAGER.LOG.2"])
+
+    def test_a_junction_is_classed_as_a_link_and_kept(self):
+        # Portable control: whatever os.path.isjunction reports is a link.
+        self._write("prompt_manager.log.4")
+        self._write("prompt_manager.log.1")
+        junction = self._path("prompt_manager.log.4")
+        real_isjunction = os.path.isjunction
+
+        def isjunction(path):
+            return os.fspath(path) == junction or real_isjunction(path)
+
+        with mock.patch.object(logging_config.os.path, "isjunction", isjunction):
+            self.assertEqual(self._kinds()["prompt_manager.log.4"], "link")
+            self.manager.delete_rotated(self._rotated_rows())
+            self.manager.truncate_logs()
+        self.assertIn("prompt_manager.log.4", self._names())
+        self.assertNotIn("prompt_manager.log.1", self._names())
+
+    @unittest.skipUnless(os.name == "nt", "junctions exist only on Windows")
+    def test_junction_is_never_deleted_on_windows(self):  # pragma: no cover
+        import _winapi
+
+        target = os.path.join(self.outside, "kept")
+        os.makedirs(target)
+        with open(os.path.join(target, "inside.txt"), "wb") as handle:
+            handle.write(b"keep me")
+        _winapi.CreateJunction(target, self._path("prompt_manager.log.4"))
+        self._write("prompt_manager.log.1")
+        self.assertEqual(self._kinds()["prompt_manager.log.4"], "link")
+        self.manager.delete_rotated(self._rotated_rows())
+        self.manager.truncate_logs()
+        self.assertIn("prompt_manager.log.4", self._names())
+        self.assertTrue(os.path.exists(os.path.join(target, "inside.txt")))
+        with self.assertRaises(FileNotFoundError):
+            self.manager.log_file_entry("prompt_manager.log.4")
+        os.rmdir(self._path("prompt_manager.log.4"))  # removes the junction only
+
+    def test_delete_rotated_removes_exactly_the_listed_files(self):
+        for n in (1, 2, 3):
+            self._write(f"prompt_manager.log.{n}", b"r" * n)
+        self._write("prompt_manager.log.bak")
+        os.makedirs(self._path("prompt_manager.log.7"))
+        target = self._symlink("prompt_manager.log.4")
+        listed = [
+            r for r in self._rotated_rows() if r["name"] != "prompt_manager.log.3"
+        ]
+        result = self.manager.delete_rotated(listed)
+        self.assertEqual(
+            result,
+            {"removed": ["prompt_manager.log.1", "prompt_manager.log.2"], "failed": []},
+        )
+        expected = [
+            "prompt_manager.log",
+            "prompt_manager.log.3",
+            "prompt_manager.log.7",
+            "prompt_manager.log.bak",
+        ]
+        if target is not None:
+            expected.append("prompt_manager.log.4")
+            self.assertTrue(os.path.exists(target))
+        self.assertEqual(self._names(), sorted(expected))
+
+    def test_delete_rotated_refuses_all_when_one_changed(self):
+        def change_size(path):
+            with open(path, "ab") as handle:
+                handle.write(b"more")
+
+        def change_mtime(path):
+            stat = os.lstat(path)
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+
+        def change_inode(path):
+            stat = os.lstat(path)
+            with open(path, "rb") as handle:
+                data = handle.read()
+            other = path + ".new"
+            with open(other, "wb") as handle:
+                handle.write(data)
+            os.utime(other, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            os.replace(other, path)
+            if os.lstat(path).st_ino in (0, stat.st_ino):  # pragma: no cover
+                self.skipTest("this filesystem reports no inode numbers")
+
+        def remove(path):
+            os.unlink(path)
+
+        def replace_by_link(path):
+            os.unlink(path)
+            target = os.path.join(self.outside, "elsewhere.txt")
+            with open(target, "wb") as handle:
+                handle.write(b"rotated\n")
+            try:
+                os.symlink(target, path)
+            except (OSError, NotImplementedError):  # pragma: no cover
+                self.skipTest("this account cannot create symlinks")
+
+        changes = {
+            "size": change_size,
+            "mtime": change_mtime,
+            "inode": change_inode,
+            "missing": remove,
+            "link": replace_by_link,
+        }
+        for label, change in changes.items():
+            with self.subTest(change=label):
+                for n in (1, 2, 3):
+                    self._write(f"prompt_manager.log.{n}", b"rotated\n")
+                reviewed = self._rotated_rows()
+                change(self._path("prompt_manager.log.2"))
+                before = self._names()
+                with self.assertRaises(RotatedChanged):
+                    self.manager.delete_rotated(reviewed)
+                self.assertEqual(self._names(), before)
+                self.assertIn("prompt_manager.log.1", before)
+                self.assertIn("prompt_manager.log.3", before)
+                for name in self._names():
+                    if name.startswith("prompt_manager.log."):
+                        os.unlink(self._path(name))
+
+    def test_rollover_waits_while_cleanup_holds_the_handler_lock(self):
+        # The file is already over its limit: the next record rolls it over,
+        # renaming .1 to .2 and the active log to .1.
+        self.manager.update_config({"max_file_size": 64, "backup_count": 3})
+        self.logger.info("x" * 100)
+        self._write("prompt_manager.log.1", b"first copy\n")
+        self._write("prompt_manager.log.2", b"second copy\n")
+        reviewed = self._rotated_rows()
+        holding = threading.Event()
+        release = threading.Event()
+        logged = threading.Event()
+        real_unlink = os.unlink
+        self.allowed_thread_names.add("pm-test-rollover")
+
+        def log_from_another_thread():
+            self.logger.info("rolls the log over")
+            logged.set()
+
+        worker = threading.Thread(
+            target=log_from_another_thread, name="pm-test-rollover", daemon=True
+        )
+
+        def slow_unlink(path, *args, **kwargs):
+            if not holding.is_set():
+                worker.start()  # its record must wait for the cleanup's lock
+                holding.set()
+                if not release.wait(10):
+                    raise RuntimeError("the test never released the cleanup")
+            return real_unlink(path, *args, **kwargs)
+
+        result = {}
+
+        def cleanup():
+            result.update(self.manager.delete_rotated(reviewed))
+
+        with mock.patch.object(logging_config.os, "unlink", slow_unlink):
+            cleaner = threading.Thread(target=cleanup, daemon=True)
+            cleaner.start()
+            self.assertTrue(holding.wait(10), "the cleanup never started deleting")
+            # The record waits on the handler lock the cleanup holds.
+            self.assertFalse(logged.wait(0.3), "a record was written mid-cleanup")
+            release.set()
+            cleaner.join(10)
+            worker.join(10)
+        self.assertFalse(cleaner.is_alive())
+        self.assertTrue(logged.is_set())
+        self.assertEqual(
+            result,
+            {"removed": ["prompt_manager.log.1", "prompt_manager.log.2"], "failed": []},
+        )
+        # The rollover ran after the cleanup: only the old active log moved.
+        self.assertEqual(self._names(), ["prompt_manager.log", "prompt_manager.log.1"])
+        with open(self._path("prompt_manager.log.1"), "rb") as handle:
+            self.assertIn(b"x" * 100, handle.read())
+
+    def test_open_rotated_copy_is_reported_not_deleted(self):
+        for n in (1, 2, 3):
+            self._write(f"prompt_manager.log.{n}")
+        real_unlink = os.unlink
+        held = self._path("prompt_manager.log.2")
+
+        def unlink(path, *args, **kwargs):
+            if os.fspath(path) == held:
+                error = PermissionError(
+                    13,
+                    "The process cannot access the file because it is being "
+                    "used by another process",
+                    held,
+                )
+                error.winerror = 32
+                raise error
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(logging_config.os, "unlink", unlink):
+            result = self.manager.delete_rotated(self._rotated_rows())
+        self.assertEqual(
+            result["removed"], ["prompt_manager.log.1", "prompt_manager.log.3"]
+        )
+        [(name, error)] = result["failed"]
+        self.assertEqual(name, "prompt_manager.log.2")
+        self.assertIsInstance(error, PermissionError)
+        self.assertIn("prompt_manager.log.2", self._names())
+
+    @unittest.skipUnless(os.name == "nt", "only Windows refuses to unlink an open file")
+    def test_open_rotated_copy_is_reported_not_deleted_on_windows(
+        self,
+    ):  # pragma: no cover
+        for n in (1, 2, 3):
+            self._write(f"prompt_manager.log.{n}")
+        reviewed = self._rotated_rows()
+        handle = open(self._path("prompt_manager.log.2"), "rb")
+        try:
+            result = self.manager.delete_rotated(reviewed)
+        finally:
+            handle.close()
+        self.assertEqual(
+            result["removed"], ["prompt_manager.log.1", "prompt_manager.log.3"]
+        )
+        [(name, error)] = result["failed"]
+        self.assertEqual(name, "prompt_manager.log.2")
+        self.assertIsInstance(error, PermissionError)
+        self.assertIn("prompt_manager.log.2", self._names())
+
+    def test_cleanup_never_logs_while_holding_the_handler_lock(self):
+        for n in (1, 2):
+            self._write(f"prompt_manager.log.{n}")
+        handler = self._file_handler()
+        depth = 0
+        calls = []
+        real_acquire, real_release = handler.acquire, handler.release
+
+        def acquire():
+            nonlocal depth
+            real_acquire()
+            depth += 1
+
+        def release():
+            nonlocal depth
+            depth -= 1
+            real_release()
+
+        real_call_handlers = logging.Logger.callHandlers
+
+        def call_handlers(logger_self, record):
+            calls.append((record.getMessage(), depth))
+            return real_call_handlers(logger_self, record)
+
+        with (
+            mock.patch.object(handler, "acquire", acquire),
+            mock.patch.object(handler, "release", release),
+            mock.patch.object(logging.Logger, "callHandlers", call_handlers),
+        ):
+            self.manager.delete_rotated(self._rotated_rows())
+            self.assertEqual(depth, 0)
+            self._write("prompt_manager.log.1")
+            self.manager.truncate_logs()
+            self.assertEqual(depth, 0)
+        self.assertTrue(calls, "the cleanup logged no summary")
+        self.assertEqual([c for c in calls if c[1]], [])
+
+    def test_truncate_keeps_other_files_and_links(self):
+        # Corrected (#329): the legacy glob deleted every prompt_manager.log*.
+        self._rotate()
+        self._write("prompt_manager.log.bak", b"mine")
+        self._write("prompt_manager.log.1.gz", b"zip")
+        target = self._symlink("prompt_manager.log.4")
+        result = self.manager.truncate_logs()
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            sorted(result["truncated"]),
+            ["prompt_manager.log", "prompt_manager.log.1", "prompt_manager.log.2"],
+        )
+        names = self._names()
+        self.assertIn("prompt_manager.log.bak", names)
+        self.assertIn("prompt_manager.log.1.gz", names)
+        self.assertNotIn("prompt_manager.log.1", names)
+        if target is not None:
+            self.assertIn("prompt_manager.log.4", names)
+            self.assertTrue(os.path.islink(self._path("prompt_manager.log.4")))
+            with open(target, "rb") as handle:
+                self.assertEqual(handle.read(), b"secret " * 1000)
+
+    def test_truncate_with_file_logging_off_never_creates_the_active_log(self):
+        self.manager.update_config({"file_logging": False})
+        os.unlink(self._path("prompt_manager.log"))
+        self._write("prompt_manager.log.1")
+        result = self.manager.truncate_logs()
+        self.assertEqual(result, {"truncated": ["prompt_manager.log.1"], "errors": []})
+        self.assertEqual(self._names(), [])
+
+    def test_truncate_never_empties_a_linked_active_log(self):
+        self.manager.update_config({"file_logging": False})
+        os.unlink(self._path("prompt_manager.log"))
+        target = self._require_symlink("prompt_manager.log", data=b"keep")
+        self.manager.truncate_logs()
+        with open(target, "rb") as handle:
+            self.assertEqual(handle.read(), b"keep")
+
+    def test_log_files_mark_kind_and_lstat_links(self):
+        self._write("prompt_manager.log.1", b"r" * 10)
+        self._write("prompt_manager.log.bak", b"b")
+        target = self._require_symlink("prompt_manager.log.4")
+        rows = {row["filename"]: row for row in self.manager.get_log_files()}
+        self.assertEqual(rows["prompt_manager.log"]["kind"], "active")
+        self.assertTrue(rows["prompt_manager.log"]["is_main"])
+        self.assertEqual(rows["prompt_manager.log.1"]["kind"], "rotated")
+        self.assertEqual(rows["prompt_manager.log.bak"]["kind"], "other")
+        link = rows["prompt_manager.log.4"]
+        self.assertEqual(link["kind"], "link")
+        self.assertEqual(
+            link["size"], os.lstat(self._path("prompt_manager.log.4")).st_size
+        )
+        self.assertNotEqual(link["size"], os.path.getsize(target))
+        for row in rows.values():
+            self.assertEqual(
+                set(row), {"filename", "path", "size", "modified", "is_main", "kind"}
+            )
+
+    def test_stats_exclude_links(self):
+        self._write("prompt_manager.log.1", b"r" * 10)
+        before = self.manager.get_log_stats()
+        self._require_symlink("prompt_manager.log.4")
+        after = self.manager.get_log_stats()
+        self.assertEqual(after["log_files_count"], before["log_files_count"])
+        self.assertEqual(after["total_log_size"], before["total_log_size"])
+
+    def test_log_file_entry_accepts_only_listed_regular_files(self):
+        self._write("prompt_manager.log.1")
+        self._write("prompt_manager.log.bak")
+        os.makedirs(self._path("folder.log"))
+        self._symlink("prompt_manager.log.4")
+        self.assertEqual(
+            os.path.normcase(str(self.manager.log_file_entry("prompt_manager.log.1"))),
+            os.path.normcase(self._path("prompt_manager.log.1")),
+        )
+        self.manager.log_file_entry("prompt_manager.log")
+        self.manager.log_file_entry("prompt_manager.log.bak")
+        for name in (
+            "prompt_manager.log.4",
+            "folder.log",
+            "missing.log",
+            "",
+            ".",
+            "..",
+            "../outside/secret.txt",
+            "..\\outside\\secret.txt",
+            "prompt_manager.log:stream",
+            "prompt_manager.log\x00",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(FileNotFoundError):
+                    self.manager.log_file_entry(name)
 
 
 class TestConfiguration(IsolatedLoggerTestCase):
