@@ -942,6 +942,12 @@ def golden_cases():
             anchor.two_stage_same_conditioning(["91", 0]),
             "final_00003_.png",
         ),
+        ("hidden-earlier", anchor.hidden_earlier_prompt(), "out_00001_.png"),
+        (
+            "hidden-override",
+            anchor.hidden_earlier_prompt(override=True),
+            "out_00001_.png",
+        ),
     ):
         cases[f"anchor-{name}"] = {"prompt": _dump(graph)}
         if file_name is not None:

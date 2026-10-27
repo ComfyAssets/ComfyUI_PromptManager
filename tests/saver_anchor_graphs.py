@@ -127,3 +127,55 @@ def two_stage_same_conditioning(second_positive=None):
     if second_positive is not None:
         graph["91"] = _encode(BRANCH_TEXTS[1])
     return graph
+
+
+def hidden_earlier_prompt(override=False):
+    """Review shape: the skipped same-links stage continues a different prompt.
+
+    10 (cat) -> 11 (dog) -> unlisted LatentBlend -> 13 (dog, same links as 11)
+    -> VAEDecode -> SaveImage ``out``. With ``override``, 11 is a
+    ``KSampler (Efficient)`` with a linked ``script``.
+    """
+    graph = _base()
+    graph["5"] = _encode("cat X")
+    graph["6"] = _encode("dog Y")
+    graph["10"] = _ksampler(["5", 0], ["3", 0], ["2", 0])
+    graph["11"] = _ksampler(["6", 0], ["3", 0], ["10", 0])
+    if override:
+        graph["11"] = _ksampler(["6", 0], ["3", 0], ["2", 0])
+        graph["11"]["class_type"] = "KSampler (Efficient)"
+        graph["11"]["inputs"]["script"] = ["40", 0]
+        graph["40"] = {"class_type": "XY Plot", "inputs": {"grid_spacing": 0}}
+    graph["12"] = {
+        "class_type": "LatentBlend",
+        "inputs": {"samples1": ["11", 0], "samples2": ["2", 0], "blend_factor": 0.5},
+    }
+    graph["13"] = _ksampler(["6", 0], ["3", 0], ["12", 0], 0.5)
+    graph["14"] = {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["13", 0], "vae": ["1", 2]},
+    }
+    graph["15"] = {
+        "class_type": "SaveImage",
+        "inputs": {"filename_prefix": "out", "images": ["14", 0]},
+    }
+    return graph
+
+
+def deep_prefixes(chain):
+    """Review shape: two branches whose savers both trace the prefix ``dup``.
+
+    Saver A's prefix runs through ``chain`` DisplayText nodes; saver B's
+    through one more, so a short visit allowance can finish only one trace.
+    """
+    graph = branch_bench(prefixes=[["p0", 0], ["q", 0], "x_1", "x_2"])
+    graph["pz"] = {"class_type": "StringConstant", "inputs": {"string": "dup"}}
+    previous = "pz"
+    for index in range(chain - 1, -1, -1):
+        graph[f"p{index}"] = {
+            "class_type": "DisplayText",
+            "inputs": {"text": [previous, 0]},
+        }
+        previous = f"p{index}"
+    graph["q"] = {"class_type": "DisplayText", "inputs": {"text": ["p0", 0]}}
+    return graph

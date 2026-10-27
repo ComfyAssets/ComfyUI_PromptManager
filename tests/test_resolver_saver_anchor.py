@@ -108,3 +108,28 @@ class TestSharedConditioningStages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewFindings(unittest.TestCase):
+    """Shapes from the independent review of the saver-anchor commit."""
+
+    def test_a_skipped_stage_never_hides_its_own_earlier_prompt(self):
+        result = _inspect(shapes.hidden_earlier_prompt(), "out_00001_.png")
+        self.assertNotEqual(result["state"], "resolved")
+        self.assertEqual(result["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
+
+    def test_a_skipped_stage_never_hides_its_override(self):
+        result = _inspect(shapes.hidden_earlier_prompt(override=True), "out_00001_.png")
+        self.assertNotEqual(result["state"], "resolved")
+
+    def test_an_unfinished_prefix_scan_anchors_nothing(self):
+        graph = shapes.deep_prefixes(9)
+        for visits in range(10, 30):
+            with self.subTest(visits=visits):
+                result = resolver.resolve_prompt_pair(
+                    {"prompt": graph},
+                    profile=resolver.INSPECTION_PROFILE,
+                    max_visits=visits,
+                    file_name="dup_00001_.png",
+                )
+                self.assertNotEqual(result["state"], "resolved")

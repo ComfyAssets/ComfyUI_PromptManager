@@ -1552,6 +1552,44 @@ class _GraphResolver:
             keys.append(tuple(values))
         return keys[0] == keys[1]
 
+    def alone(self, node_id: str) -> bool:
+        """Whether a sampler's prompt is its own links' text alone.
+
+        True when it sets no prompt override and its latent ancestry reaches no
+        listed sampler (a plain first stage). Any failure but running out of
+        visits is ``False``; the walk never recurses into another stage.
+        """
+        name, inputs = self.node(node_id)
+        entry = self.semantics.samplers[name]
+        if entry["strategy"] == _DETAILER:
+            return False
+        if any(
+            inputs.get(override) not in (None, "")
+            for override in entry.get("prompt_overrides", ())
+        ):
+            return False
+        value = inputs.get(entry.get("latent")) if entry.get("latent") else None
+        if value is None:
+            return True
+        if not _link(value):
+            return False
+        queue, queued = self.walk_from(value)
+        try:
+            while queue:
+                current, depth = queue.popleft()
+                if current == node_id or depth >= self.max_depth:
+                    return False
+                self.budget.spend()
+                name, inputs = self.node(current)
+                if name in self.stage_classes or self.stage_shaped(name, inputs):
+                    return False
+                self.enqueue(queue, queued, inputs, depth + 1)
+        except _Unresolved as error:
+            if error.code == "work-limit":
+                raise
+            return False
+        return True
+
     def saver_stages(self, file_name: Any) -> Optional[list]:
         """The candidate samplers of the one saver that wrote ``file_name``.
 
@@ -1599,7 +1637,11 @@ class _GraphResolver:
         if _link(prefix):
             try:
                 prefix = self.text(prefix, "string")[0]
-            except (_Unresolved, _Diverging):
+            except _Diverging:
+                return False
+            except _Unresolved as error:
+                if error.code == "work-limit":
+                    raise  # an unfinished scan anchors nothing (never a guess)
                 return False
         if not isinstance(prefix, str):
             return False
@@ -2012,7 +2054,7 @@ class _GraphResolver:
                 if not traced:
                     lineage, traced = self.lineage_predecessor(value), True
                 if node_id != lineage:
-                    if self.same_conditioning(origin, node_id):
+                    if self.same_conditioning(origin, node_id) and self.alone(node_id):
                         # Same positive and negative links: the same prompt
                         # whichever stage this is (#381).
                         continue

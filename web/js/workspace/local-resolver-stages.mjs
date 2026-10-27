@@ -322,6 +322,32 @@ function sameConditioning(resolver, first, second) {
     return keys[0] === keys[1];
 }
 
+/** `alone`: no prompt override set and no listed sampler in its latent ancestry (a plain first stage). */
+function alone(resolver, nodeId) {
+    let [name, inputs] = resolver.node(nodeId);
+    const entry = resolver.semantics.samplers.get(name);
+    if (entry.strategy === DETAILER) return false;
+    if ((entry.prompt_overrides ?? []).some(override => { const value = pyGet(inputs, override); return value !== null && value !== undefined && value !== ''; })) return false;
+    const value = entry.latent ? pyGet(inputs, entry.latent) : null;
+    if (value === null || value === undefined) return true;
+    if (!isLink(value)) return false;
+    const start = String(value[0]), queue = [[start, 0]], queued = new Set([start]);
+    try {
+        for (let head = 0; head < queue.length; head++) {
+            const [current, depth] = queue[head];
+            if (current === nodeId || depth >= resolver.maxDepth) return false;
+            resolver.budget.spend();
+            [name, inputs] = resolver.node(current);
+            if (resolver.stageClasses.has(name) || resolver.stageShaped(name, inputs)) return false;
+            resolver.enqueue(queue, queued, inputs, depth + 1);
+        }
+    } catch (error) {
+        if (!(error instanceof Unresolved) || error.code === 'work-limit') throw error;
+        return false;
+    }
+    return true;
+}
+
 export function latentStages(resolver, origin, value) {
     if (!isLink(value)) throw new Unresolved('Unknown latent ancestry', 'malformed');
     const start = String(value[0]), queue = [[start, 0]], queued = new Set([start]);
@@ -336,7 +362,7 @@ export function latentStages(resolver, origin, value) {
             if (!traced) { lineage = lineagePredecessor(resolver, value); traced = true; }
             if (nodeId !== lineage) {
                 // Same positive and negative links: the same prompt whichever stage this is (#381).
-                if (sameConditioning(resolver, origin, nodeId)) continue;
+                if (sameConditioning(resolver, origin, nodeId) && alone(resolver, nodeId)) continue;
                 throw new Unresolved(MULTISTAGE_UNATTRIBUTED_REASON);
             }
             earlier = nodeId;

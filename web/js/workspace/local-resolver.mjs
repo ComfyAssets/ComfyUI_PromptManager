@@ -403,7 +403,8 @@ class GraphResolver {
         let prefix = pyGet(node.get('inputs'), 'filename_prefix');
         if (isLink(prefix)) {
             try { prefix = this.text(prefix, 'string')[0]; } catch (error) {
-                if (error instanceof Unresolved || error instanceof Diverging) return false;
+                // An unfinished scan anchors nothing (never a guess): work-limit ends the match scan.
+                if (error instanceof Diverging || (error instanceof Unresolved && error.code !== 'work-limit')) return false;
                 throw error;
             }
         }

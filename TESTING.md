@@ -790,7 +790,8 @@ sampler found means no anchor: nothing is guessed and the file stays "several po
 prompts". Ingestion ignores file names. Shared-conditioning stages: in a sampler's
 latent walk, an earlier sampler reading the very same conditioning links (positive and
 negative, or a guider; compared by node ID text and slot) is the same prompt, not an
-unattributed stage (`tests/test_resolver_saver_anchor.py`, shapes in
+unattributed stage, when it is a plain first stage: not a detailer, no prompt override
+set, and no listed sampler in its own latent ancestry (else it stays unattributed) (`tests/test_resolver_saver_anchor.py`, shapes in
 `tests/saver_anchor_graphs.py` from the maintainer's `gpu_unlock_bench`, dataset and
 ANIMA runs; browser parity through the `anchor-*` cases, which carry `__file_name`).
 

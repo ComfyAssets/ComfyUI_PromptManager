@@ -2974,14 +2974,10 @@ class TestLatentAncestry(unittest.TestCase):
         source["60"]["class_type"] = "UltimateSDUpscale"
         result = _inspect(source, output_node_id="9")
         self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
-        # Reached only through an unlisted image node, it stays unattributed,
-        # unless both stages read the same conditioning links (#381).
+        # Reached only through an unlisted image node, it stays unattributed:
+        # a detailer is never a plain first stage, even on the same links (#381).
         source["61"] = {"class_type": "MysteryFilter", "inputs": {"image": ["60", 0]}}
         source["5"]["inputs"]["pixels"] = ["61", 0]
-        result = _inspect(source, output_node_id="9")
-        self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
-        source["74"] = parity._enc(parity.POS)
-        source["60"]["inputs"]["positive"] = ["74", 0]
         result = _inspect(source, output_node_id="9")
         self.assertEqual(result["reason"], resolver.MULTISTAGE_UNATTRIBUTED_REASON)
 
