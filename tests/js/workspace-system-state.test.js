@@ -420,3 +420,12 @@ test('a partial host save keeps what saved, adopts its revision and fails only t
     assert.equal((await drafts.save()).host, 'failed');
     assert.equal(drafts.statusText(), SETTINGS_STATUS.partial);
 });
+
+// S12 (#329): System's runtime domain is the running server's log level and console setting (`/logs/config`).
+test('runtime adapter maps config.level to runtime_level and back', async () => {
+    const { runtimeValues, runtimeBody } = await import('../../web/js/workspace/system-diagnostics.mjs');
+    assert.deepEqual(runtimeValues({ level: 'WARNING', console_logging: false, backup_count: 5 }),
+        { runtime_level: 'WARNING', console_logging: false });
+    assert.deepEqual(runtimeBody({ runtime_level: 'WARNING' }), { level: 'WARNING' });
+    assert.deepEqual(runtimeBody({ runtime_level: 'CRITICAL', console_logging: true }), { level: 'CRITICAL', console_logging: true });
+});

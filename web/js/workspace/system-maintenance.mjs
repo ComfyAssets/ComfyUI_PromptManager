@@ -135,13 +135,21 @@ function metadataCacheRow({ scope, notify, cache }) {
 }
 
 /**
+ * The Health report's "Review missing links" (D95): a fresh Missing-file links plan, never a cleanup, holding the pressed
+ * button while it is read. Maintenance and Diagnostics & logs (S12) pass it to `runHealthAction`.
+ */
+export function reviewMissingLinks({ api, store, scope, notify = showWorkspaceToast, navigate = navigateTo }) {
+    return (trigger, pressed = trigger) => reviewPlan({ api, store, scope, operation: 'missing_links', trigger, hold: pressed,
+        notify, navigate });
+}
+
+/**
  * The Maintenance section's mount (`mountSystem`'s `sections.maintenance`): the notice and the two surfaces. `activity`
  * is the page's Activity store.
  */
 export function mountMaintenance(container, { api, activity, scope, navigate = navigateTo, notify = showWorkspaceToast,
     cache = ownership() }) {
-    const reviewMissing = (trigger, pressed = trigger) => reviewPlan({ api, store: activity, scope, operation: 'missing_links',
-        trigger, hold: pressed, notify, navigate });
+    const reviewMissing = reviewMissingLinks({ api, store: activity, scope, notify, navigate });
     const actions = {
         health: button => runHealthAction({ api, activity, scope, button, onReviewMissing: reviewMissing, notify }),
         duplicates: () => findDuplicates({ store: activity, scope, notify, navigate }),

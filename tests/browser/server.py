@@ -45,6 +45,10 @@ from tests.browser.workspace_library_editor_fixture import (
 from tests.browser.workspace_vocabulary_fixture import register_vocabulary_commands
 from tests.browser.workspace_tagging_fixture import register_tagging_commands
 from tests.browser.workspace_review_fixture import register_review_commands
+from tests.browser.workspace_diagnostics_fixture import (
+    register_diagnostics_commands,
+    repoint_logs,
+)
 
 CANONICAL_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_ASSETS = {
@@ -199,6 +203,8 @@ def create_app(root: Path) -> web.Application:
         directory.mkdir()
         setattr(folder_paths, f"get_{name}_directory", lambda path=directory: str(path))
     sys.modules["folder_paths"] = folder_paths
+    # S12: the logger writes into this server's root before any record is written.
+    repoint_logs(root)
 
     from py.config import GalleryConfig, PromptManagerConfig
 
@@ -223,6 +229,7 @@ def create_app(root: Path) -> web.Application:
     register_activity_commands(app, routes, api)
     register_system_commands(app, routes, api, root)
     register_integrations_commands(app, routes, api, root)
+    reset_logs = register_diagnostics_commands(app, routes, api, root)
     request_holds = register_request_holds(app, routes)
     slow_reset_watch.install(app, api)
 
@@ -415,6 +422,7 @@ def create_app(root: Path) -> web.Application:
         # No preview queued by the last test may land in the new fixture.
         await api._run_in_executor(api.close_auto_thumbnails)
         library_editor_commands.reset()
+        await api._run_in_executor(reset_logs)
         data = await request.json() if request.can_read_body else {}
         if not isinstance(data, dict):
             raise web.HTTPBadRequest()

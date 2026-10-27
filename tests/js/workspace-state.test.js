@@ -23,7 +23,7 @@ test('tags is a native route titled Tags; only unbuilt routes hand off to legacy
         assert.equal(routeTitle(route), route.label);
     }
     assert.equal(routeTitle(resolveRoute('#/library/7')), 'Prompt library');
-    // System is native from S2 (#249 System): its undelivered sections hand off per section (D94), not the route.
+    // System is native from S2 (#249 System), and every section of it from S12 (D94 retired), not the route.
     for (const id of ['images', 'library', 'tags', 'inspect', 'overview', 'activity', 'review', 'system']) assert.equal(isHandoff(resolveRoute(`#/${id}`)), false, id);
 });
 

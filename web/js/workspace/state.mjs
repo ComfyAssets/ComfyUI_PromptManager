@@ -19,8 +19,8 @@ export const routes = [
     // The concept's Activity (app.js renderActivity 732–738): this server session's jobs. No href: no Overview card.
     { id: 'activity', label: 'Activity' },
     // Native System (#249 System S2): `#/system/<section>`. Q12: Overview's card opens its Overview section (`native`:
-    // a workspace hash, not a legacy page); each undelivered section hands off to its legacy tool (D94). The
-    // description is the concept's System heading (app.js renderSystem 700).
+    // a workspace hash, not a legacy page); every section is native (S12 retired D94's hand-off). The description is
+    // the concept's System heading (app.js renderSystem 700).
     { id: 'system', label: 'System', href: '#/system/overview', native: true,
         description: 'Configuration, maintenance and recovery—with browsing kept in the workspace.', action: 'Open System' },
 ];
