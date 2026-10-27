@@ -1075,7 +1075,9 @@ class ImageMonitor:
         """Stop the image monitoring system within one ``timeout`` deadline.
 
         Closes the handler first (its worker is joined and its dispatch
-        returns at once), then stops the watchdog observer and joins it.
+        returns at once), then stops the watchdog observer and joins it. The
+        worker and the observer share the one deadline: the observer's join
+        gets what the worker left, possibly 0 s.
         watchdog's ``observer.stop()`` joins its emitters without a limit;
         it counts against the deadline but is not bounded here. A part an
         earlier call left running is waited for again. Safe to call when
@@ -1100,10 +1102,6 @@ class ImageMonitor:
         for pair_observer, pair_handler in pairs:
             handler_ok = self._close_handler(pair_handler, remaining())
             observer_ok = self._stop_observer(pair_observer, remaining())
-            if not observer_ok:
-                self.logger.warning(
-                    f"watchdog observer still running after {timeout} s"
-                )
             if not (handler_ok and observer_ok):
                 self._unfinished.append(
                     (
@@ -1124,7 +1122,8 @@ class ImageMonitor:
             return False
 
     def _stop_observer(self, observer, timeout: float) -> bool:
-        """``observer.stop()`` (safe to repeat), then a bounded join."""
+        """``observer.stop()`` (safe to repeat), then a join of ``timeout``
+        seconds; a join that times out is logged with the time it got."""
         if observer is None:
             return True
         try:
@@ -1133,7 +1132,12 @@ class ImageMonitor:
         except Exception as e:
             self.logger.warning(f"Error while stopping image monitoring: {e}")
             return False
-        return not observer.is_alive()
+        if observer.is_alive():
+            self.logger.warning(
+                f"watchdog observer still running after {timeout:.1f} s"
+            )
+            return False
+        return True
 
     def detect_comfyui_output_dirs(self) -> list:
         """Auto-detect ComfyUI output directories.
