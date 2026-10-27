@@ -268,8 +268,10 @@ class PromptManagerBase:
 
         cache = get_trigger_cache()
 
-        # Lazy-load cache on first use
-        if not cache.is_loaded and IntegrationConfig.LORA_MANAGER_PATH:
+        # Lazy-load cache on first use; a failed load waits before the next try
+        # (#355: never a rescan of LoraManager's folders on every run).
+        retry_due = getattr(cache, "retry_due", lambda: True)
+        if not cache.is_loaded and IntegrationConfig.LORA_MANAGER_PATH and retry_due():
             cache.load(IntegrationConfig.LORA_MANAGER_PATH)
 
         modified, injected = inject_trigger_words(text, cache)

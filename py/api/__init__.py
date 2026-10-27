@@ -750,7 +750,12 @@ class PromptManagerAPI(
     # ── Shared utilities used by multiple mixins ──────────────────────
 
     def _enrich_images(self, images):
-        """Add url and thumbnail_url to a flat list of image dicts."""
+        """Add url and thumbnail_url to a flat list of image dicts.
+
+        Each dict without ``is_video`` also gets ``is_video`` and
+        ``media_type`` from its extension (#355: a linked LoraManager video
+        outside the output folders is shown as a video, not a picture).
+        """
         from urllib.parse import quote as url_quote
 
         output_dirs = self._get_all_output_dirs()
@@ -759,6 +764,11 @@ class PromptManagerAPI(
             image_path_str = image.get("image_path", "")
             if not image_path_str:
                 continue
+
+            if "is_video" not in image:
+                video = is_video_path(image_path_str)
+                image["is_video"] = video
+                image["media_type"] = "video" if video else "image"
 
             img_path = Path(image_path_str)
 

@@ -166,7 +166,20 @@ def register_reveal_stub(routes, api, root: Path):
     return types.SimpleNamespace(reset=reset)
 
 
+def isolate_lora_manager_settings(root: Path) -> Path:
+    """LoraManager's settings lookup reads an empty folder under ``root`` (#355).
+
+    The server's temporary root is removed when it exits, and with it this
+    folder: no page test reads the developer's real LoraManager settings.
+    """
+    folder = root / "lora-manager-settings"
+    folder.mkdir(exist_ok=True)
+    os.environ["LORA_MANAGER_SETTINGS_DIR"] = str(folder)
+    return folder
+
+
 def create_app(root: Path) -> web.Application:
+    isolate_lora_manager_settings(root)
     os.environ["PROMPT_MANAGER_CONFIG_PATH"] = str(root / "config.json")
     os.chdir(root)
     app = web.Application()

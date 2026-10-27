@@ -2295,14 +2295,43 @@ class ImageRoutesMixin:
                 {"success": False, "error": _safe_error(e)}, status=500
             )
 
+    def _media_roots(self, outputs=None):
+        """The roots a prompt's linked media is listed and inspected under.
+
+        The output folders first (``outputs``, else ``_get_all_output_dirs``),
+        so every output ``root_index`` keeps its meaning, then, while the
+        LoRA integration is on, the guarded LoraManager folders and the
+        CivitAI download cache (``_lora_image_dirs``, #355). Media under those
+        is linked-only: ``serve_output_image`` serves a file under them only
+        when the database records it, and no preview file is made there.
+        """
+        roots = list(self._get_all_output_dirs() if outputs is None else outputs)
+        seen = {_canonical(root) for root in roots}
+        for extra in self._lora_image_dirs():
+            key = _canonical(extra)
+            if key not in seen:
+                seen.add(key)
+                roots.append(Path(extra))
+        return roots
+
     def _lora_image_dirs(self):
-        """Extra directories served when the LoRA integration is enabled."""
+        """Extra directories served when the LoRA integration is enabled.
+
+        LoraManager's guarded LoRA roots, sidecar root and example-images
+        root (``lora_manager_layout.media_roots``, #355) and PromptManager's
+        CivitAI download cache. An unusable LoraManager layout gives the
+        default LoRA roots and the cache.
+        """
         try:
             from ..config import IntegrationConfig
 
             if not IntegrationConfig.LORA_MANAGER_ENABLED:
                 return []
-            from ..lora_utils import find_lora_directories, get_lora_image_cache_dir
+            from ..lora_utils import (
+                get_lora_image_cache_dir,
+                layout_for_install,
+                lora_manager_layout,
+            )
 
             lora_root = IntegrationConfig.LORA_MANAGER_PATH or ""
             if lora_root.strip():
@@ -2315,9 +2344,13 @@ class ImageRoutesMixin:
                 lora_root = resolve_lora_manager_path(lora_root)
                 if not lora_root:
                     return []
+                layout = layout_for_install(lora_root)
+            else:
+                layout = lora_manager_layout("")
 
-            dirs = [Path(d) for d in find_lora_directories(lora_root)]
-            dirs.append(Path(get_lora_image_cache_dir()))
+            dirs = [Path(d) for d in layout.media_roots]
+            # Named, not made: listing and serving never create the cache.
+            dirs.append(Path(get_lora_image_cache_dir(create=False)))
             return dirs
         except Exception:
             # LoRA integration is optional; never widen access on failure.
@@ -2348,9 +2381,21 @@ class ImageRoutesMixin:
         return []
 
     async def serve_output_image(self, request):
-        """Serve a media file from the ComfyUI output folder(s)."""
+        """Serve a media file from the ComfyUI output folder(s).
+
+        With ``?root=N`` past the output folders (a LoRA-linked root,
+        ``_media_roots``, #355) only a file the database records is served,
+        and no preview is served or made there.
+        """
         try:
-            roots = list(self._get_all_output_dirs())
+            outputs = list(self._get_all_output_dirs())
+            root_param = request.query.get("root")
+            roots = outputs
+            if root_param is not None and re.fullmatch(r"[0-9]+", root_param):
+                if int(root_param) >= len(outputs):
+                    # Only a LoRA-linked request reads LoraManager's layout;
+                    # output media (and its previews) never waits on it.
+                    roots = await self._run_in_executor(self._media_roots, outputs)
             scope_error = self._gallery_scope_error(request.query, roots)
             if scope_error is not None:
                 return scope_error
@@ -2365,9 +2410,13 @@ class ImageRoutesMixin:
             ):
                 return _forbidden("Only media files can be served")
 
-            output_dirs = self._select_root(roots, request.query.get("root"))
+            output_dirs = self._select_root(roots, root_param)
             if not output_dirs:
                 return _forbidden("No allowed image directories configured")
+            if len(outputs) <= int(root_param or 0):
+                return await self._serve_linked_only(
+                    output_dirs[0], filepath, int(root_param), len(outputs)
+                )
 
             for output_path in output_dirs:
                 image_path = output_path / filepath
@@ -2398,6 +2447,46 @@ class ImageRoutesMixin:
             return web.json_response(
                 {"success": False, "error": _safe_error(e)}, status=500
             )
+
+    def _is_recorded_media(self, path) -> bool:
+        """Whether the database records ``path`` as a linked image.
+
+        Imported local media is stored resolved; downloaded CivitAI images
+        keep the cache folder's own spelling (a symlinked or junctioned data
+        folder), so either spelling names the record.
+        """
+        spellings = dict.fromkeys([str(path), os.path.realpath(path)])
+        return any(
+            self.db.get_prompt_id_for_image(spelling) is not None
+            for spelling in spellings
+        )
+
+    async def _linked_only_error(self, index: int, outputs: int, path):
+        """The one gate for a LoRA-linked root (``_media_roots`` past the
+        ``outputs`` output folders, #355): only a file the database records
+        is served, inspected or revealed there; anything else is 403.
+        Output roots pass (None)."""
+        if index < outputs:
+            return None
+        if not await self._run_in_executor(self._is_recorded_media, path):
+            return _forbidden()
+        return None
+
+    async def _serve_linked_only(self, root, filepath, index, outputs):
+        """A file under a LoRA-linked root, served only when it is recorded."""
+        if _is_thumbnail_cache_path(filepath):
+            return _forbidden()
+        image_path = root / filepath
+        if not _is_within(image_path, root):
+            return _forbidden()
+        if not image_path.is_file():
+            return web.json_response(
+                {"success": False, "error": "Image file not found"}, status=404
+            )
+        denied = await self._linked_only_error(index, outputs, image_path)
+        if denied is not None:
+            return denied
+        return self._file_response(image_path)
 
     async def rescan_gallery(self, request):
         """Rewalk every output root now and answer with the new listing.
@@ -3253,7 +3342,9 @@ class ImageRoutesMixin:
         if error is not None:
             return error
         index, scope, relative = target
-        roots = list(self._get_all_output_dirs())
+        # A LoRA-linked root too (#355), for the files the import linked only.
+        outputs = list(self._get_all_output_dirs())
+        roots = await self._run_in_executor(self._media_roots, outputs)
         error = self._gallery_scope_error(
             {"root_scope": scope, "root": str(index)}, roots
         )
@@ -3262,6 +3353,9 @@ class ImageRoutesMixin:
         root = roots[index]
         if Path(relative).suffix.lower() not in SERVABLE_EXTENSIONS:
             return _forbidden("Only media files can be shown")
+        denied = await self._linked_only_error(index, len(outputs), root / relative)
+        if denied is not None:
+            return denied
         gate = self._reveal_gate
         if not gate.try_enter():
             return web.json_response(
@@ -3273,12 +3367,16 @@ class ImageRoutesMixin:
                 status=429,
             )
         try:
-            return await self._reveal(relative, root)
+            return await self._reveal(relative, root, linked_only=index >= len(outputs))
         finally:
             gate.leave()
 
-    async def _reveal(self, relative: str, root: Path):
-        """Resolve and open, inside the reveal gate."""
+    async def _reveal(self, relative: str, root: Path, *, linked_only=False):
+        """Resolve and open, inside the reveal gate.
+
+        Under a LoRA-linked root the file that would open is checked again
+        (it may resolve through a path anchor): only a recorded one opens.
+        """
         try:
             path = await self._run_in_executor(self._reveal_path, relative, root)
         except (OSError, ValueError) as exc:
@@ -3289,6 +3387,10 @@ class ImageRoutesMixin:
             return _reveal_not_found()
         if path is None:
             return _reveal_not_found()
+        if linked_only and not await self._run_in_executor(
+            self._is_recorded_media, path
+        ):
+            return _forbidden()
         try:
             await asyncio.get_running_loop().run_in_executor(
                 reveal_executor(), self._reveal_opener, path, root
@@ -3380,8 +3482,13 @@ class ImageRoutesMixin:
             return set()
 
     async def inspect_image(self, request):
-        """Read prompt evidence for one explicitly rooted physical media file."""
-        roots = list(self._get_all_output_dirs())
+        """Read prompt evidence for one explicitly rooted physical media file.
+
+        The roots include LoRA-linked folders (``_media_roots``, #355), so the
+        inspector opens a LoRA import's media (recorded files only); it only
+        reads them."""
+        outputs = list(self._get_all_output_dirs())
+        roots = await self._run_in_executor(self._media_roots, outputs)
         scope_error = self._gallery_scope_error(request.query, roots)
         if scope_error is not None:
             return scope_error
@@ -3406,6 +3513,8 @@ class ImageRoutesMixin:
             return _forbidden("Previews are not inspected; inspect the original")
         path = Path(roots[index]) / relative
         denied = _media_access_error(path, [roots[index]])
+        if denied is None:
+            denied = await self._linked_only_error(index, len(outputs), path)
         if denied is not None:
             return denied
         if not path.is_file():

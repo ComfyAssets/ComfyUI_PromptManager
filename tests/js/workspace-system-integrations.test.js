@@ -108,13 +108,17 @@ test('host compatibility shows the detected renderer as status (D106)', async ()
 
 test('the import review shows replacement, blocked items and network effects (D107)', async () => {
     const { importGrid } = await integrations;
-    const plan = { lora_files: 3, with_metadata: 2, current_imports: 5, blocked_by_pairs: 0, planned_downloads: 4,
+    const plan = { lora_files: 2221, with_metadata: 615, with_local_media: 476, skipped: 1606, current_imports: 5,
+        blocked_by_pairs: 0, planned_downloads: 4,
+        layout: { source: 'portable', settings_file: '~/ComfyUI/custom_nodes/LM/settings.json', error: null, mode: 'centralized',
+            library: 'comfyui', example_images: true },
         scope: { count: 2, label: 'Replace 5 imported prompts with 2 LoRAs' }, protected: { count: 0, reasons: [] },
         backup: { policy: 'on', destination_label: 'prompts.db.backup_<date and time>' }, network: { planned_downloads: 4, api_key: true },
         media: { deletes_files: false, label: 'No files are removed; image links are replaced' } };
     assert.deepEqual(importGrid(plan), [
+        ['LoraManager', 'portable settings · centralized storage · library comfyui'],
         ['Scope', 'Replace 5 imported prompts with 2 LoRAs'],
-        ['Found', '3 metadata files · 2 readable'],
+        ['Found', '2,221 metadata files · 615 LoRAs · 476 with local images'],
         ['Protected', 'Nothing is protected'],
         ['Network', 'Downloads up to 4 example images from CivitAI with your saved key'],
         ['Backup', 'Create and verify before changes (prompts.db.backup_<date and time>)'],
@@ -122,11 +126,34 @@ test('the import review shows replacement, blocked items and network effects (D1
     ]);
     const blocked = importGrid({ ...plan, planned_downloads: 1, network: { api_key: false }, protected: { count: 2,
         reasons: ['2 imported prompts used by saved pairs'] } });
-    assert.deepEqual(blocked[2], ['Protected', '2 imported prompts used by saved pairs']);
-    assert.deepEqual(blocked[3], ['Network', 'Downloads up to 1 example image from CivitAI']);
+    assert.deepEqual(blocked[3], ['Protected', '2 imported prompts used by saved pairs']);
+    assert.deepEqual(blocked[4], ['Network', 'Downloads up to 1 example image from CivitAI']);
+    // A plan without a layout (no LoraManager row) and with no counts.
     assert.deepEqual(importGrid({})[0], ['Scope', '0 LoRAs']);
+    assert.deepEqual(importGrid({})[1], ['Found', '0 metadata files · 0 LoRAs · 0 with local images']);
     assert.deepEqual(importGrid({})[3], ['Network', 'No downloads']);
     assert.deepEqual(importGrid({})[5], ['Media on disk', 'No files are removed']);
+    assert.deepEqual(importGrid({ ...plan, lora_files: 1, with_metadata: 1, with_local_media: 0 })[2],
+        ['Found', '1 metadata file · 1 LoRA · 0 with local images']);
+});
+
+test('the LoraManager row names what the import read, and an unusable layout closes the review (#355)', async () => {
+    const { layoutText, closeNote, LAYOUT_UNUSABLE, BLOCKED_NOTE, NOTHING_TO_IMPORT } = await integrations;
+    assert.equal(layoutText({ source: 'environment', mode: 'alongside', library: 'default', error: null }),
+        'environment settings · alongside storage · library default');
+    assert.equal(layoutText({ source: 'user config', mode: 'alongside', library: 'x', error: 'the settings file is not valid JSON' }),
+        'Not usable: the settings file is not valid JSON');
+    assert.equal(layoutText(null), null);
+    assert.equal(layoutText('nope'), null);
+    const error = 'the sidecar folder does not exist';
+    assert.equal(closeNote({ token: null, layout: { error } }),
+        'LoraManager settings: not usable: the sidecar folder does not exist. Nothing was changed.');
+    assert.equal(LAYOUT_UNUSABLE(error), closeNote({ token: null, layout: { error }, blocked_by_pairs: 2 }));
+    assert.equal(closeNote({ token: null, blocked_by_pairs: 1, layout: { error: null } }), BLOCKED_NOTE);
+    assert.equal(closeNote({ token: null }), NOTHING_TO_IMPORT);
+    assert.equal(closeNote({ token: 't', with_metadata: 0, current_imports: 0 }), NOTHING_TO_IMPORT);
+    assert.equal(closeNote({ token: 't', with_metadata: 1, current_imports: 0 }), null);
+    assert.equal(closeNote({ token: 't', with_metadata: 0, current_imports: 3 }), null);
 });
 
 test('a LoRA import job reads in Activity: tiles, outcomes and the kept collection on failure', async () => {

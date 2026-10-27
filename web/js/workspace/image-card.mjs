@@ -50,7 +50,8 @@ export function cardMedia(image, lazy = false) {
 /**
  * One card for `image`. `checked` (a boolean) adds the D8 selection checkbox, `favoriteBusy` paints a pending star
  * (D7, shown wherever the image reports `favorite`), `media: false` leaves the open button empty for a file that
- * cannot be served, and `showInfo: false` hides the title and file line (D97).
+ * cannot be served, and `showInfo: false` hides the title and file line (D97). A `linked_only` image (LoRA media in
+ * LoraManager's folders, #355) has no Tag action.
  */
 export function createImageCard(image, { checked = null, favoriteBusy = false, media = true, showInfo = true } = {}) {
     const card = el('article', undefined, 'media-card');
@@ -87,7 +88,9 @@ export function createImageCard(image, { checked = null, favoriteBusy = false, m
     const inspectButton = createButton('', 'icon-btn');
     inspectButton.append(createWorkspaceIcon('info'));
     inspectButton.setAttribute('aria-label', `Inspect ${image.filename}`);
-    actions.append(inspectButton, createTagButton(image));
+    actions.append(inspectButton);
+    // #355: LoRA-linked media lives in LoraManager's folders; tags are kept for output files only.
+    if (image.linked_only !== true) actions.append(createTagButton(image));
     info.append(text, actions);
     card.append(art, info);
     return card;

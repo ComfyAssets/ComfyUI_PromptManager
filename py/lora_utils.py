@@ -13,6 +13,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -26,6 +27,16 @@ except ImportError:
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from utils.logging_config import get_logger
+
+from dataclasses import replace
+
+from .lora_manager_layout import (
+    MODE_ALONGSIDE,
+    METADATA_SUFFIX,
+    LoraManagerLayout,
+    discover_sidecars,
+    load_layout,
+)
 
 logger = get_logger("prompt_manager.lora_utils")
 
@@ -234,23 +245,22 @@ def resolve_lora_manager_path(path) -> Optional[str]:
 # ── Metadata reading ─────────────────────────────────────────────────
 
 
-def find_lora_directories(lora_manager_path: str) -> List[str]:
-    """Find directories that contain LoRA models (with .metadata.json files).
+def default_lora_roots() -> List[str]:
+    """The LoRA folders ComfyUI knows, without LoraManager's settings.
 
-    Searches: ComfyUI models/loras, extra_model_paths.yaml lora dirs,
-    and the LoraManager extension dir itself.
+    ComfyUI's ``models/loras``, the ``loras`` entries of
+    ``extra_model_paths.yaml`` and, inside ComfyUI, every folder
+    ``folder_paths`` registers for ``loras``. ``lora_manager_layout`` adds
+    the folders LoraManager's own settings name.
     """
     dirs = set()
-    lm_path = Path(lora_manager_path)
 
     root = find_comfyui_root()
     if root:
-        # Default models/loras
         models_loras = root / "models" / "loras"
         if models_loras.is_dir():
             dirs.add(str(models_loras.resolve()))
 
-        # Extra model paths from ComfyUI config
         for extra_dir in _get_extra_lora_paths(root):
             if extra_dir.is_dir():
                 dirs.add(str(extra_dir.resolve()))
@@ -267,11 +277,26 @@ def find_lora_directories(lora_manager_path: str) -> List[str]:
         # folder_paths unavailable — not running inside ComfyUI runtime
         pass
 
-    # Check for any .metadata.json in the LoraManager dir tree
-    for meta in lm_path.rglob("*.metadata.json"):
-        dirs.add(str(meta.parent.resolve()))
-
     return sorted(dirs)
+
+
+def lora_manager_install(lora_manager_path: Optional[str]) -> Optional[str]:
+    """The LoraManager install to read: the configured path when it is an
+    allowed install under ``custom_nodes``, auto-detection when it is empty."""
+    if isinstance(lora_manager_path, str) and lora_manager_path.strip():
+        return resolve_lora_manager_path(lora_manager_path)
+    detected = detect_lora_manager()
+    return resolve_lora_manager_path(detected) if detected else None
+
+
+def layout_for_install(install: Optional[str]) -> LoraManagerLayout:
+    """The layout of an already resolved install (None: none was found)."""
+    return load_layout(install, default_roots=default_lora_roots)
+
+
+def lora_manager_layout(lora_manager_path: Optional[str]) -> LoraManagerLayout:
+    """Where LoraManager keeps its files (``py/lora_manager_layout.py``)."""
+    return layout_for_install(lora_manager_install(lora_manager_path))
 
 
 def _get_extra_lora_paths(comfyui_root: Path) -> List[Path]:
@@ -377,46 +402,6 @@ def get_model_name_from_metadata(metadata: Dict) -> str:
     if not name:
         name = metadata.get("file_name", "unknown")
     return name
-
-
-def get_preview_images_from_metadata(metadata: Dict, metadata_path: Path) -> List[str]:
-    """Find all local preview/example image paths for a LoRA.
-
-    Returns:
-        List of absolute path strings to image files.
-    """
-    results = []
-    lora_dir = metadata_path.parent
-    file_name = metadata.get("file_name", "")
-    if not file_name:
-        stem = metadata_path.name.replace(".metadata.json", "")
-        file_name = stem
-
-    base_name = Path(file_name).stem
-
-    # Check standard preview naming conventions
-    for ext in (
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".preview.png",
-        ".preview.jpg",
-        ".preview.jpeg",
-    ):
-        candidate = lora_dir / f"{base_name}{ext}"
-        if candidate.exists():
-            results.append(str(candidate.resolve()))
-
-    return results
-
-
-def get_preview_image_from_metadata(
-    metadata: Dict, metadata_path: Path
-) -> Optional[str]:
-    """Find the first preview image path for a LoRA (backward compat)."""
-    images = get_preview_images_from_metadata(metadata, metadata_path)
-    return images[0] if images else None
 
 
 _THUMB_MAX_SIZE = 512
@@ -837,28 +822,14 @@ def get_lora_image_cache_dir(create: bool = True) -> Path:
     return cache
 
 
-def get_example_images_dir(lora_manager_path: str) -> Optional[str]:
-    """Find the LoraManager example_images directory."""
-    lm_path = Path(lora_manager_path)
-
-    # Direct subdirectory
-    candidate = lm_path / "example_images"
-    if candidate.is_dir():
-        return str(candidate.resolve())
-
-    # Search one level in user data dirs
-    for child in lm_path.iterdir():
-        if child.is_dir():
-            sub = child / "example_images"
-            if sub.is_dir():
-                return str(sub.resolve())
-
-    return None
-
-
 # ── Trigger word cache & injection ───────────────────────────────────
 
 _LORA_PATTERN = re.compile(r"<lora:([^:>]+):[^>]+>", re.IGNORECASE)
+
+
+# A failed load is retried by a running node only after this long (an explicit
+# reload, from the settings routes, always runs).
+TRIGGER_RETRY_SECONDS = 60
 
 
 class TriggerWordCache:
@@ -871,51 +842,80 @@ class TriggerWordCache:
         self._cache: Dict[str, List[str]] = {}
         self._lock = threading.Lock()
         self._loaded = False
+        self._failed_at: Optional[float] = None
 
     def load(self, lora_manager_path: str) -> int:
-        """Scan LoRA metadata files and build the trigger word mapping.
+        """Build the trigger word map from the sidecars LoraManager uses.
+
+        Never raises (a node calls this while it runs): a folder that cannot
+        be listed, or any other failure, is logged and the previous map is
+        kept. When LoraManager's settings cannot be used, the reason is
+        logged and the default LoRA folders are read in alongside mode.
 
         Returns:
-            Number of LoRAs with trigger words found.
+            Number of LoRAs with trigger words in the map.
         """
-        new_cache: Dict[str, List[str]] = {}
-
-        lora_dirs = find_lora_directories(lora_manager_path)
-        for lora_dir in lora_dirs:
-            dir_path = Path(lora_dir)
-            for meta_file in dir_path.rglob("*.metadata.json"):
-                metadata = read_lora_metadata(meta_file)
-                if not metadata:
-                    continue
-
-                words = get_trigger_words_from_metadata(metadata)
-                if not words:
-                    continue
-
-                # Key by filename stem (what appears in <lora:NAME:weight>)
-                file_name = metadata.get("file_name", "")
-                if file_name:
-                    stem = Path(file_name).stem
-                    new_cache[stem.lower()] = words
-
-                # Also key by the metadata file stem
-                meta_stem = meta_file.name.replace(".metadata.json", "")
-                if meta_stem.lower() not in new_cache:
-                    new_cache[meta_stem.lower()] = words
+        try:
+            new_cache = self._build(lora_manager_path)
+        except Exception as error:
+            logger.warning(f"Trigger word cache not refreshed: {error}")
+            with self._lock:
+                self._failed_at = time.monotonic()
+                return len(self._cache)
 
         with self._lock:
             self._cache = new_cache
             self._loaded = True
+            self._failed_at = None
 
         logger.info(
             f"Trigger word cache loaded: {len(new_cache)} LoRAs with trigger words"
         )
         return len(new_cache)
 
+    @staticmethod
+    def _build(lora_manager_path: str) -> Dict[str, List[str]]:
+        layout = lora_manager_layout(lora_manager_path)
+        if layout.error is not None:
+            logger.warning(
+                f"LoraManager settings not usable ({layout.error}); trigger words "
+                "come from the default LoRA folders"
+            )
+            layout = replace(
+                layout,
+                error=None,
+                mode=MODE_ALONGSIDE,
+                sidecar_root=None,
+                example_images_root=None,
+            )
+        new_cache: Dict[str, List[str]] = {}
+        for sidecar in discover_sidecars(layout).sidecars:
+            metadata = read_lora_metadata(sidecar.metadata_path)
+            if not metadata:
+                continue
+            words = get_trigger_words_from_metadata(metadata)
+            if not words:
+                continue
+            # Key by the model file name (what appears in <lora:NAME:weight>)
+            # and by the sidecar's name.
+            new_cache[sidecar.model_path.stem.lower()] = words
+            sidecar_stem = sidecar.metadata_path.name[: -len(METADATA_SUFFIX)]
+            new_cache.setdefault(sidecar_stem.lower(), words)
+        return new_cache
+
     def get_trigger_words(self, lora_name: str) -> List[str]:
         """Look up trigger words for a LoRA by name (case-insensitive)."""
         with self._lock:
             return self._cache.get(lora_name.lower(), [])
+
+    def retry_due(self) -> bool:
+        """Whether a node may try loading again: never failed, or the last
+        failure is TRIGGER_RETRY_SECONDS old (no rescan on every prompt run)."""
+        with self._lock:
+            failed_at = self._failed_at
+        return failed_at is None or time.monotonic() - failed_at >= (
+            TRIGGER_RETRY_SECONDS
+        )
 
     @property
     def is_loaded(self) -> bool:
@@ -926,6 +926,7 @@ class TriggerWordCache:
         with self._lock:
             self._cache.clear()
             self._loaded = False
+            self._failed_at = None
 
 
 # Module-level singleton

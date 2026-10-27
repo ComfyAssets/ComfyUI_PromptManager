@@ -841,6 +841,11 @@ test('openReviewDialog lays out heading, grid, options, sentence, backup box and
             [['dt', 'dd'], 'Scope', '2 stale image links'], [['dt', 'dd'], 'Media on disk', 'No source files removed']]);
         review.setValue('Scope', '3 stale image links');
         assert.equal(grid.children[0].children[1].textContent, '3 stale image links');
+        // #355: a row's hover title (the LoRA review's settings file); an unknown term changes nothing.
+        review.setTitle('Media on disk', '~/settings.json');
+        review.setTitle('Absent', 'x');
+        review.setValue('Absent', 'x');
+        assert.equal(grid.children[1].children[1].title, '~/settings.json');
         const actions = byId(dom, 'modal-body').children.at(-1);
         assert.deepEqual(actions.children.map(node => [node.textContent, node.className]),
             [['Cancel', ''], ['Apply reviewed operation', 'ca-primary']]);

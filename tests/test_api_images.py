@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from contextlib import ExitStack
 from pathlib import Path, PurePath
@@ -1317,7 +1318,8 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
             with (
                 patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
                 patch.object(IntegrationConfig, "LORA_MANAGER_PATH", ""),
-                patch("py.lora_utils.find_lora_directories", return_value=[lora]),
+                patch("py.lora_utils.detect_lora_manager", return_value=None),
+                patch("py.lora_utils.default_lora_roots", return_value=[lora]),
                 patch("py.lora_utils.get_lora_image_cache_dir", return_value=cache),
             ):
                 resp = await self.client.request(
@@ -1328,7 +1330,8 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
             with (
                 patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
                 patch.object(IntegrationConfig, "LORA_MANAGER_PATH", ""),
-                patch("py.lora_utils.find_lora_directories", side_effect=RuntimeError),
+                patch("py.lora_utils.detect_lora_manager", return_value=None),
+                patch("py.lora_utils.default_lora_roots", side_effect=RuntimeError),
             ):
                 resp = await self.client.request(
                     "GET", f"/prompt_manager/images/{image_id}/file"
@@ -1347,7 +1350,12 @@ class TestLoraManagerPathAllowList(ImageRouteCoverageCase):
         )
         stack.enter_context(patch.object(IntegrationConfig, "LORA_MANAGER_PATH", path))
         stack.enter_context(
-            patch("py.lora_utils.find_lora_directories", return_value=[lora])
+            patch("py.lora_utils.default_lora_roots", return_value=[lora])
+        )
+        # Never the developer's LoraManager settings (#355).
+        settings = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(
+            patch.dict(os.environ, {"LORA_MANAGER_SETTINGS_DIR": settings})
         )
         stack.enter_context(
             patch("py.lora_utils.get_lora_image_cache_dir", return_value=cache)
@@ -1387,6 +1395,115 @@ class TestLoraManagerPathAllowList(ImageRouteCoverageCase):
             self.assertEqual(resp.status, 200)
             await resp.read()  # release the served file before the directory goes
             resolve.assert_called_once_with(configured)
+
+
+class TestLoraManagerMediaServing(ImageRouteCoverageCase):
+    """#355: LoraManager's sidecar and example-image folders are served while
+    the integration is on, only through the folder guard."""
+
+    async def setUpAsync(self):
+        await super().setUpAsync()
+        from py.config import IntegrationConfig
+
+        self._lm_tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self._lm_tmp.cleanup)
+        root = Path(os.path.realpath(self._lm_tmp.name))
+        custom_nodes = root / "custom_nodes"
+        self.lm = custom_nodes / "ComfyUI-Lora-Manager"
+        (self.lm / "py").mkdir(parents=True)
+        (self.lm / "__init__.py").write_text("")
+        self.settings = root / "settings"
+        self.settings.mkdir()
+        self.sidecars = root / "sidecars"
+        self.examples = root / "examples"
+        self.cache = root / "cache"
+        for folder in (self.sidecars, self.examples, self.cache):
+            folder.mkdir()
+        self.write_settings(str(self.sidecars))
+        self.enabled = patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True)
+        for item in (
+            self.enabled,
+            patch.object(IntegrationConfig, "LORA_MANAGER_PATH", str(self.lm)),
+            patch(
+                "py.lora_utils.custom_nodes_directories", return_value=[custom_nodes]
+            ),
+            patch("py.lora_utils.default_lora_roots", return_value=[]),
+            patch("py.lora_utils.get_lora_image_cache_dir", return_value=self.cache),
+            patch.dict(os.environ, {"LORA_MANAGER_SETTINGS_DIR": str(self.settings)}),
+        ):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def write_settings(self, sidecar_root):
+        (self.settings / "settings.json").write_text(
+            json.dumps(
+                {
+                    "sidecar_storage_mode": "centralized",
+                    "sidecar_storage_path": sidecar_root,
+                    "example_images_path": str(self.examples),
+                    "civitai_api_key": "never-served",
+                }
+            )
+        )
+
+    async def _status(self, image_id):
+        resp = await self.client.request(
+            "GET", f"/prompt_manager/images/{image_id}/file"
+        )
+        await resp.read()  # release the served file before the folder goes
+        return resp.status
+
+    async def test_sidecar_and_example_media_are_served_while_enabled(self):
+        preview = self.sidecars / "loras-0a1b2c3d" / "neon.webp"
+        preview.parent.mkdir()
+        preview.write_bytes(b"RIFF")
+        example = self.examples / "ab12" / "1.mp4"
+        example.parent.mkdir()
+        example.write_bytes(b"video")
+        ids = [self._link_image(preview, "a"), self._link_image(example, "b")]
+
+        for image_id in ids:
+            self.assertEqual(await self._status(image_id), 200)
+        self.enabled.stop()
+        for image_id in ids:
+            self.assertEqual(await self._status(image_id), 403)
+        self.enabled.start()
+
+    async def test_a_filesystem_root_as_sidecar_folder_adds_nothing(self):
+        self.write_settings(os.path.abspath(os.sep))
+        dirs = self.api._lora_image_dirs()
+        # An unusable layout: the default LoRA roots (none here) and the cache.
+        self.assertEqual(dirs, [self.cache])
+
+    async def test_the_layout_folders_are_the_served_ones(self):
+        dirs = self.api._lora_image_dirs()
+        self.assertEqual(
+            dirs,
+            [
+                Path(os.path.normcase(str(self.sidecars))),
+                Path(os.path.normcase(str(self.examples))),
+                self.cache,
+            ],
+        )
+
+
+class TestEnrichMarksVideos(ImageAPITestCase):
+    """#355: a linked video outside the output folders is marked as video."""
+
+    async def test_enrich_sets_is_video_and_media_type(self):
+        elsewhere = Path(tempfile.gettempdir()) / "lora-media"
+        images = [
+            {"id": 1, "image_path": str(elsewhere / "a.MP4")},
+            {"id": 2, "image_path": str(elsewhere / "b.png")},
+            {"id": 3, "image_path": str(elsewhere / "c.mp4"), "is_video": False},
+            {"id": 4, "image_path": ""},
+        ]
+        self.api._enrich_images(images)
+        self.assertEqual(
+            [(i.get("is_video"), i.get("media_type")) for i in images],
+            [(True, "video"), (False, "image"), (False, None), (None, None)],
+        )
+        self.assertEqual(images[0]["url"], "/prompt_manager/images/1/file")
 
 
 class TestLinkImageRelativePaths(ImageAPITestCase):
@@ -3343,8 +3460,13 @@ class TestSharedListing(ImageAPITestCase):
         record = await self._listed()
         self._interval(30)
         # The interval ends in a few milliseconds: still never a zero delay.
-        record.last_started_at = images_module._time.monotonic() - 29.99
-        self.api.mark_root_dirty(self._output("b.png"))
+        # The module's clock is held, so a slow runner cannot pass the end
+        # of the interval between these lines (the walk would start at once).
+        now = images_module._time.monotonic()
+        record.last_started_at = now - 29.99
+        held = types.SimpleNamespace(monotonic=lambda: now)
+        with patch.object(images_module, "_time", held):
+            self.api.mark_root_dirty(self._output("b.png"))
         handle = record.rewalk_handle
         self.assertIsNotNone(handle)
         self.assertGreaterEqual(self._remaining(handle), 0.45)

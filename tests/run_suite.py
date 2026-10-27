@@ -33,7 +33,9 @@ written next to it (TESTING.md "Time limits and hangs").
 import argparse
 import faulthandler
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -41,6 +43,9 @@ DEFAULT_PER_TEST_LIMIT = 120
 DEFAULT_SHUTDOWN_LIMIT = 120
 NO_TESTS_EXIT = 5
 USAGE_EXIT = 2
+# LoraManager's settings-folder override (#355): every test reads an empty,
+# disposable LoraManager settings folder, never the developer's real one.
+LORA_MANAGER_SETTINGS_ENV = "LORA_MANAGER_SETTINGS_DIR"
 
 
 class LimitError(ValueError):
@@ -115,6 +120,16 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
+def isolate_lora_manager_settings():
+    """Point LoraManager's settings lookup at a fresh temporary folder.
+
+    Returns the folder; the caller removes it when the run ends.
+    """
+    folder = tempfile.mkdtemp(prefix="pm-lora-settings-")
+    os.environ[LORA_MANAGER_SETTINGS_ENV] = folder
+    return folder
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     # Keep the real stderr: a test may replace sys.stderr, and the watchdog
@@ -128,16 +143,20 @@ def main(argv=None):
         return USAGE_EXIT
 
     faulthandler.dump_traceback_later(per_test_limit, exit=True, file=stream)
-    start = os.path.abspath(args.start_directory)
-    suite = unittest.TestLoader().discover(start, args.pattern, top_level_dir=start)
-    runner = unittest.TextTestRunner(
-        stream=stream,
-        verbosity=args.verbosity,
-        # As unittest.main does: show warnings unless -W/PYTHONWARNINGS set them.
-        warnings=None if sys.warnoptions else "default",
-        resultclass=make_result_class(stream, per_test_limit, shutdown_limit),
-    )
-    result = runner.run(suite)
+    settings_folder = isolate_lora_manager_settings()
+    try:
+        start = os.path.abspath(args.start_directory)
+        suite = unittest.TestLoader().discover(start, args.pattern, top_level_dir=start)
+        runner = unittest.TextTestRunner(
+            stream=stream,
+            verbosity=args.verbosity,
+            # As unittest.main does: show warnings unless -W/PYTHONWARNINGS set them.
+            warnings=None if sys.warnoptions else "default",
+            resultclass=make_result_class(stream, per_test_limit, shutdown_limit),
+        )
+        result = runner.run(suite)
+    finally:
+        shutil.rmtree(settings_folder, ignore_errors=True)
     if result.testsRun == 0 and not result.skipped:
         return NO_TESTS_EXIT
     return 0 if result.wasSuccessful() else 1

@@ -7,13 +7,18 @@ reaches a real LoraManager, ComfyUI install or the network:
   no key, no trigger words), removes the fake install, its LoRA folder and
   the image cache, forgets every LoRA import and injected failure, and opens
   the download gate;
-- ``POST /__test__/integrations/lora-manager`` ``{loras, civitai, previous}``
-  writes ``custom_nodes/ComfyUI-Lora-Manager`` (detected through the
-  ``folder_paths`` stub's base path) and ``loras`` metadata files under
-  ``models/loras``, each with a local preview PNG; ``civitai`` adds one
-  CivitAI example image per LoRA (served by the stub opener below);
-  ``previous`` saves that many earlier ``lora-manager`` imports with tags and
-  image links;
+- ``POST /__test__/integrations/lora-manager``
+  ``{loras, civitai, preview, previous, settings}`` writes
+  ``custom_nodes/ComfyUI-Lora-Manager`` (detected through the
+  ``folder_paths`` stub's base path) and ``loras`` LoRAs under
+  ``models/loras``: each a ``<stem>.safetensors`` model beside its
+  ``<stem>.metadata.json`` sidecar (LoraManager's alongside layout, #355)
+  and, unless ``preview`` is false, a local preview PNG; ``civitai`` adds one
+  CivitAI example image per LoRA (served by the stub opener below; an import
+  downloads it only for a LoRA without a local preview); ``previous`` saves
+  that many earlier ``lora-manager`` imports with tags and image links;
+  ``settings: "invalid"`` makes LoraManager's settings file unreadable JSON
+  (the server's own isolated settings folder, ``LORA_MANAGER_SETTINGS_DIR``);
 - ``POST /__test__/integrations/gate`` ``{hold}`` holds every CivitAI
   download until it is released (``{"hold": false}``), so a test sees the job
   while it downloads;
@@ -30,6 +35,7 @@ test ever opens a network connection.
 
 import io
 import json
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -91,7 +97,11 @@ def register_integrations_commands(app, routes, api, root: Path):
 
     type(api.db).replace_category_prompts = replace
 
+    def settings_file():
+        return Path(os.environ["LORA_MANAGER_SETTINGS_DIR"]) / "settings.json"
+
     def reset():
+        settings_file().unlink(missing_ok=True)
         IntegrationConfig.LORA_MANAGER_ENABLED = False
         IntegrationConfig.LORA_MANAGER_PATH = ""
         IntegrationConfig.LORA_TRIGGER_WORDS_ENABLED = False
@@ -118,11 +128,17 @@ def register_integrations_commands(app, routes, api, root: Path):
         data = await request.json() if request.can_read_body else {}
         count = data.get("loras", 2)
         previous = data.get("previous", 0)
+        preview = data.get("preview", True)
+        settings = data.get("settings")
         for value in (count, previous):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise web.HTTPBadRequest()
         if not 0 <= count <= MAX_LORAS or not 0 <= previous <= MAX_LORAS:
             raise web.HTTPBadRequest()
+        if not isinstance(preview, bool) or settings not in (None, "invalid"):
+            raise web.HTTPBadRequest()
+        if settings == "invalid":
+            settings_file().write_text("{not json", encoding="utf-8")
         (lora_manager / "py").mkdir(parents=True, exist_ok=True)
         (lora_manager / "__init__.py").write_text("")
         loras.mkdir(parents=True, exist_ok=True)
@@ -141,8 +157,10 @@ def register_integrations_commands(app, routes, api, root: Path):
                 "model_name": f"Style {number + 1:02}",
                 "civitai": civitai,
             }
+            (loras / f"{stem}.safetensors").write_bytes(b"model")
             (loras / f"{stem}.metadata.json").write_text(json.dumps(meta))
-            (loras / f"{stem}.png").write_bytes(_png())
+            if preview:
+                (loras / f"{stem}.png").write_bytes(_png())
         for number in range(previous):
             text = f"previous lora import {number + 1}"
             prompt_id = api.db.save_prompt(

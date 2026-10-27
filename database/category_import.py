@@ -192,7 +192,10 @@ class CategoryImportOperations:
                 outcome = "imported"
             created[prompt_hash] = prompt_id
         result[_COUNTERS[outcome]] += 1
-        for image in record.get("images") or []:
+        # Linked last to first: every workspace list shows a prompt's media
+        # newest link first, so the record's first image (the LoRA cover,
+        # #355) is the one a Library card shows.
+        for image in reversed(record.get("images") or []):
             if self._insert_image_link(conn, prompt_id, image):
                 result["images"] += 1
         result["rows"].append({"name": name, "outcome": outcome})

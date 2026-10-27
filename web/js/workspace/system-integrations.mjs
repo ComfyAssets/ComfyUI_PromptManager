@@ -16,6 +16,9 @@
  * - "LoRA reference data" → "Review import" (D107; the concept's button only simulated a job): the server
  *   reviews the import (`POST /lora/import/preview`, read-only) and the shared review dialog shows what it replaces,
  *   what saved pairs block, what it downloads and the backup box; Start runs the "LoRA reference import" Activity job.
+ *   #355: its first row, "LoraManager", names the settings source, storage mode and library the server read (the
+ *   settings file is the row's hover title); "Found" counts metadata files, LoRAs and LoRAs with local images. When
+ *   LoraManager's settings cannot be used, the plan has no token and the review says why and offers only Close.
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { createBridgeClient } from '../shared/toolkit/prompt-bridge.js';
@@ -55,6 +58,9 @@ export const KEY_COPY = Object.freeze({ saved: 'A key is saved.', none: 'No key 
 export const NOTHING_TO_IMPORT = 'There is nothing to import; nothing was changed.';
 export const BLOCKED_NOTE = 'Delete or change the saved pairs that use these prompts, then review the import again. Nothing was changed.';
 export const CACHE_NOTE = 'Example images downloaded before a failure stay in the image cache.';
+export const LAYOUT_TERM = 'LoraManager';
+/** #355: the close-only note for LoraManager settings the server cannot use. */
+export const LAYOUT_UNUSABLE = reason => `LoraManager settings: not usable: ${reason}. Nothing was changed.`;
 
 const number = value => value.toLocaleString('en-US');
 
@@ -175,17 +181,38 @@ export function keyText(values, changes) {
     return values.lora_has_key ? KEY_COPY.saved : KEY_COPY.none;
 }
 
+/** #355: the "LoraManager" row: which settings, storage mode and library the server read; null without a layout. */
+export function layoutText(layout) {
+    if (!layout || typeof layout !== 'object') return null;
+    if (layout.error) return `Not usable: ${layout.error}`;
+    return `${layout.source} settings · ${layout.mode} storage · library ${layout.library}`;
+}
+
+/** The note of a review that offers only Close, or null when the plan can start. */
+export function closeNote(plan) {
+    if (!plan.token) {
+        if (plan.layout?.error) return LAYOUT_UNUSABLE(plan.layout.error);
+        return plan.blocked_by_pairs ? BLOCKED_NOTE : NOTHING_TO_IMPORT;
+    }
+    return !plan.with_metadata && !plan.current_imports ? NOTHING_TO_IMPORT : null;
+}
+
 /** D107: the import review's rows from the server's plan. */
 export function importGrid(plan) {
     const downloads = Number.isSafeInteger(plan.planned_downloads) ? plan.planned_downloads : 0;
     const network = downloads
         ? `Downloads up to ${number(downloads)} example ${noun(downloads, 'image')} from CivitAI${plan.network?.api_key ? ' with your saved key' : ''}`
         : 'No downloads';
-    const found = Number.isSafeInteger(plan.lora_files) ? plan.lora_files : 0;
-    const readable = Number.isSafeInteger(plan.with_metadata) ? plan.with_metadata : 0;
+    const count = value => (Number.isSafeInteger(value) ? value : 0);
+    const found = count(plan.lora_files);
+    const readable = count(plan.with_metadata);
+    const local = count(plan.with_local_media);
+    const layout = layoutText(plan.layout);
     return [
+        ...(layout ? [[LAYOUT_TERM, layout]] : []),
         ['Scope', plan.scope?.label || `${number(readable)} ${noun(readable, 'LoRA')}`],
-        ['Found', `${number(found)} metadata ${noun(found, 'file')} · ${number(readable)} readable`],
+        ['Found', `${number(found)} metadata ${noun(found, 'file')} · ${number(readable)} ${noun(readable, 'LoRA')} · `
+            + `${number(local)} with local images`],
         ['Protected', protectedText(plan.protected)],
         ['Network', network],
         ['Backup', backupText(plan.backup)],
@@ -205,11 +232,18 @@ function namesList(plan) {
     return [list];
 }
 
+/** The settings file (home shown as `~`) as the LoraManager row's hover title. */
+function settingsTitle(dd, plan) {
+    if (typeof plan.layout?.settings_file === 'string') dd.title = plan.layout.settings_file;
+}
+
 function closeOnly({ scope, trigger, plan, note }) {
     const grid = el('dl', undefined, 'meta-grid');
     for (const [term, value] of importGrid(plan)) {
         const entry = el('div');
-        entry.append(el('dt', term), el('dd', value));
+        const dd = el('dd', value);
+        if (term === LAYOUT_TERM) settingsTitle(dd, plan);
+        entry.append(el('dt', term), dd);
         grid.append(entry);
     }
     const close = createButton('Close');
@@ -223,21 +257,19 @@ function closeOnly({ scope, trigger, plan, note }) {
 /** Show the reviewed import; Start applies exactly this token (D107). */
 export function showImportPlan(plan, { api, store, scope, trigger = null, reviewAgain, notify = showWorkspaceToast,
     navigate = navigateTo, backup = () => downloadDatabaseBackup() }) {
-    if (!plan.token) {
-        closeOnly({ scope, trigger, plan, note: plan.blocked_by_pairs ? BLOCKED_NOTE : NOTHING_TO_IMPORT });
-        return;
-    }
-    if (!plan.with_metadata && !plan.current_imports) {
-        closeOnly({ scope, trigger, plan, note: NOTHING_TO_IMPORT });
+    const note = closeNote(plan);
+    if (note) {
+        closeOnly({ scope, trigger, plan, note });
         return;
     }
     const removesAll = !plan.with_metadata;
     const sentence = [planNote(plan), removesAll ? 'No LoRA metadata was found: this removes every imported LoRA prompt.' : '', CACHE_NOTE]
         .filter(Boolean).join(' ');
-    openReviewDialog({ scope, trigger, title: IMPORT_TITLE, heading: 'LoRA reference data', grid: importGrid(plan),
+    const review = openReviewDialog({ scope, trigger, title: IMPORT_TITLE, heading: 'LoRA reference data', grid: importGrid(plan),
         options: namesList(plan), sentence, backup: { copy: BACKUP_COPY, onBackup: backup }, cancelLabel: 'Cancel',
         primary: { label: IMPORT_START, danger: removesAll },
         onStart: () => applyPlan({ api, store, scope, token: plan.token, reviewAgain, notify, navigate, url: IMPORT_APPLY_URL }) });
+    if (typeof plan.layout?.settings_file === 'string') review.setTitle(LAYOUT_TERM, plan.layout.settings_file);
 }
 
 /** Review the import (read-only) and show its plan; the pressed button reads "Reviewing…" until it answered. */
