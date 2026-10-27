@@ -88,6 +88,10 @@ class LayoutCache:
         self._entry: Optional[_Entry] = None
         self._generation = 0
         self._lock = threading.Lock()
+        # What was last logged; survives clear() so a reload of the same
+        # layout stays quiet.
+        self._logged_layout: Optional[LoraManagerLayout] = None
+        self._logged_refused: Tuple[str, ...] = ()
 
     def get(self, configured: str) -> Tuple[Optional[str], LoraManagerLayout]:
         """``(install, layout)`` for the configured path ("" auto-detects)."""
@@ -101,6 +105,7 @@ class LayoutCache:
             generation = self._generation
         install = self._resolve(key)
         layout = self._load(install)
+        self._log_refused(layout)
         try:
             signatures = tuple(
                 (path, self._signature(path)) for path in self._watched(install, layout)
@@ -110,9 +115,18 @@ class LayoutCache:
         if layout.error == UNREADABLE or self._racy(signatures, self._wall_ns()):
             return install, layout
         stored = _Entry(key, install, layout, signatures, self._monotonic())
+        changed = False
         with self._lock:
             if self._generation == generation:
                 self._entry = stored
+                changed = layout != self._logged_layout
+                if changed:
+                    self._logged_layout = layout
+        if changed:
+            logger.info(
+                f"LoraManager layout changed: {layout.source or 'no'} settings, "
+                f"{layout.mode} storage, {len(layout.media_roots)} media folders"
+            )
         return install, layout
 
     def clear(self) -> None:
@@ -120,6 +134,21 @@ class LayoutCache:
         with self._lock:
             self._entry = None
             self._generation += 1
+
+    def _log_refused(self, layout: LoraManagerLayout) -> None:
+        """One warning per default LoRA folder newly refused by the guard."""
+        refused = tuple(layout.refused_defaults)
+        with self._lock:
+            if refused == self._logged_refused:
+                return
+            new = [folder for folder in refused if folder not in self._logged_refused]
+            self._logged_refused = refused
+        for folder in new:
+            logger.warning(
+                f"ComfyUI LoRA folder '{folder}' is neither scanned nor served: "
+                "it is a filesystem root, the home folder or a folder that "
+                "contains it"
+            )
 
     # ── validation ──────────────────────────────────────────────────
 

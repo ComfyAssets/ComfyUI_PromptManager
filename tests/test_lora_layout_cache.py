@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 from pathlib import Path, PureWindowsPath
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -511,6 +512,61 @@ class ConcurrencyTests(CacheTestCase):
         self.assertIsNone(cache._entry)
         cache.get("")
         self.assertEqual(len(self.loaded), 2)
+
+
+class LoggingTests(CacheTestCase):
+    LOGGER = "prompt_manager.lora_layout_cache"
+
+    def get(self, cache):
+        with self.assertLogs(self.LOGGER, "DEBUG") as logs:
+            cache.get("")
+            # assertLogs needs one record; this marker is not counted.
+            cache_module.logger.debug("marker")
+        return [r for r in logs.records if r.getMessage() != "marker"]
+
+    def test_a_new_layout_logs_one_info_line(self):
+        cache = self.cache()
+        records = self.get(cache)
+        self.assertEqual([r.levelname for r in records], ["INFO"])
+        self.assertEqual(
+            records[0].getMessage(),
+            "LoraManager layout changed: user config settings, alongside storage, "
+            "1 media folders",
+        )
+        self.mono += MAX_AGE_SECONDS
+        self.assertEqual(self.get(cache), [])  # an equal layout, reloaded
+        cache.clear()
+        self.assertEqual(self.get(cache), [])
+        self.layout = replace(self.layout, media_roots=(), lora_roots=())
+        self.mono += MAX_AGE_SECONDS
+        self.assertEqual(len(self.get(cache)), 1)
+
+    def test_no_settings_source_prints_no(self):
+        self.layout = replace(self.layout, source=None)
+        records = self.get(self.cache())
+        self.assertIn("layout changed: no settings,", records[0].getMessage())
+
+    def test_an_unstored_load_logs_no_info_line(self):
+        self.write(self.settings, "{}", mtime_ns=self.now_ns)
+        self.assertEqual(
+            [r for r in self.get(self.cache()) if r.levelname == "INFO"], []
+        )
+
+    def test_a_newly_refused_default_folder_logs_one_warning(self):
+        self.layout = replace(self.layout, refused_defaults=("/home",))
+        cache = self.cache()
+        records = self.get(cache)
+        warnings = [r for r in records if r.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("/home", warnings[0].getMessage())
+        self.mono += MAX_AGE_SECONDS
+        self.assertEqual(self.get(cache), [])
+        cache.clear()
+        self.assertEqual(self.get(cache), [])
+        self.layout = replace(self.layout, refused_defaults=("/home", "/"))
+        self.mono += MAX_AGE_SECONDS
+        warnings = [r for r in self.get(cache) if r.levelname == "WARNING"]
+        self.assertEqual([w.getMessage().count("'/'") for w in warnings], [1])
 
 
 class ModuleTests(unittest.TestCase):

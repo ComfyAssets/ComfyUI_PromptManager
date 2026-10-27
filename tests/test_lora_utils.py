@@ -1791,6 +1791,34 @@ class TestTriggerWordCacheLayout(unittest.TestCase):
         self.assertTrue(cache.is_loaded)
         self.assertTrue(cache.retry_due())
 
+    def test_an_os_error_is_a_warning_without_a_traceback(self):
+        cache = TriggerWordCache()
+        cache._cache = {"old": ["word"]}
+        with (
+            patch.object(TriggerWordCache, "_build", side_effect=OSError("denied")),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING") as logs,
+        ):
+            self.assertEqual(cache.load(str(self.lm)), 1)
+        self.assertEqual([r.levelname for r in logs.records], ["WARNING"])
+        self.assertIsNone(logs.records[0].exc_info)
+        self.assertEqual(cache.get_trigger_words("old"), ["word"])
+        self.assertFalse(cache.retry_due())
+
+    def test_an_unexpected_failure_logs_its_traceback(self):
+        # #362: a programming error must not look like a disk error.
+        cache = TriggerWordCache()
+        cache._cache = {"old": ["word"]}
+        with (
+            patch.object(TriggerWordCache, "_build", side_effect=ValueError("bug")),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING") as logs,
+        ):
+            self.assertEqual(cache.load(str(self.lm)), 1)
+        self.assertEqual(len(logs.records), 1)
+        self.assertIsNotNone(logs.records[0].exc_info)
+        self.assertIs(logs.records[0].exc_info[0], ValueError)
+        self.assertEqual(cache.get_trigger_words("old"), ["word"])
+        self.assertFalse(cache.retry_due())
+
     def test_any_other_failure_never_raises(self):
         cache = TriggerWordCache()
         with (

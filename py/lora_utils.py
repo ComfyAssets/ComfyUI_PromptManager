@@ -883,11 +883,13 @@ class TriggerWordCache:
         """
         try:
             new_cache = self._build(lora_manager_path)
-        except Exception as error:
+        except OSError as error:
             logger.warning(f"Trigger word cache not refreshed: {error}")
-            with self._lock:
-                self._failed_at = time.monotonic()
-                return len(self._cache)
+            return self._failed()
+        except Exception:
+            # Not a disk error: keep the traceback (#362).
+            logger.exception("Trigger word cache not refreshed")
+            return self._failed()
 
         with self._lock:
             self._cache = new_cache
@@ -898,6 +900,12 @@ class TriggerWordCache:
             f"Trigger word cache loaded: {len(new_cache)} LoRAs with trigger words"
         )
         return len(new_cache)
+
+    def _failed(self) -> int:
+        """Keep the previous map and note when this load failed."""
+        with self._lock:
+            self._failed_at = time.monotonic()
+            return len(self._cache)
 
     @staticmethod
     def _build(lora_manager_path: str) -> Dict[str, List[str]]:

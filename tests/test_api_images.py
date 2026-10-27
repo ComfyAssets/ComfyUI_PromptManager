@@ -1524,6 +1524,7 @@ class TestLoraManagerMediaServing(ImageRouteCoverageCase):
         with patch.object(layout_module.Path, "home", return_value=outer / "home"):
             self.assertEqual(await self._status(image_id), 200)
             self.assertIsNotNone(lora_utils._layout_cache._entry)
+            # A skip after the rmtree is safe: setUp builds a fresh tree.
             shutil.rmtree(self.examples)
             self._make_symlink(outer, self.examples, target_is_directory=True)
             self.assertEqual(await self._status(image_id), 403)
@@ -1533,8 +1534,12 @@ class TestLoraManagerMediaServing(ImageRouteCoverageCase):
 
         self.assertEqual(await self._status(self._link_image(self._example())), 200)
         self.assertIsNotNone(lora_utils._layout_cache._entry)
+        stored = lora_utils._layout_cache._entry
         with patch.object(IntegrationConfig, "LORA_MANAGER_PATH", str(self.sidecars)):
             self.assertEqual(self.api._lora_image_dirs(), [])
+        # The warm entry for the real install was never handed out for it.
+        self.assertIsNone(lora_utils.cached_lora_manager_layout(str(self.sidecars))[0])
+        self.assertIsNotNone(stored)
 
     async def test_serve_image_builds_the_allow_list_in_the_executor(self):
         calls = self._spy_executor()
