@@ -441,6 +441,19 @@ class LoraImportRouteTests(LoraImportAPITestCase):
             [os.path.basename(i["image_path"]) for i in images], ["image_1.png"]
         )
 
+    async def test_an_unlistable_folder_says_so_in_the_review(self):
+        self._two_loras()
+        error = PermissionError(13, "Permission denied", str(self.loras / "lost+found"))
+        with patch.object(lora_import, "discover_sidecars", side_effect=error):
+            resp, body = await self._post(PREVIEW)
+        self.assertEqual((resp.status, body["code"]), (500, "folder-unreadable"))
+        self.assertEqual(
+            body["error"],
+            "A LoRA folder could not be listed (Permission denied: lost+found). "
+            "Nothing was changed.",
+        )
+        self.assertNotIn(str(self.tmp_root), json.dumps(body))
+
     async def test_preview_requires_the_integration(self):
         IntegrationConfig.LORA_MANAGER_ENABLED = False
         resp, body = await self._post(PREVIEW)

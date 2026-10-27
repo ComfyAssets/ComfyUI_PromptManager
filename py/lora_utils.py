@@ -13,6 +13,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -826,6 +827,11 @@ def get_lora_image_cache_dir(create: bool = True) -> Path:
 _LORA_PATTERN = re.compile(r"<lora:([^:>]+):[^>]+>", re.IGNORECASE)
 
 
+# A failed load is retried by a running node only after this long (an explicit
+# reload, from the settings routes, always runs).
+TRIGGER_RETRY_SECONDS = 60
+
+
 class TriggerWordCache:
     """Thread-safe cache mapping LoRA names to their trigger words.
 
@@ -836,6 +842,7 @@ class TriggerWordCache:
         self._cache: Dict[str, List[str]] = {}
         self._lock = threading.Lock()
         self._loaded = False
+        self._failed_at: Optional[float] = None
 
     def load(self, lora_manager_path: str) -> int:
         """Build the trigger word map from the sidecars LoraManager uses.
@@ -853,11 +860,13 @@ class TriggerWordCache:
         except Exception as error:
             logger.warning(f"Trigger word cache not refreshed: {error}")
             with self._lock:
+                self._failed_at = time.monotonic()
                 return len(self._cache)
 
         with self._lock:
             self._cache = new_cache
             self._loaded = True
+            self._failed_at = None
 
         logger.info(
             f"Trigger word cache loaded: {len(new_cache)} LoRAs with trigger words"
@@ -899,6 +908,15 @@ class TriggerWordCache:
         with self._lock:
             return self._cache.get(lora_name.lower(), [])
 
+    def retry_due(self) -> bool:
+        """Whether a node may try loading again: never failed, or the last
+        failure is TRIGGER_RETRY_SECONDS old (no rescan on every prompt run)."""
+        with self._lock:
+            failed_at = self._failed_at
+        return failed_at is None or time.monotonic() - failed_at >= (
+            TRIGGER_RETRY_SECONDS
+        )
+
     @property
     def is_loaded(self) -> bool:
         with self._lock:
@@ -908,6 +926,7 @@ class TriggerWordCache:
         with self._lock:
             self._cache.clear()
             self._loaded = False
+            self._failed_at = None
 
 
 # Module-level singleton

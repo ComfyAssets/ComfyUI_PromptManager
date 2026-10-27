@@ -323,8 +323,9 @@ def _example_images_root(
     root = _guard_folder(configured, home) if configured else None
     if root is None or libraries <= 1:
         return root
-    scoped = os.path.join(root, _sanitize_library_name(library))
-    return scoped if os.path.isdir(scoped) else None
+    # Guarded (canonical) like its root: a library name keeps its case, and
+    # the media check compares normcased paths.
+    return _guard_folder(os.path.join(root, _sanitize_library_name(library)), home)
 
 
 def _media_roots(*groups) -> Tuple[str, ...]:

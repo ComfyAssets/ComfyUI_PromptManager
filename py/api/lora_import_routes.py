@@ -230,6 +230,18 @@ class LoraImportRoutesMixin:
                 lora_import.preview, lm_path, cache_dir, SERVABLE_EXTENSIONS
             )
             state = await self._run_in_executor(db.category_import_state, CATEGORY)
+        except OSError as error:
+            # A folder discovery cannot list refuses the import (it must not
+            # replace the collection with part of it): say which one.
+            self.logger.warning(
+                f"LoRA import review: a folder could not be listed: {error}"
+            )
+            return _failure(
+                f"A LoRA folder could not be listed ({self._public_error(error)}). "
+                "Nothing was changed.",
+                500,
+                "folder-unreadable",
+            )
         except Exception:
             self.logger.exception("LoRA import preview failed")
             return _failure("The LoRA import could not be reviewed.", 500)

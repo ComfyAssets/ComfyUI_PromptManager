@@ -1771,6 +1771,26 @@ class TestTriggerWordCacheLayout(unittest.TestCase):
         self.assertEqual(cache.get_trigger_words("old"), ["word"])
         self.assertIn("share gone", "\n".join(logs.output))
 
+    def test_a_failed_load_waits_before_a_node_retries(self):
+        # Review finding: a node calls load while the cache is not loaded; a
+        # failing discovery must not rescan on every prompt run.
+        cache = TriggerWordCache()
+        self.assertTrue(cache.retry_due())
+        clock = [100.0]
+        with (
+            patch.object(lora_utils.time, "monotonic", lambda: clock[0]),
+            patch.object(lora_utils, "discover_sidecars", side_effect=OSError("x")),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING"),
+        ):
+            cache.load(str(self.lm))
+            self.assertFalse(cache.is_loaded)
+            self.assertFalse(cache.retry_due())
+            clock[0] += lora_utils.TRIGGER_RETRY_SECONDS
+            self.assertTrue(cache.retry_due())
+        cache.load(str(self.lm))
+        self.assertTrue(cache.is_loaded)
+        self.assertTrue(cache.retry_due())
+
     def test_any_other_failure_never_raises(self):
         cache = TriggerWordCache()
         with (
