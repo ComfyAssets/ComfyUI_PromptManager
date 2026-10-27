@@ -95,8 +95,14 @@ async function watchProgress(page) {
     await page.evaluate(() => {
         window.progressSeen = [];
         const node = document.getElementById('autoTagProgressPercent');
-        new MutationObserver(() => window.progressSeen.push(node.textContent))
-            .observe(node, { childList: true, characterData: true, subtree: true });
+        // Each change from its own record: frames that land in one task share one
+        // callback, and the node's text by then is only the last of them.
+        new MutationObserver(records => {
+            for (const record of records) {
+                if (record.type === 'characterData') window.progressSeen.push(record.target.data);
+                for (const added of record.addedNodes) window.progressSeen.push(added.textContent);
+            }
+        }).observe(node, { childList: true, characterData: true, subtree: true });
     });
 }
 
