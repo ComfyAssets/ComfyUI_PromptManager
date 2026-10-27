@@ -2335,3 +2335,162 @@ class TestWorkspaceImageTags(ImageAPITestCase):
                 )
             ]
         self.assertFalse([step for step in plan if step.startswith("SCAN")], plan)
+
+
+class TestListingFilterSelection(ImageAPITestCase):
+    """#392: "Select all N matching" resolves the listing filter on the server."""
+
+    async def tearDownAsync(self):
+        self.api.db.close_all()
+        await super().tearDownAsync()
+
+    def media(self, name, mtime=100):
+        target = self.output_dir / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        make_png(target)
+        os.utime(target, (mtime, mtime))
+        return target
+
+    async def listing(self, **params):
+        response = await self.client.get(
+            "/prompt_manager/images/output",
+            params={"mode": "workspace", "limit": 500, **params},
+        )
+        return (await response.json())["images"]
+
+    async def test_resolve_lists_every_match_in_listing_order_beyond_a_page(self):
+        for number in range(7):
+            self.media(f"bulk/{number:02}.png", 100 + number)
+        self.media("other/x.png", 500)
+        from py.api.images import parse_listing_filter
+
+        params = parse_listing_filter({"subfolder": "bulk", "sort": "newest"})
+        resolved = await self.api.resolve_listing_filter(params, cap=100)
+
+        listed = await self.listing(subfolder="bulk", sort="newest")
+        self.assertEqual(
+            [list(target) for target in resolved.targets],
+            [[i["root_index"], i["root_scope"], i["path"]] for i in listed],
+        )
+        self.assertEqual(len(resolved.targets), 7)
+        self.assertFalse(resolved.truncated)
+
+    async def test_resolve_reports_linked_positives_and_unlinked_count(self):
+        first = self.media("a.png", 300)
+        second = self.media("b.png", 200)
+        self.media("c.png", 100)
+        prompt = self._save_prompt("shared positive")
+        self.api.db.link_image_to_prompt(prompt, str(first))
+        self.api.db.link_image_to_prompt(prompt, str(second))
+        from py.api.images import parse_listing_filter
+
+        resolved = await self.api.resolve_listing_filter(parse_listing_filter({}), 100)
+
+        self.assertEqual(resolved.positive_ids, [prompt])
+        self.assertEqual(resolved.unlinked, 1)
+
+    async def test_resolve_marks_more_than_the_cap_as_truncated(self):
+        for number in range(4):
+            self.media(f"{number}.png", 100 + number)
+        from py.api.images import parse_listing_filter
+
+        resolved = await self.api.resolve_listing_filter(parse_listing_filter({}), 3)
+
+        self.assertTrue(resolved.truncated)
+
+    def test_parse_listing_filter_rejects_anything_but_listing_strings(self):
+        from py.api.images import parse_listing_filter
+
+        self.assertEqual(
+            parse_listing_filter({"q": "cat", "tags": "a,b", "root": "0"}),
+            {"q": "cat", "tags": "a,b", "root": "0"},
+        )
+        for bad in (
+            None,
+            [],
+            "q=cat",
+            {"mode": "workspace"},
+            {"cursor": "x"},
+            {"path": "a.png"},
+            {"q": 1},
+            {"q": "x" * 2049},
+            {"sort": "sideways"},
+            {"media": "audio"},
+            {"favorites": "yes"},
+            {"subfolder": "../up"},
+            {"root": "-1"},
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    params = parse_listing_filter(bad)
+                    # Root bounds need the roots: the resolver checks them.
+                    from py.api.images import _workspace_root
+
+                    _workspace_root(params, [self.output_dir])
+
+    async def test_bulk_category_takes_the_listing_filter(self):
+        first = self.media("keep/a.png", 300)
+        second = self.media("keep/b.png", 200)
+        self.media("keep/c.png", 100)
+        other = self.media("skip/d.png", 400)
+        prompt = self._save_prompt("in the filter")
+        outside = self._save_prompt("outside the filter")
+        self.api.db.link_image_to_prompt(prompt, str(first))
+        self.api.db.link_image_to_prompt(prompt, str(second))
+        self.api.db.link_image_to_prompt(outside, str(other))
+
+        response = await self.client.post(
+            "/prompt_manager/bulk/category",
+            json={"images_filter": {"subfolder": "keep"}, "category": "Kept"},
+        )
+        data = await response.json()
+
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(
+            (data["updated_count"], data["prompt_count"], data["skipped"]), (1, 1, 1)
+        )
+        self.assertEqual(self.api.db.get_prompt_by_id(prompt)["category"], "Kept")
+        self.assertNotEqual(self.api.db.get_prompt_by_id(outside)["category"], "Kept")
+
+    async def test_bulk_category_filter_with_no_linked_image_changes_nothing(self):
+        self.media("a.png")
+
+        response = await self.client.post(
+            "/prompt_manager/bulk/category",
+            json={"images_filter": {}, "category": "Kept"},
+        )
+        data = await response.json()
+
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(
+            (data["updated_count"], data["prompt_count"], data["skipped"]), (0, 0, 1)
+        )
+
+    async def test_bulk_category_refuses_a_bad_or_doubled_filter(self):
+        self.media("a.png")
+        prompt = self._save_prompt("p")
+        for body in (
+            {"images_filter": {"sort": "sideways"}, "category": "x"},
+            {"images_filter": "all", "category": "x"},
+            {"images_filter": {}, "prompt_ids": [prompt], "category": "x"},
+            {"images_filter": {"root": "9"}, "category": "x"},
+        ):
+            with self.subTest(body=body):
+                response = await self.client.post(
+                    "/prompt_manager/bulk/category", json=body
+                )
+                self.assertEqual(response.status, 400, await response.text())
+
+    async def test_bulk_category_refuses_a_renumbered_source(self):
+        self.media("a.png")
+
+        response = await self.client.post(
+            "/prompt_manager/bulk/category",
+            json={
+                "images_filter": {"root": "0", "root_scope": "f" * 64},
+                "category": "x",
+            },
+        )
+
+        self.assertEqual(response.status, 409)
+        self.assertEqual((await response.json())["code"], "source-changed")
