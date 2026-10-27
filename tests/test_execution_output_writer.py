@@ -28,6 +28,11 @@ except ImportError:
 # Upper bound a blocked fake write waits for its release. Tests prove ordering
 # with events, so this only caps a failing run and never decides a pass.
 BLOCK_SECONDS = 10
+# A restore is a full verify/migrate/backup/replace cycle and is bound by the
+# disk: a busy Windows runner took over 10 s (merge queue, #382). Waits that
+# span a restore use this ceiling, which stays under the runner's 120 s hang
+# watchdog, so a real hang still fails with the thread dump.
+RESTORE_SECONDS = 90
 
 
 class OutputWriterTests(fixtures.unittest.TestCase):
@@ -317,8 +322,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
 
         Returns the patch and an event set once that rotation has returned on
         the worker. A restore is a full verify/migrate/backup/replace cycle, so
-        the handoff waits on this event with the generous ``BLOCK_SECONDS``
-        ceiling instead of the short worker-behavior deadline (TESTING.md,
+        the handoff waits on this event with the ``RESTORE_SECONDS`` ceiling
+        instead of the short worker-behavior deadline (TESTING.md,
         Windows portability preflight).
         """
         backup = os.path.join(self.directory.name, f"restore-{start.run_id}.db")
@@ -361,7 +366,7 @@ class OutputWriterTests(fixtures.unittest.TestCase):
                         )
                         with rotation:
                             self.finalization(writer, start)
-                            self.assertTrue(rotated.wait(BLOCK_SECONDS))
+                            self.assertTrue(rotated.wait(RESTORE_SECONDS))
                             self.wait_for(lambda: writer.status().pending == 0)
                         self.assertEqual(
                             self.db.get_execution_outputs(start.run_id)["state"],
@@ -403,7 +408,7 @@ class OutputWriterTests(fixtures.unittest.TestCase):
             self.assertEqual(writer.status().pending, 1)
             self.assertEqual(writer.context_budget.charged_bytes, charge)
             release.set()
-            self.assertTrue(rotated.wait(BLOCK_SECONDS))
+            self.assertTrue(rotated.wait(RESTORE_SECONDS))
             self.wait_for(lambda: writer.status().pending == 0)
         self.assertEqual(writer.context_budget.charged_bytes, 0)
         self.assertFalse(writer.status().accepting)
@@ -567,6 +572,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
                 self.assertIs(replacement.context_budget, writer.context_budget)
                 self.assertIsNone(replacement.context_budget.reserve(8388608))
                 release.set()
+                # Drain first: the 2 s bound is not under test here (#370).
+                drain_writer(writer)
                 self.assertTrue(writer.close(2))
         finally:
             release.set()
@@ -608,6 +615,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
             writer.invalidate()
             self.assertEqual(writer.context_budget.charged_bytes, 0)
             release.set()
+        # Drain first: the 2 s bound is not under test here (#370).
+        drain_writer(writer)
         self.assertTrue(writer.close(2))
 
     def test_malformed_context_omission_preserves_independent_valid_output(self):
@@ -698,6 +707,8 @@ class OutputWriterTests(fixtures.unittest.TestCase):
                 release.set()
                 invalidator.join(BLOCK_SECONDS)
             self.assertFalse(invalidator.is_alive())
+            # Drain first: the 2 s bound is not under test here (#370).
+            drain_writer(writer)
             self.assertTrue(writer.close(2))
         self.assertEqual(
             self.db.get_execution_outputs(start.run_id)["state"], "complete"
