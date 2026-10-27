@@ -36,33 +36,48 @@ function fixture() {
     const reply = (index, data) => requests[index].resolve({ json: async () => data });
     return { manager, requests, reply, notifications };
 }
-test('gallery review retains root identity and applies tags with the returned prompt ID', async () => {
+const SHA = 'a'.repeat(64);
+test('gallery review retains root identity and applies the tags to the image by its sha256 (#379)', async () => {
     const { manager, requests, reply } = fixture();
     const load = manager.loadNextReviewImage();
     assert.equal(requests[0].body.root_index, 1);
-    reply(0, { success: true, prompt_id: 42, tags: ['smile'] });
+    assert.equal(requests[0].body.existing, 'merge');
+    reply(0, { success: true, prompt_id: 42, tags: ['smile'], sha256: SHA, image_tags: [] });
     await load;
     manager.loadNextReviewImage = () => {};
     const apply = manager.applyReviewTags();
-    assert.deepEqual(requests[1].body, { prompt_id: 42, tags: ['smile'] });
+    assert.equal(requests[1].url, '/prompt_manager/autotag/apply');
+    assert.deepEqual(requests[1].body, ImageHelpers.autotagApplyBody(
+        { id: 'digest', path: 'same.png', root_index: 1 }, SHA, ['smile']));
+    assert.equal('prompt_id' in requests[1].body, false);
     reply(1, { success: true });
     await apply;
 });
-test('unlinked images do not submit an invalid apply request or advance', async () => {
+test('an unlinked image applies to the image like a linked one', async () => {
     const { manager, requests, reply } = fixture();
     const load = manager.loadNextReviewImage();
-    reply(0, { success: true, prompt_id: null, tags: ['smile'] });
+    reply(0, { success: true, prompt_id: null, tags: ['smile'], sha256: SHA, image_tags: [] });
     await load;
+    manager.loadNextReviewImage = () => {};
     const apply = manager.applyReviewTags();
-    if (requests[1]) reply(1, { success: false, error: "Unexpected apply" });
+    assert.equal(requests[1].body.sha256, SHA);
+    assert.deepEqual(requests[1].body.tags, ['smile']);
+    reply(1, { success: true });
     await apply;
-    assert.equal(requests.length, 1);
-    assert.equal(manager.autoTagState.reviewIndex, 0);
+});
+test('an answer without a captured sha256 never sends an apply', async () => {
+    const { manager, requests, reply } = fixture();
+    const load = manager.loadNextReviewImage();
+    reply(0, { success: true, prompt_id: 42, tags: ['smile'] });
+    await load;
+    manager.loadNextReviewImage = () => {};
+    await manager.applyReviewTags();
+    assert.equal(requests.filter(r => r.url === '/prompt_manager/autotag/apply').length, 0);
 });
 test('a failed apply keeps the current image available for retry', async () => {
     const { manager, requests, reply } = fixture();
     const load = manager.loadNextReviewImage();
-    reply(0, { success: true, prompt_id: 42, tags: ['smile'] });
+    reply(0, { success: true, prompt_id: 42, tags: ['smile'], sha256: SHA, image_tags: [] });
     await load;
     const apply = manager.applyReviewTags();
     reply(1, { success: false, error: 'Try again' });

@@ -296,6 +296,7 @@ class AnnotationRoutesMixin:
                 self._captures_closed = True
             unsubscribe, self._captures_unsubscribe = self._captures_unsubscribe, None
             store, self._captures = self._captures, None
+            self._suggested_tokens = set()
         if unsubscribe is not None:
             unsubscribe()
         if store is not None:
@@ -515,6 +516,7 @@ class AnnotationRoutesMixin:
         store = self._captures
         if store is not None and _TOKEN.fullmatch(token) is not None:
             store.release(token)
+        self._suggested_tokens.discard(token)
         return web.json_response(
             {"success": True}, headers={"Cache-Control": "no-store"}
         )
@@ -564,6 +566,9 @@ class AnnotationRoutesMixin:
             return _coded("capture-expired", _OTHER_FILE)
         if facts.sha256 != capture.sha256:
             return _coded("file-changed")
+        # A save after Generate suggestions ran on this capture marks the
+        # image auto-tagged (#379), so a Skip batch leaves the review alone.
+        suggested = token in self._suggested_tokens
         try:
             receipt = await self._run_in_executor(
                 self.db.replace_image_tags,
@@ -574,6 +579,7 @@ class AnnotationRoutesMixin:
                 expected_epoch=expected_epoch,
                 expected_tag_revision=revision,
                 tags=tags,
+                mark_autotagged=suggested,
             )
         except AnnotationCommandError as exc:
             current = exc.current or {}
@@ -590,9 +596,22 @@ class AnnotationRoutesMixin:
         except Exception:
             self.logger.exception("Image tag save failed")
             return _error(500, "save-failed", "The tags could not be saved.")
+        # Dropped only after a saved or replayed receipt: a retry after a
+        # tag-conflict still marks.
+        self._suggested_tokens.discard(token)
         return web.json_response(
             {"success": True, **receipt}, headers={"Cache-Control": "no-store"}
         )
+
+    def _remember_suggested(self, store, token: str) -> None:
+        """Note that Generate ran on *token*; forget tokens whose capture is
+        gone. ``expires_in`` does not reset a capture's idle clock."""
+        self._suggested_tokens = {
+            kept
+            for kept in self._suggested_tokens
+            if store.expires_in(kept) is not None
+        }
+        self._suggested_tokens.add(token)
 
     # -- suggest ---------------------------------------------------------------
 
@@ -675,6 +694,7 @@ class AnnotationRoutesMixin:
         finally:
             if not started:
                 store.release_use(token)
+        self._remember_suggested(store, token)
         return web.json_response(
             {
                 "success": True,

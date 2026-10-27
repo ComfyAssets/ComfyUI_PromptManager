@@ -3801,7 +3801,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         } else if (data.type === 'complete') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
-                            this.showNotification(`Auto tagging complete! Applied tags to ${data.tagged || 0} prompts.`, 'success');
+                            this.showNotification(ImageHelpers.autotagCompleteMessage(data.tagged), 'success');
                             this.refreshList(); // Refresh the prompt list
                         } else if (data.type === 'error') {
                             this.autoTagState.eventSource.close();
@@ -3819,7 +3819,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         console.error('EventSource readyState:', this.autoTagState.eventSource.readyState);
                         this.autoTagState.eventSource.close();
                         this.hideModal("autoTagProgressModal");
-                        this.showNotification('Connection lost during auto tagging', 'error');
+                        this.showNotification((error && error.serverMessage) || 'Connection lost during auto tagging', 'error');
                     };
                 } catch (error) {
                     console.error('Auto tag error:', error);
@@ -3894,10 +3894,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            // Check if tags array has "real" tags (excluding auto-scanned and prepend:* metadata)
-            getRealTags(tags) {
-                if (!tags || !Array.isArray(tags)) return [];
-                return tags.filter(tag => tag !== 'auto-scanned' && !tag.startsWith('prepend:') && !tag.startsWith('append:'));
+            /** POST /autotag/single for `image` (#379: `existing` "skip" answers already_tagged for an auto-tagged image). */
+            async requestReviewTags(image, existing) {
+                const response = await ApiClient.fetchUrl('/prompt_manager/autotag/single', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(ImageHelpers.autotagSingleBody(image, { ...this.autoTagState, existing }))
+                });
+                return response.json();
             }
 
             // Show the re-tag confirmation modal
@@ -3949,26 +3953,48 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // always provides a servable url; never rebuild it from the path.
                 const imageUrl = this.getImageUrl(image);
 
-                // Check if image already has real tags (excluding auto-scanned)
-                const realTags = this.getRealTags(image.prompt_tags);
+                this.autoTagState.currentImage = image;
+                this.autoTagState.currentSha256 = null;
+                this.autoTagState.tagsExpanded = false;  // Reset accordion for new image
 
-                if (realTags.length > 0) {
-                    // Skip if "Skip All Tagged" was selected
-                    if (this.autoTagState.skipAllTagged) {
-                        this.autoTagState.reviewIndex++;
-                        return this.loadNextReviewImage();
+                let data;
+                try {
+                    // Each image is first asked with "skip": an image a tagging model already tagged answers
+                    // already_tagged (its image tags, never its prompt's) without running the model (#379).
+                    data = await this.requestReviewTags(image, 'skip');
+                    if (data.success && data.already_tagged) {
+                        if (this.autoTagState.skipAllTagged) {
+                            this.autoTagState.reviewIndex++;
+                            return this.loadNextReviewImage();
+                        }
+                        const choice = await this.showRetagConfirmation(image, imageUrl, data.image_tags || []);
+                        if (choice === 'skip' || choice === 'skipAll') {
+                            this.autoTagState.reviewIndex++;
+                            return this.loadNextReviewImage();
+                        }
+                        // choice === 'retag': generate new tags for it
+                        this.showReviewImage(image, imageUrl);
+                        data = await this.requestReviewTags(image, 'merge');
+                    } else {
+                        this.showReviewImage(image, imageUrl);
                     }
-
-                    // Show confirmation modal
-                    const choice = await this.showRetagConfirmation(image, imageUrl, realTags);
-
-                    if (choice === 'skip' || choice === 'skipAll') {
-                        this.autoTagState.reviewIndex++;
-                        return this.loadNextReviewImage();
+                    if (data.success) {
+                        this.autoTagState.currentTags = data.tags;
+                        this.autoTagState.currentSha256 = data.sha256 || null;
+                        this.renderReviewTags();
+                    } else {
+                        document.getElementById('reviewTagsVisible').innerHTML =
+                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
                     }
-                    // choice === 'retag' - continue with tagging
+                } catch (error) {
+                    console.error('Error generating tags:', error);
+                    this.showReviewImage(image, imageUrl);
+                    document.getElementById('reviewTagsVisible').innerHTML =
+                        '<div class="text-pm-error">Failed to generate tags</div>';
                 }
+            }
 
+            showReviewImage(image, imageUrl) {
                 document.getElementById('reviewImage').src = imageUrl;
                 // The record's file name, else the last segment of its path (#328: `filename` was never declared).
                 const filename = image.filename || String(image.image_path || image.path || '').split(/[\\/]/).pop();
@@ -3977,37 +4003,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('reviewTagsHidden').innerHTML = '';
                 document.getElementById('reviewTagsAccordion').classList.add('hidden');
                 document.getElementById('reviewTagsToggle').classList.add('hidden');
-
-                // Store prompt_id from database for applying tags later
-                this.autoTagState.currentPromptId = image.prompt_id;
-                this.autoTagState.tagsExpanded = false;  // Reset accordion for new image
-
-                try {
-                    // Review rows come from /images/all (database ids), so this resolves to image_id
-                    const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
-
-                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/single', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(requestBody)
-                    });
-
-                    const data = await response.json();
-
-                    if (data.success) {
-                        this.autoTagState.currentTags = data.tags;
-                        // Use prompt_id from database, fallback to API response
-                        this.autoTagState.currentPromptId = image.prompt_id || data.prompt_id;
-                        this.renderReviewTags();
-                    } else {
-                        document.getElementById('reviewTagsVisible').innerHTML =
-                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
-                    }
-                } catch (error) {
-                    console.error('Error generating tags:', error);
-                    document.getElementById('reviewTagsVisible').innerHTML =
-                        '<div class="text-pm-error">Failed to generate tags</div>';
-                }
             }
 
             /** /prompt_manager/images/all is capped per call; collect every page. */
@@ -4126,15 +4121,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             async applyReviewTags() {
-                if (this.autoTagState.currentTags.length === 0) {
-                    this.skipReviewImage();
-                    return;
-                }
-
-                const promptId = this.autoTagState.currentPromptId;
-
-                if (!promptId) {
-                    this.showNotification('No linked prompt found for this image', 'warning');
+                // #379: the reviewed tags go to this image (linked or not), never its prompt; an empty
+                // list still marks the image as reviewed by a tagging model.
+                if (!this.autoTagState.currentSha256) {
                     this.skipReviewImage();
                     return;
                 }
@@ -4143,10 +4132,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     const response = await ApiClient.fetchUrl('/prompt_manager/autotag/apply', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            prompt_id: promptId,
-                            tags: this.autoTagState.currentTags
-                        })
+                        body: JSON.stringify(ImageHelpers.autotagApplyBody(
+                            this.autoTagState.currentImage, this.autoTagState.currentSha256, this.autoTagState.currentTags))
                     });
 
                     const data = await response.json();

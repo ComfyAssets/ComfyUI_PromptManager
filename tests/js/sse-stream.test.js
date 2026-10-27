@@ -97,6 +97,30 @@ test("connect reports a non-2xx response through onerror and never onmessage", a
     assert.equal(source.readyState, source.CLOSED);
 });
 
+test("a non-2xx JSON answer's error sentence reaches onerror as serverMessage", async () => {
+    let error = null;
+    const fetchImpl = async () => new Response(
+        JSON.stringify({ success: false, error: "Auto-tagging is already running" }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+    );
+    const source = connect("/x", { fetchImpl });
+    source.onerror = (err) => { error = err; };
+    await until(() => error !== null);
+    assert.match(error.message, /409/);
+    assert.equal(error.status, 409);
+    assert.equal(error.serverMessage, "Auto-tagging is already running");
+});
+
+test("a non-2xx answer without a JSON error has no serverMessage", async () => {
+    let error = null;
+    const fetchImpl = async () => new Response("nope", { status: 500 });
+    const source = connect("/x", { fetchImpl });
+    source.onerror = (err) => { error = err; };
+    await until(() => error !== null);
+    assert.equal(error.status, 500);
+    assert.equal(error.serverMessage, undefined);
+});
+
 test("connect reports a network failure through onerror", async () => {
     let error = null;
     const source = connect("/x", { fetchImpl: async () => { throw new TypeError("Failed to fetch"); } });
