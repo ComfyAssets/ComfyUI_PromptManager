@@ -169,3 +169,44 @@ test('a plan with nothing to do offers no Apply (S7 live test)', async () => {
     assert.equal(hasWork({ ...PLAN, scope: {} }), true);
     assert.equal(NOTHING_TO_APPLY, 'There is nothing to apply; nothing was changed.');
 });
+
+// S12 (#329): the rotated-log cleanup plan changes no library record: its Backup reads "Not needed", the review shows no
+// D55 backup box, and its details are files.
+const LOG_PLAN = { operation: 'rotated_logs', token: 't', expires_at: '2026-10-26T23:15:00',
+    scope: { count: 3, label: '3 rotated log copies · 28.4 MB' },
+    protected: { count: 3, reasons: ['Kept: the active log', 'Kept: 1 link', 'Kept: 1 other file'] },
+    backup: { policy: 'none', destination_label: null, expected_bytes: null },
+    media: { deletes_files: true, label: 'Deletes only the listed log files. No image, video or library record changes.' },
+    details: [{ label: 'prompt_manager.log.1', detail: '10.0 MB · 2026-10-25 14:02' }] };
+
+test('a plan without a database change reads Not needed and shows no backup box', async () => {
+    const { planGrid, backupText, backupBox, BACKUP_COPY, OPERATION_TITLES } = await review;
+    assert.equal(backupText({ policy: 'none' }), 'Not needed: no library record changes');
+    assert.deepEqual(planGrid(LOG_PLAN), [
+        ['Scope', '3 rotated log copies · 28.4 MB'],
+        ['Protected', 'Kept: the active log · Kept: 1 link · Kept: 1 other file'],
+        ['Backup', 'Not needed: no library record changes'],
+        ['Media on disk', 'Deletes only the listed log files. No image, video or library record changes.'],
+    ]);
+    const onBackup = () => {};
+    assert.equal(backupBox(LOG_PLAN, onBackup), null);
+    // Every database plan keeps its D55 box.
+    assert.deepEqual(backupBox({ ...LOG_PLAN, operation: 'optimize', backup: { policy: 'required' } }, onBackup), { copy: BACKUP_COPY, onBackup });
+    assert.deepEqual(backupBox({ operation: 'missing_links' }, onBackup), { copy: BACKUP_COPY, onBackup });
+    // Its title heads the dialog and lets Activity offer Review again.
+    assert.equal(OPERATION_TITLES.rotated_logs, 'Rotated log copies');
+});
+
+test('rotated_logs details read Listed files', async () => {
+    const { detailsSummary, detailLines } = await review;
+    assert.equal(detailsSummary(LOG_PLAN, 3), 'Listed files (3)');
+    assert.equal(detailsSummary({ ...LOG_PLAN, scope: { count: 60 } }, 50), 'Listed files (50 of 60)');
+    assert.equal(detailsSummary({ operation: 'missing_links', scope: { count: 2 } }, 2), 'Listed records (2)');
+    assert.deepEqual(detailLines(LOG_PLAN), ['prompt_manager.log.1 · 10.0 MB · 2026-10-25 14:02']);
+});
+
+test('a rotated-log cleanup the log overtook offers Review again (S12)', async () => {
+    const { reviewAgainOf } = await jobView;
+    assert.deepEqual(reviewAgainOf({ kind: 'maintenance', state: 'failed', scope: { operation: 'rotated_logs', failure: 'plan-changed' } }),
+        { operation: 'rotated_logs' });
+});

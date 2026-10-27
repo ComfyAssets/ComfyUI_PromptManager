@@ -18,7 +18,7 @@ const routes = [
     ['tags', 'Tags & categories', null],
     // #249 local Inspect: the native Inspect a file page; Overview's tool card still links the legacy metadata page.
     ['inspect', 'Inspect a file', null],
-    // #249 System S2: native System; its undelivered sections hand off per section (D94, asserted below).
+    // #249 System S2: native System; every section native since S12 (D94 retired, asserted below).
     ['system', 'System', null],
     // #249 D51: SAVED VIEWS' Favorites, Images filtered to favorites.
     ['favorites', 'Favorites', null],
@@ -395,7 +395,7 @@ const SURFACE = {
     intro: { fontSize: '12px', marginTop: '7px' },
 };
 
-for (const width of [1600, 390]) test(`overview and handoff render with concept surfaces ${width}`, async ({ page }) => {
+for (const width of [1600, 390]) test(`overview renders with concept surfaces and no System section hands off ${width}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`${workspace}#/overview`);
     const main = page.locator('#workspace-main');
@@ -412,23 +412,23 @@ for (const width of [1600, 390]) test(`overview and handoff render with concept 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     await sidebarLink(page, 'System').click();
-    // System's Overview is native (S2 Task 6); a section not delivered yet still hands off (D94).
+    // Every System section is native (S12 retired D94): the last one, Diagnostics & logs, shows concept surfaces.
     await main.locator('.section-nav').getByRole('button', { name: 'Diagnostics & logs', exact: true }).click();
-    const handoff = main.locator('section.handoff');
-    await expect(handoff).toHaveClass(/\bsurface\b/);
-    expect(await handoff.evaluate(surfaceStyle)).toMatchObject(SURFACE);
-    await expect(handoff.locator('a[href="/prompt_manager/admin"]')).toBeVisible();
+    const logs = main.locator('.settings-layout > section.surface').last();
+    await expect(logs.locator(':scope > h2')).toHaveText('Logs');
+    expect(await logs.evaluate(surfaceStyle)).toMatchObject(SURFACE);
+    await expect(main.locator('.handoff')).toHaveCount(0);
     await expect(main.locator('.panel')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-// #249 System S2 Task 5: the concept's renderSystem shell (app.js 698–706) at `#/system/<section>`, every section a D94
-// hand-off until its PR, and the Save row's truthful status (D92).
+// #249 System S2 Task 5: the concept's renderSystem shell (app.js 698–706) at `#/system/<section>`, every section native
+// (S12 retired the D94 hand-off), and the Save row's truthful status (D92).
 const SYSTEM_SECTION_LABELS = ['Overview', 'Appearance', 'Sources & scans', 'Integrations', 'Auto-tagging', 'Maintenance',
     'Backup & export', 'Diagnostics & logs'];
 const SYSTEM_HASHES = ['overview', 'appearance', 'sources', 'integrations', 'tagging', 'maintenance', 'backups', 'diagnostics'];
 
-test('System is native: the concept shell, section navigation, sections, hand-offs and the Save row', async ({ page }) => {
+test('System is native: the concept shell, section navigation, sections and the Save row', async ({ page }) => {
     const mutations = [];
     page.on('request', item => { if (!['GET', 'HEAD', 'OPTIONS'].includes(item.method())) mutations.push(item.url()); });
     await page.goto(`${workspace}#/system`);
@@ -466,7 +466,8 @@ test('System is native: the concept shell, section navigation, sections, hand-of
         // (S4 Task 11, workspace-system-sources.spec.mjs, its update notice shown in a fresh browser), Integrations (S10
         // Task 27, workspace-system-integrations.spec.mjs), Maintenance (S7 Task 19,
         // workspace-system-maintenance.spec.mjs), Backup & export (S9 Task 24, workspace-system-backups.spec.mjs) and
-        // Auto-tagging (S11 Task 6, workspace-system-tagging.spec.mjs); every other section hands off.
+        // Auto-tagging (S11 Task 6, workspace-system-tagging.spec.mjs) and Diagnostics & logs (S12,
+        // workspace-system-diagnostics.spec.mjs): none hands off.
         if (hash === 'tagging') await expect(layout.locator('#tag-model')).toBeVisible();
         if (hash === 'overview') await expect(layout.locator(':scope > .summary-metrics')).toBeVisible();
         if (hash === 'sources') await expect(layout.locator('#source-list .operation')).toHaveCount(2);
@@ -476,13 +477,9 @@ test('System is native: the concept shell, section navigation, sections, hand-of
                 integrations: ['section.surface', 'section.surface', 'div.save-row'],
                 maintenance: ['div.notice', 'section.surface', 'section.surface', 'div.save-row'],
                 backups: ['div.two-col', 'section.surface', 'div.save-row'],
-                tagging: ['section.surface', 'div.save-row'] }[hash]
-                ?? ['section.surface handoff', 'div.save-row']);
-        if (['overview', 'appearance', 'sources', 'integrations', 'tagging', 'maintenance', 'backups'].includes(hash)) continue;
-        const handoff = layout.locator('section.handoff');
-        await expect(handoff.locator('h2')).toHaveText('Your current tools are ready');
-        expect(await handoff.locator('a.workspace-link').evaluateAll(links => links.map(link => link.getAttribute('href'))))
-            .toEqual(['/prompt_manager/admin']);
+                tagging: ['section.surface', 'div.save-row'],
+                diagnostics: ['section.surface', 'section.surface', 'div.save-row'] }[hash]);
+        await expect(layout.locator('.handoff')).toHaveCount(0);
         await expect(layout.locator('#settings-status')).toHaveText('No unsaved changes.');
         await expect(page.locator('aside.sidebar a[href="#/system"]')).toHaveAttribute('aria-current', 'page');
     }

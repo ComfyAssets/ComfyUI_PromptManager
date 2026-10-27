@@ -85,9 +85,6 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .tool-card { border: 1px solid var(--line); background: var(--ca-field); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
 .tool-card p { flex: 1; margin: 0 0 12px; }
 .workspace-link { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 0; font-size: 12px; overflow-wrap: anywhere; }
-.handoff .workspace-link { margin-top: 12px; }
-/* D94: a System section not delivered yet links every legacy tool that still owns it, side by side. */
-.handoff .workspace-link + .workspace-link { margin-inline-start: 18px; /* D94 */ }
 
 /* D92: System's Save row is aria-disabled while nothing is unsaved (or a save runs), and a setting the last save could
    not save is highlighted, as its "Review the highlighted settings" status says. */
@@ -439,3 +436,8 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
   #workspace-main .setting-row:has(> #tag-model) { flex-wrap: wrap; /* D132 */ }
   #workspace-main .setting-row #tag-model { flex-shrink: 0; max-width: 100% !important; /* D132 */ }
 }
+
+/* D109: System › Diagnostics & logs' added Lines field sits in the concept's toolbar like its Level select, and a value
+   outside 1–500 is highlighted as a refused setting is (D92). */
+.toolbar #log-limit { inline-size: 6em; min-height: 36px; font-size: 11px; /* D109 */ }
+.toolbar #log-limit[aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; /* D109 */ }

@@ -2702,7 +2702,8 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–D114; D121–D134 assigned):
+Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107, D109–D110 and D111–D114; D121–D134 assigned). D94,
+the per-section hand-off panel, was retired by S12 (#329): every section is native.
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2734,10 +2735,6 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   "N output sources" with "Monitoring and enrichment share one source list.", prefixed
   by "M of N configured sources available." or "None configured is available; ComfyUI's
   output folder is used." when that is the case.
-- **D94** (all sections): a section not delivered yet shows the hand-off panel "Your
-  current tools are ready" with a link to each legacy tool that still owns it (the
-  plan's legacy coverage table); retired section by section, gone after S12. Since S11
-  (#328) only Diagnostics & logs hands off (`SECTION_HANDOFFS`, to the admin page).
 - **D95** (health report): the concept's `health-check` dialog titled "Health report",
   with no sample note. It lists every check in the server's order: Integrity check,
   Foreign keys & pair references, Canonical hashes, Pair uniqueness (added), Missing
@@ -2768,7 +2765,7 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
 - **D123** (Maintenance): the concept's Maintenance notice
   ("Check first. Review changes. Then apply." + Run health checks) was delivered ahead of
   the rest of Maintenance (S2), as the native place that runs the health check; since S7
-  the section's two surfaces follow it and its D94 hand-off is gone. A press shows "Checking…" (`aria-disabled`) and opens the report; a
+  the section's two surfaces follow it and its hand-off panel is gone. A press shows "Checking…" (`aria-disabled`) and opens the report; a
   failed check toasts "The health check could not finish. Nothing was changed."
 - **D97** (Appearance): added rows for the legacy gallery settings the concept leaves
   out, after its own rows: "Show image details on cards" (`showImageInfo`; off hides a
@@ -2889,6 +2886,11 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   and the media hashes, `GET /__test__/system/digest`). `plan dialogs match the concept`
   (system-maintenance-concept.spec, both themes and sizes) compares each of the four
   operations' dialogs with the concept's, mapped by these values only.
+  S12 (#329): the `rotated_logs` plan (Diagnostics & logs › Review log cleanup, `h3`
+  "Rotated log copies") changes no library record: its Backup reads "Not needed: no
+  library record changes" (`backup.policy: "none"`), it has no D55 backup box, and its
+  `details` reads "Listed files (N)" (`a plan without a database change reads Not needed
+  and shows no backup box`, `rotated_logs details read Listed files`).
 - **D101** (Maintenance, S7): Duplicate image files → Find duplicates starts the
   duplicate search (Activity, D111); its job view adds "Review groups" after Download
   report once it finished with groups. The concept's `duplicates` dialog ("Review
@@ -3166,6 +3168,55 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   `tag output images review matches the concept`, its mutation check and `the
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
   the batch tests of workspace-system-tagging.spec.
+- **D109** (Logs, S12, #329): the concept's Logs surface on the live server. The toolbar
+  keeps "Level", Refresh and the download (renamed "Download log": the active log,
+  `/logs/download/prompt_manager.log`, through the api client), with all six minimum
+  levels (All levels, DEBUG, INFO, WARNING, ERROR, CRITICAL; the concept has three) and an
+  added `label` "Lines" + `input#log-limit[type=number]` 1–500 (default 100): a value that
+  is not a whole number 1–500 after trimming gets `aria-invalid` and sends nothing, a
+  Level change included. The `pre` shows the in-memory buffer newest first as `HH:MM:SS
+  LEVEL message` ("No log entries at this level." / "The log could not be read."); a
+  newer read wins. Added after it, `p.small#log-stats[role=status]` "Log statistics":
+  "N entries in memory · E errors · W warnings · F files · S on disk" (errors are ERROR +
+  CRITICAL, singular for 1, links not counted). "Runtime log level" adds CRITICAL after
+  the concept's INFO, WARNING, DEBUG, ERROR; it and "Console logging" are runtime drafts
+  saved by Save preferences (`POST /logs/config`, only the changed keys) and read the
+  server's values; their descriptions say "Applied until the server restarts." (the
+  concept's say a gallery toggle is replaced and output stays quiet). Inside "Log files &
+  retention", after the concept's line ("prompt_manager.log · <size> · rotated copies:
+  N", N the `rotated` rows) and Review log cleanup (D100's `rotated_logs` plan): a
+  `p.small` "Rotates at M MB · keeps K rotated copies · file logging on|off · memory
+  buffer B entries" (read-only), an `.operation-list` of `/logs/files` (`h3` name, `p`
+  "<size> · <YYYY-MM-DD HH:MM> · Active log | Rotated copy | Other file | Link, not
+  downloaded", "Download" named "Download <name>" except for a link), and the danger
+  `.operation` "Clear all logs" / "Empty the active log and delete its rotated copies." /
+  "Clear all logs…", which confirms ("Empties prompt_manager.log, deletes N rotated
+  copies (S) and clears the lines shown here. The other files in the log folder are
+  kept. This cannot be undone."), runs `POST /logs/truncate`, toasts "Logs cleared · N
+  rotated copies deleted." (plus " · K could not be deleted") and reads the viewer,
+  statistics, files and configuration again. Pinned by workspace-system-diagnostics.spec's
+  Task 5 and Task 6 tests.
+- **D110** (Diagnostics, S12, #329): the concept's Diagnostics surface with live values.
+  The `div.meta-grid` `dd`s read one `GET /system/diagnostics`: Database "Readable ·
+  <size> · N images" or "Not readable: <message>"; Sources "N sources · M watching", "N
+  sources · K not available", or with none configured "ComfyUI output folder · watching
+  | manual scan"; Viewer.js "<pinned version> · pinned vendor". Host renderers is D106's
+  renderer line from the send bridge. Each reads "Loading…" first, "Busy: <job> is
+  running." when an exclusive job refuses the read (D57's naming) and "Could not be
+  read." on any other failure. Run checks opens the shared Health report (D95). The
+  buttons drop the concept's "sample": "Download diagnostic report" saves a fresh report
+  plus `host_renderers` as `prompt-manager-diagnostics-YYYYMMDD-HHMM.json` (local time)
+  and toasts "Diagnostic report downloaded." ("Busy: <job> is running. Try again when it
+  ends." / "The diagnostic report could not be downloaded. Nothing was saved to this
+  device."); "Inspect" opens `#/inspect`, which reads a file and writes nothing. An added
+  `.operation` "Test image link" / "Write a placeholder image record to check that
+  linking works." / "Create test link…" keeps the legacy synthetic link (S12-11): it
+  reads the most recent prompt on mount (`aria-disabled` with "Add a prompt first." or
+  "The most recent prompt could not be read." added to the description), confirms in
+  "Create test link" naming the prompt and how Missing-file links removes the record,
+  and toasts "Test link created (image record N)." or "The test link could not be
+  created. Nothing was changed.". Pinned by workspace-system-diagnostics.spec's Task 4
+  tests.
 - **D124** (inspector): with "Load metadata on selection" off, the Images panel and
   the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
   button instead of reading the file. The concept has no such state, so no concept
@@ -3744,6 +3795,54 @@ fail}` installs a fake that waits on a fixture event, and every tagging reset re
 it. Every workspace-system-tagging test asserts no `/autotag/download/` request.
 Changing the routes or `py/config.py` needs a ComfyUI restart; the section itself is
 HTML, CSS and JS only.
+
+### Logs and diagnostics contract (#249 System S12)
+
+System › Diagnostics & logs (`web/js/workspace/system-diagnostics.mjs`, D109–D110)
+reads and deletes only through the routes below; the legacy admin Logs and Diagnostics
+modals use the same routes and keep working.
+
+- **Rule R** (`utils/logging_config.py`): a file may be deleted as a rotated copy only
+  when it is a direct entry of the log folder named `prompt_manager.log.<n>` (`<n>` a
+  decimal integer ≥ 1 with no leading zero, compared after `normcase`) and a regular
+  file that is not a link or junction (`lstat`). Every other entry is `active`, `link`
+  or `other` and is never deleted. `/logs/files` rows carry that `kind`; links are listed
+  with their own `lstat` size and are not counted or sized by `/logs/stats`. A download
+  is served only for a regular, non-link file of the folder (a link, a folder or a name
+  not listed is 404), read off the event loop.
+- **Reviewed cleanup**: `POST /maintenance/preview {operation: "rotated_logs", options:
+  {}}` lists every rotated copy (basenames, size and time) and writes nothing; `POST
+  /maintenance/apply {token}` starts the `maintenance` job "Rotated log copies"
+  (admission `read`, not cancellable). Under the manager's files lock and every file
+  handler's lock it re-scans; when any listed file is missing, no longer rotated or
+  differs in size, `mtime_ns` or a non-zero inode, it deletes nothing and fails
+  `plan-changed` ("The log files changed since the review; nothing was deleted. Review
+  again.", Activity offers Review again). Otherwise it deletes exactly the listed files;
+  each is a Changed row ("Deleted · <size>"), a file that cannot be removed an Errors
+  row. Two Prompt Manager processes sharing one log folder are not locked against each
+  other: each file's identity is checked just before its unlink.
+- **Clear all logs** (`POST /logs/truncate`, also the admin page's Clear) empties the
+  active log through its handler, deletes the rotated copies (Rule R) and clears the
+  buffer; other files and links are kept. Response keys are unchanged.
+- **Runtime settings** (`GET/POST /logs/config`): the level (DEBUG…CRITICAL) and console
+  logging apply until the server restarts; the retention values are shown read-only in
+  the workspace and the API keeps accepting them.
+- **Report** (`GET /system/diagnostics`): built on the server from an explicit list of
+  fields (version, Python, platform, Viewer.js version, the four legacy checks, database
+  info, source counts, log configuration and statistics, the session's health summary
+  and the non-path configuration with `has_civitai_api_key`). Every path is relative to
+  a ComfyUI anchor or reads "outside ComfyUI"; a backstop scrub replaces any absolute
+  path or the saved key and counts it in `redacted`, which the tests require to be 0. It
+  takes a registry lease (409 `busy` while an exclusive job such as a restore runs).
+- **Compressed downloads**: the gzip middleware drops a handler's declared
+  `Content-Length` before it compresses a body, so the response declares the compressed
+  length. A stale length made a browser wait for bytes that never came: the log download
+  of any file over 1 KB hung (`test_compressed_body_declares_its_own_length`).
+
+The browser server writes its logs into `<server root>/logs`
+(`tests/browser/workspace_diagnostics_fixture.py`), whose hooks seed records with fixed
+times, rotated copies, a link (POSIX) and a user's `.bak`, and roll the copies over; no
+test reads or deletes a real log folder.
 
 ### Browser cache ownership (#222)
 

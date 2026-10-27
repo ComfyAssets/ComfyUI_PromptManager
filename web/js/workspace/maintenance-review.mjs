@@ -53,7 +53,14 @@ export const OPERATION_TITLES = Object.freeze({
     duplicate_files: 'Duplicate image files',
     // Reviewed and applied through the API and seen in Activity; Maintenance has no row for it (the concept has none).
     workflow_storage: 'Store each workflow once',
+    // S12: Diagnostics & logs › Log files & retention › Review log cleanup (the concept's `maintenance-plan` "rotated logs").
+    rotated_logs: 'Rotated log copies',
 });
+/** S12: plans whose details are files, not records ("Listed files"). */
+const FILE_PLANS = new Set(['rotated_logs']);
+/** S12: a plan that changes no library record (`backup.policy: "none"`): no backup is taken or offered. */
+export const NO_BACKUP_TEXT = 'Not needed: no library record changes';
+const noBackup = plan => plan?.backup?.policy === 'none';
 // The review is gone or no longer matches the database: review it again.
 const REVIEW_AGAIN = new Set(['plan-expired', 'storage-changed', 'plan-changed']);
 // Refusals whose server message is the whole truth.
@@ -71,6 +78,7 @@ function el(tag, text, className) {
 
 /** The Backup value: what the apply will do before it changes anything. */
 export function backupText(backup) {
+    if (backup?.policy === 'none') return NO_BACKUP_TEXT;
     if (backup?.policy === 'off') return 'No safety backup (the policy is off)';
     const where = backup?.destination_label ? ` (${backup.destination_label})` : '';
     if (backup?.policy === 'required') return `Always created and verified first${where}`;
@@ -205,6 +213,18 @@ export async function applyPlan({ api, store, scope, token, reviewAgain, notify 
     return { job };
 }
 
+/** The details list's summary: "Listed records (N)", or "Listed files (N)" for a plan of files (S12); "(N of M)" when cut. */
+export function detailsSummary(plan, shown) {
+    const what = FILE_PLANS.has(plan?.operation) ? 'Listed files' : 'Listed records';
+    const count = plan?.scope?.count ?? shown;
+    return shown < count ? `${what} (${number(shown)} of ${number(count)})` : `${what} (${number(shown)})`;
+}
+
+/** D55's backup box for the review, or null for a plan that changes no library record (S12, `policy: "none"`). */
+export function backupBox(plan, onBackup) {
+    return noBackup(plan) ? null : { copy: BACKUP_COPY, onBackup };
+}
+
 /** Show the reviewed `plan` for `operation`; Apply applies exactly this token. */
 export function showPlan(plan, { api, store, scope, trigger = null, reviewAgain, notify = showWorkspaceToast,
     navigate = navigateTo, backup = () => downloadDatabaseBackup() }) {
@@ -212,9 +232,7 @@ export function showPlan(plan, { api, store, scope, trigger = null, reviewAgain,
     const lines = detailLines(plan);
     if (lines.length) {
         const list = el('details');
-        const count = plan.scope?.count ?? lines.length;
-        list.append(el('summary', lines.length < count ? `Listed records (${number(lines.length)} of ${number(count)})`
-            : `Listed records (${number(lines.length)})`));
+        list.append(el('summary', detailsSummary(plan, lines.length)));
         const body = el('pre', lines.join('\n'));
         body.tabIndex = 0;
         list.append(body);
@@ -238,7 +256,7 @@ export function showPlan(plan, { api, store, scope, trigger = null, reviewAgain,
         return;
     }
     openReviewDialog({ scope, trigger, title: PLAN_TITLE, heading,
-        grid: planGrid(plan), options, sentence: planNote(plan), backup: { copy: BACKUP_COPY, onBackup: backup },
+        grid: planGrid(plan), options, sentence: planNote(plan), backup: backupBox(plan, backup),
         cancelLabel: 'Cancel', primary: { label: APPLY_LABEL },
         onStart: () => applyPlan({ api, store, scope, token: plan.token, reviewAgain, notify, navigate }) });
 }
