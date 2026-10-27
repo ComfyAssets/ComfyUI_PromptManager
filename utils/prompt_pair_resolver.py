@@ -2580,7 +2580,7 @@ def resolve_text_input(
         return None
 
 
-_NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 def _numeric(text: str) -> bool:

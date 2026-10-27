@@ -1,5 +1,6 @@
 """``sampler_less_prompt``: the one wired text of a graph with no sampler (#252)."""
 
+import time
 import unittest
 
 from utils.prompt_pair_resolver import sampler_less_prompt
@@ -30,6 +31,13 @@ class TestSamplerLessPrompt(unittest.TestCase):
         for value in (2048, "2048", "1.5", " 7 "):
             graph = _guided(**{"1": {"class_type": "Enc", "inputs": {"text": value}}})
             self.assertEqual(sampler_less_prompt(graph)["state"], "absent", value)
+
+    def test_a_long_digit_run_with_a_letter_is_text_and_fast(self):
+        text = "9" * 50_000 + "x"
+        graph = _guided(**{"1": {"class_type": "Enc", "inputs": {"text": text}}})
+        started = time.monotonic()
+        self.assertEqual(sampler_less_prompt(graph)["text"], text)
+        self.assertLess(time.monotonic() - started, 1.0)
 
     def test_number_like_words_are_prompts(self):
         for value in ("nan", "inf", "Infinity", "1_000"):
