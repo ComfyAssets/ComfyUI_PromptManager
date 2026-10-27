@@ -6,7 +6,9 @@ contains effective ``text``, deduplicated-recipe ``storage_text`` and
 ``provenance``; ComfyUI provenance records the exact output
 slot and complete followed link path. States distinguish a resolved pair (an
 explicit empty negative is valid), absent data, unsupported/unresolved data and
-ambiguous sampler selection. Unknown conditioning semantics are never flattened.
+ambiguous sampler selection. Listed composites are never flattened; in the
+inspection profile, nodes the semantics table does not name pass their text
+through (#381, ``_GraphResolver.passed``).
 
 Future nodes can register declarative ``OutputAdapter`` entries by
 ``(class_type, output_slot)``. This does not prescribe a future paired-node schema.
@@ -48,7 +50,9 @@ RESOLVER_VERSION = 1
 # review items recorded from that profile (with the profile's budgets and
 # the semantics table). Bump it when a change would make the inspection
 # profile resolve the same metadata otherwise, even if ingestion is unchanged.
-INSPECTION_RESOLVER_VERSION = 1
+# 2: unknown nodes pass through generically (#381); unknown classes are not in
+# the table's class projection, so only this number can move those items.
+INSPECTION_RESOLVER_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,15 @@ _HISTORICAL_ADAPTERS = {
 for _name in ("PromptManagerPositive", "PromptManagerDetailer"):
     _HISTORICAL_ADAPTERS[(_name, 0)] = _COMMA
     _HISTORICAL_ADAPTERS[(_name, 1)] = replace(_COMMA, kind="string")
+# This repository's own node classes, current and historical: their text is the
+# prompt whatever unknown nodes sit between them and the sampler (#381).
+_OWN_CLASSES = frozenset(
+    name
+    for name, _ in list(_DEFAULT_ADAPTERS) + list(_HISTORICAL_ADAPTERS)
+    if name.startswith("PromptManager")
+)
+# Nodes with these exact names are traced by code, not by the table.
+_CODED_CLASSES = frozenset({"Reroute", "StringConcatenate", "Text Concatenate"})
 
 
 @dataclass(frozen=True)
@@ -197,6 +210,16 @@ _ZEROED_SOURCE = "zeroed-conditioning"
 _MAX_BRANCH_CANDIDATES = 32
 # Statically undecidable text (a search, a list output): never pick an item.
 _RUNTIME_REASON = "Text is decided at run time"
+# Different texts reach one sampler through unknown nodes (#381): one candidate
+# per text, never a refusal.
+SEVERAL_SOURCES_REASON = "Several prompts reach the sampler"
+SELECTOR_BRANCHES_REASON = "Selector branches have different prompts"
+# Failures that bound the work: never skipped by a pass-through walk.
+_LIMIT_CODES = frozenset({"work-limit", "depth-limit", "text-limit"})
+# Inputs that make an unknown node a conditioning transform, not a generator.
+_CONDITIONING_INPUTS = ("conditioning", "positive", "negative")
+# The first item of a pass-through divergence's 3-tuple choice key.
+_PASS_THROUGH = "pass-through"
 # Uncoded outcomes the inspector explains by their exact reason.
 EMPTY_POSITIVE_REASON = "Positive prompt is empty"
 # Several sampler branches, every one resolved to the same pair (#249).
@@ -241,17 +264,23 @@ class _Unresolved(Exception):
 
 
 class _Diverging(Exception):
-    """A runtime selector whose branches trace to different texts.
+    """A runtime choice whose options trace to different texts.
 
     Raised from inside tracing; ``_GraphResolver.branches`` resolves the sampler
-    again once per choice, so each candidate is internally consistent.
+    again once per choice, so each candidate is internally consistent. A
+    selector's choices are ``(True, False)``; an unknown node passing several
+    texts through (#381) has one choice per distinct text, ``0..n-1``.
     """
 
-    def __init__(self, key: Tuple[str, int]) -> None:
+    def __init__(self, key: tuple, choices: tuple, sources: bool = False) -> None:
         super().__init__(key)
-        # The condition output (node ID, slot): one runtime value, so every
-        # selector it drives is forced together.
+        # A selector's condition output (node ID, slot): one runtime value, so
+        # every selector it drives is forced together. A pass-through key is
+        # ``(_PASS_THROUGH, node ID, slot)``.
         self.key = key
+        self.choices = choices
+        # Raised by an unknown node passing several texts (the outcome's reason).
+        self.sources = sources
 
 
 def _node_ref(node_id: str, class_type: Any) -> dict:
@@ -457,6 +486,19 @@ class _GraphResolver:
             )
             # Any listed sampler upstream in latent ancestry is an earlier stage.
             self.stage_classes = frozenset(semantics.samplers)
+            # Classes the resolver knows something about: an unlisted output of
+            # one stays ``unsupported-node``; any other class passes through.
+            facts = semantics.facts
+            self.described = (
+                semantics.all_classes
+                | {name for name, _ in semantics.lineage}
+                | {name for name, _ in self.adapters}
+                | _CODED_CLASSES
+                | frozenset(facts["configuration_outputs"])
+                | frozenset(facts["model_outputs"])
+                | frozenset(facts["model_passthroughs"])
+                | frozenset(facts["scalar_outputs"])
+            )
 
     def node(self, node_id: str) -> Tuple[str, dict]:
         if self.legacy:
@@ -557,7 +599,9 @@ class _GraphResolver:
                     self.inherit_source(node_id, slot, [path])
             elif (name, slot) in self.adapters:
                 adapter = self.adapters[(name, slot)]
-                if not isinstance(adapter, OutputAdapter) or adapter.kind != kind:
+                if not isinstance(adapter, OutputAdapter) or (
+                    kind != "any" and adapter.kind != kind
+                ):
                     raise _Unresolved(_INCOMPATIBLE_SLOT, "malformed")
                 evidence = (
                     self.execution_record(node_id, inputs)
@@ -613,7 +657,7 @@ class _GraphResolver:
             elif (
                 name in ("StringConcatenate", "Text Concatenate")
                 and slot == 0
-                and kind == "string"
+                and kind in ("string", "any")
             ):
                 if name == "StringConcatenate":
                     keys = ["string_a", "string_b"]
@@ -651,6 +695,10 @@ class _GraphResolver:
             elif self.semantics is not None and self.follows(name, slot, kind):
                 text, path, storage_text = self.semantic(
                     node_id, name, slot, kind, inputs, depth
+                )
+            elif self.semantics is not None and name not in self.described:
+                text, path, storage_text = self.passed(
+                    node_id, slot, kind, inputs, depth
                 )
             else:
                 raise self.unsupported(
@@ -747,7 +795,7 @@ class _GraphResolver:
             return True
         if slot == 0 and name in semantics.selectors:
             return True
-        return kind == "conditioning" and (
+        return kind in ("conditioning", "any") and (
             (name, slot) in semantics.conditioning
             or (slot == 0 and name in semantics.composites)
         )
@@ -769,11 +817,13 @@ class _GraphResolver:
         ):
             listed = table.get((name, slot))
             if listed is not None:
-                if kind != expected:
+                if kind not in (expected, "any"):
                     raise _Unresolved(_INCOMPATIBLE_SLOT, "malformed")
                 return build(node_id, listed, inputs, depth)
         entry = (
-            semantics.conditioning.get((name, slot)) if kind == "conditioning" else None
+            semantics.conditioning.get((name, slot))
+            if kind in ("conditioning", "any")
+            else None
         )
         if entry is not None and entry["strategy"] == "zeroed":
             # The upstream text is discarded, so it is not traced.
@@ -825,8 +875,97 @@ class _GraphResolver:
             for label in ("true", "false")
         ]
         if parts[0][0] != parts[1][0]:
-            raise _Diverging((str(condition[0]), condition[1]))
+            raise _Diverging((str(condition[0]), condition[1]), (True, False))
         return self.merged(node_id, 0, parts)
+
+    def passed(
+        self, node_id: str, slot: int, kind: str, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """An output no rule describes passes its text through (#381).
+
+        A text output (kind ``string`` or ``any``) of a node with a seed input
+        (``seed``, ``noise_seed``, ``sampling_mode.seed``) and no linked
+        conditioning input is generated at run time (a language model, a
+        wildcard or random line): ``runtime-value``, never its inputs. With a
+        linked conditioning input it is a conditioning transform (noise). A
+        ``text`` input is the text (the legacy encoder rule). Otherwise the
+        followed inputs (``pass_inputs``) are traced with kind ``any``: an
+        unknown node may turn a string into conditioning. A followed input that
+        finds no text (``unsupported-node``) adds nothing; limits and runtime
+        choices propagate; any other failure blocks, unless a PromptManager
+        node was reached: this repository's own nodes are authoritative, so
+        only their texts count then. One distinct text is the result; several
+        are a runtime choice with one candidate per text, in input order.
+        """
+        if (
+            kind != "conditioning"
+            and any(name.endswith("seed") for name in inputs)
+            and not any(_link(inputs.get(name)) for name in _CONDITIONING_INPUTS)
+        ):
+            raise self.named(_RUNTIME_REASON, "runtime-value", node_id)
+        if "text" in inputs:
+            traced = self.text(inputs["text"], "string", depth + 1)
+            self.inherit_source(node_id, slot, [traced[1]])
+            return traced
+        found: list = []
+        blocking: Optional[_Unresolved] = None
+        for value in self.pass_inputs(slot, inputs):
+            try:
+                found.append(self.text(value, "any", depth + 1))
+            except _Unresolved as error:
+                if error.code in _LIMIT_CODES:
+                    raise
+                if error.code != "unsupported-node" and blocking is None:
+                    blocking = error
+        owned = [traced for traced in found if self.owned(traced[1])]
+        if owned:
+            found = owned
+        elif blocking is not None:
+            raise blocking
+        if not found:
+            raise self.unsupported("Unsupported node semantics or output slot", node_id)
+        texts = list(dict.fromkeys(traced[0] for traced in found))
+        if len(texts) == 1:
+            return self.merged(node_id, slot, found)
+        if len(texts) > _MAX_BRANCH_CANDIDATES:
+            raise _Unresolved("Too many selector branches", "work-limit")
+        key = (_PASS_THROUGH, node_id, slot)
+        if key not in self.choices:
+            raise _Diverging(key, tuple(range(len(texts))), sources=True)
+        self.tainted = True
+        chosen = texts[self.choices[key]]
+        return self.merged(node_id, slot, [t for t in found if t[0] == chosen])
+
+    def pass_inputs(self, slot: int, inputs: dict) -> list:
+        """The linked inputs an unknown node's output is read through.
+
+        Output slot 0 with a linked ``positive`` (slot 1, ``negative``) reads
+        only that input: the paired-conditioning convention, which the legacy
+        parser followed by role. A linked ``conditioning`` is read alone (the
+        legacy order). Otherwise every linked input but the core type inputs
+        (``pass_through.skip_inputs``: model, clip, image, ...) is read.
+        """
+        for wanted, name in ((0, "positive"), (1, "negative")):
+            if slot == wanted and _link(inputs.get(name)):
+                return [inputs[name]]
+        if _link(inputs.get("conditioning")):
+            return [inputs["conditioning"]]
+        skipped = self.semantics.pass_through["skip_inputs"]
+        return [
+            value
+            for name, value in inputs.items()
+            if _link(value) and name not in skipped
+        ]
+
+    def through_unknown(self, path: list) -> bool:
+        """Whether a followed path passes through a node no rule describes."""
+        self.scan(len(path))
+        return any(self.node(step["node_id"])[0] not in self.described for step in path)
+
+    def owned(self, path: list) -> bool:
+        """Whether a followed path passes through one of this repository's nodes."""
+        self.scan(len(path))
+        return any(self.node(step["node_id"])[0] in _OWN_CLASSES for step in path)
 
     def merged(self, node_id: str, slot: int, parts: list) -> Tuple[str, list, str]:
         """One text reached through several followed paths (deduplicated)."""
@@ -1022,7 +1161,11 @@ class _GraphResolver:
             return None
         for name in ("text", "negative_text", "prepend_text", "append_text"):
             try:
-                expected = self.text(inputs.get(name, ""), "string")[0]
+                expected, followed, _ = self.text(inputs.get(name, ""), "string")
+            except _Diverging:
+                # Several texts passed through an unknown node (#381): the
+                # record is what ran, so it is not checked against them.
+                continue
             except _Unresolved as error:
                 if self.unverifiable(error):
                     value = inputs.get(name)
@@ -1043,6 +1186,9 @@ class _GraphResolver:
                             raise
                     continue
                 raise
+            if self.semantics is not None and self.through_unknown(followed):
+                # A text passed through an unknown node may be transformed there.
+                continue
             if name in ("prepend_text", "append_text"):
                 expected = expected.strip()
             if expected != record[name]:
@@ -1563,17 +1709,20 @@ class _GraphResolver:
         """
         pending: list = [{}]
         results: list = []
+        several = False
         try:
             while pending:
                 self.choices = pending.pop(0)
                 try:
                     results.append(self.stage(sampler_id, frozenset()))
                 except _Diverging as diverging:
-                    if len(results) + len(pending) + 2 > _MAX_BRANCH_CANDIDATES:
+                    count = len(diverging.choices)
+                    if len(results) + len(pending) + count > _MAX_BRANCH_CANDIDATES:
                         raise _Unresolved("Too many selector branches", "work-limit")
+                    several = several or diverging.sources
                     pending.extend(
                         {**self.choices, diverging.key: choice}
-                        for choice in (True, False)
+                        for choice in diverging.choices
                     )
         except _Unresolved as error:
             return _result(
@@ -1592,7 +1741,7 @@ class _GraphResolver:
         return _result(
             "ambiguous",
             sampler_id=sampler_id,
-            reason="Selector branches have different prompts",
+            reason=SEVERAL_SOURCES_REASON if several else SELECTOR_BRANCHES_REASON,
             candidates=results,
         )
 

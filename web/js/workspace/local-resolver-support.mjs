@@ -29,6 +29,14 @@ export const ZEROED_SOURCE = 'zeroed-conditioning';
 export const MAX_BRANCH_CANDIDATES = 32;
 export const RUNTIME_REASON = 'Text is decided at run time';
 export const EMPTY_POSITIVE_REASON = 'Positive prompt is empty';
+// #381: different texts reach one sampler through unknown nodes (one candidate each).
+export const SEVERAL_SOURCES_REASON = 'Several prompts reach the sampler';
+export const SELECTOR_BRANCHES_REASON = 'Selector branches have different prompts';
+// Failures that bound the work: never skipped by a pass-through walk (`_LIMIT_CODES`).
+export const PASS_LIMIT_CODES = new Set(['work-limit', 'depth-limit', 'text-limit']);
+export const PASS_THROUGH = 'pass-through';
+// Classes traced by code, not by the table (`_CODED_CLASSES`).
+export const CODED_CLASSES = ['Reroute', 'StringConcatenate', 'Text Concatenate'];
 export const IDENTICAL_BRANCHES_REASON = 'Every sampler branch uses the same prompt pair';
 export const MULTISTAGE_UNATTRIBUTED_REASON = 'Multistage sampler ancestry is ambiguous';
 export const ADDED_CONDITIONING_REASON = 'A later stage adds conditioning to the base prompt';
@@ -96,6 +104,8 @@ const historical = [
 ];
 for (const name of ['PromptManagerPositive', 'PromptManagerDetailer']) historical.push([name, 0, 'text', 'conditioning', COMMA], [name, 1, 'text', 'string', COMMA]);
 for (const [name, slot, input, kind, options] of historical) ADAPTERS.set(slotKey(name, slot), adapter(input, kind, options));
+// This repository's own classes (`_OWN_CLASSES`): authoritative through unknown nodes (#381).
+export const OWN_CLASSES = new Set([...ADAPTERS.keys()].map(key => key.split('\u0000')[0]).filter(name => name.startsWith('PromptManager')));
 // `known_slots` in execution_record: every adapter slot per class.
 export const ADAPTER_SLOTS = new Map();
 for (const key of ADAPTERS.keys()) {
@@ -112,9 +122,13 @@ export class Unresolved extends Error {
     }
 }
 export class Diverging extends Error {
-    constructor(key) {
+    /** A selector's choices are [true, false]; an unknown node's are 0..n-1, one per distinct text (#381). */
+    constructor(key, choices, sources = false) {
         super('diverging');
         this.key = key;
+        this.choices = choices;
+        // Raised by an unknown node passing several texts (the outcome's reason).
+        this.sources = sources;
     }
 }
 
@@ -247,9 +261,22 @@ export function compileSemantics(doc) {
     }
     const stageInputs = doc.stage_inputs;
     if (!plain(stageInputs) || !Array.isArray(stageInputs.shaped) || !Array.isArray(stageInputs.with_model)) fail('stage_inputs');
+    // #381: core type inputs an unknown node's text is never read through.
+    const passThrough = doc.pass_through;
+    if (!plain(passThrough) || Object.keys(passThrough).length !== 1 || !Array.isArray(passThrough.skip_inputs) ||
+        !passThrough.skip_inputs.length || passThrough.skip_inputs.some(name => typeof name !== 'string' || !name) ||
+        new Set(passThrough.skip_inputs).size !== passThrough.skip_inputs.length ||
+        ['text', 'positive', 'negative', 'conditioning'].some(name => passThrough.skip_inputs.includes(name))) fail('pass_through');
+    // Classes the facts tables describe (loaders, model patches, configuration and scalar outputs).
+    const facts = doc.facts;
+    if (!plain(facts) || !plain(facts.configuration_outputs) || !plain(facts.model_outputs) || !Array.isArray(facts.model_passthroughs) ||
+        !plain(facts.scalar_outputs)) fail('facts');
+    const factClasses = new Set([...Object.keys(facts.configuration_outputs), ...Object.keys(facts.model_outputs), ...facts.model_passthroughs,
+        ...Object.keys(facts.scalar_outputs)]);
     return Object.freeze({
         samplers, guiders, selectors, composites, savers, conditioning, encoders, strings, runtime, nonFileOutputs, lineage,
         stageInputs: { shaped: [...stageInputs.shaped], withModel: [...stageInputs.with_model] }, allClasses: new Set(owners.keys()),
+        skipInputs: new Set(passThrough.skip_inputs), factClasses,
     });
 }
 

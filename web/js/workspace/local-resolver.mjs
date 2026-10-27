@@ -23,7 +23,13 @@ import {
     MAX_JOIN_INPUTS,
     MAX_SUBGRAPH_DEPTH,
     MAX_WORKFLOW_NODES,
+    CODED_CLASSES,
     NO_SAMPLER_NAMES,
+    OWN_CLASSES,
+    PASS_LIMIT_CODES,
+    PASS_THROUGH,
+    SELECTOR_BRANCHES_REASON,
+    SEVERAL_SOURCES_REASON,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
     ROLE_METADATA_KEYS,
@@ -78,6 +84,9 @@ class GraphResolver {
         this.semantics = semantics;
         this.samplerClasses = new Set([...semantics.samplers].filter(([, entry]) => CANDIDATE_STRATEGIES.has(entry.strategy)).map(([name]) => name));
         this.stageClasses = new Set(semantics.samplers.keys());
+        // `described`: an unlisted output of one of these stays `unsupported-node`; any other class passes through (#381).
+        this.described = new Set([...semantics.allClasses, ...[...semantics.lineage.keys()].map(key => key.split('\u0000')[0]),
+            ...[...ADAPTERS.keys()].map(key => key.split('\u0000')[0]), ...CODED_CLASSES, ...semantics.factClasses]);
     }
 
     node(nodeId) {
@@ -156,7 +165,7 @@ class GraphResolver {
                 [text, path, storageText] = this.text(inputs.get(keys[0]), kind, depth + 1);
                 this.inheritSource(nodeId, slot, [path]);
             } else if (adapted) {
-                if (adapted.kind !== kind) throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
+                if (kind !== 'any' && adapted.kind !== kind) throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
                 const evidence = name === 'PromptManagerPair' ? this.executionRecord(nodeId, inputs) : null;
                 if (evidence !== null) {
                     text = evidence[adapted.inputName === 'text' ? 'positive_text' : 'negative_effective_text'];
@@ -178,11 +187,13 @@ class GraphResolver {
                         if (omitted.length) this.omitting.add(slotKey(nodeId, slot));
                     }
                 }
-            } else if ((name === 'StringConcatenate' || name === 'Text Concatenate') && slot === 0 && kind === 'string') {
+            } else if ((name === 'StringConcatenate' || name === 'Text Concatenate') && slot === 0 && (kind === 'string' || kind === 'any')) {
                 [text, path] = this.concatenate(name, inputs, depth);
                 storageText = text;
             } else if (this.follows(name, slot, kind)) {
                 [text, path, storageText] = this.semantic(nodeId, name, slot, kind, inputs, depth);
+            } else if (!this.described.has(name)) {
+                [text, path, storageText] = this.passed(nodeId, slot, kind, inputs, depth);
             } else {
                 throw this.unsupported('Unsupported node semantics or output slot', nodeId);
             }
@@ -258,7 +269,7 @@ class GraphResolver {
         if (semantics.runtime.has(name)) return true;
         if (semantics.encoders.has(key) || semantics.strings.has(key)) return true;
         if (slot === 0 && semantics.selectors.has(name)) return true;
-        return kind === 'conditioning' && (semantics.conditioning.has(key) || (slot === 0 && semantics.composites.has(name)));
+        return (kind === 'conditioning' || kind === 'any') && (semantics.conditioning.has(key) || (slot === 0 && semantics.composites.has(name)));
     }
 
     semantic(nodeId, name, slot, kind, inputs, depth) {
@@ -267,11 +278,11 @@ class GraphResolver {
         for (const [table, expected, build] of [[semantics.encoders, 'conditioning', 'encoded'], [semantics.strings, 'string', 'stringed']]) {
             const listed = table.get(key);
             if (listed !== undefined) {
-                if (kind !== expected) throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
+                if (kind !== expected && kind !== 'any') throw new Unresolved(INCOMPATIBLE_SLOT, 'malformed');
                 return this[build](nodeId, listed, inputs, depth);
             }
         }
-        const entry = kind === 'conditioning' ? semantics.conditioning.get(key) : undefined;
+        const entry = kind === 'conditioning' || kind === 'any' ? semantics.conditioning.get(key) : undefined;
         if (entry !== undefined && entry.strategy === 'zeroed') {
             this.textSources.set(slotKey(nodeId, slot), ZEROED_SOURCE);
             return ['', [], ''];
@@ -302,8 +313,64 @@ class GraphResolver {
             return traced;
         }
         const parts = ['true', 'false'].map(label => this.text(pyGet(inputs, branches[label]), kind, depth + 1));
-        if (parts[0][0] !== parts[1][0]) throw new Diverging(slotKey(String(condition[0]), condition[1]));
+        if (parts[0][0] !== parts[1][0]) throw new Diverging(slotKey(String(condition[0]), condition[1]), [true, false]);
         return this.merged(nodeId, 0, parts);
+    }
+
+    /** `passed` (#381): an output no rule describes passes its text through; PromptManager nodes are authoritative. */
+    passed(nodeId, slot, kind, inputs, depth) {
+        // A text output of a node with a seed input is generated at run time (a language model, a wildcard).
+        // With a linked conditioning input it is a conditioning transform (noise) instead.
+        if (kind !== 'conditioning' && [...inputs.keys()].some(name => name.endsWith('seed')) &&
+            !['conditioning', 'positive', 'negative'].some(name => isLink(pyGet(inputs, name)))) throw this.named(RUNTIME_REASON, 'runtime-value', nodeId);
+        if (inputs.has('text')) {
+            const traced = this.text(inputs.get('text'), 'string', depth + 1);
+            this.inheritSource(nodeId, slot, [traced[1]]);
+            return traced;
+        }
+        let found = [], blocking = null;
+        for (const value of this.passInputs(slot, inputs)) {
+            try {
+                found.push(this.text(value, 'any', depth + 1));
+            } catch (error) {
+                if (!(error instanceof Unresolved) || PASS_LIMIT_CODES.has(error.code)) throw error;
+                if (error.code !== 'unsupported-node' && blocking === null) blocking = error;
+            }
+        }
+        const owned = found.filter(traced => this.owned(traced[1]));
+        if (owned.length) found = owned;
+        else if (blocking !== null) throw blocking;
+        if (!found.length) throw this.unsupported('Unsupported node semantics or output slot', nodeId);
+        const texts = [...new Set(found.map(traced => traced[0]))];
+        if (texts.length === 1) return this.merged(nodeId, slot, found);
+        if (texts.length > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
+        // JSON escapes U+0000, so this never equals a selector's raw `slotKey` (Python: a 3-tuple vs a 2-tuple).
+        const key = JSON.stringify([PASS_THROUGH, nodeId, slot]);
+        if (!this.choices.has(key)) throw new Diverging(key, texts.map((_, index) => index), true);
+        this.tainted = true;
+        const chosen = texts[this.choices.get(key)];
+        return this.merged(nodeId, slot, found.filter(traced => traced[0] === chosen));
+    }
+
+    /** `pass_inputs`: the role input by output slot, else `conditioning`, else every linked non-type input. */
+    passInputs(slot, inputs) {
+        for (const [wanted, name] of [[0, 'positive'], [1, 'negative']]) {
+            if (slot === wanted && isLink(pyGet(inputs, name))) return [inputs.get(name)];
+        }
+        if (isLink(pyGet(inputs, 'conditioning'))) return [inputs.get('conditioning')];
+        return [...inputs].filter(([name, value]) => isLink(value) && !this.semantics.skipInputs.has(name)).map(([, value]) => value);
+    }
+
+    /** `through_unknown`: whether a followed path passes through a node no rule describes. */
+    throughUnknown(path) {
+        this.scan(path.length);
+        return path.some(step => !this.described.has(this.node(step.node_id)[0]));
+    }
+
+    /** `owned`: whether a followed path passes through one of this repository's nodes. */
+    owned(path) {
+        this.scan(path.length);
+        return path.some(step => OWN_CLASSES.has(this.node(step.node_id)[0]));
     }
 
     merged(nodeId, slot, parts) {
@@ -421,10 +488,12 @@ class GraphResolver {
         const record = readPairExecution(this.metadata, nodeId);
         if (record === null) return null;
         for (const name of ['text', 'negative_text', 'prepend_text', 'append_text']) {
-            let expected;
+            let expected, followed;
             try {
-                expected = this.text(pyGet(inputs, name, ''), 'string')[0];
+                [expected, followed] = this.text(pyGet(inputs, name, ''), 'string');
             } catch (error) {
+                // Several texts passed through an unknown node (#381): the record is what ran.
+                if (error instanceof Diverging) continue;
                 if (error instanceof Unresolved && this.unverifiable(error)) {
                     const value = pyGet(inputs, name);
                     if (isLink(value)) {
@@ -437,6 +506,8 @@ class GraphResolver {
                 }
                 throw error;
             }
+            // A text passed through an unknown node may be transformed there.
+            if (this.throughUnknown(followed)) continue;
             if (name === 'prepend_text' || name === 'append_text') expected = pyStrip(expected);
             if (expected !== record[name]) throw new Unresolved('Execution evidence does not match recorded node inputs', 'malformed');
         }
@@ -492,6 +563,7 @@ class GraphResolver {
 
     branches(samplerId) {
         const pending = [new Map()], results = [];
+        let several = false;
         try {
             while (pending.length) {
                 this.choices = pending.shift();
@@ -499,8 +571,9 @@ class GraphResolver {
                     results.push(stage(this, samplerId, new Set()));
                 } catch (error) {
                     if (!(error instanceof Diverging)) throw error;
-                    if (results.length + pending.length + 2 > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
-                    for (const choice of [true, false]) pending.push(new Map([...this.choices, [error.key, choice]]));
+                    if (results.length + pending.length + error.choices.length > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
+                    several = several || error.sources;
+                    for (const choice of error.choices) pending.push(new Map([...this.choices, [error.key, choice]]));
                 }
             }
         } catch (error) {
@@ -511,7 +584,7 @@ class GraphResolver {
         }
         if (results.every(item => item.state === 'unresolved')) return results[0];
         if (new Set(results.map(outcomeKey)).size === 1) return results[0];
-        return result('ambiguous', { samplerId, reason: 'Selector branches have different prompts', candidates: results });
+        return result('ambiguous', { samplerId, reason: several ? SEVERAL_SOURCES_REASON : SELECTOR_BRANCHES_REASON, candidates: results });
     }
 
     sides(samplerId) {

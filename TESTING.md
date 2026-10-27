@@ -745,11 +745,32 @@ with a literal true `strip_newlines` is `replace("\n", "").strip()`;
 (`N` = `inputcount`) after the literal delimiter unless missing or exactly `""`, and
 ignores later inputs. A linked setting is `unsupported-node`; a list output
 (`return_list` true or linked) and `PromptSearchList` are `runtime-value` ("Text is
-decided at run time"), never one list item. Unverified text nodes (LoRAfromText,
-RegexReplace, XYZPrompt, ImpactWildcardProcessor) stay `unsupported-node`. Every
+decided at run time"), never one list item. Every
 intermediate text is length-checked and charged to the scanned-character budget. If
 the table cannot be loaded, graph inspection is `unresolved` ("Inspection node
 semantics are unavailable") and ingestion is unaffected, because it never imports the table.
+Unknown nodes pass through (#381, maintainer-approved 2026-10-27; no per-node
+inventory): an output whose class the table, its `facts`, `lineage` and the code's
+adapters never name is read through, not refused. A `text` input is its text (the
+legacy encoder rule, so RegexReplace or LoRAfromText show their input text). Else
+output slot 0 with a linked `positive` (slot 1, `negative`) follows only that input,
+else a linked `conditioning` alone, else every linked input except the table's
+`pass_through.skip_inputs` (core type inputs: model, clip, vae, image, latent, ...),
+each traced with kind `any`. A followed input with no text adds nothing; limits and
+selector choices propagate; another failure (`runtime-value`, `composite`,
+`malformed`) blocks, unless a PromptManager node was reached: this repository's own
+nodes are authoritative, and then only their texts count. One distinct text
+resolves; several make the sampler `ambiguous` "Several prompts reach the sampler"
+with one candidate per text, in input order (at most 32, else `work-limit`). No text
+at all is `unsupported-node` naming the outermost unknown node. An unlisted output
+of a listed class (a sampler, a loader, a lineage node) stays `unsupported-node`, so
+the walk never reads another stage's prompt. `INSPECTION_RESOLVER_VERSION` is 2 for
+this rule; ingestion keeps the default profile (`RESOLVER_VERSION` 1). The legacy
+parity gate (`tests/test_legacy_parity_gate.py`) records, per corpus (the
+generation-params vectors, the inspection parity fixtures, the local resolver golden
+and selection cases, the unknown-node shapes in `tests/unknown_node_graphs.py`),
+every graph whose inspection positive equals the legacy parser's; a graph may join
+that list (`python3 -m tests.test_legacy_parity_gate --write`), never leave it.
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240

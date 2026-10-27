@@ -906,6 +906,15 @@ def golden_cases():
             },
         ),
     )
+    # #381: unknown nodes between the prompt and the sampler pass through.
+    try:
+        from tests import unknown_node_graphs
+    except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
+        import unknown_node_graphs
+    for name, graph in unknown_node_graphs.shapes().items():
+        add(f"pass-through-{name}", graph)
+    for name, records in unknown_node_graphs.recorded_shapes().items():
+        cases[f"pass-through-{name}"] = records
     cases["parameters-only"] = {
         "parameters": "a fox\nNegative prompt: blur\nSteps: 20, Sampler: euler"
     }
@@ -1059,7 +1068,8 @@ def boundary_cases():
                 ["7", 0],
                 {
                     "\U0001f600"
-                    * 70: {"class_type": long_name, "inputs": {"text": "x"}},
+                    # No text and no links: still named, not passed through (#381).
+                    * 70: {"class_type": long_name, "inputs": {"seed": 1}},
                     "7": _encode("b"),
                 },
             )
