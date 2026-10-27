@@ -375,13 +375,11 @@ def _busy_refusal(busy: JobBusy) -> Refusal:
     return Refusal(409, "busy", f"{title} already running", busy_response(busy))
 
 
-def _batch_cancelled(job):
-    """End the batch as cancelled; None (no service to hand back)."""
+def _batch_cancelled(job) -> str:
+    """Say the batch was cancelled; its end state (the runner ends the job)."""
     job.update(status_line=BATCH_CANCELLED)
     job.log_line(BATCH_CANCELLED)
-    job.publish({"type": "cancelled", "progress": job.progress})
-    job.finish("cancelled")
-    return None
+    return "cancelled"
 
 
 class ImageTagJobsMixin:
@@ -513,16 +511,17 @@ class ImageTagJobsMixin:
 
         ``job.cancelled`` is checked between phases (and per pre-pass chunk
         and per image). Each phase publishes ``{"type": "phase", "phase"}``.
-        With ``keep_in_memory`` false the model is unloaded under the gate
-        before the gate is released, also after a cancel or a failure.
+        With ``keep_in_memory`` false the model is unloaded under the gate.
+        The job ends only after that cleanup and the gate release, so a job
+        that reads as ended never still holds the gate.
         """
+        state = "failed"
         try:
-            await self._autotag_batch_phases(run, job)
+            state = await self._autotag_batch_phases(run, job)
         except Exception:
             self.logger.exception("Tag output images failed")
             job.update(status_line=_INTERNAL_ERROR)
             job.log_line(f"Tagging failed · {_INTERNAL_ERROR}")
-            job.finish("failed")
         finally:
             try:
                 if not run.keep_in_memory:
@@ -531,6 +530,8 @@ class ImageTagJobsMixin:
                     await self._prune_backup_pool(job, self.db)
             finally:
                 model_gate.release(run.owner)
+                job.publish({"type": state, "progress": job.progress})
+                job.finish(state)
 
     async def _unload_batch_model(self, owner) -> None:
         from ..autotag import get_autotag_service
@@ -542,11 +543,12 @@ class ImageTagJobsMixin:
         except Exception:
             self.logger.exception("The tagging model could not be unloaded")
 
-    async def _autotag_batch_phases(self, run: AutotagRun, job):
+    async def _autotag_batch_phases(self, run: AutotagRun, job) -> str:
+        """Run the phases; the job's end state (the caller ends the job)."""
         job.publish({"type": "phase", "phase": "backup"})
         ok, _backup = await self._safety_backup_step(job, self.db, run.backup_on)
         if not ok:
-            return None
+            return "failed"
         if job.cancelled:
             return _batch_cancelled(job)
         job.publish({"type": "phase", "phase": "model"})
@@ -554,8 +556,7 @@ class ImageTagJobsMixin:
         spec = _Spec("auto", (), model_type=run.model_type, options=run.options)
         service = await self._prepare_tagging_model(job, spec, run.owner)
         if service is None:
-            job.finish("failed")
-            return None
+            return "failed"
         if job.cancelled:
             return _batch_cancelled(job)
         job.publish({"type": "phase", "phase": "listing"})
@@ -567,8 +568,7 @@ class ImageTagJobsMixin:
             self.logger.exception("Tag output images could not list the outputs")
             job.update(status_line=LISTING_FAILED)
             job.log_line(f"! {LISTING_FAILED}")
-            job.finish("failed")
-            return None
+            return "failed"
         total = len(targets)
         job.scope["images"] = total
         job.update(total=total)
@@ -592,16 +592,13 @@ class ImageTagJobsMixin:
         if not await self._tag_each_file(loop_run, done_before=done):
             job.update(status_line=STORAGE_RESTORED)
             job.log_line(f"Tagging stopped · {STORAGE_RESTORED}")
-            job.finish("failed")
-            return service
+            return "failed"
         if job.cancelled:
             return _batch_cancelled(job)
         finished = f"Tagged {_plural(job.counters.get('tagged', 0), 'image')}"
         job.update(status_line=finished, progress=100)
         job.log_line(finished)
-        job.publish({"type": "finished", "progress": 100})
-        job.finish("finished")
-        return service
+        return "finished"
 
     async def _autotag_prepass(self, job, targets, skip_marked: bool):
         """The targets left for the model, or None when cancelled meanwhile.
@@ -637,6 +634,7 @@ class ImageTagJobsMixin:
                 )
                 skipped += len(skips)
                 job.update(processed=skipped, progress=skipped * 100 // total)
+                job.publish({"type": "progress", "progress": job.progress})
         if skipped:
             job.log_line(f"Skipped {_plural(skipped, 'image')} before tagging")
         return remaining

@@ -372,6 +372,68 @@ class TestBatchLifecycle(BatchTestCase):
                 self.assertEqual(self.tagger.calls, [])
                 self.assertIsNone(model_gate.holder())
 
+    async def test_cancel_between_prepass_chunks_keeps_counts(self):
+        for n in range(3):
+            self.image(f"{n}.png", (n, n, n))
+        await self.run_batch()
+        seen = []
+        real = jobs_module._prepass_chunk
+
+        def chunk(db, items, skip_marked, max_file):
+            result = real(db, items, skip_marked, max_file)
+            job = self.api._jobs.active("autotag")
+            seen.append(job.processed)
+            job.cancelled = True  # cancel after the first chunk
+            return result
+
+        with (
+            patch.object(jobs_module, "PREPASS_CHUNK", 1),
+            patch.object(jobs_module, "_prepass_chunk", side_effect=chunk),
+        ):
+            job = await self.run_batch()
+        self.assertEqual(job.state, "cancelled")
+        self.assertEqual(job.counters["skipped"], 1)
+        self.assertEqual((job.processed, job.total), (1, 3))
+        self.assertEqual(seen, [0])
+
+    async def test_the_job_ends_only_after_its_cleanup(self):
+        self.image("a.png", (1, 1, 1))
+        PromptManagerConfig.SAFETY_BACKUP = True
+        states = []
+
+        async def prune(job, _db):
+            states.append((job.state, model_gate.holder() is not None))
+
+        with (
+            patch("py.api.maintenance.take_safety_backup", return_value="db.backup_x"),
+            patch.object(self.api, "_prune_backup_pool", side_effect=prune),
+        ):
+            job = await self.run_batch()
+        self.assertEqual(job.state, "finished")
+        self.assertEqual(states, [("running", True)])
+        self.assertIsNone(model_gate.holder())
+
+    async def test_prepass_publishes_its_progress(self):
+        for n in range(2):
+            self.image(f"{n}.png", (n, n, n))
+        await self.run_batch()
+        published = []
+        real = type(self.api._jobs).start
+
+        def start(registry, *args, **kwargs):
+            job = real(registry, *args, **kwargs)
+            original = job.publish
+            job.publish = lambda payload: (
+                published.append(dict(payload)),
+                original(payload),
+            )
+            return job
+
+        with patch.object(type(self.api._jobs), "start", start):
+            await self.run_batch()
+        self.assertIn({"type": "progress", "progress": 100}, published)
+        self.assertEqual(published[-1], {"type": "finished", "progress": 100})
+
     async def test_restore_mid_run_fails_the_job(self):
         self.image("a.png", (1, 1, 1))
         self.image("b.png", (2, 2, 2))
