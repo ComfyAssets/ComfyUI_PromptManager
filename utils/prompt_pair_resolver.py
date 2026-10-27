@@ -2578,3 +2578,100 @@ def resolve_text_input(
         return resolver.text(inputs.get(input_name), "string")[0]
     except _Unresolved:
         return None
+
+
+def _numeric(text: str) -> bool:
+    """Whether ``text`` is a number (a widget value such as ``2048``, #252)."""
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
+
+
+def sampler_less_prompt(graph: Any, *, max_visits: int = 500) -> Dict[str, Any]:
+    """The positive prompt of an API graph with no sampler pair, if one (#252).
+
+    For graphs ``_no_sampler`` finds ``absent`` (no node takes a ``positive``
+    or ``negative`` input, such as a Flux guider or a video wrapper). Only the
+    executed API graph is read, never the UI workflow. A candidate is a node
+    with a ``text`` input whose output another node consumes: a text that
+    feeds nothing did not make the image. Its text is traced as a STRING
+    (``resolve_text_input``); a linked text no rule reads is unknown unless
+    it is built from a candidate's text (``_covered``). Blank and
+    numeric texts are never prompts. This repository's own positive-text
+    nodes are authoritative: when they give a text, only they count.
+
+    Returns ``{"state", "text", "texts"}``: ``resolved`` with the one distinct
+    text; ``ambiguous`` when several texts or an unknown one could be the
+    prompt (``texts`` lists the readable ones); ``absent`` when none.
+    """
+    absent = {"state": "absent", "text": None, "texts": []}
+    if not isinstance(graph, dict) or not graph or len(graph) > max_visits:
+        return absent
+    nodes = {str(key): value for key, value in graph.items()}
+    consumed = {
+        str(value[0])
+        for node in nodes.values()
+        if isinstance(node, dict) and isinstance(node.get("inputs"), dict)
+        for value in node["inputs"].values()
+        if _link(value)
+    }
+    own: list = []
+    other: list = []
+    unknown = False
+    for node_id, node in nodes.items():
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if node_id not in consumed or not _has_text_input(node):
+            continue
+        value = inputs["text"]
+        text = resolve_text_input(nodes, node_id, "text", max_visits=max_visits)
+        if text is None:
+            # A literal that is not a string (a number) is never a prompt.
+            if _link(value) and not _covered(nodes, str(value[0])):
+                unknown = True
+            continue
+        text = text.strip()
+        if not text or _numeric(text):
+            continue
+        kind = node.get("class_type")
+        if isinstance(kind, str) and kind in _OWN_CLASSES and "Negative" not in kind:
+            own.append(text)
+        else:
+            other.append(text)
+    texts = list(dict.fromkeys(own or other))
+    if len(texts) == 1 and (own or not unknown):
+        return {"state": "resolved", "text": texts[0], "texts": texts}
+    if texts or unknown:
+        return {"state": "ambiguous", "text": None, "texts": texts}
+    return absent
+
+
+def _has_text_input(node: Any) -> bool:
+    inputs = node.get("inputs") if isinstance(node, dict) else None
+    return isinstance(inputs, dict) and "text" in inputs
+
+
+def _covered(nodes: dict, source_id: str) -> bool:
+    """Whether an unreadable text link is built from a candidate's text.
+
+    True when a node upstream of ``source_id`` (itself included) has a
+    ``text`` input: that candidate is read on its own, and whatever else is
+    joined to it at run time (a caption, a language model) is no stored
+    prompt to choose. False when the text comes only from inputs no candidate
+    holds (a builder's ``prompt`` field): the prompt is unknown then.
+    """
+    seen, stack = set(), [source_id]
+    while stack:
+        node_id = stack.pop()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        node = nodes.get(node_id)
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if not isinstance(inputs, dict):
+            continue
+        if "text" in inputs:
+            return True
+        stack.extend(str(value[0]) for value in inputs.values() if _link(value))
+    return False
