@@ -388,6 +388,16 @@ test("ApiError keeps a validated running job on busy and a validated source on i
     assert.deepEqual([new ApiError(409, "old caller").running, new ApiError(409, "old caller").source], [null, null]);
 });
 
+test("ApiError keeps a validated operation on model-busy only (#328)", () => {
+    const body = { operation: "Tagging model download · WD14 ViT" };
+    assert.equal(new ApiError(409, "busy", "model-busy", null, body).operation, "Tagging model download · WD14 ViT");
+    assert.equal(new ApiError(409, "busy", "busy", null, body).operation, null);
+    for (const operation of [null, 7, "", "x".repeat(201)]) {
+        assert.equal(new ApiError(409, "busy", "model-busy", null, { operation }).operation, null);
+    }
+    assert.equal(new ApiError(409, "busy", "model-busy").operation, null);
+});
+
 test("ApiError says whether the server itself refused (a parsed success:false body; S7 review I1)", () => {
     assert.equal(new ApiError(400, "bad", null, null, { success: false, error: "bad" }).refused, true);
     assert.equal(new ApiError(409, "busy", "busy", null, { success: false, code: "busy" }).refused, true);

@@ -11,6 +11,7 @@ from unittest import mock
 
 from database.run_attribution import stored_run_prompt
 from tests import test_execution_history_database as history_tests
+from tests.background_stops import close_handler
 from tests.test_api_admin import AdminAPITestCase
 from tests.test_execution_context_database import snapshot
 from tests.test_prompt_attribution import issue_graph, llm_text_graph, make_tracker
@@ -151,6 +152,7 @@ class TestStoredRunPrompt(RecordedRuns, unittest.TestCase):
         prompt_id = self.save(LLM_TEXT)
         self.record_run(self.db, self.output, [("sub", "img_00001_.png")], [LLM_TEXT])
         handler = ImageGenerationHandler(self.db, make_tracker(self.db))
+        self.addCleanup(close_handler, self, handler)
         linked = []
         handler.link_image_to_prompt = lambda path, prompt, meta: linked.append(
             prompt["id"]
@@ -332,7 +334,7 @@ class TestMonitorHistoryRecheck(RecordedRuns, unittest.TestCase):
         self.handler = ImageGenerationHandler(self.db, make_tracker(self.db))
         self.handler.processing_delay = 0
         self.handler.settle_interval = 0.01
-        self.addCleanup(self.handler.shutdown)
+        self.addCleanup(close_handler, self, self.handler)
         self.linked = []
         self.handler.link_image_to_prompt = lambda path, prompt, meta: (
             self.linked.append((os.path.basename(path), prompt["id"]))
@@ -650,7 +652,7 @@ class TestLinkedOutputRoot(RecordedRuns, unittest.TestCase):
         handler = ImageGenerationHandler(db, make_tracker(db))
         handler.processing_delay = 0
         handler.settle_interval = 0.01
-        self.addCleanup(handler.shutdown)
+        self.addCleanup(close_handler, self, handler)
         linked = []
         handler.link_image_to_prompt = lambda path, prompt, meta: linked.append(
             prompt["id"]

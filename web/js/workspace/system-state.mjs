@@ -22,7 +22,8 @@
  * write that saved part of its changes throws with `partial: {saved: [keys], revision}`: those keys are saved, the
  * revision is adopted and only the rest fail (`partial`, S10). A host
  * write refused as `invalid-source` (its error's `source` and server message) makes that message the status and
- * `invalidSource()` that source, so Sources marks its row (S4).
+ * `invalidSource()` that source, so Sources marks its row (S4). One refused as `invalid-setting` (S11: the server
+ * named the setting it refused) makes that message the status too, naming no source.
  */
 export { SYSTEM_SECTIONS, isSystemSection } from './state.mjs';
 
@@ -48,6 +49,9 @@ export const RESTART_LABELS = Object.freeze({ monitoring_enabled: 'Watch for new
 export const DRAFT_DOMAINS = Object.freeze(['browser', 'host', 'runtime']);
 const CONFLICT_CODE = 'settings-changed';
 const INVALID_SOURCE_CODE = 'invalid-source';
+/** S11: a `/settings` save refused for one value (a 400 whose message names the setting, e.g. a confidence of 1.5). */
+export const INVALID_SETTING_CODE = 'invalid-setting';
+const MESSAGE_CODES = new Set([INVALID_SOURCE_CODE, INVALID_SETTING_CODE]);
 const ADAPTERS = ['readBrowser', 'readHost', 'readRuntime', 'writeBrowser', 'writeHost', 'writeRuntime'];
 
 /**
@@ -182,8 +186,9 @@ export function createSystemDrafts(adapters) {
             commit(domain, written);
             return 'applied';
         } catch (error) {
-            if (domain === 'host' && error?.code === INVALID_SOURCE_CODE && typeof error.message === 'string') {
-                hostDetail.invalid = { source: typeof error.source === 'string' ? error.source : null, message: error.message };
+            if (domain === 'host' && MESSAGE_CODES.has(error?.code) && typeof error.message === 'string') {
+                const source = error.code === INVALID_SOURCE_CODE && typeof error.source === 'string' ? error.source : null;
+                hostDetail.invalid = { source, message: error.message };
             }
             const partial = domain === 'host' ? error?.partial : null;
             if (partial && Array.isArray(partial.saved)) {

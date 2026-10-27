@@ -28,6 +28,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from test_api_review import ReviewRoutesTestCase
     from test_review import unlinkable_graph, write_png
 
+from tests.background_stops import close_handler
 from utils import inspection_semantics, review_capture
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
@@ -437,6 +438,7 @@ class TestApplyInspectionCandidate(InspectionTestCase):
 class TestMonitorNeverQueues(InspectionTestCase):
     def _handler(self):
         handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+        self.addCleanup(close_handler, self, handler)
         handler.review_recorder = self.api.record_review_file
         return handler
 
@@ -760,6 +762,7 @@ class TestRecordingEdges(InspectionTestCase):
             text="latest", prompt_hash=generate_prompt_hash("latest")
         )
         handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+        self.addCleanup(close_handler, self, handler)
         handler.link_image_to_prompt(
             str(path),
             {"id": prompt_id, "text": "latest", "fallback": True},

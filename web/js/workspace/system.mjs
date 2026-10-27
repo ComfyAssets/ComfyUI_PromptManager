@@ -6,20 +6,22 @@
  * truthful and "Save preferences" is aria-disabled while nothing is unsaved. A section not delivered yet shows the
  * per-section hand-off to its legacy tool (D94), never mock placeholders. Overview (system-overview.mjs),
  * Appearance (system-appearance.mjs), Sources & scans (system-sources.mjs), Integrations (system-integrations.mjs),
- * Maintenance (system-maintenance.mjs) and Backup & export (system-backups.mjs) are native.
+ * Auto-tagging (system-tagging.mjs), Maintenance (system-maintenance.mjs) and Backup & export (system-backups.mjs) are
+ * native.
  *
  * Switching sections keeps the shell (and focus on the pressed button) and disposes the old section's scope, so its
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
  */
 import { createButton, createScope } from '../shared/toolkit/core.js';
 import { SYSTEM_SECTIONS, navigateTo } from './state.mjs';
-import { createSystemDrafts, DRAFT_DOMAINS } from './system-state.mjs';
+import { createSystemDrafts, DRAFT_DOMAINS, INVALID_SETTING_CODE } from './system-state.mjs';
 import { sectionNav } from './system-controls.mjs';
 import { mountOverview } from './system-overview.mjs';
 import { mountAppearance } from './system-appearance.mjs';
 import { mountSources } from './system-sources.mjs';
 import { mountMaintenance } from './system-maintenance.mjs';
 import { mountBackups } from './system-backups.mjs';
+import { mountTagging } from './system-tagging.mjs';
 import { LORA_ENABLE_URL, LORA_STATUS_URL, loraValues, mountIntegrations, writeHostInParts } from './system-integrations.mjs';
 import { busyToast } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
@@ -28,12 +30,10 @@ import { displayPreferences, readPreferences, reconcilePreferences, subscribePre
 const SETTINGS_URL = '/prompt_manager/settings';
 const ADMIN = Object.freeze({ href: '/prompt_manager/admin', label: 'Open existing administration' });
 /**
- * D94: where each section's capabilities live until its PR (the plan's legacy capability coverage): the admin page's
- * dashboard, Settings, Maintenance, Backup, Restore, Scan, Logs, Diagnostics and Auto-tag tools, and the gallery's
- * settings, thumbnails, duplicates and cache tools.
+ * D94: where each section's capabilities live until its PR (the plan's legacy capability coverage): only Diagnostics &
+ * logs still hands off, to the admin page's Logs and Diagnostics tools.
  */
 export const SECTION_HANDOFFS = Object.freeze({
-    tagging: [ADMIN],
     diagnostics: [ADMIN],
 });
 export const NOT_DELIVERED = 'This setting is not available here yet.';
@@ -54,6 +54,20 @@ function el(tag, text, className) {
     if (text !== undefined) node.textContent = text;
     if (className) node.className = className;
     return node;
+}
+
+/**
+ * S11 (CUJ 2a): a `/settings` save that carried Auto-tagging values (`autotag_*` keys in `body`) and was refused with a
+ * plain 400 naming the setting ("General-tag confidence must be between 0 and 1."): mark it `invalid-setting`, so the
+ * Save row shows the server's sentence. Every other section's refusal is left as it was (the generic copy).
+ */
+export function settingRefusal(error, body) {
+    const tagging = Object.keys(body ?? {}).some(key => key.startsWith('autotag_'));
+    if (tagging && error?.status === 400 && error.refused === true && !error.code && typeof error.message === 'string'
+        && error.message) {
+        error.code = INVALID_SETTING_CODE;
+    }
+    return error;
 }
 
 /** A domain whose settings no delivered section edits yet: nothing can be drafted, and a write would say it failed. */
@@ -92,7 +106,8 @@ export function systemDrafts(api) {
             // a save where only one part was written reports which (writeHostInParts, review I3).
             try {
                 return await writeHostInParts({ changes, saved: drafts.saved('host'), expected_revision,
-                    postLora: body => api.post(LORA_ENABLE_URL, body), postSettings: body => api.post(SETTINGS_URL, body) });
+                    postLora: body => api.post(LORA_ENABLE_URL, body),
+                    postSettings: body => api.post(SETTINGS_URL, body).catch(error => { throw settingRefusal(error, body); }) });
             } catch (error) {
                 // A sources change waits for a running record-changing job (S4): name it, as a refused start does (D57).
                 if (error?.code === 'busy') showWorkspaceToast(busyToast(await runningJob(error)));
@@ -128,13 +143,14 @@ function markFailed(layout, store) {
 
 /**
  * The sections delivered so far: Overview (S2 Task 6), Appearance (S3 Task 8), Sources & scans (S4 Task 11),
- * Integrations (S10 Task 27), Maintenance (S7 Task 19) and Backup & export (S9 Task 24).
+ * Integrations (S10 Task 27), Auto-tagging (S11 Task 6, #328), Maintenance (S7 Task 19) and Backup & export (S9 Task 24).
  */
 export const DELIVERED_SECTIONS = Object.freeze({
     overview: mountOverview,
     appearance: mountAppearance,
     sources: mountSources,
     integrations: mountIntegrations,
+    tagging: mountTagging,
     maintenance: mountMaintenance,
     backups: mountBackups,
 });

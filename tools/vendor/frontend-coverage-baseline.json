@@ -545,6 +545,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/system-tagging.mjs": {
+    "lines": 80,
+    "branches": 70,
+    "functions": 75,
+    "statements": 80
+  },
   "workspace/system-thumbnails.mjs": {
     "lines": 98,
     "branches": 95,

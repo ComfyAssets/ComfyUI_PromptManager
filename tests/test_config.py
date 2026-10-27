@@ -413,9 +413,21 @@ class TestAutotagConfig(unittest.TestCase):
         self.config_class = getattr(config_module, "AutotagConfig", None)
         self.assertIsNotNone(self.config_class, "AutotagConfig is not implemented")
         self._orig = PromptManagerConfig.get_config()
+        self._defaults = {
+            attr: getattr(self.config_class, attr, None)
+            for attr in (
+                "MODEL_TYPE",
+                "EXISTING",
+                "GENERAL_THRESHOLD",
+                "CHARACTER_THRESHOLD",
+                "TEMPLATE",
+                "SUGGESTION_LIMIT",
+            )
+        }
 
     def tearDown(self):
-        self.config_class.SUGGESTION_LIMIT = 10
+        for attr, value in self._defaults.items():
+            setattr(self.config_class, attr, value)
         PromptManagerConfig.update_config(self._orig)
 
     def _load(self, value):
@@ -446,8 +458,23 @@ class TestAutotagConfig(unittest.TestCase):
         self.assertEqual(self.config_class.suggestion_limit(), 10)
         self.assertEqual(
             PromptManagerConfig.get_config()["autotag"],
-            {"defaults": {"suggestion_limit": 10}},
+            {
+                "defaults": {
+                    "model_type": "wd14-swinv2",
+                    "existing": "skip",
+                    "general_threshold": 0.35,
+                    "character_threshold": 0.85,
+                    "suggestion_limit": 10,
+                }
+            },
         )
+        # The built-in template is not written; a saved one is.
+        self.config_class.TEMPLATE = "Saved."
+        self.assertEqual(
+            PromptManagerConfig.get_config()["autotag"]["defaults"]["template"],
+            "Saved.",
+        )
+        self.config_class.TEMPLATE = config_module.DEFAULT_TAG_TEMPLATE
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "config.json")
             PromptManagerConfig.update_config(
@@ -465,6 +492,102 @@ class TestAutotagConfig(unittest.TestCase):
                     {"autotag": {"defaults": {"suggestion_limit": value}}}
                 )
                 self.assertEqual(self.config_class.suggestion_limit(), value)
+
+    def test_autotag_defaults_fall_back_per_key_on_load(self):
+        """#328: each saved tagging default is checked alone on load; a bad
+        hand-edited value falls back to its default with one warning and
+        leaves the other keys as saved."""
+        good = {
+            "model_type": "gguf",
+            "existing": "merge",
+            "general_threshold": 0.4,
+            "character_threshold": 0.7,
+            "template": "Tags only.",
+            "suggestion_limit": 15,
+        }
+        fallback = {
+            "model_type": "wd14-swinv2",
+            "existing": "skip",
+            "general_threshold": 0.35,
+            "character_threshold": 0.85,
+            "template": config_module.DEFAULT_TAG_TEMPLATE,
+            "suggestion_limit": 10,
+        }
+        bad_values = {
+            "model_type": ["wd14-convnext", 3, None],
+            "existing": ["replace", "", True],
+            # #369: a saved threshold off the 0.05 step no page can show.
+            "general_threshold": [1.5, -0.1, float("nan"), "0.4", True, 0.37],
+            "character_threshold": [2, float("inf"), None, 0.33],
+            # 4000 characters are at most 16,000 UTF-8 bytes, so the 16 KiB
+            # byte cap can only be met past the character cap.
+            "template": ["", "   ", "x" * 4001, "\U0001f600" * 4097, "\ud800", 7],
+        }
+        for key, values in bad_values.items():
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    saved = dict(good, **{key: value})
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        path = os.path.join(tmpdir, "config.json")
+                        with open(path, "w") as f:
+                            json.dump({"autotag": {"defaults": saved}}, f)
+                        with self.assertLogs(
+                            "prompt_manager.config", level="WARNING"
+                        ) as logs:
+                            PromptManagerConfig.load_from_file(path)
+                    self.assertEqual(len(logs.records), 1, logs.output)
+                    self.assertIn(f"autotag.defaults.{key}", logs.output[0])
+                    loaded = {
+                        k: getattr(self.config_class, attr)
+                        for k, (attr, _v, _d) in self.config_class._KEYS.items()
+                    }
+                    self.assertEqual(loaded, dict(good, **{key: fallback[key]}))
+
+    def test_tagging_validators_moved_with_their_messages(self):
+        validate_threshold = config_module.validate_threshold
+        validate_template = config_module.validate_template
+        self.assertEqual(validate_threshold("general_threshold", 1), 1.0)
+        for value, message in (
+            (float("nan"), "general_threshold must be a finite number"),
+            ("0.4", "general_threshold must be a finite number"),
+            (1.01, "general_threshold must be between 0 and 1"),
+        ):
+            with self.assertRaises(ValueError) as caught:
+                validate_threshold("general_threshold", value)
+            self.assertEqual(str(caught.exception), message)
+        self.assertEqual(validate_template("Tags."), "Tags.")
+        for value, message in (
+            ("  ", "instructions must be non-empty text"),
+            ("x" * 4001, "instructions must be at most 4000 characters"),
+            ("\ud800", "instructions must be valid Unicode text"),
+        ):
+            with self.assertRaises(ValueError) as caught:
+                validate_template(value)
+            self.assertEqual(str(caught.exception), message)
+        self.assertEqual(
+            config_module.MODEL_TYPES, {"gguf", "hf", "wd14-swinv2", "wd14-vit"}
+        )
+
+    def test_saved_threshold_is_a_multiple_of_the_step(self):
+        """#369: every page shows the thresholds in steps of 0.05, so a saved
+        one must be on that grid; it is stored exactly on it."""
+        from py.tagging_defaults import validate_saved_threshold as validate
+
+        for value in (0, 0.05, 0.15, 0.35, 0.85, 1):
+            with self.subTest(value=value):
+                self.assertEqual(validate("x", value), value)
+        self.assertEqual(validate("x", 0.1 + 0.2), 0.3)
+        for value, message in (
+            (0.37, "x must be a multiple of 0.05"),
+            (0.351, "x must be a multiple of 0.05"),
+            (0.35000000001, "x must be a multiple of 0.05"),
+            (1.5, "x must be between 0 and 1"),
+            ("0.4", "x must be a finite number"),
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as caught:
+                    validate("x", value)
+                self.assertEqual(str(caught.exception), message)
 
     def test_suggestion_limit_setting_validated_on_load(self):
         for value in (0, 101, "10", float("nan"), 2.5, True, None, [10]):

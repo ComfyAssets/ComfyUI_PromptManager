@@ -10,12 +10,15 @@ filesystem or the database.
 
 import math
 
-WD14_MODELS = frozenset({"wd14-swinv2", "wd14-vit"})
-LLM_MODELS = frozenset({"gguf", "hf"})
-MODEL_TYPES = WD14_MODELS | LLM_MODELS
-
-MAX_INSTRUCTION_CHARS = 4000
-MAX_INSTRUCTION_BYTES = 16 * 1024
+from ..tagging_defaults import (  # noqa: F401 - re-exported for the route
+    LLM_MODEL_TYPES as LLM_MODELS,
+    MAX_INSTRUCTION_BYTES,
+    MAX_INSTRUCTION_CHARS,
+    MODEL_TYPES,
+    WD14_MODEL_TYPES as WD14_MODELS,
+    validate_template,
+    validate_threshold,
+)
 
 SUGGEST_FIELDS = frozenset(
     {"target", "capture_token", "expected_epoch", "model_type", "options"}
@@ -24,7 +27,7 @@ _COMMON = frozenset({"suggestion_limit", "use_gpu"})
 _WD14_REQUIRED = frozenset({"general_threshold", "character_threshold"})
 _LLM_REQUIRED = frozenset({"instructions"})
 
-UNAVAILABLE_HINT = "Download it from the legacy Auto-tag page."
+UNAVAILABLE_HINT = "Download it in System › Auto-tagging."
 
 
 class OptionError(ValueError):
@@ -32,27 +35,17 @@ class OptionError(ValueError):
 
 
 def _threshold(name: str, value) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value):
-        raise OptionError(f"{name} must be a finite number")
-    if not 0 <= value <= 1:
-        raise OptionError(f"{name} must be between 0 and 1")
-    return float(value)
+    try:
+        return validate_threshold(name, value)
+    except ValueError as error:
+        raise OptionError(str(error)) from None
 
 
 def _instructions(value) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise OptionError("instructions must be non-empty text")
-    if len(value) > MAX_INSTRUCTION_CHARS:
-        raise OptionError(
-            f"instructions must be at most {MAX_INSTRUCTION_CHARS} characters"
-        )
     try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
-        raise OptionError("instructions must be valid Unicode text") from None
-    if len(encoded) > MAX_INSTRUCTION_BYTES:
-        raise OptionError("instructions are too long")
-    return value
+        return validate_template(value)
+    except ValueError as error:
+        raise OptionError(str(error)) from None
 
 
 def validate_options(model_type, options, *, default_limit: int, max_limit: int):

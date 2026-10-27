@@ -38,6 +38,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
         write_png,
     )
 
+from tests.background_stops import close_handler
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
 from utils.prompt_tracker import PromptTracker
@@ -299,6 +300,7 @@ class TestQueueSelfHeals(OutcomeTestCase):
 class TestMonitorRule(OutcomeTestCase):
     def _handler(self):
         handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+        self.addCleanup(close_handler, self, handler)
         handler.review_recorder = self.api.record_review_file
         return handler
 

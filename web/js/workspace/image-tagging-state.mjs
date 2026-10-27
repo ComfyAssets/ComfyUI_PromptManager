@@ -179,14 +179,15 @@ function validateReceipt(value) {
 }
 
 /**
- * Thresholds, instructions and suggestion count from the server, else the documented defaults, and the models'
- * download status (`models`, null when unknown).
+ * Thresholds, instructions and suggestion count from the server, else the documented defaults, the models'
+ * download status (`models`, null when unknown) and the saved tagging model (`model`, null when unknown; #328).
  */
 async function readDefaults(api, signal) {
     try {
         const value = await api.get(MODELS_URL, {signal, cache: 'no-store'});
-        if (!object(value)) return {defaults: DEFAULTS, models: null};
+        if (!object(value)) return {defaults: DEFAULTS, models: null, model: null};
         return {
+            model: typeof value.model_type === 'string' && modelOf(value.model_type) ? value.model_type : null,
             defaults: {
                 general_threshold: unit(value.wd14_general_threshold) ? value.wd14_general_threshold : DEFAULTS.general_threshold,
                 character_threshold: unit(value.wd14_character_threshold) ? value.wd14_character_threshold : DEFAULTS.character_threshold,
@@ -197,11 +198,11 @@ async function readDefaults(api, signal) {
         };
     } catch {
         // The defaults keep the dialog usable; Generate reports a real failure itself.
-        return {defaults: DEFAULTS, models: null};
+        return {defaults: DEFAULTS, models: null, model: null};
     }
 }
 
-const UNAVAILABLE_HINT = 'Download it from the legacy Auto-tag page.';
+export const UNAVAILABLE_HINT = 'Download it in System › Auto-tagging.';
 /**
  * Why `model` cannot run, from the `/autotag/models` status (the server's own `model-unavailable` sentence), else ''
  * (downloaded, or the status is unknown: the job then reports a missing model itself).
@@ -263,6 +264,7 @@ export function createImageTaggingController({api, target, source = 'images', on
     requireValue(SOURCES.has(source), 'Unknown tagging source');
     requireValue(typeof onLateSave === 'function', 'onLateSave must be a function');
     const chosen = validatePreset(preset);
+    let modelPicked = false; // the user chose a model: the saved one no longer applies
 
     let state = freeze(derive(initialState(source, chosen)));
     const listeners = new Set();
@@ -336,8 +338,11 @@ export function createImageTaggingController({api, target, source = 'images', on
         }
         capture = {token: value.capture.token, sha256: value.capture.sha256};
         epoch = value.library_epoch;
-        ({defaults} = await defaultsRead);
+        const read = await defaultsRead;
+        ({defaults} = read);
         if (closed || serial !== openSerial) return;
+        // The saved model (System › Auto-tagging) unless a preset or the user already chose one (#328).
+        const savedModel = !chosen && !modelPicked && read.model ? {model: read.model} : {};
         observedOnce = true;
         const {width, height, media_type: mediaType, preview_url: previewUrl, generate} = value.capture;
         // A kept draft stays as typed unless another writer changed the set meanwhile: then the set leads it (I2).
@@ -350,7 +355,7 @@ export function createImageTaggingController({api, target, source = 'images', on
             savedTags: value.tags.slice(), tagRevision: value.tag_revision,
             manual: draft === null ? value.tags.join(', ') : changed ? mergeCurrent(value.tags, draft) : draft,
             draftRevision: state.draftRevision + 1,
-            options: {...defaults, ...chosen?.options}, optionsRevision: state.optionsRevision + 1,
+            ...savedModel, options: {...defaults, ...chosen?.options}, optionsRevision: state.optionsRevision + 1,
             generateSupported: generate.supported, generateReason: generate.reason,
             statusText: changed ? `${COPY.changedElsewhere} ${savedNow(value.tags)}${reason ? ` ${reason}` : ''}` : reason,
         });
@@ -362,7 +367,9 @@ export function createImageTaggingController({api, target, source = 'images', on
 
     function setModel(id) {
         requireValue(modelOf(id), 'Unknown tagging model');
-        if (closed || id === state.model) return;
+        if (closed) return;
+        modelPicked = true;
+        if (id === state.model) return;
         stopGenerating();
         const phase = state.phase === 'generating' || state.phase === 'generate-error' ? 'ready' : state.phase;
         set({
@@ -535,6 +542,7 @@ export function createTaggingOptionsController({api} = {}) {
     let defaults = DEFAULTS;
     let models = null;
     let abort = null;
+    let modelPicked = false;
     const deriveOptions = value => ({...value, canGenerate: false, unavailable: modelUnavailable(models, value.model),
         canStart: value.phase === 'ready' && !modelUnavailable(models, value.model)});
     let state = freeze(deriveOptions({phase: 'loading', model: MODEL_OPTIONS[0].id, options: {...DEFAULTS}, optionsRevision: 0}));
@@ -550,11 +558,15 @@ export function createTaggingOptionsController({api} = {}) {
         const read = await readDefaults(api, abort.signal);
         if (closed) return;
         ({defaults, models} = read);
-        set({phase: 'ready', options: {...defaults}, optionsRevision: state.optionsRevision + 1});
+        // The saved model (System › Auto-tagging) unless the user already chose one (#328).
+        const savedModel = !modelPicked && read.model ? {model: read.model} : {};
+        set({phase: 'ready', ...savedModel, options: {...defaults}, optionsRevision: state.optionsRevision + 1});
     }
     function setModel(id) {
         requireValue(modelOf(id), 'Unknown tagging model');
-        if (closed || id === state.model) return;
+        if (closed) return;
+        modelPicked = true;
+        if (id === state.model) return;
         // As in the Tag image dialog: the model's fields start from the defaults again; the count is kept (D91).
         set({model: id, optionsRevision: state.optionsRevision + 1,
             options: {...state.options, general_threshold: defaults.general_threshold,

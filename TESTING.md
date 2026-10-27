@@ -275,6 +275,72 @@ Start fixing as soon as a failed log shows the cause, but push the fix only afte
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
 so a push cancels the running jobs and can hide a second failure.
 
+## Background threads at exit
+
+PromptManager's own background threads stop through one package teardown,
+`_stop_background_work()` in `__init__.py` (#301, #302). It runs once and
+works against one 10 s deadline. Each step gets the smaller of its own bound
+and the time left. The steps, in order:
+
+1. Detach the monitor's callbacks (Needs review recorder, preview queue,
+   Images listing listener).
+2. `ImageMonitor.stop_monitoring` closes the image handler, which joins the
+   image worker (5 s). It then calls watchdog's `observer.stop()`, which is
+   not bounded here, and joins the observer (5 s).
+3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s) and
+   kills ffmpeg.
+4. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
+
+A failing step, or a second Ctrl+C, is logged with its traceback and does not
+skip the later steps. A clean run logs one INFO line to PromptManager's log:
+`Background work stopped in 0.4 s: monitor=ok thumbnails=ok tracker=ok`. If
+any part is still running, one WARNING goes to the console:
+`Background work not stopped in time (10.0 s): monitor`.
+
+ComfyUI never runs aiohttp's `on_cleanup` hooks, because it never calls
+`runner.cleanup()`. So `atexit` is the live host's path. It runs on Ctrl+C
+(`main.py` catches `KeyboardInterrupt` and returns) and on a normal exit.
+The teardown is registered after the execution history hook, so at exit
+(newest first) it runs before the history writer's 2 s dispose.
+It also runs from `on_cleanup` on hosts that do run it (our test servers) and
+from the tests' package unload (`cleanup_package`), and it removes its own
+`atexit` callback. Nothing runs when the process is killed: SIGTERM, a
+ComfyUI-Manager restart through `os.execv`, a closed Windows console, or
+ComfyUI Desktop stopping its server. SQLite's WAL journal covers those.
+
+Stop contract: `PromptTracker.shutdown(timeout)`,
+`ImageGenerationHandler.shutdown(timeout)` (restartable),
+`ImageGenerationHandler.close(timeout)` (final: `schedule()` refuses and a
+sealed run's re-check is dropped) and `ImageMonitor.stop_monitoring(timeout)`
+each signal their thread and join it within the bound. They return True only
+when it ended, and log a warning naming the part when it did not. Called on
+their own thread, they only signal.
+
+Test rules:
+
+- Every test that constructs a real `PromptTracker`, `ImageGenerationHandler`
+  or `ImageMonitor` ends with its final stop and an assertion
+  (`tests/background_stops.py`: `close_handler`, `stop_monitor`,
+  `stop_tracker`). The stop comes before the folder and databases are removed.
+  `tearDown` runs before `addCleanup` callbacks, so a class whose `tearDown`
+  removes files stops the thread there.
+- A test waits for a state through an `Event` set by the code under test, or
+  by a wrapper around it, with a 30 s ceiling. It never sleeps or polls for
+  that state.
+- A test that asserts "still running" first waits for an `entered` event
+  inside the held call, then stops with `timeout=0.05`.
+- A test that asserts a history writer's `dispose()`/`close()` is True right
+  after queuing work drains first (`drain_writer`), or holds the write itself
+  (#370).
+- Patch the module attribute of the code under test (for example
+  `utils.prompt_tracker.time`, or the package's `_clock`), or patch with
+  `wraps=`. Never replace a `time` or `atexit` function for the whole
+  process.
+- `tests/test_package_exit.py` runs a child process that imports the
+  package, leaves the image worker alive and returns. Its `atexit` reporter
+  checks the teardown's result. This is the interpreter path ComfyUI takes
+  after Ctrl+C, on all three OS.
+
 ## Performance budgets
 
 A spec performance budget gets two tests:
@@ -1504,8 +1570,8 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
   Its fields show the server's defaults (`GET /prompt_manager/autotag/models`, the
   D91 Suggestions count included) once that read lands; Start waits for it. A model
   the status lists as not downloaded keeps Start `aria-disabled` and
-  `#tag-generation-status` says "<model> is not downloaded. Download it from the
-  legacy Auto-tag page." (the server's own sentence), so no job starts only to fail.
+  `#tag-generation-status` says "<model> is not downloaded. Download it in System ›
+  Auto-tagging." (the server's own sentence), so no job starts only to fail.
   Start validates the fields as Generate does (native validity; nothing is sent).
   The concept comparison (`images-concept.spec.mjs`) uses the concept page itself as
   the oracle, with Add to collection and Remove links… removed and a copy of its Add
@@ -2587,7 +2653,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–D114; D121–D131 assigned):
+Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–D114; D121–D134 assigned):
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
   unsaved changes.", "Unsaved changes.", "Saved in this browser." / "Saved to the server
@@ -2621,7 +2687,8 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   output folder is used." when that is the case.
 - **D94** (all sections): a section not delivered yet shows the hand-off panel "Your
   current tools are ready" with a link to each legacy tool that still owns it (the
-  plan's legacy coverage table); retired section by section, gone after S12.
+  plan's legacy coverage table); retired section by section, gone after S12. Since S11
+  (#328) only Diagnostics & logs hands off (`SECTION_HANDOFFS`, to the admin page).
 - **D95** (health report): the concept's `health-check` dialog titled "Health report",
   with no sample note. It lists every check in the server's order: Integrity check,
   Foreign keys & pair references, Canonical hashes, Pair uniqueness (added), Missing
@@ -2997,6 +3064,59 @@ Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107 and D111–
   dialog on that scope. Pinned by the thumbnail dialog comparison (mapped) and its
   mutation check (system-concept.spec) and `the thumbnail row counts outdated previews`
   (workspace-system.spec).
+- **D132** (Auto-tagging, S11, #328, OQ1/OQ5/OQ6/OQ10): "Tagging model" (`#tag-model`)
+  lists the four real engines in the concept's order, each `<label> · <size_label>` from
+  `GET /prompt_manager/autotag/models` ("WD14 SwinV2 · ~400 MB", "WD14 ViT · ~400 MB",
+  "GGUF JoyCaption · ~4.5 GB", "HuggingFace JoyCaption · ~16 GB"; GGUF takes the
+  concept's "Ollama" slot, as D61 does). Its description is the chosen engine's live
+  status instead of the concept's design note: "Loading model status…" (the select is
+  disabled until the read answers), "Model status could not be read.", "Not downloaded.
+  Download size <size>.", "Downloaded. Not loaded.", "Downloaded and loaded." or "Partly
+  downloaded. Download again to finish." (GGUF with one of its two files). The concept's
+  two simulated job buttons are "Download" ("Download again" for an engine on disk),
+  which starts the `model_download` Activity job and opens it, and "Unload", a direct
+  `POST /autotag/unload` with a toast ("<label> unloaded.") and a fresh status read,
+  enabled only while a model is loaded; a busy model's refusal reads "The tagging model
+  is busy: <operation>. Try again when it finishes.". "Preview tagging review" opens the
+  Tag image dialog for the image selected in Images with the section's current model and
+  values; it is `aria-disabled` without a selection (the D115 sentence "Select an image
+  in Images first.") or with an invalid value (the toast names the setting); a saved
+  engine the section does not know reads "The saved tagging model is not one of these
+  engines. Choose one and save preferences.". A part-downloaded GGUF offers "Download
+  again"; an Unload that found nothing loaded only reads the status again. At phone width
+  the concept's 120px select cap cuts every engine label, so `#tag-model` alone keeps its
+  natural width there and its row wraps the select under the text (`workspace.css`
+  `/* D132 */`); Existing tags stays as the concept draws it, cut at 390 as there. The
+  comparison maps `selectsFit` only for the engine select and measures each row's
+  `flexWrap` and whether its control sits under the text. Pinned by `auto-tagging matches
+  the concept` (both themes and sizes), `auto-tagging at 390 wraps only the engine row`,
+  `auto-tagging engine select fits at 320 wide` and the mutation check (it includes a
+  wrapped row) (system-tagging-concept.spec), and the model, Download, Unload and Preview
+  tests of workspace-system-tagging.spec.
+- **D133** (Auto-tagging, S11): a "Suggestions per image" row (`#tag-suggestions`,
+  number 1–100, host key `autotag_suggestion_limit`) follows the two confidence rows:
+  the persisted count the Tag image dialog's Suggestions field (D91) starts from. Pinned
+  by the comparison's mapping (it inserts the row) and `defaults save through Save
+  preferences and the Tag image dialog uses them`.
+- **D134** (Auto-tagging, S11, OQ2/OQ3/OQ7/OQ8): an `.operation` "Tag output images"
+  with "Review" follows `.row-actions`: the legacy prompt-tag batch. Review is
+  `aria-disabled` (the press explains) while the chosen engine is not downloaded or a
+  value it uses is invalid; otherwise it posts `/autotag/batch/preview` with the drafted
+  engine and policy (read-only) and opens "Review tag output images" in the concept's
+  record-changing review (its `maintenancePlan` shell): `h3` "Tag output images", the
+  `dl.meta-grid` Model, Existing tags, Images linked, Prompts, Already tagged, Prompts
+  to tag ("up to N"), Settings ("General <g> · Character <c>" or "Template of N
+  characters") and Backup, the upper-bound sentence in the `p.small`, the D55 backup box
+  and Cancel / "Start tagging", which starts the cancellable `autotag` job and opens it.
+  Replace after review, a model not on disk, a short disk, no linked image and nothing to
+  tag each show the rows with only Cancel and the reason ("Replacing tags needs a review
+  of each image. Use Preview tagging review, or choose Skip or Merge for a batch run.",
+  "Every prompt with an output image is already tagged.", "Not enough free disk space:
+  the safety backup needs about X MB and Y MB is free. Nothing is written until there is
+  room.") in the close-only review Integrations shares (`openCloseOnlyReview`). Pinned by
+  `tag output images review matches the concept`, its mutation check and `the
+  Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
+  the batch tests of workspace-system-tagging.spec.
 - **D124** (inspector): with "Load metadata on selection" off, the Images panel and
   the viewer's details show "Metadata loads when you ask for it." and a "Load metadata"
   button instead of reading the file. The concept has no such state, so no concept
@@ -3461,6 +3581,76 @@ npm run --prefix tools/vendor test:workflows -- workspace-system-integrations.sp
   system-integrations-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
+
+### Auto-tagging contract (#328, #249 System S11)
+
+System › Auto-tagging (`web/js/workspace/system-tagging.mjs`, D132–D134) edits one
+server-side tagging configuration, `autotag.defaults` in config.json: `model_type`
+(`wd14-swinv2`, `wd14-vit`, `gguf`, `hf`), `existing` (`skip`, `merge`,
+`replace_after_review`), `general_threshold` and `character_threshold` (0–1 in
+steps of 0.05, #369),
+`template` (non-blank, at most 4,000 characters and 16 KiB) and `suggestion_limit`
+(1–100). They are host drafts (`autotag_model_type`, `autotag_existing`,
+`autotag_general_threshold`, `autotag_character_threshold`, `autotag_template`,
+`autotag_suggestion_limit`) saved by the one Save row through `POST
+/prompt_manager/settings` with `expected_revision`; a bad value is refused with a 400
+naming the setting by its row label ("General-tag confidence must be between 0 and
+1."), nothing is written, the Save row shows that sentence (`invalid-setting`, set by
+`settingRefusal` in system.mjs only for a save that carried `autotag_*` keys; every
+other section's plain 400 keeps the generic status) and the control is highlighted.
+The template's limit counts code points, as Python's `len` does. A hand-edited bad value
+falls back to its default on load, one key at a time. Every page shows the thresholds in
+steps of 0.05 (the System rows, the Tag image dialogs, the legacy sliders), so a saved
+threshold off that grid is refused ("General-tag confidence must be a multiple of
+0.05.", `validate_saved_threshold`; `draftProblem` holds back Preview tagging review and
+the batch Review with the same sentence) and falls back on load; an accepted one is
+stored exactly on the grid (#369). A per-request threshold keeps its own check: `/image-annotations/suggest` and
+`/jobs/autotag` take 0–1; the legacy `/autotag/single` and `/autotag/start` only require a number. `GET /autotag/models` reports the
+saved values (`wd14_general_threshold`, `wd14_character_threshold`, `suggestion_limit`,
+`default_prompt`, `model_type`, `existing`), so the Tag image and Auto-tag selected
+dialogs start from them; a preset (the bulk review, Preview tagging review) wins.
+
+`GET /prompt_manager/autotag/models` reads the disk in the executor, never loads or
+downloads a model and carries no absolute path: per engine `name`, `label`,
+`size_label`, `description`, `size`, `downloaded`, `loaded` (GGUF also `model_exists`,
+`mmproj_exists`), plus `model_loaded` and `loaded_model_type`. Opening the section
+makes exactly one such read per mount (`entering the section makes no model call
+besides status`).
+
+One model gate (`py/model_gate.py`) covers download, unload, both batches, the legacy
+single-image tag, Generate suggestions and Auto-tag selected. A refusal is `409
+model-busy` with `operation`, the holder's label: the download job's title, "Tag output
+images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
+"Unloading the tagging model", "Auto-tag selected images", "Generate suggestions", else
+"Another tagging operation". `ApiError.operation` keeps it (only on `model-busy`).
+
+- **Download**: `POST /prompt_manager/jobs/model-download {model_type}` starts the
+  `model_download` job (202), title "Tagging model download · <label>", admission
+  `read`, not cancellable, indeterminate (Activity's generic held view: no Cancel, a
+  `<progress>` without a value), holding the gate until it ends. A second download is
+  `409 busy`; the legacy SSE route attaches to the same job and keeps its frames.
+- **Unload**: `POST /prompt_manager/autotag/unload` answers `{success, message}` or
+  `409 model-busy`.
+- **Tag output images**: `POST /prompt_manager/autotag/batch/preview {model_type,
+  existing}` writes nothing and opens no file; it answers `images`, `prompts`,
+  `already_tagged`, `to_tag` (an upper bound), `model {type, label, size_label,
+  downloaded}`, `existing`, `review_required`, `backup {policy}` and `disk`. `POST
+  /prompt_manager/jobs/autotag {model_type, existing, options}` (WD14: both thresholds;
+  GGUF/HF: `instructions`, the template) starts the cancellable `autotag` job (202),
+  title "Tag output images", admission `records`, a safety backup by the policy first.
+  Refusals: `400 review-required` (Replace after review never runs as a batch), `409
+  model-unavailable` ("<label> is not downloaded. Download it in System ›
+  Auto-tagging."), `507 insufficient-space`, `409 busy`, `409 model-busy`. The section
+  toasts `model-busy` with its operation, the other three with the server's sentence,
+  `busy` with the running job (D57), anything else "<what> could not start. Try again.".
+  Outcomes: Tagged / Unchanged / Skipped / Errors (the `image-tags` descriptor, D111).
+
+No browser test downloads or runs a model: the injected `TestModel` answers, its
+`download_model` raises unless `/__test__/tagging/download {mode: hold | succeed |
+fail}` installs a fake that waits on a fixture event, and every tagging reset releases
+it. Every workspace-system-tagging test asserts no `/autotag/download/` request.
+Changing the routes or `py/config.py` needs a ComfyUI restart; the section itself is
+HTML, CSS and JS only.
 
 ### Browser cache ownership (#222)
 

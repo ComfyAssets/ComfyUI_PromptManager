@@ -104,6 +104,24 @@ function maintenanceFinish(job) {
 // D85: an image tagging job says which of its two modes started.
 const IMAGE_TAG_START_TOASTS = Object.freeze({ add: 'Tagging started.', auto: 'Auto-tagging started.' });
 
+/** D89: the image tagging job's view, shared with Tag output images (#328). */
+const IMAGE_TAGS = Object.freeze({
+    ...GENERIC,
+    pillVerb: 'Tagging',
+    startToast: job => IMAGE_TAG_START_TOASTS[job.scope?.mode] ?? titleStarted(job),
+    finishToast: namedFinish(job => job.title, taggedOf, tagLine),
+    line: tagLine,
+    kept: taggedOf,
+    scope: imagesOf,
+    tiles: tiles([['tagged', 'Tagged', 'added'], ['unchanged', 'Unchanged', ''], ['skipped', 'Skipped', 'warn'],
+        ['errors', 'Errors', 'bad']]),
+    outcomes: tiles([['tagged', 'Tagged'], ['errors', 'Errors'], ['skipped', 'Skipped'], ['unchanged', 'Unchanged']]),
+    openable: groups('tagged', 'unchanged'),
+    log: 'Tagging log',
+    cancelLabel: 'Cancel tagging',
+    cancel: 'Cancel tagging',
+});
+
 /** Every kind with a descriptor of its own. */
 export const KINDS = Object.freeze({
     __proto__: null,
@@ -125,22 +143,10 @@ export const KINDS = Object.freeze({
         cancel: 'Cancel scan',
     }),
     // D89: Tagged (green), Unchanged, Skipped (warning) and Errors (red); Tagged and Unchanged rows open the viewer.
-    'image-tags': Object.freeze({
-        ...GENERIC,
-        pillVerb: 'Tagging',
-        startToast: job => IMAGE_TAG_START_TOASTS[job.scope?.mode] ?? titleStarted(job),
-        finishToast: namedFinish(job => job.title, taggedOf, tagLine),
-        line: tagLine,
-        kept: taggedOf,
-        scope: imagesOf,
-        tiles: tiles([['tagged', 'Tagged', 'added'], ['unchanged', 'Unchanged', ''], ['skipped', 'Skipped', 'warn'],
-            ['errors', 'Errors', 'bad']]),
-        outcomes: tiles([['tagged', 'Tagged'], ['errors', 'Errors'], ['skipped', 'Skipped'], ['unchanged', 'Unchanged']]),
-        openable: groups('tagged', 'unchanged'),
-        log: 'Tagging log',
-        cancelLabel: 'Cancel tagging',
-        cancel: 'Cancel tagging',
-    }),
+    'image-tags': IMAGE_TAGS,
+    // #328 (extends D111): Tag output images, the prompt-tag batch, counts its images the same way. Its legacy-page
+    // hold counts nothing and is not cancellable, so `viewOf` gives it the generic held view.
+    autotag: IMAGE_TAGS,
     // D111: Generated (green), Skipped (already fresh) and Errors (red); a row with a preview opens the viewer.
     thumbnails: Object.freeze({
         ...GENERIC,
