@@ -66,6 +66,8 @@ export const COPY = Object.freeze({
     statsUnread: 'The log statistics could not be read.',
     filesUnread: 'The log files could not be read.',
     configUnread: 'The retention settings could not be read.',
+    runtimeUnread: 'The current value could not be read.',
+    limitHint: 'Lines to show: a whole number from 1 to 500.',
     logDownloadFailed: 'The log could not be downloaded.',
     reportDone: 'Diagnostic report downloaded.',
     reportFailed: 'The diagnostic report could not be downloaded. Nothing was saved to this device.',
@@ -297,15 +299,16 @@ function testLinkRow({ api, scope, notify }) {
         onClick: button => {
             if (button.getAttribute('aria-disabled') === 'true' || !prompt) return;
             const target = prompt;
+            // The button is held until the write answered, so a second press cannot write a second record.
             confirmDialog({ scope, trigger: button, title: 'Create test link', sentence: testLinkSentence(target), label: 'Create',
-                onConfirm: async () => {
+                onConfirm: () => pressing(button, async () => {
                     try {
                         const answer = await api.post(TEST_LINK_URL, { prompt_id: target.id });
                         if (!scope.signal.aborted) notify(`Test link created (image record ${answer?.result?.image_id}).`);
                     } catch {
                         if (!scope.signal.aborted) notify(COPY.testLinkFailed);
                     }
-                } });
+                }) });
         } });
     const button = row.querySelector('.row-actions > button');
     const description = row.querySelector('p');
@@ -410,8 +413,16 @@ function runtimeRows({ scope, drafts }) {
     };
     scope.cleanup(drafts.subscribe(repaint));
     repaint();
-    drafts.load('runtime').catch(() => {});
-    return [level, consoleRow];
+    // A failed read leaves both controls disabled; each says why (the value the server holds is not known).
+    const notes = [level, consoleRow].map(row => {
+        const note = el('p', COPY.runtimeUnread, 'small');
+        return () => row.children[0].append(note);
+    });
+    const reload = () => drafts.load('runtime').then(() => {}, () => {
+        if (!scope.signal.aborted) for (const show of notes) show();
+    });
+    reload();
+    return { rows: [level, consoleRow], reload };
 }
 
 /** The "Logs" surface. */
@@ -436,6 +447,7 @@ function logsSurface({ api, activity, scope, drafts, navigate, notify, latestOnl
     limit.max = String(MAX_LIMIT);
     limit.step = '1';
     limit.value = String(DEFAULT_LIMIT);
+    limit.title = COPY.limitHint;
     const refresh = createButton('Refresh');
     const downloadLog = createButton('Download log');
     toolbar.append(levelLabel, level, limitLabel, limit, refresh, downloadLog);
@@ -456,11 +468,18 @@ function logsSurface({ api, activity, scope, drafts, navigate, notify, latestOnl
     const retention = el('p', LOADING, 'small');
     const list = el('div', undefined, 'operation-list');
     let listed = null;
+    // The confirmation names what Clear deletes now: the files are read again before it opens (a read that fails
+    // gives the general sentence, never an old count).
     const clear = operationRow({ scope, title: 'Clear all logs', description: COPY.clearDescription, label: 'Clear all logs…',
-        danger: true, onClick: button => confirmDialog({ scope, trigger: button, title: 'Clear all logs', sentence: clearSentence(listed),
-            label: 'Clear', danger: true, onConfirm: clearLogs }) });
+        danger: true, onClick: button => pressing(button, async () => {
+            await readFiles();
+            if (scope.signal.aborted) return;
+            confirmDialog({ scope, trigger: button, title: 'Clear all logs', sentence: clearSentence(listed), label: 'Clear',
+                danger: true, onConfirm: clearLogs });
+        }) });
     files.append(el('summary', 'Log files & retention'), line, review, retention, list, clear);
-    surface.append(el('h2', 'Logs'), toolbar, lines, stats, ...runtimeRows({ scope, drafts }), files);
+    const runtime = runtimeRows({ scope, drafts });
+    surface.append(el('h2', 'Logs'), toolbar, lines, stats, ...runtime.rows, files);
 
     const logsRead = latestOnly({ lifetime: scope.signal });
     async function readLogs() {
@@ -553,12 +572,12 @@ function logsSurface({ api, activity, scope, drafts, navigate, notify, latestOnl
         if (scope.signal.aborted) return;
         if (answer) notify(clearToast(answer.results));
         readAll();
-        drafts.load('runtime').catch(() => {});
+        runtime.reload();
     }
 
     scope.listen(level, 'change', readLogs);
     scope.listen(limit, 'change', readLogs);
-    scope.listen(refresh, 'click', () => { readLogs(); readStats(); });
+    scope.listen(refresh, 'click', () => { readLogs(); readStats(); readFiles(); });
     scope.listen(downloadLog, 'click', () => saveLog(downloadLog, ACTIVE_LOG));
     scope.listen(review, 'click', () => reviewPlan({ api, store: activity, scope, operation: 'rotated_logs', trigger: review,
         notify, navigate }));

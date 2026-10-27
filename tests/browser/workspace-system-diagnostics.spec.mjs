@@ -294,7 +294,8 @@ test('Lines accepts 1 to 500 and sends nothing when invalid', async ({ page, req
     const limit = page.locator('#log-limit');
     await expect(page.locator('label[for="log-limit"]')).toHaveText('Lines');
     await expect(limit).toHaveValue('100');
-    expect(await limit.evaluate(node => [node.type, node.min, node.max])).toEqual(['number', '1', '500']);
+    expect(await limit.evaluate(node => [node.type, node.min, node.max, node.title]))
+        .toEqual(['number', '1', '500', 'Lines to show: a whole number from 1 to 500.']);
     await limit.fill('20');
     await limit.dispatchEvent('change');
     await expect.poll(() => urls.at(-1)).toBe('?limit=20');
@@ -424,6 +425,17 @@ test('a refused runtime value is marked invalid', async ({ page }) => {
     await expect(select).not.toHaveAttribute('aria-invalid');
 });
 
+test('runtime values that cannot be read stay disabled and say so', async ({ page }) => {
+    await page.route(`**${CONFIG_URL}`, route => route.fulfill({ status: 500, contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: 'boom' }) }));
+    await openDiagnostics(page);
+    for (const label of ['Runtime log level', 'Console logging']) {
+        const row = settingOf(page, label);
+        await expect(row.locator('p.small')).toHaveText('The current value could not be read.');
+        await expect(row.locator('select, input[type="checkbox"]')).toBeDisabled();
+    }
+});
+
 // ── Task 6: log files, the reviewed cleanup and Clear all logs ─────────────────────────────────────────────────────
 
 const LOG_FOLDER = { rotated: [3000, 2048, 1024], other: true, link: true, active: 100 };
@@ -527,6 +539,26 @@ test('Clear all logs states both counts, confirms first and reads everything aga
     // The server lists newest first: compare as a set.
     await expect.poll(async () => (await details.locator('.operation-list h3').allTextContents()).sort()).toEqual([...kept].sort());
     expect(await names(request)).toEqual(['prompt_manager.log', ...(LINKS ? ['prompt_manager.log.4'] : []), 'prompt_manager.log.bak']);
+});
+
+test('Clear all logs reads the files again before it states what it deletes', async ({ page, request }) => {
+    await seedLogs(request, { rotated: [1024], active: 100 });
+    await openDiagnostics(page);
+    const details = await openFiles(page);
+    await expect(details.locator(':scope > p.small').first()).toHaveText(/rotated copies: 1$/);
+    // The log rolls over while the page stays open: Clear names what it deletes now, not the count shown.
+    await seedLogs(request, { records: false, rotated: [1024, 1024, 1024] });
+    await operation(page, 'Clear all logs').getByRole('button', { name: 'Clear all logs…', exact: true }).click();
+    await expect(dialog(page).locator('#modal-body > p')).toHaveText(/^Empties prompt_manager\.log, deletes 3 rotated copies \(3\.0 KB\) /);
+    await expect(details.locator(':scope > p.small').first()).toHaveText(/rotated copies: 3$/);
+    await dialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    // A list that cannot be read gives the general sentence, never an old count.
+    await page.route('**/prompt_manager/logs/files', route => route.fulfill({ status: 500, contentType: 'application/json',
+        body: JSON.stringify({ success: false, error: 'boom', files: [] }) }));
+    await operation(page, 'Clear all logs').getByRole('button', { name: 'Clear all logs…', exact: true }).click();
+    await expect(dialog(page).locator('#modal-body > p')).toHaveText(/^Empties prompt_manager\.log, deletes its rotated copies and clears/);
+    await dialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    expect(await names(request)).toEqual(['prompt_manager.log', 'prompt_manager.log.1', 'prompt_manager.log.2', 'prompt_manager.log.3']);
 });
 
 test('each listed file downloads by its returned name and a link has no Download', async ({ page, request }) => {

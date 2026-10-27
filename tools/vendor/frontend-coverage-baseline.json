@@ -1,9 +1,9 @@
 {
   "admin.js": {
-    "lines": 32,
+    "lines": 37,
     "branches": 61,
-    "functions": 27,
-    "statements": 32
+    "functions": 32,
+    "statements": 37
   },
   "api-client.js": {
     "lines": 98,
@@ -48,10 +48,10 @@
     "statements": 98
   },
   "gallery.js": {
-    "lines": 45,
-    "branches": 66,
-    "functions": 48,
-    "statements": 45
+    "lines": 49,
+    "branches": 68,
+    "functions": 50,
+    "statements": 49
   },
   "html-escape.js": {
     "lines": 98,
@@ -133,7 +133,7 @@
   },
   "sse-stream.js": {
     "lines": 98,
-    "branches": 90,
+    "branches": 92,
     "functions": 98,
     "statements": 98
   },
@@ -181,7 +181,7 @@
   },
   "workspace/activity-scan.mjs": {
     "lines": 96,
-    "branches": 87,
+    "branches": 90,
     "functions": 98,
     "statements": 96
   },
@@ -420,10 +420,10 @@
     "statements": 98
   },
   "workspace/maintenance-review.mjs": {
-    "lines": 94,
-    "branches": 86,
-    "functions": 90,
-    "statements": 94
+    "lines": 95,
+    "branches": 87,
+    "functions": 91,
+    "statements": 95
   },
   "workspace/media-viewer.mjs": {
     "lines": 98,
@@ -515,15 +515,21 @@
     "functions": 89,
     "statements": 98
   },
+  "workspace/system-diagnostics.mjs": {
+    "lines": 95,
+    "branches": 86,
+    "functions": 94,
+    "statements": 95
+  },
   "workspace/system-integrations.mjs": {
-    "lines": 96,
-    "branches": 88,
-    "functions": 91,
-    "statements": 96
+    "lines": 97,
+    "branches": 90,
+    "functions": 92,
+    "statements": 97
   },
   "workspace/system-maintenance.mjs": {
     "lines": 93,
-    "branches": 80,
+    "branches": 81,
     "functions": 92,
     "statements": 93
   },
@@ -546,10 +552,10 @@
     "statements": 98
   },
   "workspace/system-tagging.mjs": {
-    "lines": 80,
-    "branches": 70,
-    "functions": 75,
-    "statements": 80
+    "lines": 98,
+    "branches": 94,
+    "functions": 95,
+    "statements": 98
   },
   "workspace/system-thumbnails.mjs": {
     "lines": 98,
@@ -560,7 +566,7 @@
   "workspace/system.mjs": {
     "lines": 98,
     "branches": 92,
-    "functions": 86,
+    "functions": 98,
     "statements": 98
   },
   "workspace/theme.mjs": {

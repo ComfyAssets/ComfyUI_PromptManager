@@ -40,10 +40,9 @@ async function runningJob(error) {
     return jobs.running()[0];
 }
 
-function el(tag, text, className) {
+function el(tag, className) {
     const node = document.createElement(tag);
-    if (text !== undefined) node.textContent = text;
-    if (className) node.className = className;
+    node.className = className;
     return node;
 }
 
@@ -136,8 +135,7 @@ export const DELIVERED_SECTIONS = Object.freeze({
 /**
  * Mount System under the heading `renderHeading` wrote in `main`. Returns `{show(section)}`, which shows another
  * section in place. `scope` is the page's view scope; `sections` maps a section id to a delivered section's mount
- * (`(container, {api, activity, scope, drafts}) => nodes`); an id without a mount shows Overview's. `activity` is the
- * page's Activity store, which follows the jobs a section starts.
+ * (`(container, {api, activity, scope, drafts}) => nodes`) for every section. `activity` is the page's Activity store, which follows the jobs a section starts.
  *
  * The host values are read on mount (and by the store again after a conflict), so a save carries the current revision;
  * until a read returned one, a host save fails without a request (system-state.mjs). The browser values are read on
@@ -162,9 +160,9 @@ export function mountSystem(main, api, scope, { section, activity, sections = DE
     scope.cleanup(subscribePreferences(window, next => reconcile(next.values)));
     const nav = sectionNav({ label: 'System sections', sections: SYSTEM_SECTIONS, active: section, scope,
         onSelect: id => navigate(`#/system/${id}`) });
-    const layout = el('div', undefined, 'settings-layout');
-    const saveRow = el('div', undefined, 'save-row');
-    const status = el('span', undefined, 'small');
+    const layout = el('div', 'settings-layout');
+    const saveRow = el('div', 'save-row');
+    const status = el('span', 'small');
     status.id = 'settings-status';
     const save = createButton('Save preferences', 'ca-primary');
     saveRow.append(status, save);
@@ -192,8 +190,8 @@ export function mountSystem(main, api, scope, { section, activity, sections = DE
         sectionScope = createScope();
         for (const button of nav.children) button.setAttribute('aria-pressed', String(button.dataset.value === next));
         while (layout.firstChild !== saveRow) layout.firstChild.remove();
-        const mount = sections[next] ?? sections.overview;
-        const nodes = mount(layout, { api, activity, scope: sectionScope, drafts: store });
+        // Every section is delivered (S12), and the router only names known sections (state.mjs).
+        const nodes = sections[next](layout, { api, activity, scope: sectionScope, drafts: store });
         layout.prepend(...nodes);
         paintStatus();
     }

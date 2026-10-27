@@ -74,10 +74,22 @@ def _manager():
 
 
 def repoint_logs(root: Path) -> Path:
-    """Point the logger at ``<root>/logs`` before anything is logged."""
-    manager = _manager()
+    """Point the logger at ``<root>/logs`` before anything is logged.
+
+    The logger is built while ``logs_dir`` answers that folder, so its first
+    handler never opens a log file anywhere else (a node folder with a legacy
+    database would otherwise name a real log folder).
+    """
+    from utils import library_location
+
     folder = Path(root) / "logs"
     folder.mkdir(exist_ok=True)
+    original = library_location.logs_dir
+    library_location.logs_dir = lambda **_kwargs: str(folder)
+    try:
+        manager = _manager()
+    finally:
+        library_location.logs_dir = original
     with manager._files_lock:
         manager.log_dir = folder
         manager._setup_loggers()
@@ -102,6 +114,9 @@ def _record(time_text, level, message, index):
 
 
 def _touch(path: Path, size: int, moment: datetime.datetime) -> None:
+    # A link at this name is replaced, never written through.
+    if path.is_symlink():
+        path.unlink()
     with open(path, "wb") as handle:
         handle.write(b"x" * size)
     stamp = moment.timestamp()
@@ -130,7 +145,9 @@ def register_diagnostics_commands(app, routes, api, root: Path):
         with manager._files_lock:
             held = manager._acquire_file_handlers()
             try:
-                for entry in os.scandir(log_dir):
+                with os.scandir(log_dir) as entries:
+                    found = list(entries)
+                for entry in found:
                     path = Path(entry.path)
                     if entry.name == ACTIVE and entry.is_file(follow_symlinks=False):
                         manager._truncate_main_log(path)
@@ -210,7 +227,9 @@ def register_diagnostics_commands(app, routes, api, root: Path):
         manager = _manager()
         log_dir = folder()
         entries = []
-        for entry in sorted(os.scandir(log_dir), key=lambda item: item.name):
+        with os.scandir(log_dir) as listing:
+            found = sorted(listing, key=lambda item: item.name)
+        for entry in found:
             info = entry.stat(follow_symlinks=False)
             entries.append(
                 {"name": entry.name, "size": info.st_size, "link": entry.is_symlink()}
