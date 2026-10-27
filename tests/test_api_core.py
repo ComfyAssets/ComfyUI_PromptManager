@@ -1,5 +1,6 @@
 """Tests for the core API module (py/api/__init__.py): helpers and base routes."""
 
+import asyncio
 import json
 import os
 import shutil
@@ -165,8 +166,19 @@ class TestGzipMiddleware(AioHTTPTestCase):
             await resp.write_eof()
             return resp
 
+        async def declared_length(request):
+            # The log download (#329) declares its length before the middleware
+            # compresses it.
+            body = b"x" * 3000
+            return web.Response(
+                body=body,
+                content_type="text/plain",
+                headers={"Content-Length": str(len(body))},
+            )
+
         app = web.Application(middlewares=[api_module._gzip_middleware])
         app.router.add_get("/prompt_manager/big", big_json)
+        app.router.add_get("/prompt_manager/declared", declared_length)
         app.router.add_get("/prompt_manager/small", small_json)
         app.router.add_get("/prompt_manager/encoded", already_encoded)
         app.router.add_get("/prompt_manager/binary", binary)
@@ -192,6 +204,18 @@ class TestGzipMiddleware(AioHTTPTestCase):
         import gzip
 
         self.assertIn(b'"data"', gzip.decompress(await resp.read()))
+
+    async def test_compressed_body_declares_its_own_length(self):
+        # A stale Content-Length (the uncompressed size) makes a browser wait
+        # for bytes that never come (#329: Download log hung on any log > 1 KB).
+        resp = await self._get("/prompt_manager/declared")
+        self.assertEqual(resp.headers.get("Content-Encoding"), "gzip")
+        # Bounded: a stale length would otherwise wait for the missing bytes.
+        body = await asyncio.wait_for(resp.read(), timeout=10)
+        self.assertEqual(int(resp.headers["Content-Length"]), len(body))
+        import gzip
+
+        self.assertEqual(gzip.decompress(body), b"x" * 3000)
 
     async def test_small_body_not_compressed(self):
         resp = await self._get("/prompt_manager/small")

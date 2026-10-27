@@ -295,6 +295,10 @@ async def _gzip_middleware(request, handler):
     if len(compressed) >= len(body):
         return response
 
+    # A length the handler declared is the uncompressed one: drop it so the
+    # compressed body's own length is sent (#329: a stale length made the
+    # browser wait for bytes that never came).
+    response.headers.pop("Content-Length", None)
     response.body = compressed
     response.headers["Content-Encoding"] = "gzip"
     response.headers["Vary"] = "Accept-Encoding"
