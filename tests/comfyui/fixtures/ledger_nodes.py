@@ -292,7 +292,8 @@ async def image_monitor(request: web.Request) -> web.Response:
         config.MONITORING_ENABLED = True
         monitor.start_monitoring([folder_paths.get_output_directory()])
     else:
-        # Joins the image worker and the observer (up to 5 s each): off the loop.
+        # Joins the image worker and the observer (one shared 5 s deadline),
+        # so it runs on a worker thread, not on the event loop.
         await asyncio.to_thread(monitor.stop_monitoring)
         config.MONITORING_ENABLED = False
     return web.json_response({"monitoring": monitor.is_monitoring})
