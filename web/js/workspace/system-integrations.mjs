@@ -345,7 +345,8 @@ function comfySurface({ scope, clientFactory }) {
     return surface;
 }
 
-function bridgeFactory() {
+/** The send bridge's client factory for this page's mount (Integrations and Diagnostics & logs, S12-13). */
+export function bridgeFactory() {
     const url = new URL(window.ApiClient.resolveUrl('/prompt_manager/'), window.location.href);
     return () => createBridgeClient({ namespace: url.pathname.slice(0, -'prompt_manager/'.length), origin: window.location.origin });
 }

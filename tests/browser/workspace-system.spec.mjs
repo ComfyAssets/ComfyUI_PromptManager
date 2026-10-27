@@ -412,15 +412,16 @@ test('out-of-order overview responses never repaint a newer section', async ({ p
     await nav.getByRole('button', { name: 'Appearance', exact: true }).click();
     await nav.getByRole('button', { name: 'Overview', exact: true }).click();
     await expect.poll(held).toBe(2);
-    // Diagnostics still hands off (S12), so its body is one known panel.
+    // Diagnostics & logs is native (S12): its body is its two surfaces.
     await nav.getByRole('button', { name: 'Diagnostics & logs', exact: true }).click();
+    await expect(layout.locator(':scope > section.surface')).toHaveCount(2);
     await expect(await request.post('/__test__/release')).toBeOK();
     await expect.poll(held).toBe(0);
     // Both late answers reached a section that had left: Diagnostics keeps its own body.
-    await expect(layout.locator(':scope > section.handoff')).toBeVisible();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect(layout.locator('.summary-metrics')).toHaveCount(0);
-    expect(await layout.evaluate(node => [...node.children].map(child => child.className))).toEqual(['surface handoff', 'save-row']);
+    expect(await layout.evaluate(node => [...node.children].map(child => `${child.localName}.${child.className}`)))
+        .toEqual(['section.surface', 'section.surface', 'div.save-row']);
     // Back on Overview, one fresh read paints one set of metrics.
     await nav.getByRole('button', { name: 'Overview', exact: true }).click();
     await expect(layout.locator('.summary-metrics')).toHaveCount(1);
