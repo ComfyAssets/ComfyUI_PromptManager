@@ -64,16 +64,18 @@ jobs:
   comfyui:
     name: real ComfyUI compatibility
     runs-on: ubuntu-latest
+    # Chromium and its system libraries come from the pinned Playwright image (tag = @playwright/test in
+    # tools/vendor/package-lock.json; tests/vendor/browser-image.test.mjs checks it). The runner install
+    # pulled them from Ubuntu's apt mirror on every run, and three runs (#349, #378, #382) crawled at
+    # ~26 kB/s for 11-12 minutes until the job hit its limit after every test had passed.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001
     timeout-minutes: 24
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: tools/vendor/package-lock.json
       - name: Read the reviewed runtime pins
         id: runtime
         run: |
@@ -98,21 +100,42 @@ jobs:
           ref: ${{ steps.runtime.outputs.kikoRevision }}
           path: .ci-kikotools
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      # The image's own Python and Node 24: setup-python/setup-node install the runner's toolcache builds,
+      # whose entry points name host paths that do not exist in the container. The image has no ensurepip
+      # and the job has no root, so a checksum-pinned pip wheel bootstraps a user-space venv. The image
+      # Python must be the reviewed host Python, so a pin or image bump that disagrees fails here.
+      - name: Python environment on the reviewed host Python
+        env:
+          PIP_WHEEL: https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl
+          PIP_SHA256: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
+          PINNED_PYTHON: ${{ steps.runtime.outputs.pythonVersion }}
+        run: |
+          image="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          [ "$image" = "$PINNED_PYTHON" ] || { echo "::error::image Python $image is not the pinned $PINNED_PYTHON"; exit 1; }
+          venv="$RUNNER_TEMP/venv" wheel="$RUNNER_TEMP/pip-26.2.1-py3-none-any.whl"
+          python3 -m venv --without-pip "$venv"
+          curl -fsSL --retry 3 -o "$wheel" "$PIP_WHEEL"
+          echo "$PIP_SHA256  $wheel" | sha256sum -c -
+          "$venv/bin/python" "$wheel/pip" install --no-index --no-cache-dir "$wheel"
+          echo "$venv/bin" >> "$GITHUB_PATH"
+      - run: python --version && node --version && node --version | grep -q '^v24\.'
+      # pip's download cache (torch alone is ~200 MB); inside the container ~ is the job's HOME (/github/home).
+      - name: Cache pip downloads
+        uses: actions/cache@v6
         with:
-          python-version: ${{ steps.runtime.outputs.pythonVersion }}
-          cache: pip
-          cache-dependency-path: |
-            requirements-dev.txt
-            .ci-comfyui/requirements.txt
-            tools/vendor/comfyui-runtime.json
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('requirements-dev.txt', '.ci-comfyui/requirements.txt', 'tools/vendor/comfyui-runtime.json') }}
       - name: Install CPU runtime and test dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install "torch==${{ steps.runtime.outputs.torchVersion }}" "torchvision==${{ steps.runtime.outputs.torchvisionVersion }}" --index-url https://download.pytorch.org/whl/cpu
           pip install -r .ci-comfyui/requirements.txt -r requirements-dev.txt "torch==${{ steps.runtime.outputs.torchVersion }}" "torchvision==${{ steps.runtime.outputs.torchvisionVersion }}"
+      # npm's download cache, keyed on the lockfile. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
-      - run: npx --prefix tools/vendor playwright install --with-deps chromium
       - name: Classic and Nodes 2.0 startup and compatibility
         env:
           PM_COMFY_ROOT: ${{ github.workspace }}/.ci-comfyui
