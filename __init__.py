@@ -22,7 +22,10 @@ Features:
 - Comprehensive logging and diagnostics
 """
 
+import atexit
 import re
+import threading
+import time
 from pathlib import Path
 
 
@@ -72,6 +75,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # are served by our own routes instead (see py/api).
 WEB_DIRECTORY = "web/comfy"
 
+# Parts the package teardown stops (``_stop_background_work``). Each stays None
+# when its start-up block below fails, and the teardown skips it.
+api = None
+_global_prompt_tracker = None
+_global_image_monitor = None
+
 # Add API routes (same pattern as ComfyUI_Assets)
 try:
     # Set extension URI
@@ -89,8 +98,6 @@ try:
     api.add_routes(routes)
     # Temp files of preview writes a crash interrupted (#317), off the
     # import path: the walk may cover a large thumbnails folder.
-    import threading
-
     threading.Thread(
         target=api.sweep_thumbnail_temps,
         name="PromptManagerPreviewTempSweep",
@@ -141,29 +148,16 @@ try:
 
     # The Needs review pass for ambiguous new outputs runs through the API's
     # capture store (the one the scan and the Tag dialog use): a linked output
-    # is never queued and its pending items leave the queue. It stops before
-    # that store is closed at shutdown.
-    _review_api = globals().get("api")
-    if _review_api is not None:
-        _global_image_monitor.set_review_recorder(_review_api.record_review_file)
+    # is never queued and its pending items leave the queue. The package
+    # teardown detaches it before that store is closed at shutdown.
+    if api is not None:
+        _global_image_monitor.set_review_recorder(api.record_review_file)
         # Every settled output's preview is queued for the API's background
         # worker (#249): the workspace never asks to generate thumbnails.
-        _global_image_monitor.set_thumbnail_queue(_review_api.queue_capture_thumbnail)
+        _global_image_monitor.set_thumbnail_queue(api.queue_capture_thumbnail)
         # Every settled output walks its Images listing again (#348): the
         # API hops from the monitor's thread onto the server's loop.
-        _global_image_monitor.set_output_listener(_review_api.notify_output_settled)
-        _review_host = getattr(config.server_instance, "app", None)
-        if _review_host is not None and hasattr(_review_host, "on_cleanup"):
-
-            async def _stop_review_recording(
-                app, monitor=_global_image_monitor, api=_review_api
-            ):
-                monitor.set_review_recorder(None)
-                monitor.set_thumbnail_queue(None)
-                monitor.set_output_listener(None)
-                api.close_auto_thumbnails(final=True)
-
-            _review_host.on_cleanup.insert(0, _stop_review_recording)
+        _global_image_monitor.set_output_listener(api.notify_output_settled)
 
     # Start monitoring
     _global_image_monitor.start_monitoring()
@@ -232,6 +226,144 @@ except Exception:
         logging.getLogger("prompt_manager.init").error(
             "Failed to register execution history"
         )
+
+
+# ── Package teardown (#301, #302) ────────────────────────────────────────────
+# ComfyUI never runs aiohttp's cleanup hooks (it never calls
+# ``runner.cleanup()``), so ``atexit`` is the live host's path: Ctrl+C, and a
+# normal exit. It is registered after the history hook, so at exit (newest
+# first) it runs before the history dispose. Hosts that do run ``on_cleanup``
+# (our test servers) run it there, and the tests' package unload calls it.
+
+TEARDOWN_SECONDS = 10.0
+_clock = time.monotonic
+_background_work_lock = threading.Lock()
+_background_work_result = None
+
+
+def _teardown_step(name, stop, logger):
+    """Run one teardown step; a failure (even Ctrl+C) is logged and is False."""
+    try:
+        return bool(stop())
+    except (Exception, KeyboardInterrupt):
+        logger.error(f"Background work: stopping {name} failed", exc_info=True)
+        return False
+
+
+def _teardown_logger():
+    """PromptManager's init logger; the standard one if that cannot load."""
+    try:
+        from .utils.logging_config import get_logger
+
+        return get_logger("prompt_manager.init")
+    except Exception:
+        import logging
+
+        return logging.getLogger("prompt_manager.init")
+
+
+def _stop_background_work():
+    """Stop the image monitor, the preview worker and the prompt cleanup
+    thread against one TEARDOWN_SECONDS deadline, once.
+
+    Returns ``{"monitor", "thumbnails", "tracker"}`` booleans (True: it
+    stopped), leaving out parts that never started. Later calls return a
+    copy of the first result.
+    """
+    global _background_work_result
+    with _background_work_lock:
+        if _background_work_result is not None:
+            return dict(_background_work_result)
+        logger = _teardown_logger()
+        began = _clock()
+        deadline = began + TEARDOWN_SECONDS
+
+        def left(own_bound):
+            return max(0.0, min(own_bound, deadline - _clock()))
+
+        monitor, thumbnails, tracker = (
+            _global_image_monitor,
+            api,
+            _global_prompt_tracker,
+        )
+        result = {}
+        if monitor is not None:
+
+            def stop_monitor():
+                from .utils.image_monitor import OBSERVER_JOIN_SECONDS
+
+                # Callbacks first: an image in hand queues no preview into a
+                # closing preview worker. The worker may have read the queue
+                # callback already, so the API refuses new previews too (at
+                # exit, Python 3.12+ refuses to start their worker thread).
+                if thumbnails is not None:
+                    thumbnails.refuse_auto_thumbnails()
+                monitor.set_review_recorder(None)
+                monitor.set_thumbnail_queue(None)
+                monitor.set_output_listener(None)
+                return monitor.stop_monitoring(left(OBSERVER_JOIN_SECONDS))
+
+            result["monitor"] = _teardown_step(
+                "the image monitor", stop_monitor, logger
+            )
+        if thumbnails is not None:
+
+            def close_previews():
+                from .py.api.thumbnail_auto import CLOSE_WAIT_SECONDS
+
+                return thumbnails.close_auto_thumbnails(
+                    final=True, timeout=left(CLOSE_WAIT_SECONDS)
+                )
+
+            result["thumbnails"] = _teardown_step(
+                "the preview worker", close_previews, logger
+            )
+        if tracker is not None:
+
+            def stop_tracker():
+                from .utils.prompt_tracker import TRACKER_JOIN_SECONDS
+
+                return tracker.shutdown(left(TRACKER_JOIN_SECONDS))
+
+            result["tracker"] = _teardown_step(
+                "the prompt cleanup thread", stop_tracker, logger
+            )
+        elapsed = _clock() - began
+        failed = [name for name, ok in result.items() if not ok]
+        if failed:
+            logger.warning(
+                f"Background work not stopped in time ({elapsed:.1f} s): "
+                + ", ".join(failed)
+            )
+        else:
+            parts = " ".join(f"{name}=ok" for name in result)
+            logger.info(f"Background work stopped in {elapsed:.1f} s: {parts}")
+        _background_work_result = result
+        atexit.unregister(_stop_background_work)
+        return dict(result)
+
+
+async def _stop_background_work_on_cleanup(app):
+    """aiohttp ``on_cleanup``: no request is served then, so it runs inline."""
+    _stop_background_work()
+
+
+try:
+    atexit.register(_stop_background_work)
+    from .py.config import server_instance as _teardown_server
+
+    _teardown_host = getattr(_teardown_server, "app", None)
+    if _teardown_host is not None and hasattr(_teardown_host, "on_cleanup"):
+        _teardown_host.on_cleanup.insert(0, _stop_background_work_on_cleanup)
+except Exception as e:
+    try:
+        from .utils.logging_config import get_logger
+
+        get_logger("prompt_manager.init").error(
+            f"Failed to register the background work teardown: {e}"
+        )
+    except Exception:
+        pass
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
