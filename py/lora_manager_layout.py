@@ -12,8 +12,10 @@ server share one definition:
   plugin file, or the user config folder, in LoraManager's order), keeps only
   the seven keys the import needs, and resolves the LoRA roots, the sidecar
   root (centralized storage), the example-images root and the active
-  LoraManager library. Every folder from the settings passes the folder
-  guard (exists, not a filesystem root, not the home folder itself).
+  LoraManager library. Every folder from the settings, and each of
+  ComfyUI's default LoRA folders, passes the folder guard: it must exist and
+  must not be a filesystem root, the home folder or a folder that contains
+  it. Default folders the guard refuses are listed in ``refused_defaults``.
 - ``discover_sidecars`` finds every sidecar whose model file exists inside a
   LoRA root: beside the models in ``alongside`` mode, under the sidecar root
   (matched to its model by ``file_path``) in ``centralized`` mode.
@@ -25,6 +27,7 @@ it is testable outside ComfyUI.
 """
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, replace
@@ -98,7 +101,12 @@ NOT_OBJECT = "the settings file is not a JSON object"
 TOO_LARGE = "the settings file is larger than 5 MB"
 NO_PLATFORMDIRS = "platformdirs is not available"
 NO_SIDECAR_ROOT = "the sidecar folder does not exist"
-BAD_SIDECAR_ROOT = "the sidecar folder is a filesystem root or the home folder"
+BAD_SIDECAR_ROOT = (
+    "the sidecar folder is a filesystem root, the home folder or a folder "
+    "that contains it"
+)
+
+logger = logging.getLogger("prompt_manager.lora_manager_layout")
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,9 @@ class LoraManagerLayout:
     example_images_root: Optional[str]
     library: str
     media_roots: Tuple[str, ...]
+    # ComfyUI's default LoRA folders that exist but that the folder guard
+    # refused (canonical): the layout cache logs them (#362).
+    refused_defaults: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,12 +137,19 @@ class Sidecar:
 
 @dataclass(frozen=True)
 class Discovery:
-    """The sidecars kept, how many metadata files were seen, and those unread."""
+    """The sidecars kept, every metadata file seen, and those unread."""
 
     layout: LoraManagerLayout
     sidecars: List[Sidecar]
-    scanned: int
+    # Every ``*.metadata.json`` seen, kept or skipped: resolved, once each,
+    # sorted by ``str(path)``. The import's fingerprint covers all of them.
+    scanned_files: Tuple[Path, ...]
     unreadable: List[str]
+
+    @property
+    def scanned(self) -> int:
+        """How many metadata files were seen."""
+        return len(self.scanned_files)
 
 
 class _SettingsError(Exception):
@@ -315,6 +333,23 @@ def _guarded(paths, home: str) -> Tuple[str, ...]:
     return tuple(kept)
 
 
+def _refused(paths, home: str) -> Tuple[str, ...]:
+    """The folders in ``paths`` that exist but that the guard refuses."""
+    refused = []
+    for path in paths:
+        absolute = _absolute(path)
+        if not absolute or not os.path.isdir(absolute):
+            continue
+        if _guard_folder(absolute, home) is None:
+            try:
+                canonical = _canonical(absolute)
+            except (OSError, ValueError):
+                continue
+            if canonical not in refused:
+                refused.append(canonical)
+    return tuple(refused)
+
+
 def _example_images_root(
     settings: Mapping, library: str, libraries: int, home: str
 ) -> Optional[str]:
@@ -351,7 +386,9 @@ def load_layout(
     default LoRA roots, so serving and trigger words keep working.
     """
     home = str(Path.home())
-    defaults = _guarded(default_roots(), home)
+    default_list = list(default_roots())
+    defaults = _guarded(default_list, home)
+    refused_defaults = _refused(default_list, home)
     fallback = LoraManagerLayout(
         settings_path=None,
         source=None,
@@ -362,6 +399,7 @@ def load_layout(
         example_images_root=None,
         library="default",
         media_roots=defaults,
+        refused_defaults=refused_defaults,
     )
     if not lora_manager_path:
         return fallback
@@ -377,10 +415,14 @@ def load_layout(
     except _SettingsError as error:
         return replace(fallback, error=str(error))
     settings = _settings_subset(raw or {})
-    return _layout_from_settings(settings, settings_path, source, defaults, home)
+    return _layout_from_settings(
+        settings, settings_path, source, defaults, home, refused_defaults
+    )
 
 
-def _layout_from_settings(settings, settings_path, source, defaults, home):
+def _layout_from_settings(
+    settings, settings_path, source, defaults, home, refused_defaults=()
+):
     library, entry, libraries = _active_library(settings)
     lora_roots = _media_roots(
         defaults,
@@ -400,6 +442,7 @@ def _layout_from_settings(settings, settings_path, source, defaults, home):
         example_images_root=example_root,
         library=library,
         media_roots=_media_roots(lora_roots, [example_root]),
+        refused_defaults=refused_defaults,
     )
     if mode != MODE_CENTRALIZED:
         return layout
@@ -482,13 +525,13 @@ def discover_sidecars(layout: LoraManagerLayout) -> Discovery:
     cannot see every folder must not replace the collection with part of it.
     """
     if layout.error is not None:
-        return Discovery(layout, [], 0, [])
+        return Discovery(layout, [], (), [])
     if layout.mode == MODE_CENTRALIZED:
         folders = [layout.sidecar_root]
     else:
         folders = list(layout.lora_roots)
     seen = set()
-    scanned = 0
+    scanned: List[Path] = []
     unreadable: List[str] = []
     sidecars = []
     for folder in folders:
@@ -498,12 +541,13 @@ def discover_sidecars(layout: LoraManagerLayout) -> Discovery:
             if key in seen:
                 continue
             seen.add(key)
-            scanned += 1
+            scanned.append(resolved)
             model = _model_for(resolved, layout, unreadable)
             if model is not None:
                 sidecars.append(Sidecar(resolved, Path(os.path.realpath(model))))
     sidecars.sort(key=lambda sidecar: str(sidecar.metadata_path))
-    return Discovery(layout, sidecars, scanned, unreadable)
+    scanned.sort(key=str)
+    return Discovery(layout, sidecars, tuple(scanned), unreadable)
 
 
 # ── images ──────────────────────────────────────────────────────────
@@ -526,8 +570,15 @@ def _example_files(folder: str) -> List[str]:
 def _preview_candidates(sidecar: Sidecar, metadata: Dict) -> Iterator[str]:
     """The paths a preview is looked for at, in LoraManager's order."""
     url = metadata.get("preview_url")
-    if isinstance(url, str) and url.strip() and os.path.isabs(url.strip()):
-        yield url.strip()
+    if isinstance(url, str) and url.strip():
+        if os.path.isabs(url.strip()):
+            yield url.strip()
+        else:
+            # LoraManager writes absolute paths; it would resolve a relative
+            # one against its working directory, not the sidecar folder.
+            logger.debug(
+                "Relative preview_url skipped in %s", sidecar.metadata_path.name
+            )
     base = sidecar.metadata_path.name[: -len(METADATA_SUFFIX)]
     for suffix in PREVIEW_EXTENSIONS:
         yield str(sidecar.metadata_path.parent / f"{base}{suffix}")

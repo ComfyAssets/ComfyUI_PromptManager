@@ -12,9 +12,10 @@ last writes to the database:
    the sidecars (``discover``). In ``alongside`` mode a sidecar beside its
    model is kept when ``<base>.safetensors`` exists; in ``centralized`` mode
    every sidecar under the sidecar root is kept when its ``file_path`` names
-   a model inside a LoRA root. ``fingerprint`` covers the kept sidecars (path,
-   size and modification time) and the layout; ``preview`` adds the counts a
-   review shows. Nothing is written and nothing is requested.
+   a model inside a LoRA root. ``fingerprint`` covers every scanned sidecar,
+   kept or skipped (path, size, modification time, kept or not, #362) and the
+   layout; ``preview`` adds the counts a review shows. Nothing is written
+   and nothing is requested.
 2. **stage**: read each sidecar and build its record. Its LoraManager preview
    and example images are linked where they are (``local_media``); only a
    LoRA without any local image downloads its CivitAI example images into the
@@ -69,9 +70,10 @@ def discover(lora_manager_path: Optional[str]) -> Discovery:
 
 
 def fingerprint(discovery: Discovery) -> str:
-    """What a review saw: the layout, then each kept sidecar's path, size and
-    modification time (a LoraManager save that changes unrelated settings
-    leaves it as it was)."""
+    """What a review saw: the layout, then every scanned sidecar, kept or
+    skipped, with its path, size, modification time and whether it was kept
+    (#362). A LoraManager save that changes unrelated settings leaves it as
+    it was."""
     layout = discovery.layout
     digest = hashlib.sha256()
     for value in (
@@ -87,13 +89,14 @@ def fingerprint(discovery: Discovery) -> str:
         digest.update(f"{value}\n".encode("utf-8", "surrogatepass"))
     for name in discovery.unreadable:
         digest.update(f"unreadable\0{name}\n".encode("utf-8", "surrogatepass"))
-    for sidecar in discovery.sidecars:
-        path = sidecar.metadata_path
+    kept = {str(sidecar.metadata_path) for sidecar in discovery.sidecars}
+    for path in discovery.scanned_files:
+        flag = 1 if str(path) in kept else 0
         try:
             stat = path.stat()
-            entry = f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\n"
+            entry = f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\0{flag}\n"
         except OSError:
-            entry = f"{path}\0missing\n"
+            entry = f"{path}\0missing\0{flag}\n"
         digest.update(entry.encode("utf-8", "surrogatepass"))
     return "sha256:" + digest.hexdigest()
 

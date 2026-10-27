@@ -33,6 +33,10 @@ MEDIA = frozenset(
     {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm", ".mov", ".bmp"}
 )
 MARKER = "marker-from-unkept-settings-0123"
+BAD_SIDECAR_REASON = (
+    "the sidecar folder is a filesystem root, the home folder or a folder "
+    "that contains it"
+)
 
 
 class LayoutTestCase(unittest.TestCase):
@@ -261,10 +265,25 @@ class UnusableLayoutTests(LayoutTestCase):
             {"sidecar_storage_mode": "centralized", "sidecar_storage_path": "/"},
         )
         layout = self.load()
-        self.assertEqual(
-            layout.error, "the sidecar folder is a filesystem root or the home folder"
-        )
+        self.assertEqual(layout.error, BAD_SIDECAR_REASON)
         self.assertNotIn(os.path.normcase(os.path.realpath("/")), layout.media_roots)
+
+    def test_a_centralized_sidecar_root_that_contains_home(self):
+        home = self.tmp / "outer" / "me"
+        home.mkdir(parents=True)
+        self.write_settings(
+            self.user_config,
+            {
+                "sidecar_storage_mode": "centralized",
+                "sidecar_storage_path": str(self.tmp / "outer"),
+            },
+        )
+        with patch.object(layout_module.Path, "home", return_value=home):
+            layout = self.load()
+        self.assertEqual(layout.error, BAD_SIDECAR_REASON)
+        self.assertEqual(
+            layout.media_roots, (os.path.normcase(str(self.default_loras)),)
+        )
 
 
 class SecretTests(LayoutTestCase):
@@ -501,6 +520,31 @@ class CentralizedDiscoveryTests(LayoutTestCase):
         self.assertEqual(discovery.scanned, 3)
         self.assertEqual(discovery.sidecars, [])
 
+    def test_every_scanned_file_is_listed_resolved_and_sorted(self):
+        # #362: the fingerprint covers every scanned sidecar, kept or skipped.
+        ckpt = self.model(self.checkpoints, "base")
+        alpha = self.model(self.loras, "alpha")
+        self.sidecar(self.sidecars / "z", "base", {"file_path": str(ckpt)})
+        self.sidecar(self.sidecars / "a", "alpha", {"file_path": str(alpha)})
+        self.sidecar(self.sidecars / "m", "nopath", {"model_name": "x"})
+        discovery = discover_sidecars(self.load())
+        files = discovery.scanned_files
+        self.assertIsInstance(files, tuple)
+        self.assertEqual(len(files), 3)
+        self.assertEqual(discovery.scanned, len(files))
+        self.assertEqual([str(f) for f in files], sorted(str(f) for f in files))
+        self.assertEqual(
+            [f.name for f in files],
+            [
+                f"alpha{METADATA_SUFFIX}",
+                f"nopath{METADATA_SUFFIX}",
+                f"base{METADATA_SUFFIX}",
+            ],
+        )
+        for path in files:
+            self.assertEqual(str(path), os.path.realpath(path))
+        self.assertEqual(len(discovery.sidecars), 1)
+
     def test_leftover_sidecars_beside_models_are_not_scanned(self):
         model = self.model(self.loras, "alpha")
         self.sidecar(self.loras, "alpha", {"file_path": str(model)})
@@ -610,6 +654,16 @@ class LocalMediaTests(LayoutTestCase):
         preview = self.touch(self.default_loras / "custom.jpeg")
         self.touch(self.default_loras / "alpha.webp")
         self.assertEqual(self.media({"preview_url": preview}), [preview])
+
+    def test_a_relative_preview_url_is_logged_and_skipped(self):
+        fallback = self.touch(self.default_loras / "alpha.webp")
+        self.touch(self.default_loras / "relative.png")
+        with self.assertLogs("prompt_manager.lora_manager_layout", "DEBUG") as logs:
+            media = self.media({"preview_url": "relative.png"})
+        self.assertEqual(media, [fallback])
+        self.assertEqual(len(logs.records), 1)
+        self.assertEqual(logs.records[0].levelname, "DEBUG")
+        self.assertIn(self.meta.name, logs.output[0])
 
     def test_preview_url_outside_media_roots_or_not_servable_is_ignored(self):
         outside = self.touch(self.tmp / "elsewhere" / "p.png")
@@ -808,6 +862,63 @@ class FolderGuardTests(unittest.TestCase):
         root = os.path.normcase(str(self.tmp / "Loras"))
         self.assertTrue(layout_module._inside(inside, (root,)))
         self.assertFalse(layout_module._inside(str(self.tmp / "other.png"), (root,)))
+
+
+class RefusedDefaultsTests(LayoutTestCase):
+    """#362: ComfyUI's default LoRA folders pass the same guard; the refused
+    ones that exist are listed so the layout cache can warn about them."""
+
+    def setUp(self):
+        super().setUp()
+        self.outer = self.tmp / "outer"
+        self.home = self.outer / "me"
+        self.home.mkdir(parents=True)
+        self.fs_root = os.path.abspath(os.sep)
+        self.defaults = [
+            str(self.home),
+            str(self.outer),
+            self.fs_root,
+            str(self.tmp / "missing"),
+            str(self.default_loras),
+        ]
+        self.expected = (
+            layout_module._canonical(str(self.home)),
+            layout_module._canonical(str(self.outer)),
+            layout_module._canonical(self.fs_root),
+        )
+        home_patch = patch.object(layout_module.Path, "home", return_value=self.home)
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
+
+    def load_defaults(self, path="__plugin__"):
+        return self.load(path, default_roots=lambda: list(self.defaults))
+
+    def test_refused_existing_defaults_are_listed_on_a_usable_layout(self):
+        self.write_settings(self.user_config, {})
+        layout = self.load_defaults()
+        self.assertIsNone(layout.error)
+        self.assertEqual(layout.refused_defaults, self.expected)
+        self.assertEqual(
+            layout.lora_roots, (os.path.normcase(str(self.default_loras)),)
+        )
+
+    def test_they_are_listed_on_an_unusable_centralized_layout(self):
+        self.write_settings(
+            self.user_config,
+            {"sidecar_storage_mode": "centralized", "sidecar_storage_path": "/"},
+        )
+        layout = self.load_defaults()
+        self.assertEqual(layout.error, BAD_SIDECAR_REASON)
+        self.assertEqual(layout.refused_defaults, self.expected)
+
+    def test_they_are_listed_without_an_install(self):
+        layout = self.load_defaults(None)
+        self.assertEqual(layout.error, "no LoraManager install found")
+        self.assertEqual(layout.refused_defaults, self.expected)
+
+    def test_nothing_is_listed_when_every_default_is_accepted(self):
+        self.write_settings(self.user_config, {})
+        self.assertEqual(self.load().refused_defaults, ())
 
 
 class SummaryTests(LayoutTestCase):

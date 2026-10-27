@@ -224,6 +224,14 @@ class TestReadLoraMetadata(unittest.TestCase):
         result = read_lora_metadata(Path("/nonexistent/file.metadata.json"))
         self.assertIsNone(result)
 
+    def test_returns_none_for_a_file_that_is_not_utf8(self):
+        # #362: one malformed sidecar is skipped; it must not fail the whole
+        # trigger-word load (now logged with a traceback) or the review.
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bad.metadata.json"
+            path.write_bytes(b'{"model_name": "\xff\xfe"}')
+            self.assertIsNone(read_lora_metadata(path))
+
 
 class TestGetLoraImageCacheDir(unittest.TestCase):
     """Test get_lora_image_cache_dir — returns and creates cache path."""
@@ -1790,6 +1798,34 @@ class TestTriggerWordCacheLayout(unittest.TestCase):
         cache.load(str(self.lm))
         self.assertTrue(cache.is_loaded)
         self.assertTrue(cache.retry_due())
+
+    def test_an_os_error_is_a_warning_without_a_traceback(self):
+        cache = TriggerWordCache()
+        cache._cache = {"old": ["word"]}
+        with (
+            patch.object(TriggerWordCache, "_build", side_effect=OSError("denied")),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING") as logs,
+        ):
+            self.assertEqual(cache.load(str(self.lm)), 1)
+        self.assertEqual([r.levelname for r in logs.records], ["WARNING"])
+        self.assertIsNone(logs.records[0].exc_info)
+        self.assertEqual(cache.get_trigger_words("old"), ["word"])
+        self.assertFalse(cache.retry_due())
+
+    def test_an_unexpected_failure_logs_its_traceback(self):
+        # #362: a programming error must not look like a disk error.
+        cache = TriggerWordCache()
+        cache._cache = {"old": ["word"]}
+        with (
+            patch.object(TriggerWordCache, "_build", side_effect=ValueError("bug")),
+            self.assertLogs("prompt_manager.lora_utils", level="WARNING") as logs,
+        ):
+            self.assertEqual(cache.load(str(self.lm)), 1)
+        self.assertEqual(len(logs.records), 1)
+        self.assertIsNotNone(logs.records[0].exc_info)
+        self.assertIs(logs.records[0].exc_info[0], ValueError)
+        self.assertEqual(cache.get_trigger_words("old"), ["word"])
+        self.assertFalse(cache.retry_due())
 
     def test_any_other_failure_never_raises(self):
         cache = TriggerWordCache()

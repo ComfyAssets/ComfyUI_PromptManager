@@ -30,6 +30,7 @@ except ImportError:
 
 from dataclasses import replace
 
+from .lora_layout_cache import LayoutCache
 from .lora_manager_layout import (
     MODE_ALONGSIDE,
     METADATA_SUFFIX,
@@ -295,8 +296,33 @@ def layout_for_install(install: Optional[str]) -> LoraManagerLayout:
 
 
 def lora_manager_layout(lora_manager_path: Optional[str]) -> LoraManagerLayout:
-    """Where LoraManager keeps its files (``py/lora_manager_layout.py``)."""
+    """Where LoraManager keeps its files (``py/lora_manager_layout.py``).
+
+    A fresh read: the import review, Start, the legacy scan and the trigger
+    word cache use it. The image hot paths use ``cached_lora_manager_layout``.
+    """
     return layout_for_install(lora_manager_install(lora_manager_path))
+
+
+# The image hot paths' layout cache (#362). The lambdas look the functions up
+# when called, so a test that patches them here is seen by the cache.
+_layout_cache = LayoutCache(
+    lambda path: lora_manager_install(path),
+    lambda install: layout_for_install(install),
+)
+
+
+def cached_lora_manager_layout(
+    configured: Optional[str],
+) -> Tuple[Optional[str], LoraManagerLayout]:
+    """``(install, layout)`` for the configured path, from the layout cache
+    while LoraManager's settings files are unchanged (``py/lora_layout_cache.py``)."""
+    return _layout_cache.get(configured or "")
+
+
+def clear_layout_cache() -> None:
+    """Drop the cached layout (after an import linked files in new folders)."""
+    _layout_cache.clear()
 
 
 def _get_extra_lora_paths(comfyui_root: Path) -> List[Path]:
@@ -342,7 +368,7 @@ def read_lora_metadata(metadata_path: Path) -> Optional[Dict]:
     try:
         with open(metadata_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+    except (ValueError, OSError) as e:  # JSONDecodeError, UnicodeDecodeError
         logger.debug(f"Failed to read {metadata_path}: {e}")
         return None
 
@@ -857,11 +883,13 @@ class TriggerWordCache:
         """
         try:
             new_cache = self._build(lora_manager_path)
-        except Exception as error:
+        except OSError as error:
             logger.warning(f"Trigger word cache not refreshed: {error}")
-            with self._lock:
-                self._failed_at = time.monotonic()
-                return len(self._cache)
+            return self._failed()
+        except Exception:
+            # Not a disk error: keep the traceback (#362).
+            logger.exception("Trigger word cache not refreshed")
+            return self._failed()
 
         with self._lock:
             self._cache = new_cache
@@ -872,6 +900,12 @@ class TriggerWordCache:
             f"Trigger word cache loaded: {len(new_cache)} LoRAs with trigger words"
         )
         return len(new_cache)
+
+    def _failed(self) -> int:
+        """Keep the previous map and note when this load failed."""
+        with self._lock:
+            self._failed_at = time.monotonic()
+            return len(self._cache)
 
     @staticmethod
     def _build(lora_manager_path: str) -> Dict[str, List[str]]:

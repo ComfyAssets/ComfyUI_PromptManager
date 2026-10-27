@@ -9,9 +9,11 @@ import asyncio
 import json
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from contextlib import ExitStack
@@ -36,6 +38,8 @@ from PIL import Image  # noqa: E402
 from database.operations import PromptDatabase  # noqa: E402
 import py.api.images as images_module
 from py.api import gallery_listing  # noqa: E402
+from py import lora_utils  # noqa: E402
+from py import lora_manager_layout as layout_module  # noqa: E402
 from py.api.thumbnail_settings import ThumbnailSettings  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 from py.api.prompts import MAX_PAGE_LIMIT  # noqa: E402
@@ -111,12 +115,24 @@ class ImageAPITestCase(AioHTTPTestCase):
         self.assertGreater(image_id, 0, "fixture: image link failed")
         return image_id
 
-    def _make_symlink(self, target, link):
+    def _make_symlink(self, target, link, target_is_directory=False):
         """Create a symlink or skip the test when the platform refuses."""
         try:
-            os.symlink(str(target), str(link))
+            os.symlink(str(target), str(link), target_is_directory=target_is_directory)
         except (OSError, NotImplementedError, AttributeError) as exc:
             self.skipTest(f"symlinks unavailable: {exc}")
+
+    def _spy_executor(self):
+        """Record the __name__ of every callable sent to _run_in_executor."""
+        original = self.api._run_in_executor
+        calls = []
+
+        async def spy(func, *args, **kwargs):
+            calls.append(getattr(func, "__name__", repr(func)))
+            return await original(func, *args, **kwargs)
+
+        self.api._run_in_executor = spy
+        return calls
 
 
 class TestServeOutputImage(ImageAPITestCase):
@@ -387,18 +403,6 @@ class ThumbnailTestCase(ImageAPITestCase):
     """Shared helpers for the thumbnail routes."""
 
     PROGRESS_URL = "/prompt_manager/images/generate-thumbnails/progress"
-
-    def _spy_executor(self):
-        """Record the __name__ of every callable sent to _run_in_executor."""
-        original = self.api._run_in_executor
-        calls = []
-
-        async def spy(func, *args, **kwargs):
-            calls.append(getattr(func, "__name__", repr(func)))
-            return await original(func, *args, **kwargs)
-
-        self.api._run_in_executor = spy
-        return calls
 
     def _thumb_path(self, name, suffix=".webp"):
         return self.output_dir / "thumbnails" / f"{name}_thumb{suffix}"
@@ -1216,6 +1220,13 @@ def _raise(*_args, **_kwargs):
 class ImageRouteCoverageCase(ImageAPITestCase):
     """Helpers for driving success and failure branches of each route."""
 
+    def setUp(self):
+        # #362: the LoraManager layout cache is per process; every test here
+        # starts and ends with it empty (runs before the subclasses' setUpAsync).
+        super().setUp()
+        lora_utils.clear_layout_cache()
+        self.addCleanup(lora_utils.clear_layout_cache)
+
     def _break_db(self, db_method):
         setattr(self.api.db, db_method, _raise)
 
@@ -1327,6 +1338,9 @@ class TestServeErrorBranches(ImageRouteCoverageCase):
                 )
                 self.assertEqual(resp.status, 200)
 
+            # The cache does not watch default_lora_roots (#362): without a
+            # clear the next request would reuse the folders above.
+            lora_utils.clear_layout_cache()
             with (
                 patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True),
                 patch.object(IntegrationConfig, "LORA_MANAGER_PATH", ""),
@@ -1419,32 +1433,39 @@ class TestLoraManagerMediaServing(ImageRouteCoverageCase):
         self.cache = root / "cache"
         for folder in (self.sidecars, self.examples, self.cache):
             folder.mkdir()
+        self.root = root
         self.write_settings(str(self.sidecars))
         self.enabled = patch.object(IntegrationConfig, "LORA_MANAGER_ENABLED", True)
+        self.default_roots = patch("py.lora_utils.default_lora_roots", return_value=[])
         for item in (
             self.enabled,
             patch.object(IntegrationConfig, "LORA_MANAGER_PATH", str(self.lm)),
             patch(
                 "py.lora_utils.custom_nodes_directories", return_value=[custom_nodes]
             ),
-            patch("py.lora_utils.default_lora_roots", return_value=[]),
+            self.default_roots,
             patch("py.lora_utils.get_lora_image_cache_dir", return_value=self.cache),
             patch.dict(os.environ, {"LORA_MANAGER_SETTINGS_DIR": str(self.settings)}),
         ):
             item.start()
             self.addCleanup(item.stop)
 
-    def write_settings(self, sidecar_root):
-        (self.settings / "settings.json").write_text(
+    def write_settings(self, sidecar_root, examples=None):
+        path = self.settings / "settings.json"
+        path.write_text(
             json.dumps(
                 {
                     "sidecar_storage_mode": "centralized",
                     "sidecar_storage_path": sidecar_root,
-                    "example_images_path": str(self.examples),
+                    "example_images_path": str(examples or self.examples),
                     "civitai_api_key": "never-served",
                 }
             )
         )
+        # Ten seconds old, so the layout cache (real clock here) stores the
+        # first load instead of treating the file as being written (#362).
+        stamp = time.time_ns() - 10 * 10**9
+        os.utime(path, ns=(stamp, stamp))
 
     async def _status(self, image_id):
         resp = await self.client.request(
@@ -1464,10 +1485,64 @@ class TestLoraManagerMediaServing(ImageRouteCoverageCase):
 
         for image_id in ids:
             self.assertEqual(await self._status(image_id), 200)
+        # A warm layout cache does not outlive the integration (#362).
+        self.assertIsNotNone(lora_utils._layout_cache._entry)
         self.enabled.stop()
         for image_id in ids:
             self.assertEqual(await self._status(image_id), 403)
         self.enabled.start()
+
+    def _example(self, folder=None, name="1.mp4"):
+        path = (folder or self.examples) / "ab12" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"video")
+        return path
+
+    async def test_unchanged_settings_reuse_the_cached_layout(self):
+        image_id = self._link_image(self._example())
+        self.assertEqual(await self._status(image_id), 200)
+        self.assertIsNotNone(lora_utils._layout_cache._entry)
+        self.assertEqual(await self._status(image_id), 200)
+        self.assertEqual(lora_utils.default_lora_roots.call_count, 1)
+
+    async def test_a_settings_change_is_seen_without_a_clear(self):
+        image_id = self._link_image(self._example())
+        self.assertEqual(await self._status(image_id), 200)
+        self.assertIsNotNone(lora_utils._layout_cache._entry)
+        moved = self.root / "examples-moved"
+        moved.mkdir()
+        self.write_settings(str(self.sidecars), examples=moved)
+        self.assertEqual(await self._status(image_id), 403)
+
+    async def test_a_cached_folder_swapped_for_a_symlink_to_home_is_refused(self):
+        # CUJ 7: the example-images folder becomes a symlink to a folder that
+        # holds the home folder; the same recorded file is refused.
+        outer = self.root / "outer"
+        (outer / "home").mkdir(parents=True)
+        self._example(outer)
+        image_id = self._link_image(self._example())
+        with patch.object(layout_module.Path, "home", return_value=outer / "home"):
+            self.assertEqual(await self._status(image_id), 200)
+            self.assertIsNotNone(lora_utils._layout_cache._entry)
+            # A skip after the rmtree is safe: setUp builds a fresh tree.
+            shutil.rmtree(self.examples)
+            self._make_symlink(outer, self.examples, target_is_directory=True)
+            self.assertEqual(await self._status(image_id), 403)
+
+    async def test_a_configured_path_outside_custom_nodes_adds_nothing(self):
+        from py.config import IntegrationConfig
+
+        self.assertEqual(await self._status(self._link_image(self._example())), 200)
+        self.assertIsNotNone(lora_utils._layout_cache._entry)
+        with patch.object(IntegrationConfig, "LORA_MANAGER_PATH", str(self.sidecars)):
+            self.assertEqual(self.api._lora_image_dirs(), [])
+        # The warm entry for the real install was never handed out for it.
+        self.assertIsNone(lora_utils.cached_lora_manager_layout(str(self.sidecars))[0])
+
+    async def test_serve_image_builds_the_allow_list_in_the_executor(self):
+        calls = self._spy_executor()
+        self.assertEqual(await self._status(self._link_image(self._example())), 200)
+        self.assertIn("_lora_image_dirs", calls)
 
     async def test_a_filesystem_root_as_sidecar_folder_adds_nothing(self):
         self.write_settings(os.path.abspath(os.sep))
