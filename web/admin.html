@@ -1187,14 +1187,13 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 <div class="space-y-1.5">
                     <label class="flex items-center p-2.5 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
                         <input type="radio" name="autoTagMode" value="skip" checked class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                        <span class="ml-2.5 text-pm text-xs">Skip images with existing tags</span>
+                        <span class="ml-2.5 text-pm text-xs">Skip images already auto-tagged</span>
                     </label>
                     <label class="flex items-center p-2.5 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
                         <input type="radio" name="autoTagMode" value="retag" class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
                         <span class="ml-2.5 text-pm text-xs">Re-tag all images</span>
                     </label>
                 </div>
-                <p class="text-pm-muted text-[11px] mt-1">Note: "auto-scanned" is not counted as a real tag</p>
             </div>
 
             <!-- Action Buttons -->
@@ -1293,6 +1292,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 <div class="w-full bg-pm-input rounded-full h-1.5">
                     <div id="autoTagProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
                 </div>
+                <p id="autoTagCloseNote" class="text-pm-muted text-[11px] mt-1.5">Closing this window stops tagging. Tags already added are kept. Prompt Manager's Activity page shows the time left.</p>
             </div>
 
             <div class="grid grid-cols-3 gap-3 mb-4">
@@ -1332,7 +1332,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     <!-- Re-tag Confirmation Modal -->
     <div id="retagConfirmModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
         <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-3">Image Already Tagged</h3>
+            <h3 class="text-sm font-semibold text-pm mb-3">Image Already Auto-tagged</h3>
 
             <div class="mb-3">
                 <img id="retagPreviewImage" src="" alt="Preview" class="w-full h-40 object-contain bg-pm-primary rounded-pm-md">
@@ -1345,7 +1345,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 </div>
             </div>
 
-            <p class="text-pm-secondary text-xs mb-4">This image already has tags. Would you like to generate new tags?</p>
+            <p class="text-pm-secondary text-xs mb-4">A tagging model already tagged this image. Generate new tags?</p>
 
             <div class="flex gap-2 justify-end">
                 <button id="retagSkipBtn"

@@ -59,6 +59,20 @@
      * @returns {{onmessage: Function|null, onerror: Function|null, onclose: Function|null,
      *   readyState: number, close: Function, CONNECTING: number, OPEN: number, CLOSED: number}}
      */
+    // A non-2xx answer as an Error carrying its status and, when the body is
+    // the API's JSON {error}, that sentence as serverMessage for the page.
+    async function httpError(response) {
+        const error = new Error(`HTTP ${response.status}`);
+        error.status = response.status;
+        try {
+            const data = await response.json();
+            if (data && typeof data.error === "string" && data.error) error.serverMessage = data.error;
+        } catch (_) {
+            // Not JSON: the status alone.
+        }
+        return error;
+    }
+
     function connect(url, { method = "GET", body, fetchImpl } = {}) {
         const doFetch = fetchImpl || ((...args) => globalThis.fetch(...args));
         const controller = new AbortController();
@@ -103,7 +117,7 @@
                 if (body !== undefined) init.body = body;
                 const requestUrl = root.ApiClient ? root.ApiClient.resolveUrl(url) : url;
                 const response = await doFetch(requestUrl, init);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) throw await httpError(response);
                 if (source.readyState === CLOSED) return;
                 source.readyState = OPEN;
 

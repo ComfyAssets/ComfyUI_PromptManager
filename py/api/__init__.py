@@ -363,6 +363,9 @@ class PromptManagerAPI(
         # Private media captures of the annotation routes (py/api/annotations.py),
         # created on first use with their restore subscription.
         self._captures = None
+        # Capture tokens Generate suggestions ran on: a save of one marks the
+        # image auto-tagged (#379).
+        self._suggested_tokens = set()
         self._captures_unsubscribe = None
         # Set by close_annotation_captures (shutdown): no store is recreated.
         self._captures_closed = False

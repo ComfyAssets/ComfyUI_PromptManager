@@ -5,6 +5,8 @@ const {
     formatImageCaption,
     workflowDocumentHtml,
     autotagSingleBody,
+    autotagApplyBody,
+    autotagCompleteMessage,
     fallbackImageSource,
 } = require("../../web/js/image-helpers.js");
 
@@ -120,4 +122,28 @@ test('metadata lookup preserves encoded filename characters and works behind a p
     assert.equal(metadataLookupUrl('https://example.test/ComfyBackendDirect/prompt_manager/images/serve/space%20%23%3F%2520%20caf%C3%A9.png?root=1'), '/prompt_manager/images/prompt/space%20%23%3F%2520%20caf%C3%A9.png?root=1');
     assert.equal(metadataLookupUrl('/prompt_manager/images/serve/a.png?v=123'), '/prompt_manager/images/prompt/a.png');
     assert.equal(metadataLookupUrl('/elsewhere/a.png'), null);
+});
+
+test("autotagSingleBody asks to skip auto-tagged images only when told (#379)", () => {
+    assert.equal(autotagSingleBody({ id: 1 }, WD14).existing, "merge");
+    assert.equal(autotagSingleBody({ id: 1 }, { ...WD14, existing: "skip" }).existing, "skip");
+    assert.equal(autotagSingleBody({ id: 1 }, { ...WD14, existing: "odd" }).existing, "merge");
+});
+
+test("autotagApplyBody names the image, its bytes and the tags, never a prompt (#379)", () => {
+    const sha = "a".repeat(64);
+    assert.deepEqual(autotagApplyBody({ id: 4, prompt_id: 7 }, sha, ["bird"]), { image_id: 4, sha256: sha, tags: ["bird"] });
+    assert.deepEqual(autotagApplyBody({ id: "digest", path: "sub/a.png", root_index: 1 }, sha, []),
+        { path: "sub/a.png", root_index: 1, sha256: sha, tags: [] });
+    assert.deepEqual(autotagApplyBody({ id: 2 }, undefined, null), { image_id: 2, sha256: "", tags: [] });
+    const tags = ["x"];
+    autotagApplyBody({ id: 1 }, sha, tags).tags.push("y");
+    assert.deepEqual(tags, ["x"]);
+});
+
+test("autotagCompleteMessage counts images (#379)", () => {
+    assert.equal(autotagCompleteMessage(2), "Auto tagging complete! Tagged 2 images.");
+    assert.equal(autotagCompleteMessage(1), "Auto tagging complete! Tagged 1 image.");
+    assert.equal(autotagCompleteMessage(0), "Auto tagging complete! Tagged 0 images.");
+    assert.equal(autotagCompleteMessage(undefined), "Auto tagging complete! Tagged 0 images.");
 });

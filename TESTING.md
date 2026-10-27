@@ -3766,7 +3766,9 @@ threshold off that grid is refused ("General-tag confidence must be a multiple o
 0.05.", `validate_saved_threshold`; `draftProblem` holds back Preview tagging review and
 the batch Review with the same sentence) and falls back on load; an accepted one is
 stored exactly on the grid (#369). A per-request threshold keeps its own check: `/image-annotations/suggest` and
-`/jobs/autotag` take 0–1; the legacy `/autotag/single` and `/autotag/start` only require a number. `GET /autotag/models` reports the
+`/jobs/autotag` take 0–1; the legacy `/autotag/start` passes its options through
+`validate_options` and starts the `autotag` job titled "Tag output images (legacy page)";
+the legacy `/autotag/single` only requires a number. `GET /autotag/models` reports the
 saved values (`wd14_general_threshold`, `wd14_character_threshold`, `suggestion_limit`,
 `default_prompt`, `model_type`, `existing`), so the Tag image and Auto-tag selected
 dialogs start from them; a preset (the bulk review, Preview tagging review) wins.
@@ -3831,6 +3833,57 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   different tags with no `prompts` or `prompt_tags` row changed; the marks' schema group
   is pinned by `tests/test_autotag_schema.py` (forward-only: one empty `WITHOUT ROWID`
   table, optional in old backups, refused without the annotation group).
+
+- **The legacy pages (#379, PR 2)** write image tags, never prompt tags.
+  `POST /autotag/start` (the admin and gallery batch) reads `model_type`, `prompt`,
+  `skip_tagged` (Skip or Merge), `keep_in_memory` and the thresholds (else the saved
+  ones), checks them with `validate_options` (WD14: both thresholds; GGUF/HF:
+  `instructions` = the non-blank `prompt`, else the saved template; the saved
+  "Suggestions per image") and starts the `autotag` job "Tag output images (legacy
+  page)" (gate owner `legacy-batch`) through the native start, so the safety backup and
+  the disk check apply. A second legacy batch answers JSON 409 `{success: false, error:
+  "Auto-tagging is already running"}` (also when another legacy start wins the race past
+  that check); `SseStream` hands a non-2xx JSON `error` to `onerror` as `serverMessage`,
+  which both pages show instead of "Connection lost during auto tagging". Any other refusal (a job in the way: "<title>
+  already running", `model-unavailable`, `insufficient-space`, `model-busy`, a bad
+  option) is one `{type: "error", status: "error", message}` frame. The stream relays
+  the job: the phases as `{type: "progress", progress: 0 | 5 | 8, status: "Taking a
+  safety backup…" | "Loading model…" | "Listing output images…"}`, each image as
+  `{type: "progress", progress: 10 + progress × 85 / 100, status, processed, tagged,
+  skipped}` (at most every 0.5 s; `processed` = Tagged + Unchanged + Errors), and the end
+  as `complete` (`processed`, `tagged`, `skipped`, `errors`, `skipped_outside_roots: 0`,
+  `status` "Complete" or "No still images found", `model_status`, `model_loaded`),
+  `{type: "cancelled", message: "Cancelled. Tags already added were kept."}` or an
+  `error` frame with the job's status line. A job quiet for 5 s repeats its last frame,
+  and a closed stream cancels the job (the legacy pages have no other stop).
+  `POST /autotag/single` takes `existing` (`"skip"` or `"merge"`, default merge). Under
+  Skip, an image whose current bytes are auto-tagged answers `{success, already_tagged:
+  true, image_tags, prompt_id, filename}` after one stat, without the model gate.
+  Otherwise the image is captured and the model runs on the capture under the gate with
+  the saved cap; the answer adds `tags`, `sha256` (the captured bytes) and `image_tags`,
+  and `service.custom_prompt` is never set. Refusals: `409 model-unavailable`, `413
+  too-large`, `404 file-not-found`, `409 file-changed`, `503 busy`, `415 not-a-still`
+  (the image is marked), `409 model-busy`. `POST /autotag/apply` takes exactly
+  `{image_id, sha256, tags}` or `{path, root_index?, sha256, tags}` (64 KiB), re-hashes
+  the file and unions the tags into that image (`add_image_tags`, marked): `{success,
+  added_tags, total_tags}`; an empty list only marks the image. A body with `prompt_id`
+  is `400` "This page is out of date. Reload it."; a changed file `409 file-changed`
+  ("The image changed since its tags were generated."); a full set `409 tag-limit`; a
+  restore `409 storage-changed`. The admin review asks each image with Skip first: an
+  auto-tagged one shows "Image Already Auto-tagged" / "A tagging model already tagged
+  this image. Generate new tags?" with its image tags (Skip, Skip All Tagged, Re-tag asks
+  again with Merge); the gallery review always merges. Apply & Next sends the image and
+  its `sha256` (linked or not). The batch copy: "Skip images already auto-tagged",
+  "Auto tagging complete! Tagged N images." ("1 image"), and under both progress bars
+  "Closing this window stops tagging. Tags already added are kept. Prompt Manager's
+  Activity page shows the time left.". Pinned by `tests/test_autotag_legacy.py`,
+  `tests/js/image-helpers.test.js` and `legacy-autotag.spec`.
+- **Tag image dialog marks (DEC4).** A save after Generate suggestions ran on that
+  capture marks the image auto-tagged (also a replayed save, and a saved retry after
+  `tag-conflict`); a save without Generate does not. The API keeps the suggested capture
+  tokens; each new one drops the tokens whose capture is gone (`expires_in`, which never
+  resets a capture's idle clock), a release or a saved receipt drops its own, and
+  closing the captures clears them (`TestDialogMarks`).
 
 No browser test downloads or runs a model: the injected `TestModel` answers, its
 `download_model` raises unless `/__test__/tagging/download {mode: hold | succeed |

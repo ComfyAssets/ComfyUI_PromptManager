@@ -127,7 +127,8 @@ test('the gallery cache clear keeps preferences and other tools caches', async (
     }))).toEqual({ theme: 'light', other: 'keep', prefixed: 'keep', notice: '3.2.0', caches: ['other-tool-gallery-thumbnails'] });
 });
 
-test('actual gallery review generates and persists tags for the selected root', async ({ page, request }) => {
+// #379: the reviewed tags are that image's own tags; no prompt changes.
+test('actual gallery review generates and persists tags for the selected root\'s image', async ({ page, request }) => {
     await page.goto('/prompt_manager/gallery');
     await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);
     await page.locator('#autoTagBtn').click();
@@ -135,13 +136,15 @@ test('actual gallery review generates and persists tags for the selected root', 
     await page.locator('#startReviewBtn').click();
     const generation = await generated;
     expect(generation.request().postDataJSON().root_index).toBe(0);
-    await expect(page.locator('#reviewTagsContainer')).toContainText('generated');
+    await expect(page.locator('#reviewTagsContainer')).toContainText('sandstone');
     const result = page.waitForResponse(response => response.url().endsWith('/prompt_manager/autotag/apply'));
     await page.locator('#applyReviewBtn').click();
     expect((await (await result).json()).success).toBe(true);
     const data = await (await request.get('/prompt_manager/recent?limit=20')).json();
-    expect(data.results.find(prompt => prompt.text === 'Cat portrait').tags).toContain('generated');
-    expect(data.results.find(prompt => prompt.text === 'Dog landscape').tags).not.toContain('generated');
+    expect(data.results.find(prompt => prompt.text === 'Cat portrait').tags).toEqual(['cats']);
+    expect(data.results.find(prompt => prompt.text === 'Dog landscape').tags).toEqual(['dogs']);
+    const tagged = await (await request.get('/prompt_manager/images/output?mode=workspace&tags=sandstone')).json();
+    expect(tagged.images.map(image => `${image.root_index}:${image.path}`)).toEqual(['0:shared/same.png']);
 });
 
 test('actual Tags page reloads the selected filter and opens its image viewer', async ({ page }) => {

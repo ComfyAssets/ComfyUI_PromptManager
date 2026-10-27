@@ -70,10 +70,28 @@
      * path digest as id, which would 404, so those are addressed by path.
      *
      * @param {{id?: unknown, path?: unknown}} image
-     * @param {{modelType: string, generalThreshold?: number, characterThreshold?: number, prompt?: string}} settings
+     * `existing` (#379): "skip" answers `already_tagged` for an image a model
+     * already tagged; anything else is "merge" (always suggest).
+     *
+     * @param {{id?: unknown, path?: unknown}} image
+     * @param {{modelType: string, generalThreshold?: number, characterThreshold?: number, prompt?: string, existing?: string}} settings
      * @returns {object} JSON-serialisable request body
      */
     function autotagSingleBody(image, settings) {
+        const target = autotagTarget(image);
+        const existing = settings.existing === "skip" ? "skip" : "merge";
+        const modelType = String(settings.modelType || "");
+        const params = modelType.startsWith("wd14")
+            ? {
+                  general_threshold: settings.generalThreshold,
+                  character_threshold: settings.characterThreshold,
+              }
+            : { prompt: settings.prompt };
+        return { ...target, model_type: modelType, existing, ...params };
+    }
+
+    /** The image a legacy single/apply body names: its row id, or its path (and root). */
+    function autotagTarget(image) {
         const entry = image || {};
         const target =
             typeof entry.path === "string" && entry.path && !Number.isInteger(entry.id)
@@ -82,14 +100,22 @@
         if ("path" in target && Number.isInteger(entry.root_index)) {
             target.root_index = entry.root_index;
         }
-        const modelType = String(settings.modelType || "");
-        const params = modelType.startsWith("wd14")
-            ? {
-                  general_threshold: settings.generalThreshold,
-                  character_threshold: settings.characterThreshold,
-              }
-            : { prompt: settings.prompt };
-        return { ...target, model_type: modelType, ...params };
+        return target;
+    }
+
+    /**
+     * Body for POST /prompt_manager/autotag/apply (#379): the image, the
+     * `sha256` /autotag/single answered and the reviewed tags. The tags go to
+     * that image only, never to its prompt; an empty list marks it reviewed.
+     */
+    function autotagApplyBody(image, sha256, tags) {
+        return { ...autotagTarget(image), sha256: String(sha256 || ""), tags: Array.isArray(tags) ? [...tags] : [] };
+    }
+
+    /** The legacy batch's completion toast (#379): images, never prompts. */
+    function autotagCompleteMessage(tagged) {
+        const count = Number.isSafeInteger(tagged) && tagged > 0 ? tagged : 0;
+        return `Auto tagging complete! Tagged ${count} ${count === 1 ? "image" : "images"}.`;
     }
 
     /**
@@ -122,7 +148,15 @@
         }
     }
 
-    const api = { formatImageCaption, workflowDocumentHtml, autotagSingleBody, fallbackImageSource, metadataLookupUrl };
+    const api = {
+        formatImageCaption,
+        workflowDocumentHtml,
+        autotagSingleBody,
+        autotagApplyBody,
+        autotagCompleteMessage,
+        fallbackImageSource,
+        metadataLookupUrl,
+    };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.ImageHelpers = api;
 })(typeof window !== "undefined" ? window : globalThis);
