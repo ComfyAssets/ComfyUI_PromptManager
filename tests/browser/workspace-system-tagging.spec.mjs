@@ -188,6 +188,35 @@ test('a refused value shows the server\'s message', async ({ page, request }) =>
     await expect(actionOf(page, 'Preview tagging review')).not.toHaveAttribute('aria-disabled', 'true');
 });
 
+test('a value off the 0.05 step is refused and never reaches the Tag image dialog (#369)', async ({ page, request }) => {
+    const before = (await serverJson(request, SETTINGS_URL)).settings;
+    const STEP = 'General-tag confidence must be a multiple of 0.05.';
+    await selectThenOpen(page, FIRST);
+    await page.locator('#threshold-general').fill('0.37');
+    await page.locator('#threshold-general').press('Tab');
+    // Preview tagging review explains instead of opening a dialog whose Generate the browser would block.
+    await expect(actionOf(page, 'Preview tagging review')).toHaveAttribute('aria-disabled', 'true');
+    await actionOf(page, 'Preview tagging review').focus();
+    await page.keyboard.press('Enter');
+    await expect(toast(page)).toHaveText(STEP);
+    await expect(tagDialog(page)).toHaveCount(0);
+    // The server refuses the save with the same sentence and writes nothing.
+    await save(page).click();
+    await expect(status(page)).toHaveText(STEP);
+    expect((await serverJson(request, SETTINGS_URL)).settings.autotag_general_threshold).toBe(before.autotag_general_threshold);
+    // A value on the step opens the dialog, and its Generate passes the browser's own check and sends.
+    await page.locator('#threshold-general').fill('0.4');
+    await page.locator('#threshold-general').press('Tab');
+    await expect(actionOf(page, 'Preview tagging review')).not.toHaveAttribute('aria-disabled', 'true');
+    await actionOf(page, 'Preview tagging review').click();
+    await expect(tagDialog(page).locator('#image-general-threshold')).toHaveValue('0.4');
+    expect(await tagDialog(page).locator('#image-general-threshold').evaluate(input => input.checkValidity())).toBe(true);
+    const suggested = page.waitForResponse(item => item.url().endsWith('/image-annotations/suggest'));
+    await tagDialog(page).getByRole('button', { name: 'Generate suggestions', exact: true }).click();
+    const answer = await suggested;
+    expect(answer.request().postDataJSON().options.general_threshold).toBe(0.4);
+});
+
 test('Download starts the job and Activity shows it without Cancel', async ({ page, request }) => {
     await unavailable(request, ['wd14-vit']);
     await fakeDownload(request, 'hold');

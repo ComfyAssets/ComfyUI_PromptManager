@@ -516,8 +516,9 @@ class TestAutotagConfig(unittest.TestCase):
         bad_values = {
             "model_type": ["wd14-convnext", 3, None],
             "existing": ["replace", "", True],
-            "general_threshold": [1.5, -0.1, float("nan"), "0.4", True],
-            "character_threshold": [2, float("inf"), None],
+            # #369: a saved threshold off the 0.05 step no page can show.
+            "general_threshold": [1.5, -0.1, float("nan"), "0.4", True, 0.37],
+            "character_threshold": [2, float("inf"), None, 0.33],
             # 4000 characters are at most 16,000 UTF-8 bytes, so the 16 KiB
             # byte cap can only be met past the character cap.
             "template": ["", "   ", "x" * 4001, "\U0001f600" * 4097, "\ud800", 7],
@@ -566,6 +567,27 @@ class TestAutotagConfig(unittest.TestCase):
         self.assertEqual(
             config_module.MODEL_TYPES, {"gguf", "hf", "wd14-swinv2", "wd14-vit"}
         )
+
+    def test_saved_threshold_is_a_multiple_of_the_step(self):
+        """#369: every page shows the thresholds in steps of 0.05, so a saved
+        one must be on that grid; it is stored exactly on it."""
+        from py.tagging_defaults import validate_saved_threshold as validate
+
+        for value in (0, 0.05, 0.15, 0.35, 0.85, 1):
+            with self.subTest(value=value):
+                self.assertEqual(validate("x", value), value)
+        self.assertEqual(validate("x", 0.1 + 0.2), 0.3)
+        for value, message in (
+            (0.37, "x must be a multiple of 0.05"),
+            (0.351, "x must be a multiple of 0.05"),
+            (0.35000000001, "x must be a multiple of 0.05"),
+            (1.5, "x must be between 0 and 1"),
+            ("0.4", "x must be a finite number"),
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as caught:
+                    validate("x", value)
+                self.assertEqual(str(caught.exception), message)
 
     def test_suggestion_limit_setting_validated_on_load(self):
         for value in (0, 101, "10", float("nan"), 2.5, True, None, [10]):

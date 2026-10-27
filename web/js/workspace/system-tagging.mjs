@@ -85,6 +85,9 @@ export const STATUS_COPY = Object.freeze({
 export const SETTING_PROBLEMS = Object.freeze({
     autotag_general_threshold: 'General-tag confidence must be between 0 and 1.',
     autotag_character_threshold: 'Character-tag confidence must be between 0 and 1.',
+    // #369: every page shows the thresholds in steps of 0.05, so the server saves only values on that grid.
+    autotag_general_threshold_step: 'General-tag confidence must be a multiple of 0.05.',
+    autotag_character_threshold_step: 'Character-tag confidence must be a multiple of 0.05.',
     autotag_suggestion_limit: 'Suggestions per image must be a whole number from 1 to 100.',
     // The server's two template sentences (`validate_template`), blank first.
     autotag_template: 'LLM tag template must be non-empty text.',
@@ -171,10 +174,15 @@ export function draftValue(key, text) {
 }
 
 const unit = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+// A multiple of 0.05 within the server's tolerance (`validate_saved_threshold`): (0.1 + 0.2) * 20 is 6.000000000000001.
+const onStep = value => Math.abs(value * 20 - Math.round(value * 20)) <= 1e-12;
+// A threshold on the grid, handed on exactly as the server stores it (anything else is left for draftProblem to refuse).
+const snapped = value => (unit(value) && onStep(value) ? Math.round(value * 20) / 20 : value);
 
 /**
  * The first setting the chosen model would use that the section cannot send, as `{key, message}`, else null: WD14
- * reads both thresholds, the language models the template; Generate also reads the suggestion count (`limit`).
+ * reads both thresholds (0 to 1 in steps of 0.05, #369), the language models the template; Generate also reads the
+ * suggestion count (`limit`).
  */
 export function draftProblem(values, { limit = true } = {}) {
     const model = values.autotag_model_type;
@@ -189,6 +197,7 @@ export function draftProblem(values, { limit = true } = {}) {
         }
         const valid = key === 'autotag_suggestion_limit' ? Number.isInteger(value) && value >= 1 && value <= 100 : unit(value);
         if (!valid) return { key, message: SETTING_PROBLEMS[key] };
+        if (key !== 'autotag_suggestion_limit' && !onStep(value)) return { key, message: SETTING_PROBLEMS[`${key}_step`] };
     }
     return null;
 }
@@ -197,7 +206,8 @@ export function draftProblem(values, { limit = true } = {}) {
 export function taggingPreset(values) {
     const model = values.autotag_model_type;
     const options = CLASSIFIERS.has(model)
-        ? { general_threshold: values.autotag_general_threshold, character_threshold: values.autotag_character_threshold }
+        ? { general_threshold: snapped(values.autotag_general_threshold),
+            character_threshold: snapped(values.autotag_character_threshold) }
         : { instructions: values.autotag_template };
     return { model, options: { ...options, suggestion_limit: values.autotag_suggestion_limit } };
 }
@@ -206,7 +216,8 @@ export function taggingPreset(values) {
 export function batchBody(values) {
     const model = values.autotag_model_type;
     const options = CLASSIFIERS.has(model)
-        ? { general_threshold: values.autotag_general_threshold, character_threshold: values.autotag_character_threshold }
+        ? { general_threshold: snapped(values.autotag_general_threshold),
+            character_threshold: snapped(values.autotag_character_threshold) }
         : { instructions: values.autotag_template };
     return { model_type: model, existing: values.autotag_existing, options };
 }

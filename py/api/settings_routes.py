@@ -173,8 +173,8 @@ def _validate_autotag_settings(data):
         EXISTING_POLICIES,
         MAX_SUGGESTION_LIMIT,
         MODEL_TYPES,
+        validate_saved_threshold,
         validate_template,
-        validate_threshold,
     )
 
     updates = {}
@@ -198,7 +198,7 @@ def _validate_autotag_settings(data):
     ):
         if key in data:
             try:
-                value = validate_threshold(label, data[key])
+                value = validate_saved_threshold(label, data[key])
             except ValueError as error:
                 raise ValueError(f"{error}.") from None
             updates[key.upper()] = value

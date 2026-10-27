@@ -39,6 +39,25 @@ def validate_threshold(name: str, value: Any) -> float:
     return float(value)
 
 
+# Every page shows the thresholds in steps of 0.05 (the concept's System rows,
+# the Tag image dialogs and the legacy sliders), so a saved one must be on that
+# grid (#369). Per-request thresholds keep their own checks.
+THRESHOLD_STEP = 0.05
+_STEPS_PER_UNIT = round(1 / THRESHOLD_STEP)
+# A computed float can miss the grid by a hair: (0.1 + 0.2) * 20 is 6.000000000000001.
+_STEP_TOLERANCE = 1e-12  # in steps; refuses 0.35000000001
+
+
+def validate_saved_threshold(name: str, value: Any) -> float:
+    """A saved WD14 threshold: in [0, 1] and a multiple of ``THRESHOLD_STEP``,
+    returned exactly on the grid; else ValueError naming ``name``."""
+    value = validate_threshold(name, value)
+    steps = value * _STEPS_PER_UNIT
+    if abs(steps - round(steps)) > _STEP_TOLERANCE:
+        raise ValueError(f"{name} must be a multiple of {THRESHOLD_STEP}")
+    return round(steps) / _STEPS_PER_UNIT
+
+
 def validate_template(value: Any, name: str = "instructions") -> str:
     """Non-empty language-model instructions within the character and byte
     caps, or ValueError naming ``name``."""

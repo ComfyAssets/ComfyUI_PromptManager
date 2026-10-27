@@ -307,6 +307,16 @@ test('Preview tagging review opens the Tag image dialog with the section’s val
     assert.deepEqual(draftProblem({ ...HOST, autotag_general_threshold: 1.5 }),
         { key: 'autotag_general_threshold', message: 'General-tag confidence must be between 0 and 1.' });
     assert.equal(draftProblem({ ...HOST, autotag_character_threshold: '' }).key, 'autotag_character_threshold');
+    // #369: every page shows the thresholds in steps of 0.05, so a value off that grid cannot be saved or previewed.
+    assert.deepEqual(draftProblem({ ...HOST, autotag_general_threshold: 0.37 }),
+        { key: 'autotag_general_threshold', message: 'General-tag confidence must be a multiple of 0.05.' });
+    assert.deepEqual(draftProblem({ ...HOST, autotag_character_threshold: 0.33 }),
+        { key: 'autotag_character_threshold', message: 'Character-tag confidence must be a multiple of 0.05.' });
+    assert.equal(draftProblem({ ...HOST, autotag_general_threshold: 0.15, autotag_character_threshold: 0.95 }), null);
+    assert.equal(draftProblem({ ...HOST, autotag_general_threshold: 0, autotag_character_threshold: 1 }), null);
+    // A computed value a hair off the grid passes and is handed on snapped to it, as the server stores it.
+    assert.equal(draftProblem({ ...HOST, autotag_general_threshold: 0.1 + 0.2 }), null);
+    assert.equal(taggingPreset({ ...HOST, autotag_general_threshold: 0.1 + 0.2 }).options.general_threshold, 0.3);
     assert.equal(draftProblem({ ...HOST, autotag_suggestion_limit: 2.5 }).key, 'autotag_suggestion_limit');
     assert.equal(draftProblem({ ...HOST, autotag_suggestion_limit: 0 }, { limit: false }), null);
     assert.deepEqual(draftProblem({ ...HOST, autotag_model_type: 'hf', autotag_template: '  ' }),
@@ -342,6 +352,11 @@ test('Preview tagging review opens the Tag image dialog with the section’s val
         await button('Preview tagging review').dispatch('click');
         assert.deepEqual(calls.toasts, ['General-tag confidence must be between 0 and 1.']);
         assert.equal(calls.opened.length, 1);
+        byId('threshold-general').value = '0.37'; await byId('threshold-general').dispatch('change');
+        assert.equal(button('Preview tagging review').getAttribute('aria-disabled'), 'true');
+        await button('Preview tagging review').dispatch('click');
+        assert.deepEqual(calls.toasts.at(-1), 'General-tag confidence must be a multiple of 0.05.');
+        assert.equal(calls.opened.length, 1);
     } finally { scope.dispose(); dom.restore(); }
 });
 
@@ -361,6 +376,8 @@ test('the batch review grid, body and Cancel-only reasons (D134, CUJ 4–5)', as
     assert.equal(existingLabel('odd'), 'odd');
     assert.deepEqual(batchBody(HOST), { model_type: 'wd14-swinv2', existing: 'skip',
         options: { general_threshold: 0.35, character_threshold: 0.85 } });
+    // #369: a threshold a hair off the grid is sent snapped to it.
+    assert.equal(batchBody({ ...HOST, autotag_character_threshold: 0.1 + 0.2 }).options.character_threshold, 0.3);
     assert.deepEqual(batchBody(llm), { model_type: 'gguf', existing: 'skip', options: { instructions: HOST.autotag_template } });
     assert.equal(batchCloseNote(PLAN), null);
     assert.equal(batchCloseNote({ ...PLAN, review_required: true }), REPLACE_NOTE);
