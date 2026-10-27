@@ -1037,6 +1037,23 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
         settings = (await self._get())["settings"]
         self.assertEqual({key: settings[key] for key in self.SAVED}, self.SAVED)
 
+    async def test_threshold_near_the_grid_is_saved_on_it(self):
+        """#369: a computed value a hair off the 0.05 grid is stored on it, so
+        every page's step check accepts what /settings and the file return."""
+        revision = (await self._get())["revision"]
+        status, data = await self._post(
+            "/prompt_manager/settings",
+            {"expected_revision": revision, "autotag_general_threshold": 0.1 + 0.2},
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(
+            repr(self._read_config()["autotag"]["defaults"]["general_threshold"]),
+            "0.3",
+        )
+        self.assertEqual(
+            repr((await self._get())["settings"]["autotag_general_threshold"]), "0.3"
+        )
+
     async def test_stale_revision_changes_no_default(self):
         revision = (await self._get())["revision"]
         self._write_config({"custom": {"edited": "elsewhere"}})
@@ -1054,6 +1071,16 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
                 "autotag_general_threshold",
                 1.5,
                 "General-tag confidence must be between 0 and 1.",
+            ),
+            (
+                "autotag_general_threshold",
+                0.37,
+                "General-tag confidence must be a multiple of 0.05.",
+            ),
+            (
+                "autotag_character_threshold",
+                0.33,
+                "Character-tag confidence must be a multiple of 0.05.",
             ),
             (
                 "autotag_character_threshold",
