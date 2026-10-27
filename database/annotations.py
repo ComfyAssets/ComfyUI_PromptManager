@@ -454,12 +454,12 @@ class AnnotationOperations:
         already folded). One read of the names that tag an image.
         """
         wanted = set(wanted)
-        conn = self.model.get_connection()
-        return [
-            tag_id
-            for tag_id, name in conn.execute(_IMAGE_TAG_NAMES)
-            if name in wanted or (query and query in name.casefold())
-        ]
+        with self._annotation_read() as conn:
+            return [
+                tag_id
+                for tag_id, name in conn.execute(_IMAGE_TAG_NAMES)
+                if name in wanted or (query and query in name.casefold())
+            ]
 
     def image_tag_locators(self, tag_ids) -> set[str]:
         """Locators with any byte record (current or not) carrying one of

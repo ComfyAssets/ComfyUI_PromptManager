@@ -2163,6 +2163,27 @@ class TestWorkspaceImageTags(ImageAPITestCase):
                 "tag_id IN" in sql or "EXISTS" in sql or "byte_id IN" in sql, sql
             )
 
+    async def test_the_image_tag_lookup_never_reads_prompt_tags(self):
+        self.seed_differential()
+        linked = self.media("linked.png", mtime=105)
+        prompt = self._save_prompt(
+            "Prompt with its own tag", tags=["prompt_only_beach"]
+        )
+        self.api.db.link_image_to_prompt(prompt, str(linked))
+        db = self.api.db
+        # The tag is only on a prompt: the image-tag lookup never yields it,
+        # under the Tags filter or the text search.
+        self.assertEqual(db.image_tag_ids(["prompt_only_beach"], ""), [])
+        self.assertEqual(db.image_tag_ids([], "prompt_only"), [])
+        self.assertEqual(
+            db.image_tag_locators(db.image_tag_ids([], "beach")),
+            reference_candidates(db, [], "beach"),
+        )
+        # The search still matches through the linked positive's prompt tags
+        # (the design keeps that, #379 "Behavior that does not change").
+        _, body = await self.get(q="prompt_only")
+        self.assertEqual(self.names(body), ["linked.png"])
+
     @unittest.skipUnless(os.environ.get("PM_PERF") == "1", "timing run (PM_PERF=1)")
     async def test_tag_search_timing(self):
         """Linux timing for the PR body: 23,600 records, 10 tags each."""
