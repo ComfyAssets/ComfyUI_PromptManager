@@ -3521,7 +3521,8 @@ npm run --prefix tools/vendor test:workflows -- workspace-system-integrations.sp
 System › Auto-tagging (`web/js/workspace/system-tagging.mjs`, D132–D134) edits one
 server-side tagging configuration, `autotag.defaults` in config.json: `model_type`
 (`wd14-swinv2`, `wd14-vit`, `gguf`, `hf`), `existing` (`skip`, `merge`,
-`replace_after_review`), `general_threshold` and `character_threshold` (0–1),
+`replace_after_review`), `general_threshold` and `character_threshold` (0–1 in
+steps of 0.05, #369),
 `template` (non-blank, at most 4,000 characters and 16 KiB) and `suggestion_limit`
 (1–100). They are host drafts (`autotag_model_type`, `autotag_existing`,
 `autotag_general_threshold`, `autotag_character_threshold`, `autotag_template`,
@@ -3532,7 +3533,13 @@ naming the setting by its row label ("General-tag confidence must be between 0 a
 `settingRefusal` in system.mjs only for a save that carried `autotag_*` keys; every
 other section's plain 400 keeps the generic status) and the control is highlighted.
 The template's limit counts code points, as Python's `len` does. A hand-edited bad value
-falls back to its default on load, one key at a time. `GET /autotag/models` reports the
+falls back to its default on load, one key at a time. Every page shows the thresholds in
+steps of 0.05 (the System rows, the Tag image dialogs, the legacy sliders), so a saved
+threshold off that grid is refused ("General-tag confidence must be a multiple of
+0.05.", `validate_saved_threshold`; `draftProblem` holds back Preview tagging review and
+the batch Review with the same sentence) and falls back on load; an accepted one is
+stored exactly on the grid (#369). A per-request threshold keeps its own check: `/image-annotations/suggest` and
+`/jobs/autotag` take 0–1; the legacy `/autotag/single` and `/autotag/start` only require a number. `GET /autotag/models` reports the
 saved values (`wd14_general_threshold`, `wd14_character_threshold`, `suggestion_limit`,
 `default_prompt`, `model_type`, `existing`), so the Tag image and Auto-tag selected
 dialogs start from them; a preset (the bulk review, Preview tagging review) wins.

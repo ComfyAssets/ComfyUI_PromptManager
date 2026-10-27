@@ -573,6 +573,7 @@ try:
         MAX_INSTRUCTION_CHARS,
         MODEL_TYPES,
         WD14_MODEL_TYPES,
+        validate_saved_threshold,
         validate_template,
         validate_threshold,
     )
@@ -585,6 +586,7 @@ except ImportError:
         MAX_INSTRUCTION_CHARS,
         MODEL_TYPES,
         WD14_MODEL_TYPES,
+        validate_saved_threshold,
         validate_template,
         validate_threshold,
     )
@@ -631,12 +633,12 @@ class AutotagConfig:
         "existing": ("EXISTING", _valid_existing, "skip"),
         "general_threshold": (
             "GENERAL_THRESHOLD",
-            lambda v: validate_threshold("value", v),
+            lambda v: validate_saved_threshold("value", v),
             0.35,
         ),
         "character_threshold": (
             "CHARACTER_THRESHOLD",
-            lambda v: validate_threshold("value", v),
+            lambda v: validate_saved_threshold("value", v),
             0.85,
         ),
         "template": ("TEMPLATE", validate_template, DEFAULT_TAG_TEMPLATE),
