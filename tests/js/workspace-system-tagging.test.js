@@ -360,19 +360,23 @@ test('Preview tagging review opens the Tag image dialog with the section’s val
     } finally { scope.dispose(); dom.restore(); }
 });
 
-const PLAN = { images: 3, prompts: 2, already_tagged: 1, to_tag: 1,
+const PLAN = { images: 3, already_tagged: 1, to_tag: 2, estimate_seconds: 3.2, estimate_device: 'cpu', suggestion_limit: 10,
     model: { type: 'wd14-swinv2', label: 'WD14 SwinV2', size_label: '~400 MB', downloaded: true }, existing: 'skip',
     review_required: false, backup: { policy: 'on' }, disk: { free_bytes: 10 * 2 ** 30, required_bytes: 2 ** 20, sufficient: true } };
 
-test('the batch review grid, body and Cancel-only reasons (D134, CUJ 4–5)', async () => {
-    const { batchGrid, batchBody, batchCloseNote, existingLabel, REPLACE_NOTE, NOTHING_TO_TAG, NO_LINKED_IMAGES } = await tagging;
+test('the batch review grid, body and Cancel-only reasons (D134, #379, CUJ 4–5)', async () => {
+    const { batchGrid, batchBody, batchCloseNote, existingLabel, REPLACE_NOTE, NOTHING_TO_TAG, NO_IMAGES } = await tagging;
     assert.deepEqual(batchGrid(PLAN, HOST), [['Model', 'WD14 SwinV2 · ~400 MB'], ['Existing tags', 'Skip already tagged'],
-        ['Images linked', '3'], ['Prompts', '2'], ['Already tagged', '1'], ['Prompts to tag', 'up to 1'],
-        ['Settings', 'General 0.35 · Character 0.85'], ['Backup', 'Create and verify before changes']]);
+        ['Images', '3'], ['Already auto-tagged', '1'], ['Images to tag', 'about 2'],
+        ['Time', 'about 1 min on a processor; a graphics card can be faster.'],
+        ['Settings', 'General 0.35 · Character 0.85 · up to 10 tags per image'], ['Backup', 'Create and verify before changes']]);
     const llm = { ...HOST, autotag_model_type: 'gguf' };
-    assert.deepEqual(batchGrid({ ...PLAN, model: { type: 'gguf' }, backup: { policy: 'off' } }, llm).slice(-2),
-        [['Settings', 'Template of 27 characters'], ['Backup', 'No safety backup (the policy is off)']]);
+    assert.deepEqual(batchGrid({ ...PLAN, model: { type: 'gguf' }, backup: { policy: 'off' }, estimate_seconds: null,
+        estimate_device: null, suggestion_limit: 4 }, llm).slice(-3),
+    [['Time', 'Language-model engines take longer per image. Activity shows the time left once tagging starts.'],
+        ['Settings', 'Template of 27 characters · up to 4 tags per image'], ['Backup', 'No safety backup (the policy is off)']]);
     assert.equal(batchGrid({}, HOST)[2][1], '0');
+    assert.equal(batchGrid({}, HOST)[6][1], 'General 0.35 · Character 0.85');
     assert.equal(existingLabel('odd'), 'odd');
     assert.deepEqual(batchBody(HOST), { model_type: 'wd14-swinv2', existing: 'skip',
         options: { general_threshold: 0.35, character_threshold: 0.85 } });
@@ -385,9 +389,31 @@ test('the batch review grid, body and Cancel-only reasons (D134, CUJ 4–5)', as
     assert.equal(batchCloseNote({ ...PLAN, model: { ...PLAN.model, downloaded: false } }), 'WD14 SwinV2 is not downloaded. Download it first.');
     assert.equal(batchCloseNote({ ...PLAN, disk: { free_bytes: 2 ** 20, required_bytes: 2 ** 21, sufficient: false } }),
         'Not enough free disk space: the safety backup needs about 2.0 MB and 1.0 MB is free. Nothing is written until there is room.');
-    assert.equal(batchCloseNote({ ...PLAN, prompts: 0, to_tag: 0 }), NO_LINKED_IMAGES);
+    assert.equal(batchCloseNote({ ...PLAN, images: 0, to_tag: 0 }), NO_IMAGES);
+    assert.equal(batchCloseNote({ ...PLAN, images: undefined }), NO_IMAGES);
+    assert.equal(NO_IMAGES, 'The output folders contain no images to tag.');
     assert.equal(batchCloseNote({ ...PLAN, to_tag: 0 }), NOTHING_TO_TAG);
-    assert.equal(NOTHING_TO_TAG, 'Every prompt with an output image is already tagged.');
+    assert.equal(NOTHING_TO_TAG, 'Every output image is already auto-tagged.');
+});
+
+test('the review Time row (DEC11, #379): minutes, hours and the engine it runs on', async () => {
+    const { durationText, timeText, TIME_UNKNOWN } = await tagging;
+    assert.equal(durationText(1), 'about 1 min');
+    assert.equal(durationText(0), 'about 1 min');
+    assert.equal(durationText(89), 'about 89 min');
+    assert.equal(durationText(90), 'about 1 h 30 min');
+    assert.equal(durationText(120), 'about 2 h');
+    assert.equal(durationText(631), 'about 10 h 31 min');
+    assert.equal(durationText(Number.NaN), 'about 1 min');
+    // 23,645 images at 1.6 s on a processor (the design's CUJ 1).
+    assert.equal(timeText({ estimate_seconds: 37832, estimate_device: 'cpu' }),
+        'about 10 h 31 min on a processor; a graphics card can be faster.');
+    assert.equal(timeText({ estimate_seconds: 59, estimate_device: 'gpu' }), 'about 1 min on the graphics card.');
+    assert.equal(timeText({ estimate_seconds: 0, estimate_device: 'cpu' }), 'about 1 min on a processor; a graphics card can be faster.');
+    for (const plan of [{ estimate_seconds: null }, {}, { estimate_seconds: -1 }, { estimate_seconds: Infinity }, null]) {
+        assert.equal(timeText(plan), TIME_UNKNOWN);
+    }
+    assert.equal(TIME_UNKNOWN, 'Language-model engines take longer per image. Activity shows the time left once tagging starts.');
 });
 
 test('showBatchPlan opens the review with the backup box, or the Cancel-only review', async () => {

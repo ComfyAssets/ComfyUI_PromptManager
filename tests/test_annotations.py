@@ -561,6 +561,142 @@ class CurrentImageTagsTests(AnnotationTestCase):
         )
 
 
+class AutotagMarkTests(AnnotationTestCase):
+    """The auto-tagged mark (#379): per byte record, written with the tags."""
+
+    def marked(self):
+        conn = self.db.model.get_connection()
+        return sorted(
+            row[0] for row in conn.execute("SELECT * FROM media_image_autotags")
+        )
+
+    def byte_id(self, loc, digest=DIGEST_A):
+        conn = self.db.model.get_connection()
+        return conn.execute(
+            "SELECT b.id FROM media_annotation_bytes b JOIN media_annotation_files f "
+            "ON f.id=b.file_id WHERE f.locator=? AND b.sha256=?",
+            (loc, digest),
+        ).fetchone()[0]
+
+    def test_hand_tags_never_mark(self):
+        loc = self.locator("a.png")
+        self.replace(loc, tags=["keeper"])
+        self.add(loc, tags=["more"])
+        self.assertEqual(self.marked(), [])
+        self.assertEqual(self.db.autotag_state({loc: (SIZE, MTIME)}), {loc: False})
+        self.assertEqual(self.db.autotagged_locators(), set())
+
+    def test_model_union_marks_including_replayed_and_empty_results(self):
+        loc = self.locator("a.png")
+        receipt = self.add(loc, tags=["bird"], mark_autotagged=True)
+        self.assertEqual((receipt["added"], receipt["replayed"]), (1, False))
+        self.assertEqual(self.marked(), [self.byte_id(loc)])
+        # A replayed union and an empty result still mark (idempotently).
+        other = self.locator("b.png")
+        self.replace(other, DIGEST_B, ["keeper"])
+        replayed = self.add(other, DIGEST_B, ["KEEPER"], mark_autotagged=True)
+        self.assertTrue(replayed["replayed"])
+        empty = self.locator("c.png")
+        nothing = self.add(empty, tags=[], mark_autotagged=True)
+        self.assertEqual((nothing["tags"], nothing["added"]), ([], 0))
+        self.add(empty, tags=[], mark_autotagged=True)
+        self.assertEqual(
+            self.marked(),
+            sorted(
+                [self.byte_id(loc), self.byte_id(other, DIGEST_B), self.byte_id(empty)]
+            ),
+        )
+        self.assertEqual(
+            self.db.autotag_state(
+                {loc: (SIZE, MTIME), other: (SIZE, MTIME), empty: (SIZE, MTIME)}
+            ),
+            {loc: True, other: True, empty: True},
+        )
+        self.schema_clean()
+
+    def test_empty_union_without_mark_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.add(self.locator("a.png"), tags=[])
+        self.assertEqual(self.counts()["media_annotation_files"], 0)
+
+    def test_tag_limit_union_writes_no_tag_and_no_mark(self):
+        loc = self.locator("a.png")
+        self.replace(loc, tags=[f"t{i}" for i in range(100)])
+        before = self.rows(*ANNOTATION_TABLES, "tags")
+        with self.assertRaises(AnnotationCommandError) as ctx:
+            self.add(loc, tags=["one more"], mark_autotagged=True)
+        self.assertEqual(ctx.exception.code, "tag-limit")
+        self.assertEqual(self.rows(*ANNOTATION_TABLES, "tags"), before)
+        self.assertEqual(self.marked(), [])
+
+    def test_replace_marks_on_saved_and_replayed_receipts_not_on_conflict(self):
+        loc = self.locator("a.png")
+        saved = self.replace(loc, tags=["a"], mark_autotagged=True)
+        self.assertFalse(saved["replayed"])
+        self.assertEqual(self.marked(), [self.byte_id(loc)])
+        other = self.locator("b.png")
+        self.replace(other, DIGEST_B, ["x"])
+        replayed = self.replace(
+            other, DIGEST_B, ["x"], revision=1, mark_autotagged=True
+        )
+        self.assertTrue(replayed["replayed"])
+        third = self.locator("c.png")
+        self.replace(third, tags=["y"])
+        with self.assertRaises(AnnotationCommandError):
+            self.replace(third, tags=["z"], revision=5, mark_autotagged=True)
+        self.assertEqual(
+            self.marked(), sorted([self.byte_id(loc), self.byte_id(other, DIGEST_B)])
+        )
+
+    def test_mark_follows_the_bytes_not_the_file(self):
+        loc = self.locator("a.png")
+        self.add(loc, tags=["bird"], mark_autotagged=True)
+        # The file's bytes changed: the new record is current and unmarked.
+        self.replace(loc, DIGEST_B, ["hand"], mtime_ns=MTIME + 1)
+        self.assertEqual(self.db.autotag_state({loc: (SIZE, MTIME + 1)}), {loc: False})
+        self.assertEqual(self.db.autotag_state({loc: (SIZE, MTIME)}), {loc: True})
+        # The review's estimate counts any marked record of the locator.
+        self.assertEqual(self.db.autotagged_locators(), {loc})
+        missing = self.locator("none.png")
+        self.assertEqual(self.db.autotag_state({missing: (1, 1)}), {missing: False})
+
+    def test_state_and_tags_choose_the_same_current_record(self):
+        loc = self.locator("a.png")
+        # Two records with the same verified fingerprint: the newest wins.
+        self.replace(loc, DIGEST_A, ["old bytes"])
+        with patch.object(
+            annotations_module, "utc_now_iso", return_value="2099-01-01T00:00:00"
+        ):
+            self.add(loc, DIGEST_B, ["new bytes"], mark_autotagged=True)
+        stats = {loc: (SIZE, MTIME)}
+        self.assertEqual(self.db.current_image_tags(stats), {loc: ["new bytes"]})
+        self.assertEqual(self.db.autotag_state(stats), {loc: True})
+        with patch.object(
+            annotations_module, "utc_now_iso", return_value="2199-01-01T00:00:00"
+        ):
+            self.add(loc, DIGEST_A, ["older bytes again"])
+        self.assertEqual(
+            self.db.current_image_tags(stats), {loc: ["old bytes", "older bytes again"]}
+        )
+        self.assertEqual(self.db.autotag_state(stats), {loc: False})
+
+    def test_marks_never_touch_prompt_rows(self):
+        conn = self.db.model.get_connection()
+        prompt_id = self.db.save_prompt("a beach", tags=["beach"])
+        before = [
+            [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY 1")]
+            for table in ("prompts", "prompt_tags")
+        ]
+        self.add(self.locator("a.png"), tags=["bird"], mark_autotagged=True)
+        self.replace(self.locator("b.png"), DIGEST_B, ["waves"], mark_autotagged=True)
+        after = [
+            [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY 1")]
+            for table in ("prompts", "prompt_tags")
+        ]
+        self.assertIsNotNone(prompt_id)
+        self.assertEqual(after, before)
+
+
 class AnnotationIsolationTests(AnnotationTestCase):
     def test_cascade_from_vocabulary_delete_keeps_byte_records(self):
         loc = self.locator("a.png")

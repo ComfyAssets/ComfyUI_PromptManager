@@ -23,6 +23,11 @@ from . import restore_stage
 from .library_schema import library_schema_error, migrate_library_state
 from .image_favorites import image_favorites_schema_error, migrate_image_favorites
 from .annotation_schema import annotation_schema_error, migrate_annotation_state
+from .autotag_schema import (
+    autotag_schema_error,
+    autotag_without_annotations_error,
+    migrate_autotag_state,
+)
 from .review_schema import (
     migrate_review_state,
     review_schema_error,
@@ -338,8 +343,13 @@ class PromptModel:
         review_error = review_without_annotations_error(conn)
         if review_error:
             raise sqlite3.DatabaseError(review_error)
+        # The auto-tag marks cite annotation bytes the same way (#379).
+        autotag_error = autotag_without_annotations_error(conn)
+        if autotag_error:
+            raise sqlite3.DatabaseError(autotag_error)
         migrate_annotation_state(conn)
         migrate_review_state(conn)
+        migrate_autotag_state(conn)
         # Last: the older generated_images rebuilds run only before file_path.
         migrate_workflow_documents(conn)
 
@@ -1225,6 +1235,11 @@ class PromptModel:
             )
             if review_error:
                 return False, review_error
+            autotag_error = autotag_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if autotag_error:
+                return False, autotag_error
             documents_error = workflow_documents_schema_error(
                 conn, allow_missing=not require_library_state, documents=documents
             )

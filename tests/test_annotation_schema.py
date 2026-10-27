@@ -35,6 +35,8 @@ REVIEW_TABLES = (
     "media_review_items",
     "media_review_metadata",
 )
+# The auto-tag marks (#379) cite annotation bytes too; an old backup lacks them.
+CITING_TABLES = REVIEW_TABLES + ("media_image_autotags",)
 # The exact DDL the plan pins; the module must produce precisely these objects.
 DDL = {
     METADATA: (
@@ -214,7 +216,7 @@ class AnnotationSchemaTests(unittest.TestCase):
         """
         with closing(sqlite3.connect(path)) as raw, raw:
             raw.execute("PRAGMA foreign_keys=OFF")
-            for table in REVIEW_TABLES + tuple(reversed(TABLES)):
+            for table in CITING_TABLES + tuple(reversed(TABLES)):
                 raw.execute(f"DROP TABLE {table}")
 
     def test_fresh_install_and_reopen_is_idempotent(self):

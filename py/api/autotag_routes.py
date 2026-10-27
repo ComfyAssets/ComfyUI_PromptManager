@@ -15,12 +15,11 @@ from urllib.parse import quote
 from .job_routes import busy_response
 from .jobs import (
     AUTOTAG_BATCH_JOB_KIND,
-    AUTOTAG_GROUP_NAMES,
     MODEL_DOWNLOAD_JOB_KIND,
     JobBusy,
 )
-from .admin import _plural, _scan_location, _scan_roots
-from .maintenance import disk_plan, short_space_message
+
+from .maintenance import disk_plan
 from .prompts import thumbnail_url_for
 from . import thumbnail_settings
 from .. import model_gate
@@ -29,7 +28,7 @@ from aiohttp import web
 
 _INTERNAL_ERROR = "An internal error occurred. Check server logs for details."
 
-# Tag output images (#328): the native prompt-tag batch.
+# Tag output images (#328, per image since #379).
 AUTOTAG_JOB_TITLE = "Tag output images"
 AUTOTAG_PREVIEW_LEASE = "Tag output images review"
 AUTOTAG_OWNER_KIND = "autotag-job"
@@ -198,6 +197,18 @@ async def _refusal(title):
     """The single error event of an auto-tag batch refused by another job."""
     message = f"{title} already running"
     yield {"type": "error", "status": "error", "message": message}
+
+
+def wd14_device(service) -> str:
+    """Worker thread: ``"gpu"`` when WD14 runs (or would run) on CUDA, else
+    ``"cpu"``; a service without the probe is ``"cpu"``."""
+    probe = getattr(service, "wd14_device", None)
+    if not callable(probe):
+        return "cpu"
+    try:
+        return "gpu" if probe() == "gpu" else "cpu"
+    except Exception:
+        return "cpu"
 
 
 class AutotagRoutesMixin:
@@ -802,6 +813,8 @@ class AutotagRoutesMixin:
 
     async def _preview_autotag_batch(self, request):
         from ..autotag import get_autotag_service
+        from ..config import AutotagConfig
+        from ..tagging_defaults import WD14_MODEL_TYPES, wd14_seconds_per_image
 
         data, error = await self._batch_body(
             request, ("model_type", "existing"), BATCH_PREVIEW_BODY_MAX
@@ -813,11 +826,14 @@ class AutotagRoutesMixin:
             return self._bad_request(message)
         model_type, existing = data["model_type"], data["existing"]
         policy = self._safety_backup_policy()
+        service = get_autotag_service()
         try:
-            candidates = await self._run_in_executor(self.db.autotag_batch_candidates)
-            status = await self._run_in_executor(
-                get_autotag_service().get_models_status
-            )
+            targets = await self._autotag_targets()
+            marked = await self._run_in_executor(self.db.autotagged_locators)
+            status = await self._run_in_executor(service.get_models_status)
+            device = None
+            if model_type in WD14_MODEL_TYPES:
+                device = await self._run_in_executor(wd14_device, service)
             disk, _short, _size = await self._run_in_executor(
                 functools.partial(
                     disk_plan,
@@ -831,16 +847,21 @@ class AutotagRoutesMixin:
             return web.json_response(
                 {"success": False, "error": self._public_error(e)}, status=500
             )
-        prompts = {row["prompt_id"]: row["prompt_tags"] for row in candidates}
-        tagged = sum(1 for tags in prompts.values() if self._real_tags(tags))
-        to_tag = len(prompts) - tagged if existing == "skip" else len(prompts)
+        images = len(targets)
+        tagged = sum(1 for item in targets if item.locator in marked)
+        to_tag = images - tagged if existing == "skip" else images
+        estimate = None
+        if device is not None:
+            estimate = round(to_tag * wd14_seconds_per_image(device), 3)
         return web.json_response(
             {
                 "success": True,
-                "images": len(candidates),
-                "prompts": len(prompts),
+                "images": images,
                 "already_tagged": tagged,
                 "to_tag": to_tag,
+                "estimate_seconds": estimate,
+                "estimate_device": device,
+                "suggestion_limit": AutotagConfig.suggestion_limit(),
                 "model": {
                     "type": model_type,
                     "label": config["label"],
@@ -862,9 +883,9 @@ class AutotagRoutesMixin:
         In order: 400 body or options, 400 ``review-required``; 409
         ``model-unavailable``; 507 ``insufficient-space``; 409 ``busy``
         (another records job, the legacy batch's hold included); 409
-        ``model-busy``. No await follows the busy check.
+        ``model-busy``. No await follows the busy check. The job tags each
+        output image (``_run_autotag_batch``), never a prompt (#379).
         """
-        from ..autotag import get_autotag_service
         from ..config import MAX_SUGGESTION_LIMIT, AutotagConfig
         from .annotation_suggest import OptionError, validate_options
 
@@ -873,7 +894,7 @@ class AutotagRoutesMixin:
         )
         if error is not None:
             return error
-        config, message = self._batch_choice(data)
+        _config, message = self._batch_choice(data)
         if message:
             return self._bad_request(message)
         model_type, existing, options = (
@@ -897,143 +918,23 @@ class AutotagRoutesMixin:
                 {"success": False, "code": "review-required", "error": REVIEW_REQUIRED},
                 status=400,
             )
-        service = get_autotag_service()
-        backup_on = self._safety_backup_policy() == "on"
         try:
-            status = await self._run_in_executor(service.get_models_status)
-            candidates = await self._run_in_executor(self.db.autotag_batch_candidates)
-            _disk, short, _size = await self._run_in_executor(
-                functools.partial(
-                    disk_plan, self.db.model.db_path, backup=backup_on, vacuum=False
-                )
+            job, refusal = await self._start_autotag(
+                model_type=model_type,
+                existing=existing,
+                options=options,
+                keep_in_memory=True,
+                title=AUTOTAG_JOB_TITLE,
+                owner_kind=AUTOTAG_OWNER_KIND,
             )
         except Exception as e:
             self.logger.exception("Tag output images could not start")
             return web.json_response(
                 {"success": False, "error": self._public_error(e)}, status=500
             )
-        if not (status.get(model_type) or {}).get("downloaded"):
-            return web.json_response(
-                {
-                    "success": False,
-                    "code": "model-unavailable",
-                    "error": f"{config['label']} is not downloaded. "
-                    "Download it in System › Auto-tagging.",
-                },
-                status=409,
-            )
-        if backup_on and short is not None:
-            return web.json_response(
-                {
-                    "success": False,
-                    "code": "insufficient-space",
-                    "error": short_space_message(short),
-                },
-                status=507,
-            )
-        busy = self._jobs.blocker(AUTOTAG_BATCH_JOB_KIND, admission="records")
-        if busy is not None:
-            return busy_response(JobBusy(busy))
-        owner = model_gate.new_owner(AUTOTAG_OWNER_KIND)
-        if not model_gate.try_acquire(owner):
-            return model_busy_response()
-        opts = {
-            "model_type": model_type,
-            "existing": existing,
-            "keep_in_memory": True,
-            "gate_owner": owner,
-            "general_threshold": options.get("general_threshold"),
-            "character_threshold": options.get("character_threshold"),
-            "prompt": options.get("instructions"),
-        }
-        try:
-            job = self._jobs.start(
-                AUTOTAG_BATCH_JOB_KIND,
-                AUTOTAG_JOB_TITLE,
-                admission="records",
-                cancellable=True,
-                scope={
-                    "model_type": model_type,
-                    "existing": existing,
-                    "images": len(candidates),
-                    "label": config["label"],
-                },
-                groups=AUTOTAG_GROUP_NAMES,
-                runner=functools.partial(
-                    self._run_autotag_job, service, opts, backup_on
-                ),
-            )
-        except BaseException as refused:
-            model_gate.release(owner)
-            if isinstance(refused, JobBusy):
-                return busy_response(refused)
-            raise
-        job.task.add_done_callback(lambda _task: model_gate.release(owner))
+        if refusal is not None:
+            return refusal.response
         return web.json_response({"success": True, "job": job.summary()}, status=202)
-
-    async def _run_autotag_job(self, service, opts, backup_on, job):
-        ok, _backup = await self._safety_backup_step(job, self.db, backup_on)
-        if not ok:
-            return
-        try:
-            await self._tag_output_images(service, opts, job)
-        except Exception:
-            self.logger.exception("Tag output images failed")
-            job.update(status_line=_INTERNAL_ERROR)
-            job.log_line(f"Tagging failed · {_INTERNAL_ERROR}")
-            job.finish("failed")
-        finally:
-            if backup_on:
-                await self._prune_backup_pool(job, self.db)
-
-    async def _tag_output_images(self, service, opts, job):
-        roots = _scan_roots(self._get_all_output_dirs())
-        job.log_line(
-            f"Tagging started · {job.scope['label']} · "
-            + ("skip prompts already tagged" if opts["existing"] == "skip" else "merge")
-        )
-        job.update(status_line="Loading the tagging model")
-
-        def on_item(index, total, group, image_path, detail):
-            path, root, root_index = _scan_location(image_path or "", roots)
-            job.update(
-                processed=index + 1,
-                total=total,
-                progress=100 * (index + 1) // total,
-                status_line=f"Tagging {index + 1} of {total}",
-            )
-            job.record(
-                group,
-                {
-                    "path": path,
-                    "root": root,
-                    "root_index": root_index,
-                    "detail": detail,
-                },
-                f"{path}: {detail}",
-            )
-            job.publish({"type": "progress", "progress": job.progress})
-
-        final = None
-        async for event in self._autotag_batch_events(
-            service,
-            {**opts, "cancelled": lambda: job.cancelled, "on_item": on_item},
-        ):
-            if event.get("type") in ("complete", "error"):
-                final = event
-        if final is not None and final["type"] == "error":
-            job.update(status_line=final["message"])
-            job.log_line(f"Tagging failed · {final['message']}")
-            job.finish("failed")
-        elif job.cancelled:  # a cancel wins over a run that then completed
-            job.update(status_line=BATCH_CANCELLED)
-            job.log_line(BATCH_CANCELLED)
-            job.finish("cancelled")
-        else:
-            done = f"Tagged {_plural(job.counters.get('tagged', 0), 'prompt')}"
-            job.update(status_line=done, progress=100)
-            job.log_line(done)
-            job.finish("finished")
 
     def _gated_runner(self, owner):
         """Executor calls under the model gate *owner* holds (plain when None)."""

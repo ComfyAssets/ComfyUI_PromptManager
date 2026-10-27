@@ -468,6 +468,7 @@ class TestRestoreFromFile(BackupTestCase):
 
     def test_restore_old_backup_without_annotations(self):
         tables = (
+            "media_image_autotags",
             "media_review_decisions",
             "media_review_items",
             "media_review_metadata",

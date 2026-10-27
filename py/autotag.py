@@ -756,6 +756,24 @@ class AutoTagService:
 
             self.logger.info("Model unloaded, memory freed")
 
+    def wd14_device(self) -> str:
+        """``"gpu"`` when WD14 runs (or would run) on CUDA, else ``"cpu"``.
+
+        A loaded WD14 session answers from its own first provider; otherwise
+        ONNX Runtime's available providers say whether CUDA would be offered
+        (a session can still fall back to the processor). Loads no model.
+        """
+        tagger = self._tagger
+        if tagger is not None and tagger[0] == "wd14":
+            providers = tagger[1][0].get_providers()
+            return "gpu" if providers[:1] == ["CUDAExecutionProvider"] else "cpu"
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            return "cpu"
+        available = ort.get_available_providers()
+        return "gpu" if "CUDAExecutionProvider" in available else "cpu"
+
     def is_model_loaded(self) -> bool:
         """Check if a model is currently loaded."""
         return self._tagger is not None
