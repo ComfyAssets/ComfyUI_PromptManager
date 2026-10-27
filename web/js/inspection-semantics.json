@@ -246,6 +246,29 @@
     ],
     "with_model": ["conditioning", "neg_conditioning", "samples", "latent"]
   },
+  "pass_through": {
+    "skip_inputs": [
+      "model",
+      "clip",
+      "vae",
+      "clip_vision",
+      "clip_vision_output",
+      "control_net",
+      "style_model",
+      "upscale_model",
+      "image",
+      "images",
+      "pixels",
+      "mask",
+      "latent",
+      "latent_image",
+      "samples",
+      "noise",
+      "sampler",
+      "sigmas",
+      "guider"
+    ]
+  },
   "facts": {
     "configuration_outputs": {
       "RandomNoise": { "kind": "noise", "fields": ["noise_seed"] },

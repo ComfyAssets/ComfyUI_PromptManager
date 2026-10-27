@@ -864,7 +864,11 @@ class TestInspectionResolverVersion(InspectionTestCase):
             }
 
         with (
-            patch.object(review_capture, "INSPECTION_RESOLVER_VERSION", 2),
+            patch.object(
+                review_capture,
+                "INSPECTION_RESOLVER_VERSION",
+                review_capture.INSPECTION_RESOLVER_VERSION + 1,
+            ),
             patch.object(review_capture, "resolve_inspection", side_effect=newer),
         ):
             self.assertNotEqual(_version(), version)

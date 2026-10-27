@@ -106,9 +106,9 @@ export function toInspectionRead(classification, result) {
 const dimension = value => Number.isSafeInteger(value) && value > 0 ? value : null;
 
 /** The roles for one local read (`{prompts, resolution}`): the bounded parse and resolution step of buildLocalPayload. */
-export function localEvidence(read, classification, semantics = null) {
+export function localEvidence(read, classification, semantics = null, fileName = null) {
     const inspection = toInspectionRead(classificationOf(classification), read);
-    return inspection.read === null ? unreadableEvidence() : resolveLocalEvidence(inspection.read.records, semantics);
+    return inspection.read === null ? unreadableEvidence() : resolveLocalEvidence(inspection.read.records, semantics, fileName);
 }
 
 /**
@@ -117,7 +117,7 @@ export function localEvidence(read, classification, semantics = null) {
  * "unavailable" as the server does), so the legacy fill in projectInspectionPayload applies exactly where it does
  * for Images.
  */
-export function buildLocalPayload({ read, file, classification, semantics = null, evidence = localEvidence(read, classification, semantics) }) {
+export function buildLocalPayload({ read, file, classification, semantics = null, evidence = localEvidence(read, classification, semantics, file?.name ?? null) }) {
     const classified = classificationOf(classification);
     const inspection = toInspectionRead(classified, read);
     const filename = sanitizeLocalFilename(file?.name);
@@ -211,7 +211,7 @@ export const localFileAdapter = Object.freeze({
         }
         const semantics = await untilAborted(loadInspectionSemantics(), signal);
         await yieldControl(signal);
-        const evidence = localEvidence(result, secret.classification, semantics);
+        const evidence = localEvidence(result, secret.classification, semantics, secret.filename);
         await yieldControl(signal);
         const file = { name: secret.filename, size: secret.file.size, lastModified: secret.file.lastModified };
         const payload = buildLocalPayload({ read: result, file, classification: secret.classification, semantics, evidence });

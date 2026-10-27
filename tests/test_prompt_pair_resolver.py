@@ -1019,7 +1019,8 @@ class TestResolverProfiles(unittest.TestCase):
 
     def test_unsupported_node_names_the_blocking_node(self):
         source = graph()
-        source["1"]["class_type"] = "UnknownEncoder"
+        # No text and no links: nothing passes through it (#381).
+        source["1"] = {"class_type": "UnknownEncoder", "inputs": {"seed": 1}}
         result = resolve_prompt_pair(source, profile=resolver.INSPECTION_PROFILE)
         self.assertEqual(result["reason_code"], "unsupported-node")
         self.assertEqual(result["node"], {"id": "1", "class_type": "UnknownEncoder"})
@@ -1161,14 +1162,9 @@ class TestGuiderSamplers(unittest.TestCase):
 
     def test_unsupported_node_names_first_blocking_node(self):
         source = _guided()
-        source["30"] = {
-            "class_type": "FutureConditioner",
-            "inputs": {"conditioning": ["6", 0]},
-        }
-        source["31"] = {
-            "class_type": "OtherConditioner",
-            "inputs": {"conditioning": ["7", 0]},
-        }
+        # No links: nothing passes through them (#381).
+        source["30"] = {"class_type": "FutureConditioner", "inputs": {"seed": 1}}
+        source["31"] = {"class_type": "OtherConditioner", "inputs": {"seed": 2}}
         source["21"]["inputs"]["positive"] = ["30", 0]
         source["21"]["inputs"]["negative"] = ["31", 0]
         result = _inspect(source)
@@ -1548,7 +1544,8 @@ class TestConditioningSemantics(unittest.TestCase):
     def test_diverging_branch_that_cannot_be_traced_is_never_guessed(self):
         extra = {
             "10": _encoded(parity.POS),
-            "11": {"class_type": "FutureEncoder", "inputs": {"text": WOLF}},
+            # No text and no links: nothing passes through it (#381).
+            "11": {"class_type": "FutureEncoder", "inputs": {"strength": 1.0}},
             "12": _image_exists(),
         }
         source = _with_positive(_if_else(["12", 1], ["10", 0], ["11", 0]), extra)
@@ -2048,11 +2045,16 @@ class TestEncoderAndStringSemantics(unittest.TestCase):
                 result = _inspect(_with_positive(node))
                 self.assertEqual(result["reason_code"], "malformed")
 
-    def test_unverified_text_nodes_stay_unsupported_and_named(self):
-        # TextBoxMira was verified in its source in Task 2.7b and is listed.
+    def test_unknown_text_nodes_pass_their_text_through(self):
+        # #381: an unlisted node's ``text`` input is its text (the legacy rule);
+        # without one, and with nothing linked, it is still named.
         for name in ("LoRAfromText", "RegexReplace", "XYZPrompt"):
             with self.subTest(node=name):
                 node = {"class_type": name, "inputs": {"text": parity.POS}}
+                result = _inspect(_string_positive(node))
+                self.assertEqual(result["state"], "resolved")
+                self.assertEqual(result["positive"]["text"], parity.POS)
+                node = {"class_type": name, "inputs": {"pattern": parity.POS}}
                 result = _inspect(_string_positive(node))
                 self.assertEqual(result["reason_code"], "unsupported-node")
                 self.assertEqual(result["node"], {"id": "10", "class_type": name})
@@ -2313,7 +2315,8 @@ class TestDetailerStages(unittest.TestCase):
 
     def test_unresolved_stage_blocks_the_chain(self):
         source = _detailed(same_prompt=True)
-        source["30"] = {"class_type": "FutureConditioner", "inputs": {"c": ["6", 0]}}
+        # No links: nothing passes through it (#381).
+        source["30"] = {"class_type": "FutureConditioner", "inputs": {"c": 1.0}}
         source["3"]["inputs"]["positive"] = ["30", 0]
         source["50"]["inputs"]["positive"] = ["10", 0]
         result = _inspect(source)
@@ -2662,11 +2665,13 @@ class TestLatentAncestry(unittest.TestCase):
             },
             {
                 "50": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+                # Its own encoder (#381: the same links would be one prompt).
+                "73": parity._enc(parity.POS),
                 "70": {
                     "class_type": "KSampler",
                     "inputs": {
                         "model": ["4", 0],
-                        "positive": ["6", 0],
+                        "positive": ["73", 0],
                         "negative": ["7", 0],
                         "latent_image": ["72", 0],
                     },
@@ -2969,7 +2974,8 @@ class TestLatentAncestry(unittest.TestCase):
         source["60"]["class_type"] = "UltimateSDUpscale"
         result = _inspect(source, output_node_id="9")
         self.assertEqual((result["state"], result["sampler_id"]), ("resolved", "3"))
-        # Reached only through an unlisted image node, it stays unattributed.
+        # Reached only through an unlisted image node, it stays unattributed:
+        # a detailer is never a plain first stage, even on the same links (#381).
         source["61"] = {"class_type": "MysteryFilter", "inputs": {"image": ["60", 0]}}
         source["5"]["inputs"]["pixels"] = ["61", 0]
         result = _inspect(source, output_node_id="9")

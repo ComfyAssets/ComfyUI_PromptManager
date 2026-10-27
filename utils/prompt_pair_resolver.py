@@ -6,7 +6,9 @@ contains effective ``text``, deduplicated-recipe ``storage_text`` and
 ``provenance``; ComfyUI provenance records the exact output
 slot and complete followed link path. States distinguish a resolved pair (an
 explicit empty negative is valid), absent data, unsupported/unresolved data and
-ambiguous sampler selection. Unknown conditioning semantics are never flattened.
+ambiguous sampler selection. Listed composites are never flattened; in the
+inspection profile, nodes the semantics table does not name pass their text
+through (#381, ``_GraphResolver.passed``).
 
 Future nodes can register declarative ``OutputAdapter`` entries by
 ``(class_type, output_slot)``. This does not prescribe a future paired-node schema.
@@ -48,7 +50,9 @@ RESOLVER_VERSION = 1
 # review items recorded from that profile (with the profile's budgets and
 # the semantics table). Bump it when a change would make the inspection
 # profile resolve the same metadata otherwise, even if ingestion is unchanged.
-INSPECTION_RESOLVER_VERSION = 1
+# 2: unknown nodes pass through generically (#381); unknown classes are not in
+# the table's class projection, so only this number can move those items.
+INSPECTION_RESOLVER_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,15 @@ _HISTORICAL_ADAPTERS = {
 for _name in ("PromptManagerPositive", "PromptManagerDetailer"):
     _HISTORICAL_ADAPTERS[(_name, 0)] = _COMMA
     _HISTORICAL_ADAPTERS[(_name, 1)] = replace(_COMMA, kind="string")
+# This repository's own node classes, current and historical: their text is the
+# prompt whatever unknown nodes sit between them and the sampler (#381).
+_OWN_CLASSES = frozenset(
+    name
+    for name, _ in list(_DEFAULT_ADAPTERS) + list(_HISTORICAL_ADAPTERS)
+    if name.startswith("PromptManager")
+)
+# Nodes with these exact names are traced by code, not by the table.
+_CODED_CLASSES = frozenset({"Reroute", "StringConcatenate", "Text Concatenate"})
 
 
 @dataclass(frozen=True)
@@ -197,6 +210,17 @@ _ZEROED_SOURCE = "zeroed-conditioning"
 _MAX_BRANCH_CANDIDATES = 32
 # Statically undecidable text (a search, a list output): never pick an item.
 _RUNTIME_REASON = "Text is decided at run time"
+# Different texts reach one sampler through unknown nodes (#381): one candidate
+# per text, never a refusal.
+SEVERAL_SOURCES_REASON = "Several prompts reach the sampler"
+SELECTOR_BRANCHES_REASON = "Selector branches have different prompts"
+# Failures that bound the work: never skipped by a pass-through walk.
+_LIMIT_CODES = frozenset({"work-limit", "depth-limit", "text-limit"})
+_PASSED_UNVERIFIABLE = "Text passed through an unknown node is not verifiable"
+# Inputs that make an unknown node a conditioning transform, not a generator.
+_CONDITIONING_INPUTS = ("conditioning", "positive", "negative")
+# The first item of a pass-through divergence's 3-tuple choice key.
+_PASS_THROUGH = "pass-through"
 # Uncoded outcomes the inspector explains by their exact reason.
 EMPTY_POSITIVE_REASON = "Positive prompt is empty"
 # Several sampler branches, every one resolved to the same pair (#249).
@@ -241,17 +265,23 @@ class _Unresolved(Exception):
 
 
 class _Diverging(Exception):
-    """A runtime selector whose branches trace to different texts.
+    """A runtime choice whose options trace to different texts.
 
     Raised from inside tracing; ``_GraphResolver.branches`` resolves the sampler
-    again once per choice, so each candidate is internally consistent.
+    again once per choice, so each candidate is internally consistent. A
+    selector's choices are ``(True, False)``; an unknown node passing several
+    texts through (#381) has one choice per distinct text, ``0..n-1``.
     """
 
-    def __init__(self, key: Tuple[str, int]) -> None:
+    def __init__(self, key: tuple, choices: tuple, sources: bool = False) -> None:
         super().__init__(key)
-        # The condition output (node ID, slot): one runtime value, so every
-        # selector it drives is forced together.
+        # A selector's condition output (node ID, slot): one runtime value, so
+        # every selector it drives is forced together. A pass-through key is
+        # ``(_PASS_THROUGH, node ID, slot)``.
         self.key = key
+        self.choices = choices
+        # Raised by an unknown node passing several texts (the outcome's reason).
+        self.sources = sources
 
 
 def _node_ref(node_id: str, class_type: Any) -> dict:
@@ -447,6 +477,8 @@ class _GraphResolver:
         self.latent_charged: set = set()
         # ``semantics`` (inspection) names the samplers and guiders it follows.
         self.semantics = semantics
+        # Nesting depth of execution-record checks (``passed``).
+        self.verifying = 0
         if semantics is None:
             self.sampler_classes = self.stage_classes = _SAMPLERS
         else:
@@ -457,6 +489,19 @@ class _GraphResolver:
             )
             # Any listed sampler upstream in latent ancestry is an earlier stage.
             self.stage_classes = frozenset(semantics.samplers)
+            # Classes the resolver knows something about: an unlisted output of
+            # one stays ``unsupported-node``; any other class passes through.
+            facts = semantics.facts
+            self.described = (
+                semantics.all_classes
+                | {name for name, _ in semantics.lineage}
+                | {name for name, _ in self.adapters}
+                | _CODED_CLASSES
+                | frozenset(facts["configuration_outputs"])
+                | frozenset(facts["model_outputs"])
+                | frozenset(facts["model_passthroughs"])
+                | frozenset(facts["scalar_outputs"])
+            )
 
     def node(self, node_id: str) -> Tuple[str, dict]:
         if self.legacy:
@@ -557,7 +602,9 @@ class _GraphResolver:
                     self.inherit_source(node_id, slot, [path])
             elif (name, slot) in self.adapters:
                 adapter = self.adapters[(name, slot)]
-                if not isinstance(adapter, OutputAdapter) or adapter.kind != kind:
+                if not isinstance(adapter, OutputAdapter) or (
+                    kind != "any" and adapter.kind != kind
+                ):
                     raise _Unresolved(_INCOMPATIBLE_SLOT, "malformed")
                 evidence = (
                     self.execution_record(node_id, inputs)
@@ -613,7 +660,7 @@ class _GraphResolver:
             elif (
                 name in ("StringConcatenate", "Text Concatenate")
                 and slot == 0
-                and kind == "string"
+                and kind in ("string", "any")
             ):
                 if name == "StringConcatenate":
                     keys = ["string_a", "string_b"]
@@ -651,6 +698,10 @@ class _GraphResolver:
             elif self.semantics is not None and self.follows(name, slot, kind):
                 text, path, storage_text = self.semantic(
                     node_id, name, slot, kind, inputs, depth
+                )
+            elif self.semantics is not None and name not in self.described:
+                text, path, storage_text = self.passed(
+                    node_id, slot, kind, inputs, depth
                 )
             else:
                 raise self.unsupported(
@@ -747,7 +798,7 @@ class _GraphResolver:
             return True
         if slot == 0 and name in semantics.selectors:
             return True
-        return kind == "conditioning" and (
+        return kind in ("conditioning", "any") and (
             (name, slot) in semantics.conditioning
             or (slot == 0 and name in semantics.composites)
         )
@@ -769,11 +820,13 @@ class _GraphResolver:
         ):
             listed = table.get((name, slot))
             if listed is not None:
-                if kind != expected:
+                if kind not in (expected, "any"):
                     raise _Unresolved(_INCOMPATIBLE_SLOT, "malformed")
                 return build(node_id, listed, inputs, depth)
         entry = (
-            semantics.conditioning.get((name, slot)) if kind == "conditioning" else None
+            semantics.conditioning.get((name, slot))
+            if kind in ("conditioning", "any")
+            else None
         )
         if entry is not None and entry["strategy"] == "zeroed":
             # The upstream text is discarded, so it is not traced.
@@ -825,8 +878,119 @@ class _GraphResolver:
             for label in ("true", "false")
         ]
         if parts[0][0] != parts[1][0]:
-            raise _Diverging((str(condition[0]), condition[1]))
+            raise _Diverging((str(condition[0]), condition[1]), (True, False))
         return self.merged(node_id, 0, parts)
+
+    def passed(
+        self, node_id: str, slot: int, kind: str, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """``read_through``, except while checking an execution record.
+
+        A pair node's recorded text is what ran. While its inputs are checked
+        against the record (``execution_record``), any outcome of a walk through
+        an unknown node but running out of visits only means "cannot be read
+        statically" (``unsupported-node``, unverifiable), as before #381.
+        """
+        if not self.verifying:
+            return self.read_through(node_id, slot, kind, inputs, depth)
+        try:
+            return self.read_through(node_id, slot, kind, inputs, depth)
+        except _Diverging:
+            raise self.unsupported(_PASSED_UNVERIFIABLE, node_id) from None
+        except _Unresolved as error:
+            if error.code == "work-limit":
+                raise
+            raise self.unsupported(_PASSED_UNVERIFIABLE, node_id) from None
+
+    def read_through(
+        self, node_id: str, slot: int, kind: str, inputs: dict, depth: int
+    ) -> Tuple[str, list, str]:
+        """An output no rule describes passes its text through (#381).
+
+        A string output (kind ``string``) of a node with a seed input
+        (``seed``, ``noise_seed``, ``sampling_mode.seed``) and no linked
+        conditioning input is generated at run time (a language model, a
+        wildcard or random line): ``runtime-value``, never its inputs. With a
+        linked conditioning input it is a conditioning transform (noise). A
+        ``text`` input is the text (the legacy encoder rule). Otherwise the
+        followed inputs (``pass_inputs``) are traced with kind ``any``: an
+        unknown node may turn a string into conditioning. A followed input that
+        finds no text (``unsupported-node``) adds nothing; limits and runtime
+        choices propagate; any other failure blocks, unless a PromptManager
+        node was reached: this repository's own nodes are authoritative, so
+        only their texts count then. One distinct text is the result; several
+        are a runtime choice with one candidate per text, in input order.
+        """
+        if (
+            kind == "string"
+            and any(name.endswith("seed") for name in inputs)
+            and not any(_link(inputs.get(name)) for name in _CONDITIONING_INPUTS)
+        ):
+            raise self.named(_RUNTIME_REASON, "runtime-value", node_id)
+        if "text" in inputs:
+            traced = self.text(inputs["text"], "string", depth + 1)
+            self.inherit_source(node_id, slot, [traced[1]])
+            return traced
+        found: list = []
+        blocking: Optional[_Unresolved] = None
+        for value in self.pass_inputs(slot, inputs):
+            try:
+                found.append(self.text(value, "any", depth + 1))
+            except _Unresolved as error:
+                if error.code in _LIMIT_CODES:
+                    raise
+                if error.code != "unsupported-node" and blocking is None:
+                    blocking = error
+        owned = [traced for traced in found if self.owned(traced[1])]
+        if owned:
+            found = owned
+        elif blocking is not None:
+            raise blocking
+        if not found:
+            raise self.unsupported("Unsupported node semantics or output slot", node_id)
+        texts = list(dict.fromkeys(traced[0] for traced in found))
+        if len(texts) == 1:
+            return self.merged(node_id, slot, found)
+        if len(texts) > _MAX_BRANCH_CANDIDATES:
+            raise _Unresolved("Too many selector branches", "work-limit")
+        key = (_PASS_THROUGH, node_id, slot)
+        if key not in self.choices:
+            raise _Diverging(key, tuple(range(len(texts))), sources=True)
+        self.tainted = True
+        chosen = texts[self.choices[key]]
+        return self.merged(node_id, slot, [t for t in found if t[0] == chosen])
+
+    def pass_inputs(self, slot: int, inputs: dict) -> list:
+        """The linked inputs an unknown node's output is read through.
+
+        Output slot 0 of a node with a ``positive`` or ``negative`` input reads
+        only ``positive`` (slot 1, ``negative``), nothing when that one is not
+        linked: the paired-conditioning convention, which the legacy parser
+        followed by role. A linked ``conditioning`` is read alone (the
+        legacy order). Otherwise every linked input but the core type inputs
+        (``pass_through.skip_inputs``: model, clip, image, ...) is read.
+        """
+        if slot in (0, 1) and ("positive" in inputs or "negative" in inputs):
+            value = inputs.get(("positive", "negative")[slot])
+            return [value] if _link(value) else []
+        if _link(inputs.get("conditioning")):
+            return [inputs["conditioning"]]
+        skipped = self.semantics.pass_through["skip_inputs"]
+        return [
+            value
+            for name, value in inputs.items()
+            if _link(value) and name not in skipped
+        ]
+
+    def through_unknown(self, path: list) -> bool:
+        """Whether a followed path passes through a node no rule describes."""
+        self.scan(len(path))
+        return any(self.node(step["node_id"])[0] not in self.described for step in path)
+
+    def owned(self, path: list) -> bool:
+        """Whether a followed path passes through one of this repository's nodes."""
+        self.scan(len(path))
+        return any(self.node(step["node_id"])[0] in _OWN_CLASSES for step in path)
 
     def merged(self, node_id: str, slot: int, parts: list) -> Tuple[str, list, str]:
         """One text reached through several followed paths (deduplicated)."""
@@ -1021,8 +1185,9 @@ class _GraphResolver:
         if record is None:
             return None
         for name in ("text", "negative_text", "prepend_text", "append_text"):
+            self.verifying += 1
             try:
-                expected = self.text(inputs.get(name, ""), "string")[0]
+                expected, followed, _ = self.text(inputs.get(name, ""), "string")
             except _Unresolved as error:
                 if self.unverifiable(error):
                     value = inputs.get(name)
@@ -1043,6 +1208,11 @@ class _GraphResolver:
                             raise
                     continue
                 raise
+            finally:
+                self.verifying -= 1
+            if self.semantics is not None and self.through_unknown(followed):
+                # A text passed through an unknown node may be transformed there.
+                continue
             if name in ("prepend_text", "append_text"):
                 expected = expected.strip()
             if expected != record[name]:
@@ -1362,6 +1532,121 @@ class _GraphResolver:
             _link(inputs.get(key)) for key in stage_inputs["with_model"]
         )
 
+    def same_conditioning(self, first: str, second: str) -> bool:
+        """Whether two listed samplers read the very same conditioning links.
+
+        Compared by the sampler table's conditioning inputs (positive and
+        negative, or a custom sampler's guider): each a link, equal by node ID
+        text and slot. Then their prompt is one, whatever their stage order.
+        """
+        keys = []
+        for node_id in (first, second):
+            name, inputs = self.node(node_id)
+            conditioning = self.semantics.samplers[name]["conditioning"]
+            values = []
+            for role in sorted(conditioning):
+                value = inputs.get(conditioning[role])
+                if not _link(value):
+                    return False
+                values.append((role, str(value[0]), str(value[1])))
+            keys.append(tuple(values))
+        return keys[0] == keys[1]
+
+    def alone(self, node_id: str) -> bool:
+        """Whether a sampler's prompt is its own links' text alone.
+
+        True when it sets no prompt override and its latent ancestry reaches no
+        listed sampler (a plain first stage). Any failure but running out of
+        visits is ``False``; the walk never recurses into another stage.
+        """
+        name, inputs = self.node(node_id)
+        entry = self.semantics.samplers[name]
+        if entry["strategy"] == _DETAILER:
+            return False
+        if any(
+            inputs.get(override) not in (None, "")
+            for override in entry.get("prompt_overrides", ())
+        ):
+            return False
+        value = inputs.get(entry.get("latent")) if entry.get("latent") else None
+        if value is None:
+            return True
+        if not _link(value):
+            return False
+        queue, queued = self.walk_from(value)
+        try:
+            while queue:
+                current, depth = queue.popleft()
+                if current == node_id or depth >= self.max_depth:
+                    return False
+                self.budget.spend()
+                name, inputs = self.node(current)
+                if name in self.stage_classes or self.stage_shaped(name, inputs):
+                    return False
+                self.enqueue(queue, queued, inputs, depth + 1)
+        except _Unresolved as error:
+            if error.code == "work-limit":
+                raise
+            return False
+        return True
+
+    def saver_stages(self, file_name: Any) -> Optional[list]:
+        """The candidate samplers of the one saver that wrote ``file_name``.
+
+        A saver is any node with a ``filename_prefix`` (literal, or traced as a
+        string) whose last path part makes the file's stem
+        ``<prefix>_<digits>`` with an optional trailing ``_`` (ComfyUI's and
+        VideoHelperSuite's counters). Exactly one saver must match; its
+        linked inputs are walked like a detailer's image ancestry. No match,
+        several, an unreadable walk or no candidate sampler is ``None``: the
+        file is then judged unanchored, never guessed (#381).
+        """
+        stem = _file_stem(file_name)
+        if stem is None:
+            return None
+        self.budget.reset(self.per_candidate_visits)
+        try:
+            matches = [
+                node_id
+                for node_id, node in self.graph.items()
+                if self.writes(node, stem)
+            ]
+            if len(matches) != 1:
+                return None
+            _, inputs = self.node(matches[0])
+            values = [
+                value
+                for name, value in inputs.items()
+                if name != "filename_prefix" and _link(value)
+            ]
+            found = self.stages_from(matches[0], values)
+        except (_Unresolved, _Diverging):
+            return None
+        candidates = [
+            node_id
+            for node_id in found
+            if self.graph[node_id]["class_type"] in self.sampler_classes
+        ]
+        return candidates or None
+
+    def writes(self, node: Any, stem: str) -> bool:
+        """Whether a node's ``filename_prefix`` names the file ``stem``."""
+        if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+            return False
+        prefix = node["inputs"].get("filename_prefix")
+        if _link(prefix):
+            try:
+                prefix = self.text(prefix, "string")[0]
+            except _Diverging:
+                return False
+            except _Unresolved as error:
+                if error.code == "work-limit":
+                    raise  # an unfinished scan anchors nothing (never a guess)
+                return False
+        if not isinstance(prefix, str):
+            return False
+        return _counter_of(prefix.replace("\\", "/").split("/")[-1], stem)
+
     def upstream_stages(self, origin: str, value: Any) -> list:
         """Samplers reached from a detailer's image input, in breadth-first order.
 
@@ -1370,8 +1655,18 @@ class _GraphResolver:
         """
         if not _link(value):
             raise _Unresolved("Expected an image link", "malformed")
+        return self.stages_from(origin, [value])
+
+    def stages_from(self, origin: str, values: list) -> list:
+        """``upstream_stages`` from several start links, queued in order once."""
         found: list = []
-        queue, queued = self.walk_from(value)
+        queue: deque = deque()
+        queued: set = set()
+        for value in values:
+            start = str(value[0])
+            if start not in queued:
+                queued.add(start)
+                queue.append((start, 0))
         while queue:
             node_id, depth = queue.popleft()
             if node_id == origin:
@@ -1563,17 +1858,20 @@ class _GraphResolver:
         """
         pending: list = [{}]
         results: list = []
+        several = False
         try:
             while pending:
                 self.choices = pending.pop(0)
                 try:
                     results.append(self.stage(sampler_id, frozenset()))
                 except _Diverging as diverging:
-                    if len(results) + len(pending) + 2 > _MAX_BRANCH_CANDIDATES:
+                    count = len(diverging.choices)
+                    if len(results) + len(pending) + count > _MAX_BRANCH_CANDIDATES:
                         raise _Unresolved("Too many selector branches", "work-limit")
+                    several = several or diverging.sources
                     pending.extend(
                         {**self.choices, diverging.key: choice}
-                        for choice in (True, False)
+                        for choice in diverging.choices
                     )
         except _Unresolved as error:
             return _result(
@@ -1587,12 +1885,18 @@ class _GraphResolver:
             self.choices = {}
         if all(item["state"] == "unresolved" for item in results):
             return results[0]
+        if several:
+            # Chained unknown nodes can offer one text twice: list it once.
+            unique: dict = {}
+            for item in results:
+                unique.setdefault(_outcome_key(item), item)
+            results = list(unique.values())
         if len({_outcome_key(item) for item in results}) == 1:
             return results[0]
         return _result(
             "ambiguous",
             sampler_id=sampler_id,
-            reason="Selector branches have different prompts",
+            reason=SEVERAL_SOURCES_REASON if several else SELECTOR_BRANCHES_REASON,
             candidates=results,
         )
 
@@ -1750,6 +2054,10 @@ class _GraphResolver:
                 if not traced:
                     lineage, traced = self.lineage_predecessor(value), True
                 if node_id != lineage:
+                    if self.same_conditioning(origin, node_id) and self.alone(node_id):
+                        # Same positive and negative links: the same prompt
+                        # whichever stage this is (#381).
+                        continue
                     # Not the one continued stage: no stage's prompt is chosen.
                     raise _Unresolved(MULTISTAGE_UNATTRIBUTED_REASON)
                 earlier = node_id
@@ -1883,6 +2191,26 @@ def _parameters(value: Any, max_text_length: int, inspection: bool = False) -> d
     return _result("resolved", positive_side, negative_side)
 
 
+def _file_stem(file_name: Any) -> Optional[str]:
+    """A file name's last path part without its extension, or ``None``."""
+    if not isinstance(file_name, str) or not file_name:
+        return None
+    base = file_name.replace("\\", "/").split("/")[-1]
+    dot = base.rfind(".")
+    stem = base[:dot] if dot > 0 else base
+    return stem or None
+
+
+def _counter_of(prefix: str, stem: str) -> bool:
+    """Whether ``stem`` is ``prefix`` + ``_`` + ASCII digits [+ ``_``]."""
+    if not prefix or not stem.startswith(prefix + "_"):
+        return False
+    rest = stem[len(prefix) + 1 :]
+    if rest.endswith("_"):
+        rest = rest[:-1]
+    return rest != "" and all("0" <= char <= "9" for char in rest)
+
+
 def _profile_with(
     profile: ResolverProfile,
     max_visits: Optional[int],
@@ -1927,6 +2255,7 @@ def resolve_prompt_pair(
     max_visits: Optional[int] = None,
     max_depth: Optional[int] = None,
     max_text_length: Optional[int] = None,
+    file_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve parsed metadata; a present API graph is authoritative over text.
 
@@ -1937,9 +2266,11 @@ def resolve_prompt_pair(
     ``sampler_id`` (the inspection profile first drops stages that only reach
     previews).
     ``profile`` selects the bounds; explicit ``max_*`` keywords override it.
+    ``file_name`` (inspection only, unanchored) anchors on the one saver that
+    wrote that file (``_GraphResolver.saver_stages``) when exactly one matches.
     """
     profile = _profile_with(profile, max_visits, max_depth, max_text_length)
-    result = _resolve(metadata, output_node_id, adapters, profile)
+    result = _resolve(metadata, output_node_id, adapters, profile, file_name)
     return _legacy_result(result) if profile.legacy else result
 
 
@@ -1992,6 +2323,7 @@ def _resolve(
     output_node_id: Optional[str],
     adapters: Optional[Mapping[Tuple[str, int], OutputAdapter]],
     profile: ResolverProfile,
+    file_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(metadata, dict) or not metadata:
         return _result("absent", reason="No parsed prompt metadata")
@@ -2047,14 +2379,19 @@ def _resolve(
                 "unresolved", reason=str(error), reason_code=error.code, node=error.node
             )
     else:
-        sampler_ids = [
+        anchored = (
+            resolver.saver_stages(file_name)
+            if semantics is not None and file_name is not None
+            else None
+        )
+        sampler_ids = anchored or [
             node_id
             for node_id, node in normalized.items()
             if isinstance(node, dict)
             and isinstance(node.get("class_type"), str)
             and node["class_type"] in resolver.sampler_classes
         ]
-        if semantics is not None:
+        if semantics is not None and anchored is None:
             sampler_ids = resolver.final_stages(sampler_ids)
     if not sampler_ids:
         return _no_sampler(normalized, profile)

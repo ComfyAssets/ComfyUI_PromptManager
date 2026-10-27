@@ -13,7 +13,7 @@ profile never imports it, so a missing or bad table can never break ingestion.
 An invalid table raises ``SemanticsError`` so a bad edit fails loudly instead of
 silently changing what the inspector resolves. The file is bounded in size and
 nesting before it is validated. Every class appears in exactly one prompt
-category; classes that are not listed stay ``unsupported-node``. ``lineage``
+category; an unlisted output of a listed class stays ``unsupported-node``. ``lineage``
 (image and latent pass-through outputs for multi-stage chains) describes no
 prompt, so its classes are not claimed by a category.
 
@@ -23,9 +23,13 @@ keys, no whitespace): any change of content, never of layout, moves it.
 folds into the version of the items it records from the inspection profile
 (``utils.review_capture``): the SHA-256 of ``class_projection``, the table
 restricted to what it says about ``classes`` (the node classes of one graph)
-plus the class-independent ``schema`` and ``stage_inputs``. The resolver looks
-the table up only by the class of a graph node, so an edit about other
-classes cannot change how that graph resolves and leaves the version alone.
+plus the class-independent ``schema``, ``stage_inputs`` and ``pass_through``.
+The resolver looks the table up only by the class of a graph node, so an edit
+about other classes cannot change how that graph resolves and leaves the
+version alone. A class the table does not list at all passes text through
+(#381); that rule lives in code, so ``INSPECTION_RESOLVER_VERSION`` moves for it.
+``pass_through.skip_inputs`` names the core type inputs (model, clip, image,
+...) such a node's text is never read through.
 """
 
 import hashlib
@@ -86,7 +90,7 @@ _CATEGORIES = frozenset(
     + _CLASS_CATEGORIES
     + _SLOT_CATEGORIES
     + _SET_CATEGORIES
-    + ("lineage", "stage_inputs", "facts")
+    + ("lineage", "stage_inputs", "pass_through", "facts")
 )
 # Input names that make an unlisted node a possible sampler stage in an ancestry
 # walk (``shaped``: pipes, video embeds and custom-sampler parts carry a prompt
@@ -95,6 +99,10 @@ _CATEGORIES = frozenset(
 # ``model`` alone (ModelSampling*) or with ``clip`` (LoraLoader) is a model patch.
 # The resolver and comfy-metadata.js both read these lists.
 _STAGE_INPUT_LISTS = ("shaped", "with_model")
+# Inputs of core ComfyUI types (model, clip, image, ...) that an unknown node's
+# output is never read through when the resolver passes text through it (#381):
+# a loader's lora tag reached through ``clip`` is not the prompt.
+_PASS_THROUGH_KEYS = ("skip_inputs",)
 _STRING_PARAMS = MappingProxyType(
     {
         "literal": frozenset(),
@@ -127,6 +135,7 @@ class Semantics:
     non_file_outputs: FrozenSet[str]
     lineage: Mapping[Tuple[str, int], Mapping[str, Any]]
     stage_inputs: Mapping[str, Tuple[str, ...]]
+    pass_through: Mapping[str, Tuple[str, ...]]
     facts: Mapping[str, Any]
     all_classes: FrozenSet[str]
     # SHA-256 of the canonical table JSON (set by ``load_semantics``).
@@ -447,6 +456,19 @@ def _stage_inputs(doc: dict) -> Mapping[str, Tuple[str, ...]]:
     return _freeze(table)
 
 
+def _pass_through(doc: dict) -> Mapping[str, Tuple[str, ...]]:
+    table = doc["pass_through"]
+    if not isinstance(table, dict) or set(table) != set(_PASS_THROUGH_KEYS):
+        raise SemanticsError(
+            f"pass_through must have exactly {list(_PASS_THROUGH_KEYS)}"
+        )
+    _names(table["skip_inputs"], "pass_through.skip_inputs")
+    for name in ("text", "positive", "negative", "conditioning"):
+        if name in table["skip_inputs"]:
+            raise SemanticsError(f"pass_through.skip_inputs: {name} carries text")
+    return _freeze(table)
+
+
 def _facts(doc: dict) -> Mapping[str, Any]:
     facts = doc["facts"]
     if not isinstance(facts, dict) or set(facts) != set(_FACTS_TABLES):
@@ -506,6 +528,7 @@ def _validate(doc: Any) -> Semantics:
     return Semantics(
         lineage=_lineage(doc),
         stage_inputs=_stage_inputs(doc),
+        pass_through=_pass_through(doc),
         facts=_facts(doc),
         all_classes=owners.classes(),
         **tables,
@@ -542,7 +565,7 @@ def load_semantics(path: Optional[Union[str, Path]] = None) -> Semantics:
 
 
 # Table parts that hold no class names: they apply to every graph.
-_CLASS_INDEPENDENT = frozenset({"schema", "stage_inputs"})
+_CLASS_INDEPENDENT = frozenset({"schema", "stage_inputs", "pass_through"})
 
 
 def _canonical_json(doc: Any) -> str:
