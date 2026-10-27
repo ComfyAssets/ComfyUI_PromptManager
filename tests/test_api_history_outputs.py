@@ -21,6 +21,8 @@ from tests.test_api_images import ImageAPITestCase, make_png
 from tests.test_api_prompt_inspector import graph, png
 from tests.test_execution_context_database import bundle as context_bundle
 from tests.test_execution_history_database import JOB, SESSION
+from tests.saver_anchor_graphs import BRANCH_TEXTS, shared_prefix
+from tests.test_recorded_saver_anchor import LLM_TEXT, text_generate_run
 from utils.execution_contexts import ContextBundle
 from utils.execution_history_events import make_finish, make_start
 from utils.execution_outputs import OutputBundle, OutputReference, snapshot_output_roots
@@ -1505,3 +1507,88 @@ class HistoryOutputAPITests(ImageAPITestCase):
         body = await response.json()
         self.assertEqual(response.status, 200, body)
         self.assertEqual(body["prompts"]["positive"]["text"], "Readable portrait")
+
+    async def recorded_shared_prefix_run(self):
+        """#386: the dataset shape, branch 3's saver wrote the file in a run."""
+        path = png(self.output_dir / "IMG_GEN_00371_.png", prompt=shared_prefix())
+        # make_start/make_finish observe the run at 0 ms: the file was written then.
+        os.utime(path, ns=(1_000_000, 1_000_000))
+        start = self.capture(
+            [self.ref(node="33", filename=path.name), self.ref("43", 1, "other.png")]
+        )
+        return start
+
+    async def test_both_inspect_routes_name_the_branch_recorded_history_saved(self):
+        start = await self.recorded_shared_prefix_run()
+        _, body = await self.outputs(start)
+        descriptor = next(
+            item["current_candidate"]["media"]
+            for item in body["items"]
+            if item["occurrence"]["output_node_id"] == "33"
+        )
+        response = await self.current(descriptor["inspection_url"])
+        recorded = await response.json()
+        self.assertEqual(response.status, 200, recorded)
+        response = await self.client.get(
+            "/prompt_manager/images/inspect/IMG_GEN_00371_.png", params={"root": "0"}
+        )
+        images = await response.json()
+        self.assertEqual(response.status, 200, images)
+        for result in (recorded, images):
+            self.assertEqual(result["resolution"]["state"], "resolved")
+            self.assertEqual(
+                result["prompts"]["positive"],
+                {
+                    "status": "resolved",
+                    "text": BRANCH_TEXTS[2],
+                    "source": "recorded-run",
+                },
+            )
+
+    async def test_a_file_rewritten_after_its_run_keeps_several_prompts(self):
+        await self.recorded_shared_prefix_run()
+        os.utime(self.output_dir / "IMG_GEN_00371_.png")  # written now: not that run
+        response = await self.client.get(
+            "/prompt_manager/images/inspect/IMG_GEN_00371_.png", params={"root": "0"}
+        )
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["resolution"]["state"], "ambiguous")
+        self.assertEqual(body["prompts"]["positive"]["status"], "ambiguous")
+
+    async def test_a_failing_history_lookup_judges_the_file_alone(self):
+        await self.recorded_shared_prefix_run()
+        with (
+            patch(
+                "database.run_attribution.recorded_output",
+                side_effect=sqlite3.OperationalError("locked"),
+            ),
+            self.assertLogs("prompt_manager.run_attribution", "WARNING"),
+        ):
+            response = await self.client.get(
+                "/prompt_manager/images/inspect/IMG_GEN_00371_.png",
+                params={"root": "0"},
+            )
+            body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["resolution"]["state"], "ambiguous")
+
+    async def test_a_language_model_text_shows_what_promptmanager_recorded(self):
+        path = png(self.output_dir / "moss_00026_.png", prompt=text_generate_run())
+        os.utime(path, ns=(1_000_000, 1_000_000))
+        start = self.capture([self.ref(node="9", filename=path.name)])
+        self.api.db.write_execution_contexts(
+            start.run_id,
+            start.storage_epoch,
+            context_bundle("", LLM_TEXT, anchor="7"),
+        )
+        response = await self.client.get(
+            "/prompt_manager/images/inspect/moss_00026_.png", params={"root": "0"}
+        )
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(
+            body["prompts"]["positive"],
+            {"status": "resolved", "text": LLM_TEXT, "source": "execution"},
+        )
+        self.assertEqual(body["prompts"]["negative"]["text"], "")

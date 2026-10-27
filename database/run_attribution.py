@@ -15,6 +15,10 @@ only when all of this holds:
 
 Anything else returns None: the caller leaves the file unlinked. Read-only.
 
+``recorded_output`` applies the first two rules and returns, for the
+inspector (#386), the one output node (save node) that run reported the file
+from and the texts PromptManager recorded at execution per sampler.
+
 Lookups are batched (``stored_run_prompts``): one parameterized query per
 chunk of at most ``LOOKUP_CHUNK`` distinct file names, matched in memory. The
 history schema is left exactly as it is (no extra index), so older builds can
@@ -26,6 +30,7 @@ import os
 import sqlite3
 import threading
 import weakref
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 try:
@@ -45,7 +50,8 @@ LOOKUP_CHUNK = 500
 
 _RUNS_FOR_NAMES = (
     "SELECT DISTINCT o.filename, o.subfolder, o.root_key, o.path_style, o.run_id, "
-    "r.observed_dequeue_at, COALESCE(r.terminal_event_at, r.observed_callback_at) "
+    "r.observed_dequeue_at, COALESCE(r.terminal_event_at, r.observed_callback_at), "
+    "o.output_node_id "
     "FROM execution_run_outputs o JOIN execution_runs r ON r.run_id = o.run_id "
     "WHERE o.folder_type = 'output' AND o.filename IN ({marks})"
 )
@@ -138,9 +144,10 @@ def stored_run_prompt(
 
 
 def _runs_by_location(db: Any, names: List[str]) -> Optional[Dict[tuple, dict]]:
-    """``{(filename, subfolder, root_key, style): {run_id: (start, end)}}``.
+    """``{(filename, subfolder, root_key, style): {run_id: (start, end, nodes)}}``.
 
-    One query per ``LOOKUP_CHUNK`` names; None without history tables.
+    ``nodes`` is the set of output node ids that reported the location in that
+    run. One query per ``LOOKUP_CHUNK`` names; None without history tables.
     """
     found: Dict[tuple, dict] = {}
     conn = db.model.get_connection()
@@ -151,10 +158,47 @@ def _runs_by_location(db: Any, names: List[str]) -> Optional[Dict[tuple, dict]]:
             rows = conn.execute(query, chunk).fetchall()  # nosec B608
         except sqlite3.Error:
             return None  # no history tables (a library without history)
-        for name, subfolder, root_key, style, run_id, began, ended in rows:
+        for name, subfolder, root_key, style, run_id, began, ended, node in rows:
             runs = found.setdefault((name, subfolder, root_key, style), {})
-            runs[run_id] = (began, ended)
+            runs.setdefault(run_id, (began, ended, set()))[2].add(node)
     return found
+
+
+def _recorded_runs(
+    db: Any,
+    image_paths: Iterable[str],
+    output_root: Optional[str],
+    path_style: Optional[str],
+) -> Dict[str, tuple]:
+    """``{path: (run_id, output node ids)}`` for each file history attributes.
+
+    A file is attributed when exactly one recorded run reported its location
+    and it was last written while that run executed.
+    """
+    paths = list(dict.fromkeys(path for path in image_paths if path))
+    if not paths or not output_root:
+        return {}
+    style = path_style or ("windows" if os.name == "nt" else "posix")
+    located = {}
+    for path in paths:
+        location = _location(path, output_root, style)
+        if location is not None:
+            located[path] = location
+    if not located:
+        return {}
+    names = sorted({filename for _key, _sub, filename in located.values()})
+    runs = _runs_by_location(db, names)
+    if not runs:
+        return {}
+    attributed = {}
+    for path, (root_key, subfolder, filename) in located.items():
+        reported = runs.get((filename, subfolder, root_key, style), {})
+        if len(reported) != 1:
+            continue
+        ((run_id, (began, ended, nodes)),) = reported.items()
+        if _written_during(path, began, ended):
+            attributed[path] = (run_id, nodes)
+    return attributed
 
 
 def _named_prompt(db: Any, run_id: str) -> Optional[int]:
@@ -183,35 +227,104 @@ def stored_run_prompts(
     """
     paths = list(dict.fromkeys(path for path in image_paths if path))
     result: Dict[str, Optional[int]] = dict.fromkeys(paths)
-    if not paths or not output_root:
-        return result
-    style = path_style or ("windows" if os.name == "nt" else "posix")
-    located = {}
-    for path in paths:
-        location = _location(path, output_root, style)
-        if location is not None:
-            located[path] = location
-    if not located:
-        return result
-    names = sorted({filename for _key, _sub, filename in located.values()})
-    runs = _runs_by_location(db, names)
-    if not runs:
-        return result
     prompts: Dict[str, Optional[int]] = {}
-    for path, (root_key, subfolder, filename) in located.items():
-        reported = runs.get((filename, subfolder, root_key, style), {})
-        if len(reported) != 1:
-            continue
-        ((run_id, (began, ended)),) = reported.items()
-        if not _written_during(path, began, ended):
-            continue
+    for path, (run_id, _nodes) in _recorded_runs(
+        db, paths, output_root, path_style
+    ).items():
         if run_id not in prompts:
             prompts[run_id] = _named_prompt(db, run_id)
         result[path] = prompts[run_id]
     return result
 
 
+@dataclass(frozen=True)
+class RecordedOutput:
+    """What recorded history knows about the run that wrote one file (#386).
+
+    ``saver_id`` is the one output node the run reported the file from (None
+    when several did). ``texts`` maps each sampler anchor of the run to the
+    effective texts PromptManager recorded at execution for its roles
+    (``{"positive": text or None, "negative": text or None}``); a role whose
+    text was only inferred from the graph is None.
+    """
+
+    saver_id: Optional[str]
+    texts: Dict[str, Dict[str, Optional[str]]]
+
+
+def _recorded_texts(db: Any, run_id: str) -> Dict[str, Dict[str, Optional[str]]]:
+    texts = {}
+    for context in db.get_execution_contexts(run_id).get("contexts") or []:
+        evidence = context.get("evidence") or {}
+        roles = {}
+        for role in ("positive", "negative"):
+            values = context.get(role) or {}
+            proof = (evidence.get(role) or {}).get("effective") or {}
+            value = values.get("effective")
+            recorded = proof.get("provenance") == "recorded"
+            roles[role] = value if recorded and isinstance(value, str) else None
+        texts[context["anchor_id"]] = roles
+    return texts
+
+
+def recorded_output(
+    db: Any,
+    image_path: str,
+    output_root: Optional[str],
+    path_style: Optional[str] = None,
+) -> Optional[RecordedOutput]:
+    """The recorded run facts for ``image_path``, else None (#386).
+
+    The file must be attributed to one run (``_recorded_runs``: one run
+    reported its location and it was written during that run). Read-only; it
+    never links anything.
+    """
+    if not image_path:
+        return None
+    found = _recorded_runs(db, [image_path], output_root, path_style)
+    if image_path not in found:
+        return None
+    run_id, nodes = found[image_path]
+    saver = next(iter(nodes)) if len(nodes) == 1 else None
+    return RecordedOutput(saver, _recorded_texts(db, run_id))
+
+
+def recorded_output_node(
+    db: Any,
+    image_path: str,
+    output_root: Optional[str],
+    path_style: Optional[str] = None,
+) -> Optional[str]:
+    """The one output node history says wrote ``image_path``, else None."""
+    found = recorded_output(db, image_path, output_root, path_style)
+    return found.saver_id if found is not None else None
+
+
 _LOGGER = logging.getLogger("prompt_manager.run_attribution")
+
+
+def recorded_output_lookup(db: Any, *, close: bool = False) -> Callable[[Any], Any]:
+    """``lookup(path) -> RecordedOutput or None`` for the inspect routes (#386).
+
+    Uses ComfyUI's output folder. Any failure (no history, a locked library)
+    is logged and names no node, so the file is judged from its own metadata.
+    ``close`` closes the calling thread's connection afterwards, for routes
+    that close theirs after reading.
+    """
+
+    def lookup(path: Any) -> Optional[RecordedOutput]:
+        try:
+            return recorded_output(db, str(path), host_output_directory())
+        except Exception:
+            _LOGGER.warning("Recorded run lookup failed", exc_info=True)
+            return None
+        finally:
+            if close:
+                db.model.close()
+
+    return lookup
+
+
 _SEALED_LISTENERS: List[weakref.WeakMethod] = []
 _SEALED_LOCK = threading.Lock()
 

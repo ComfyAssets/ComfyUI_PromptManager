@@ -9,13 +9,23 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from database.run_attribution import stored_run_prompt
+from database.run_attribution import (
+    RecordedOutput,
+    recorded_output,
+    recorded_output_node,
+    stored_run_prompt,
+)
 from tests import test_execution_history_database as history_tests
 from tests.background_stops import close_handler
 from tests.test_api_admin import AdminAPITestCase
-from tests.test_execution_context_database import snapshot
+from tests.test_execution_context_database import known, snapshot
 from tests.test_prompt_attribution import issue_graph, llm_text_graph, make_tracker
-from utils.execution_contexts import ContextBundle, RecipeContext
+from utils.execution_contexts import (
+    ContextBundle,
+    PromptSnapshot,
+    RecipeContext,
+    TextEvidence,
+)
 from utils.execution_outputs import (
     OutputBundle,
     OutputReference,
@@ -38,28 +48,34 @@ class RecordedRuns:
     start = history_tests.HistoryDatabaseTests.start
     finish = history_tests.HistoryDatabaseTests.finish
 
-    def record_run(self, db, output_root, files, positives, item=0, window=None):
+    def record_run(
+        self, db, output_root, files, positives, item=0, window=None, nodes=None
+    ):
         started, finished = window or (now_ms() - 5000, now_ms() + 5000)
         start = self.start(db, item, started)
         db.write_execution_start(start)
         finish = self.finish(start, time=finished)
         db.write_execution_finish(finish)
-        db.write_execution_contexts(
-            start.run_id,
-            start.storage_epoch,
-            ContextBundle(
-                tuple(
-                    RecipeContext(str(4 + i), snapshot(text), snapshot(""), "inferred")
-                    for i, text in enumerate(positives)
+        if positives:  # a run with no PromptManager node records no contexts
+            db.write_execution_contexts(
+                start.run_id,
+                start.storage_epoch,
+                ContextBundle(
+                    tuple(
+                        RecipeContext(
+                            str(4 + i), snapshot(text), snapshot(""), "inferred"
+                        )
+                        for i, text in enumerate(positives)
+                    ),
+                    "complete",
+                    "captured",
                 ),
-                "complete",
-                "captured",
-            ),
-        )
+            )
         root = snapshot_output_roots(STYLE, output_root, output_root).output_key
+        nodes = nodes or ["9"] * len(files)
         references = tuple(
-            OutputReference("9", i, "output", sub, name, STYLE, root)
-            for i, (sub, name) in enumerate(files)
+            OutputReference(node, i, "output", sub, name, STYLE, root)
+            for i, (node, (sub, name)) in enumerate(zip(nodes, files))
         )
         db.write_execution_outputs_for_finish(
             finish, OutputBundle(references, "complete", "reported")
@@ -169,6 +185,163 @@ class TestStoredRunPrompt(RecordedRuns, unittest.TestCase):
         ):
             handler.process_new_image(self.image)
         self.assertEqual(linked, [prompt_id])
+
+
+class TestRecordedOutputNode(RecordedRuns, unittest.TestCase):
+    """#386: the save node history says wrote a file, under the same rules."""
+
+    close_databases = history_tests.HistoryDatabaseTests.close_databases
+    database = history_tests.HistoryDatabaseTests.database
+    setUp = TestStoredRunPrompt.setUp
+
+    def node(self, path=None):
+        return recorded_output_node(self.db, path or self.image, self.output)
+
+    def test_one_run_one_saver_names_the_saver(self):
+        other = os.path.join(self.output, "sub", "img_00002_.png")
+        Path(other).write_bytes(b"png")
+        self.record_run(
+            self.db,
+            self.output,
+            [("sub", "img_00001_.png"), ("sub", "img_00002_.png")],
+            [],
+            nodes=["13", "23"],
+        )
+        self.assertEqual(self.node(), "13")
+        self.assertEqual(self.node(other), "23")
+
+    def test_a_run_without_prompt_manager_contexts_still_names_the_saver(self):
+        self.record_run(self.db, self.output, [("sub", "img_00001_.png")], [])
+        self.assertEqual(self.node(), "9")
+
+    def test_two_runs_reporting_the_file_name_nothing(self):
+        self.record_run(
+            self.db, self.output, [("sub", "img_00001_.png")], [], nodes=["13"]
+        )
+        self.record_run(
+            self.db, self.output, [("sub", "img_00001_.png")], [], item=1, nodes=["23"]
+        )
+        self.assertIsNone(self.node())
+
+    def test_one_run_reporting_the_file_from_two_savers_names_nothing(self):
+        self.record_run(
+            self.db,
+            self.output,
+            [("sub", "img_00001_.png"), ("sub", "img_00001_.png")],
+            [],
+            nodes=["13", "23"],
+        )
+        self.assertIsNone(self.node())
+
+    def test_a_file_written_outside_the_run_names_nothing(self):
+        self.record_run(
+            self.db,
+            self.output,
+            [("sub", "img_00001_.png")],
+            [],
+            window=(1_000_000, 2_000_000),
+        )
+        self.assertIsNone(self.node())
+
+    def test_unrecorded_outside_or_unknown_roots_name_nothing(self):
+        self.record_run(self.db, self.output, [("sub", "img_00001_.png")], [])
+        other = os.path.join(self.output, "sub", "other.png")
+        Path(other).write_bytes(b"png")
+        self.assertIsNone(self.node(other))
+        self.assertIsNone(recorded_output_node(self.db, self.image, None))
+        self.assertIsNone(recorded_output_node(self.db, "", self.output))
+
+    def test_the_run_texts_recorded_at_execution_come_with_the_saver(self):
+        self.record_run(
+            self.db, self.output, [("sub", "img_00001_.png")], ["an llm prompt"]
+        )
+        self.assertEqual(
+            recorded_output(self.db, self.image, self.output),
+            RecordedOutput("9", {"4": {"positive": "an llm prompt", "negative": ""}}),
+        )
+
+    def test_texts_only_inferred_from_the_graph_are_not_recorded(self):
+        start = self.start(self.db, 0, now_ms() - 5000)
+        self.db.write_execution_start(start)
+        finish = self.finish(start, time=now_ms() + 5000)
+        self.db.write_execution_finish(finish)
+        inferred = TextEvidence("graph text", "inferred", "graph_literal", None)
+        self.db.write_execution_contexts(
+            start.run_id,
+            start.storage_epoch,
+            ContextBundle(
+                (
+                    RecipeContext(
+                        "7",
+                        PromptSnapshot(inferred, inferred, known(""), known("")),
+                        snapshot("kept"),
+                        "inferred",
+                    ),
+                ),
+                "complete",
+                "captured",
+            ),
+        )
+        root = snapshot_output_roots(STYLE, self.output, self.output).output_key
+        self.db.write_execution_outputs_for_finish(
+            finish,
+            OutputBundle(
+                (
+                    OutputReference(
+                        "9", 0, "output", "sub", "img_00001_.png", STYLE, root
+                    ),
+                ),
+                "complete",
+                "reported",
+            ),
+        )
+        self.assertEqual(
+            recorded_output(self.db, self.image, self.output).texts,
+            {"7": {"positive": None, "negative": "kept"}},
+        )
+
+    def test_several_savers_name_no_saver_but_keep_the_texts(self):
+        self.record_run(
+            self.db,
+            self.output,
+            [("sub", "img_00001_.png"), ("sub", "img_00001_.png")],
+            ["text"],
+            nodes=["13", "23"],
+        )
+        found = recorded_output(self.db, self.image, self.output)
+        self.assertIsNone(found.saver_id)
+        self.assertEqual(found.texts, {"4": {"positive": "text", "negative": ""}})
+
+    def test_the_route_lookup_logs_a_failure_and_names_nothing(self):
+        from database.run_attribution import recorded_output_lookup
+
+        broken = mock.Mock()
+        broken.model.get_connection.return_value.execute.side_effect = (
+            sqlite3.OperationalError("locked")
+        )
+        broken.get_execution_contexts.side_effect = sqlite3.OperationalError("x")
+        with mock.patch(
+            "database.run_attribution.host_output_directory", return_value=self.output
+        ):
+            self.assertIsNone(recorded_output_lookup(broken)(self.image))
+            with (
+                mock.patch(
+                    "database.run_attribution._recorded_runs",
+                    side_effect=sqlite3.OperationalError("locked"),
+                ),
+                self.assertLogs("prompt_manager.run_attribution", "WARNING"),
+            ):
+                self.assertIsNone(
+                    recorded_output_lookup(broken, close=True)(self.image)
+                )
+        broken.model.close.assert_called_once_with()
+
+    def test_a_library_without_history_tables_names_nothing(self):
+        broken = mock.Mock()
+        broken.model.get_connection.return_value.execute.side_effect = (
+            sqlite3.OperationalError("no such table")
+        )
+        self.assertIsNone(recorded_output_node(broken, self.image, self.output))
 
 
 class TestScanUsesHistory(RecordedRuns, AdminAPITestCase):

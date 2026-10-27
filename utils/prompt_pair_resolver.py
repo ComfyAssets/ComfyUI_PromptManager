@@ -1611,15 +1611,33 @@ class _GraphResolver:
                 for node_id, node in self.graph.items()
                 if self.writes(node, stem)
             ]
-            if len(matches) != 1:
-                return None
-            _, inputs = self.node(matches[0])
+        except (_Unresolved, _Diverging):
+            return None
+        if len(matches) != 1:
+            return None
+        return self.saver_walk(matches[0])
+
+    def recorded_saver_stages(self, node_id: str) -> Optional[list]:
+        """The candidate samplers of the save node recorded history names (#386).
+
+        The node is walked exactly like a file-name match. A node the graph
+        lacks, a failing walk or no candidate sampler is ``None``: unanchored.
+        """
+        if not isinstance(self.graph.get(node_id), dict):
+            return None
+        self.budget.reset(self.per_candidate_visits)
+        return self.saver_walk(node_id)
+
+    def saver_walk(self, saver_id: str) -> Optional[list]:
+        """The listed samplers in one saver's linked inputs' ancestry, or None."""
+        try:
+            _, inputs = self.node(saver_id)
             values = [
                 value
                 for name, value in inputs.items()
                 if name != "filename_prefix" and _link(value)
             ]
-            found = self.stages_from(matches[0], values)
+            found = self.stages_from(saver_id, values)
         except (_Unresolved, _Diverging):
             return None
         candidates = [
@@ -2256,6 +2274,7 @@ def resolve_prompt_pair(
     max_depth: Optional[int] = None,
     max_text_length: Optional[int] = None,
     file_name: Optional[str] = None,
+    recorded_saver_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve parsed metadata; a present API graph is authoritative over text.
 
@@ -2268,9 +2287,14 @@ def resolve_prompt_pair(
     ``profile`` selects the bounds; explicit ``max_*`` keywords override it.
     ``file_name`` (inspection only, unanchored) anchors on the one saver that
     wrote that file (``_GraphResolver.saver_stages``) when exactly one matches.
+    ``recorded_saver_id`` (inspection only, unanchored) is the save node that
+    recorded history says wrote the file (#386); it is tried before the file
+    name, and a node that yields no candidate sampler anchors nothing.
     """
     profile = _profile_with(profile, max_visits, max_depth, max_text_length)
-    result = _resolve(metadata, output_node_id, adapters, profile, file_name)
+    result = _resolve(
+        metadata, output_node_id, adapters, profile, file_name, recorded_saver_id
+    )
     return _legacy_result(result) if profile.legacy else result
 
 
@@ -2324,6 +2348,7 @@ def _resolve(
     adapters: Optional[Mapping[Tuple[str, int], OutputAdapter]],
     profile: ResolverProfile,
     file_name: Optional[str] = None,
+    recorded_saver_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(metadata, dict) or not metadata:
         return _result("absent", reason="No parsed prompt metadata")
@@ -2379,11 +2404,11 @@ def _resolve(
                 "unresolved", reason=str(error), reason_code=error.code, node=error.node
             )
     else:
-        anchored = (
-            resolver.saver_stages(file_name)
-            if semantics is not None and file_name is not None
-            else None
-        )
+        anchored = None
+        if semantics is not None and recorded_saver_id is not None:
+            anchored = resolver.recorded_saver_stages(str(recorded_saver_id))
+        if anchored is None and semantics is not None and file_name is not None:
+            anchored = resolver.saver_stages(file_name)
         sampler_ids = anchored or [
             node_id
             for node_id, node in normalized.items()

@@ -185,6 +185,21 @@ test('legacy fill applies to local records', async () => {
     assert.notEqual(zeroed.prompts.positive.text, '');
 });
 
+test('a branch named by recorded run history shows the Recorded run badge', async () => {
+    // #386: the server labels sides whose save node recorded history named; Execution recorded stays stronger.
+    const base = await localRecord(new File([fs.readFileSync(new URL('f09.png', PARITY))], 'f09.png'));
+    const recorded = {...base, prompts:{positive:{...base.prompts.positive, source:'recorded-run'}, negative:{...base.prompts.negative, source:'recorded-run'}}};
+    let view = renderFull(recorded);
+    try {
+        assert.deepEqual(view.texts(n => n.className === 'chip blue'), ['Recorded run']);
+        assert.ok(view.texts(n => n.tagName === 'p').includes('Prompt evidence: recorded run'));
+    } finally { view.done(); }
+    view = renderFull({...recorded, prompts:{...recorded.prompts, negative:{...recorded.prompts.negative, source:'execution'}}});
+    try {
+        assert.deepEqual(view.texts(n => n.className === 'chip blue'), ['Execution recorded']);
+    } finally { view.done(); }
+});
+
 // #249 PR C Task C3 (D88): one chip row, the file's current image tags first, then D21's linked tags not already shown.
 function tagged(imageTags, library = {status:'linked', tags:['Minimal', 'warm_light', 'editorial'], tags_scope:'positive'}) {
     return {...record(), imageTags, library};

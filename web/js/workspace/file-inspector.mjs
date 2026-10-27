@@ -158,8 +158,8 @@ function generationFacts(record, listClass, noteClass) {
 }
 // D21: the panel badge names the strongest resolved prompt source; any other source shows no badge.
 // A prompt that left out a run-time PromptManager part (D125) or a later stage's added conditioning (D126) is still
-// inferred from the workflow.
-const EVIDENCE_BADGES = [['execution', 'Execution recorded'], ['graph-inferred', 'Workflow inferred'], ['runtime-parts-omitted', 'Workflow inferred'],
+// inferred from the workflow. "Recorded run" (#386): recorded run history named the save node that wrote the file.
+const EVIDENCE_BADGES = [['execution', 'Execution recorded'], ['recorded-run', 'Recorded run'], ['graph-inferred', 'Workflow inferred'], ['runtime-parts-omitted', 'Workflow inferred'],
     ['added-conditioning', 'Workflow inferred'], ['runtime-parts-omitted-and-added-conditioning', 'Workflow inferred'], ['embedded-parameters', 'Embedded parameters']];
 function evidenceBadge(prompts) {
     const sources = new Set(Object.values(prompts).filter(role => role?.status === 'resolved').map(role => role.source));

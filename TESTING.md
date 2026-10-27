@@ -794,6 +794,22 @@ unattributed stage, when it is a plain first stage: not a detailer, no prompt ov
 set, and no listed sampler in its own latent ancestry (else it stays unattributed) (`tests/test_resolver_saver_anchor.py`, shapes in
 `tests/saver_anchor_graphs.py` from the maintainer's `gpu_unlock_bench`, dataset and
 ANIMA runs; browser parity through the `anchor-*` cases, which carry `__file_name`).
+Recorded run history (#386): both inspect routes (Images and a history occurrence)
+ask `database.run_attribution.recorded_output` inside the file's stat window. It
+answers only for a file that exactly one recorded run reported and that was written
+during that run (the #342 rules): the one output node that run reported it from (none
+when several did) and, per sampler anchor, the effective texts PromptManager recorded
+at execution (a role only inferred from the graph is none). Only when the file alone
+leaves the prompt open (`ambiguous` or `unresolved`) the inspector resolves again
+anchored on that node (`recorded_saver_id`, walked like a file-name match), and keeps
+that result only when it names the positive (resolved, or a guider with no
+negative); its `graph-inferred` sides read `recorded-run` ("Recorded run" badge).
+Still open at one named sampler whose positive text was recorded (a language
+model's output feeding PromptManager), the recorded texts show as `execution`. A
+result the file resolves alone never changes; a lookup failure is logged and judges
+the file alone; local Inspect and ingestion are unchanged
+(`tests/test_recorded_saver_anchor.py`, `tests/test_run_attribution.py`,
+`tests/test_api_history_outputs.py`).
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240
