@@ -48,5 +48,20 @@ class TestFolderTrash(unittest.TestCase):
         close_trash(self.root)  # idempotent
 
 
+class TestFolderTrashAfterClose(unittest.TestCase):
+    def test_a_replacement_after_close_deletes_in_place_without_a_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            close_trash(root)
+            folder = root / "output"
+            folder.mkdir()
+            (folder / "late.png").write_bytes(b"png")
+            replace_folder(folder)
+            self.assertEqual(list(folder.iterdir()), [])
+            self.assertFalse((root / TRASH_NAME).exists())
+            names = [t.name for t in threading.enumerate()]
+            self.assertNotIn("pm-reset-trash", names)
+
+
 if __name__ == "__main__":
     unittest.main()

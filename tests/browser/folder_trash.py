@@ -46,6 +46,9 @@ class _Trash:
 
 
 _trashes: dict[Path, _Trash] = {}
+# Trash folders whose server has cleaned up: a reset still running then
+# deletes in place instead of starting a thread nobody would stop.
+_closed: set[Path] = set()
 _lock = threading.Lock()
 
 
@@ -56,15 +59,20 @@ def replace_folder(folder: Path) -> None:
         directory = folder.parent / TRASH_NAME
         with _lock:
             trash = _trashes.get(directory)
-            if trash is None:
+            if trash is None and directory not in _closed:
                 trash = _trashes[directory] = _Trash(directory)
-            trash.discard(folder)
+            if trash is not None:
+                trash.discard(folder)
+        if folder.exists():
+            shutil.rmtree(folder)
     folder.mkdir()
 
 
 def close_trash(parent: Path) -> None:
     """Stop deleting under ``parent``'s trash and remove it (blocking)."""
+    directory = Path(parent) / TRASH_NAME
     with _lock:
-        trash = _trashes.pop(Path(parent) / TRASH_NAME, None)
+        _closed.add(directory)
+        trash = _trashes.pop(directory, None)
     if trash is not None:
         trash.close()

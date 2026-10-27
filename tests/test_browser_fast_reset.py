@@ -255,6 +255,21 @@ class TestScratchSeeder(unittest.TestCase):
         seeder.close()
         self.assertEqual(list(memory.iterdir()), [])
 
+    def test_a_full_memory_root_puts_the_scratch_on_disk(self):
+        memory = self.root / "memory"
+        memory.mkdir()
+        seeder = ScratchSeeder(self.api, self.root / "fallback", memory_root=memory)
+        self.addCleanup(seeder.close)
+        full = mock.patch.object(
+            fast_reset.shutil,
+            "disk_usage",
+            return_value=types.SimpleNamespace(free=fast_reset.MEMORY_FREE_BYTES - 1),
+        )
+        with full:
+            seeder.run(reseed)
+        self.assertEqual(list(memory.iterdir()), [])
+        self.assertTrue((self.root / "fallback" / "seed.db").exists())
+
     def test_close_releases_the_scratch_files(self):
         self.seeder.run(reseed)
         self.seeder.close()

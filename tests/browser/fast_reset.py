@@ -36,6 +36,11 @@ SEED_ON_LIVE_ENV = "PM_TEST_SEED_ON_LIVE"
 SCRATCH_SCHEMA = "reset_seed"
 # Linux's shared-memory tmpfs (present in the Playwright image and on runners).
 MEMORY_ROOT = Path("/dev/shm")
+# The largest fixtures' scratch copy is about 8 MB (database plus a WAL that
+# autocheckpoints near 4 MB). Docker's default /dev/shm is 64 MB, shared with
+# the browsers and the other workers; with less free than this, the scratch
+# copy goes on disk instead.
+MEMORY_FREE_BYTES = 32 * 1024 * 1024
 
 
 def _quote(name: str) -> str:
@@ -225,7 +230,12 @@ class ScratchSeeder:
         kernel is writing back the pages they rewrite.
         """
         root = self._memory_root
-        if root is not None and root.is_dir() and os.access(root, os.W_OK):
+        if (
+            root is not None
+            and root.is_dir()
+            and os.access(root, os.W_OK)
+            and shutil.disk_usage(root).free >= MEMORY_FREE_BYTES
+        ):
             return Path(tempfile.mkdtemp(prefix="pm-reset-", dir=root))
         self._fallback.mkdir(parents=True, exist_ok=True)
         return self._fallback
