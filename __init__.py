@@ -22,22 +22,18 @@ Features:
 - Comprehensive logging and diagnostics
 """
 
-import re
 from pathlib import Path
 
 
 def get_version():
-    """Parse version from pyproject.toml"""
+    """Parse version from pyproject.toml (``utils/version.py``)."""
+    from .utils.version import project_version
+
     try:
-        pyproject_path = Path(__file__).parent / "pyproject.toml"
-        if pyproject_path.exists():
-            content = pyproject_path.read_text()
-            match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
-            if match:
-                return match.group(1)
+        root = Path(__file__).parent
     except Exception:
-        pass
-    return "unknown"
+        return "unknown"
+    return project_version(root)
 
 
 from .prompt_manager import (  # noqa: E402

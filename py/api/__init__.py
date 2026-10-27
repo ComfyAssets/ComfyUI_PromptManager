@@ -6,6 +6,7 @@ Split into domain-specific mixins for maintainability:
 - AdminRoutesMixin: duplicates, stats, settings, diagnostics, maintenance, backup, scan
 - LoggingRoutesMixin: log management endpoints
 - LogCleanupMixin: the reviewed rotated-log cleanup (a maintenance plan)
+- DiagnosticsReportMixin: the shareable diagnostic report, without secrets or paths
 - AutotagRoutesMixin: auto-tagging model management and tagging
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 - ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
@@ -67,6 +68,7 @@ from .maintenance_plans import PlanStore
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
 from .log_cleanup import LogCleanupMixin
+from .diagnostics_report import DiagnosticsReportMixin
 from .autotag_routes import AutotagRoutesMixin
 from .lora_integration import LoraIntegrationMixin
 from .lora_import_routes import LoraImportRoutesMixin
@@ -326,6 +328,7 @@ class PromptManagerAPI(
     DuplicateFilesMixin,
     LoggingRoutesMixin,
     LogCleanupMixin,
+    DiagnosticsReportMixin,
     AutotagRoutesMixin,
     LoraIntegrationMixin,
     LoraImportRoutesMixin,
@@ -681,6 +684,7 @@ class PromptManagerAPI(
         self._register_settings_routes(routes)
         self._register_job_routes(routes)
         self._register_system_routes(routes)
+        self._register_diagnostics_report_routes(routes)
         self._register_library_location_routes(routes)
         self._register_maintenance_routes(routes)
         self._register_backup_restore_routes(routes)
