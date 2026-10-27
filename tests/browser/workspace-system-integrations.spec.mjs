@@ -339,13 +339,17 @@ test('Review import shows replacement, blocked items and network effects with th
         await expect(dialog(page).locator('#modal-body > h3')).toHaveText('LoRA reference data');
         expect(previews).toEqual([{}]);
         expect(await gridOf(page)).toEqual([
+            ['LoraManager', 'environment settings · alongside storage · library default'],
             ['Scope', 'Replace 2 imported prompts with 3 LoRAs'],
-            ['Found', '3 metadata files · 3 readable'],
+            ['Found', '3 metadata files · 3 LoRAs · 0 with local images'],
             ['Protected', 'Nothing is protected'],
             ['Network', 'Downloads up to 3 example images from CivitAI'],
             ['Backup', 'Create and verify before changes (browser.db.backup_<date and time>)'],
             ['Media on disk', 'No files are removed; image links are replaced'],
         ]);
+        // #355: the settings file the server read is the LoraManager row's hover title.
+        await expect(dialog(page).locator('dl.meta-grid > div').first().locator('dd'))
+            .toHaveAttribute('title', /lora-manager-settings[\/\\]settings\.json$/);
         await expect(dialog(page).locator('details > summary')).toHaveText('LoRAs found (3)');
         await expect(dialog(page).locator('.notice h3')).toHaveText('Back up the database first (recommended)');
         await expect(dialog(page).locator('p.small').last()).toContainText('stay in the image cache');
@@ -382,12 +386,28 @@ test('saved pairs block the import: the review explains it and offers only Close
     await enable(page);
     await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
     // gridOf reads once; poll until the review has rendered its rows.
-    await expect.poll(async () => (await gridOf(page))[2]).toEqual(['Protected', '1 imported prompt used by saved pairs']);
+    await expect.poll(async () => (await gridOf(page))[3]).toEqual(['Protected', '1 imported prompt used by saved pairs']);
     await expect(dialog(page).locator('p.small')).toHaveText(
         'Delete or change the saved pairs that use these prompts, then review the import again. Nothing was changed.');
     expect(await dialog(page).locator('.dialog-actions button').allTextContents()).toEqual(['Close']);
     await dialog(page).getByRole('button', { name: 'Close', exact: true }).click();
     await expect(dialog(page)).toHaveCount(0);
+});
+
+test('unusable LoraManager settings: the review says why and offers only Close (#355)', async ({ page, request }) => {
+    await lora(request, { previous: 1, settings: 'invalid' });
+    await openIntegrations(page);
+    await enable(page);
+    const before = await serverJson(request, '/__test__/integrations/state');
+    await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
+    await expect.poll(async () => (await gridOf(page))[0])
+        .toEqual(['LoraManager', 'Not usable: the settings file is not valid JSON']);
+    await expect(dialog(page).locator('p.small')).toHaveText(
+        'LoraManager settings: not usable: the settings file is not valid JSON. Nothing was changed.');
+    expect(await dialog(page).locator('.dialog-actions button').allTextContents()).toEqual(['Close']);
+    await dialog(page).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    expect(await serverJson(request, '/__test__/integrations/state')).toEqual(before);
 });
 
 test('a failed import keeps old imports and its job says so', async ({ page, request }) => {

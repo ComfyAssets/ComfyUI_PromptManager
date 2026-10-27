@@ -270,7 +270,8 @@ function mapImportConcept(reference, plan) {
         title: 'Review LoRA import',
         tree: ['h3', 'dl.meta-grid', 'details', 'p.small', 'div.notice', 'div.dialog-actions'],
         heading: { ...reference.heading, text: 'LoRA reference data' },
-        grid: { ...reference.grid, rows: [['Scope', plan.scope.label], ['Found', '2 metadata files · 2 readable'],
+        grid: { ...reference.grid, rows: [['LoraManager', 'environment settings · alongside storage · library default'],
+            ['Scope', plan.scope.label], ['Found', '2 metadata files · 2 LoRAs · 0 with local images'],
             ['Protected', 'Nothing is protected'], ['Network', 'Downloads up to 2 example images from CivitAI'],
             ['Backup', `Create and verify before changes (${plan.backup.destination_label})`],
             ['Media on disk', 'No files are removed; image links are replaced']] },
@@ -312,7 +313,7 @@ async function productionReview(page, request, theme) {
 for (const theme of THEMES) for (const [width, height] of SIZES) {
     test(`LoRA import review matches the concept ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
         await page.setViewportSize({ width, height });
-        await fakeLoraManager(request, { loras: 2, civitai: true });
+        await fakeLoraManager(request, { loras: 2, civitai: true, preview: false });
         const concept = await conceptReview(page, theme);
         expect(concept.tree).toEqual(['p.demo-note', 'h3', 'dl.meta-grid', 'p.small', 'div.dialog-actions']);
         await page.screenshot({ path: testInfo.outputPath(`concept-plan-review-${theme}-${width}.png`) });
@@ -324,15 +325,15 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
 
 test('LoRA import review comparison detects mutations', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
-    await fakeLoraManager(request, { loras: 2, civitai: true });
+    await fakeLoraManager(request, { loras: 2, civitai: true, preview: false });
     const concept = await conceptReview(page, 'dark');
     const { plan } = await productionReview(page, request, 'dark');
     const expected = mapImportConcept(concept, plan);
     const paths = async () => diffInventory(expected, await page.evaluate(measureReview)).map(item => item.path);
     expect(await paths()).toEqual([]);
-    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[3].textContent = 'Downloads'; });
-    expect(await paths()).toEqual(['grid.rows.3.0']);
-    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[3].textContent = 'Network'; });
+    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[4].textContent = 'Downloads'; });
+    expect(await paths()).toEqual(['grid.rows.4.0']);
+    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[4].textContent = 'Network'; });
     const undoGrid = await mutate(page, { css: 'dialog#modal dl.meta-grid { column-gap: 3px; }' });
     expect(await paths()).toEqual(expect.arrayContaining(['grid.columnGap']));
     await undoGrid();
