@@ -88,7 +88,8 @@ class ReviewRecordingMixin:
     def _record_scanned_review(self, media_file, roots, review=None, scanned=None):
         """Record one ambiguous, unlinked scanned file (logged and counted).
 
-        ``scanned`` is the scan's ``(metadata, inspection_resolution)``.
+        ``scanned`` is the scan's ``(metadata, inspection_resolution)``; the
+        resolution is None when the scan did not run the inspection profile.
         """
         try:
             outcome = self._record_review_sync(
@@ -199,7 +200,7 @@ class ReviewRecordingMixin:
         key = _memory_key(locator)
         if state is not None and memory.get(key) == state:
             return None
-        resolution = review_capture.inspection_choice(canonical)
+        resolution = review_capture.inspection_choice(canonical, media_file.name)
         if resolution is not None:
             memory.pop(key, None)
             return canonical, resolution

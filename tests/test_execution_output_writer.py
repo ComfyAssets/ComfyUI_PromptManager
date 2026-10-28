@@ -18,6 +18,7 @@ from utils.execution_output_capture import seal_outputs
 from utils.execution_outputs import snapshot_output_roots
 from utils.execution_history_writer import HistoryWriter
 from tests.history_waits import drain_writer
+from tests.disk_waits import DISK_BOUND_SECONDS
 
 try:
     from tests import test_execution_history_writer as fixtures
@@ -28,11 +29,17 @@ except ImportError:
 # Upper bound a blocked fake write waits for its release. Tests prove ordering
 # with events, so this only caps a failing run and never decides a pass.
 BLOCK_SECONDS = 10
+
+# Saturation tests block the worker while they queue 1023 more items. The
+# block must hold until the test releases it (#346/#352): a 3 s timer let a
+# loaded runner unblock the worker mid-fill and drain it. This is only a hang
+# guard; the test, or cleanup, always sets the release.
+SATURATION_HOLD_SECONDS = 60
+
 # A restore is a full verify/migrate/backup/replace cycle and is bound by the
 # disk: a busy Windows runner took over 10 s (merge queue, #382). Waits that
-# span a restore use this ceiling, which stays under the runner's 120 s hang
-# watchdog, so a real hang still fails with the thread dump.
-RESTORE_SECONDS = 90
+# span a restore use the shared disk-bound hang guard (tests/disk_waits.py).
+RESTORE_SECONDS = DISK_BOUND_SECONDS
 
 
 class OutputWriterTests(fixtures.unittest.TestCase):
@@ -591,7 +598,7 @@ class OutputWriterTests(fixtures.unittest.TestCase):
 
         def write(command):
             entered.set()
-            release.wait(3)
+            release.wait(SATURATION_HOLD_SECONDS)
             return original(command)
 
         with patch.object(self.db, "write_execution_start", write):
