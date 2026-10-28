@@ -201,6 +201,27 @@ class TestSetAndClear(ImageCategoryTestCase):
             data = await self.delete(["a.png"], status=500)
         self.assertNotIn("secret", json.dumps(data))
 
+    async def test_a_symlinked_output_folder_keys_like_its_favorites(self):
+        """A detected output folder can be a symlink: keys use its real path."""
+        real = self.comfy_dir / "real-output"
+        make_png(real / "a.png")
+        link = self.comfy_dir / "linked-output"
+        self._make_symlink(real, link, target_is_directory=True)
+        self.api._get_all_output_dirs = lambda: [link]
+        data = await self.put(["a.png"], "Scans")
+        self.assertEqual(data["updated"], 1)
+        self.assertEqual(self.rows(), [(_favorite_root_key(link), "a.png", "Scans")])
+        self.assertEqual((await self.listed())["categories"], ["Scans"])
+        self.assertEqual((await self.delete(["a.png"]))["cleared"], 1)
+
+    async def test_lone_surrogates_are_400_not_500(self):
+        make_png(self.output_dir / "a.png")
+        await self.send(
+            "PUT", {"items": [self.target("a.png")], "category": "x\ud800"}, 400
+        )
+        await self.send("DELETE", {"items": [self.target("a\ud800.png")]}, 400)
+        self.assertEqual(self.rows(), [])
+
     async def test_delete_category_never_reaches_delete_image(self):
         make_png(self.output_dir / "a.png")
         calls = []
@@ -301,3 +322,54 @@ class TestCategoryList(ImageCategoryTestCase):
             data = await self.listed(status=500)
         self.assertEqual(data["error"], "Image categories could not be read.")
         self.assertNotIn("secret", json.dumps(data))
+
+
+class TestAllMatchingFilter(ImageCategoryTestCase):
+    """#392 "Select all N matching": the listing filter, resolved now."""
+
+    async def test_filter_sets_and_clears_every_match(self):
+        for name in ("bulk/a.png", "bulk/b.png", "other/c.png"):
+            make_png(self.output_dir / name)
+        data = await self.send(
+            "PUT", {"filter": {"subfolder": "bulk"}, "category": "Scans"}
+        )
+        self.assertEqual((data["updated"], data["not_found"]), (2, 0))
+        self.assertEqual(
+            sorted(row[1] for row in self.rows()), ["bulk/a.png", "bulk/b.png"]
+        )
+        data = await self.send("DELETE", {"filter": {"subfolder": "bulk"}})
+        self.assertEqual(data["cleared"], 2)
+        data = await self.send(
+            "PUT", {"filter": {"subfolder": "none"}, "category": "Scans"}, 404
+        )
+        self.assertEqual(data["code"], "files-not-found")
+        self.assertEqual(
+            (await self.send("DELETE", {"filter": {"q": "zz"}}))["cleared"], 0
+        )
+
+    async def test_filter_refusals(self):
+        make_png(self.output_dir / "a.png")
+        item = self.target("a.png")
+        for body in (
+            {"filter": {}, "items": [item], "category": "x"},
+            {"filter": {"unknown": "1"}, "category": "x"},
+            {"filter": "q=a", "category": "x"},
+            {"filter": {"root": "0", "root_scope": "nothex"}, "category": "x"},
+        ):
+            with self.subTest(body=body):
+                await self.send("PUT", body, 400)
+        data = await self.send(
+            "PUT",
+            {"filter": {"root": "0", "root_scope": "0" * 64}, "category": "x"},
+            409,
+        )
+        self.assertEqual(data["code"], "source-changed")
+        self.assertEqual(self.rows(), [])
+
+    async def test_more_than_500_matching_is_refused(self):
+        for number in range(501):
+            make_png(self.output_dir / f"many/{number:03}.png", size=(1, 1))
+        data = await self.send("PUT", {"filter": {}, "category": "x"}, 400)
+        self.assertEqual(data["code"], "too-many-images")
+        self.assertEqual(data["error"], "Select at most 500 images.")
+        self.assertEqual(self.rows(), [])

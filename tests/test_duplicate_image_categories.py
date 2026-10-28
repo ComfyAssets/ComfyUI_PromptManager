@@ -134,3 +134,18 @@ class TestDuplicateCleanupKeepsCategories(DuplicateFilesTestCase):
         await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
         self.assertFalse((self.output_dir / "sub" / "b.png").exists())
         self.assertEqual(self.api.db.image_category(sub_key, "a.png"), "Portraits")
+
+    async def test_a_symlinked_output_folder_still_moves_the_category(self):
+        link = self.output_dir.parent / "linked-output"
+        try:
+            os.symlink(self.output_dir, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available")
+        self.trio()
+        with patch.object(self.api, "_get_all_output_dirs", return_value=[link]):
+            key = image_category_key([link], link / "b.png")
+            self.api.db.set_image_categories([key], "Portraits")
+            await self.run_cleanup()
+            kept = image_category_key([link], link / "a.png")
+        self.assertFalse((self.output_dir / "b.png").exists())
+        self.assertEqual(self.api.db.image_category(*kept), "Portraits")
