@@ -4117,7 +4117,9 @@ opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a ca
 only when its row above is `covered`. One row per removed capability: Capability is the
 exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
 Removed methods list what went (`—` for none), and Native test copies that row's Test
-cell. An id that stays on a System link is not listed, only its handler.
+cell. An id that stays on a System link is not listed, only its handler. The gallery keeps
+its Default View Mode in Page options: System › Appearance's Default layout writes the
+workspace's own `workspaceLayout`, and nothing native writes the legacy `defaultViewMode`.
 
 `tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
 `covered` or copies another test, when an id or method is listed twice for one page, or
@@ -4150,7 +4152,7 @@ legacy page workflows), not by this check.
 | Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
 | Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
 | Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
-| Default view mode, image quality | gallery | `#imageQualitySelect`, `#defaultViewModeSelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
+| Default view mode, image quality | gallery | `#imageQualitySelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
 | Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
 | Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
 | Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |

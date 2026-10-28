@@ -227,7 +227,7 @@ test('Page options keeps the page-only settings admin', async ({ page, request }
 
 test('Page options keeps the page-only settings gallery', async ({ page }) => {
     // Native Appearance keys and the startup prompt's own keys are in the shared object before the page opens.
-    const stored = { defaultViewMode: 'list', imageQuality: 'high', showImageInfo: false, videoMute: false,
+    const stored = { imageQuality: 'high', showImageInfo: false, videoMute: false,
         autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
         checkThumbnailsAtStartup: false };
     await page.addInitScript(value => {
@@ -244,15 +244,16 @@ test('Page options keeps the page-only settings gallery', async ({ page }) => {
     await expect(dialog.locator('h3')).toHaveText('Page options');
     // Exactly the page-only settings (G5).
     expect(await dialog.locator('input, select, textarea').evaluateAll(fields => fields.map(field => field.id))).toEqual([
-        'checkThumbnailsAtStartup', 'lazyLoadingToggle', 'defaultLimitSelect', 'gridColumnsSelect', 'infiniteScrollToggle',
-        'debugModeToggle', 'apiTimeoutInput']);
+        'checkThumbnailsAtStartup', 'lazyLoadingToggle', 'defaultViewModeSelect', 'defaultLimitSelect', 'gridColumnsSelect',
+        'infiniteScrollToggle', 'debugModeToggle', 'apiTimeoutInput']);
     await page.locator('#defaultLimitSelect').selectOption('50');
+    await page.locator('#defaultViewModeSelect').selectOption('list');
     await page.locator('#debugModeToggle').check();
     await page.locator('#saveSettingsBtn').click();
     await expect(dialog).toBeHidden();
     const read = () => page.evaluate(() => JSON.parse(localStorage.getItem('gallerySettings')));
     let saved = await read();
-    expect(saved).toMatchObject({ ...stored, defaultLimit: 50, debugMode: true });
+    expect(saved).toMatchObject({ ...stored, defaultLimit: 50, debugMode: true, defaultViewMode: 'list' });
 
     // Reset puts back only the page options' defaults; the Appearance and startup-prompt keys stay.
     await openPageOptions(page);
@@ -261,7 +262,7 @@ test('Page options keeps the page-only settings gallery', async ({ page }) => {
     await expect(page.getByText('Page options reset to defaults')).toBeVisible();
     await expect(page.locator('#defaultLimitSelect')).toHaveValue('100');
     saved = await read();
-    expect(saved).toMatchObject({ defaultViewMode: 'list', imageQuality: 'high', showImageInfo: false, videoMute: false,
+    expect(saved).toMatchObject({ defaultViewMode: 'grid', imageQuality: 'high', showImageInfo: false, videoMute: false,
         autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
         defaultLimit: 100, debugMode: false, checkThumbnailsAtStartup: true, lazyLoading: true, gridColumns: 8,
         infiniteScroll: false, apiTimeout: 30 });

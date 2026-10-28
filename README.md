@@ -330,9 +330,9 @@ The comprehensive gallery system provides complete access to all your ComfyUI ou
 
 #### **⚙️ Gallery Settings**
 
-The gallery's **Settings** opens System › Appearance in a new tab: default layout, image quality, media info on cards, sidebar, video autoplay/mute/loop and metadata loading are set there and apply to this page too.
+The gallery's **Settings** opens System › Appearance in a new tab: image quality, details on cards, collapsed viewer details, video autoplay/mute/loop, metadata loading and file paths are set there and apply to this page too.
 
-The gallery's **Page options** keep the page's own settings: the thumbnail check at startup, lazy loading, items per page, grid columns, infinite scrolling, debug mode and API timeout. Reset puts back only these.
+The gallery's **Page options** keep the page's own settings: the thumbnail check at startup, lazy loading, default view mode, items per page, grid columns, infinite scrolling, debug mode and API timeout. Reset puts back only these.
 
 Thumbnail generation, the server thumbnail and browser cache clears, refreshing the file listing and finding duplicate images are in System › Sources & scans and System › Maintenance (Page options links both); each runs as an Activity job you can follow after closing the page.
 
@@ -496,7 +496,7 @@ A CivitAI API key is **required if your library contains NSFW LoRAs** — CivitA
 
 To add your key:
 1. Get your API key from [civitai.com/user/account](https://civitai.com/user/account)
-2. Paste it into the **CivitAI API Key** field in System › Integrations
+2. Paste it into the **CivitAI API key** field in System › Integrations
 3. Save and re-import to download any previously skipped images
 
 The key is sent only over HTTPS to CivitAI's own hosts. CivitAI serves images through a redirect to its storage host; PromptManager follows such a redirect only over HTTPS to a host on CivitAI's own `civitai.com`, `civitai.red` or `civitai.green` domains, at most three hops, and never sends the key with it. When downloads fail, the import's status line says how many; when none could be downloaded, it starts with a warning. The server log has one warning per failed image with the reason (HTTP status, refused redirect, size cap, unreadable image, timeout or network error).
@@ -522,7 +522,7 @@ Keep your database optimized in System › Maintenance (the admin dashboard's **
 - **Missing-file links**: remove image records for missing files
 - **Unused prompt components**: remove prompts nothing uses
 - **Run health checks**: verify database integrity and relationships (the Health report)
-- **Database statistics**: System › Diagnostics & logs and the Overview's Statistics
+- **Database size and prompt counts**: System › Diagnostics & logs (Database) and the Overview's Statistics
 
 Each operation opens a review that shows what it will change and the safety backup it takes, then runs as an Activity job.
 

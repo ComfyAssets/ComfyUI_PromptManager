@@ -2,8 +2,9 @@
             // A Cancel on a thumbnail job another tab or System started (#249 System S5, review I1).
             static THUMBNAILS_STOPPED_FOLLOWING = 'Stopped following thumbnail generation started elsewhere; it keeps running in Activity';
             // The page-only settings Page options edits and resets (#330 S13-13); System › Appearance owns the others.
-            static PAGE_OPTION_KEYS = Object.freeze(['checkThumbnailsAtStartup', 'lazyLoading', 'defaultLimit', 'gridColumns',
-                'infiniteScroll', 'debugMode', 'apiTimeout']);
+            // The default view stays here: System › Appearance's Default layout is the workspace's own key (workspaceLayout).
+            static PAGE_OPTION_KEYS = Object.freeze(['checkThumbnailsAtStartup', 'lazyLoading', 'defaultViewMode', 'defaultLimit',
+                'gridColumns', 'infiniteScroll', 'debugMode', 'apiTimeout']);
 
             constructor() {
                 this.images = [];
@@ -987,10 +988,7 @@
                     video.muted = !video.muted;
                     muteBtn.textContent = video.muted ? '🔇' : '🔊';
                     
-                    // Save setting
-                    const newSettings = this.getSettings();
-                    newSettings.videoMute = video.muted;
-                    this.saveSettings(newSettings);
+                    this.storeSetting('videoMute', video.muted);
                 });
                 
                 // Loop toggle
@@ -998,10 +996,7 @@
                     video.loop = !video.loop;
                     loopBtn.style.opacity = video.loop ? '1' : '0.5';
                     
-                    // Save setting
-                    const newSettings = this.getSettings();
-                    newSettings.videoLoop = video.loop;
-                    this.saveSettings(newSettings);
+                    this.storeSetting('videoLoop', video.loop);
                 });
                 
                 // Set initial states
@@ -1714,6 +1709,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const settings = this.getSettings();
                 document.getElementById('checkThumbnailsAtStartup').checked = settings.checkThumbnailsAtStartup;
                 document.getElementById('lazyLoadingToggle').checked = settings.lazyLoading;
+                document.getElementById('defaultViewModeSelect').value = settings.defaultViewMode;
                 document.getElementById('defaultLimitSelect').value = settings.defaultLimit;
                 document.getElementById('gridColumnsSelect').value = settings.gridColumns;
                 document.getElementById('infiniteScrollToggle').checked = settings.infiniteScroll;
@@ -1739,6 +1735,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     ...this.getSettings(),
                     checkThumbnailsAtStartup: document.getElementById('checkThumbnailsAtStartup').checked,
                     lazyLoading: document.getElementById('lazyLoadingToggle').checked,
+                    defaultViewMode: document.getElementById('defaultViewModeSelect').value,
                     defaultLimit: parseInt(document.getElementById('defaultLimitSelect').value),
                     gridColumns: parseInt(document.getElementById('gridColumnsSelect').value),
                     infiniteScroll: document.getElementById('infiniteScrollToggle').checked,
@@ -1748,7 +1745,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
 
                 try {
                     localStorage.setItem('gallerySettings', JSON.stringify(settings));
-                    this.showNotification('Settings saved successfully!', 'success');
+                    this.showNotification('Page options saved', 'success');
                     this.hideSettings();
                     
                     // Apply some settings immediately
@@ -1756,6 +1753,18 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 } catch (e) {
                     console.error('Failed to save settings:', e);
                     this.showNotification('Failed to save settings', 'error');
+                }
+            }
+
+            /**
+             * Remembers one viewer choice (mute, loop) in the shared `gallerySettings`, keeping every other key; unlike
+             * Save it never reads the Page options dialog.
+             */
+            storeSetting(key, value) {
+                try {
+                    localStorage.setItem('gallerySettings', JSON.stringify({ ...this.getSettings(), [key]: value }));
+                } catch (e) {
+                    console.warn('Failed to remember the viewer setting:', e);
                 }
             }
 
@@ -3004,7 +3013,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const remaining = Number(result && result.remaining) || 0;
                 if (remaining > 0) {
                     this.showNotification(
-                        `${remaining} thumbnails still pending. Run "Generate Thumbnails" again to continue.`,
+                        `${remaining} thumbnails still pending. Generate the rest from System › Sources & scans.`,
                         'warning'
                     );
                     return;

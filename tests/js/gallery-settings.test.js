@@ -76,7 +76,7 @@ test("the workspace keys have their own defaults and validation", () => {
     assert.equal(normalizeGallerySettings({ defaultViewMode: "masonry" }).defaultViewMode, "grid");
 });
 
-// #330 S13: the legacy gallery's Page options edit only the page-only keys; System › Appearance owns the rest, so a Save
+// #330 S13: the legacy gallery's Page options edit only the page-only keys (and its default view, see PAGE_OPTION_KEYS); System › Appearance owns the rest, so a Save
 // or a Reset from the legacy page keeps every other stored key.
 function legacyGallery(stored, controls, extra = {}) {
     const fs = require("node:fs");
@@ -101,24 +101,26 @@ function legacyGallery(stored, controls, extra = {}) {
 }
 
 const PAGE_OPTION_CONTROLS = () => ({
-    checkThumbnailsAtStartup: { checked: false }, lazyLoadingToggle: { checked: false }, defaultLimitSelect: { value: "200" },
+    checkThumbnailsAtStartup: { checked: false }, lazyLoadingToggle: { checked: false }, defaultViewModeSelect: { value: "list" },
+    defaultLimitSelect: { value: "200" },
     gridColumnsSelect: { value: "6" }, infiniteScrollToggle: { checked: true }, debugModeToggle: { checked: true },
     apiTimeoutInput: { value: "45" },
 });
 
 test("a legacy gallery Save keeps the workspace keys and every other stored key", () => {
     const { manager, saved } = legacyGallery({ workspaceLayout: "masonry", workspaceDensity: "compact", someOtherTool: 1,
-        defaultViewMode: "list", showImageInfo: false, videoMute: false, thumbnailPromptDismissed: "sig" }, PAGE_OPTION_CONTROLS());
+        imageQuality: "high", showImageInfo: false, videoMute: false, thumbnailPromptDismissed: "sig" }, PAGE_OPTION_CONTROLS());
     manager.saveSettings();
     const result = saved();
     assert.equal(result.workspaceLayout, "masonry");
     assert.equal(result.workspaceDensity, "compact");
     assert.equal(result.someOtherTool, 1);
-    assert.equal(result.defaultViewMode, "list");
+    assert.equal(result.imageQuality, "high");
     assert.equal(result.showImageInfo, false);
     assert.equal(result.videoMute, false);
     assert.equal(result.thumbnailPromptDismissed, "sig");
-    // The page-only keys come from the dialog.
+    // The page-only keys come from the dialog (the default view stays a page option: System's layout is the workspace's).
+    assert.equal(result.defaultViewMode, "list");
     assert.equal(result.lazyLoading, false);
     assert.equal(result.debugMode, true);
     assert.equal(result.checkThumbnailsAtStartup, false);
@@ -130,19 +132,19 @@ test("a legacy gallery Save keeps the workspace keys and every other stored key"
 
 test("a legacy gallery Reset restores only the page options and keeps every other stored key", () => {
     const controls = PAGE_OPTION_CONTROLS();
-    const { manager, saved, calls } = legacyGallery({ workspaceLayout: "masonry", defaultViewMode: "list", videoMute: false,
+    const { manager, saved, calls } = legacyGallery({ workspaceLayout: "masonry", imageQuality: "high", videoMute: false,
         thumbnailPromptDismissed: "sig", thumbnailsGenerated: true, lazyLoading: false, debugMode: true, defaultLimit: 200,
-        gridColumns: 6, infiniteScroll: true, apiTimeout: 45, checkThumbnailsAtStartup: false }, controls,
+        gridColumns: 6, infiniteScroll: true, apiTimeout: 45, checkThumbnailsAtStartup: false, defaultViewMode: "list" }, controls,
     { confirm: message => (calls.push(["confirm", message]), true) });
     manager.resetSettings();
     const result = saved();
     const { DEFAULT_SETTINGS } = require("../../web/js/gallery-settings.js");
-    for (const key of ["checkThumbnailsAtStartup", "lazyLoading", "defaultLimit", "gridColumns", "infiniteScroll", "debugMode",
-        "apiTimeout"]) {
+    for (const key of ["checkThumbnailsAtStartup", "lazyLoading", "defaultViewMode", "defaultLimit", "gridColumns",
+        "infiniteScroll", "debugMode", "apiTimeout"]) {
         assert.equal(result[key], DEFAULT_SETTINGS[key], key);
     }
     assert.equal(result.workspaceLayout, "masonry");
-    assert.equal(result.defaultViewMode, "list");
+    assert.equal(result.imageQuality, "high");
     assert.equal(result.videoMute, false);
     assert.equal(result.thumbnailPromptDismissed, "sig");
     assert.equal(result.thumbnailsGenerated, true);
@@ -151,4 +153,14 @@ test("a legacy gallery Reset restores only the page options and keeps every othe
     assert.equal(controls.apiTimeoutInput.value, DEFAULT_SETTINGS.apiTimeout);
     assert.deepEqual(calls, [["confirm", "Reset these page options to their defaults?"], ["apply", DEFAULT_SETTINGS.lazyLoading],
         ["success", "Page options reset to defaults"]]);
+});
+
+test("a viewer mute or loop click remembers only that key and never reads the Page options dialog", () => {
+    const { manager, saved, calls } = legacyGallery({ defaultLimit: 200, lazyLoading: false, videoMute: true }, {});
+    manager.storeSetting("videoMute", false);
+    const result = saved();
+    assert.equal(result.videoMute, false);
+    assert.equal(result.defaultLimit, 200);
+    assert.equal(result.lazyLoading, false);
+    assert.deepEqual(calls, []);
 });
