@@ -44,7 +44,7 @@ function el(tag, text, className) {
  * matching", whose actions send that filter to the server.
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
-    getListing, getFilter, getCategories = () => [], checked: initial = Object.freeze(new Set()) }) {
+    getListing, getFilter, getCategories, checked: initial = Object.freeze(new Set()) }) {
     let checked = initial;
     let exporting = false, categorizing = false;
     // D135: the range anchor, "all N matching" mode, touch selection mode and a pending Shift+click on a checkbox.
