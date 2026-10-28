@@ -221,7 +221,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install black flake8
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      # The exact black and flake8 pins from requirements-dev.txt, so a new release cannot turn CI red.
+      - run: pip install $(grep -E '^(black|flake8)==' requirements-dev.txt)
       - run: black --check .
       - run: flake8 .
 
@@ -235,6 +238,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: tools/vendor/package-lock.json
 
       - name: Check shipped extension and page modules parse
         run: |

@@ -247,3 +247,32 @@ test('the Python matrix and coverage run the suite through the watchdog runner',
         assert.doesNotMatch(found.get(id), /unittest discover/, `${id} no longer runs the bare unittest discover`);
     }
 });
+
+// CI hygiene (#352): lint tools are pinned, the bandit hook can fail, the JS job caches npm.
+const readRepoFile = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
+
+test('black and flake8 are pinned exactly and the lint job installs those pins', () => {
+    const requirements = readRepoFile('requirements-dev.txt');
+    assert.match(requirements, /^black==\d+\.\d+\.\d+$/m, 'black is pinned exactly');
+    assert.match(requirements, /^flake8==\d+\.\d+\.\d+$/m, 'flake8 is pinned exactly');
+    const lint = jobs(readWorkflow('test.yml')).get('lint');
+    assert.match(lint, /pip install \$\(grep -E '\^\(black\|flake8\)==' requirements-dev\.txt\)/);
+    assert.doesNotMatch(lint, /pip install black flake8/, 'lint no longer installs the latest releases');
+});
+
+test('the frontend modules job caches npm keyed on the vendor lockfile', () => {
+    const setupNode = steps(jobs(readWorkflow('test.yml')).get('js-test'))
+        .find(step => /uses: actions\/setup-node@v\d+/.test(step));
+    assert.match(setupNode, /^ {10}cache: npm$/m);
+    assert.match(setupNode, /^ {10}cache-dependency-path: tools\/vendor\/package-lock\.json$/m);
+});
+
+test('the bandit pre-commit hook fails at the severity CI enforces and passes every file', () => {
+    const quality = readWorkflow('code-quality.yml');
+    assert.match(quality, /^ {8}run: bandit -r \. -lll -q --exclude /m, 'CI fails on high severity');
+    const hook = /- id: bandit\n([\s\S]*?)(?=\n {6}(?:- id:|#)|\n*$)/.exec(readRepoFile('.pre-commit-config.yaml'))?.[1];
+    assert.ok(hook, 'the bandit hook exists');
+    assert.match(hook, /^ {8}entry: bandit -lll -q$/m, 'the hook enforces the same -lll level as CI');
+    assert.doesNotMatch(hook, /true|exit-zero|bash -c/, 'nothing masks the exit code or drops a file');
+    assert.doesNotMatch(hook, /pass_filenames: false/, 'the hook scans the staged files');
+});
