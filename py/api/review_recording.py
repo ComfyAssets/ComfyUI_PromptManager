@@ -199,7 +199,7 @@ class ReviewRecordingMixin:
         key = _memory_key(locator)
         if state is not None and memory.get(key) == state:
             return None
-        resolution = review_capture.inspection_choice(canonical)
+        resolution = review_capture.inspection_choice(canonical, media_file.name)
         if resolution is not None:
             memory.pop(key, None)
             return canonical, resolution
@@ -209,6 +209,46 @@ class ReviewRecordingMixin:
             while len(memory) > MAX_UNTRACED_MEMORY:
                 del memory[next(iter(memory))]
         return None
+
+    def _saver_anchored_review(self, media_file, roots, canonical, review=None):
+        """True when the saver that wrote a default-ambiguous file resolves
+        its branch (#390), so the file is not queued (blocking).
+
+        Its current bytes' pending, undecided items then leave the queue
+        (counted in ``review["untraced"]``: nothing to choose). A failure is
+        logged and counted, and the file is queued as before.
+        """
+        try:
+            if not review_capture.saver_anchored(canonical, media_file.name):
+                return False
+        except Exception:
+            self.logger.warning(
+                f"{media_file.name} could not be inspected for Needs review",
+                exc_info=True,
+            )
+            if review is not None:
+                review["errors"] += 1
+            return False
+        located = self._review_location(media_file, roots)
+        if located is None:
+            return True
+        try:
+            facts = os.lstat(located[3])
+            # No version is current for these bytes: any pending item goes.
+            removed = self.db.settle_stale_review_items(
+                os.path.normcase(located[3]), facts.st_size, facts.st_mtime_ns, ()
+            )
+        except Exception:
+            self.logger.warning(
+                f"Needs review items of {media_file.name} could not be removed",
+                exc_info=True,
+            )
+            if review is not None:
+                review["errors"] += 1
+            return True
+        if review is not None:
+            review["untraced"] += removed
+        return True
 
     def _settle_stale_reviews(self, media_file, roots, canonical, review=None):
         """Remove the pending, undecided items of an untraced file's current

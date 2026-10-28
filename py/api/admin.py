@@ -1594,7 +1594,8 @@ class AdminRoutesMixin:
         whose final outcome is ambiguous and unlinked (the resolver found it
         ambiguous and the fallback did not link it) is recorded for Needs
         review (best effort, counted in ``review`` when given); one a saved
-        row already links is reported ``unchanged`` and never queued. An
+        row already links is reported ``unchanged`` and never queued, and one
+        whose saver anchors its branch (#390) ``unresolved``. An
         ambiguous file with nothing to choose is reported ``unresolved`` and
         its pending items without a choice leave the queue.
         """
@@ -1629,6 +1630,10 @@ class AdminRoutesMixin:
             if ambiguous and outcome == "ambiguous":
                 if self._review_file_linked(media_file, roots):
                     outcome = "unchanged"  # already linked: not a review case
+                elif self._saver_anchored_review(
+                    media_file, roots, records.get("canonical"), review
+                ):
+                    outcome = "unresolved"  # its saver names its branch (#390)
                 else:
                     self._record_scanned_review(media_file, roots, review)
             elif untraced and outcome == "unresolved":
@@ -1691,9 +1696,9 @@ class AdminRoutesMixin:
         ``"ambiguous"`` (nothing linked it) is a Needs review case. An
         ambiguous result with nothing to choose (``reviewable`` is False: fewer
         than two candidates carry a prompt) that nothing links returns
-        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``;
-        its parsed records go to ``records["canonical"]`` when ``records`` is
-        a dict.
+        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``.
+        The parsed records of either ambiguous file go to
+        ``records["canonical"]`` when ``records`` is a dict.
         """
         if not metadata:
             # No prompt metadata (--disable-metadata, bare savers): only the
@@ -1723,6 +1728,8 @@ class AdminRoutesMixin:
                 records["canonical"] = canonical
         elif resolution["state"] == "ambiguous" and ambiguous is not None:
             ambiguous.append(media_file)
+            if records is not None:
+                records["canonical"] = canonical
         if resolution["state"] == "resolved":
             result = ingest_resolved_pair(
                 self.db, str(media_file), canonical, resolution
