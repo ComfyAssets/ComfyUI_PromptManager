@@ -1,0 +1,379 @@
+"""The per-file prompt decision shared by the scan and the monitor (#247).
+
+One test per case, named by the ladder step of the design
+(``docs/egm/247-foreign-workflows``). The ladder does no file or database
+I/O: history comes in through ``lookup``.
+"""
+
+import json
+import unittest
+from unittest import mock
+
+from database.run_attribution import RecordedOutput
+from tests.test_pair_scan import flux_graph, sampled_graph
+from tests.test_prompt_attribution import issue_graph, pair_evidence
+from utils import file_prompt
+from utils.file_prompt import Policy, decide_file_prompt, junk_text
+from utils.prompt_inspector import InspectionResult
+
+try:
+    from tests import inspection_parity as parity
+    from tests import saver_anchor_graphs as shapes
+except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
+    import inspection_parity as parity
+    import saver_anchor_graphs as shapes
+
+SHARED_NAME = "IMG_GEN_00371_.png"
+LORA = "<lora:style:1.00>"
+
+
+def _decide(
+    metadata,
+    *,
+    policy=Policy.SCAN,
+    lookup=None,
+    in_output=True,
+    file_name=SHARED_NAME,
+    file_size=None,
+):
+    return decide_file_prompt(
+        metadata,
+        file_name=file_name,
+        file_size=file_size,
+        in_output=in_output,
+        lookup=lookup,
+        policy=policy,
+    )
+
+
+def _graph(graph):
+    return {"prompt": json.dumps(graph)}
+
+
+class _Lookup:
+    """A history lookup that counts its calls."""
+
+    def __init__(self, saver=None):
+        self.calls = 0
+        self.found = RecordedOutput(saver, {}) if saver is not None else None
+
+    def __call__(self):
+        self.calls += 1
+        return self.found
+
+
+def _inspected(state, malformed=False):
+    resolution = {"state": state, "positive": None, "negative": None}
+    return InspectionResult(resolution, malformed=malformed)
+
+
+def _untraced_by_both():
+    """A sampled graph whose positive no profile traces; the legacy parser does."""
+    return mock.patch.object(
+        file_prompt, "inspection_resolution", return_value=_inspected("unresolved")
+    )
+
+
+def _gated(graph):
+    """``graph`` past the default profile's node gate, so it is unresolved."""
+    graph = dict(graph)
+    for index in range(510):
+        graph[f"pad{index}"] = {"class_type": "Note", "inputs": {}}
+    return graph
+
+
+class TestStepsBeforeResolving(unittest.TestCase):
+    def test_step_1_no_metadata_tries_the_recorded_run(self):
+        for metadata in ({}, None):
+            decision = _decide(metadata)
+            self.assertEqual(decision.kind, "never")
+            self.assertTrue(decision.try_recorded_run)
+            self.assertIsNone(decision.unlinked_status)
+            self.assertEqual(decision.canonical, {})
+
+    def test_step_3_neither_prompt_nor_parameters_tries_the_recorded_run(self):
+        decision = _decide({"workflow": json.dumps({"nodes": []})})
+        self.assertEqual(decision.kind, "never")
+        self.assertTrue(decision.try_recorded_run)
+        self.assertIsNone(decision.unlinked_status)
+        self.assertEqual(decision.canonical, {"workflow": {"nodes": []}})
+
+    def test_strings_are_parsed_and_malformed_ones_kept(self):
+        decision = _decide({"prompt": "{not json", "workflow": "{}"})
+        self.assertEqual(decision.canonical["prompt"], "{not json")
+        self.assertEqual(decision.canonical["workflow"], {})
+
+    def test_the_file_size_is_recorded_unless_the_metadata_has_one(self):
+        meta = _graph(sampled_graph())
+        self.assertEqual(
+            _decide(meta, file_size=42).canonical["file_info"], {"size": 42}
+        )
+        meta["file_info"] = {"size": 7, "width": 3}
+        self.assertEqual(
+            _decide(meta, file_size=42).canonical["file_info"], {"size": 7, "width": 3}
+        )
+        self.assertNotIn("file_info", _decide(_graph(sampled_graph())).canonical)
+
+
+class TestResolvedSteps(unittest.TestCase):
+    def test_step_6_a_blank_positive_counts_as_unresolved(self):
+        meta = {
+            "prompt": json.dumps(issue_graph()),
+            "comfyassets_prompt_pairs": json.dumps(pair_evidence()),
+        }
+        decision = _decide(meta, policy=Policy.MONITOR, in_output=False)
+        self.assertEqual(decision.kind, "never")
+        self.assertEqual(decision.resolution["state"], "unresolved")
+
+    def test_step_7_a_resolved_pair(self):
+        lookup = _Lookup("9")
+        decision = _decide(_graph(sampled_graph("cat", "blur")), lookup=lookup)
+        self.assertEqual(decision.kind, "pair")
+        self.assertEqual(decision.source, "resolver")
+        self.assertEqual(decision.text, "cat")
+        self.assertEqual(decision.resolution["negative"]["text"], "blur")
+        self.assertIsNone(decision.review)
+        self.assertEqual(lookup.calls, 0, "decided before step 8: history not asked")
+
+    def test_step_7_a_blank_negative_stays_a_pair(self):
+        decision = _decide(_graph(sampled_graph("cat", "")))
+        self.assertEqual(decision.kind, "pair")
+        self.assertEqual(decision.resolution["negative"]["text"], "")
+
+
+class TestUndecidedGraph(unittest.TestCase):
+    def test_step_8_1_the_inspector_alone_decides(self):
+        decision = _decide({"prompt": parity.build("f03")["prompt"]})
+        self.assertEqual(decision.kind, "positive")
+        self.assertEqual(decision.source, "inspector")
+        self.assertEqual(decision.text, parity.POS)
+        self.assertEqual(decision.resolution["state"], "unresolved")
+
+    def test_step_8_1_the_recorded_saver_names_its_branch(self):
+        lookup = _Lookup("23")
+        decision = _decide(_graph(shapes.shared_prefix()), lookup=lookup)
+        self.assertEqual(decision.kind, "positive")
+        self.assertEqual(decision.source, "recorded-run")
+        self.assertEqual(decision.text, shapes.BRANCH_TEXTS[1])
+        self.assertEqual(decision.review, "ambiguous")
+        self.assertEqual(lookup.calls, 1)
+
+    def test_step_8_1_stores_the_storage_text_without_prepend_or_append(self):
+        graph = shapes.shared_prefix()
+        graph["20"]["inputs"]["text"] = ["25", 1]
+        graph["25"] = {
+            "class_type": "PromptManagerSplit",
+            "inputs": {
+                "text": shapes.BRANCH_TEXTS[1],
+                "prepend_text": "trigger",
+                "append_text": "detail",
+            },
+        }
+        decision = _decide(_graph(graph), lookup=_Lookup("23"))
+        self.assertEqual(decision.source, "recorded-run")
+        self.assertEqual(decision.text, shapes.BRANCH_TEXTS[1])
+
+    def test_step_8_1_a_file_name_naming_another_saver_anchors_nothing(self):
+        graph = shapes.branch_bench()
+        for index in (1, 3, 4):
+            graph[str(index * 10 + 3)]["inputs"]["filename_prefix"] = "bench/shared"
+        decision = _decide(
+            _graph(graph), lookup=_Lookup("43"), file_name="s45_branch_2_00001_.png"
+        )
+        # The file name alone names branch 2; history's branch 4 is not used.
+        self.assertEqual(decision.source, "inspector")
+        self.assertEqual(decision.text, shapes.BRANCH_TEXTS[1])
+
+    def test_step_8_2_the_monitor_waits_for_history_inside_the_output_folder(self):
+        decision = _decide(_graph(shapes.shared_prefix()), policy=Policy.MONITOR)
+        self.assertEqual(decision.kind, "history")
+
+    def test_step_8_2_outside_the_output_folder_steps_8_3_and_8_4_apply(self):
+        decision = _decide(
+            _graph(shapes.shared_prefix()), policy=Policy.MONITOR, in_output=False
+        )
+        self.assertEqual(decision.kind, "never")
+        with _untraced_by_both():
+            decision = _decide(
+                _graph(_gated(sampled_graph())), policy=Policy.MONITOR, in_output=False
+            )
+        self.assertEqual(
+            (decision.kind, decision.source), ("positive", "legacy-parser")
+        )
+
+    def test_step_8_3_an_ambiguous_file_is_left_unlinked_by_the_monitor(self):
+        lookup = _Lookup("missing")
+        decision = _decide(
+            _graph(shapes.shared_prefix()), policy=Policy.MONITOR, lookup=lookup
+        )
+        self.assertEqual(decision.kind, "never")
+        self.assertEqual(decision.unlinked_status, "ambiguous")
+        self.assertEqual(lookup.calls, 1)
+
+    def test_step_8_4_an_ambiguous_file_gets_the_legacy_answer_in_the_scan(self):
+        decision = _decide(_graph(shapes.shared_prefix()), lookup=_Lookup())
+        self.assertEqual(decision.kind, "positive")
+        self.assertEqual(decision.source, "legacy-parser")
+        self.assertEqual(decision.text, shapes.BRANCH_TEXTS[0])
+        self.assertEqual(decision.review, "ambiguous")
+
+    def test_step_8_4_an_untraceable_file_gets_the_legacy_answer_in_both(self):
+        for policy in Policy:
+            for inspected in (_inspected("unresolved"), _inspected("x", True)):
+                with (
+                    self.subTest(policy=policy, malformed=inspected.malformed),
+                    mock.patch.object(
+                        file_prompt, "inspection_resolution", return_value=inspected
+                    ),
+                ):
+                    decision = _decide(
+                        _graph(_gated(sampled_graph("cat"))),
+                        policy=policy,
+                        lookup=_Lookup(),
+                    )
+                    self.assertEqual(decision.kind, "positive")
+                    self.assertEqual(decision.source, "legacy-parser")
+                    self.assertEqual(decision.text, "cat")
+
+    def test_step_8_4_nothing_traced_tries_the_recorded_run(self):
+        graph = sampled_graph()
+        graph["5"] = {**graph["3"]}
+        for sampler in ("3", "5"):
+            graph[sampler]["inputs"]["positive"] = ["9", 0]
+        graph["9"] = {"class_type": "BasicGuider", "inputs": {"width": 2048}}
+        decision = _decide(_graph(graph), lookup=_Lookup())
+        self.assertEqual(decision.kind, "never")
+        self.assertTrue(decision.try_recorded_run)
+        # Ambiguous without a choice is reported unresolved.
+        self.assertEqual(decision.unlinked_status, "unresolved")
+        self.assertEqual(decision.review, "untraced")
+
+
+class TestStepsWithoutAnUndecidedGraph(unittest.TestCase):
+    def test_step_9_ambiguous_parameters_only(self):
+        meta = {
+            "parameters": (
+                "cat\nNegative prompt: blur\nNegative prompt: noise"
+                "\nSteps: 20, Sampler: Euler"
+            )
+        }
+        decision = _decide(meta)
+        self.assertEqual(decision.kind, "never")
+        self.assertFalse(decision.try_recorded_run)
+        self.assertEqual(decision.unlinked_status, "unresolved")
+
+    def test_step_10_unresolved_without_a1111_text(self):
+        decision = _decide({"prompt": {}, "parameters": 5})
+        self.assertEqual(decision.kind, "never")
+        self.assertFalse(decision.try_recorded_run)
+        self.assertEqual(decision.unlinked_status, "unresolved")
+
+    def test_step_11_sampler_less_with_one_text(self):
+        decision = _decide(_graph(flux_graph()))
+        self.assertEqual((decision.kind, decision.source), ("positive", "sampler-less"))
+        self.assertEqual(decision.text, "a red fox")
+
+    def test_step_11_sampler_less_with_several_texts(self):
+        graph = flux_graph()
+        graph["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "clip": ["2", 0], "text": "a lora note"},
+        }
+        graph["22"]["inputs"]["model"] = ["50", 0]
+        graph["6"]["inputs"]["clip"] = ["50", 1]
+        decision = _decide(_graph(graph))
+        self.assertEqual(decision.kind, "never")
+        self.assertTrue(decision.try_recorded_run)
+        self.assertEqual(decision.unlinked_status, "unresolved")
+        meta = {**_graph(graph), "parameters": "a red fox\nNegative prompt: x"}
+        decision = _decide(meta)
+        self.assertEqual((decision.kind, decision.source), ("positive", "a1111"))
+        self.assertEqual(decision.text, "a red fox")
+
+    def test_step_11_sampler_less_without_a_text(self):
+        graph = {"40": {"class_type": "easy showAnything", "inputs": {"text": "x"}}}
+        decision = _decide(_graph(graph))
+        self.assertEqual(decision.kind, "never")
+        self.assertTrue(decision.try_recorded_run)
+        self.assertEqual(decision.unlinked_status, "found")
+
+    def test_step_12_a1111_only(self):
+        decision = _decide({"parameters": "a cat"})
+        self.assertEqual((decision.kind, decision.source), ("positive", "a1111"))
+        self.assertEqual(decision.text, "a cat")
+        decision = _decide({"parameters": "Negative prompt: blur"})
+        self.assertEqual((decision.kind, decision.unlinked_status), ("never", "found"))
+        self.assertFalse(decision.try_recorded_run)
+
+    def test_step_12_parsed_metadata_never_raises(self):
+        # The monitor hands parsed values: a dict prompt, non-string parameters.
+        decision = _decide({"prompt": {}, "parameters": "a cat"})
+        self.assertEqual(decision.text, "a cat")
+        decision = _decide({"parameters": 5})
+        self.assertEqual((decision.kind, decision.unlinked_status), ("never", "found"))
+
+
+class TestJunkGate(unittest.TestCase):
+    JUNK = {
+        "blank": "  ",
+        "number": "2048",
+        "lora-only": f"{LORA}, <lora:detail:0.5> |",
+        "model-file": "models/checkpoints/Flux-Dev.SafeTensors",
+    }
+
+    def test_each_junk_class_is_named(self):
+        for name, text in self.JUNK.items():
+            with self.subTest(name=name):
+                self.assertEqual(junk_text(text), name)
+        for ending in ("ckpt", "pt", "pth", "bin", "gguf", "sft"):
+            self.assertEqual(junk_text(f"model.{ending}"), "model-file")
+
+    def test_near_misses_are_not_junk(self):
+        for text in (
+            f"a red fox {LORA}",
+            "a.safetensors b.safetensors",
+            "nan",
+            "a portrait saved as final.safetensors",
+            "4k",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(junk_text(text))
+
+    def test_step_13_junk_from_any_step_is_never_stored(self):
+        cases = {
+            "resolver": _graph(sampled_graph("2048", "blur")),
+            "sampler-less": _graph(flux_graph(text=LORA)),
+            "a1111": {"parameters": "model.safetensors"},
+        }
+        for step, meta in cases.items():
+            with self.subTest(step=step):
+                decision = _decide(meta)
+                self.assertEqual(decision.kind, "never")
+                self.assertTrue(decision.source.startswith("junk:"), decision.source)
+                self.assertTrue(decision.try_recorded_run)
+                self.assertEqual(decision.unlinked_status, "found")
+
+    def test_step_13_a_junk_legacy_answer_is_never_stored(self):
+        with _untraced_by_both():
+            decision = _decide(_graph(_gated(sampled_graph(LORA))), lookup=_Lookup())
+        self.assertEqual(decision.source, "junk:lora-only")
+        self.assertEqual(decision.kind, "never")
+
+
+class TestParseComfyuiPrompt(unittest.TestCase):
+    def test_a_parsed_prompt_and_non_string_values_are_kept(self):
+        parsed = file_prompt.parse_comfyui_prompt(
+            {"prompt": {"1": {}}, "workflow": {"nodes": []}, "steps": 20}
+        )
+        self.assertEqual(parsed["prompt"], {"1": {}})
+        self.assertEqual(parsed["workflow"], {"nodes": []})
+        self.assertEqual(parsed["parameters"]["steps"], 20)
+        self.assertIsNone(parsed["positive_prompt"])
+
+    def test_non_string_parameters_are_ignored(self):
+        parsed = file_prompt.parse_comfyui_prompt({"parameters": {"a": 1}})
+        self.assertIsNone(parsed["positive_prompt"])
+
+
+if __name__ == "__main__":
+    unittest.main()
