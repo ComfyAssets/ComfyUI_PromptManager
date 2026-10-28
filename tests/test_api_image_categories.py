@@ -201,6 +201,27 @@ class TestSetAndClear(ImageCategoryTestCase):
             data = await self.delete(["a.png"], status=500)
         self.assertNotIn("secret", json.dumps(data))
 
+    async def test_a_symlinked_output_folder_keys_like_its_favorites(self):
+        """A detected output folder can be a symlink: keys use its real path."""
+        real = self.comfy_dir / "real-output"
+        make_png(real / "a.png")
+        link = self.comfy_dir / "linked-output"
+        self._make_symlink(real, link, target_is_directory=True)
+        self.api._get_all_output_dirs = lambda: [link]
+        data = await self.put(["a.png"], "Scans")
+        self.assertEqual(data["updated"], 1)
+        self.assertEqual(self.rows(), [(_favorite_root_key(link), "a.png", "Scans")])
+        self.assertEqual((await self.listed())["categories"], ["Scans"])
+        self.assertEqual((await self.delete(["a.png"]))["cleared"], 1)
+
+    async def test_lone_surrogates_are_400_not_500(self):
+        make_png(self.output_dir / "a.png")
+        await self.send(
+            "PUT", {"items": [self.target("a.png")], "category": "x\ud800"}, 400
+        )
+        await self.send("DELETE", {"items": [self.target("a\ud800.png")]}, 400)
+        self.assertEqual(self.rows(), [])
+
     async def test_delete_category_never_reaches_delete_image(self):
         make_png(self.output_dir / "a.png")
         calls = []

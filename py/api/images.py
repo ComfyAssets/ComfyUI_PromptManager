@@ -807,25 +807,29 @@ def _source_depth(source: str) -> int:
 def deepest_source(sources, absolute_path):
     """``(source, POSIX path below it)`` of the deepest source holding the path.
 
-    *sources* are compared by their real path (they are stored resolved); the
-    path is compared lexically after ``normpath`` and never resolved, so a
+    A source matches by its real path or by its spelling as configured (a
+    detected output folder can be a symlink), and the deepest real path wins.
+    The path is compared lexically after ``normpath`` and never resolved, so a
     symlinked subfolder keeps its listed spelling. Containment folds case
-    where the OS does. None when no source contains the path.
+    where the OS does. *source* is the real path. None when no source
+    contains the path.
     """
     path = os.path.normpath(str(absolute_path))
     folded = os.path.normcase(path)
     best = None
     for source in sources:
         real = os.path.normpath(os.path.realpath(str(source)))
-        prefix = os.path.join(os.path.normcase(real), "")
-        if not folded.startswith(prefix):
-            continue
-        if best is None or _source_depth(real) > _source_depth(best):
-            best = real
+        for spelling in dict.fromkeys((real, os.path.normpath(str(source)))):
+            prefix = os.path.join(os.path.normcase(spelling), "")
+            if not folded.startswith(prefix):
+                continue
+            if best is None or _source_depth(real) > _source_depth(best[0]):
+                best = (real, spelling)
+            break
     if best is None:
         return None
-    relative = os.path.relpath(path, best)
-    return best, relative.replace(os.sep, "/")
+    relative = os.path.relpath(path, best[1])
+    return best[0], relative.replace(os.sep, "/")
 
 
 def image_category_key(sources, absolute_path):

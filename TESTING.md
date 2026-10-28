@@ -4484,11 +4484,13 @@ category; without one it shows the category its link supplies.
 - The **file key** is `image_category_key(sources, absolute path)` in
   `py/api/images.py`: the deepest output source that contains the path (compared
   lexically, never resolving the path, so a symlinked subfolder keeps its listed
-  spelling) and the path below it, keyed with the favorites helpers. Without
-  nested sources it equals a favorite's key. Every write and read uses it. A path
+  spelling) and the path below it, keyed with the favorites helpers. A source
+  matches by its real path or its configured spelling (a detected output folder
+  can be a symlink). Without nested sources it equals a favorite's key. Every write and read uses it. A path
   that no source contains has no key, so it has no own category.
 - `image_categories_schema_error` checks the structure at startup (a value saved
-  under older rules never stops the library opening). Restore also checks the
+  under older rules never stops the library opening; a table without its index,
+  which this code never leaves, is repaired by the install). Restore also checks the
   values: text columns, keys within the favorites bound, `category` 1 to 100
   characters with no character below U+0020 and no leading or trailing space, and
   `updated_at` of at most 64 bytes. Backups made before #332 restore without the

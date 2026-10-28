@@ -195,7 +195,6 @@ class TestImageCategoriesSchema(_TempDir):
                 _INDEX_DDL,
             ),
             "wrong index": (_DDL, f"CREATE INDEX {INDEX} ON {TABLE}(updated_at)"),
-            "no index": (_DDL,),
             "extra index": (
                 _DDL,
                 _INDEX_DDL,
@@ -231,6 +230,17 @@ class TestImageCategoriesSchema(_TempDir):
                 )
                 with self.assertRaises(sqlite3.DatabaseError):
                     migrate_image_categories(conn)
+        # A table without its category index (never written by this code) is
+        # refused by the check but repaired by the install.
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.execute(_DDL)
+            conn.execute(f"INSERT INTO {TABLE} VALUES ('r', 'a.png', 'Scans', 'now')")
+            self.assertIsNotNone(image_categories_schema_error(conn))
+            migrate_image_categories(conn)
+            self.assertIsNone(image_categories_schema_error(conn, allow_missing=False))
+            self.assertEqual(
+                conn.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0], 1
+            )
         with closing(sqlite3.connect(":memory:")) as conn:
             migrate_image_categories(conn)
             migrate_image_categories(conn)  # idempotent

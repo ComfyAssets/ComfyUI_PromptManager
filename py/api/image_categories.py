@@ -60,10 +60,31 @@ def _category_value(raw) -> tuple[str | None, web.Response | None]:
             f"Category cannot exceed {MAX_CATEGORY_LENGTH} characters"
         )
     try:
+        value.encode("utf-8")
         validate_category(value)
+    except UnicodeEncodeError:
+        return None, bad_request("category must be valid text")
     except ValueError as exc:
         return None, bad_request(str(exc))
     return value, None
+
+
+class _KeyRefused(Exception):
+    """A target has no storable file key (outside every source, or too long)."""
+
+    def __init__(self, message: str = "Access denied"):
+        super().__init__(message)
+        self.message = message
+
+
+def _file_key(roots, root, relative) -> tuple[str, str]:
+    """The target's file key (blocking: resolves the sources)."""
+    key = image_category_key(roots, Path(root) / relative)
+    if key is None:
+        raise _KeyRefused()
+    if max(len(key[0]), len(key[1])) > MAX_KEY_LENGTH:
+        raise _KeyRefused("Path is too long")
+    return key
 
 
 def _nested_sources(root: Path, sources) -> list[tuple[str, str]]:
@@ -101,7 +122,9 @@ class ImageCategoryRoutesMixin:
 
     def _register_image_category_routes(self, routes):
         # Fixed paths beside DELETE /prompt_manager/images/{image_id}, as the
-        # favorite routes are: matched before the dynamic resource.
+        # favorite routes are. Registered after it, they still win: aiohttp
+        # (3.10+) looks fixed paths up before dynamic resources
+        # (test_delete_category_never_reaches_delete_image).
         @routes.put("/prompt_manager/images/category")
         async def set_image_category_route(request):
             return await self.set_image_category(request)
@@ -198,6 +221,11 @@ class ImageCategoryRoutesMixin:
         targets, error = _parse_targets(items, media_message=CATEGORY_MEDIA_MESSAGE)
         if error is not None:
             return None, None, None, error
+        try:
+            for _index, _scope, relative in targets:
+                relative.encode("utf-8")
+        except UnicodeEncodeError:
+            return None, None, None, bad_request("path must be valid text")
         roots = list(self._get_all_output_dirs())
         for index, scope in dict.fromkeys((t[0], t[1]) for t in targets):
             if index >= len(roots):
@@ -211,6 +239,23 @@ class ImageCategoryRoutesMixin:
                 return None, None, None, error
         return data, targets, roots, None
 
+    def _listed_file_keys(self, roots, targets, files) -> tuple[list, list]:
+        """``(listed keys, unlisted keys)`` of the targets (blocking).
+
+        A target counts as listed when its source's listing holds it; its key
+        then follows the listed spelling. Targets folding to one key count
+        once, and a key that is listed through any target is listed.
+        """
+        listings, listed, missing = {}, {}, {}
+        for index, _scope, relative in targets:
+            root = roots[index]
+            if index not in listings:
+                listings[index] = self._favorite_listing(root, files[index])
+            spelled = listings[index].get(_favorite_relative_key(relative))
+            key = _file_key(roots, root, spelled or relative)
+            (missing if spelled is None else listed)[key] = True
+        return list(listed), [key for key in missing if key not in listed]
+
     async def set_image_category(self, request):
         """PUT ``{items, category}``: set the own category of listed files."""
         data, targets, roots, error = await self._category_request(request, _PUT_FIELDS)
@@ -220,22 +265,18 @@ class ImageCategoryRoutesMixin:
         if error is not None:
             return error
         try:
-            listings = {}
-            listed_keys, missing_keys = {}, {}
-            for index, _scope, relative in targets:
-                root = roots[index]
-                if index not in listings:
-                    files = await self._get_gallery_files(root)
-                    listings[index] = await self._run_in_executor(
-                        self._favorite_listing, root, files
-                    )
-                listed = listings[index].get(_favorite_relative_key(relative))
-                key = image_category_key(roots, root / (listed or relative))
-                if key is None or max(len(key[0]), len(key[1])) > MAX_KEY_LENGTH:
-                    return _forbidden("Path is too long")
-                (missing_keys if listed is None else listed_keys)[key] = True
-            for key in listed_keys:
-                missing_keys.pop(key, None)
+            files = {}
+            for index in dict.fromkeys(t[0] for t in targets):
+                files[index] = await self._get_gallery_files(roots[index])
+            listed_keys, missing_keys = await self._run_in_executor(
+                self._listed_file_keys, roots, targets, files
+            )
+        except _KeyRefused as refused:
+            return _forbidden(refused.message)
+        except Exception:
+            self.logger.exception("Image category update failed")
+            return _coded(500, "category-failed", WRITE_FAILED)
+        try:
             if not listed_keys:
                 return _coded(
                     404,
@@ -243,7 +284,7 @@ class ImageCategoryRoutesMixin:
                     "None of the selected images could be found.",
                 )
             counts = await self._run_in_executor(
-                self.db.set_image_categories, list(listed_keys), category
+                self.db.set_image_categories, listed_keys, category
             )
         except Exception:
             self.logger.exception("Image category update failed")
@@ -266,16 +307,15 @@ class ImageCategoryRoutesMixin:
         )
         if error is not None:
             return error
-        keys = {}
-        for index, _scope, relative in targets:
-            key = image_category_key(roots, roots[index] / relative)
-            if key is None or max(len(key[0]), len(key[1])) > MAX_KEY_LENGTH:
-                return _forbidden("Path is too long")
-            keys[key] = True
         try:
-            cleared = await self._run_in_executor(
-                self.db.clear_image_categories, list(keys)
+            keys = await self._run_in_executor(
+                lambda: list(
+                    dict.fromkeys(_file_key(roots, roots[i], r) for i, _s, r in targets)
+                )
             )
+            cleared = await self._run_in_executor(self.db.clear_image_categories, keys)
+        except _KeyRefused as refused:
+            return _forbidden(refused.message)
         except Exception:
             self.logger.exception("Image category removal failed")
             return _coded(500, "category-failed", WRITE_FAILED)
