@@ -3,7 +3,7 @@ import { imageKey, toggleSelection, selectionLabel } from './images-state.mjs';
 import { inspectPath, toInspectionRecord } from './inspection-state.mjs';
 import { BUNDLE_FILENAME, metadataBundle, collectImagesMetadata, exportOutcome } from './images-export.mjs';
 import { CATEGORY_DIALOG, CATEGORY_MAX_LENGTH, CATEGORY_URL, MAX_CATEGORY_IMAGES, REMOVE_DIALOG, USE_PROMPT_CATEGORY,
-    clearOutcome, failureMessage, removeQuestion, setOutcome } from './images-category.mjs';
+    NONE_FOUND, clearOutcome, failureMessage, removeQuestion, setOutcome } from './images-category.mjs';
 import { closeWorkspaceDialog, openContentDialog, openInputDialog } from './workspace-dialogs.mjs';
 import { TOO_MANY, bulkTargets, openAddTags, openAutoTag } from './images-tagging-bulk.mjs';
 import { showWorkspaceToast } from './toast.mjs';
@@ -270,7 +270,9 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
         if (categorizing) return;
         const count = allMatching ? getListing().total : checked.size;
         const targets = allMatching ? {filter: getFilter()} : {items: bulkTargets(checkedImages())};
-        if (count > MAX_CATEGORY_IMAGES || (!allMatching && !targets.items)) { showWorkspaceToast(TOO_MANY); return; }
+        if (count > MAX_CATEGORY_IMAGES) { showWorkspaceToast(TOO_MANY); return; }
+        // Checked files the listing no longer holds (a refresh dropped them): nothing to send.
+        if (!allMatching && !targets.items?.length) { showWorkspaceToast(NONE_FOUND); return; }
         openInputDialog({ scope, trigger: button, title: CATEGORY_DIALOG.title, label: CATEGORY_DIALOG.label,
             action: CATEGORY_DIALOG.action, maxLength: CATEGORY_MAX_LENGTH, suggestions: getCategories(),
             secondary: { label: USE_PROMPT_CATEGORY, onClick: () => confirmRemove(button, targets, count) },
@@ -293,8 +295,8 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
     }
     /**
      * The write carries no page signal: once sent it finishes even if the page is left (`writing` then tells the page
-     * not to save a visit that predates it). A failure keeps the selection (a changed source reloads the listing); a
-     * success reloads through `onCategorySet`.
+     * not to save a visit that predates it). A failure keeps the selection, except a changed source, which reloads the
+     * listing as a success does (`onCategorySet`).
      */
     async function writeCategory(button, send, outcome) {
         categorizing = true;
@@ -309,13 +311,16 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
             release();
         }
         if (scope.signal.aborted) return;
+        const focused = document.activeElement === button;
         if (failure !== null || !result) {
             showWorkspaceToast(failureMessage(failure));
-            if (failure?.code === 'source-changed') onCategorySet();
+            // A changed source reloads the listing (clearing the selection); any other failure keeps it.
+            if (failure?.code !== 'source-changed') return;
+            onCategorySet();
+            if (focused) focusFallback.focus({ preventScroll: true });
             return;
         }
         showWorkspaceToast(outcome(result));
-        const focused = document.activeElement === button;
         onCategorySet();
         // The reload hides the bar with the focused action in it, as Clear does: focus moves to the page heading.
         if (focused) focusFallback.focus({ preventScroll: true });

@@ -1266,7 +1266,8 @@ Recorded deviations on this page (spec §8):
   it finish without a toast, and the return loads the collection afresh instead of the
   saved visit. Its success reloads the categories and the listing together (clearing
   the selection, focus to the heading, and, as any replaced collection does, the
-  inspector moves to the first listed image); failure keeps the selection. `images selection bar matches
+  inspector moves to the first listed image); a failure keeps the selection, except a
+  changed source (409), which reloads the listing as a success does. `images selection bar matches
   the concept` compares the bar and the checked card with one card checked; the omitted
   actions flow again from the concept's own boxes, checked against the concept page with
   them removed at runtime.
@@ -1475,8 +1476,8 @@ Recorded deviations on this page (spec §8):
 - **D146** (#332, amends D21 and D39): the category chip names its origin in visible
   text. It is `span.chip` > `span.ca-visually-hidden` (the D21 prefix) + the category +
   `span.chip-source` (" · this image", " · prompt" or " · recipe"; muted
-  `--ca-muted`, `white-space: nowrap`, so at 390px the chip may wrap only before the
-  origin). It shows when the inspection names a non-empty category and either the
+  `--ca-muted`, `white-space: nowrap`, so at 390px the origin never splits; the chip may wrap
+  before it or inside a long category). It shows when the inspection names a non-empty category and either the
   scope is `image` (any link status, so an unlinked or ambiguous file with an own
   category shows it) or the file is linked. The concept's chip shows the bare name
   (app.js a402). The inspector comparison (inspector-concept.spec) measures each chip's
@@ -5670,7 +5671,8 @@ fixture-only tags after the concept's sample tags.
   (`image_count`, the stored rows, missing files included): "N positive prompts · M
   images" beside prompts, "M images" for an image-only value, which follows every
   prompt-backed row (by value) before Manage category. Browse on an image-only row opens
-  Images with exactly that Category filter (its Library would be empty); every other
+  Images with exactly that Category filter (its Library would be empty), as a fresh
+  Images visit that becomes the Images return state, the way Browse seeds the Library's; every other
   row opens the Library as before. Manage category's select lists image-only values
   last, so past 1,000 categories they are the first left out (the dialog says the list is
   capped).

@@ -125,11 +125,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
-    // A Tags & categories Browse (browseImages) is handed to this mount once, as a saved view's state is.
+    // A Tags & categories Browse (browseImages) is handed to this mount once: a fresh Images visit filtered by its
+    // category, which becomes the Images return state like any plain visit (as Browse does for the Library).
     const handed = !embedded && !favorites && !savedState ? browseState : null;
     if (!embedded && !favorites) browseState = null;
-    const saved = embedded || !(savedState || handed) ? null : imagesFilters(savedState || handed);
-    const prior = embedded || saved || favorites ? null : lastVisit;
+    const saved = embedded || !savedState ? null : imagesFilters(savedState);
+    const prior = embedded || saved || favorites || handed ? null : lastVisit;
     // A stale visit keeps its filters, layout and size, and lists again instead of restoring (M6).
     const visit = prior?.stale ? null : prior;
     // The layout and size defaults are the Images page's: an embedded gallery (a prompt history's, its dialogs) has no
@@ -148,6 +149,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...prior?.filters, ...saved,
+        ...(handed ? {category: handed.category} : {}),
         favorites: favorites || saved?.favorites === true };
     filters.tags = [...filters.tags];
     if (!IMAGE_SORT_OPTIONS.some(([value]) => value === filters.sort)) filters.sort = 'newest';

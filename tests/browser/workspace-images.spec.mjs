@@ -2252,6 +2252,8 @@ test('a changed source says so and reloads the listing (#332)', async ({ page })
     await expect(toast(page)).toHaveText('The sources changed. Refresh the images and try again.');
     await reloaded;
     await expect(cards(page)).toHaveCount(2);
+    // The reload hides the bar with Set category in it: focus moves to the page heading, as after a success.
+    await expect(page.locator('#workspace-main h1')).toBeFocused();
 });
 
 test('a recipe-linked image is listed under its recipe\'s category (#332 D142)', async ({ page, request }) => {
