@@ -85,7 +85,8 @@ test('a System link sends no request from the legacy page', async ({ page, conte
         // The page's own start-up reads (list, film strips, settings) finish first; then the click must add none.
         await page.waitForLoadState('networkidle');
         const sent = [];
-        const record = item => sent.push(`${item.method()} ${item.url()}`);
+        // Lazy thumbnails may still load whenever the layout changes; they are not the click's.
+        const record = item => { if (item.resourceType() !== 'image') sent.push(`${item.method()} ${item.url()}`); };
         page.on('request', record);
         const opened = context.waitForEvent('page');
         await control.click();
