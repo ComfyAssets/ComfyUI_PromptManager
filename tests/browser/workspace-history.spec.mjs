@@ -1,5 +1,6 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from './fixtures.mjs';
+import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 
@@ -16,13 +17,13 @@ const marker=(page,id,anchor='10')=>recorded(page).locator(`button[data-run-id="
 const exact=async locator=>locator.evaluate(node=>node.textContent);
 
 test.beforeEach(async({page,request,browserName})=>{
-    await startCoverage(page,browserName);page.historyErrors=[];page.on('pageerror',error=>page.historyErrors.push(error.message));
+    await startCoverage(page,browserName);await armUnseenRestores(page);page.historyErrors=[];page.on('pageerror',error=>page.historyErrors.push(error.message));
     const reset=await request.post('/__test__/reset',{data:{chronological_history:true}});await expect(reset).toBeOK();page.fixture=await reset.json();
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.historyErrors).toEqual([]);});
 
 const command=async(request,data)=>{const response=await request.post('/__test__/history/commands',{data});await expect(response).toBeOK();return response.json();};
-const restoreSnapshot=async(request,bytes)=>{const response=await request.post('/prompt_manager/restore',{multipart:{database_file:{name:'history.db',mimeType:'application/octet-stream',buffer:bytes}}});await expect(response).toBeOK();expect((await response.json()).success).toBe(true);};
+const restoreSnapshot=async(page,request,bytes)=>{const response=await unseenRestore(page,()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'history.db',mimeType:'application/octet-stream',buffer:bytes}}}));await expect(response).toBeOK();expect((await response.json()).success).toBe(true);};
 const historyRead=async(request,id)=>{const response=await request.get(`/prompt_manager/library/${id}/history`);await expect(response).toBeOK();return response.json();};
 const frozenContexts=contexts=>contexts.map(({navigation,positive_prompt_id,negative_prompt_id,pair_id,...frozen})=>frozen);
 const immutableReceipts=items=>items.map(({current_candidate,...receipt})=>receipt);
@@ -62,7 +63,7 @@ for(const boundary of ['window','detail','candidate','inspection','media']) test
     await command(request,{action:'arm',boundary});const pending=request.get(target);
     try {
         await expect.poll(async()=> (await(await request.get('/__test__/history/checkpoint')).json()).entered).toBe(true);
-        await restoreSnapshot(request,bytes);
+        await restoreSnapshot(page,request,bytes);
     } finally {await command(request,{action:'release'});}
     const retired=await pending;expect(retired.status()).toBe(409);expect((await retired.json()).code).toBe('history-changed');
     for(const url of [`/prompt_manager/library/${f.detail_id}/history?limit=1&cursor=${encodeURIComponent(firstWindow.next_cursor)}`,`${base}?epoch=${epoch}`,`${base}/outputs?epoch=${epoch}`,`${base}/outputs?epoch=${epoch}&cursor=${encodeURIComponent(outputs.next_cursor)}`,media.url,media.thumbnail_url,media.inspection_url]) {
@@ -130,7 +131,7 @@ test('archive delete merge and prune preserve frozen evidence without repairing 
 
 test('actual restore with reused numeric owner rejects stale history and offers explicit saved recovery',async({page,request})=>{
     const f=page.fixture;await open(page,f.detail_id);const original=await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'));
-    const source=await request.get('/__test__/history/reused-snapshot');await expect(source).toBeOK();await restoreSnapshot(request,await source.body());
+    const source=await request.get('/__test__/history/reused-snapshot');await expect(source).toBeOK();await restoreSnapshot(page,request,await source.body());
     await marker(page,f.runs.shared).click();await expect(dialog(page)).toContainText('Recorded evidence changed');await page.keyboard.press('Escape');
     await expect(page.locator('.library-parent-status')).toContainText('changed');expect(await exact(saved(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(original);
     await expect(recorded(page).getByRole('button',{name:'Reload recorded history',exact:true})).toBeVisible();
@@ -142,12 +143,12 @@ for(const outcome of ['success','error'])test(`delayed actual old browser ${outc
     const f=page.fixture;await open(page,f.detail_id);const snapshot=await request.get('/__test__/history/snapshot');const bytes=await snapshot.body();
     let entered,release;const started=new Promise(resolve=>{entered=resolve;}),held=new Promise(resolve=>{release=resolve;});
     await page.route(new RegExp(`/history/runs/${f.runs.shared}\\?`),async route=>{
-        if(outcome==='error')await restoreSnapshot(request,bytes);
+        if(outcome==='error')await restoreSnapshot(page,request,bytes);
         const response=await route.fetch();expect(response.status()).toBe(outcome==='success'?200:409);entered();await held;
         await route.fulfill({response}).catch(()=>{});
     });
     try {
-        await marker(page,f.runs.shared).click();await started;if(outcome==='success')await restoreSnapshot(request,bytes);
+        await marker(page,f.runs.shared).click();await started;if(outcome==='success')await restoreSnapshot(page,request,bytes);
         await page.evaluate(()=>{location.hash='#/overview';});await expect(page.locator('#workspace-main h1')).toHaveText('Overview');release();
         await page.unroute(new RegExp(`/history/runs/${f.runs.shared}\\?`));await open(page,f.detail_id);
         await expect(recorded(page).locator('button[data-run-id]')).toHaveCount(0);
@@ -258,7 +259,7 @@ test('inspection first discovers a real restore and immediately retires every su
                 if(changed)window.recordedRecoveryStates.push({receipts:run.querySelectorAll('[data-receipt]').length,active:[...run.querySelectorAll('[data-send-role],[data-copy-role],[data-view-receipt]')].filter(node=>!node.disabled&&node.checkVisibility()).length});
             });observer.observe(run,{subtree:true,childList:true,attributes:true,characterData:true});
         });
-        await restoreSnapshot(request,await snapshot.body());
+        await restoreSnapshot(page,request,await snapshot.body());
     } finally {await command(request,{action:'release'});}
     const response=await inspectionRead;expect(response.status()).toBe(409);expect((await response.json()).code).toBe('history-changed');
     await expect(dialog(page).locator('.recorded-run-status')).toContainText('Recorded evidence changed');
