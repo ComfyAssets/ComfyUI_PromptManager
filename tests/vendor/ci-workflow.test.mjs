@@ -248,7 +248,8 @@ test('browser job timeouts keep a real margin over measured runs', () => {
 });
 
 // Every job is bounded (#350): a hang ends at a measured limit instead of GitHub's 6-hour default.
-const BOUNDED_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
+const GATING_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
+const BOUNDED_WORKFLOWS = [...GATING_WORKFLOWS, 'portability.yml'];
 const readWorkflow = name => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
 
 test('every job in the CI workflows has a numeric timeout-minutes', () => {
@@ -304,17 +305,28 @@ test('the bandit pre-commit hook fails at the severity CI enforces and passes ev
 // Event split (#420): pull requests run a fast subset, the merge queue and main run everything.
 const testJobs = () => jobs(readWorkflow('test.yml'));
 
-test('the Python matrix is one leg on a pull request and the full matrix on every other event', () => {
+test('the Python matrix is Linux 3.12 on a pull request and Linux 3.12-3.14 on every other event', () => {
     const body = testJobs().get('test');
-    const lists = key => {
-        const match = new RegExp(`^ {8}${key}: \\$\\{\\{ github\\.event_name == 'pull_request' && fromJSON\\('(\\[[^\\]]*\\])'\\) \\|\\| fromJSON\\('(\\[[^\\]]*\\])'\\) \\}\\}$`, 'm').exec(body);
-        assert.ok(match, `${key} is chosen by event`);
-        return { pr: JSON.parse(match[1]), other: JSON.parse(match[2]) };
-    };
-    assert.deepEqual(lists('os'), { pr: ['ubuntu-latest'], other: ['ubuntu-latest', 'windows-latest', 'macos-latest'] });
-    assert.deepEqual(lists('python-version'), { pr: ['3.12'], other: ['3.12', '3.13', '3.14'] });
+    assert.deepEqual(matrixList(body, 'os'), ['ubuntu-latest'], 'Windows and macOS never gate a merge');
+    const match = /^ {8}python-version: \$\{\{ github\.event_name == 'pull_request' && fromJSON\('(\[[^\]]*\])'\) \|\| fromJSON\('(\[[^\]]*\])'\) \}\}$/m.exec(body);
+    assert.ok(match, 'python-version is chosen by event');
+    assert.deepEqual({ pr: JSON.parse(match[1]), other: JSON.parse(match[2]) }, { pr: ['3.12'], other: ['3.12', '3.13', '3.14'] });
     assert.match(body, /^ {6}fail-fast: false$/m);
     assert.match(body, /^ {4}name: py\$\{\{ matrix\.python-version \}\} on \$\{\{ matrix\.os \}\}$/m);
+});
+
+test('Windows and macOS run 3.12-3.14 on main, nightly and on demand, never on a PR or in the queue', () => {
+    const text = readWorkflow('portability.yml');
+    const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\nconcurrency:'));
+    for (const event of ['push', 'schedule', 'workflow_dispatch']) assert.match(triggers, new RegExp(`^ {2}${event}:`, 'm'));
+    for (const event of ['pull_request', 'merge_group']) assert.doesNotMatch(triggers, new RegExp(`^ {2}${event}`, 'm'));
+    assert.match(triggers, /^ {4}branches: \[main\]$/m, 'push runs only for main');
+    const body = jobs(text).get('test');
+    assert.deepEqual(matrixList(body, 'os'), ['windows-latest', 'macos-latest']);
+    assert.deepEqual(matrixList(body, 'python-version'), ['"3.12"', '"3.13"', '"3.14"']);
+    assert.match(body, /^ {6}fail-fast: false$/m);
+    assert.match(body, /^ {8}run: python -m tests\.run_suite -v$/m);
+    assert.doesNotMatch(text, /cancel-in-progress: true|cancel-in-progress: \$/, 'no portability run is cancelled');
 });
 
 test('real ComfyUI runs only outside pull requests; the other test.yml checks run on every event', () => {
@@ -338,7 +350,7 @@ test('all tests needs every gating test.yml job and requires the full set outsid
 });
 
 test('the CI workflows run on pull_request, merge_group and push without path filters', () => {
-    for (const name of BOUNDED_WORKFLOWS) {
+    for (const name of GATING_WORKFLOWS) {
         const text = readWorkflow(name);
         const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\n', text.indexOf('\non:') + 1) + 400);
         for (const event of ['merge_group', 'pull_request', 'push']) {
@@ -357,4 +369,5 @@ test('every required check reports on a pull request and the gates carry the ful
     ].sort());
     assert.equal(contexts.filter(context => /^py/.test(context)).length, 1,
         'a dropped matrix leg never reports on a pull request, so it cannot be required');
+    assert.ok(!contexts.some(context => /windows|macos/.test(context)), 'Windows and macOS never gate a merge');
 });

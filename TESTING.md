@@ -273,11 +273,12 @@ gh run view <run id> --json jobs                          # shows a job that alr
 gh run view --job <job id> --log-failed                   # that job's failed log, at once
 ```
 
-Windows, macOS, Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures
-first show up in the merge queue, on the merge-group commit rather than the
+Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures first show up in the
+merge queue, on the merge-group commit rather than the
 pushed one. Find that run with `gh run list --event merge_group --workflow test.yml`
 (or `viewerjs-check.yml`) and match its head branch
-(`gh-readonly-queue/main/pr-<N>-...`).
+(`gh-readonly-queue/main/pr-<N>-...`). Windows and macOS failures show up only
+after the merge, in `gh run list --workflow portability.yml`.
 
 Start fixing as soon as a failed log shows the cause, but push the fix only after
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
@@ -527,12 +528,11 @@ Before changing paths, SQLite, streams, restore or cleanup:
   open with `FirstWriterHold`) and give peers that must all succeed the
   ordinary busy timeout; cross-thread handoffs wait on events with generous
   ceilings, never a short wall clock (#242).
-- Run native Windows CI early for these changes: pull requests run only Linux, so
-  start the full matrix on the branch with `gh workflow run test.yml --ref <branch>`.
-  That run reports the same check names on the PR head, and a red one can hold
-  the PR out of the queue until it is fixed.
-  Include a Windows impact and evidence note in the PR. All nine OS/Python
-  combinations (they run again in the merge queue) and every applicable
+- Run native Windows CI early for these changes. Pull requests and the merge
+  queue run only Linux, so start Windows and macOS on the branch with
+  `gh workflow run portability.yml --ref <branch>`.
+  Include a Windows impact and evidence note in the PR. All six Windows/macOS
+  combinations in that run, every Linux leg and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
   controls do not establish native filesystem, locking or cleanup success.
 
@@ -544,13 +544,14 @@ what runs:
 | Job | `pull_request` | `merge_group`, push to `main`, `workflow_dispatch` |
 | --- | --- | --- |
 | `py3.12 on ubuntu-latest` | runs | runs |
-| other Python/OS legs (3.12-3.14 x Linux/Windows/macOS) | not created | run |
+| `py3.13 on ubuntu-latest`, `py3.14 on ubuntu-latest` | not created | run |
 | `real ComfyUI compatibility` | skipped | runs |
 | `coverage gate (85%)`, `black and flake8`, `frontend modules`, `bandit (high severity)` | run | run |
 | `frontend coverage (shard N/3)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 3) | run | run |
 | `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
 | `all tests`, `viewerjs` (gates) | run | run |
 | `perf budget` | skipped | push and dispatch only (not in the queue) |
+| `py3.12-3.14 on windows-latest/macos-latest` (`portability.yml`) | not run | push to `main`, nightly, `workflow_dispatch` only; never required |
 
 GitHub has one required set for pull requests and the queue. A job skipped by
 its `if:` reports Success. A dropped matrix leg never reports, so it would stay
@@ -560,8 +561,14 @@ guarantee:
   to be skipped.
 - On every other event they require every job to succeed.
 
-So a merge group cannot turn green unless all nine Python/OS legs, real ComfyUI
-and the four browser shards passed. `tests/vendor/ci-workflow.test.mjs` pins the
+So a merge group cannot turn green unless all three Linux Python legs, real
+ComfyUI and the four browser shards passed.
+
+Windows and macOS (Python 3.12-3.14) are out of the blocking path for now
+(maintainer, 2026-10-28). They run in `portability.yml` on every push to `main`,
+nightly and on demand, and no context there is required. A red portability run
+is still a failure: fix it at its cause, not by rerunning, and have every one
+green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
 event split and runs both gate scripts for each event.
 
 ## Required merge checks
