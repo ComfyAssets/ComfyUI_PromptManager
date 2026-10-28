@@ -3,11 +3,8 @@
                 this.prompts = [];
                 this.listMode = "recent"; // "recent" or "search"; a sort change reloads it
                 this.selectedPrompts = new Set();
+                // The page's own options (Page options); every other setting lives in System.
                 this.settings = {
-                    resultTimeout: 5,
-                    webuiDisplayMode: 'popup',
-                    workerThreads: 1,
-                    cpuCount: 1,
                     infiniteScroll: false,
                 };
                 this.categories = [];
@@ -125,7 +122,7 @@
                 document.getElementById("bulkTagBtn").addEventListener("click", () => this.showBulkTagModal());
                 document.getElementById("bulkCategoryBtn").addEventListener("click", () => this.showBulkCategoryModal());
                 document.getElementById("exportBtn").addEventListener("click", () => this.exportPrompts());
-                document.getElementById("settingsBtn").addEventListener("click", () => this.showSettingsModal());
+                document.getElementById("pageOptionsBtn").addEventListener("click", () => this.showSettingsModal());
                 document.getElementById("statsBtn").addEventListener("click", () => this.showStats());
                 document.getElementById("maintenanceBtn").addEventListener("click", () => this.showMaintenanceModal());
                 document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
@@ -193,8 +190,6 @@
                 // Settings modal
                 document.getElementById("saveSettings").addEventListener("click", () => this.saveSettings());
                 document.getElementById("cancelSettings").addEventListener("click", () => this.hideModal("settingsModal"));
-                document.getElementById("refreshMonitoringStatus").addEventListener("click", () => this.updateMonitoringStatus());
-                document.getElementById("addScanPathBtn").addEventListener("click", () => this.addScanPath());
 
                 // Bulk tag modal
                 document.getElementById("confirmBulkTag").addEventListener("click", () => this.confirmBulkTag());
@@ -249,7 +244,6 @@
                 document.getElementById('wd14GeneralThreshold').addEventListener('input', (e) => {
                     document.getElementById('wd14GeneralThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
                 });
-                document.getElementById("workerThreads").addEventListener("input", () => this.renderWorkerThreads());
                 document.getElementById('wd14CharacterThreshold').addEventListener('input', (e) => {
                     document.getElementById('wd14CharacterThresholdValue').textContent = parseFloat(e.target.value).toFixed(2);
                 });
@@ -298,21 +292,9 @@
                     if (response.ok) {
                         const data = await response.json();
                         if (data.success && data.settings) {
-                            this.settings.resultTimeout = data.settings.result_timeout ?? 5;
-                            this.settings.webuiDisplayMode = data.settings.webui_display_mode || 'popup';
                             this.settings.infiniteScroll = data.settings.infinite_scroll === true;
                             // The saved default seeds the session until the header checkbox is used
                             if (!this.infiniteScrollChosen) this.setInfiniteScroll(this.settings.infiniteScroll, { session: false });
-                            this.settings.cpuCount = Math.max(1, parseInt(data.settings.cpu_count, 10) || 1);
-                            this.settings.workerThreads = Math.min(
-                                this.settings.cpuCount, Math.max(1, parseInt(data.settings.worker_threads, 10) || 1)
-                            );
-                            this.settings.monitoredDirectories = data.settings.monitored_directories || [];
-                            this.settings.galleryRootPaths = data.settings.gallery_root_paths || [];
-                            // Backward compat: if server only returned old field
-                            if (!this.settings.galleryRootPaths.length && data.settings.gallery_root_path) {
-                                this.settings.galleryRootPaths = [data.settings.gallery_root_path];
-                            }
                         }
                     }
                 } catch (error) {
@@ -996,255 +978,29 @@
                 });
             }
 
-            renderWorkerThreads() {
-                const threads = document.getElementById("workerThreads");
-                document.getElementById("workerThreadsValue").textContent =
-                    `${threads.value} / ${this.settings.cpuCount} cores`;
-            }
-
+            /** Page options: the prompt list's saved Infinite Scrolling default (scan folders and the rest are in System). */
             showSettingsModal() {
-                document.getElementById("resultTimeout").value = this.settings.resultTimeout;
-                document.getElementById("webuiDisplayMode").value = this.settings.webuiDisplayMode;
                 document.getElementById("infiniteScrollDefault").checked = this.settings.infiniteScroll;
-                const threads = document.getElementById("workerThreads");
-                threads.max = this.settings.cpuCount;
-                threads.value = this.settings.workerThreads;
-                this.renderWorkerThreads();
-                this.renderScanPaths();
-                this.updateMonitoringStatus();
-                this.detectLoraManager();
                 this.showModal("settingsModal");
-            }
-
-            async updateMonitoringStatus() {
-                const statusEl = document.getElementById("monitoringStatus");
-                try {
-                    const response = await ApiClient.fetchUrl("/prompt_manager/settings");
-                    if (response.ok) {
-                        const data = await response.json();
-                        const dirs = data.settings?.monitored_directories || [];
-                        if (dirs.length > 0) {
-                            statusEl.innerHTML = dirs.map(d => `<div class="truncate" title="${escapeHtml(d)}">✓ ${escapeHtml(d)}</div>`).join('');
-                        } else {
-                            statusEl.textContent = 'No directories being monitored (auto-detect on restart)';
-                        }
-                    }
-                } catch (error) {
-                    statusEl.textContent = 'Unable to fetch status';
-                }
             }
 
             // ── LoraManager integration ──────────────────────────────
 
-            async detectLoraManager() {
-                const badge = document.getElementById("loraDetectionBadge");
-                const toggle = document.getElementById("loraEnabled");
-                const settings = document.getElementById("loraSettings");
-
-                try {
-                    // First check current status
-                    const statusRes = await ApiClient.fetchUrl("/prompt_manager/lora/status");
-                    if (statusRes.ok) {
-                        const status = await statusRes.json();
-                        if (status.success && status.enabled) {
-                            badge.textContent = "enabled";
-                            badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400";
-                            toggle.checked = true;
-                            toggle.disabled = false;
-                            document.getElementById("loraManagerPath").value = status.path;
-                            document.getElementById("loraTriggerWords").checked = status.trigger_words_enabled;
-                            const keyInput = document.getElementById("civitaiApiKey");
-                            keyInput.value = "";
-                            keyInput.placeholder = status.has_civitai_api_key
-                                ? "A key is stored — leave empty to keep it"
-                                : "Optional — required for NSFW example images";
-                            document.getElementById("clearCivitaiKey").checked = false;
-                            settings.classList.remove("hidden");
-                            this._loraPath = status.path;
-                            this._bindLoraEvents();
-                            return;
-                        }
-                    }
-
-                    // Try auto-detection
-                    const detectRes = await ApiClient.fetchUrl("/prompt_manager/lora/detect");
-                    if (!detectRes.ok) return;
-                    const data = await detectRes.json();
-
-                    if (data.detected) {
-                        badge.textContent = "detected";
-                        badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400";
-                        toggle.disabled = false;
-                        document.getElementById("loraManagerPath").value = data.path;
-                        this._loraPath = data.path;
-                    } else {
-                        badge.textContent = "not installed";
-                        badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-pm-input text-pm-muted";
-                        toggle.disabled = true;
-                    }
-
-                    this._bindLoraEvents();
-                } catch (e) {
-                    badge.textContent = "error";
-                    badge.className = "text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400";
-                }
-            }
-
-            _bindLoraEvents() {
-                if (this._loraBound) return;
-                this._loraBound = true;
-
-                const toggle = document.getElementById("loraEnabled");
-                const settings = document.getElementById("loraSettings");
-
-                toggle.addEventListener("change", () => {
-                    if (toggle.checked) {
-                        settings.classList.remove("hidden");
-                    } else {
-                        settings.classList.add("hidden");
-                    }
-                });
-
-                document.getElementById("loraImportBtn").addEventListener("click", () => {
-                    this.runLoraImport();
-                });
-            }
-
-            async saveLoraSettings() {
-                const enabled = document.getElementById("loraEnabled").checked;
-                const triggerWords = document.getElementById("loraTriggerWords").checked;
-                const civitaiKey = document.getElementById("civitaiApiKey").value.trim();
-                const clearKey = document.getElementById("clearCivitaiKey").checked;
-                const path = this._loraPath || "";
-
-                // The server never returns the stored key: an empty field keeps it, the
-                // checkbox removes it, and a non-empty field replaces it
-                const payload = { enabled, path, trigger_words_enabled: triggerWords };
-                if (clearKey) payload.clear_civitai_api_key = true;
-                else if (civitaiKey) payload.civitai_api_key = civitaiKey;
-
-                try {
-                    const res = await ApiClient.fetchUrl("/prompt_manager/lora/enable", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(payload),
-                    });
-                    const data = await res.json();
-                    if (!data.success) {
-                        this.showNotification(data.error || "Failed to save LoRA settings", "error");
-                        return false;
-                    }
-                    return true;
-                } catch (e) {
-                    this.showNotification("Failed to save LoRA settings", "error");
-                    return false;
-                }
-            }
-
-            async runLoraImport() {
-                const saved = await this.saveLoraSettings();
-                if (!saved) return;
-
-                // Close settings and show progress modal
-                this.hideModal("settingsModal");
-                document.getElementById("loraImportStatus").textContent = "Initializing...";
-                document.getElementById("loraImportBar").style.width = "0%";
-                document.getElementById("loraImportPercent").textContent = "0%";
-                document.getElementById("loraImportProcessed").textContent = "0 processed";
-                document.getElementById("loraImportImported").textContent = "0 imported";
-                this.showModal("loraImportModal");
-
-                try {
-                    const res = await ApiClient.fetchUrl("/prompt_manager/lora/scan", { method: "POST" });
-                    const reader = res.body.getReader();
-                    const decoder = new TextDecoder();
-                    let buffer = "";
-
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-
-                        buffer += decoder.decode(value, { stream: true });
-                        const lines = buffer.split("\n\n");
-                        buffer = lines.pop();
-
-                        for (const line of lines) {
-                            if (!line.startsWith("data: ")) continue;
-                            try {
-                                const data = JSON.parse(line.slice(6));
-                                const pct = data.progress || 0;
-                                document.getElementById("loraImportBar").style.width = `${pct}%`;
-                                document.getElementById("loraImportPercent").textContent = `${pct}%`;
-
-                                if (data.status) {
-                                    document.getElementById("loraImportStatus").textContent = data.status;
-                                }
-                                if (data.processed !== undefined) {
-                                    document.getElementById("loraImportProcessed").textContent = `${data.processed} processed`;
-                                }
-                                if (data.imported !== undefined) {
-                                    document.getElementById("loraImportImported").textContent = `${data.imported} imported`;
-                                }
-
-                                if (data.type === "complete") {
-                                    document.getElementById("loraImportStatus").textContent =
-                                        `Done — ${data.imported} imported, ${data.skipped} skipped`;
-                                    this.loadStatistics();
-                                    setTimeout(() => this.hideModal("loraImportModal"), 2000);
-                                } else if (data.type === "error") {
-                                    // A refusal (another job runs) or a failed import: name it and close the modal.
-                                    document.getElementById("loraImportStatus").textContent = `Error: ${data.message}`;
-                                    this.showNotification(`LoRA import failed: ${data.message}`, "error");
-                                    setTimeout(() => this.hideModal("loraImportModal"), 3000);
-                                }
-                            } catch (e) { /* skip malformed SSE */ }
-                        }
-                    }
-                } catch (e) {
-                    document.getElementById("loraImportStatus").textContent = `Error: ${e.message}`;
-                    setTimeout(() => this.hideModal("loraImportModal"), 3000);
-                }
-            }
-
+            /** Saves Page options: only `infinite_scroll`, so a stale page never overwrites what System saved (#330 S13-9). */
             async saveSettings() {
-                const timeout = parseInt(document.getElementById("resultTimeout").value);
-                const displayMode = document.getElementById("webuiDisplayMode").value;
-                const workerThreads = parseInt(document.getElementById("workerThreads").value, 10) || 1;
                 const infiniteScroll = document.getElementById("infiniteScrollDefault").checked;
-                const galleryPaths = this._collectScanPaths().filter(p => p !== '');
-
-                this.settings.resultTimeout = timeout;
-                this.settings.webuiDisplayMode = displayMode;
-                this.settings.workerThreads = workerThreads;
-                this.settings.infiniteScroll = infiniteScroll;
-                this.settings.galleryRootPaths = galleryPaths;
 
                 try {
                     const response = await ApiClient.fetchUrl("/prompt_manager/settings", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            result_timeout: timeout,
-                            webui_display_mode: displayMode,
-                            worker_threads: workerThreads,
-                            infinite_scroll: infiniteScroll,
-                            gallery_root_paths: galleryPaths
-                        }),
+                        body: JSON.stringify({ infinite_scroll: infiniteScroll }),
                     });
 
                     if (response.ok) {
-                        const data = await response.json();
-
-                        // Save LoRA integration settings (fire-and-forget)
-                        await this.saveLoraSettings();
-
+                        this.settings.infiniteScroll = infiniteScroll;
                         this.setInfiniteScroll(infiniteScroll, { session: false });
-
-                        if (data.restart_required) {
-                            this.showNotification("Settings saved. Restart ComfyUI for gallery path changes to take effect.", "warning");
-                        } else {
-                            this.showNotification("Settings saved successfully", "success");
-                        }
+                        this.showNotification("Page options saved", "success");
                         this.hideModal("settingsModal");
                     } else {
                         // A refusal names its reason (a corrupt config.json, a changed file): show it.
@@ -1255,57 +1011,6 @@
                     const reason = error.message.startsWith("Failed to save settings:") ? error.message : "Failed to save settings";
                     this.showNotification(reason, "error");
                 }
-            }
-
-            renderScanPaths() {
-                const container = document.getElementById("scanPathsList");
-                const paths = this.settings.galleryRootPaths || [];
-                container.textContent = '';  // Clear safely
-
-                const toRender = paths.length > 0 ? paths : [''];
-                toRender.forEach((p, i) => {
-                    const row = document.createElement('div');
-                    row.className = 'flex gap-2 items-center';
-                    row.dataset.pathIndex = i;
-
-                    const input = document.createElement('input');
-                    input.type = 'text';
-                    input.value = p;
-                    input.placeholder = 'Leave empty for auto-detect';
-                    input.className = 'flex-1 px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none scan-path-input';
-
-                    const removeBtn = document.createElement('button');
-                    removeBtn.type = 'button';
-                    removeBtn.className = 'text-pm-muted hover:text-red-400 p-1 text-lg leading-none';
-                    removeBtn.title = 'Remove';
-                    removeBtn.textContent = '\u00d7';  // multiplication sign as X
-                    removeBtn.addEventListener('click', () => this.removeScanPath(i));
-
-                    row.appendChild(input);
-                    row.appendChild(removeBtn);
-                    container.appendChild(row);
-                });
-            }
-
-            addScanPath() {
-                const paths = this._collectScanPaths();
-                paths.push('');
-                this.settings.galleryRootPaths = paths;
-                this.renderScanPaths();
-                const inputs = document.querySelectorAll('.scan-path-input');
-                if (inputs.length) inputs[inputs.length - 1].focus();
-            }
-
-            removeScanPath(index) {
-                const paths = this._collectScanPaths();
-                paths.splice(index, 1);
-                this.settings.galleryRootPaths = paths;
-                this.renderScanPaths();
-            }
-
-            _collectScanPaths() {
-                return Array.from(document.querySelectorAll('.scan-path-input'))
-                    .map(input => input.value.trim());
             }
 
             toggleSelectAll(checked) {

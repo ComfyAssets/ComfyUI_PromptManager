@@ -18,6 +18,7 @@ const LABELS = Object.freeze({
 // One row per System link of the design's §2 map: the page, the control's label, how to find it, the section it opens
 // and what a test must arrange before the control shows.
 const LINKS = Object.freeze([
+    { page: 'admin', label: 'Settings', locate: page => page.locator('#settingsBtn'), section: 'overview' },
     { page: 'admin', label: 'Diagnostics', locate: page => page.locator('#diagnosticsBtn'), section: 'diagnostics' },
     { page: 'admin', label: 'View Logs', locate: page => page.locator('#logsBtn'), section: 'diagnostics' },
 ]);
@@ -154,4 +155,30 @@ test('kept admin flows still work', async ({ page, context }) => {
         expect(new URL(tab.url()).pathname).toBe(path);
         await tab.close();
     }
+});
+
+test('Page options keeps the page-only settings admin', async ({ page, request }) => {
+    const before = (await (await request.get('/prompt_manager/settings')).json()).settings;
+    await page.goto(PAGES.admin);
+    await expect(page.locator('#resultsList .prompt-text').first()).toBeVisible();
+    await page.locator('#pageOptionsBtn').click();
+    const dialog = page.locator('#settingsModal');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('h3')).toHaveText('Page options');
+    // Exactly the page-only setting (G5): the list's Infinite Scrolling default.
+    expect(await dialog.locator('input, select, textarea').evaluateAll(fields => fields.map(field => field.id)))
+        .toEqual(['infiniteScrollDefault']);
+    await expect(page.locator('#infiniteScrollDefault')).not.toBeChecked();
+    await page.locator('#infiniteScrollDefault').check();
+    const saved = page.waitForRequest(item => item.method() === 'POST' && item.url().endsWith('/prompt_manager/settings'));
+    await page.locator('#saveSettings').click();
+    expect((await saved).postDataJSON()).toEqual({ infinite_scroll: true });
+    await expect(dialog).toBeHidden();
+    // The list header follows the saved default at once; nothing else changed.
+    await expect(page.locator('#infiniteScrollSession')).toBeChecked();
+    const after = (await (await request.get('/prompt_manager/settings')).json()).settings;
+    expect(after).toEqual({ ...before, infinite_scroll: true });
+    await page.reload();
+    await page.locator('#pageOptionsBtn').click();
+    await expect(page.locator('#infiniteScrollDefault')).toBeChecked();
 });
