@@ -95,7 +95,8 @@ def copy_move(target, kept_stat, spellings):
 
     A record found under a folder spelling moves to the kept copy under
     the same spelling when that folder holds it too, else to its real
-    path. Its favorite moves under every listed root holding the file.
+    path. Its favorite and its collection memberships move under every
+    listed root holding the file.
     """
     removed = spellings.of(target["abs"])
     kept = spellings.of(target["keeper_abs"])

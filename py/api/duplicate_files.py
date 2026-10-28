@@ -588,7 +588,9 @@ class DuplicateFilesMixin:
         job.update(total=len(targets), status_line="Removing duplicate files")
         spellings = await self._run_in_executor(self._source_spellings)
         removed, failure, keepers = 0, None, {}
-        totals = dict.fromkeys(("moved", "merged", "favorites", "tags", "review"), 0)
+        totals = dict.fromkeys(
+            ("moved", "merged", "favorites", "tags", "review", "collections"), 0
+        )
         for done, target in enumerate(targets, start=1):
             if failure is not None:
                 self._record_target(job, "kept", target, NOT_ATTEMPTED)
@@ -630,6 +632,11 @@ class DuplicateFilesMixin:
         if totals["favorites"]:
             job.log_line(
                 f"Moved {_plural(totals['favorites'], 'favorite')} to the kept copies"
+            )
+        if totals["collections"]:
+            job.log_line(
+                f"Moved {_plural(totals['collections'], 'collection membership')} "
+                "to the kept copies"
             )
         if totals["tags"]:
             job.log_line(

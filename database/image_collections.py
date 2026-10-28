@@ -229,3 +229,231 @@ def migrate_image_collections(conn: sqlite3.Connection) -> None:
         conn.execute("ROLLBACK TO image_collections_schema")
         conn.execute("RELEASE image_collections_schema")
         raise
+
+
+class CollectionMissing(LookupError):
+    """No collection has the id (a 404 ``collection-not-found``)."""
+
+
+class CollectionNameTaken(ValueError):
+    """Another collection already has the name's key (a 409 ``name-taken``)."""
+
+    def __init__(self, collection_id: int):
+        super().__init__("Another collection has this name")
+        self.collection_id = collection_id
+
+
+class CollectionFilesMissing(LookupError):
+    """A new name with nothing to insert (a 404 ``files-not-found``)."""
+
+
+LIST_SQL = f"SELECT id, name FROM {COLLECTIONS_TABLE} ORDER BY name_key, id"
+GET_SQL = f"SELECT id, name FROM {COLLECTIONS_TABLE} WHERE id = ?"
+BY_KEY_SQL = f"SELECT id, name FROM {COLLECTIONS_TABLE} WHERE name_key = ?"
+MEMBERS_SQL = (
+    f"SELECT relative_path FROM {ITEMS_TABLE} "
+    "WHERE collection_id = ? AND root_key = ?"
+)
+ROOT_MEMBERS_SQL = (
+    f"SELECT collection_id, relative_path FROM {ITEMS_TABLE} WHERE root_key = ?"
+)
+COUNTS_SQL = (
+    f"SELECT c.id, (SELECT COUNT(*) FROM {ITEMS_TABLE} i "
+    f"WHERE i.collection_id = c.id) FROM {COLLECTIONS_TABLE} c"
+)
+FILE_SQL = (
+    f"SELECT collection_id FROM {ITEMS_TABLE} "
+    "WHERE root_key = ? AND relative_path = ? ORDER BY collection_id"
+)
+# Every read, for the EXPLAIN QUERY PLAN check: none scans the items table and
+# only the two whole-list reads (LIST_SQL, COUNTS_SQL) scan the collections.
+READ_SQL = (
+    LIST_SQL,
+    GET_SQL,
+    BY_KEY_SQL,
+    MEMBERS_SQL,
+    ROOT_MEMBERS_SQL,
+    COUNTS_SQL,
+    FILE_SQL,
+)
+_INSERT_ITEM_SQL = f"INSERT OR IGNORE INTO {ITEMS_TABLE} VALUES (?, ?, ?, ?)"
+_DELETE_ITEM_SQL = (
+    f"DELETE FROM {ITEMS_TABLE} "
+    "WHERE collection_id = ? AND root_key = ? AND relative_path = ?"
+)
+
+
+def _collection_id(value: object) -> int:
+    if type(value) is not int or not 1 <= value <= 999_999_999:
+        raise CollectionInvalid("Collection id must be a positive integer")
+    return value
+
+
+def _items(items: object) -> list:
+    """Distinct ``(root key, relative key)`` pairs, in order."""
+    if not isinstance(items, (list, tuple)):
+        raise CollectionInvalid("Items must be a list")
+    found = []
+    for item in items:
+        if (
+            not isinstance(item, (list, tuple))
+            or len(item) != 2
+            or not all(
+                isinstance(part, str) and 1 <= len(part) <= MAX_KEY_LENGTH
+                for part in item
+            )
+        ):
+            raise CollectionInvalid("Each item is a root key and a relative key")
+        found.append((item[0], item[1]))
+    return list(dict.fromkeys(found))
+
+
+def _row(row) -> dict:
+    return {"id": row[0], "name": row[1]}
+
+
+class ImageCollectionOperations:
+    """PromptDatabase mixin: collections and their members.
+
+    Each write runs in its own ``BEGIN IMMEDIATE`` transaction
+    (``_pair_transaction``), so two tabs creating one name are serialized.
+    """
+
+    def list_collections(self) -> list[dict]:
+        """Every collection ``{id, name}`` in name-key order, then id."""
+        rows = self.model.get_connection().execute(LIST_SQL)
+        return [_row(row) for row in rows]
+
+    def get_collection(self, collection_id: int) -> Optional[dict]:
+        """``{id, name}`` of one collection, or None."""
+        row = (
+            self.model.get_connection()
+            .execute(GET_SQL, (_collection_id(collection_id),))
+            .fetchone()
+        )
+        return _row(row) if row else None
+
+    def collection_exists(self, collection_id: int) -> bool:
+        return self.get_collection(collection_id) is not None
+
+    def collection_members(self, collection_id: int, root_key: str) -> set[str]:
+        """The relative keys stored for one collection under one source."""
+        rows = self.model.get_connection().execute(
+            MEMBERS_SQL, (_collection_id(collection_id), root_key)
+        )
+        return {path for (path,) in rows}
+
+    def root_collection_members(self, root_key: str) -> dict[int, set[str]]:
+        """``{collection id: relative keys}`` stored under one source."""
+        found: dict[int, set[str]] = {}
+        for collection_id, path in self.model.get_connection().execute(
+            ROOT_MEMBERS_SQL, (root_key,)
+        ):
+            found.setdefault(collection_id, set()).add(path)
+        return found
+
+    def collection_counts(self) -> dict[int, int]:
+        """``{collection id: stored rows}`` for every collection."""
+        rows = self.model.get_connection().execute(COUNTS_SQL)
+        return {collection_id: count for collection_id, count in rows}
+
+    def file_collections(self, root_key: str, relative_path: str) -> list[int]:
+        """Ids of the collections holding one file."""
+        rows = self.model.get_connection().execute(FILE_SQL, (root_key, relative_path))
+        return [collection_id for (collection_id,) in rows]
+
+    def add_to_collection(
+        self, *, items: object, collection_id: object = None, name: object = None
+    ) -> dict:
+        """Add files to an existing id or a name; create the name when needed.
+
+        A name whose key exists uses that collection; otherwise a collection
+        is created only when at least one item is inserted. Returns
+        ``{collection, created, added, already}``.
+        """
+        from .models import utc_now_iso  # models imports this module's schema
+
+        if (collection_id is None) == (name is None):
+            raise CollectionInvalid("Give either a collection id or a name")
+        pairs = _items(items)
+        if name is not None:
+            spelled = normalize_collection_name(name)
+        else:
+            collection_id = _collection_id(collection_id)
+        now = utc_now_iso()
+        with self._pair_transaction() as conn:
+            created = False
+            if name is not None:
+                row = conn.execute(
+                    BY_KEY_SQL, (collection_name_key(spelled),)
+                ).fetchone()
+                if row is None:
+                    if not pairs:
+                        raise CollectionFilesMissing("Nothing to add")
+                    cursor = conn.execute(
+                        f"INSERT INTO {COLLECTIONS_TABLE} "  # nosec B608
+                        "(name, name_key, created_at) VALUES (?, ?, ?)",
+                        (spelled, collection_name_key(spelled), now),
+                    )
+                    row, created = (cursor.lastrowid, spelled), True
+            else:
+                row = conn.execute(GET_SQL, (collection_id,)).fetchone()
+                if row is None:
+                    raise CollectionMissing("No such collection")
+            collection = _row(row)
+            added = sum(
+                conn.execute(
+                    _INSERT_ITEM_SQL, (collection["id"], root, path, now)
+                ).rowcount
+                for root, path in pairs
+            )
+        return {
+            "collection": collection,
+            "created": created,
+            "added": added,
+            "already": len(pairs) - added,
+        }
+
+    def remove_from_collection(self, collection_id: object, items: object) -> dict:
+        """Remove files from one collection; ``{collection, removed}``."""
+        collection_id = _collection_id(collection_id)
+        pairs = _items(items)
+        with self._pair_transaction() as conn:
+            row = conn.execute(GET_SQL, (collection_id,)).fetchone()
+            if row is None:
+                raise CollectionMissing("No such collection")
+            removed = sum(
+                conn.execute(_DELETE_ITEM_SQL, (collection_id, root, path)).rowcount
+                for root, path in pairs
+            )
+        return {"collection": _row(row), "removed": removed}
+
+    def rename_collection(self, collection_id: object, name: object) -> dict:
+        """The renamed ``{id, name}``; a case variant of its own name is fine."""
+        collection_id = _collection_id(collection_id)
+        spelled = normalize_collection_name(name)
+        key = collection_name_key(spelled)
+        with self._pair_transaction() as conn:
+            if conn.execute(GET_SQL, (collection_id,)).fetchone() is None:
+                raise CollectionMissing("No such collection")
+            taken = conn.execute(BY_KEY_SQL, (key,)).fetchone()
+            if taken is not None and taken[0] != collection_id:
+                raise CollectionNameTaken(taken[0])
+            conn.execute(
+                f"UPDATE {COLLECTIONS_TABLE} SET name = ?, name_key = ? "  # nosec B608
+                "WHERE id = ?",
+                (spelled, key, collection_id),
+            )
+        return {"id": collection_id, "name": spelled}
+
+    def delete_collection(self, collection_id: object) -> bool:
+        """Delete one collection and its members (never a file). True."""
+        collection_id = _collection_id(collection_id)
+        with self._pair_transaction() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM {COLLECTIONS_TABLE} WHERE id = ?",  # nosec B608
+                (collection_id,),
+            )
+            if cursor.rowcount == 0:
+                raise CollectionMissing("No such collection")
+        return True
