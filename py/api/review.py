@@ -677,7 +677,14 @@ def _verify_and_read(store, capture, item, root, need_metadata: bool):
     facts = store.verify(root, relative)
     captured = None
     if need_metadata:
-        captured = captured_review(store, capture, item_profile(item["evidence"]))
+        # The file's own name, so an inspection item resolves anchored on its
+        # saver as it was recorded (#390).
+        captured = captured_review(
+            store,
+            capture,
+            item_profile(item["evidence"]),
+            relative.rsplit("/", 1)[-1],
+        )
     return relative, facts, captured
 
 
@@ -723,6 +730,9 @@ def _candidate_still_offered(resolution: dict, choice: str) -> bool:
     that rewords the top-level reason or reorders candidates leaves a
     pending item applicable.
     """
+    if isinstance(resolution, dict) and resolution.get("anchor") == "saver":
+        # Only the saver anchor resolves the bytes (#390): its pair alone.
+        resolution = {"state": "ambiguous", "candidates": [resolution]}
     if not isinstance(resolution, dict) or resolution.get("state") != "ambiguous":
         return False
     evidence, _count, limited = review_evidence(resolution)

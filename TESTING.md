@@ -3200,12 +3200,16 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   again"; an Unload that found nothing loaded only reads the status again. At phone width
   the concept's 120px select cap cuts every engine label, so `#tag-model` alone keeps its
   natural width there and its row wraps the select under the text (`workspace.css`
-  `/* D132 */`); Existing tags stays as the concept draws it, cut at 390 as there. The
-  comparison maps `selectsFit` only for the engine select and measures each row's
-  `flexWrap` and whether its control sits under the text. Pinned by `auto-tagging matches
-  the concept` (both themes and sizes), `auto-tagging at 390 wraps only the engine row`,
-  `auto-tagging engine select fits at 320 wide` and the mutation check (it includes a
-  wrapped row) (system-tagging-concept.spec), and the model, Download, Unload and Preview
+  `/* D132 */`). The concept's cap cuts Existing tags too ("Replace after review"); by the
+  maintainer's decision (#398) that parity is not kept: `#tag-existing` never shrinks for
+  its row text and at phone width keeps its natural width beside the text (its row does
+  not wrap; the text column narrows). 1600 is as the concept draws it. The comparison
+  expects `selectsFit` true for every select and measures each row's `flexWrap` and
+  whether its control sits under the text. Pinned by `auto-tagging matches the concept`
+  (both themes and sizes), `auto-tagging at 390 wraps only the engine row`, `auto-tagging
+  selects fit every option at 390/320 wide` (every option of both selects, both themes, no
+  page scroll) and the mutation check (a wrapped row, a squeezed engine and Existing tags
+  select) (system-tagging-concept.spec), and the model, Download, Unload and Preview
   tests of workspace-system-tagging.spec.
 - **D133** (Auto-tagging, S11): a "Suggestions per image" row (`#tag-suggestions`,
   number 1–100, host key `autotag_suggestion_limit`) follows the two confidence rows:
@@ -3979,7 +3983,30 @@ modals use the same routes and keep working.
   other: each file's identity is checked just before its unlink.
 - **Clear all logs** (`POST /logs/truncate`, also the admin page's Clear) empties the
   active log through its handler, deletes the rotated copies (Rule R) and clears the
-  buffer; other files and links are kept. Response keys are unchanged.
+  buffer; other files and links are kept. Response keys are unchanged. It deletes or
+  empties no more than its confirmation showed (#389):
+  - `/logs/files` rows carry `identity`, the string `"<size>:<mtime_ns>:<ino>"` (a
+    string: `mtime_ns` and many inodes are beyond a browser's exact integers). The
+    workspace sends `{"expected": [{name, identity}]}` with the active and rotated rows
+    its dialog was built from. Under the files lock and every handler lock each listed
+    rotated copy must still match (`_matches_review`) and the listed active log must be
+    the same inode, or nothing changes: 409 `logs-changed`. Only listed copies are
+    deleted; one that appeared after the confirmation is kept. A malformed list is 400.
+  - Without a body (the legacy admin page, whose confirm lists nothing; also the
+    workspace when the file list could not be read and the dialog said "deletes its
+    rotated copies") every rotated copy present at the locked rescan is deleted.
+  - Either way, before anything changes (best effort, not a cross-process lock: a
+    write before our own last write, or any while file logging is off here, is not
+    seen): a second writer of the active log (our
+    handler's flushed stream is behind the file's size, or its file is now a rotated
+    copy: another ComfyUI sharing the folder) is 409 `logs-foreign-writer`; an active
+    log with more than one name (`st_nlink > 1` by `lstat` or the handler's `fstat`,
+    NTFS included) is 409 `logs-hard-link`, never truncated (replacing it instead would
+    rename a file our handler holds open, which Windows refuses). Each copy is
+    `lstat`-checked again just before its unlink; one that changed stops the clear there
+    and keeps it, the copies after it and the active log, which is emptied last.
+  - The browser fixture grows the active log through the handler's own stream, since a
+    second handle appending to it is exactly what Clear refuses.
 - **Runtime settings** (`GET/POST /logs/config`): the level (DEBUG…CRITICAL) and console
   logging apply until the server restarts; the retention values are shown read-only in
   the workspace and the API keeps accepting them.
@@ -4098,6 +4125,33 @@ list stay unscoped: any row's control proves them.
 | Client debug output `debugMode` | `gallery-settings.js:36` | Legacy gallery (S12-10) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
 | API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
 | config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
+
+### Legacy System UI removed by S13
+
+System S13 (#330) points the legacy pages' System buttons at native System (a link that
+opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a capability
+only when its row above is `covered`. One row per removed capability: Capability is the
+exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
+Removed methods list what went (`—` for none), and Native test copies that row's Test
+cell. An id that stays on a System link is not listed, only its handler.
+
+`tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
+`covered` or copies another test, when an id or method is listed twice for one page, or
+when a listed id is still on its page (`id="…"` in the markup or the script, a
+`getElementById`/`querySelector('#…')` lookup, an entry of a modal-id list) or a listed
+method is still defined or called (`.name(`). A deletion listed nowhere is caught by the
+kept-flow tests (`kept admin flows still work` in `legacy-system-links.spec.mjs` and the
+legacy page workflows), not by this check.
+
+| Capability | Page | Removed ids | Removed methods | Native test |
+| --- | --- | --- | --- | --- |
+| Diagnostics run | admin | `#diagnosticsModal`, `#runDiagnosticsBtn`, `#diagnosticsContent` | `showDiagnosticsModal()`, `closeDiagnostics()`, `runDiagnostics()`, `renderDiagnostics()` | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
+| Synthetic image-link test | admin | `#testImageLinkBtn` | `testImageLink()` | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
+| View logs with level and limit | admin | `#logsModal`, `#logLevel`, `#logLimit`, `#refreshLogsBtn`, `#logsContainer` | `showLogsModal()`, `closeLogs()`, `refreshLogs()`, `displayLogs()` | level filter is minimum-level over all six choices (workspace-system-diagnostics.spec.mjs) |
+| Log statistics | admin | `#logStatsTotal`, `#logStatsErrors`, `#logStatsWarnings`, `#logStatsLevel`, `#logStatsSize` | `loadLogStats()`, `formatBytes()` | log statistics show entries, errors, warnings, files and size (workspace-system-diagnostics.spec.mjs) |
+| Log files list and download | admin | `#downloadLogsBtn`, `#logFilesList` | `loadLogFiles()`, `downloadLogs()`, `downloadLogFile()` | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
+| Clear/truncate logs | admin | `#clearLogsBtn` | `clearLogs()` | Clear all logs states both counts, confirms first and reads everything again (workspace-system-diagnostics.spec.mjs) |
+| Set log level (incl. CRITICAL), console logging | admin | `#updateLogConfigBtn`, `#setLogLevel`, `#consoleLogging` | `loadLogConfig()`, `updateLogConfig()` | runtime level (including CRITICAL) and console logging save and say they apply until the server restarts (workspace-system-diagnostics.spec.mjs) |
 
 ### Browser cache ownership (#222)
 
@@ -4656,7 +4710,23 @@ files, oldest forgotten first, keyed by 16-byte digests: 8.6 MiB measured at
 the cap). A file whose inspection raises is logged, counted in
 `review_errors` and reported `unresolved`; the scan goes on. An older version's
 pending, undecided item of bytes now untraced leaves the queue
-(`settle_stale_review_items`), so an item never stays stuck at 409. The 16-candidate limited
+(`settle_stale_review_items`), so an item never stays stuck at 409.
+Saver anchor (#390, `tests/test_review_saver_anchor.py`): the scan and Apply
+resolve with the file's name as the workspace inspector does, so the one saver
+whose `filename_prefix` names the file anchors its branch. A file is never both
+unlinked and unqueued (maintainer ruling): when only that anchor resolves it
+(the named inspection run resolves, the unnamed one does not) and neither the
+default profile nor the parser floor links it, the scan queues it with the
+anchor's pair as its one candidate (evidence `anchor: "saver"`; the page
+preselects it), never linking it. Such an item counts as a choice for the
+untraced settle. Files already linked or resolved by the default path are
+unchanged. No match, several matches or an unfinished walk anchor nothing, and
+the file is queued as before. `REVIEW_RULE_VERSION` is folded into inspection
+item versions, so older inspection items are recorded again once. Apply accepts
+the anchored pair and refuses a choice the anchor contradicts. Measured on the
+maintainer's 40,890 outputs: the queue is unchanged (249 files); the 242
+`gpu_unlock_bench` files the inspector resolves are linked by the parser
+floor. The 16-candidate limited
 rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
