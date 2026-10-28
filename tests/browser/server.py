@@ -48,6 +48,7 @@ from tests.browser.workspace_vocabulary_fixture import register_vocabulary_comma
 from tests.browser.workspace_tagging_fixture import register_tagging_commands
 from tests.browser.source_change_fixture import register_source_change_commands
 from tests.browser.workspace_review_fixture import register_review_commands
+from tests.browser.workspace_collections_fixture import register_collections_commands
 from tests.browser.workspace_diagnostics_fixture import (
     register_diagnostics_commands,
     repoint_logs,
@@ -234,6 +235,7 @@ def create_app(root: Path) -> web.Application:
     restore_sources = register_source_change_commands(routes, api)
     register_tagging_commands(routes, api, root, model, on_reset=restore_sources)
     register_review_commands(routes, api, root)
+    register_collections_commands(routes, api, root)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
     register_system_commands(app, routes, api, root)

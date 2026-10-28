@@ -206,3 +206,31 @@ test('a viewer whose media source was renumbered closes onto the file, kept sele
     await expect(page.locator('#viewer-dialog').getByText('Media could not be loaded. Retry this file.', { exact: true })).toBeHidden();
     await expect.poll(() => page.locator('#viewer-dialog img').first().evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
 });
+
+test('a collection page finds a renumbered member again and stays on its members', async ({ page, request }) => {
+    // Members are stored by root path, not index (#331), so a renumbering keeps them; the page's scopes go stale.
+    const listing = await (await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();
+    const first = listing.images.find(image => image.path === FIRST && image.root_index === 0);
+    const name = `Stale ${test.info().workerIndex}-${Date.now()}`;
+    const added = await request.post('/prompt_manager/collections/items', { data: { name, items: [
+        { root_index: 0, root_scope: first.root_scope, path: FIRST }] } });
+    await expect(added).toBeOK();
+    const collections = (await (await request.get('/prompt_manager/collections')).json()).collections;
+    const { id } = collections.find(item => item.name === name);
+    await page.goto(`/prompt_manager/workspace#/collection/${id}`);
+    await expect(cards(page)).toHaveCount(1);
+    await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
+    await expect(await request.post('/__test__/sources/reverse')).toBeOK();
+
+    const rescoped = answered(page, '/images/rescope');
+    const relisted = page.waitForResponse(item => item.url().includes('/images/output?') && new URL(item.url()).searchParams.get('collection') === String(id));
+    await card(page, FIRST).locator('.image-open').click();
+    expect((await (await rescoped).json()).image.root_index).toBe(1);
+    expect((await relisted).status()).toBe(200);
+    await expect(page).toHaveURL(new RegExp(`#/collection/${id}$`));
+    await expect(cards(page)).toHaveCount(1);
+    await expect(card(page, FIRST, 1)).toHaveClass(/\bselected\b/);
+    // Tag image works on the member under its new source.
+    expect((await openTag(page, FIRST, 1)).status()).toBe(200);
+    await expect(notice(page)).toHaveCount(0);
+});

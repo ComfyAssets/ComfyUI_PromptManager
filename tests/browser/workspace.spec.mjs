@@ -548,12 +548,16 @@ test('sidebar matches the concept groups and shows real counts', async ({ page, 
     await expect(page.locator('.workspace-shell, .workspace-body, .sidebar-footer, .connection-dot, .workspace-icon')).toHaveCount(0);
     const sidebar = page.locator('aside.sidebar');
     expect(await childShape(sidebar)).toEqual(['a.brand', 'div.sidebar-label', 'nav#primary-nav', 'div.sidebar-label',
-        'nav#saved-nav', 'div.sidebar-bottom']);
+        'nav#saved-nav', 'div.sidebar-label', 'nav#collections-nav', 'div.sidebar-bottom']);
     await expect(sidebar.locator('.brand')).toHaveAttribute('href', '#/images');
-    // D49: SAVED VIEWS without the concept's PROPOSED badge; D28: still no COLLECTIONS.
-    await expect(sidebar.locator('.sidebar-label')).toHaveText(['WORKSPACE', 'SAVED VIEWS']);
+    // D49: SAVED VIEWS without the concept's PROPOSED badge. D136: COLLECTIONS without it either, its label hidden
+    // and its nav empty while no collection exists.
+    await expect(sidebar.locator('.sidebar-label')).toHaveText(['WORKSPACE', 'SAVED VIEWS', 'COLLECTIONS']);
+    await expect(sidebar.locator('.sidebar-label').nth(2)).toBeHidden();
     await expect(page.locator('nav#saved-nav')).toHaveAttribute('aria-label', 'Saved views');
-    await expect(page.locator('#collections-nav, .new-label')).toHaveCount(0);
+    await expect(page.locator('nav#collections-nav')).toHaveAttribute('aria-label', 'Collections');
+    await expect(page.locator('nav#collections-nav > a')).toHaveCount(0);
+    await expect(page.locator('.new-label')).toHaveCount(0);
     const primary = page.locator('nav#primary-nav');
     await expect(primary).toHaveAttribute('aria-label', 'Workspace');
     for (const [id] of NAV_TOTALS) await expect(navCount(page, id)).toHaveText(totals[id].toLocaleString('en-US'));
@@ -580,7 +584,7 @@ test('sidebar matches the concept groups and shows real counts', async ({ page, 
     // At phone width the concept wraps the links and hides counts and the connection (concept 950px block).
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(navCount(page, 'library')).toBeHidden();
-    await expect(page.locator('.sidebar-label, .connection')).toHaveCount(3);
+    await expect(page.locator('.sidebar-label, .connection')).toHaveCount(4);
     for (const hidden of await page.locator('.sidebar-label, .connection').all()) await expect(hidden).toBeHidden();
     await expect(primary.locator('a[href="#/inspect"]')).toBeVisible();
 });
