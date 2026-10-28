@@ -63,9 +63,9 @@ test('status line shows only server-reported backups (D103)', async () => {
 
 const PREVIEW = Object.freeze({
     success: true, token: 'r'.repeat(43), expires_at: '2026-10-25T12:15:00+00:00',
-    summary: { prompts: 1234, positives: 900, pairs: 3, archived_pairs: 0, image_links: 56, runs: 1, saved_views: 2 },
+    summary: { prompts: 1234, positives: 900, pairs: 3, archived_pairs: 0, image_links: 56, runs: 1, saved_views: 2, collections: 1 },
     schema: { migrated: true, library_state: true }, integrity: 'ok', documents: { repaired: 0, cleared: 0, images: 0 },
-    live: { prompts: 1, positives: 1, pairs: 0, archived_pairs: 0, image_links: 0, runs: 0, saved_views: 0 }, size: 4096,
+    live: { prompts: 1, positives: 1, pairs: 0, archived_pairs: 0, image_links: 0, runs: 0, saved_views: 0, collections: 0 }, size: 4096,
     safety_backup: { destination_label: 'prompts.db.backup_<date and time>' },
 });
 

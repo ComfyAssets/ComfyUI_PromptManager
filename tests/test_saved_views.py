@@ -40,6 +40,7 @@ IMAGES_STATE = {
     "media": "all",
     "tags": ["fluffy"],
     "favorites": False,
+    "collection": "",
 }
 LIBRARY_STATE = {"q": "", "category": "", "sort": "rating", "tags": []}
 IMAGES_DEFAULTS = {
@@ -51,6 +52,7 @@ IMAGES_DEFAULTS = {
     "media": "all",
     "tags": [],
     "favorites": False,
+    "collection": "",
 }
 LIBRARY_DEFAULTS = {"q": "", "category": "", "sort": "newest", "tags": []}
 # A row saved by an older build: no favorites key, a retired key, a sort
@@ -229,6 +231,48 @@ class TestSavedViewsApi(ImageAPITestCase):
             await self.create(page="library", state={"sort": sort, "tags": ["a b"]})
         _, listed = await self.send("GET")
         self.assertEqual(len(listed["views"]), 20)
+
+    async def test_write_requires_the_collection_key(self):
+        # #331 D140: a view saved on a collection page keeps the collection id.
+        without = {k: v for k, v in IMAGES_STATE.items() if k != "collection"}
+        good = {"page": "images", "name": "Grid", "state": IMAGES_STATE}
+        cases = [
+            {**good, "state": without},
+            {**good, "state": {**IMAGES_STATE, "collection": "0"}},
+            {**good, "state": {**IMAGES_STATE, "collection": "x"}},
+            {**good, "state": {**IMAGES_STATE, "collection": 12}},
+            {**good, "state": {**IMAGES_STATE, "collection": "012"}},
+            {**good, "state": {**IMAGES_STATE, "collection": "1" * 10}},
+            {**good, "state": {**IMAGES_STATE, "collection": None}},
+            # Favorites and a collection are never both a view's filter.
+            {
+                **good,
+                "state": {**IMAGES_STATE, "favorites": True, "collection": "3"},
+            },
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                response, data = await self.send("POST", body=body)
+                self.assertEqual(response.status, 400, data)
+                self.assertFalse(data["success"])
+        for collection in ("1", "12", "9" * 9):
+            view = await self.create(state={"collection": collection})
+            self.assertEqual(view["state"]["collection"], collection)
+            self.assertIs(view["state"]["favorites"], False)
+
+    async def test_an_old_row_without_a_collection_reads_empty(self):
+        with self.api.db.model.get_connection() as conn:
+            conn.execute(
+                f"INSERT INTO {TABLE} (page, name, state, position, created_at, "
+                "updated_at) VALUES ('images', 'Old', ?, 0, 'x', 'x')",
+                (json.dumps({"q": "cat", "favorites": True}),),
+            )
+        _, data = await self.send("GET")
+        (view,) = data["views"]
+        self.assertEqual(
+            view["state"], {**IMAGES_DEFAULTS, "q": "cat", "favorites": True}
+        )
+        self.assertEqual(view["state"]["collection"], "")
 
     async def test_rename_and_delete_validate_id_and_body(self):
         view = await self.create()
@@ -618,6 +662,17 @@ class TestSavedViewsSchema(unittest.TestCase):
             ),
             {**IMAGES_DEFAULTS, "folder": "kept"},
         )
+        # A stored row with both filters (never written by this build) opens the
+        # collection, as a listing URL with both does.
+        self.assertEqual(
+            normalize_state("images", {"favorites": True, "collection": "4"}),
+            {**IMAGES_DEFAULTS, "collection": "4"},
+        )
+        for bad in ("0", "x", 12, "012"):
+            with self.subTest(collection=bad):
+                self.assertEqual(
+                    normalize_state("images", {"collection": bad}), IMAGES_DEFAULTS
+                )
         self.assertEqual(normalize_state("history", {}), {})
 
     def test_validation_errors_are_saved_view_invalid(self):

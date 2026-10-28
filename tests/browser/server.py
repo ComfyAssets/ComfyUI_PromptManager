@@ -47,6 +47,7 @@ from tests.browser.workspace_library_editor_fixture import (
 from tests.browser.workspace_vocabulary_fixture import register_vocabulary_commands
 from tests.browser.workspace_tagging_fixture import register_tagging_commands
 from tests.browser.workspace_review_fixture import register_review_commands
+from tests.browser.workspace_collections_fixture import register_collections_commands
 from tests.browser.workspace_diagnostics_fixture import (
     register_diagnostics_commands,
     repoint_logs,
@@ -75,6 +76,8 @@ class TestModel:
     loaded = None
     # Models the Tag image dialog workflows mark as not downloaded.
     unavailable: set = set()
+    # Pip names per model whose backend packages "cannot be imported" (#424).
+    missing_packages: dict = {}
     # Scored names the concept comparisons answer instead of the fixed list
     # (``/__test__/tagging/suggestions``); None keeps the fixed list.
     suggestions: list | None = None
@@ -82,10 +85,13 @@ class TestModel:
     models_config: dict = {}
 
     def get_models_status(self) -> dict:
+        from py.autotag import package_fields
+
         return {
             name: {
                 "downloaded": name not in self.unavailable,
                 "loaded": self.loaded == name,
+                **package_fields(name, self.missing_packages.get(name, [])),
             }
             for name in self.models_config
         }
@@ -227,6 +233,7 @@ def create_app(root: Path) -> web.Application:
     register_vocabulary_commands(routes, api, root)
     register_tagging_commands(routes, api, root, model)
     register_review_commands(routes, api, root)
+    register_collections_commands(routes, api, root)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
     register_system_commands(app, routes, api, root)
@@ -262,6 +269,8 @@ def create_app(root: Path) -> web.Application:
         with target.db.model.get_connection() as conn:
             for table in (
                 "saved_views",
+                "image_collection_items",
+                "image_collections",
                 "image_favorites",
                 "media_review_decisions",
                 "media_review_items",

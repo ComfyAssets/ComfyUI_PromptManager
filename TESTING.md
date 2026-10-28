@@ -688,7 +688,7 @@ The shared inline and collection inspector reads the current rooted file's suppo
 embedded records, exact generation facts and recorded or inferred prompt evidence.
 It renders in two concept surfaces (#249 D20–D22, D38). The Images side panel shows
 only the concept content: cover, title, filename, the evidence badge with a category
-chip, the + and − prompt blocks with copy and send, tag chips (the file's own image
+chip naming its origin (D146), the + and − prompt blocks with copy and send, tag chips (the file's own image
 tags first, D88, then the linked tags; image tags and the linked positive's own tags
 filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
 "Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
@@ -1399,22 +1399,18 @@ Recorded deviations on this page (spec §8):
   inspector's own "Download metadata JSON" envelopes in listing order); the button is
   `aria-disabled` and ignores a second press while it runs, the selection is kept, and
   the toast names the unread images (none read: no download); leaving Images aborts the
-  reads with no download and no toast. Set category opens the
-  concept's `simpleInput` dialog ("Categorize selected images", `input#action-input`
-  labelled Category, Cancel / Apply) and posts the selection's distinct linked positive
-  ids to `/prompt_manager/bulk/category` (images have no category; the filter matches
-  the linked positive's). With no linked image checked it posts nothing and opens no
-  dialog; an empty value keeps the dialog open; the field stops at the server's 100
-  characters; success reloads the categories and the listing together (clearing the
-  selection, focus to the heading, and, as any replaced collection does, the inspector
-  moves to the first listed image); failure keeps the selection. The write carries no
-  page signal: leaving Images while it runs lets it finish without a toast, and the return
-  loads the collection afresh instead of the saved visit. Three deviations from the
-  concept's `simpleInput`: the field starts empty (the concept pre-fills its demo
-  "Landscapes"), the action reads "Apply" (not "Apply in prototype"), and the
-  nothing-linked check runs on the Set category press, so no dialog opens. The route
-  rejects anything but 1-1000 positive integer ids within SQLite's INTEGER range
-  (deduplicated) and a category that fails `validate_category`. `images selection bar matches
+  reads with no download and no toast. Set category (amended by D140, #332) sets the
+  checked images' own categories: it opens the concept's `simpleInput` dialog
+  ("Categorize selected images", `input#action-input` labelled Category) and writes
+  `PUT`/`DELETE /prompt_manager/images/category`, never a prompt (see D140). Prompt
+  categories are changed in the Prompt library editor and on the legacy admin page's
+  "Set Category"; `POST /prompt_manager/bulk/category` is unchanged and serves that
+  legacy page only. The write carries no page signal: leaving Images while it runs lets
+  it finish without a toast, and the return loads the collection afresh instead of the
+  saved visit. Its success reloads the categories and the listing together (clearing
+  the selection, focus to the heading, and, as any replaced collection does, the
+  inspector moves to the first listed image); a failure keeps the selection, except a
+  changed source (409), which reloads the listing as a success does. `images selection bar matches
   the concept` compares the bar and the checked card with one card checked; the omitted
   actions flow again from the concept's own boxes, checked against the concept page with
   them removed at runtime.
@@ -1481,6 +1477,9 @@ Recorded deviations on this page (spec §8):
   filters, while recipe, recorded-run and embedded tags stay plain `span.chip`.
   Amended by D88 (#249 PR C): the file's own current image tags lead the same row
   and are filters too; a linked tag already shown (case-insensitive) is left out.
+  Amended by D146 (#332): the category chip also names its origin in visible text
+  after the category (" · this image", " · prompt", " · recipe"), and an image's own
+  category shows for an unlinked or ambiguous file too.
 - **D22**: an empty positive reads "No positive prompt (explicitly empty)" (the concept
   applies its negative wording to both roles), and a confirmed `p.prompt-text` is
   focusable (`tabindex=0`, marked focus ring) so long prompts stay keyboard-readable.
@@ -1543,8 +1542,9 @@ Recorded deviations on this page (spec §8):
   The category filter matches the same inherited category as the panel (D142, #332), and
   an image's own category overrides both (D141, D146). The inspection response names each
   field's source (`library.category_scope`, `library.tags_scope`: `pair`, `positive` or
-  null); the category chip's visually hidden prefix (D21) says "Recipe category: " or
-  "Positive prompt category: " from it, and tag chips are Tags filter buttons only when
+  null, or `image` for an own category, #332); the category chip's visually hidden
+  prefix (D21) says "Recipe category: ", "Positive prompt category: " or "Image category: "
+  from it, and its visible origin (D146) " · recipe", " · prompt" or " · this image", and tag chips are Tags filter buttons only when
   they are the positive's (#260 D2). History's media inspector uses the same rule. The
   concept shows the prompt's category and tags for every image and the concept
   fixture's recipes have neither, so the inspector comparison needs no mapping for it.
@@ -1562,7 +1562,11 @@ Recorded deviations on this page (spec §8):
   files whose own category is the value by path, so their rating and positive count.
   `test_filter_budget` seeds 2,000 own categories on its 50,000-file fixture.
   The option list adds the image categories of listed files
-  (`GET /prompt_manager/images/categories`, PR 3).
+  (`GET /prompt_manager/images/categories`, PR 3), merged with the Library's and sorted
+  (D36); if only that read fails, the prompt categories show and the categories alert is
+  raised. `images category options and Set category dialog match the concept` sets one
+  image's own category ("Portraits") through the real route and compares the toolbar
+  with it sorted into the concept's options; unmapped, only the options differ.
 - **D142** (#332 MC4, amends D39's filter note): the inherited category is one rule,
   `inherited_category` in `utils/inspection_response.py`: a linked recipe's own
   category when it is not blank, else the linked positive's. Before #332 the filter
@@ -1578,7 +1582,53 @@ Recorded deviations on this page (spec §8):
   output sources, as Images keys it. A temp output or a file no source holds has none;
   a failed read hides the chip (DC5). The outputs list and media requests read nothing
   new. The chip's hidden prefix reads "Image category: " for an own category; the
-  visible origin text and its comparison are D146 (PR 3).
+  visible origin text and its comparison are D146 (PR 3). `history media inspector
+  category chip matches the concept` (history-concept.spec) sets an own category on the
+  Quality baseline's newest output, opens its Recorded run and "View current file", and
+  compares the viewer's chip with the concept viewer's category chip (app.js a402) laid
+  out at runtime with the D146 origin and that category; its place is not compared (what
+  precedes it differs), only its size, tokens, text, prefix and origin. Unmapped, the two
+  differ only in the text, the prefix, the width and `span.chip-source`.
+- **D140** (#332, amends D8): Set category sets the checked images' own categories, so
+  every checked file is a target (no nothing-linked check). More than 500 checked (or
+  "all N matching" over 500) toasts "Select at most 500 images." and opens nothing.
+  The dialog is the concept's `simpleInput` with three recorded differences: the field
+  starts empty (the concept pre-fills its demo "Landscapes") and suggests the toolbar's
+  current categories (`datalist#workspace-input-suggestions`, `openInputDialog`'s
+  `suggestions`); "Use prompt category", a plain button between Cancel and Apply
+  (`secondary`), closes it and opens the "Use prompt category" confirmation ("Remove the
+  image category from the 1 selected image? / … the N selected images? Each one then
+  shows its prompt's category, or none if it has no linked prompt. This cannot be
+  undone.", Cancel and a danger Remove, built like saved views' delete confirmation);
+  and the action reads "Apply" (D8). Apply sends `PUT /prompt_manager/images/category`
+  `{items | filter, category}`, Remove `DELETE` `{items | filter}`; Cancel sends
+  nothing. An empty value keeps the dialog open and the field stops at 100 characters.
+  Toasts: "Category “X” set on 1 image." / "… on N images." (unchanged files count as
+  set) plus " N could not be found." for unlisted files; "Removed the image category
+  from N images." or "None of the selected images had its own category."; 404 "None of
+  the selected images could be found. Refresh the images and try again."; 409 "The
+  sources changed. Refresh the images and try again." (the listing reloads); anything
+  else "Category could not be set. Try again.". `images category options and Set
+  category dialog match the concept` (images-concept.spec) checks a card, opens the
+  dialog in both documents and compares it (title, body tree, field, input, suggestions,
+  actions and every button's box and tokens) with the concept's own dialog changed at
+  runtime as recorded: field emptied, the datalist added after the field, a clone of
+  its Cancel reading "Use prompt category" after Cancel, the primary renamed "Apply".
+  Unmapped, the dialog differs only in the input's value and list, the body's tree, the
+  suggestions and the actions.
+- **D146** (#332, amends D21 and D39): the category chip names its origin in visible
+  text. It is `span.chip` > `span.ca-visually-hidden` (the D21 prefix) + the category +
+  `span.chip-source` (" · this image", " · prompt" or " · recipe"; muted
+  `--ca-muted`, `white-space: nowrap`, so at 390px the origin never splits; the chip may wrap
+  before it or inside a long category). It shows when the inspection names a non-empty category and either the
+  scope is `image` (any link status, so an unlinked or ambiguous file with an own
+  category shows it) or the file is linked. The concept's chip shows the bare name
+  (app.js a402). The inspector comparison (inspector-concept.spec) measures each chip's
+  `span.chip-source` (text, font, color, `white-space`, box) and lays the concept's own
+  chip out with the recorded rule and " · prompt" added at runtime (`withChipSource` in
+  `concept-inventory.mjs`), in the side panel and the viewer's details; unmapped they
+  differ only in the chip's text, width and `span.chip-source`. Its mutation check
+  removes the origin. History's chip (D145) is compared the same way.
 - **D42**: the concept never shows a toast and a page alert together. Production keeps
   the concept's fixed toast (centred, 22px from the bottom, 12px at 700px and below)
   and, when an Import → Rescan toast leaves the Images discovery alert
@@ -1603,7 +1653,8 @@ applies D3 (the `.file-inspector` class of the production-only rules), D20 (the
 viewer's plain tag chips, laid out by the concept page itself with its chips made
 plain at runtime), the D20/D21 side-panel scroll (`overflow: auto`,
 `max-height: calc(100dvh - 40px)` above 700px), D21 (the category's hidden scope
-prefix) and D22 (focusable prompt text). `inspector comparison detects mutations`
+prefix), D22 (focusable prompt text) and D146 (the chip's visible " · prompt", laid out
+by the concept page itself). `inspector comparison detects mutations`
 changes `.prompt-heading .role-label` letter spacing and removes `.detail-footer`.
 
 Manual check (quick), after a browser refresh on Images: hover an image (it zooms);
@@ -1938,11 +1989,13 @@ ranges include cards that bounded rendering has unmounted.
   Over the limit, the client toasts "Narrow the view to at most 10,000 images." and the
   server answers 400 `too-many-images`. No match is 400 `no-images`. Auto-tag in this
   mode does not offer Review each image, because the review walks images in the
-  browser. Set category posts `{images_filter, category}` to `/prompt_manager/bulk/category`.
-  The server sets the category on the distinct linked positives and answers
-  `prompt_count` and `skipped`. A listing whose `positive_count` is 0 toasts the
-  nothing-linked sentence and opens no dialog, and over 10,000 matches it toasts the
-  limit sentence. Export metadata reads every image in
+  browser. Set category (D140, #332) sends `{filter, category}` to
+  `PUT /prompt_manager/images/category` (Use prompt category `{filter}` to `DELETE`),
+  which sets or removes each matching image's own category; over 500 matches the client
+  toasts "Select at most 500 images." and opens no dialog, and the server answers 400
+  `too-many-images`. (`POST /prompt_manager/bulk/category` still accepts
+  `{images_filter, category}` and sets the linked positives' category, but no workspace
+  control sends it any more.) Export metadata reads every image in
   the browser, so it is `aria-disabled` in this mode, and its `title` says why.
 
 Tests: `tests/browser/workspace-images.spec.mjs` ("Shift+click selects a range across
@@ -4810,6 +4863,21 @@ category; without one it shows the category its link supplies.
   appears at the same path shows it. The real-host check is the last test in
   `tests/comfyui/image-attribution.spec.mjs`: PUT, list, DELETE on a generated
   output.
+- Interface (PR 3, a browser refresh; no restart beyond PR 1-2's): the Images
+  selection bar's Set category writes these routes (D140, which amends D8); the toolbar
+  category options add the listed images' own categories (D141); the inspector's
+  category chip names its origin, " · this image", " · prompt" or " · recipe" (D146), in
+  the side panel, the viewer and History's media inspector (D145); Tags & categories
+  counts images on each category row and lists image-only values (D143), and Manage
+  category previews and renames image rows too (D144). Prompt categories are changed in
+  the Prompt library editor and on the legacy admin page's "Set Category". Concept
+  comparisons, at 1600x1100 and 390x844 in both themes: `images-concept.spec.mjs` (the
+  Set category dialog and the options), `inspector-concept.spec.mjs` (the chip),
+  `history-concept.spec.mjs` (History's chip) and `vocabulary-visual.spec.mjs` (rows and
+  preview, with `vocabulary-canonical-comparison.mjs`). Behavior: `workspace-images`,
+  `full-inspector`, `workspace-history` and `workspace-vocabulary` specs, and
+  `tests/js/workspace-images-category.test.js`, `workspace-file-inspector.test.js`,
+  `workspace-vocabulary-state.test.js`, `workspace-toolbar.test.js`.
 
 Image annotations schema (#249, `database/annotation_schema.py`): the group
 `media_annotation_metadata` (one row: schema version, `image_index_revision`),
@@ -5906,13 +5974,18 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
 "Open existing tag manager" card for tag search and sort, the untagged entry and
 multi-tag AND/OR browsing; bulk prompt actions (delete, tag, category) stay on the
-legacy admin page. The screen consumes only the `/prompt_manager/vocabulary/*` routes
+legacy admin page. A prompt's category is changed in the Prompt library editor or with
+the legacy admin page's "Set Category" (`POST /prompt_manager/bulk/category`, unchanged);
+the Images selection bar's Set category sets images' own categories only (D140, #332),
+and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
 above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.
 
 Screen: a `+ Create tag` heading action, a Tag vocabulary table (columns Tag, Prompts,
 Images counting the files that carry the tag (`image_count`, #249 C2), and Actions with Browse and
 Rename / merge), and a Categories panel whose category rows end with the Manage
-category row (Review). Lists load 100 rows at a time, append when scrolled into view
+category row (Review). A category row reads "N positive prompts", "N positive prompts ·
+M images" when images hold the value as their own category too, or "M images" for a
+value only images hold (D143, #332). Lists load 100 rows at a time, append when scrolled into view
 and keep `Load more tags` / `Load more categories` while more remain. Prompts counts
 are the Library Browse totals.
 
@@ -5955,7 +6028,34 @@ Recorded deviations from the concept (maintainer acceptance): bounded lists with
 Load more; title "Tags"; Manage categories adds a Category select and Preview before
 Apply; "Apply" instead of "Apply in prototype"; Delete tag… inside Rename or merge;
 Browse sets the exact filter; singular "1 positive prompt"; the production list appends
-fixture-only tags after the concept's sample tags. Paired concept/production captures
+fixture-only tags after the concept's sample tags.
+
+- **D143** (#332): category rows count the images whose own category is the value
+  (`image_count`, the stored rows, missing files included): "N positive prompts · M
+  images" beside prompts, "M images" for an image-only value, which follows every
+  prompt-backed row (by value) before Manage category. Browse on an image-only row opens
+  Images with exactly that Category filter (its Library would be empty), as a fresh
+  Images visit that becomes the Images return state, the way Browse seeds the Library's; every other
+  row opens the Library as before. Manage category's select lists image-only values
+  last, so past 1,000 categories they are the first left out (the dialog says the list is
+  capped).
+- **D144** (#332): Manage category's preview counts the images holding the value ("“X”
+  is used by N positive prompts and M images. Apply renames it to “Y”."; D9's sentence
+  with "M images" added when above 0), an image-only value can be renamed, and Apply
+  renames the image rows in the same transaction; an image row gaining or losing the
+  value between Preview and Apply is 409 `vocabulary-conflict` with nothing written.
+- `category rows and the Manage category preview match the concept with image
+  categories` (vocabulary-visual.spec, 1600x1100 and 390x844, both themes) seeds the
+  fixture with `image_categories: true` ("Landscapes" on two images, "Portraits" on one
+  image only, rows keyed as Images keys them) and compares the page with D143 mapped
+  (`mapVocabularyConcept(reference, imageCategories)`, whose row model is checked against
+  the concept page with those rows added at runtime) and the Manage dialog after
+  Preview with D9 and D144 (`mapVocabularyDialog`'s `preview`). Before the preview is
+  measured the pointer leaves the pressed Apply and focus returns to ×, the state the
+  opening comparison in workspace-vocabulary.spec measures. Unmapped, the page differs
+  in the Landscapes row's text and the added Portraits row, the dialog only in the
+  sentence. The default fixture seeds no image category, so the other vocabulary
+  comparisons are unchanged. Paired concept/production captures
 for both themes and widths are attached as test artifacts; no PNG baseline is added
 until acceptance. Not compared: hover states and the dialog focus ring (the page-level
 keyboard ring and link ring offsets are asserted). No coverage floor was lowered;

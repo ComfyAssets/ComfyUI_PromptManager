@@ -141,6 +141,22 @@ test('the Favorites page asks the listing for favorites only (#249 D51)', async 
     for(const favorites of ['1',1,'true'])await assert.rejects(stream.reset({favorites}),/Invalid favorites filter/);
 });
 
+test('a collection page asks the listing for that collection only (#331 D137)', async () => {
+    const {createImageStream}=await source;let query;
+    const stream=createImageStream({api:{get:async url=>{query=new URL(url,'http://local').searchParams;return page([]);}}});
+    await stream.reset({collection:'12',q:'fog'});
+    assert.equal(query.get('collection'),'12');assert.equal(query.get('q'),'fog');assert.equal(query.has('favorites'),false);
+    await stream.reset({collection:7});
+    assert.equal(query.get('collection'),'7');
+    for(const collection of ['',null,undefined]) {
+        await stream.reset({collection});
+        assert.equal(query.has('collection'),false);
+    }
+    for(const collection of ['0','07','x',-1,1.5,'1234567890',true])await assert.rejects(stream.reset({collection}),/Invalid collection filter/);
+    // Favorites and a collection are never both a page's filter.
+    await assert.rejects(stream.reset({collection:'3',favorites:true}),/Invalid collection filter/);
+});
+
 test('restored browsing state resumes its cursor and filters without an initial request', async () => {
     const {createImageStream}=await source;
     const calls=[];
@@ -517,5 +533,7 @@ test('listingFilter is the listing query as an object, without paging (#392)', a
     assert.deepEqual(listingFilter({q:'cat', root:'1', subfolder:'a/b', category:'Animals', tags:[' x ','y'], media:'video', sort:'oldest', favorites:true}),
         {q:'cat', root:'1', subfolder:'a/b', category:'Animals', tags:'x,y', media:'video', sort:'oldest', favorites:'1'});
     assert.deepEqual(listingFilter({root:'all', q:'', tags:[], media:'all'}), {sort:'newest'});
+    // #331: "Select all N matching" on a collection page acts on that collection's listing.
+    assert.deepEqual(listingFilter({collection:'4', q:'cat'}), {q:'cat', sort:'newest', collection:'4'});
     assert.throws(() => listingFilter({sort:'sideways'}), TypeError);
 });

@@ -2,16 +2,16 @@ import { createButton } from '../shared/toolkit/core.js';
 import { imageKey, toggleSelection, selectionLabel } from './images-state.mjs';
 import { inspectPath, toInspectionRecord } from './inspection-state.mjs';
 import { BUNDLE_FILENAME, metadataBundle, collectImagesMetadata, exportOutcome } from './images-export.mjs';
-import { CATEGORY_DIALOG, CATEGORY_FAILED, CATEGORY_MAX_LENGTH, CATEGORY_NONE_LINKED, categoryOutcome, categoryTargets, updatedCount } from './images-category.mjs';
-import { openInputDialog } from './workspace-dialogs.mjs';
-import { MAX_FILTER_IMAGES, TOO_MANY_MATCHING, openAddTags, openAutoTag } from './images-tagging-bulk.mjs';
+import { CATEGORY_DIALOG, CATEGORY_MAX_LENGTH, CATEGORY_URL, MAX_CATEGORY_IMAGES, REMOVE_DIALOG, USE_PROMPT_CATEGORY,
+    NONE_FOUND, clearOutcome, failureMessage, removeQuestion, setOutcome } from './images-category.mjs';
+import { closeWorkspaceDialog, openContentDialog, openInputDialog } from './workspace-dialogs.mjs';
+import { TOO_MANY, bulkTargets, openAddTags, openAutoTag } from './images-tagging-bulk.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { applyKeys, createLongPress, matchingLabel, matchingOffer, offersAllMatching, rangeKeys } from './images-multiselect.mjs';
 
 const CHECKBOX = '.image-overlays input[type="checkbox"]';
 const CHECKBOX_LABEL = '.image-overlays > label';
 const CARD = 'article[data-image-key]';
-const CATEGORY_URL = '/prompt_manager/bulk/category';
 // D135: Export metadata reads every image's inspection in the browser, so it waits for loaded images.
 export const EXPORT_LOADED_ONLY = 'Export metadata reads each image in the browser, so it works on loaded images only.';
 
@@ -29,8 +29,9 @@ function el(tag, text, className) {
  * checkbox from `isChecked`; this module follows the boxes through the grid's `change` events.
  *
  * - `getItems()` is the listing in its order; `checked` restores a saved visit's selection.
- * - `onCategorySet()` reloads the categories and the listing after a successful Set category (the reload clears the
- *   selection through `clear`); focus then moves to `focusFallback` if it was on the hidden action.
+ * - `onCategorySet()` reloads the categories and the listing after a successful Set category or Use prompt category
+ *   (the reload clears the selection through `clear`); focus then moves to `focusFallback` if it was on the hidden
+ *   action. `getCategories()` gives the toolbar's categories, the field's suggestions.
  * - `retain(kept)` drops the checked files a refreshed listing no longer holds (a tag save under a filter, I7).
  * - With the Activity store `activity`, Add tags and Auto-tag selected (D85) follow the count, as the concept's Add tags
  *   leads its actions; `onTagged(keys)` re-reads the files a finished tagging job tagged. The selection stays.
@@ -43,7 +44,7 @@ function el(tag, text, className) {
  * matching", whose actions send that filter to the server.
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
-    getListing, getFilter, checked: initial = Object.freeze(new Set()) }) {
+    getListing, getFilter, getCategories, checked: initial = Object.freeze(new Set()) }) {
     let checked = initial;
     let exporting = false, categorizing = false;
     // D135: the range anchor, "all N matching" mode, touch selection mode and a pending Shift+click on a checkbox.
@@ -261,42 +262,65 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
         timer = setTimeout(release, 1000);
     }
     /**
-     * Set category (app.js bulk-category → simpleInput): images have no category, so Apply sets it on the selection's
-     * distinct linked positives, taken when the (modal) dialog opens. With no linked image there is nothing to change:
-     * a toast says so and no dialog opens.
+     * Set category (app.js bulk-category → simpleInput, #332 D140): Apply sets each selected image's own category, linked
+     * or not; "Use prompt category" removes it after a confirmation that states the count. Up to 500 images (DC2): an
+     * explicit selection or "all N matching" (the listing filter, resolved by the server); more opens nothing.
      */
     function openCategory(button) {
         if (categorizing) return;
-        // All matching (D135): the listing's positive count says whether any match is linked; the server resolves.
-        if (allMatching && getListing().total > MAX_FILTER_IMAGES) { showWorkspaceToast(TOO_MANY_MATCHING); return; }
-        const targets = allMatching ? {filter: getFilter()} : categoryTargets(checkedImages());
-        const linked = allMatching ? getListing().positiveCount !== 0 : targets.promptIds.length > 0;
-        if (!linked) { showWorkspaceToast(CATEGORY_NONE_LINKED); return; }
+        const count = allMatching ? getListing().total : checked.size;
+        const targets = allMatching ? {filter: getFilter()} : {items: bulkTargets(checkedImages())};
+        if (count > MAX_CATEGORY_IMAGES) { showWorkspaceToast(TOO_MANY); return; }
+        // Checked files the listing no longer holds (a refresh dropped them): nothing to send.
+        if (!allMatching && !targets.items?.length) { showWorkspaceToast(NONE_FOUND); return; }
         openInputDialog({ scope, trigger: button, title: CATEGORY_DIALOG.title, label: CATEGORY_DIALOG.label,
-            action: CATEGORY_DIALOG.action, maxLength: CATEGORY_MAX_LENGTH, onApply: category => applyCategory(button, targets, category) });
+            action: CATEGORY_DIALOG.action, maxLength: CATEGORY_MAX_LENGTH, suggestions: getCategories(),
+            secondary: { label: USE_PROMPT_CATEGORY, onClick: () => confirmRemove(button, targets, count) },
+            onApply: category => writeCategory(button, () => api.put(CATEGORY_URL, {...targets, category}),
+                result => setOutcome(result, category)) });
+    }
+    /** "Use prompt category": nothing is sent until Remove; Cancel leaves every category as it was. */
+    function confirmRemove(button, targets, count) {
+        const text = el('p', removeQuestion(count));
+        const actions = el('div', undefined, 'dialog-actions');
+        const cancel = createButton('Cancel'), remove = createButton(REMOVE_DIALOG.action, 'danger');
+        actions.append(cancel, remove);
+        cancel.addEventListener('click', () => closeWorkspaceDialog());
+        remove.addEventListener('click', () => {
+            closeWorkspaceDialog();
+            writeCategory(button, () => api.del(CATEGORY_URL, {body: targets}), clearOutcome);
+        });
+        openContentDialog({ scope, trigger: button, title: REMOVE_DIALOG.title, nodes: [text, actions] });
+        cancel.focus();
     }
     /**
      * The write carries no page signal: once sent it finishes even if the page is left (`writing` then tells the page
-     * not to save a visit that predates it). A failure keeps the selection; a success reloads through `onCategorySet`.
+     * not to save a visit that predates it). A failure keeps the selection, except a changed source, which reloads the
+     * listing as a success does (`onCategorySet`).
      */
-    async function applyCategory(button, { promptIds, skipped, filter }, category) {
+    async function writeCategory(button, send, outcome) {
         categorizing = true;
         const release = busy(button);
-        let result = null;
+        let result = null, failure = null;
         try {
-            result = await api.post(CATEGORY_URL, filter ? { images_filter: filter, category } : { prompt_ids: promptIds, category });
-        } catch {
-            // Reported below; the selection stays as it was.
+            result = await send();
+        } catch (error) {
+            failure = error;
         } finally {
             categorizing = false;
             release();
         }
         if (scope.signal.aborted) return;
-        if (!result) { showWorkspaceToast(CATEGORY_FAILED); return; }
-        if (filter && !result.prompt_count) { showWorkspaceToast(CATEGORY_NONE_LINKED); return; }
-        showWorkspaceToast(filter ? categoryOutcome(updatedCount(result, result.prompt_count), Number(result.skipped) || 0)
-            : categoryOutcome(updatedCount(result, promptIds.length), skipped));
         const focused = document.activeElement === button;
+        if (failure !== null || !result) {
+            showWorkspaceToast(failureMessage(failure));
+            // A changed source reloads the listing (clearing the selection); any other failure keeps it.
+            if (failure?.code !== 'source-changed') return;
+            onCategorySet();
+            if (focused) focusFallback.focus({ preventScroll: true });
+            return;
+        }
+        showWorkspaceToast(outcome(result));
         onCategorySet();
         // The reload hides the bar with the focused action in it, as Clear does: focus moves to the page heading.
         if (focused) focusFallback.focus({ preventScroll: true });

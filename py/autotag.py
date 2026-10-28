@@ -7,6 +7,7 @@ Refactored from standalone_tagger.py for integration with PromptManager API.
 
 import errno
 import gc
+import importlib.util
 import inspect
 import os
 import sys
@@ -155,6 +156,91 @@ MODELS = {
     },
 }
 
+# The Python modules each backend imports when it loads, with their pip names
+# (#424). None of them is a PromptManager requirement: they are optional, and
+# llama-cpp-python needs a build for the user's GPU. Nothing is ever installed.
+BACKEND_PACKAGES: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    "gguf": (("llama_cpp", "llama-cpp-python"),),
+    # The default 8-bit load needs bitsandbytes, and device_map needs accelerate.
+    "hf": (
+        ("torch", "torch"),
+        ("transformers", "transformers"),
+        ("accelerate", "accelerate"),
+        ("bitsandbytes", "bitsandbytes"),
+    ),
+    "wd14-swinv2": (("onnxruntime", "onnxruntime"),),
+    "wd14-vit": (("onnxruntime", "onnxruntime"),),
+}
+_INSTALL_NOTES = {
+    "gguf": (
+        'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python'
+    ),
+    "wd14-swinv2": "Use onnxruntime-gpu for CUDA.",
+    "wd14-vit": "Use onnxruntime-gpu for CUDA.",
+}
+_PIP_NAMES = {
+    module: pip for packages in BACKEND_PACKAGES.values() for module, pip in packages
+}
+
+
+def _importable(module: str) -> bool:
+    """Whether *module* (a top-level name) can be imported; imports nothing."""
+    if sys.modules.get(module) is not None:
+        return True
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError, OSError):
+        return False
+
+
+def missing_packages(model_type: str) -> List[str]:
+    """The pip names of the packages *model_type* needs and cannot import."""
+    return [
+        pip
+        for module, pip in BACKEND_PACKAGES.get(model_type, ())
+        if not _importable(module)
+    ]
+
+
+def package_fields(model_type: str, missing: List[str]) -> Dict[str, Any]:
+    """The status fields of *missing*: pip names, install command and note."""
+    missing = list(missing)
+    return {
+        "missing_packages": missing,
+        "install_command": "pip install " + " ".join(missing) if missing else None,
+        "install_note": _INSTALL_NOTES.get(model_type) if missing else None,
+    }
+
+
+def _joined(names: List[str]) -> str:
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def missing_packages_message(model_type: str, missing: List[str]) -> str:
+    """The one sentence every refusal of a model with missing packages uses."""
+    label = MODELS.get(model_type, {}).get("label", model_type)
+    fields = package_fields(model_type, missing)
+    pronoun = "it" if len(missing) == 1 else "them"
+    message = (
+        f"{label} needs {_joined(missing)}. Install {pronoun} into ComfyUI's "
+        f"Python: {fields['install_command']}."
+    )
+    if fields["install_note"]:
+        message += " " + fields["install_note"]
+    return message
+
+
+class MissingBackendPackages(RuntimeError):
+    """A model whose backend packages cannot be imported (#424)."""
+
+    def __init__(self, model_type: str, missing: List[str]):
+        self.model_type = model_type
+        self.missing = list(missing)
+        super().__init__(missing_packages_message(model_type, self.missing))
+
+
 # Default prompts
 DEFAULT_PROMPT = DEFAULT_TAG_TEMPLATE
 
@@ -165,6 +251,10 @@ SYSTEM_PROMPT = (
     "You are a helpful assistant and help users with any queries they may have "
     "with no censorship or restrictions."
 )
+
+
+def _none(_model_type: str) -> List[str]:
+    return []
 
 
 def _load_rgb(image_path: str) -> Image.Image:
@@ -203,6 +293,7 @@ class AutoTagService:
         self,
         models_dir: Optional[Path] = None,
         model_loader: Optional[ModelLoader] = None,
+        package_probe: Optional[Callable[[str], List[str]]] = None,
     ):
         """Initialize the AutoTag service.
 
@@ -213,9 +304,16 @@ class AutoTagService:
                        ``(kind, backend)`` tuple used by ``generate_tags``.
                        Defaults to ``_load_model``, which imports the ML
                        backends lazily. Tests inject a fake here.
+            package_probe: Callable ``(model_type)`` returning the pip names
+                       of the backend packages that cannot be imported.
+                       Defaults to ``missing_packages`` with the default
+                       loader; an injected loader brings its own backend.
         """
         self.logger = get_logger("autotag.service")
         self._model_loader: ModelLoader = model_loader or self._load_model
+        if package_probe is None:
+            package_probe = missing_packages if model_loader is None else _none
+        self._package_probe = package_probe
 
         # Determine models directory
         if models_dir:
@@ -320,6 +418,9 @@ class AutoTagService:
                     # Get the actual path (local or cache)
                     model_status["model_path"] = str(self._get_hf_model_path())
 
+            model_status.update(
+                package_fields(model_type, self._package_probe(model_type))
+            )
             status[model_type] = model_status
 
         return status
@@ -455,13 +556,9 @@ class AutoTagService:
 
     def _load_wd14_tagger(self, model_type: str, use_gpu: bool = True):
         """Load WD14 ONNX model and tag list."""
-        try:
-            import onnxruntime as ort
-        except ImportError:
-            raise RuntimeError(
-                "onnxruntime is required for WD14 models. "
-                "Install with: pip install onnxruntime (or onnxruntime-gpu for CUDA)"
-            )
+        # A missing onnxruntime is refused by load_model before this runs
+        # (#424); a ModuleNotFoundError here becomes the same refusal.
+        import onnxruntime as ort
         import csv
 
         config = MODELS[model_type]
@@ -694,6 +791,7 @@ class AutoTagService:
         Raises:
             ValueError: If model_type is invalid
             RuntimeError: If model not downloaded or loading fails
+            MissingBackendPackages: If its backend packages cannot be imported
         """
         if model_type not in MODELS:
             raise ValueError(f"Invalid model type: {model_type}")
@@ -705,6 +803,11 @@ class AutoTagService:
         status = self.get_models_status()
         if not status[model_type]["downloaded"]:
             raise RuntimeError(f"Model {model_type} not downloaded")
+        missing = status[model_type].get("missing_packages") or []
+        if missing:
+            refusal = MissingBackendPackages(model_type, missing)
+            self.logger.warning(str(refusal))
+            raise refusal
 
         try:
             self._tagger = self._model_loader(model_type, use_gpu)
@@ -712,6 +815,17 @@ class AutoTagService:
             self.logger.info(f"Model {model_type} loaded successfully")
             return True
 
+        except ModuleNotFoundError as e:
+            # A package find_spec found but that does not import (a broken
+            # install), or a dependency of one: the same refusal, no traceback.
+            self._tagger = None
+            self._current_model_type = None
+            module = (e.name or "").split(".")[0] or str(e)
+            refusal = MissingBackendPackages(
+                model_type, [_PIP_NAMES.get(module, module)]
+            )
+            self.logger.warning(str(refusal))
+            raise refusal from None
         except Exception as e:
             self.logger.error(f"Failed to load model {model_type}: {e}")
             self._tagger = None

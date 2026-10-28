@@ -495,6 +495,30 @@ test('the inline current file names its prompts apart from the frozen run fields
     expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(before);
 });
 
+// #332 CUJ 5 (MC8, §5.3): History's current-file inspector reads the file's own category with the Images key rule, so
+// the inline current file and its viewer show "Portraits · this image"; current.png has two saved links, so it inherits
+// nothing and shows no chip before.
+test('the current file shows its own category with its origin in the recorded run and its viewer',async({page,request})=>{
+    const chip=scope=>scope.locator('span.chip:has(> span.chip-source)');
+    const current=dialog(page).getByRole('region',{name:'Current reported file',exact:true});
+    const viewCurrent=async()=>{await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+        const details=page.locator('dialog#viewer-dialog #viewer-details');await expect(details.locator('.panel-heading')).toBeVisible();return details;};
+    await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    let details=await viewCurrent();await expect(details.locator('.panel-heading h2')).toBeVisible();await expect(chip(details)).toHaveCount(0);
+    await page.keyboard.press('Escape');await expect(current).toBeVisible();await expect(chip(current)).toHaveCount(0);
+    await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
+    const {images}=await(await request.get('/prompt_manager/images/output?mode=workspace&subfolder=history&limit=40')).json();
+    const file=images.find(image=>image.root_index===0&&image.path==='history/current.png');
+    const put=await request.put('/prompt_manager/images/category',{data:{items:[{root_index:0,root_scope:file.root_scope,path:file.path}],category:'Portraits'}});
+    await expect(put).toBeOK();expect((await put.json()).updated).toBe(1);
+    await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+    details=await viewCurrent();
+    await expect(chip(details)).toHaveText('Image category: Portraits · this image');
+    await page.keyboard.press('Escape');await expect(current).toBeVisible();
+    await expect(chip(current)).toHaveText('Image category: Portraits · this image');
+    expect(await chip(current).locator('.chip-source').evaluate(node=>node.textContent)).toBe(' · this image');
+});
+
 // LI-4 (D117): the recorded history's current-file viewer is the shared full inspector, so it copies the legacy summary.
 test('the current file viewer copies its settings summary',async({page})=>{
     await page.addInitScript(()=>{window.__copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.__copied.push(text);}}});});

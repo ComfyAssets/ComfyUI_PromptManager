@@ -482,6 +482,60 @@ test('Tag output images › Review previews the drafts, else says why; a refused
     } finally { scope.dispose(); dom.restore(); }
 });
 
+// #424: GGUF on disk without llama-cpp-python.
+const NEEDS_LLAMA = { missing_packages: ['llama-cpp-python'], install_command: 'pip install llama-cpp-python',
+    install_note: 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python' };
+const NEEDS_SENTENCE = 'GGUF JoyCaption needs llama-cpp-python. Install it into ComfyUI\'s Python: pip install llama-cpp-python. '
+    + 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python';
+
+test('a model on disk whose backend package is missing never reads as ready (#424)', async () => {
+    const { modelDescription, readStatus, batchCloseNote, STATUS_COPY } = await tagging;
+    const status = readStatus({ ...MODELS, models: { ...MODELS.models,
+        gguf: entry('GGUF JoyCaption', '~4.5 GB', { ...NEEDS_LLAMA }),
+        'wd14-vit': entry('WD14 ViT', '~400 MB', { downloaded: false, missing_packages: ['onnxruntime'],
+            install_command: 'pip install onnxruntime', install_note: 'Use onnxruntime-gpu for CUDA.' }),
+        hf: entry('HuggingFace JoyCaption', '~16 GB', { downloaded: false, model_exists: undefined,
+            missing_packages: ['accelerate', 'bitsandbytes'], install_command: 'pip install accelerate bitsandbytes' }) } });
+    const ready = modelDescription(status, 'gguf');
+    assert.notEqual(ready, STATUS_COPY.downloaded);
+    assert.equal(ready, 'Downloaded. Needs llama-cpp-python: pip install llama-cpp-python. '
+        + 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python');
+    // Not downloaded reads differently, and still says what it will need.
+    assert.equal(modelDescription(status, 'wd14-vit'), 'Not downloaded. Download size ~400 MB. Also needs onnxruntime.');
+    assert.equal(modelDescription(status, 'hf'), 'Not downloaded. Download size ~16 GB. Also needs accelerate and bitsandbytes.');
+    const partial = readStatus({ ...MODELS, models: { ...MODELS.models, gguf: entry('GGUF JoyCaption', '~4.5 GB',
+        { downloaded: false, model_exists: true, mmproj_exists: false, ...NEEDS_LLAMA }) } });
+    assert.equal(modelDescription(partial, 'gguf'), 'Partly downloaded. Download again to finish. Also needs llama-cpp-python.');
+    // Untrusted shapes are ignored; a missing command is built from the names.
+    const odd = readStatus({ ...MODELS, models: { ...MODELS.models, gguf: entry('GGUF JoyCaption', '~4.5 GB',
+        { missing_packages: ['llama-cpp-python', 3, ''], install_command: 7, install_note: {} }) } });
+    assert.equal(modelDescription(odd, 'gguf'), 'Downloaded. Needs llama-cpp-python: pip install llama-cpp-python.');
+    const junk = readStatus({ ...MODELS, models: { ...MODELS.models, gguf: entry('GGUF JoyCaption', '~4.5 GB',
+        { missing_packages: 'llama-cpp-python' }) } });
+    assert.equal(modelDescription(junk, 'gguf'), STATUS_COPY.downloaded);
+    // The batch review says why it cannot start, in the server's sentence.
+    assert.equal(batchCloseNote({ ...PLAN, model: { type: 'gguf', label: 'GGUF JoyCaption', downloaded: true, ...NEEDS_LLAMA } }),
+        NEEDS_SENTENCE);
+    assert.equal(batchCloseNote({ ...PLAN, model: { ...PLAN.model, downloaded: false, ...NEEDS_LLAMA } }),
+        'WD14 SwinV2 is not downloaded. Download it first.');
+});
+
+test('Review explains a missing backend package instead of reviewing (#424)', async () => {
+    const models = { ...MODELS, models: { ...MODELS.models, gguf: entry('GGUF JoyCaption', '~4.5 GB', { ...NEEDS_LLAMA }) } };
+    const { dom, scope, button, byId, calls } = await mounted({ models });
+    try {
+        byId('tag-model').value = 'gguf'; await byId('tag-model').dispatch('change');
+        const review = button('Review');
+        assert.equal(review.getAttribute('aria-disabled'), 'true');
+        assert.equal(review.dataset.reason, NEEDS_SENTENCE);
+        await review.dispatch('click');
+        assert.equal(calls.toasts.at(-1), NEEDS_SENTENCE);
+        assert.deepEqual(calls.post, []);
+        // Download stays offered: files and packages are separate.
+        assert.equal(button('Download again').getAttribute('aria-disabled'), null);
+    } finally { scope.dispose(); dom.restore(); }
+});
+
 test('settingRefusal marks only an Auto-tagging save\'s plain 400 as invalid-setting (CUJ 2a)', async () => {
     const { settingRefusal } = await import('../../web/js/workspace/system.mjs');
     const refusal = (extra = {}) => Object.assign(new Error('General-tag confidence must be between 0 and 1.'),

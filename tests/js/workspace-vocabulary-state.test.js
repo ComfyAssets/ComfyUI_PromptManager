@@ -553,3 +553,16 @@ test('delete text names the tag, its real links and what stays unchanged', async
     assert.equal(deleteTagText('unused', zero),
         '“unused” is not linked to any saved prompt or image. Deleting it removes only the name.');
 });
+
+test('a category row counts prompts and images, and an image-only row browses Images (#332 D143)', async () => {
+    const {categoryRowText, categoryBrowseTarget, categoryPreviewText} = await import('../../web/js/workspace/vocabulary-state.mjs');
+    assert.equal(categoryRowText({value: 'L', prompt_count: 3}), '3 positive prompts');
+    assert.equal(categoryRowText({value: 'L', prompt_count: 1, image_count: 0}), '1 positive prompt');
+    assert.equal(categoryRowText({value: 'L', prompt_count: 3, image_count: 2}), '3 positive prompts · 2 images');
+    assert.equal(categoryRowText({value: 'S', prompt_count: 0, image_count: 1}), '1 image');
+    assert.equal(categoryBrowseTarget({value: 'L', prompt_count: 3, image_count: 2}), 'library');
+    assert.equal(categoryBrowseTarget({value: 'S', prompt_count: 0, image_count: 2}), 'images');
+    const impact = {positive_prompts: 3, other_prompts: 0, negative_variants: 0, archived_negative_variants: 0, images: 2};
+    assert.equal(categoryPreviewText({source: 'Landscapes', target: 'Landscape', target_exists: false, impact}),
+        '“Landscapes” is used by 3 positive prompts and 2 images. Apply renames it to “Landscape”.');
+});

@@ -12,6 +12,9 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
    sidebar's min-content (the concept's `1fr`); the column is capped at the viewport as production's shell was. */
 @media (max-width: 950px) {
     .app-shell { grid-template-columns: minmax(0, 1fr); /* D31 */ }
+    /* D136 (#331): the concept hides COLLECTIONS here, which would leave a phone no way to open a collection; its rows
+       wrap like every other sidebar nav (the concept's `.sidebar nav` flex row). Its label stays hidden, as all are. */
+    #collections-nav { display: flex; /* D136 */ }
 }
 @media (forced-colors: active) {
     nav a[aria-current="page"] { border: 2px solid Highlight; color: LinkText; }
@@ -446,3 +449,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
    outside 1–500 is highlighted as a refused setting is (D92). */
 .toolbar #log-limit { inline-size: 6em; min-height: 36px; font-size: 11px; /* D109 */ }
 .toolbar #log-limit[aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; /* D109 */ }
+
+/* #332 D146: the category chip names its origin (" · this image", " · prompt", " · recipe") in muted text that never
+   splits; at 390px the chip may wrap between the category and its origin. */
+.chip .chip-source { color: var(--ca-muted); white-space: nowrap; }

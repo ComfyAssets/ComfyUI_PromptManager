@@ -188,6 +188,33 @@ export async function mutate(page,{css=null,remove=[],clone=[]}={}) {
 }
 
 /**
+ * #332 D146: the category chip names its origin after the category, in a muted `span.chip-source` that never splits
+ * (workspace.css `.chip .chip-source`). The concept's chip shows the bare name (app.js a402), so the recorded rule and
+ * the span are added to the concept page at runtime and the browser lays the chip out: the first `.tags` row's
+ * non-badge chip under `root`. `category` also replaces the chip's text (an own category the concept never shows).
+ * Returns the undo.
+ */
+export const D146_CHIP_SOURCE='.chip .chip-source { color: var(--ca-muted); white-space: nowrap; }';
+export async function withChipSource(page,root,origin,category=null) {
+    const restoreRule=await mutate(page,{css:D146_CHIP_SOURCE});
+    const token=await page.evaluate(({root,origin,category})=>{
+        const chip=document.querySelector(root)?.querySelector('.tags')?.querySelector(':scope > .chip:not(.blue)');
+        if(!chip)throw new Error(`withChipSource: no category chip under ${root}`);
+        const text=chip.textContent,source=document.createElement('span');
+        source.className='chip-source';source.textContent=` · ${origin}`;
+        if(category!==null)chip.textContent=category;
+        chip.append(source);
+        const token=`chip-source-${Math.random().toString(36).slice(2)}`;
+        (window.__chipSources??=new Map()).set(token,()=>{chip.textContent=text;});
+        return token;
+    },{root,origin,category});
+    return async()=>{
+        await page.evaluate(token=>{window.__chipSources.get(token)();window.__chipSources.delete(token);},token);
+        await restoreRule();
+    };
+}
+
+/**
  * Inventory sections: {chrome, heading, toolbar, filterRow, bulkbar, caption, grid, cards, continuation, panel, library,
  * history, noPageScroll}. A section is null when its element is absent. The Images sections (toolbar … panel, #249 C7)
  * measure the concept's Images markup; `cards` holds the first six; `bulkbar` is the selection bar's place and, while
@@ -615,9 +642,12 @@ export function measureInspector(selector) {
             primary:node.classList.contains('ca-primary'),...box(node),...font(node),...edges(node),...layout(node),
             minHeight:style.minHeight,minWidth:style.minWidth,icon:iconOf(node)};
     }
+    // #332 D146: a category chip's visible origin (`span.chip-source`), null on every other chip.
     function chipOf(node) {
+        const source=node.querySelector(':scope > .chip-source');
         return {tag:node.tagName.toLowerCase(),className:classes(node),text:textOf(node),hidden:hiddenOf(node),...box(node),...font(node),...edges(node),
-            minHeight:getComputedStyle(node).minHeight};
+            minHeight:getComputedStyle(node).minHeight,
+            source:when(source,()=>({text:source.textContent,...font(source),...css(source,'whiteSpace'),...box(source)}))};
     }
     function rowOf(row) {
         return {...layout(row),...edges(row),...box(row),chips:[...row.children].map(chipOf)};

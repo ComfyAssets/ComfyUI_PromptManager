@@ -299,6 +299,19 @@ class TestAutoTag(ImageTagJobTestCase):
         self.tagger.download_model.assert_not_called()
         self.assertIsNone(model_gate.holder())
 
+    async def test_a_missing_backend_package_fails_the_job_before_the_first_file(self):
+        self.png("a.png")
+        self.tagger.missing["wd14-vit"] = ["onnxruntime"]
+
+        with self.assertNoLogs(self.api.logger, level="ERROR"):
+            job = await self.run_job(self.auto_body(["a.png"]))
+
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.processed, 0)
+        self.assertTrue(job.status_line.startswith("WD14 ViT needs onnxruntime."))
+        self.assertIn("pip install onnxruntime", job.status_line)
+        self.assertEqual(self.tagger.load_calls, [])
+
     async def test_model_unavailable_fails_the_job_before_the_first_file(self):
         self.png("a.png")
         self.tagger.downloaded["wd14-vit"] = False
@@ -882,6 +895,16 @@ class TestFilterStart(ImageTagJobTestCase):
         )
 
         self.assertEqual((status, data["code"]), (400, "no-images"))
+        self.assertEqual(self.api._jobs.list(), [])
+
+    async def test_filter_with_a_deleted_collection_is_a_404_without_a_job(self):
+        self.png("a.png")
+
+        status, data = await self.start(
+            {"mode": "add", "filter": {"collection": "77"}, "tags": ["x"]}
+        )
+
+        self.assertEqual((status, data["code"]), (404, "collection-not-found"))
         self.assertEqual(self.api._jobs.list(), [])
 
     async def test_filter_over_the_cap_is_refused_without_a_job(self):
