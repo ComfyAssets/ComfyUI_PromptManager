@@ -40,6 +40,19 @@ while it is pending and undecided (never beside a decision, see
 profile the item recorded (``captured_review(..., item_profile(evidence))``).
 The inspection profile only ever produces review choices; ingestion's own
 links stay on the default profile, which never loads the table (D1).
+
+The saver anchor (#390): the inspection profile resolves a file with its
+name, as the workspace inspector does since #383, so the one saver whose
+``filename_prefix`` names the file anchors its branch. When that anchor alone
+resolves a file the default profile left ambiguous and nothing links
+(``saver_anchored``), the scan queues it with the anchor's pair as its one
+candidate (evidence ``anchor: "saver"``), never linking it: a file never
+falls through both the link and the queue (maintainer ruling). No match,
+several matches or an unfinished walk anchor nothing and the file is queued
+as before. Apply re-resolves with the file's name, so only the anchored
+branch can be applied. ``REVIEW_RULE_VERSION`` is folded into inspection
+item versions, so inspection items recorded before the anchor are recorded
+again by the next scan.
 """
 
 from __future__ import annotations
@@ -104,10 +117,16 @@ MAX_CANDIDATE_DEPTH = 8
 # The resolver profile an item's evidence was built with (``profile``).
 DEFAULT = "default"
 INSPECTION = "inspection"
+# The ``anchor`` an item recorded from the saver anchor names (#390).
+SAVER_ANCHOR = "saver"
+ANCHOR_REASON = "The saver that wrote this file names its branch"
 # Inspection item versions: above every plausible ``RESOLVER_VERSION`` and,
 # with 40 bits of the folded digest, below 2**53 (exact as a JSON number).
 INSPECTION_VERSION_BASE = 1 << 40
 _INSPECTION_VERSION_HEX = 10
+# How the scan and Apply use the inspection profile, folded into inspection
+# item versions. 1: they resolve with the file's name (the saver anchor, #390).
+REVIEW_RULE_VERSION = 1
 
 
 # Above this many distinct node classes the whole table is the fingerprint.
@@ -154,36 +173,90 @@ def inspection_review_version(metadata: Any = None) -> int | None:
     """The ``resolver_version`` of an item recorded from the inspection profile.
 
     Folds the profile with its budgets, ``RESOLVER_VERSION``,
-    ``INSPECTION_RESOLVER_VERSION`` and ``semantics_version(metadata)``, so
-    a change of either resolver, of the profile's bounds or of the table
-    about the graph's classes moves it. None when the table cannot be loaded.
+    ``INSPECTION_RESOLVER_VERSION``, ``REVIEW_RULE_VERSION`` and
+    ``semantics_version(metadata)``, so a change of either resolver, of how
+    review uses the profile, of the profile's bounds or of the table about
+    the graph's classes moves it. None when the table cannot be loaded.
     """
     table = semantics_version(metadata)
     if table is None:
         return None
     profile = repr(astuple(INSPECTION_PROFILE))
     seed = f"{profile}:{RESOLVER_VERSION}:{INSPECTION_RESOLVER_VERSION}:{table}"
+    if REVIEW_RULE_VERSION:  # 0 is the seed items had before the rule existed
+        seed += f":review-rule-{REVIEW_RULE_VERSION}"
     folded = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return INSPECTION_VERSION_BASE + int(folded[:_INSPECTION_VERSION_HEX], 16)
 
 
-def resolve_inspection(metadata: dict) -> dict:
-    """``metadata`` resolved with the inspection profile (bounded work)."""
-    return resolve_prompt_pair(metadata, profile=INSPECTION_PROFILE)
+def resolve_inspection(metadata: dict, file_name: str | None = None) -> dict:
+    """``metadata`` resolved with the inspection profile (bounded work).
+
+    ``file_name`` (the file's last path part) anchors the file on the one
+    saver that wrote it, as in the workspace inspector (#390).
+    """
+    return resolve_prompt_pair(
+        metadata, profile=INSPECTION_PROFILE, file_name=file_name
+    )
 
 
-def inspection_choice(metadata: dict) -> dict | None:
-    """The inspection profile's ambiguous result when it offers a choice.
+def inspection_choice(metadata: dict, file_name: str | None = None) -> dict | None:
+    """The inspection profile's result when the file is a review case.
 
     The scan asks only for a file the default profile found ambiguous
-    without a choice that nothing links.
+    without a choice that nothing links. The result is ambiguous with a
+    choice, or ``resolved`` when ``file_name`` anchors the file on its saver
+    and only that anchor resolves it (``saver_anchored``): the item then
+    offers the anchor's pair. None otherwise.
     """
     if inspection_review_version(metadata) is None:
         return None
-    resolution = resolve_inspection(metadata)
+    resolution = resolve_inspection(metadata, file_name)
+    if resolution.get("state") == "resolved":
+        return _anchor_of(metadata, file_name, resolution)
     if resolution.get("state") != "ambiguous" or not reviewable(resolution):
         return None
     return resolution
+
+
+def _anchor_of(metadata: Any, file_name: str | None, named: dict) -> dict | None:
+    """``named`` tagged ``anchor: "saver"`` when only the saver anchor
+    resolves the file, to a pair with a positive text to choose; else None.
+
+    ``named`` is ``metadata`` resolved with ``file_name``; the profile runs
+    once more without the name only when it is resolved and choosable.
+    """
+    if not file_name or named.get("state") != "resolved":
+        return None
+    try:
+        offered = choosable(_projection(named))
+    except (KeyError, TypeError):
+        return None
+    if not offered or resolve_inspection(metadata).get("state") == "resolved":
+        return None
+    return {**named, "anchor": SAVER_ANCHOR}
+
+
+def saver_anchored(metadata: Any, file_name: str | None) -> bool:
+    """True when the saver that wrote ``file_name`` resolves its branch (#390).
+
+    The inspection profile resolves ``metadata`` with the file's name, and
+    without it the file does not resolve: the anchor alone decides it. A file
+    the default profile left ambiguous is then queued with the anchor's pair
+    as its one candidate. No name, an unusable table, no matching saver,
+    several, or an unfinished walk anchor nothing (False). The profile
+    without the name runs only when the named run resolved.
+    """
+    return _anchored(metadata, file_name) is not None
+
+
+def _anchored(metadata: Any, file_name: str | None) -> dict | None:
+    """The anchored result ``saver_anchored`` describes, else None."""
+    if not file_name or not isinstance(metadata, dict):
+        return None
+    if inspection_review_version(metadata) is None:
+        return None
+    return _anchor_of(metadata, file_name, resolve_inspection(metadata, file_name))
 
 
 def item_profile(evidence: Any) -> str:
@@ -246,7 +319,9 @@ def record_ambiguous_file(
     """
     versions = item_versions(scanned[0] if scanned is not None else None)
     spelled_path, queued = _queued_spelling(db, root, relative, versions)
-    if queued is not None:
+    if queued is not None and not (
+        inspection and _default_item_to_anchor(db, queued, scanned, relative)
+    ):
         return _already_queued(db, *queued, versions)
     epoch = db.get_execution_epoch()
     try:
@@ -272,24 +347,24 @@ def record_ambiguous_file(
     if resolution is None or resolution.get("state") != "ambiguous":
         return "skipped"
     profile, version = DEFAULT, RESOLVER_VERSION
-    if not reviewable(resolution):
-        version = inspection_review_version(captured[0]) if inspection else None
-        if version is None:
+    named = _captured_inspection(captured[0], relative, scanned) if inspection else None
+    anchored = named is not None and named[0].get("anchor") == SAVER_ANCHOR
+    if anchored:
+        # Only the saver anchor resolves it (#390): offer that one pair.
+        profile, version = INSPECTION, named[1]
+        resolution = {
+            "state": "ambiguous",
+            "reason": ANCHOR_REASON,
+            "candidates": [named[0]],
+        }
+    elif not reviewable(resolution):
+        if named is None:
             return "untraced"
-        profile = INSPECTION
-        if (
-            scanned is not None
-            and scanned[1] is not None
-            and _same_records(captured[0], scanned[0])
-        ):
-            resolution = scanned[1]  # the same records: no second run
-        else:
-            # Heavier, so only for a file ambiguous with nothing to choose.
-            resolution = resolve_inspection(captured[0])
+        profile, (resolution, version) = INSPECTION, named
         if resolution.get("state") != "ambiguous" or not reviewable(resolution):
             return "untraced"
     evidence, count, limited = review_evidence(
-        resolution, profile, version, captured[0]
+        resolution, profile, version, captured[0], anchored=anchored
     )
     try:
         inserted = db.record_review_item(
@@ -311,6 +386,60 @@ def record_ambiguous_file(
             db, capture.locator, capture.size, capture.mtime_ns, versions
         )
     return "limited" if limited else "recorded"
+
+
+def _default_item_to_anchor(db, queued: tuple, scanned, relative: str) -> bool:
+    """True when the bytes' only pending item is a default item recorded
+    before #390 and the saver anchor alone resolves the scanned records.
+
+    The file is then captured again so the anchored item supersedes that
+    pending, undecided item. Decided bytes and bytes already queued under
+    the current inspection version are never re-read.
+    """
+    if scanned is None or scanned[0] is None:
+        return False
+    version = inspection_review_version(scanned[0])
+    if version is None or db.review_pending_at(*queued, version):
+        return False
+    if not db.review_pending_at(*queued, RESOLVER_VERSION):
+        return False
+    return _anchored(scanned[0], _file_name(relative)) is not None
+
+
+def _captured_inspection(metadata: dict, relative: str, scanned) -> tuple | None:
+    """``(resolution, item_version)`` of the captured records under the
+    inspection profile, anchored on the file's name; None when the table is
+    unusable.
+
+    A result tagged ``anchor: "saver"`` means the saver anchor alone
+    resolves the file (#390); any other resolved result is returned as
+    ``unresolved`` (no review case, as before). The scan's result is reused
+    when the capture holds the same records (``inspection_choice`` applies
+    the same rule).
+    """
+    version = inspection_review_version(metadata)
+    if version is None:
+        return None
+    if (
+        scanned is not None
+        and scanned[1] is not None
+        and _same_records(metadata, scanned[0])
+    ):
+        return scanned[1], version  # the same records: no second run
+    name = _file_name(relative)
+    resolution = resolve_inspection(metadata, name)
+    if resolution.get("state") == "resolved":
+        # Resolved without the anchor too: no review case, as before.
+        resolution = _anchor_of(metadata, name, resolution) or {
+            **resolution,
+            "state": "unresolved",
+        }
+    return resolution, version
+
+
+def _file_name(relative: str) -> str:
+    """The last part of a ``/``-separated relative path (the saved name)."""
+    return relative.rsplit("/", 1)[-1]
 
 
 def _already_queued(db, locator: str, size: int, mtime_ns: int, versions) -> str:
@@ -354,14 +483,19 @@ def _queued_spelling(db, root, relative: str, versions) -> tuple[str, tuple | No
     return spelled, None
 
 
-def captured_review(store, capture, profile: str = DEFAULT) -> tuple[dict, dict] | None:
+def captured_review(
+    store, capture, profile: str = DEFAULT, file_name: str | None = None
+) -> tuple[dict, dict] | None:
     """``(metadata, resolution)`` of the capture's own bytes, else None.
 
     ``metadata`` is what the scan hands the ingester: prompt and workflow
     JSON-decoded and ``file_info`` (size, dimensions, format) from the
     capture. ``resolution`` comes from ``profile`` (``DEFAULT`` or
-    ``INSPECTION``). None when the capture is gone or carries no prompt
-    metadata.
+    ``INSPECTION``; the latter anchored on ``file_name``, the file's own
+    name, as the item was recorded). With ``file_name`` (Apply), a default
+    result its saver anchor alone resolves (``saver_anchored``) is that
+    anchored result, so only the anchored branch is still offered. None
+    when the capture is gone or carries no prompt metadata.
     """
     if store.acquire(capture.token) is None:
         return None
@@ -389,8 +523,15 @@ def captured_review(store, capture, profile: str = DEFAULT) -> tuple[dict, dict]
         info["format"] = read.format
     canonical["file_info"] = info
     if profile == INSPECTION:
-        return canonical, resolve_inspection(canonical)
-    return canonical, resolve_prompt_pair(canonical)
+        named = resolve_inspection(canonical, file_name)
+        return canonical, _anchor_of(canonical, file_name, named) or named
+    resolution = resolve_prompt_pair(canonical)
+    if file_name is not None and resolution.get("state") == "ambiguous":
+        anchored = _anchored(canonical, file_name)
+        if anchored is not None:
+            # Its saver names its branch (#390): only that one is offered.
+            return canonical, anchored
+    return canonical, resolution
 
 
 def reviewable(resolution: Any) -> bool:
@@ -416,12 +557,14 @@ def review_evidence(
     profile: str = DEFAULT,
     version: int | None = None,
     metadata: Any = None,
+    anchored: bool = False,
 ) -> tuple[dict, int, bool]:
     """``(evidence, candidate_count, limited)`` for one ambiguous result.
 
     Inspection evidence also names its ``profile`` and ``semantics``, the
     table fingerprint of ``metadata``'s graph it was resolved with;
-    ``version`` is the item's version.
+    ``version`` is the item's version. ``anchored`` evidence (the saver
+    anchor's one pair, #390) also names ``anchor: "saver"``.
     """
     base = {
         "resolver_version": RESOLVER_VERSION if version is None else version,
@@ -430,6 +573,8 @@ def review_evidence(
     if profile == INSPECTION:
         base["profile"] = INSPECTION
         base["semantics"] = semantics_version(metadata)
+    if anchored:
+        base["anchor"] = SAVER_ANCHOR
     candidates: list[dict] = []
     seen: set[str] = set()
     total = 0

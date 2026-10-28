@@ -298,19 +298,21 @@ class TestQwenEditBatchIsQueued(InspectionTestCase):
 
 class TestDefaultProfileStillDecides(InspectionTestCase):
     async def test_ambiguous_file_with_texts_keeps_the_default_profile(self):
-        """A default-ambiguous file with a choice never runs the inspection
-        profile, even when that profile would offer more candidates."""
+        """A default-ambiguous file with a choice is recorded from the
+        default profile, even when the inspection profile would offer more
+        candidates. That profile only checks the saver anchor (#390): no
+        saver names this file, so it anchors nothing."""
         self._roots()
         graph = {
             **_prefixed(qwen_edit_graph("make it night"), "q"),
             **unlinkable_graph("cat", "dog"),
         }
-        self._write(graph=graph)
+        self._write("unsaved_00001_.png", graph=graph)
 
         with patch.object(
             review_capture,
-            "resolve_inspection",
-            side_effect=AssertionError("inspection profile ran"),
+            "inspection_choice",
+            side_effect=AssertionError("inspection choices were asked"),
         ):
             await self._scan()
 
@@ -321,17 +323,24 @@ class TestDefaultProfileStillDecides(InspectionTestCase):
         self.assertEqual(item["resolver_version"], review_capture.RESOLVER_VERSION)
         self.assertEqual(_texts(evidence), ["cat", "dog"])
 
-    async def test_apply_of_a_default_item_never_runs_the_inspection_profile(self):
+    async def test_apply_of_a_default_item_inspects_only_for_the_anchor(
+        self,
+    ):
         self._roots()
         write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         await self._scan()
-        with patch.object(
-            review_capture,
-            "resolve_inspection",
-            side_effect=AssertionError("inspection profile ran"),
+        with (
+            _counted(review_capture, "resolve_inspection") as calls,
+            patch.object(
+                review_capture,
+                "inspection_choice",
+                side_effect=AssertionError("inspection choices were asked"),
+            ),
         ):
             _item, (status, data) = await self._apply("cat")
         self.assertEqual(status, 200, data)
+        # The saver anchor check (#390): with the file's name, nothing matches.
+        self.assertEqual([c[1] for c in calls], ["two.png"])
         self.assertEqual(self._linked_text(self.output_dir / "two.png"), "cat")
 
 
@@ -369,15 +378,16 @@ class TestApplyInspectionCandidate(InspectionTestCase):
         calls = []
         real = review_capture.resolve_inspection
 
-        def spy(metadata):
-            calls.append(metadata)
-            return real(metadata)
+        def spy(metadata, file_name=None):
+            calls.append((metadata, file_name))
+            return real(metadata, file_name)
 
         with patch.object(review_capture, "resolve_inspection", side_effect=spy):
             _item, (status, data) = await self._apply("make it night")
 
         self.assertEqual(status, 200, data)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], NAME)  # anchored on its saver (#390)
 
     async def test_table_change_keeps_the_item_applicable(self):
         """A table change for a class the graph uses moves the item's
@@ -853,8 +863,8 @@ class TestInspectionResolverVersion(InspectionTestCase):
         version = _version()
         real = review_capture.resolve_inspection
 
-        def newer(metadata):
-            resolution = real(metadata)
+        def newer(metadata, file_name=None):
+            resolution = real(metadata, file_name)
             return {
                 **resolution,
                 "candidates": [
@@ -899,10 +909,10 @@ class TestScanContainment(InspectionTestCase):
         self._write("b.png", graph=qwen_edit_graph("snow", "rain"))
         real = review_capture.resolve_inspection
 
-        def fails_for_a(metadata):
+        def fails_for_a(metadata, file_name=None):
             if "make it night" in json.dumps(metadata):
                 raise RuntimeError("inspection blew up")
-            return real(metadata)
+            return real(metadata, file_name)
 
         with (
             patch.object(review_capture, "resolve_inspection", side_effect=fails_for_a),
