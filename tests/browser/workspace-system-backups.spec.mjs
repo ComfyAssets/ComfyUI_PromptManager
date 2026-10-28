@@ -395,14 +395,15 @@ test('a failed settings read leaves the policy disabled with the reason', async 
     await expect(row.locator('input')).toBeDisabled();
 });
 
-test('the legacy admin Backup and Restore keep working', async ({ page, request }) => {
+test('the legacy Backup and Restore routes keep working and the admin page links to System', async ({ page, request }) => {
     const bytes = await backupBytes(request);
     const restored = await request.post('/prompt_manager/restore', { multipart: { database_file: {
         name: 'prompts_backup.db', mimeType: 'application/octet-stream', buffer: bytes } } });
     await expect(restored).toBeOK();
     expect((await restored.json()).success).toBe(true);
+    // #330: the admin page's Backup DB and Restore DB open System › Backup & export.
     await page.goto('/prompt_manager/admin');
-    await expect(page.locator('#restoreFileInput')).toHaveCount(1);
+    for (const id of ['#backupBtn', '#restoreBtn']) await expect(page.locator(id)).toHaveAttribute('href', 'workspace#/system/backups');
 });
 
 /** Start a fake running job (a metadata scan another tab started), which an exclusive restore must wait for. */
