@@ -551,6 +551,49 @@ hold a walk open with a gated scan instead of sleeping.
   time to network idle and the 10 slowest requests, from a fresh browser
   context each run.
 
+## Open pages across restarts and source changes (#430)
+
+A page addresses a listed file as `{root_index, root_scope, path}`. The root
+scope is an HMAC over the root's index and canonical path, so the server refuses
+(409 `source-changed`) an action aimed at a root that was renumbered or replaced
+since the page listed it (a same-named `ComfyUI_00001_.png` sits in every output
+folder). Its key, and the listing cursors' key, derive from one random secret in
+`workspace-scope.key` beside the database (`utils/workspace_keys.py`; owner-only,
+64 hex characters; never in config.json or the database, so no backup or export
+carries it; Move library copies it, best effort). A ComfyUI restart therefore keeps
+every scope and cursor an open page holds: `tests/test_api_workspace_restart.py`
+proves it with a second API on its own server and with two fresh interpreters on
+the same database. The key file is created with a temp file and `os.link` (of two
+first starts one file wins; without hard links `O_EXCL`), re-read after any write,
+replaced with a WARNING when corrupt, and a folder that cannot hold it gives that
+process a per-process key (one WARNING; open pages then refresh after a restart).
+Tests never write it outside their own temp folders.
+
+The cursor is `{"v": 2, "key"}` with the listing scope (it hashes every absolute
+root) bound into its MAC only, never sent. Bump `v` whenever the key tuple's shape
+changes: a cursor now outlives a restart and an upgrade. A cursor the server
+cannot verify (another key, root list or filter set) answers 400
+`cursor-stale`; Images then shows "The image collection changed. Refresh image
+collection to continue." and its Retry becomes **Refresh image collection**.
+
+When a source really changed, `POST /prompt_manager/images/rescope` (`{"target":
+{...}}`, validated by `media_target`, index ≤ 4095) maps the held target to the
+first current root whose scope at the old index equals the held scope, and answers
+the file's current workspace descriptor; a removed or replaced root, another key
+or a foreign scope is 409 `source-changed`, a missing file 404 `file-missing`, a
+path leaving the root or a preview 403 (always `no-store`). Only the Images roots
+are mapped. Images (`images-source-recovery.mjs`) asks once per held
+`(key, scope)` pair, shared by the inspector (an inspection that turns
+`refreshRequired` with `code: "source-changed"`), the viewer (a media load error)
+and the Tag image dialog. Found under another index, nothing is kept by an old key
+(`root_index:path` could name another source's file): the viewer closes, the checks
+clear, a Source filter on the old index follows the file (another one falls back to
+All sources), only that file stays selected and the collection lists again; a
+manual Refresh forgets every pair. Not found, the existing visible Refresh stays.
+Browser tests: `workspace-stale-source.spec.mjs` (`/__test__/sources/reverse` and
+`/__test__/scope-key/rotate`, both undone by every reset); the manual-Refresh
+recovery specs in `workspace-images.spec.mjs` answer every rescope 409.
+
 ## Windows portability preflight
 
 Before changing paths, SQLite, streams, restore or cleanup:
@@ -1697,10 +1740,11 @@ wins), and toasts the mock's copy verbatim, "<n> tags saved for <filename>." eve
 for one tag, plus " Prompt association still awaits review." from Needs review.
 Tagging one file never changes another file (an equal-byte copy included), a
 prompt, a pair or a link. States the mock lacks (generating, busy, conflict,
-changed storage or file, expired capture, unconfirmed save, unavailable model,
-video) are text in `#tag-generation-status` only; **Retry** (D116) leads the
-actions while the controller allows it, where the other workspace dialogs place
-their Retry. The Tags
+unavailable model, video) are text in `#tag-generation-status` only; a state that
+blocks Save (a failed or refused capture, a changed source, file or storage, an
+expired capture, an unconfirmed save) shows its reason beside the actions instead
+(D147); **Retry** (D116) leads the action buttons while the controller allows it,
+where the other workspace dialogs place their Retry. The Tags
 page re-reads its lists after every confirmed save, so the Images counts follow.
 
 The image-tagging plan's deviation numbers were renumbered by +23 because the
@@ -1744,8 +1788,8 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   its "Auto-tag images" always opens the dialog. Production opens it for the image
   selected in Images when it was last left; with none it is `aria-disabled` and
   pressing it toasts "Select an image in Images first." (no new chrome).
-- **D116** (ruling T5): **Retry** leads `.dialog-actions` (before Cancel and the
-  primary) while a failed observation, a failed Generate, an unconfirmed save or an
+- **D116** (ruling T5): **Retry** leads the buttons of `.dialog-actions` (before
+  Cancel and the primary; D147's notice row sits above them) while a failed observation, a failed Generate, an unconfirmed save or an
   answer that needs a fresh observation (changed storage or file, expired capture)
   can be retried; the concept has no failure states, so it has no Retry. After a
   failed Generate it takes Generate's own path (an invalid field reports its
@@ -1756,6 +1800,25 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   Browser tests: "D116: Retry leads the actions after an unconfirmed save…", "D116:
   Retry after an expired capture observes again and keeps the typed draft (M5)" and
   the paired `production-unknown-outcome` capture.
+- **D147** (#430, beyond the Global Constraints' "status text only"): a state
+  that blocks Save shows its reason in `div.tag-action-notice` (its sentence in a
+  `role="status"` span, written only when it changes), the first, full-width row of
+  the sticky `.dialog-actions`, above the buttons; `#tag-generation-status` is then
+  empty, so the sentence shows once. Generate and Save are `aria-disabled` and look
+  it (`.tagging-modal [aria-disabled="true"]`: opacity .55, `not-allowed`). A failed
+  or refused capture replaces the empty preview with a same-size
+  `div.tag-image-preview.tag-preview-empty` "Preview unavailable" (`role="img"`).
+  A changed source (409 `source-changed` from observe, Generate or Save, phase
+  `source-changed`, never retried as is) first asks the page where the file is
+  (`onSourceChanged`, see "Open pages across restarts and source changes"): found,
+  the dialog stays open and observes it there (`controller.retarget`, the typed
+  draft kept, the old capture released; refused while a save is in flight); not
+  found, the notice shows the server's sentence and **Refresh image collection**
+  (Images and Library-embedded galleries; **Reload page** elsewhere), which closes
+  the dialog first. Opened, generated and empty states are unchanged, so the concept
+  comparisons are not. Browser tests: `tests/browser/workspace-stale-source.spec.mjs`;
+  the file-changed and unconfirmed-save checks in `workspace-tagging.spec.mjs` and
+  `tagging-concept.spec.mjs` read the notice.
 - **D29** (no prototype copy) in the dialog: no "Prototype · suggestions are
   simulated…" note, the status reads "Suggestions from <model>. Approve tags to save."
   (not "Sample suggestions from …"), and the toast has no " in this tab".
@@ -1808,7 +1871,8 @@ production-versus-concept difference of PR C and its record:
 | Image tags first in the inspector and viewer chip row | D88 (ruling T7/C2) |
 | Auto-tag images `aria-disabled` without a selected image | D115 |
 | Retry leads the actions when the controller allows it | D116 (ruling T5) |
-| States the concept lacks (busy, conflict, changed storage or file, unconfirmed save, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
+| States the concept lacks (busy, conflict, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
+| A state that blocks Save (failed capture, changed source, file or storage, unconfirmed save): its reason and Refresh beside the actions, a "Preview unavailable" box | D147 (#430) |
 
 ### Bulk tagging from the selection bar (#249 PR D)
 

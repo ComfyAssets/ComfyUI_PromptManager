@@ -209,6 +209,38 @@ class TestMove(_MoveCase):
         )
         self.assertEqual(ll.read_marker(self.target)["state"], ll.MARKER_MOVED)
 
+    def test_the_workspace_key_moves_with_the_library(self):
+        # #430: open pages keep their scopes after the restart that follows.
+        from utils.workspace_keys import KEY_FILE_NAME, load_install_secret
+
+        secret = load_install_secret(self.ext)
+        result = self.move()
+        self.assertIn(KEY_FILE_NAME, result.files)
+        self.assertEqual(load_install_secret(self.target), secret)
+        if os.name == "posix":
+            mode = os.stat(os.path.join(self.target, KEY_FILE_NAME)).st_mode
+            self.assertEqual(mode & 0o777, 0o600)
+
+    def test_a_key_that_cannot_be_copied_never_fails_the_move(self):
+        from utils.workspace_keys import KEY_FILE_NAME, load_install_secret
+
+        load_install_secret(self.ext)
+        real = lm._hash_copy
+
+        def failing(source, destination):
+            if os.path.basename(source) == KEY_FILE_NAME:
+                raise OSError("disk error")
+            return real(source, destination)
+
+        with mock.patch.object(lm, "_hash_copy", failing):
+            with self.assertLogs("prompt_manager.database.library_move", "WARNING"):
+                result = self.move()
+        self.assertNotIn(KEY_FILE_NAME, result.files)
+        self.assertEqual(_rows(self.new_db), self.before["rows"])
+        self.assertFalse(
+            any(n.startswith(lm.TEMP_PREFIX) for n in os.listdir(self.target))
+        )
+
     def test_new_files_are_private(self):
         if os.name != "posix":
             self.skipTest("POSIX permissions")
