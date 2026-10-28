@@ -2578,3 +2578,115 @@ def resolve_text_input(
         return resolver.text(inputs.get(input_name), "string")[0]
     except _Unresolved:
         return None
+
+
+_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+def _numeric(text: str) -> bool:
+    """Whether ``text`` is a plain number (a widget value such as ``2048``)."""
+    return _NUMBER.fullmatch(text) is not None
+
+
+def sampler_less_prompt(graph: Any, *, max_visits: int = 500) -> Dict[str, Any]:
+    """The positive prompt of an API graph with no sampler pair, if one (#252).
+
+    For graphs ``_no_sampler`` finds ``absent`` (no node takes a ``positive``
+    or ``negative`` input, such as a Flux guider or a video wrapper). Only the
+    executed API graph is read, never the UI workflow. A candidate is a node
+    with a ``text`` input whose output another node consumes: a text that
+    feeds nothing did not make the image. Its text is traced as a STRING
+    (``resolve_text_input``); a linked text no rule reads is unknown unless
+    it is built from a candidate's text (``_covered``). Blank and
+    numeric texts are never prompts, and a node with a seed input holds a
+    template, not the prompt (unknown). This repository's own positive-text
+    nodes are authoritative: when they give a text, only they count.
+
+    Returns ``{"state", "text", "texts"}``: ``resolved`` with the one distinct
+    text; ``ambiguous`` when several texts or an unknown one could be the
+    prompt (``texts`` lists the readable ones); ``absent`` when none.
+    """
+    absent = {"state": "absent", "text": None, "texts": []}
+    if not isinstance(graph, dict) or not graph or len(graph) > max_visits:
+        return absent
+    nodes = {str(key): value for key, value in graph.items()}
+    consumed = {
+        str(value[0])
+        for node in nodes.values()
+        if isinstance(node, dict) and isinstance(node.get("inputs"), dict)
+        for value in node["inputs"].values()
+        if _link(value)
+    }
+    own: list = []
+    other: list = []
+    unknown = False
+    for node_id, node in nodes.items():
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if node_id not in consumed or not _has_text_input(node):
+            continue
+        if _seeded(inputs):
+            # Generated at run time (a wildcard or a language model): its
+            # text input is a template, not the prompt that ran.
+            unknown = True
+            continue
+        value = inputs["text"]
+        text = resolve_text_input(nodes, node_id, "text", max_visits=max_visits)
+        if text is None:
+            # A literal that is not a string (a number) is never a prompt.
+            if _link(value) and not _covered(nodes, value):
+                unknown = True
+            continue
+        text = text.strip()
+        if not text or _numeric(text):
+            continue
+        kind = node.get("class_type")
+        if isinstance(kind, str) and kind in _OWN_CLASSES and "Negative" not in kind:
+            own.append(text)
+        else:
+            other.append(text)
+    texts = list(dict.fromkeys(own or other))
+    if len(texts) == 1 and (own or not unknown):
+        return {"state": "resolved", "text": texts[0], "texts": texts}
+    if texts or unknown:
+        return {"state": "ambiguous", "text": None, "texts": texts}
+    return absent
+
+
+def _has_text_input(node: Any) -> bool:
+    inputs = node.get("inputs") if isinstance(node, dict) else None
+    return isinstance(inputs, dict) and "text" in inputs
+
+
+def _seeded(inputs: dict) -> bool:
+    """A seed input: the node's string output is a run-time value (the
+    resolver's ``runtime-value`` rule)."""
+    return any(isinstance(name, str) and name.endswith("seed") for name in inputs)
+
+
+def _covered(nodes: dict, link: list) -> bool:
+    """Whether an unreadable text link is built from a candidate's text.
+
+    True when a node upstream of ``link`` is read through its first output
+    (slot 0, the legacy encoder rule's text) and has an unseeded ``text``
+    input: that candidate is read on its own, and whatever else is joined to
+    it at run time (a caption, a language model) is no stored prompt to
+    choose. Another output of such a node (a loader's trigger words) is not
+    its text. False when the text comes only from inputs no candidate holds
+    (a builder's ``prompt`` field): the prompt is unknown then.
+    """
+    seen, stack = set(), [(str(link[0]), link[1])]
+    while stack:
+        node_id, slot = stack.pop()
+        if (node_id, slot) in seen:
+            continue
+        seen.add((node_id, slot))
+        node = nodes.get(node_id)
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if not isinstance(inputs, dict):
+            continue
+        if "text" in inputs and slot == 0 and not _seeded(inputs):
+            return True
+        stack.extend(
+            (str(value[0]), value[1]) for value in inputs.values() if _link(value)
+        )
+    return False
