@@ -214,3 +214,7 @@ coverage/
 
 # Old library files a Move library renamed (never deleted; #249 S6b)
 *.moved-to-*
+
+# Per-install key behind the workspace scopes and cursors (#430)
+workspace-scope.key
+.workspace-scope.key.*.tmp

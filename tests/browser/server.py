@@ -46,6 +46,7 @@ from tests.browser.workspace_library_editor_fixture import (
 )
 from tests.browser.workspace_vocabulary_fixture import register_vocabulary_commands
 from tests.browser.workspace_tagging_fixture import register_tagging_commands
+from tests.browser.source_change_fixture import register_source_change_commands
 from tests.browser.workspace_review_fixture import register_review_commands
 from tests.browser.workspace_diagnostics_fixture import (
     register_diagnostics_commands,
@@ -225,7 +226,8 @@ def create_app(root: Path) -> web.Application:
     history_commands = register_workspace_history_commands(routes, api, root)
     library_editor_commands = register_library_editor_commands(routes, api, root)
     register_vocabulary_commands(routes, api, root)
-    register_tagging_commands(routes, api, root, model)
+    restore_sources = register_source_change_commands(routes, api)
+    register_tagging_commands(routes, api, root, model, on_reset=restore_sources)
     register_review_commands(routes, api, root)
     reveal_stub = register_reveal_stub(routes, api, root)
     register_activity_commands(app, routes, api)
@@ -432,6 +434,7 @@ def create_app(root: Path) -> web.Application:
     async def reset(request: web.Request) -> web.Response:
         nonlocal history_fixture
         request_holds.release()
+        restore_sources()
         # No preview queued by the last test may land in the new fixture.
         await api._run_in_executor(api.close_auto_thumbnails)
         library_editor_commands.reset()

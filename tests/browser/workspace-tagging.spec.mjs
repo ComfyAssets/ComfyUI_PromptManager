@@ -21,6 +21,8 @@ const model = page => dialog(page).getByRole('combobox', { name: 'Tagging model'
 const generate = page => dialog(page).getByRole('button', { name: 'Generate suggestions', exact: true });
 const chips = page => dialog(page).locator('#tag-suggestions .chip.tag-suggestion');
 const status = page => dialog(page).locator('#tag-generation-status');
+// D147: the reason a state blocks Save, on its own row in the sticky actions.
+const notice = page => dialog(page).locator('.dialog-actions > .tag-action-notice');
 const toast = page => page.locator('#workspace-toast');
 const nav = (page, label) => page.locator('aside.sidebar nav').getByRole('link', { name: new RegExp(`^${label}(?:\\s*[\\d,]+)?$`) });
 const FIRST = 'tagging/dunes_00001.png', SECOND = 'tagging/dunes_00002.png', COPY = 'copies/dunes_00001.png';
@@ -716,7 +718,8 @@ test('D116: Retry leads the actions after an unconfirmed save and resends the sa
     let lost = true;
     await page.route('**/prompt_manager/image-annotations/tags', route => (lost ? (lost = false, route.fulfill({ status: 504, body: 'Gateway Timeout' })) : route.continue()));
     await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
-    await expect(status(page)).toHaveText('The save could not be confirmed. Retry sends the same tags again.');
+    await expect(notice(page)).toHaveText('The save could not be confirmed. Retry sends the same tags again.');
+    await expect(status(page)).toHaveText('');
     const inventory = await page.locator('dialog#modal').evaluate(taggingInventory);
     expect(inventory.actions.buttons.map(button => [button.text, button.primary, button.disabled])).toEqual(
         [['Retry', false, false], ['Cancel', false, false], ['Save manual tags', true, true]]);

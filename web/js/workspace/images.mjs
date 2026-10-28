@@ -21,6 +21,7 @@ import { displayPreferences } from './preferences.mjs';
 import { onImageTagsSaved } from './image-tagging.mjs';
 import { followImageTagSaves, openCardTagging } from './images-tagging.mjs';
 import { favoriteBusy, paintStar, receiveFavorites, setFavoriteVisitTarget, toggleFavorite } from './images-favorites.mjs';
+import { createSourceRecovery, recoveredSource } from './images-source-recovery.mjs';
 export { onFavoriteChange } from './images-favorites.mjs';
 
 /** The concept's panel without an image (app.js updateImages a456–458). */
@@ -65,6 +66,7 @@ const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name',
 const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
 const RETRY_RESCAN = 'Rescan from Import to retry.';
 const RETRY_REFRESH = 'Refresh image collection to retry.';
+const CURSOR_STALE = 'The image collection changed. Refresh image collection to continue.';
 /** One alert for whichever of the source discovery and the categories failed, so two failures announce once. */
 function loadFailure(sourcesRetry, categoriesFailed) {
     if (sourcesRetry && categoriesFailed) return `Sources, folders and categories could not be loaded. ${sourcesRetry}`;
@@ -122,7 +124,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // System › Appearance: the display defaults this visit starts from (preferences.mjs); null without gallery-settings.js.
     const preferences = displayPreferences();
     const inspection = createInspectionController({api, autoLoad:preferences?.autoLoadMetadata !== false, cache:preferences?.cacheMetadata !== false});
-    scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
+    // The panel's listed file: a changed source is looked up once, the panel's Refresh stays the fallback (#430).
+    let selectedImage = null;
+    scope.cleanup(inspection.subscribe(next => {
+        detailInspector?.setState(next);
+        if (next.refreshRequired && next.code === 'source-changed' && selectedImage && imageKey(selectedImage) === selection) {
+            recovery.recover(selectedImage);
+        }
+    }));
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
     // A Tags & categories Browse (browseImages) is handed to this mount once: a fresh Images visit filtered by its
@@ -288,7 +297,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     main.append(body);
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
-        onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
+        onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onMediaError:image => recovery.recover(image),onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
             if (index >= 0) focusImage(index);else focusFallback.focus({preventScroll:true});
         }});
@@ -300,6 +309,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function inspect(image) {
         detailInspector?.dispose();
         selection = imageKey(image);
+        selectedImage = image;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
             onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection});
@@ -340,7 +350,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const action = event.target.closest('.image-card-actions button');
         if (event.target.closest('.star-button')) toggleFavorite(api, image);
         else if (event.target.closest('.image-open')) previewImage(image);
-        else if (action && !openCardTagging({api, scope, image, action, embedded})) inspect(image);
+        else if (action && !openCardTagging({api, scope, image, action, embedded, onSourceChanged:recovery.recover,
+            onRefresh:refreshInspectionCollection})) inspect(image);
     });
 
     function renderVisible() {
@@ -480,6 +491,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
     function continuationText(next) {
         if (recovering) return 'Images paused until sources and folders are available.';
+        if (next.error?.code === 'cursor-stale') return CURSOR_STALE;
         if (next.error) return 'Images could not be loaded. Retry or rescan the collection.';
         if (next.loading && !next.loaded) return 'Loading images…';
         if (next.hasMore) return `${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')} · more load as you scroll`;
@@ -516,6 +528,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         setText(message, continuationText(next));
         setAttr(message, 'role', next.error ? 'alert' : 'status');
         retry.hidden = !next.error;
+        // A cursor the server can no longer verify is never resent: Retry becomes the collection refresh (#430).
+        setText(retry, next.error?.code === 'cursor-stale' ? 'Refresh image collection' : 'Retry');
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
         if (showsEmpty) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
@@ -553,7 +567,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }
     }
     scope.listen(more, 'click', pressLoad);
-    scope.listen(retry, 'click', pressLoad);
+    scope.listen(retry, 'click', () => (state?.error?.code === 'cursor-stale' ? refreshInspectionCollection() : pressLoad()));
     function maybeLoad() {
         if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('#viewer-dialog[open]')) return;
         const bounds = continuation.getBoundingClientRect();
@@ -581,8 +595,18 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             details.replaceChildren(noSelection());
         }
         selection = null;
+        selectedImage = null;
     }
+    // Bumped by every reset: a source recovery that began before it leaves the page alone (#430).
+    let generation = 0;
+    const recovery = createSourceRecovery({api, signal:scope.signal, generation:() => generation, apply:recoveredSource({
+        selected:image => selection === imageKey(image), inspect, dropSelection, stream, filters, updateScope,
+        closeViewer:() => { mediaViewer.stopSlideshow(); main.querySelector('#viewer-dialog[open]')?.close(); },
+        clearChecks:() => bar?.clear(), listsNow:() => !recovering,
+        current:started => !scope.signal.aborted && started === generation,
+        rediscover:() => loadOptions().then(found => { if (found) renderLoadStatus(); })})});
     function reset() {
+        generation += 1;
         mediaViewer.stopSlideshow();
         main.querySelector('#viewer-dialog[open]')?.close();
         dropSelection({keepPanel:recovering});
@@ -686,6 +710,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;
+        recovery.reset();
         // Numeric roots may now name another source; retire the old stream first.
         recovering = true;
         filters.root = 'all';filters.subfolder = '';

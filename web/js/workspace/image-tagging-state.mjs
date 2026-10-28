@@ -34,9 +34,13 @@ const MAX_SUGGESTIONS = 100;
 const MAX_INSTRUCTION_CHARS = 4000;
 const EDITABLE = new Set(['ready', 'generate-error', 'write-error', 'conflict']);
 // Answers after which only a fresh observation can save (the capture or epoch is gone); Retry observes again (D116).
-const REOPEN = {'storage-changed': 'storage-changed', 'file-changed': 'file-changed', 'source-changed': 'file-changed', 'capture-expired': 'capture-expired'};
-const REOBSERVE = new Set(Object.values(REOPEN));
+const REOBSERVE = new Set(['storage-changed', 'file-changed', 'capture-expired']);
+// #430: a changed source (the page's root scope no longer names its root) is never retried as is: the page re-scopes
+// the target (`retarget`) or the dialog offers a refresh.
+const REOPEN = Object.freeze({...Object.fromEntries([...REOBSERVE].map(code => [code, code])), 'source-changed': 'source-changed'});
 const RETRYABLE = new Set(['observe-error', 'generate-error', 'unknown-outcome', ...REOBSERVE]);
+// States whose reason blocks Save (and Generate): the dialog shows it beside its actions (D147).
+const BLOCKED = new Set(['observe-error', 'source-changed', 'unknown-outcome', ...REOBSERVE]);
 // Generic failure envelopes whose fixed sentence the dialog words itself.
 const GENERIC_CODES = new Set(['observe-failed', 'suggest-failed', 'save-failed', 'capture-error']);
 // A proxy timeout or bad gateway cannot tell whether the server committed the write.
@@ -238,6 +242,7 @@ function derive(state) {
         canSave: editable,
         canGenerate: editable && state.generateSupported,
         canRetry: RETRYABLE.has(state.phase),
+        blocked: BLOCKED.has(state.phase),
     };
 }
 
@@ -260,7 +265,7 @@ function validatePreset(preset) {
  */
 export function createImageTaggingController({api, target, source = 'images', onLateSave = () => {}, preset = null} = {}) {
     requireValue(object(api) && ['get', 'post', 'put', 'del'].every(name => typeof api[name] === 'function'), 'An api client is required');
-    const imageTarget = validateTarget(target);
+    let imageTarget = validateTarget(target);
     requireValue(SOURCES.has(source), 'Unknown tagging source');
     requireValue(typeof onLateSave === 'function', 'onLateSave must be a function');
     const chosen = validatePreset(preset);
@@ -333,6 +338,10 @@ export function createImageTaggingController({api, target, source = 'images', on
             }
         } catch (error) {
             if (closed || serial !== openSerial) return;
+            if (isApiError(error) && error.code === 'source-changed') {
+                set({phase: 'source-changed', statusText: error.message});
+                return;
+            }
             set({phase: 'observe-error', statusText: messageOf(error, COPY.observeFailed)});
             return;
         }
@@ -500,6 +509,16 @@ export function createImageTaggingController({api, target, source = 'images', on
         return send(lastBody);
     }
 
+    /**
+     * #430: the page found the file under a fresh `target` (its sources were renumbered): observe it there, keeping the
+     * typed draft. Refused (false) while a save is in flight or after close; a Generate for the old target is dropped.
+     */
+    function retarget(next) {
+        if (closed || saving) return Promise.resolve(false);
+        imageTarget = validateTarget(next);
+        return open({keepDraft: observedOnce || Boolean(state.manual)}).then(() => true);
+    }
+
     function cancel() {
         if (closed) return;
         set({closed: true});
@@ -525,7 +544,8 @@ export function createImageTaggingController({api, target, source = 'images', on
 
     return {
         get state() {return state;},
-        subscribe, open, setManual, setModel, setOption, generate, remove, save, retry, cancel, dispose,
+        get target() {return imageTarget;},
+        subscribe, open, setManual, setModel, setOption, generate, remove, save, retry, retarget, cancel, dispose,
     };
 }
 

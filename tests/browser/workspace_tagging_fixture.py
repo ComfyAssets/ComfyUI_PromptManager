@@ -180,9 +180,16 @@ def tagging_snapshot(api: PromptManagerAPI) -> dict:
 
 
 def register_tagging_commands(
-    routes: web.RouteTableDef, api: PromptManagerAPI, root: Path, model
+    routes: web.RouteTableDef,
+    api: PromptManagerAPI,
+    root: Path,
+    model,
+    on_reset=lambda: None,
 ) -> None:
-    """Register fixed seed, snapshot and fake-model commands; no paths or SQL input."""
+    """Register fixed seed, snapshot and fake-model commands; no paths or SQL input.
+
+    ``on_reset`` runs first on every tagging reset (the source-change undo).
+    """
     # The fake download (``/__test__/tagging/download``): waits on ``event``,
     # then answers ``result``. Every reset sets the event and puts back the
     # model's raising default, so no test can leave a worker hanging.
@@ -216,6 +223,7 @@ def register_tagging_commands(
             raise web.HTTPBadRequest()
         if not 0 <= extra <= MAX_EXTRA_IMAGES:
             raise web.HTTPBadRequest()
+        on_reset()
         model.unavailable = set()
         model.suggestions = None
         model.loaded = None
