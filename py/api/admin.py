@@ -44,26 +44,26 @@ try:
     from ...database.run_attribution import (
         RecordedOutput,
         host_output_directory,
-        in_output_folder,
         named_prompt,
-        recorded_output_lookup,
         recorded_runs,
-        stored_run_prompt,
     )
-    from ...database.scanned_prompts import store_scanned_prompt
+    from ...database.scanned_prompts import (
+        link_stored_prompt_or_raise,
+        store_scanned_prompt,
+    )
     from ...utils.file_prompt import NEVER, PAIR, Policy, decide_file_prompt
 except ImportError:
     from database.pair_ingestion import SCAN_MARKS, ingest_resolved_pair
     from database.run_attribution import (
         RecordedOutput,
         host_output_directory,
-        in_output_folder,
         named_prompt,
-        recorded_output_lookup,
         recorded_runs,
-        stored_run_prompt,
     )
-    from database.scanned_prompts import store_scanned_prompt
+    from database.scanned_prompts import (
+        link_stored_prompt_or_raise,
+        store_scanned_prompt,
+    )
     from utils.file_prompt import NEVER, PAIR, Policy, decide_file_prompt
 
 
@@ -250,7 +250,7 @@ SCAN_DETAILS = {
     "skipped": "Skipped · already linked",
     "ambiguous": "Needs review: more than one prompt could match",
     "unresolved": "Needs review: the prompt could not be traced in the workflow",
-    "conflict": "Needs review: already linked to a different prompt",
+    "conflict": "Kept: already linked to a different prompt",
     "failed": "Error: the prompt could not be stored",
     "error": "Error: the file could not be processed (see the server log)",
     "found": "Metadata found, but no prompt text to store",
@@ -1709,16 +1709,14 @@ class AdminRoutesMixin:
         the batch's lazy recorded-history lookup.
         """
         path = str(media_file)
-        if history is not None:
-            lookup = functools.partial(history.recorded, path)
-        else:
-            lookup = functools.partial(recorded_output_lookup(self.db), path)
+        if history is None:  # one file: history is still asked once
+            history = _BatchHistory(self, [media_file])
         decision = decide_file_prompt(
             metadata,
             file_name=Path(path).name,
-            file_size=_file_size(media_file),
-            in_output=in_output_folder(path, host_output_directory()),
-            lookup=lookup,
+            file_size=functools.partial(_file_size, media_file),
+            in_output=False,  # only the monitor policy reads it
+            lookup=functools.partial(history.recorded, path),
             policy=Policy.SCAN,
         )
         self._note_review(media_file, decision, ambiguous, untraced, records)
@@ -1731,8 +1729,15 @@ class AdminRoutesMixin:
                     return linked
             return decision.unlinked_status
         if decision.kind == PAIR:
-            result = ingest_resolved_pair(
-                self.db, path, decision.canonical, decision.resolution, marks=SCAN_MARKS
+            # A rerun after a library move re-checks the link rows.
+            result = self.db.survive_library_switch(
+                lambda: ingest_resolved_pair(
+                    self.db,
+                    path,
+                    decision.canonical,
+                    decision.resolution,
+                    marks=SCAN_MARKS,
+                )
             )
             if not detailed:
                 return result["status"]
@@ -1765,31 +1770,25 @@ class AdminRoutesMixin:
         ``{"status", "title"}``), or None when history names no single stored
         prompt for the file (``database.run_attribution``). Never creates a
         prompt. Works without any prompt metadata in the file. ``history`` is
-        the batch's precomputed lookup; without it the file is looked up alone.
+        the batch's lookup (``_BatchHistory``). A file already linked to
+        another prompt is a ``conflict``: one prompt per file.
         """
-        if history is not None:
-            prompt_id = history.get(str(media_file))
-        else:
-            try:
-                prompt_id = stored_run_prompt(
-                    self.db, str(media_file), host_output_directory()
-                )
-            except Exception:
-                self.logger.warning(
-                    f"History attribution failed for {media_file.name}",
-                    exc_info=True,
-                )
-                return None
+        if history is None:
+            history = _BatchHistory(self, [media_file])
+        prompt_id = history.get(str(media_file))
         if prompt_id is None:
             return None
         try:
-            image_id = self.db.link_image_to_prompt(
-                prompt_id, str(media_file), metadata=canonical
+            status = self.db.survive_library_switch(
+                lambda: link_stored_prompt_or_raise(
+                    self.db, str(media_file), canonical, prompt_id
+                )
             )
         except Exception as e:
             self.logger.error(f"Failed to link {media_file.name} from history: {e}")
             return "found"
-        status = "linked" if image_id else "unchanged"
+        if status is None:
+            return None
         if not detailed or status not in SCAN_TITLED_DETAILS:
             return status
         prompt = self.db.get_prompt_by_id(prompt_id) or {}

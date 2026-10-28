@@ -5050,12 +5050,14 @@ workflows without a PromptManager node. It does no file or database I/O.
   pair, A1111, sampler-less). Only a graph it leaves ambiguous or unresolved
   reaches the inspector's resolve (`inspection_resolution` in
   `utils/prompt_inspector.py`, the inspection profile, then the recorded saver
-  anchor of #386; never the file-name saver anchor: a file only its saver's
-  file name resolves is queued for Needs review, never linked, the #390 ruling,
-  `name_anchor=False`), and only that positive's `storage_text` is stored (never
+  anchor of #386; `name_anchor=False`: the file-name anchor never decides a
+  link; the scan's legacy floor may still link the file, as before #247, and a
+  file nothing links is queued with the anchor's choice per #390), and only that positive's `storage_text` is stored (never
   prepend or append text, never `recorded_texts`). Then the #170 browser parser
   (`graph_prompt_text`), the legacy floor, then the recorded run's stored
-  prompt. History is asked once per file and only at that step; the scan's
+  prompt. The legacy answer is refused when a PromptManager-family node has a
+  prepend or append part and the answer is not that node's own `text` (the
+  parser joins the parts, so the stored text cannot be told from it). History is asked once per file and only at that step; the scan's
   batch lookup stays lazy and makes one `recorded_runs` pass for the stored
   prompt and the saver (`_BatchHistory`).
 - **Policies.** `SCAN` keeps the legacy floor for every undecided file.
@@ -5064,14 +5066,18 @@ workflows without a PromptManager node. It does no file or database I/O.
   malformed one still gets the legacy floor.
 - **Junk.** `junk_text` refuses `blank`, `number` (the #252 `_numeric` rule),
   `lora-only` (only `<lora:...>` tags and separators) and `model-file` (one
-  token ending in a model extension) at whichever step found the text; the
-  file reports `found` and nothing later is tried.
+  token ending in a model extension) at whichever step found the text and
+  nothing later is tried; the file reports `found`, except at the undecided
+  graph step, which keeps its own status (an ambiguous file is still queued).
 - **One prompt per file.** `database/scanned_prompts.py` stores a positive in
   one `BEGIN IMMEDIATE` transaction: a file already linked to another prompt
   (either spelling, `file_link_rows`/`link_conflict`, the pair ingester's rule)
   is `conflict` and nothing is written; a failed link rolls the new prompt back
-  (`found`); two writers of one text store one prompt. A rescan therefore never
-  adds a second link to a file an older scan linked to the legacy answer.
+  (`found`); two writers of one text store one prompt. A recorded run's stored
+  prompt links the same way (`link_stored_prompt_or_raise`). A rescan therefore
+  never adds a second link to a file an older scan linked to the legacy answer;
+  the row reads "Kept: already linked to a different prompt". Every scan write
+  runs through `survive_library_switch`, so a library move reruns it.
 - **Marks.** Every prompt ingestion creates, pair components included, carries
   category `scanned`, tag `auto-scanned` and the note `Auto-scanned from
   <file>` (`SCAN_MARKS`); a reused prompt keeps its fields. Run counts are

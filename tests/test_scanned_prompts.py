@@ -166,6 +166,27 @@ class TestStoreScannedPrompt(StoreCase):
         self.assertEqual(len(self.prompts()), 1)
         self.assertEqual(len(self.links()), 1)
 
+    def test_a_library_move_reruns_the_store(self):
+        from database import scanned_prompts
+
+        real = scanned_prompts.store_scanned_prompt_or_raise
+        calls = []
+
+        def moved_once(*args, **kwargs):
+            if not calls:
+                calls.append(1)
+                self.db.model._generation += 1
+                raise sqlite3.OperationalError("closed")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(
+            scanned_prompts, "store_scanned_prompt_or_raise", side_effect=moved_once
+        ):
+            status, _id = store_scanned_prompt(
+                self.db, self.path, META, "a cat", SCAN_MARKS
+            )
+        self.assertEqual((status, calls), ("added", [1]))
+
 
 class TestPairMarks(StoreCase):
     def test_marks_reach_only_created_components(self):

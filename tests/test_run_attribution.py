@@ -492,6 +492,47 @@ class TestScanUsesHistory(RecordedRuns, AdminAPITestCase):
             db.get_prompt_by_hash(generate_prompt_hash(shapes.BRANCH_TEXTS[1]))
         )
 
+    def test_a_recorded_run_never_adds_a_second_link(self):
+        db = self.api.db
+        db.save_prompt(text=LLM_TEXT, prompt_hash=generate_prompt_hash(LLM_TEXT))
+        other = db.save_prompt(text="a dog", prompt_hash=generate_prompt_hash("a dog"))
+        path = self.write("bare_00003_.png")
+        db.link_image_to_prompt(other, str(path))
+        self.record_run(db, str(self.output_dir), [("", path.name)], [LLM_TEXT])
+        self.assertEqual(self.api._ingest_scanned_file(path, {}), "conflict")
+        rows = db.model.get_connection().execute(
+            "SELECT prompt_id FROM generated_images WHERE image_path=?", (str(path),)
+        )
+        self.assertEqual([row[0] for row in rows], [other])
+
+    def test_a_single_file_asks_history_once(self):
+        db = self.api.db
+        db.save_prompt(text=LLM_TEXT, prompt_hash=generate_prompt_hash(LLM_TEXT))
+        path = self.write("llm_00002_.png")
+        self.record_run(db, str(self.output_dir), [("", path.name)], [LLM_TEXT])
+        meta = {"prompt": json.dumps(llm_text_graph())}
+        statements = []
+        conn = db.model.get_connection()
+        conn.set_trace_callback(statements.append)
+        try:
+            self.assertEqual(self.api._ingest_scanned_file(path, meta), "linked")
+        finally:
+            conn.set_trace_callback(None)
+        lookups = [s for s in statements if "FROM execution_run_outputs" in s]
+        self.assertEqual(len(lookups), 1)
+
+    def test_a_file_the_recorded_saver_links_is_not_queued(self):
+        """A default-ambiguous file linked at the inspector's step is no
+        Needs review case."""
+        with mock.patch.object(
+            type(self.api), "_record_scanned_review", autospec=True
+        ) as record:
+            _paths, counts = self.scan_dataset(
+                ["IMG_GEN_00003_.png", "IMG_GEN_00004_.png"], ["13", "23"]
+            )
+        self.assertEqual(counts["added"], 2, counts)
+        record.assert_not_called()
+
 
 class TestHostHelpers(unittest.TestCase):
     """The host lookups degrade to "no proof", never to an error."""
@@ -892,6 +933,26 @@ class TestScanBatchLookup(RecordedRuns, AdminAPITestCase):
         ):
             self.assertIsNone(history.recorded(str(path)))
         self.assertIsNone(history.get(str(path)))
+
+    def test_a_failed_prompt_lookup_is_logged_and_names_nothing(self):
+        from py.api.admin import _BatchHistory
+
+        path = self.output_dir / "one.png"
+        path.write_bytes(b"png")
+        root = str(self.output_dir)
+        self.record_run(self.api.db, root, [("", path.name)], [LLM_TEXT])
+        history = _BatchHistory(self.api, [path])
+        with (
+            mock.patch(
+                "database.run_attribution.host_output_directory", return_value=root
+            ),
+            mock.patch(
+                "py.api.admin.named_prompt", side_effect=sqlite3.OperationalError("x")
+            ),
+            self.assertLogs("prompt_manager", "WARNING"),
+        ):
+            self.assertIsNone(history.get(str(path)))
+            self.assertEqual(history.recorded(str(path)).saver_id, "9")
 
 
 class TestLinkedOutputRoot(RecordedRuns, unittest.TestCase):
