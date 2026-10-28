@@ -88,9 +88,9 @@ from .thumbnail_encode import shutdown_encoders, writer_settings
 from .thumbnail_jobs import ThumbnailOptions
 
 try:
-    from ...utils.parallel import map_parallel
+    from ...utils.parallel import map_parallel, note_refusal, refused_at_shutdown
 except ImportError:  # tests import the package top-level
-    from utils.parallel import map_parallel
+    from utils.parallel import map_parallel, note_refusal, refused_at_shutdown
 
 # The placeholder frame a video without a preview is answered with (JPEG
 # bytes, never written to disk); written previews follow the settings.
@@ -410,7 +410,8 @@ class AutoThumbnailer:
 
     def enqueue(self, src, dst, is_video):
         """Queue *dst*'s preview for the worker; False when already queued,
-        full or closed. Never blocks on a write."""
+        full, closed or its worker is refused at interpreter exit. Never
+        blocks on a write."""
         key = _dst_key(dst)
         with self._changed:
             if self._closed or key in self._queued:
@@ -420,30 +421,41 @@ class AutoThumbnailer:
             self._queued.add(key)
             self._queue.append((key, Path(src), Path(dst), bool(is_video)))
             self._busy = True
+            started = True
             if self._start_worker and not self._worker_running:
-                self._start_worker_locked()
+                started = self._start_worker_locked()
+            if not started:
+                # Refused at interpreter exit: no worker will take it (#375).
+                self._queue.pop()
+                self._queued.discard(key)
             self._changed.notify_all()
-        return True
+        return started
 
     def _start_worker_locked(self):
-        """Start the worker (lock held). A start that fails leaves the file
-        queued and the next enqueue tries again."""
+        """Start the worker (lock held); False only when the interpreter is
+        exiting (#375: logged once at DEBUG, the caller drops the file).
+        Another start failure leaves the file queued and the next enqueue
+        tries again."""
         worker = threading.Thread(target=self._run, name=WORKER_NAME, daemon=True)
         worker.pm_preview_token = _MODULE_TOKEN
         worker.pm_preview_close = self.close
         self._worker_running = True
         try:
             worker.start()
-        except RuntimeError:
+        except RuntimeError as error:
             self._worker_running = False
             self._busy = False
+            if refused_at_shutdown(error):
+                note_refusal(self._logger, "The automatic preview worker")
+                return False
             self._logger.warning(
                 "The automatic preview worker could not start; the next output "
                 "tries again",
                 exc_info=True,
             )
-            return
+            return True
         self._worker = worker
+        return True
 
     def _run(self):
         try:
@@ -790,8 +802,8 @@ class AutoThumbnailMixin:
 
         Returns ``queued``, ``fresh`` (its preview is current) or ``skipped``
         (not a media file under a current root, a link, a preview itself,
-        already queued, or after the app's cleanup). Never writes on the
-        caller's thread.
+        already queued, after the app's cleanup, or when its worker is refused
+        at interpreter exit). Never writes on the caller's thread.
         """
         if self._auto_thumbnails_shut:
             return "skipped"
