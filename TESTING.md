@@ -2439,6 +2439,14 @@ production hub `#/overview` is unchanged (D28); its System card opens
 the pressed section button and disposes the previous section's scope, so its reads,
 listeners and dialogs never outlive it.
 
+System is the home for settings and maintenance (#330 System S13). The legacy pages keep
+their prompt list, tags, Scan Images, auto-tag batch and review and gallery browsing; their
+Settings, Diagnostics, View Logs, Maintenance, Backup DB, Restore DB, the gallery's
+thumbnail, cache, rescan and duplicate tools and the auto-tag model downloads open the
+System section that owns them in a new tab (`legacy-system-links.spec.mjs`). Each page
+keeps only its own settings in Page options. What left the legacy pages is listed in
+"Legacy System UI removed by S13".
+
 Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
 browser fields, then the host fields (`POST /prompt_manager/settings` with
 `expected_revision`, #220), then the runtime fields. A failed domain keeps its drafts and
@@ -4025,6 +4033,9 @@ Every `covered` row names one, except the rows in `CONTROL_EXEMPTIONS`
 auto-tag / review", which the Images selection bar owns, not a System section. A row that
 is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
 file. Anchors are line numbers on `main` at this PR.
+
+S13 (#330) removed the legacy copy of the `covered` rows the legacy pages linked to System;
+"Legacy System UI removed by S13" below lists every removed element against its row.
 
 `tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
 - no owner, or a status outside the three;
