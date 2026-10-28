@@ -31,6 +31,7 @@ from .generation_params import (
 from .prompt_graph import (
     PROMPT_MANAGER_TYPES,
     _positive_roots,
+    is_negative_input,
     metadata_opted_out,
     resolve_text,
     save_setting,
@@ -281,7 +282,9 @@ def _side_switch(graph: Any, side: Any) -> Optional[str]:
     """The switch outcome of the PromptManager nodes on a side's path."""
     if not isinstance(graph, dict) or not side_opted_out(graph, side):
         return None
-    path = (side.get("provenance") or {}).get("path") or []
+    provenance = side.get("provenance")
+    path = provenance.get("path") if isinstance(provenance, dict) else None
+    path = path if isinstance(path, list) else []
     nodes = {str(step.get("node_id")) for step in path if isinstance(step, dict)} & set(
         _prompt_manager_ids(graph)
     )
@@ -337,7 +340,7 @@ def _switched_off_upstream(graph: Any) -> Optional[str]:
             found.add(node_id)
         inputs = node.get("inputs")
         for key, value in (inputs.items() if isinstance(inputs, dict) else ()):
-            if key in _NOT_TEXT_INPUTS or "negative" in str(key).lower():
+            if key in _NOT_TEXT_INPUTS or is_negative_input(key):
                 continue
             if isinstance(value, (list, tuple)) and len(value) == 2:
                 if isinstance(value[0], (str, int)) and isinstance(value[1], int):
@@ -353,7 +356,8 @@ def _off_text(graph: Any, text: str) -> Optional[str]:
     for node_id in _prompt_manager_ids(graph):
         node_text = resolve_text(graph, node_id)
         if node_text is None:
-            literal = graph[node_id].get("inputs", {}).get("text")
+            inputs = graph[node_id].get("inputs")
+            literal = inputs.get("text") if isinstance(inputs, dict) else None
             node_text = literal if isinstance(literal, str) else None
         if node_text is not None and node_text.strip() == wanted:
             matched.append(save_setting(graph, node_id))

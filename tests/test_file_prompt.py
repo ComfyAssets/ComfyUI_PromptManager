@@ -271,6 +271,49 @@ class TestSaveToLibrarySteps(unittest.TestCase):
                 self.assertEqual(decision.kind, "positive")
                 self.assertEqual(decision.text, "SECRET OFF TEXT")
 
+    def test_an_off_node_on_a_negative_input_name_never_blocks(self):
+        """The walk skips negative inputs by #90's own rule (``neg``,
+        ``neg_text``, ``text_neg``, ``negative_text``)."""
+        for key in ("neg", "neg_text", "text_neg", "negative_text"):
+            with self.subTest(key=key):
+                graph = {
+                    "1": {
+                        "class_type": "PromptManagerText",
+                        "inputs": {"text": "bad hands", "save_to_library": False},
+                    },
+                    "9": {
+                        "class_type": "PromptManagerText",
+                        "inputs": {"text": "a cat", "save_to_library": True},
+                    },
+                    "7": {
+                        "class_type": "PipeEncode",
+                        "inputs": {"pos_text": ["9", 0], key: ["1", 0]},
+                    },
+                    "4": {"class_type": "CheckpointLoaderSimple", "inputs": {}},
+                    "3": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "model": ["4", 0],
+                            "positive": ["7", 0],
+                            "negative": ["7", 1],
+                        },
+                    },
+                }
+                self.assertIsNone(file_prompt._switched_off_upstream(graph))
+                self.assertNotIn(
+                    _decide(_graph(graph)).kind, ("not_saved", "not_saved_wired")
+                )
+
+    def test_the_guards_accept_malformed_nodes(self):
+        graph = {
+            "1": {"class_type": "PromptManagerText", "inputs": None},
+            "2": {"class_type": "PromptManagerText"},
+        }
+        self.assertIsNone(file_prompt._off_text(graph, "x"))
+        side = {"provenance": ["not", "a", "dict"]}
+        with mock.patch.object(file_prompt, "side_opted_out", return_value=True):
+            self.assertIsNone(file_prompt._side_switch(graph, side))
+
     def test_the_off_text_guard_reads_a_nodes_resolved_text(self):
         graph = {
             "1": {
