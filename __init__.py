@@ -364,12 +364,25 @@ def _kill_encoders_at_exit():
     shutdown_encoders()
 
 
+def _abort_downloads_at_exit():
+    """Run by the exit hook (#376): huggingface_hub's Xet transfers ignore
+    the chunk checkpoint, so they are aborted the way hub aborts on Ctrl+C."""
+    import sys
+
+    if "huggingface_hub" not in sys.modules:
+        return  # no download ever ran: import nothing at exit
+    from .py.autotag import abort_hub_downloads
+
+    abort_hub_downloads()
+
+
 try:
     # Before the executor join: running jobs stop at their next file, item or
     # chunk (#376). The teardown below still runs from atexit afterwards.
     from .utils import exit_signal as _exit_signal
 
     _exit_signal.install(_kill_encoders_at_exit)
+    _exit_signal.install(_abort_downloads_at_exit)
 except Exception as e:
     try:
         from .utils.logging_config import get_logger

@@ -41,6 +41,9 @@ CHILD_CEILING_SECONDS = 60
 # at their next file, item or chunk (the encoder is killed).
 EXIT_BOUND_SECONDS = 15
 JOB_SECONDS = 600
+# The fake encoder outlives the ceiling, yet a failing run leaks it only
+# briefly (the parent cannot reach the child's own child to kill it).
+ENCODER_SECONDS = 90
 REPORT_PREFIX = "PM_EXIT_REPORT "
 
 CHILD = textwrap.dedent("""
@@ -55,7 +58,8 @@ CHILD = textwrap.dedent("""
     import threading
     import time
 
-    root, tmp, job_seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
+    root, tmp = sys.argv[1], sys.argv[2]
+    job_seconds, encoder_seconds = float(sys.argv[3]), int(sys.argv[4])
     sys.path.insert(0, root)
     state = {"stopped": {}}
 
@@ -111,11 +115,11 @@ CHILD = textwrap.dedent("""
     def encoder_work():
         # Stands for ffmpeg on Windows, which runs without a console and
         # never sees Ctrl+C: only a kill ends it before its timeout.
-        cmd = [sys.executable, "-c", "import time; time.sleep(%d)" % job_seconds]
+        cmd = [sys.executable, "-c", "import time; time.sleep(%d)" % encoder_seconds]
         try:
             encode.run_encoder(
                 cmd,
-                timeout=job_seconds,
+                timeout=encoder_seconds,
                 track=lambda _process: entered["encoder"].set(),
             )
         except Exception as error:
@@ -156,7 +160,14 @@ class TestExitStopsRunningWork(unittest.TestCase):
             env["PYTHONIOENCODING"] = "utf-8"
             try:
                 completed = subprocess.run(
-                    [sys.executable, script, ROOT, tmp, str(JOB_SECONDS)],
+                    [
+                        sys.executable,
+                        script,
+                        ROOT,
+                        tmp,
+                        str(JOB_SECONDS),
+                        str(ENCODER_SECONDS),
+                    ],
                     cwd=ROOT,
                     env=env,
                     capture_output=True,
@@ -298,6 +309,26 @@ class TestCheckpoints(_Isolated):
                 _collect_media_files([tmp], [".png"])
 
 
+class TestLoraImportStopsAtExit(_Isolated):
+    def test_staging_stops_before_the_next_sidecar_whatever_the_caller_checks(self):
+        import types
+
+        from py import lora_import
+
+        discovery = types.SimpleNamespace(
+            sidecars=[object(), object()], unreadable=[], layout=None
+        )
+        exit_signal.request()
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(lora_import.ImportCancelled):
+                lora_import.stage(
+                    discovery,
+                    tmp,
+                    media_extensions=frozenset(),
+                    cancelled=lambda: False,  # the legacy scan's own check
+                )
+
+
 class _FakeTqdm:
     """huggingface_hub.utils.tqdm as far as a download uses it."""
 
@@ -372,6 +403,43 @@ class TestModelDownloadStopsAtExit(_Isolated):
             self.assertEqual(
                 sorted(os.listdir(folder)), ["model.onnx", "selected_tags.csv"]
             )
+
+    def test_xet_transfers_are_aborted_the_way_hub_aborts_on_ctrl_c(self):
+        import types
+
+        from py.autotag import abort_hub_downloads
+
+        aborted = []
+        xet = types.ModuleType("huggingface_hub.utils._xet")
+        xet.abort_xet_session = lambda: aborted.append(True)
+        hub = _fake_hub(chunks_before_exit=None)
+        hub["huggingface_hub.utils._xet"] = xet
+        hub["huggingface_hub.utils"]._xet = xet
+        with mock.patch.dict(sys.modules, hub):
+            abort_hub_downloads()
+        self.assertEqual(aborted, [True])
+        with mock.patch.dict(sys.modules):
+            sys.modules.pop("huggingface_hub", None)
+            abort_hub_downloads()  # never imported: nothing to abort
+        self.assertEqual(aborted, [True])
+
+    def test_an_aborted_xet_download_is_logged_as_stopped(self):
+        from py.autotag import AutoTagService
+
+        hub = _fake_hub(chunks_before_exit=None)
+
+        def aborted(*args, **kwargs):
+            exit_signal.request()  # the hook ran, then hub raised
+            raise RuntimeError("xet session aborted")
+
+        hub["huggingface_hub"].hf_hub_download = aborted
+        with tempfile.TemporaryDirectory() as tmp:
+            service = AutoTagService(models_dir=tmp)
+            with mock.patch.dict(sys.modules, hub):
+                with self.assertLogs(service.logger, "INFO") as logs:
+                    self.assertFalse(service.download_model("wd14-vit"))
+        self.assertTrue(any("exiting" in line for line in logs.output), logs.output)
+        self.assertFalse(any("Download failed" in line for line in logs.output))
 
     def test_an_old_hub_without_tqdm_class_downloads_as_before(self):
         from py.autotag import AutoTagService

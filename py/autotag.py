@@ -39,6 +39,25 @@ except ImportError:
     from utils import exit_signal
 
 
+def abort_hub_downloads() -> None:
+    """Abort huggingface_hub's Xet transfers (run by the exit hook, #376).
+
+    Xet downloads report progress from native code, which ignores an
+    exception raised in ``tqdm.update``; huggingface_hub aborts them itself
+    on Ctrl+C with ``abort_xet_session``. Nothing happens when
+    huggingface_hub was never imported or has no Xet support.
+    """
+    if "huggingface_hub" not in sys.modules:
+        return
+    try:
+        from huggingface_hub.utils import _xet
+    except ImportError:
+        return
+    abort = getattr(_xet, "abort_xet_session", None)
+    if callable(abort):
+        abort()
+
+
 def _stop_at_exit(download) -> Dict[str, Any]:
     """Keyword arguments that stop a huggingface_hub download at its next
     chunk once the interpreter is exiting (#376), or none when this
@@ -571,12 +590,14 @@ class AutoTagService:
                 return self._download_wd14_model(model_type, progress_callback)
             else:
                 return self._download_hf_model(progress_callback)
-        except exit_signal.ExitRequested:
-            self.logger.info(
-                f"Model download stopped: ComfyUI is exiting ({model_type})"
-            )
-            return False
         except Exception as e:
+            if exit_signal.requested():
+                # ExitRequested between chunks, or the Xet session aborted
+                # by the exit hook (abort_hub_downloads).
+                self.logger.info(
+                    f"Model download stopped: ComfyUI is exiting ({model_type})"
+                )
+                return False
             self.logger.error(f"Download failed: {e}")
             if progress_callback:
                 progress_callback(f"Error: {str(e)}", 0)
