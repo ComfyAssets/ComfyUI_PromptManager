@@ -143,9 +143,13 @@ class LinkMatchesTestCase(unittest.TestCase):
 
     def streamed(self, q, category, tags, every_link=False, wanted=None):
         """Today's read, called directly (the fallback)."""
-        sql, params = link_filter_query(q, category, tags, every_link=every_link)
+        sql, params = link_filter_query(
+            q, tags, every_link=every_link, category=category
+        )
         with self.db.model.get_connection() as conn:
-            return operations._streamed_link_matches(conn, sql, params, wanted)
+            return operations._streamed_link_matches(
+                conn, sql, params, wanted, category is not None
+            )
 
     def selects(self):
         found = [s for s in self.statements if s.lstrip().upper().startswith("SELECT")]
@@ -156,17 +160,17 @@ class LinkMatchesTestCase(unittest.TestCase):
 class TestOneStepLinkRead(LinkMatchesTestCase):
     def test_plain_read_returns_every_unambiguous_link(self):
         self.seed()
-        matches = self.db.get_image_link_matches("", None, [], every_link=True)
+        matches = self.db.get_image_link_matches("", [], every_link=True)
         self.assertEqual(
             matches,
             {
-                "/out/a.png": (True, 5, 1),
-                QUOTED: (True, None, 2),
-                BACKSLASHED: (True, None, 2),
-                UNICODE: (True, 3, 3),
-                NEWLINE: (True, 5, 1),
-                "/out/pair.png": (True, 4, 4),
-                "/out/two-pairs.png": (True, 3, 3),
+                "/out/a.png": (True, 5, 1, None),
+                QUOTED: (True, None, 2, None),
+                BACKSLASHED: (True, None, 2, None),
+                UNICODE: (True, 3, 3, None),
+                NEWLINE: (True, 5, 1, None),
+                "/out/pair.png": (True, 4, 4, None),
+                "/out/two-pairs.png": (True, 3, 3, None),
             },
         )
         self.assertIsNone(matches[QUOTED][1])
@@ -176,21 +180,21 @@ class TestOneStepLinkRead(LinkMatchesTestCase):
     def test_search_hits_follow_text_title_and_tags(self):
         self.seed()
         self.assertEqual(
-            self.db.get_image_link_matches("lantern", None, []),
+            self.db.get_image_link_matches("lantern", []),
             {
-                "/out/a.png": (True, 5, 1),
-                NEWLINE: (True, 5, 1),
-                UNICODE: (True, 3, 3),
-                "/out/two-pairs.png": (True, 3, 3),
+                "/out/a.png": (True, 5, 1, None),
+                NEWLINE: (True, 5, 1, None),
+                UNICODE: (True, 3, 3, None),
+                "/out/two-pairs.png": (True, 3, 3, None),
             },
         )
         self.assertEqual(
-            self.db.get_image_link_matches("lantern", "cat-a", []),
+            self.db.get_image_link_matches("lantern", [], category="cat-a"),
             {
-                "/out/a.png": (True, 5, 1),
-                NEWLINE: (True, 5, 1),
-                QUOTED: (False, None, 2),
-                BACKSLASHED: (False, None, 2),
+                "/out/a.png": (True, 5, 1, "cat-a"),
+                NEWLINE: (True, 5, 1, "cat-a"),
+                QUOTED: (False, None, 2, "cat-a"),
+                BACKSLASHED: (False, None, 2, "cat-a"),
             },
         )
 
@@ -206,7 +210,11 @@ class TestOneStepLinkRead(LinkMatchesTestCase):
                 expected = self.streamed(q, category, tags, every_link, wanted)
                 self.statements.clear()
                 actual = self.db.get_image_link_matches(
-                    q, category, list(tags), every_link=every_link, wanted=wanted
+                    q,
+                    list(tags),
+                    every_link=every_link,
+                    wanted=wanted,
+                    category=category,
                 )
                 self.assertEqual(actual, expected)
                 self.assertEqual(
@@ -218,10 +226,8 @@ class TestOneStepLinkRead(LinkMatchesTestCase):
                 self.assertIn("json_group_array", found[0])
 
     def test_empty_database_returns_nothing_in_one_statement(self):
-        self.assertEqual(
-            self.db.get_image_link_matches("", None, [], every_link=True), {}
-        )
-        self.assertEqual(self.db.get_image_link_matches("x", "c", ["t"]), {})
+        self.assertEqual(self.db.get_image_link_matches("", [], every_link=True), {})
+        self.assertEqual(self.db.get_image_link_matches("x", ["t"], category="c"), {})
         found = self.selects()
         self.assertEqual(len(found), 2, found)
         self.assertTrue(all("json_group_array" in query for query in found))
@@ -230,20 +236,51 @@ class TestOneStepLinkRead(LinkMatchesTestCase):
         self.seed()
         self.assertEqual(
             self.db.get_image_link_matches(
-                "", None, [], every_link=True, wanted={"/out/pair.png", "/x.png"}
+                "", [], every_link=True, wanted={"/out/pair.png", "/x.png"}
             ),
-            {"/out/pair.png": (True, 4, 4)},
+            {"/out/pair.png": (True, 4, 4, None)},
         )
         self.assertEqual(
-            self.db.get_image_link_matches("", None, [], every_link=True, wanted=set()),
+            self.db.get_image_link_matches("", [], every_link=True, wanted=set()),
             {},
         )
+
+    def test_category_read_carries_the_inherited_category_in_one_step(self):
+        # A recipe's own category wins over its positive's (#332 MC4); the
+        # read only narrows to links holding the value, the caller compares.
+        self.seed()
+        with self.db.model.get_connection() as conn:
+            conn.execute("UPDATE prompt_pairs SET category='cat-a' WHERE id=1")
+        self.statements.clear()
+        for category, expected in (
+            ("cat-a", {"/out/pair.png": (True, 4, 4, "cat-a")}),
+            ("cat-b", {"/out/pair.png": (True, 4, 4, "cat-a")}),
+        ):
+            with self.subTest(category=category):
+                actual = self.db.get_image_link_matches(
+                    "", [], every_link=True, category=category, wanted={"/out/pair.png"}
+                )
+                self.assertEqual(actual, expected)
+                self.assertEqual(
+                    actual, self.streamed("", category, [], True, {"/out/pair.png"})
+                )
+        found = [query for query in self.selects() if "json_group_array" in query]
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(all("pair_category" in query for query in found))
+
+    def test_plain_read_leaves_the_categories_out_of_the_json(self):
+        self.seed()
+        self.statements.clear()
+        self.db.get_image_link_matches("", [], every_link=True)
+        (query,) = self.selects()
+        aggregate = query[query.index("json_array(") :].split(")", 1)[0]
+        self.assertEqual(aggregate, "json_array(file_path, rating, matched, positive")
 
     def test_read_releases_its_snapshot(self):
         # A statement left open after the read would pin its WAL snapshot, and
         # a TRUNCATE checkpoint from another connection would report busy.
         self.seed()
-        self.assertTrue(self.db.get_image_link_matches("", None, [], every_link=True))
+        self.assertTrue(self.db.get_image_link_matches("", [], every_link=True))
         other = sqlite3.connect(str(self.root / "prompts.db"))
         try:
             other.execute("UPDATE prompts SET rating=2 WHERE id=1")
@@ -258,12 +295,15 @@ class TestOneStepLinkRead(LinkMatchesTestCase):
 
     def test_wrapped_query_keeps_the_ambiguity_probe_an_index_search(self):
         self.seed()
-        sql, params = link_filter_query("lantern", "cat-a", ["t1"], every_link=True)
+        sql, params = link_filter_query(
+            "lantern", ["t1"], every_link=True, category="cat-a"
+        )
         with self.db.model.get_connection() as conn:
             plan = [
                 row[3]
                 for row in conn.execute(
-                    "EXPLAIN QUERY PLAN " + operations.link_matches_json_query(sql),
+                    "EXPLAIN QUERY PLAN "
+                    + operations.link_matches_json_query(sql, categories=True),
                     params,
                 )
             ]
@@ -286,10 +326,10 @@ class TestStreamedFallback(LinkMatchesTestCase):
             ) as attempts,
             self.assertLogs(LOGGER, "WARNING") as logged,
         ):
-            first = self.db.get_image_link_matches("", None, [], every_link=True)
+            first = self.db.get_image_link_matches("", [], every_link=True)
             found = self.selects()
             self.assertEqual(attempts.call_count, 1)
-            second = self.db.get_image_link_matches("", None, [], every_link=True)
+            second = self.db.get_image_link_matches("", [], every_link=True)
             again = self.selects()
         self.assertEqual(first, expected)
         self.assertEqual(second, expected)
@@ -308,11 +348,11 @@ class TestStreamedFallback(LinkMatchesTestCase):
         self.seed()
         self.add_image(2, b"/out/blob.png")
         expected = self.streamed("", None, [], True)
-        self.assertEqual(expected[b"/out/blob.png"], (True, None, 2))
+        self.assertEqual(expected[b"/out/blob.png"], (True, None, 2, None))
         self.statements.clear()
         with self.assertLogs(LOGGER, "WARNING") as logged:
-            first = self.db.get_image_link_matches("", None, [], every_link=True)
-            second = self.db.get_image_link_matches("", None, [], every_link=True)
+            first = self.db.get_image_link_matches("", [], every_link=True)
+            second = self.db.get_image_link_matches("", [], every_link=True)
         self.assertEqual(first, expected)
         self.assertEqual(second, expected)
         self.assertEqual(len(logged.records), 1, logged.output)
@@ -330,7 +370,7 @@ class TestStreamedFallback(LinkMatchesTestCase):
         self.assertIn(b"\x00", expected)
         with self.assertLogs(LOGGER, "WARNING"):
             self.assertEqual(
-                self.db.get_image_link_matches("", None, [], every_link=True), expected
+                self.db.get_image_link_matches("", [], every_link=True), expected
             )
         self.assertFalse(operations._one_step_unsupported)
 
@@ -342,11 +382,27 @@ class TestStreamedFallback(LinkMatchesTestCase):
             conn.execute("UPDATE prompts SET rating=? WHERE id=3", (b"\x00",))
             conn.execute("PRAGMA ignore_check_constraints=OFF")
         expected = self.streamed("", None, [], True)
-        self.assertEqual(expected[UNICODE], (True, b"\x00", 3))
+        self.assertEqual(expected[UNICODE], (True, b"\x00", 3, None))
         with self.assertLogs(LOGGER, "WARNING"):
             self.assertEqual(
-                self.db.get_image_link_matches("", None, [], every_link=True), expected
+                self.db.get_image_link_matches("", [], every_link=True), expected
             )
+
+    def test_blob_category_streams_a_category_read(self):
+        self.seed()
+        with self.db.model.get_connection() as conn:
+            # Admitted by its recipe's text category; the positive's is a BLOB.
+            conn.execute("UPDATE prompts SET category=? WHERE id=4", (b"cat-b",))
+            conn.execute("UPDATE prompt_pairs SET category='cat-b' WHERE id=1")
+        expected = self.streamed("", "cat-b", [], True)
+        self.assertEqual(expected["/out/pair.png"], (True, 4, 4, "cat-b"))
+        with self.assertLogs(LOGGER, "WARNING") as logged:
+            actual = self.db.get_image_link_matches(
+                "", [], every_link=True, category="cat-b"
+            )
+        self.assertEqual(actual, expected)
+        self.assertIn("BLOB", logged.output[0])
+        self.assertFalse(operations._one_step_unsupported)
 
     def test_json_text_over_the_length_limit_streams(self):
         self.seed()
@@ -355,7 +411,7 @@ class TestStreamedFallback(LinkMatchesTestCase):
         limit = conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 200)
         try:
             with self.assertLogs(LOGGER, "WARNING") as logged:
-                actual = self.db.get_image_link_matches("", None, [], every_link=True)
+                actual = self.db.get_image_link_matches("", [], every_link=True)
         finally:
             conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, limit)
         self.assertEqual(actual, expected)
@@ -374,7 +430,7 @@ class TestStreamedFallback(LinkMatchesTestCase):
                 self.assertNoLogs(LOGGER, "WARNING"),
                 self.assertRaisesRegex(sqlite3.OperationalError, "^interrupted$"),
             ):
-                self.db.get_image_link_matches("", None, [], every_link=True)
+                self.db.get_image_link_matches("", [], every_link=True)
         finally:
             conn.set_progress_handler(None, 1)
         self.assertFalse(operations._one_step_warned)
@@ -393,7 +449,7 @@ class TestStreamedFallback(LinkMatchesTestCase):
             self.assertLogs(LOGGER, "WARNING"),
         ):
             with self.assertRaises(sqlite3.OperationalError):
-                self.db.get_image_link_matches("", None, [], every_link=True)
+                self.db.get_image_link_matches("", [], every_link=True)
 
 
 if __name__ == "__main__":

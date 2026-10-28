@@ -13,7 +13,9 @@ same connection before commit. Owner rows and their timestamps never change.
 
 Category consolidation is previewed in one ``library_snapshot`` and applied in
 one ``_pair_transaction`` that recomputes the owner projection and requires the
-preview's ``impact_token``; only rows carrying the exact source change.
+preview's ``impact_token``; only rows carrying the exact source change. Image
+rows holding the source (``image_categories``, #332) are owners too: they are
+counted, hashed into the token and renamed with the prompts and pairs.
 """
 
 import sqlite3
@@ -97,16 +99,30 @@ def _validate_tag_id(tag_id: object) -> None:
         raise ValueError("Invalid tag ID")
 
 
-# The /library/options universe: nonblank values on eligible parents or on
-# active pairs, grouped exactly (whitespace and case variants stay distinct).
-_CATEGORY_GROUPS = (
+# Category values in Tags & categories (#332 §7): the prompt-backed values
+# (nonblank values on eligible parents or on active pairs, grouped exactly, so
+# whitespace and case variants stay distinct; /library/options lists the same
+# prompt-backed set with its own query) plus the values only image rows hold.
+# A prompt-backed value is ordered by its oldest owning positive; an image-only
+# value sorts after all of them (first_pid is SQLite's INTEGER maximum, above
+# any prompt id), then by value. ``image_count`` counts stored rows, including
+# files missing on disk. No FULL OUTER JOIN, so it runs on SQLite 3.31+.
+_IMAGE_ONLY_FIRST_PID = 2**63 - 1
+_CATEGORY_ROWS = (
     "WITH owners(value,pid) AS ("
     "SELECT p.category,p.id FROM prompts p WHERE p.category IS NOT NULL "
     "AND TRIM(p.category)!='' AND " + _ELIGIBLE + " "
     "UNION SELECT pp.category,pp.positive_prompt_id FROM prompt_pairs pp "
     "WHERE pp.archived=0 AND pp.category IS NOT NULL AND TRIM(pp.category)!=''),"
-    "grouped AS (SELECT value,MIN(pid) AS first_pid,"
-    "COUNT(DISTINCT pid) AS prompt_count FROM owners GROUP BY value) "
+    "image_values(value,image_count) AS ("
+    "SELECT category,COUNT(*) FROM image_categories GROUP BY category),"
+    "grouped(value,first_pid,prompt_count) AS ("
+    "SELECT value,MIN(pid),COUNT(DISTINCT pid) FROM owners GROUP BY value "
+    "UNION ALL SELECT value," + str(_IMAGE_ONLY_FIRST_PID) + ",0 FROM image_values "
+    "WHERE value NOT IN (SELECT value FROM owners)),"
+    "counted AS (SELECT g.value,g.first_pid,g.prompt_count,"
+    "COALESCE(i.image_count,0) AS image_count FROM grouped g "
+    "LEFT JOIN image_values i ON i.value=g.value) "
 )
 
 
@@ -117,15 +133,23 @@ _CATEGORY_COMPONENTS = (
     "WHERE p.category=? ORDER BY p.id"
 )
 _CATEGORY_PAIRS = "SELECT id,archived FROM prompt_pairs WHERE category=? ORDER BY id"
+# Image rows holding one exact value (#332 DC7), an index search.
+_IMAGE_CATEGORY_ROWIDS = (
+    "SELECT rowid FROM image_categories WHERE category=? ORDER BY rowid"
+)
 _CATEGORY_EXISTS = (
     "SELECT EXISTS(SELECT 1 FROM prompts WHERE category=:v)"
     " OR EXISTS(SELECT 1 FROM prompt_pairs WHERE category=:v)"
+    " OR EXISTS(SELECT 1 FROM image_categories WHERE category=:v)"
 )
 
-# Pairs after components, so a failing pair update rolls both back.
+# Pairs after components and image rows last, so a failing update rolls every
+# earlier one back. An image row is keyed by its file, never by its value, so
+# merging into a value other files already hold cannot conflict.
 _CATEGORY_UPDATES = (
     "UPDATE prompts SET category=?,updated_at=? WHERE category=?",
     "UPDATE prompt_pairs SET category=?,updated_at=? WHERE category=?",
+    "UPDATE image_categories SET category=?,updated_at=? WHERE category=?",
 )
 
 
@@ -136,8 +160,15 @@ def category_impact_token(
     target_exists: bool,
     components: list,
     pairs: list,
+    *,
+    images: list = (),
 ) -> str:
-    """Hash a category projection like ``library_edit_token`` (no secret)."""
+    """Hash a category projection like ``library_edit_token`` (no secret).
+
+    ``images`` are the rowids of the image rows holding ``source`` (#332 DC7).
+    With none the preimage has no ``images`` key, so a prompt-only token keeps
+    the value it had before image categories existed.
+    """
     preimage = {
         "epoch": epoch,
         "source": source,
@@ -146,6 +177,8 @@ def category_impact_token(
         "components": sorted([int(i), bool(flag)] for i, flag in components),
         "pairs": sorted([int(i), bool(flag)] for i, flag in pairs),
     }
+    if images:
+        preimage["images"] = sorted(int(i) for i in images)
     return canonical_token(_CATEGORY_DOMAIN, preimage)
 
 
@@ -325,7 +358,8 @@ class VocabularyOperations:
         pairs = [
             [row[0], bool(row[1])] for row in conn.execute(_CATEGORY_PAIRS, (source,))
         ]
-        if not components and not pairs:
+        images = [row[0] for row in conn.execute(_IMAGE_CATEGORY_ROWIDS, (source,))]
+        if not components and not pairs and not images:
             raise LibraryCommandError("vocabulary-conflict", epoch)
         target_exists = bool(
             conn.execute(_CATEGORY_EXISTS, {"v": target}).fetchone()[0]
@@ -339,9 +373,10 @@ class VocabularyOperations:
                 "other_prompts": len(components) - eligible,
                 "negative_variants": len(pairs) - archived,
                 "archived_negative_variants": archived,
+                "images": len(images),
             },
             "impact_token": category_impact_token(
-                epoch, source, target, target_exists, components, pairs
+                epoch, source, target, target_exists, components, pairs, images=images
             ),
         }
 
@@ -365,7 +400,8 @@ class VocabularyOperations:
     def apply_vocabulary_category(
         self, *, expected_epoch: str, source: str, target: str, impact_token: str
     ) -> dict:
-        """Set the exact ``source`` to ``target`` on every component and pair.
+        """Set the exact ``source`` to ``target`` on every component, pair
+        and image row.
 
         The recomputed projection must still match the preview's token; a
         mismatch is ``vocabulary-conflict`` with nothing written.
@@ -422,15 +458,15 @@ class VocabularyOperations:
         _limit(limit)
         key = _category_after(after)
         total = conn.execute(
-            _CATEGORY_GROUPS + "SELECT COUNT(*) FROM grouped"
+            _CATEGORY_ROWS + "SELECT COUNT(*) FROM counted"
         ).fetchone()[0]
         where, params = "", []
         if key is not None:
             where = " WHERE first_pid>? OR (first_pid=? AND value>?)"
             params = [key[0], key[0], key[1]]
         rows = conn.execute(
-            _CATEGORY_GROUPS
-            + "SELECT value,first_pid,prompt_count FROM grouped"
+            _CATEGORY_ROWS
+            + "SELECT value,first_pid,prompt_count,image_count FROM counted"
             + where
             + " ORDER BY first_pid,value LIMIT ?",
             [*params, limit + 1],
@@ -440,7 +476,11 @@ class VocabularyOperations:
         return {
             "library_epoch": epoch,
             "categories": [
-                {"value": row["value"], "prompt_count": row["prompt_count"]}
+                {
+                    "value": row["value"],
+                    "prompt_count": row["prompt_count"],
+                    "image_count": row["image_count"],
+                }
                 for row in rows
             ],
             "total": total,
