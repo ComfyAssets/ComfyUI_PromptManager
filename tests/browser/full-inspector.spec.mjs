@@ -144,9 +144,10 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
     await expect(panel.locator('.meta-grid dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     const footer=panel.locator('.detail-footer');
-    await expect(footer.locator('button')).toHaveText(['Send to ComfyUI','Prompt history']);
+    // #331 D139: every listed file's footer ends with Collections… (folder icon).
+    await expect(footer.locator('button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
     await expect(footer.locator('button.send')).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${POSITIVE_TITLE}`);
-    await expect(footer.locator('button.send svg.icon')).toHaveCount(1);await expect(footer.locator('button:not(.send) svg.icon')).toHaveCount(1);
+    await expect(footer.locator('button.send svg.icon')).toHaveCount(1);await expect(footer.locator('button:not(.send) svg.icon')).toHaveCount(2);
     await expect(panel).not.toContainText(/prompt evidence|Recipe tags|Positive prompt tags/);
     // Execution recorded and embedded parameters (D21), with the extension chip naming an unverified format.
     reads.patch=data=>{for (const role of ['positive','negative']) data.prompts[role].source='execution';};
@@ -156,10 +157,11 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await selectFile(page,'ambiguous.png');await expect(panel.locator('.prompt-section.positive .prompt-text')).toHaveText('embedded positive');
     await expect(panel.locator('span.chip.blue')).toHaveText('Embedded parameters');
     await expect(panel.locator('.panel-heading .chip')).toHaveText('File extension PNG');await expect(panel.locator('.panel-heading .chip .ca-visually-hidden')).toHaveText('File extension ');
-    await expect(panel.locator('.detail-footer button')).toHaveText(['Send to ComfyUI']);
-    // Unlinked: no badge, category, tags, pair or history.
+    await expect(panel.locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Collections…']);
+    // Unlinked: no badge, category, tags, pair or history; the footer holds only Collections… (D139).
     reads.patch=null;await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
-    expect(await panelStructure(panel)).toEqual({outer:['img.detail-cover','div.detail-inner'],
+    await expect(panel.locator('.detail-footer button')).toHaveText(['Collections…']);
+    expect(await panelStructure(panel)).toEqual({outer:['img.detail-cover','div.detail-inner','div.detail-footer'],
         inner:['div.panel-heading','p.small','section.prompt-section.positive','section.prompt-section.negative','dl.meta-grid']});
     await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
     // Ambiguous saved association: the same honest absence.
@@ -210,7 +212,7 @@ test('pair send and history appear only with real roles and link',async({page,re
     await expect(panel.getByRole('button',{name:'Send prompt pair to ComfyUI: explicit-empty.png',exact:true})).toBeVisible();
     await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
     await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
-    await expect(panel.locator('.detail-footer')).toHaveCount(0);await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(0);
+    await expect(panel.locator('.detail-footer button')).toHaveText(['Collections…']);await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(0);
 });
 
 test('no provenance, raw or download controls in the side panel',async({page,request})=>{
@@ -238,8 +240,8 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     await page.setViewportSize({width:1600,height:1100});const reads=await patchInspection(page);
     await fullFixture(page,request);let details=await viewerDetails(page,'complete.png');
     // The panel content without the cover, D117's Copy settings summary after the facts, then the two disclosures,
-    // then the pair send and history buttons (D20).
-    expect(await viewerStructure(details)).toEqual({outer:['div','button.send','button'],
+    // then the pair send and history buttons (D20) and D139's Collections….
+    expect(await viewerStructure(details)).toEqual({outer:['div','button.send','button','button'],
         inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','div.tags','dl.meta-grid','button.settings-summary','details','details']});
     await expect(details.locator(':scope > div > button')).toHaveText('Copy settings summary');
     await expect(details.locator(':scope > div > button.settings-summary')).toHaveCSS('white-space','normal');
@@ -250,7 +252,7 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     await expect(details.locator(':scope > div > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);
     await expect(details.locator('.meta-grid').first().locator('dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     await expect(details.locator('summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
-    await expect(details.locator(':scope > button')).toHaveText(['Send to ComfyUI','Prompt history']);
+    await expect(details.locator(':scope > button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
     await expect(details.locator(':scope > button.send')).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${POSITIVE_TITLE}`);
     // File & provenance: the honest facts and the concept's "Prompt evidence" line; no per-fact source lines.
     const provenance=details.locator('details').first();await provenance.locator('summary').click();
@@ -275,9 +277,10 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     await expect(details.getByText('Prompt evidence: embedded parameters',{exact:true})).toBeVisible();
     await expect(details.locator('.panel-heading .chip')).toHaveText('File extension PNG');
     await expect(details.locator('details dl.meta-grid dd').nth(4)).toHaveText('PNG extension');await expect(details).not.toContainText('.PNG');
-    // No badge, no line; no resolved pair or link, no buttons after the details.
+    // No badge, no line; no resolved pair or link: after the details only D139's Collections….
     reads.patch=null;await page.keyboard.press('Escape');details=await viewerDetails(page,'empty.png');
-    expect((await viewerStructure(details)).outer).toEqual(['div']);
+    expect((await viewerStructure(details)).outer).toEqual(['div','button']);
+    await expect(details.locator(':scope > button')).toHaveText(['Collections…']);
     await details.getByText('File & provenance',{exact:true}).click();await expect(details).not.toContainText('Prompt evidence');
     // The history button leaves the viewer for the prompt's history.
     await page.keyboard.press('Escape');details=await viewerDetails(page,'complete.png');

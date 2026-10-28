@@ -520,3 +520,134 @@ for (const theme of ['dark', 'light']) {
         await expect(row(page, 'Phone')).toBeVisible();
     });
 }
+
+// #331 D139 (design §8): the shared inspector's Collections… in the Images side panel and in the viewer.
+const panel = page => page.locator('#image-inspector');
+const collectionsDialog = page => page.getByRole('dialog', { name: 'Collections', exact: true });
+const choice = (page, name) => collectionsDialog(page).getByRole('checkbox', { name, exact: true });
+const newCollection = page => collectionsDialog(page).getByRole('textbox', { name: 'New collection', exact: true });
+
+async function membership(request, path) {
+    const [image] = (await (await request.get(`/prompt_manager/images/output?mode=workspace&q=${encodeURIComponent(path)}`)).json()).images;
+    const query = new URLSearchParams({ root_index: String(image.root_index), root_scope: image.root_scope, path: image.path });
+    const response = await request.get(`${API}/membership?${query}`);
+    await expect(response).toBeOK();
+    return (await response.json()).collection_ids;
+}
+
+test('Collections… in the side panel adds, removes and creates for one image (CUJ 6)', async ({ page, request }) => {
+    const manifest = await seed(request);
+    const { Landscapes, Experiments } = manifest.collections;
+    await page.goto(`${workspace}#/images`);
+    // The newest image, landscape_01, is the panel's.
+    await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('landscape_01.png');
+    const open = panel(page).getByRole('button', { name: 'Collections…', exact: true });
+    await expect(panel(page).locator('.detail-footer > button').last()).toHaveText('Collections…');
+    await open.click();
+    await expect(collectionsDialog(page)).toBeVisible();
+    await expect(choice(page, 'Landscapes')).toBeChecked();
+    await expect(choice(page, 'Experiments')).not.toBeChecked();
+    await expect(collectionsDialog(page).locator('label.tag-suggestion')).toHaveText(['Experiments', 'Landscapes']);
+    await expect(collectionsDialog(page).locator('.dialog-actions button')).toHaveText(['Cancel', 'Save']);
+    await choice(page, 'Landscapes').uncheck();
+    await choice(page, 'Experiments').check();
+    await newCollection(page).fill('Grids');
+    await collectionsDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(collectionsDialog(page)).toHaveCount(0);
+    await expect(toast(page)).toHaveText('Collections updated.');
+    await expect(open).toBeFocused();
+    await expect(row(page, 'Grids').locator('.nav-count')).toHaveText('1');
+    await expect(row(page, 'Landscapes').locator('.nav-count')).toHaveText('11');
+    await expect(row(page, 'Experiments').locator('.nav-count')).toHaveText('9');
+    const grids = (await listed(request)).find(item => item.name === 'Grids');
+    expect((await membership(request, 'landscape_01')).sort()).toEqual([Experiments.id, grids.id].sort());
+    expect(Landscapes.id).not.toBe(grids.id);
+    // The Images page lists the same files; the dialog opened again shows the new state.
+    await expect(imageCards(page)).toHaveCount(21);
+    await open.click();
+    await expect(choice(page, 'Grids')).toBeChecked();
+    await expect(choice(page, 'Experiments')).toBeChecked();
+    await expect(choice(page, 'Landscapes')).not.toBeChecked();
+    // Save without a change sends nothing.
+    let writes = 0;
+    page.on('request', request => { if (request.url().includes(`${API}/items`)) writes++; });
+    await collectionsDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(collectionsDialog(page)).toHaveCount(0);
+    expect(writes).toBe(0);
+});
+
+test('Collections… in the viewer keeps the viewer until it closes (CUJ 7)', async ({ page, request }) => {
+    const manifest = await seed(request);
+    await page.goto(`${workspace}#/collection/${manifest.collections.Landscapes.id}`);
+    await expect(imageCards(page)).toHaveCount(12);
+    await page.getByRole('button', { name: 'Open landscape_01.png', exact: true }).click();
+    const viewer = page.locator('#viewer-dialog[open]');
+    await expect(viewer.locator('#viewer-title')).toContainText('landscape_01.png');
+    await viewer.locator('#viewer-details').getByRole('button', { name: 'Collections…', exact: true }).click();
+    await expect(choice(page, 'Landscapes')).toBeChecked();
+    await choice(page, 'Landscapes').uncheck();
+    await collectionsDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(toast(page)).toHaveText('Collections updated.');
+    await expect(collectionsDialog(page)).toHaveCount(0);
+    // The viewer stays on the image; the page keeps listing it while the viewer is open.
+    await expect(viewer.locator('#viewer-title')).toContainText('landscape_01.png');
+    await expect(row(page, 'Landscapes').locator('.nav-count')).toHaveText('11');
+    await expect(imageCards(page)).toHaveCount(12);
+    await viewer.getByRole('button', { name: 'Close image viewer', exact: true }).click();
+    await expect(viewer).toHaveCount(0);
+    await expect(imageCards(page)).toHaveCount(11);
+    await expect(card(page, 'collections/landscape_01.png')).toHaveCount(0);
+});
+
+test('a failed membership read says so and Retry reads it again', async ({ page, request }) => {
+    await seed(request);
+    let failing = true;
+    await page.route(`**${API}/membership?*`, route => failing
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false,"error":"Collections could not be read."}' })
+        : route.fallback());
+    await page.goto(`${workspace}#/images`);
+    await panel(page).getByRole('button', { name: 'Collections…', exact: true }).click();
+    await expect(collectionsDialog(page).getByRole('alert').first()).toHaveText('Collections could not be loaded.');
+    await expect(collectionsDialog(page).getByRole('checkbox')).toHaveCount(0);
+    await expect(collectionsDialog(page).getByRole('button', { name: 'Save', exact: true })).toHaveAttribute('aria-disabled', 'true');
+    failing = false;
+    await collectionsDialog(page).getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(choice(page, 'Landscapes')).toBeChecked();
+    await expect(collectionsDialog(page).getByRole('button', { name: 'Retry', exact: true })).toBeHidden();
+    // A failed write keeps the dialog with the current membership.
+    await page.route(`**${API}/items`, route => route.fulfill({ status: 500, contentType: 'application/json',
+        body: '{"success":false,"error":"The collection could not be changed."}' }));
+    await choice(page, 'Experiments').check();
+    await collectionsDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(collectionsDialog(page).getByRole('alert')).toHaveText('The collections could not be updated. Try again.');
+    await expect(choice(page, 'Experiments')).not.toBeChecked();
+    await expect(choice(page, 'Landscapes')).toBeChecked();
+});
+
+test('a file in no collection with no collections at all can start one', async ({ page }) => {
+    await page.goto(`${workspace}#/images`);
+    await panel(page).getByRole('button', { name: 'Collections…', exact: true }).click();
+    await expect(collectionsDialog(page)).toContainText('No collections yet. Name one below.');
+    await newCollection(page).fill('First');
+    await collectionsDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(toast(page)).toHaveText('Collections updated.');
+    await expect(rows(page)).toHaveCount(1);
+    await expect(row(page, 'First').locator('.nav-count')).toHaveText('1');
+});
+
+for (const theme of ['dark', 'light']) {
+    test(`the Collections dialog fits 390x844 ${theme}`, async ({ page, request }) => {
+        await seed(request);
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${workspace}#/images`);
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
+        await panel(page).getByRole('button', { name: 'Collections…', exact: true }).click();
+        await expect(choice(page, 'Landscapes')).toBeChecked();
+        const fits = await collectionsDialog(page).evaluate(dialog => {
+            const box = dialog.getBoundingClientRect();
+            return box.left >= 0 && box.right <= window.innerWidth && dialog.scrollWidth <= dialog.clientWidth;
+        });
+        expect(fits).toBe(true);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
+}

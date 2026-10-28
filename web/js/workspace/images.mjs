@@ -279,7 +279,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         onSourceChanged:refreshInspectionCollection});
     if (bar) main.append(bar.element);
     main.append(body);
+    // #331 D139: a change the inspector or the viewer confirmed that touches the open collection lists it again; the
+    // viewer reports only once it closes.
+    const inspectorCollections = embedded ? null : collections;
+    const collectionsChangedBy = ({added, removed}) => {
+        if (filters.collection && [...added, ...removed].includes(Number(filters.collection))) collectionChanged();
+    };
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
+        collections:inspectorCollections,onCollectionsChanged:collectionsChangedBy,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
         onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
@@ -295,7 +302,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         selection = imageKey(image);
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
-            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection});
+            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection,
+            collections:inspectorCollections, onCollectionsChanged:collectionsChangedBy});
         detailInspector.setState(inspection.state);
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);

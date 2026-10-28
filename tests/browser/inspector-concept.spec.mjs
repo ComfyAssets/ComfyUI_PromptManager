@@ -45,10 +45,11 @@ function withCategoryScope(inventory) {
 }
 
 /**
- * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38 and D117); everything else must
+ * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38, D117 and D139); everything else must
  * equal production. `reference.viewerPlain` is the concept's own full details
  * with its tag chips made plain (D20), D117's summary button added and, under a coarse pointer, D34's targets, all at
- * runtime: the browser lays out what follows them, as the Images spec's removed toolbar items do.
+ * runtime: the browser lays out what follows them, as the Images spec's removed toolbar items do. D139's
+ * "Collections…" is drawn after Prompt history in both the concept's panel footer and its full details.
  */
 export function mapInspectorConcept(reference,{viewport}) {
     const {panel,viewerPlain,fileControls}=reference;
@@ -106,6 +107,22 @@ async function openProductionPanel(page,theme) {
 }
 
 /**
+ * #331 D139: production's "Collections…" after Prompt history in `selector`'s buttons, drawn in the concept as its own
+ * Prompt history button (no action) with the concept's folder icon (its Images filter chip's); returns an undo.
+ */
+async function withCollectionsButton(page,selector) {
+    await page.evaluate(selector=>{
+        const history=[...document.querySelectorAll(`${selector} > button`)].find(button=>button.textContent.includes('Prompt history'));
+        const button=history.cloneNode(false);
+        for(const key of Object.keys(button.dataset))delete button.dataset[key];
+        button.append(document.querySelector('.filter-row .chip > svg.icon').cloneNode(true),' Collections…');
+        history.after(button);(window.__collectionsButtons??=[]).push(button);
+    },selector);
+    await settle(page);
+    return async()=>{await page.evaluate(()=>{for(const button of window.__collectionsButtons??[])button.remove();delete window.__collectionsButtons;});};
+}
+
+/**
  * The concept's tag chips in the open viewer as plain `span.chip`s (D20), D34's coarse targets and D117's "Copy
  * settings summary" after the six facts (LI-4), drawn as the concept's own plain button (its "Download sample JSON",
  * without its action); returns an undo.
@@ -122,8 +139,9 @@ async function plainViewerChips(page) {
         summary.textContent='Copy settings summary';summary.classList.add('settings-summary');
         document.querySelector('#viewer-details > div > dl.meta-grid').after(summary);window.__summaryButton=summary;
     });
-    await settle(page);
+    const restoreCollections=await withCollectionsButton(page,'#viewer-details');
     return async()=>{
+        await restoreCollections();
         await page.evaluate(()=>{for(const [span,button] of window.__plainChips)span.replaceWith(button);delete window.__plainChips;
             window.__summaryButton.remove();delete window.__summaryButton;});
         await restoreTargets();
@@ -162,7 +180,9 @@ async function viewerOf(page,concept,mutation=null) {
     return {viewerDetails,viewerPlain,fileControls};
 }
 async function inventory(page,concept=false) {
+    const restoreCollections=concept?await withCollectionsButton(page,'#image-inspector > .detail-footer'):null;
     const {panel}=await inspectorOf(page);
+    await restoreCollections?.();
     const {viewerDetails,viewerPlain,fileControls}=await viewerOf(page,concept);
     return concept?{panel,viewerDetails,viewerPlain,fileControls}:{panel,viewerDetails,fileControls};
 }
@@ -325,7 +345,7 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await expect(rows.first().locator('.chip .ca-visually-hidden')).toHaveText('Positive prompt category: ');
     await expect(rows.nth(1).locator('button.chip')).toHaveText(['minimal','warm_light','editorial']);
     await expect(rows.nth(1).locator('span.chip')).toHaveCount(0);
-    await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history']);
+    await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
 });
 
 // Task C3 (D88, #249 PR C): the concept's chip row is the image's own tags (`i.tags`, app.js a402). With those names
@@ -379,6 +399,13 @@ test('inspector comparison detects mutations',async({page})=>{
     const withoutSummary=await viewerMutated({remove:['#viewer-details > div > button']});
     expect(()=>assertInspectorMatch(reference,withoutSummary,viewport)).toThrow(/viewerDetails\.structure\.inner/);
     assertInspectorMatch(reference,await viewerMutated(),viewport);
+
+    // D139: Collections… is part of the mapped concept, so losing it is a difference.
+    const restoreButton=await mutate(page,{remove:['#image-inspector > .detail-footer > button:last-child']});
+    const withoutCollections=await measure();
+    expect(()=>assertInspectorMatch(reference,withoutCollections,viewport)).toThrow(/panel\.footer/);
+    await restoreButton();await settle(page);
+    assertInspectorMatch(reference,await measure(),viewport);
 
     await mutate(page,{remove:['#image-inspector > .detail-footer']});
     const domMutated=await measure();
