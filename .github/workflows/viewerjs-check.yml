@@ -27,6 +27,13 @@ concurrency:
 # coverage shards 7m34s/6m04s/5m22s (tests 6m38s/4m53s/4m04s), merge 54s, firefox 7m57s/5m21s (tests
 # 7m08s/4m34s), webkit 8m16s/5m03s (tests 7m26s/3m58s); a cache miss adds up to 5m to npm ci, which
 # the 20-minute limits absorb.
+# Hangs (#425): a job killed at its limit keeps no log and skips its upload steps, so each browser
+# test step has its own timeout-minutes (18) below the job's 20, and Playwright's globalTimeout
+# (PM_TEST_GLOBAL_TIMEOUT_MINUTES) stops the run before the step and lists the interrupted tests.
+# Measured on main (runs 40725289094, 40719375442, 40700439399): setup before the test step <= 52s,
+# uploads <= 35s; test steps up to 14m42s (webkit shard 1/2, Playwright ~14.6m) and 13m05s for
+# coverage (workflows 11.8m after ~1m of node units and the viewer suite, whose own CI limit is 3m).
+# So: page workflows globalTimeout 17m, coverage workflows 15m, each step 18m.
 jobs:
   frontend-coverage:
     name: frontend coverage (shard ${{ matrix.shard }}/3)
@@ -79,6 +86,9 @@ jobs:
       - if: matrix.shard == 3
         run: npm run --prefix tools/vendor test
       - name: Page workflows with coverage, shard ${{ matrix.shard }}/3
+        timeout-minutes: 18
+        env:
+          PM_TEST_GLOBAL_TIMEOUT_MINUTES: 15
         run: npm run --prefix tools/vendor test:coverage:shard -- ${{ matrix.shard }}/3
       - name: Upload raw coverage
         uses: actions/upload-artifact@v7
@@ -87,6 +97,7 @@ jobs:
           path: coverage/js/raw/
           if-no-files-found: error
           retention-days: 3
+      # Traces and the blob report (test-results/blob/) of a failed, timed-out or cancelled step.
       - name: Upload Chromium and touch traces
         if: always()
         uses: actions/upload-artifact@v7
@@ -211,7 +222,11 @@ jobs:
           key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
       - name: Page workflows in ${{ matrix.browser }}, shard ${{ matrix.shard }}/2
+        timeout-minutes: 18
+        env:
+          PM_TEST_GLOBAL_TIMEOUT_MINUTES: 17
         run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }} --shard ${{ matrix.shard }}/2
+      # Traces and the blob report (test-results/blob/) of a failed, timed-out or cancelled step.
       - name: Upload browser traces
         if: always()
         uses: actions/upload-artifact@v7

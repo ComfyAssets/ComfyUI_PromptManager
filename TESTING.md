@@ -262,6 +262,19 @@ watchdog dump, is a failure like any other: read the dump, find the blocking
 call, fix it. Never raise a limit or rerun to get green; a limit changes only
 with new measurements written next to it.
 
+Browser jobs (#425): GitHub keeps no log of a job killed at its limit and skips
+its upload steps, so the test step in each browser job in `viewerjs-check.yml`
+has its own `timeout-minutes` (18, below the job's 20) and Playwright stops
+first. Under `CI`, `globalTimeout` comes from `PM_TEST_GLOBAL_TIMEOUT_MINUTES`
+(page workflows 17, coverage workflows 15; the viewer suite has a fixed 3);
+the comment above `jobs:` holds the measurements. Locally there is no limit
+unless you set that variable (fractions work: `0.5` is 30 s). Each test keeps
+the 30 s default. When the run is cut off, the log ends with `Still running
+when the run ended (timedout): N` and one line per test that never finished
+(`tools/vendor/running-tests-reporter.mjs`; `list` cannot name them). The
+blob report in `tools/vendor/test-results/blob/` and the traces upload with
+`if: always()`; `npx playwright merge-reports` opens the blob.
+
 ### After a push
 
 Follow the run for the commit you pushed, never an older one:
