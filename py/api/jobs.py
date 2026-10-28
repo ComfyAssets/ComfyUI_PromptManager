@@ -47,6 +47,11 @@ import time
 import uuid
 from pathlib import PurePosixPath, PureWindowsPath
 
+try:
+    from ...utils import exit_signal
+except ImportError:  # tests import the package top-level
+    from utils import exit_signal
+
 logger = logging.getLogger(__name__)
 # Start and finish order: wall-clock times can tie (coarse Windows clocks).
 _sequence = itertools.count()
@@ -195,10 +200,20 @@ class Job:
         self.counters = dict.fromkeys(groups, 0)
         self.outcomes = {group: [] for group in groups}
         self.log = []
-        self.cancelled = False
+        self._cancel_requested = False
         self.last_event = None
         self.task = None
         self._subscribers = set()
+
+    @property
+    def cancelled(self):
+        """Cancel was requested, or the interpreter is exiting (#376): every
+        check a job already makes between files also stops it at exit."""
+        return self._cancel_requested or exit_signal.requested()
+
+    @cancelled.setter
+    def cancelled(self, value):
+        self._cancel_requested = bool(value)
 
     @property
     def record_changing(self):
