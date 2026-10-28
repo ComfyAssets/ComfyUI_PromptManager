@@ -13,9 +13,11 @@ repos:
         language: system
         types: [python]
 
+      # Fails at the severity CI enforces (code-quality.yml: -lll, high only), never stricter.
+      # pre-commit appends the staged files, so no shell wrapper can drop the first one.
       - id: bandit
         name: bandit
-        entry: bash -c 'bandit "$@" -ll -q 2>&1; true'
+        entry: bandit -lll -q
         language: system
         types: [python]
         exclude: ^(tests/|reference/)

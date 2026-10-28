@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { COLUMNS, CONTROL_EXEMPTIONS, STATUSES, declaredTitles, parseControl, parseCoverageTable, readCoverageTable,
+import { COLUMNS, CONTROL_EXEMPTIONS, PAGES, REMOVAL_COLUMNS, STATUSES, declaredTitles, duplicateRemovals, idUses, methodUses,
+    parseControl, parseCoverageTable, parseRemovalTable, readCoverageTable, readPage, readRemovalTable, removalProblems,
     rowProblems } from '../../tools/vendor/legacy-coverage.mjs';
 
 // TESTING.md "Legacy System capability coverage" (#249 System S12, #329): every legacy System capability names an
@@ -113,4 +114,100 @@ test('a covered row names its native control unless it is exempt', () => {
         assert.ok(row, `${capability} is in the table`);
         assert.deepEqual([row.Status, row['Native control']], ['covered', '—']);
     }
+});
+
+// TESTING.md "Legacy System UI removed by S13" (#330): a legacy element is removed only when its capability is
+// `covered`, the removal copies that row's native test, and the element is really gone from its page.
+const COVERAGE_HEADER = '| Capability | Legacy anchor | Owner | Status | Native control | Test |\n| --- | --- | --- | --- | --- | --- |';
+const REMOVAL_HEADER = '| Capability | Page | Removed ids | Removed methods | Native test |\n| --- | --- | --- | --- | --- |';
+const FIXTURE_COVERAGE = parseCoverageTable(['### Legacy System capability coverage', '', COVERAGE_HEADER,
+    '| View logs | `admin.html:1` | S12 Logs | covered | `diagnostics` · combobox · "Level" | level filter works (logs.spec.mjs) |',
+    '| Infinite scrolling default | `admin.html:2` | Legacy prompt list | kept in legacy | — | scrolls (list-state.test.js) |',
+    ''].join('\n'));
+const removalRow = cells => parseRemovalTable(['### Legacy System UI removed by S13', '', REMOVAL_HEADER, `| ${cells} |`, '']
+    .join('\n'))[0];
+const EMPTY_PAGE = () => ({ html: '<button id="kept">Kept</button>', script: 'class Admin {\n    kept() {}\n}\n' });
+
+test('every removed legacy element cites a covered capability and its native test', () => {
+    const coverage = readCoverageTable();
+    const rows = readRemovalTable();
+    for (const row of rows) {
+        const cited = coverage.find(item => item.Capability === row.Capability);
+        assert.ok(cited, `TESTING.md:${row.line} cites "${row.Capability}"`);
+        assert.equal(cited.Status, 'covered', `TESTING.md:${row.line} ${row.Capability}`);
+        assert.equal(row['Native test'], cited.Test, `TESTING.md:${row.line} ${row.Capability}`);
+        assert.ok(Object.keys(PAGES).includes(row.Page), `TESTING.md:${row.line} page ${row.Page}`);
+    }
+    assert.deepEqual(duplicateRemovals(rows), []);
+    assert.deepEqual(REMOVAL_COLUMNS, ['Capability', 'Page', 'Removed ids', 'Removed methods', 'Native test']);
+});
+
+test('a removed id or method is gone from its page', () => {
+    const coverage = readCoverageTable();
+    for (const row of readRemovalTable()) {
+        assert.deepEqual(removalProblems(row, coverage, page => readPage(page)), [], `TESTING.md:${row.line} ${row.Capability}`);
+    }
+    // Each way a page can still hold an id or a method is found; a call through another object, or a longer name, is not
+    // a definition.
+    const page = {
+        html: '<div id="logsModal"></div><button onclick="window.admin.closeLogs()">x</button>',
+        script: [
+            "document.getElementById('logLevel').value;",
+            "this.showModal('diagnosticsModal');",
+            '<span data-id="logsContainer"></span>',
+            'document.querySelector("#logLimit option");',
+            "const backdrops = ['settingsModal', 'duplicatesModal'];",
+            'class Admin {',
+            '    async refreshLogs(level) {',
+            '    }',
+            '}            displayLogs(logs) {',
+            '    }',
+            'this.loadLogStats();',
+            '// downloadLogs() {',
+            'other.formatBytesLater(1);',
+        ].join('\n'),
+    };
+    assert.deepEqual(idUses('logsModal', page), ['id="logsModal" in the markup']);
+    assert.deepEqual(idUses('logLevel', page), ["getElementById('logLevel')"]);
+    assert.deepEqual(idUses('logLimit', page), ["querySelector('#logLimit')"]);
+    assert.deepEqual(idUses('duplicatesModal', page), ["'duplicatesModal' in a modal list"]);
+    assert.deepEqual(idUses('logLevelX', page), []);
+    assert.deepEqual(idUses('diagnosticsModal', page), ["a …Modal('diagnosticsModal') call"]);
+    assert.deepEqual(idUses('logsContainer', page), []);
+    assert.deepEqual(methodUses('closeLogs', page), ['.closeLogs( called in the markup']);
+    assert.deepEqual(methodUses('refreshLogs', page), ['refreshLogs() defined']);
+    assert.deepEqual(methodUses('displayLogs', page), ['displayLogs() defined']);
+    assert.deepEqual(methodUses('loadLogStats', page), ['.loadLogStats( called']);
+    assert.deepEqual(methodUses('downloadLogs', page), []);
+    assert.deepEqual(methodUses('formatBytes', page), []);
+    // One id or method is listed on one row per page.
+    const twice = [removalRow('View logs | admin | `#logsModal` | — | level filter works (logs.spec.mjs)'),
+        { ...removalRow('View logs | admin | `#logsModal` | — | level filter works (logs.spec.mjs)'), line: 9 }];
+    assert.match(duplicateRemovals(twice).join(), /admin #logsModal is listed on rows/);
+    assert.deepEqual(removalProblems(removalRow('View logs | admin | `logsModal`, `#ok` | `close` | level filter works (logs.spec.mjs)'),
+        FIXTURE_COVERAGE, EMPTY_PAGE), ['malformed entry "logsModal"', 'malformed entry "close"']);
+});
+
+test('a removal citing a kept-in-legacy capability fails', () => {
+    const row = removalRow('Infinite scrolling default | admin | `#infiniteScrollDefault` | — | scrolls (list-state.test.js)');
+    assert.deepEqual(removalProblems(row, FIXTURE_COVERAGE, EMPTY_PAGE), ['cites a kept in legacy capability']);
+    const unknown = removalRow('Something else | admin | — | — | scrolls (list-state.test.js)');
+    assert.deepEqual(removalProblems(unknown, FIXTURE_COVERAGE, EMPTY_PAGE), ['cites no single coverage row "Something else"']);
+});
+
+test('a removal whose native test differs fails', () => {
+    const row = removalRow('View logs | admin | `#logsModal` | `showLogsModal()` | another title (logs.spec.mjs)');
+    assert.deepEqual(removalProblems(row, FIXTURE_COVERAGE, EMPTY_PAGE),
+        ['its native test differs from the coverage row\'s "level filter works (logs.spec.mjs)"']);
+    assert.deepEqual(removalProblems({ ...row, 'Native test': 'level filter works (logs.spec.mjs)' }, FIXTURE_COVERAGE, EMPTY_PAGE), []);
+});
+
+test('a removed id still on its page fails', () => {
+    const row = removalRow('View logs | admin | `#logsModal` | `showLogsModal()` | level filter works (logs.spec.mjs)');
+    const page = () => ({ html: '<div id="logsModal" class="hidden"></div>', script: 'class Admin {\n    showLogsModal() {\n    }\n}\n' });
+    assert.deepEqual(removalProblems(row, FIXTURE_COVERAGE, page), [
+        '#logsModal is still on the admin page: id="logsModal" in the markup',
+        'showLogsModal() is still on the admin page: showLogsModal() defined',
+    ]);
+    assert.deepEqual(removalProblems({ ...row, Page: 'metadata' }, FIXTURE_COVERAGE, page), ['unknown page "metadata"']);
 });
