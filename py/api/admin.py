@@ -52,6 +52,7 @@ try:
         extract_generation_params,
         parse_page_json,
     )
+    from ...utils.prompt_graph import metadata_opted_out, side_opted_out
     from ...utils.prompt_pair_resolver import resolve_prompt_pair, sampler_less_prompt
     from ...utils.review_capture import reviewable
 except ImportError:
@@ -67,6 +68,7 @@ except ImportError:
         extract_generation_params,
         parse_page_json,
     )
+    from utils.prompt_graph import metadata_opted_out, side_opted_out
     from utils.prompt_pair_resolver import resolve_prompt_pair, sampler_less_prompt
     from utils.review_capture import reviewable
 
@@ -260,6 +262,11 @@ SCAN_DETAILS = {
     "failed": "Error: the prompt could not be stored",
     "error": "Error: the file could not be processed (see the server log)",
     "found": "Metadata found, but no prompt text to store",
+    "not_saved": "Skipped · its PromptManager node does not save to the library",
+    "not_saved_wired": (
+        "Skipped · its Save to library switch is wired from another node, so only "
+        "the run itself can link it"
+    ),
     None: "No prompt metadata in the file",
 }
 
@@ -1720,10 +1727,34 @@ class AdminRoutesMixin:
                 except (ValueError, TypeError):
                     # Preserve malformed metadata for conservative resolver rejection.
                     pass
+        if metadata_opted_out(canonical):
+            # Save to library was off for the run's prompt: no prompt, link,
+            # recorded-run fallback or Needs review item (#90)
+            return "not_saved"
+        if metadata_opted_out(canonical, unreadable=True):
+            # The switch is wired from a node the file cannot show: only the
+            # live run (the node saw the value) can link it, never a scan
+            return "not_saved_wired"
         if not canonical.get("prompt") and not canonical.get("parameters"):
             return self._link_recorded_run(media_file, canonical, detailed, history)
         _with_file_size(canonical, media_file)
         resolution = resolve_prompt_pair(canonical)
+        if resolution["state"] == "resolved" and side_opted_out(
+            canonical.get("prompt"), resolution["negative"]
+        ):
+            # Only the negative's node is off: store the positive alone (#90)
+            prompt_text = (
+                resolution["positive"]
+                .get("storage_text", resolution["positive"]["text"])
+                .strip()
+            )
+            status = self._store_scanned_prompt(media_file, canonical, prompt_text)
+            if not detailed or status not in SCAN_TITLED_DETAILS:
+                return status
+            return {
+                "status": status,
+                "title": self._scan_title(media_file, prompt_text),
+            }
         if blank_positive(resolution):
             # Only prepend/append text: no stored prompt can own it (#342)
             resolution = {**resolution, "state": "unresolved"}

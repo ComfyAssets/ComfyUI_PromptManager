@@ -17,7 +17,7 @@ test.beforeEach(async({page,browserName})=>{
         window.fixtureApp={registerExtension(extension){this.extension=extension;},ui:{settings},graph:{_nodes:[],setDirtyCanvas(){}},canvas:{},graphToPrompt:async()=>({})};
         await import('/extensions/promptmanager/prompt_manager.js');
         class Node {
-            constructor(){this.id=1;this.type='PromptManagerPair';this.widgets=['text','negative_text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')}));this.inputs=[...['clip','prepend_text','append_text'].map(name=>({name,type:name==='clip'?'CLIP':'STRING',link:null})),...['text','negative_text','category','tags','search_text'].map(name=>({name,type:'STRING',link:null,widget:{name}}))];this.properties={};this.size=[1100,700];}
+            constructor(){this.id=1;this.type='PromptManagerPair';this.widgets=[...['text','negative_text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')})),{name:'save_to_library',type:'toggle',value:true,options:{}}];this.inputs=[...['clip','prepend_text','append_text'].map(name=>({name,type:name==='clip'?'CLIP':'STRING',link:null})),...['text','negative_text','category','tags','search_text'].map(name=>({name,type:'STRING',link:null,widget:{name}})),{name:'save_to_library',type:'BOOLEAN',link:null,widget:{name:'save_to_library'}}];this.properties={};this.size=[1100,700];}
             findInputByType(type){const index=this.inputs.findIndex(input=>input.type===type&&input.link==null);return index<0?undefined:{index,slot:this.inputs[index]};}
             addWidget(type,name,value,callback,options){const widget={type,name,value,callback,options};this.widgets.push(widget);return widget;}
             addDOMWidget(name,type,element){const host=document.createElement('div');host.style.cssText='height:700px;width:1100px;max-width:100%';host.className='fixture-dom-widget';host.append(element);document.body.append(host);return {element};}
@@ -33,6 +33,18 @@ test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);
 
 async function selectPair(page){await page.getByRole('button',{name:'Recent',exact:true}).click();await page.locator('.pm-editor-result').click();}
 async function draft(page,positive='Draft positive',negative='Draft negative'){await page.getByRole('textbox',{name:'Positive prompt',exact:true}).fill(positive);await page.getByRole('textbox',{name:'Negative prompt',exact:true}).fill(negative);}
+
+test('paired editor Save to library switch keeps the widget order and loads older workflows on (#90)',async({page})=>{
+    await expect(page.locator('.pm-pair')).toBeVisible();
+    const toggle=page.getByRole('checkbox',{name:'Save to library',exact:true});
+    await expect(toggle).toBeChecked();
+    expect(await page.evaluate(()=>node.widgets.map(widget=>widget.name))).toEqual(['text','negative_text','category','tags','search_text','prepend_text','append_text','save_to_library']);
+    await toggle.uncheck();
+    expect(await page.evaluate(()=>node.serialize().widgets_values[7])).toBe(false);
+    await expect(page.locator('.pm-pair > .pm-editor-status[role=status]').last()).toHaveText('Save to library is off: runs of this node are not added to the library.');
+    await page.evaluate(()=>node.configure({widgets_values:['P','N','','','','','',''],properties:{}}));
+    await expect(toggle).toBeChecked();
+});
 
 test('paired editor previews both texts before explicitly replacing both',async({page})=>{
     await expect(page.locator('.pm-pair')).toBeVisible();

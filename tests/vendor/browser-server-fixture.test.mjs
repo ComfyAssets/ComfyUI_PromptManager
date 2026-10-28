@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startBrowserServer, createServerSupervisor, attachServerStderr, forwardPrefixedLines, SLOW_RESET_PREFIX } from '../../tools/vendor/start-browser-server.mjs';
-import { workflowWorkers } from '../../tools/vendor/test-workers.mjs';
+import { reporters, workflowWorkers } from '../../tools/vendor/test-workers.mjs';
+import RunningTestsReporter from '../../tools/vendor/running-tests-reporter.mjs';
 
 const fakeServer = fileURLToPath(new URL('./fake-browser-server.mjs', import.meta.url));
 const fake = (...extra) => ({ command: process.execPath, args: port => [fakeServer, '--port', String(port), ...extra] });
@@ -254,4 +256,58 @@ test('worker count follows PM_TEST_WORKERS, then one in CI, then a quarter of th
     assert.equal(workflowWorkers({ env: {}, cpus: 2 }), 1);
     assert.throws(() => workflowWorkers({ env: { PM_TEST_WORKERS: 'many' }, cpus: 8 }), /PM_TEST_WORKERS must be a positive integer/);
     assert.throws(() => workflowWorkers({ env: { PM_TEST_WORKERS: '0' }, cpus: 8 }), /PM_TEST_WORKERS must be a positive integer/);
+});
+
+test('CI adds the running-tests reporter and a blob report under test-results/blob/, which the trace upload covers; local runs keep list', () => {
+    assert.equal(reporters({ env: {}, name: 'workflows' }), 'list');
+    const [list, running, blob] = reporters({ env: { CI: '1' }, name: 'workflows' });
+    assert.deepEqual(list, ['list']);
+    // Absolute: a config imported from another directory (workflow-artifacts.test.mjs) still finds it.
+    assert.ok(isAbsolute(running[0]) && running[0].endsWith('running-tests-reporter.mjs'), running[0]);
+    assert.deepEqual(blob, ['blob', { outputDir: './test-results/blob/workflows' }]);
+});
+
+function fakeHost() {
+    const host = new EventEmitter();
+    Object.assign(host, { pid: 4242, signals: [], cwd: () => '/repo/tools/vendor' });
+    host.kill = (pid, signal) => host.signals.push([pid, signal]);
+    return host;
+}
+
+const spec = (id, title, line) => ({ id, title, location: { file: '/repo/tests/browser/a.spec.mjs', line },
+    parent: { project: () => ({ name: 'firefox' }) } });
+
+test('the running-tests reporter names only the tests that never ended, relative to rootDir', () => {
+    let clock = 1_000;
+    const output = [];
+    const host = fakeHost();
+    const reporter = new RunningTestsReporter({ now: () => clock, write: text => output.push(text), host });
+    reporter.onBegin({ rootDir: '/repo/tests/browser' });
+    const done = spec('1', 'finishes', 10);
+    const stuck = spec('2', 'hangs on a fetch', 20);
+    reporter.onTestBegin(done, { retry: 0 });
+    reporter.onTestBegin(stuck, { retry: 0 });
+    clock += 500;
+    reporter.onTestEnd(done, { retry: 0 });
+    clock += 41_500;
+    reporter.onEnd({ status: 'interrupted' });
+    assert.equal(output.join(''), '\nStill running when the run ended (interrupted): 1\n'
+        + '  [firefox] › a.spec.mjs:20 › hangs on a fetch (running 42.0s)\n');
+    assert.equal(host.listenerCount('SIGTERM'), 0, 'the run is over: SIGTERM gets its default again');
+    output.length = 0;
+    reporter.onTestEnd(stuck, { retry: 0 });
+    reporter.onEnd({ status: 'passed' });
+    assert.deepEqual(output, [], 'a run where every test ended prints nothing');
+});
+
+test('on the first SIGTERM the reporter prints the running tests and hands over to Playwright\'s SIGINT', () => {
+    const output = [];
+    const host = fakeHost();
+    const reporter = new RunningTestsReporter({ now: () => 0, write: text => output.push(text), host });
+    reporter.onBegin({ rootDir: '/repo/tests/browser' });
+    reporter.onTestBegin(spec('2', 'hangs on a fetch', 20), { retry: 0 });
+    host.emit('SIGTERM');
+    assert.match(output.join(''), /Still running when the run ended \(SIGTERM\): 1\n {2}\[firefox\] › a\.spec\.mjs:20 › hangs on a fetch/);
+    assert.deepEqual(host.signals, [[4242, 'SIGINT']], 'Playwright\'s own interrupt ends the run and writes the blob');
+    assert.equal(host.listenerCount('SIGTERM'), 0, 'a second SIGTERM kills the process as usual');
 });
