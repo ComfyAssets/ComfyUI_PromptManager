@@ -76,7 +76,7 @@ test("the workspace keys have their own defaults and validation", () => {
     assert.equal(normalizeGallerySettings({ defaultViewMode: "masonry" }).defaultViewMode, "grid");
 });
 
-// #330 S13: the legacy gallery's Page options edit only the page-only keys (and its default view, see PAGE_OPTION_KEYS); System › Appearance owns the rest, so a Save
+// #330 S13: the legacy gallery's Page options edit only the page-only keys (PAGE_OPTION_KEYS); System › Appearance owns the rest, so a Save
 // or a Reset from the legacy page keeps every other stored key.
 function legacyGallery(stored, controls, extra = {}) {
     const fs = require("node:fs");
@@ -101,7 +101,7 @@ function legacyGallery(stored, controls, extra = {}) {
 }
 
 const PAGE_OPTION_CONTROLS = () => ({
-    checkThumbnailsAtStartup: { checked: false }, lazyLoadingToggle: { checked: false }, defaultViewModeSelect: { value: "list" },
+    checkThumbnailsAtStartup: { checked: false }, lazyLoadingToggle: { checked: false },
     defaultLimitSelect: { value: "200" },
     gridColumnsSelect: { value: "6" }, infiniteScrollToggle: { checked: true }, debugModeToggle: { checked: true },
     apiTimeoutInput: { value: "45" },
@@ -109,7 +109,8 @@ const PAGE_OPTION_CONTROLS = () => ({
 
 test("a legacy gallery Save keeps the workspace keys and every other stored key", () => {
     const { manager, saved } = legacyGallery({ workspaceLayout: "masonry", workspaceDensity: "compact", someOtherTool: 1,
-        imageQuality: "high", showImageInfo: false, videoMute: false, thumbnailPromptDismissed: "sig" }, PAGE_OPTION_CONTROLS());
+        imageQuality: "high", showImageInfo: false, videoMute: false, thumbnailPromptDismissed: "sig", defaultViewMode: "list" },
+        PAGE_OPTION_CONTROLS());
     manager.saveSettings();
     const result = saved();
     assert.equal(result.workspaceLayout, "masonry");
@@ -119,8 +120,9 @@ test("a legacy gallery Save keeps the workspace keys and every other stored key"
     assert.equal(result.showImageInfo, false);
     assert.equal(result.videoMute, false);
     assert.equal(result.thumbnailPromptDismissed, "sig");
-    // The page-only keys come from the dialog (the default view stays a page option: System's layout is the workspace's).
+    // Page options no longer edit the default view (S13 G5), so a stored one stays.
     assert.equal(result.defaultViewMode, "list");
+    // The page-only keys come from the dialog.
     assert.equal(result.lazyLoading, false);
     assert.equal(result.debugMode, true);
     assert.equal(result.checkThumbnailsAtStartup, false);
@@ -139,10 +141,12 @@ test("a legacy gallery Reset restores only the page options and keeps every othe
     manager.resetSettings();
     const result = saved();
     const { DEFAULT_SETTINGS } = require("../../web/js/gallery-settings.js");
-    for (const key of ["checkThumbnailsAtStartup", "lazyLoading", "defaultViewMode", "defaultLimit", "gridColumns",
+    for (const key of ["checkThumbnailsAtStartup", "lazyLoading", "defaultLimit", "gridColumns",
         "infiniteScroll", "debugMode", "apiTimeout"]) {
         assert.equal(result[key], DEFAULT_SETTINGS[key], key);
     }
+    // The default view is not a page option (S13 G5): Reset keeps a stored one.
+    assert.equal(result.defaultViewMode, "list");
     assert.equal(result.workspaceLayout, "masonry");
     assert.equal(result.imageQuality, "high");
     assert.equal(result.videoMute, false);
@@ -153,6 +157,12 @@ test("a legacy gallery Reset restores only the page options and keeps every othe
     assert.equal(controls.apiTimeoutInput.value, DEFAULT_SETTINGS.apiTimeout);
     assert.deepEqual(calls, [["confirm", "Reset these page options to their defaults?"], ["apply", DEFAULT_SETTINGS.lazyLoading],
         ["success", "Page options reset to defaults"]]);
+});
+
+test("Page options no longer hold the default view; System › Appearance's Default layout is the one control", () => {
+    const { manager } = legacyGallery({}, {});
+    assert.deepEqual([...manager.constructor.PAGE_OPTION_KEYS], ["checkThumbnailsAtStartup", "lazyLoading", "defaultLimit",
+        "gridColumns", "infiniteScroll", "debugMode", "apiTimeout"]);
 });
 
 test("a viewer mute or loop click remembers only that key and never reads the Page options dialog", () => {

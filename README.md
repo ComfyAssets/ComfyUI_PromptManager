@@ -332,7 +332,7 @@ The comprehensive gallery system provides complete access to all your ComfyUI ou
 
 The gallery's **Settings** opens System › Appearance in a new tab: image quality, details on cards, collapsed viewer details, video autoplay/mute/loop, metadata loading and file paths are set there and apply to this page too.
 
-The gallery's **Page options** keep the page's own settings: the thumbnail check at startup, lazy loading, default view mode, items per page, grid columns, infinite scrolling, debug mode and API timeout. Reset puts back only these.
+The gallery's **Page options** keep the page's own settings: the thumbnail check at startup, lazy loading, items per page, grid columns, infinite scrolling, debug mode and API timeout. Reset puts back only these.
 
 Thumbnail generation, the server thumbnail and browser cache clears, refreshing the file listing and finding duplicate images are in System › Sources & scans and System › Maintenance (Page options links both); each runs as an Activity job you can follow after closing the page.
 

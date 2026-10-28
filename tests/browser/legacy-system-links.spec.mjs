@@ -221,7 +221,7 @@ test('Page options keeps the page-only settings gallery', async ({ page }) => {
     // Native Appearance keys and the startup prompt's own keys are in the shared object before the page opens.
     const stored = { imageQuality: 'high', showImageInfo: false, videoMute: false,
         autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
-        checkThumbnailsAtStartup: false };
+        checkThumbnailsAtStartup: false, defaultViewMode: 'list' };
     await page.addInitScript(value => {
         if (!sessionStorage.getItem('seeded')) {
             sessionStorage.setItem('seeded', '1');
@@ -231,30 +231,32 @@ test('Page options keeps the page-only settings gallery', async ({ page }) => {
     const listed = page.waitForResponse(item => item.url().includes('/prompt_manager/images/output?'));
     await page.goto(PAGES.gallery);
     await listed;
+    // With no Page options control, a stored default view still opens the page in it.
+    await expect(page.locator('#listViewBtn')).toHaveClass(/bg-pm-accent/);
     await openPageOptions(page);
     const dialog = page.locator('#settingsModal');
     await expect(dialog.locator('h3')).toHaveText('Page options');
-    // Exactly the page-only settings (G5).
+    // Exactly the page-only settings (G5); the default view is System › Appearance's Default layout.
     expect(await dialog.locator('input, select, textarea').evaluateAll(fields => fields.map(field => field.id))).toEqual([
-        'checkThumbnailsAtStartup', 'lazyLoadingToggle', 'defaultViewModeSelect', 'defaultLimitSelect', 'gridColumnsSelect',
+        'checkThumbnailsAtStartup', 'lazyLoadingToggle', 'defaultLimitSelect', 'gridColumnsSelect',
         'infiniteScrollToggle', 'debugModeToggle', 'apiTimeoutInput']);
+    await expect(dialog.getByText('Default View Mode')).toHaveCount(0);
     await page.locator('#defaultLimitSelect').selectOption('50');
-    await page.locator('#defaultViewModeSelect').selectOption('list');
     await page.locator('#debugModeToggle').check();
     await page.locator('#saveSettingsBtn').click();
     await expect(dialog).toBeHidden();
     const read = () => page.evaluate(() => JSON.parse(localStorage.getItem('gallerySettings')));
     let saved = await read();
-    expect(saved).toMatchObject({ ...stored, defaultLimit: 50, debugMode: true, defaultViewMode: 'list' });
+    expect(saved).toMatchObject({ ...stored, defaultLimit: 50, debugMode: true });
 
-    // Reset puts back only the page options' defaults; the Appearance and startup-prompt keys stay.
+    // Reset puts back only the page options' defaults; the Appearance, startup-prompt and default-view keys stay.
     await openPageOptions(page);
     page.once('dialog', dialog => dialog.accept());
     await page.locator('#resetSettingsBtn').click();
     await expect(page.getByText('Page options reset to defaults')).toBeVisible();
     await expect(page.locator('#defaultLimitSelect')).toHaveValue('100');
     saved = await read();
-    expect(saved).toMatchObject({ defaultViewMode: 'grid', imageQuality: 'high', showImageInfo: false, videoMute: false,
+    expect(saved).toMatchObject({ defaultViewMode: 'list', imageQuality: 'high', showImageInfo: false, videoMute: false,
         autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
         defaultLimit: 100, debugMode: false, checkThumbnailsAtStartup: true, lazyLoading: true, gridColumns: 8,
         infiniteScroll: false, apiTimeout: 30 });

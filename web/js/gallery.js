@@ -2,8 +2,9 @@
             // A Cancel on a thumbnail job another tab or System started (#249 System S5, review I1).
             static THUMBNAILS_STOPPED_FOLLOWING = 'Stopped following thumbnail generation started elsewhere; it keeps running in Activity';
             // The page-only settings Page options edits and resets (#330 S13-13); System › Appearance owns the others.
-            // The default view stays here: System › Appearance's Default layout is the workspace's own key (workspaceLayout).
-            static PAGE_OPTION_KEYS = Object.freeze(['checkThumbnailsAtStartup', 'lazyLoading', 'defaultViewMode', 'defaultLimit',
+            // The default view is not one of them: System › Appearance's Default layout is its one control (S13 G5).
+            // A stored legacy defaultViewMode still picks the view this page opens in (applySettings), else grid.
+            static PAGE_OPTION_KEYS = Object.freeze(['checkThumbnailsAtStartup', 'lazyLoading', 'defaultLimit',
                 'gridColumns', 'infiniteScroll', 'debugMode', 'apiTimeout']);
 
             constructor() {
@@ -1709,7 +1710,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 const settings = this.getSettings();
                 document.getElementById('checkThumbnailsAtStartup').checked = settings.checkThumbnailsAtStartup;
                 document.getElementById('lazyLoadingToggle').checked = settings.lazyLoading;
-                document.getElementById('defaultViewModeSelect').value = settings.defaultViewMode;
                 document.getElementById('defaultLimitSelect').value = settings.defaultLimit;
                 document.getElementById('gridColumnsSelect').value = settings.gridColumns;
                 document.getElementById('infiniteScrollToggle').checked = settings.infiniteScroll;
@@ -1735,7 +1735,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     ...this.getSettings(),
                     checkThumbnailsAtStartup: document.getElementById('checkThumbnailsAtStartup').checked,
                     lazyLoading: document.getElementById('lazyLoadingToggle').checked,
-                    defaultViewMode: document.getElementById('defaultViewModeSelect').value,
                     defaultLimit: parseInt(document.getElementById('defaultLimitSelect').value),
                     gridColumns: parseInt(document.getElementById('gridColumnsSelect').value),
                     infiniteScroll: document.getElementById('infiniteScrollToggle').checked,
