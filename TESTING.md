@@ -362,6 +362,10 @@ A spec performance budget gets two tests:
   `test_filter_budget` (Images filters, spec D12: p95 < 150 ms at 50,000 files
   and 20,000 links).
 
+A hot SQLite read that returns many rows aggregates them into one step
+(`json_group_array`) instead of stepping once per row, so it does not wait for
+the GIL once per row while ComfyUI generates (#354, `get_image_link_matches`).
+
 The `perf budget` job in `.github/workflows/test.yml` is the reference
 measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
 It runs on every push to `main` and on `workflow_dispatch`, never on pull
@@ -4418,8 +4422,17 @@ Filters (`mode=workspace`; anything invalid is 400 "Invalid gallery filters"):
   rating 5 to 1, then linked but unrated, then unlinked and ambiguous; ties break
   newest first. A signed cursor covers every filter and the sort, so reusing it
   with a change is 400.
-- One link read (`get_image_link_matches`, streamed and bounded to the listed
-  paths) serves the filters, the rating sort and the count.
+- One link read (`get_image_link_matches`) serves the filters, the rating sort
+  and the count. SQLite returns its rows as one JSON value in one step (#354):
+  Python's `sqlite3` releases and retakes the GIL around every step, and while
+  ComfyUI generates each retake can wait on the busy thread, so a read that
+  stepped once per linked row took seconds. The result keeps only the listed
+  paths; peak memory grows with the database's matching linked rows (about
+  530 bytes each, freed on return). When the JSON step fails (a SQLite without
+  JSON functions, a BLOB value) the read streams the rows as before and logs
+  one warning per process; a missing JSON function stops the attempt for the
+  rest of the process. `tests/test_database_link_matches.py` proves both reads
+  equal on every filter and on odd values.
 
 `positive_count` is the number of distinct linked positives over the full matching
 set, not the page:
