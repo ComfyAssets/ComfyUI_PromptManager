@@ -175,6 +175,28 @@ test('Clear all logs states both counts and its toast says what was done', async
     assert.equal(clearToast(undefined), 'Logs cleared · 0 rotated copies deleted.');
 });
 
+test('Clear all logs sends back exactly the files its confirmation showed (#389)', async () => {
+    const { clearBody, clearFailureText, COPY } = await diagnostics;
+    const files = [
+        { filename: 'prompt_manager.log', kind: 'active', identity: '10:1761000000123456789:9007199254740993' },
+        { filename: 'prompt_manager.log.1', kind: 'rotated', identity: '20:1761000000123456789:42' },
+        { filename: 'prompt_manager.log.4', kind: 'link', identity: '5:1:7' },
+        { filename: 'prompt_manager.log.bak', kind: 'other', identity: '1:1:8' },
+        { filename: 'prompt_manager.log.2', kind: 'rotated' },
+    ];
+    // Identities stay strings: mtime_ns and large inodes are not exact JS numbers.
+    assert.deepEqual(clearBody(files), { expected: [
+        { name: 'prompt_manager.log', identity: '10:1761000000123456789:9007199254740993' },
+        { name: 'prompt_manager.log.1', identity: '20:1761000000123456789:42' },
+    ] });
+    assert.deepEqual(clearBody([]), { expected: [] });
+    assert.deepEqual(clearBody(null), {});
+    const refused = Object.assign(new Error('The log files changed since you confirmed; nothing was cleared.'), { status: 409 });
+    assert.equal(clearFailureText(refused), refused.message);
+    assert.equal(clearFailureText(Object.assign(new Error('boom'), { status: 500 })), COPY.clearFailed);
+    assert.equal(clearFailureText(undefined), COPY.clearFailed);
+});
+
 test('the test-link dialog names the prompt and how Missing-file links removes the record', async () => {
     const { testLinkSentence, promptName } = await diagnostics;
     assert.equal(testLinkSentence({ id: 812, text: 'Misty harbor' }), 'Writes a placeholder image record '

@@ -42,6 +42,7 @@ from py import lora_utils  # noqa: E402
 from py import lora_manager_layout as layout_module  # noqa: E402
 from py.api.thumbnail_settings import ThumbnailSettings  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
+from tests.private_temp import private_temp_db  # noqa: E402
 from py.api.prompts import MAX_PAGE_LIMIT  # noqa: E402
 from py.config import GalleryConfig  # noqa: E402
 from utils.hashing import generate_prompt_hash  # noqa: E402
@@ -60,8 +61,7 @@ class ImageAPITestCase(AioHTTPTestCase):
     """App with PromptManager routes, a temp DB and a temp output directory."""
 
     async def get_application(self):
-        self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self._temp_db.close()
+        self._temp_db = private_temp_db(self)
 
         self._output_tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         # A fake ComfyUI tree: <tmp>/output is the gallery root and <tmp> is the

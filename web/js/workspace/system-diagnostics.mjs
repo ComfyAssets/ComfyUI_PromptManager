@@ -225,6 +225,23 @@ export function clearSentence(files) {
     return `Empties ${ACTIVE_LOG}, deletes ${number(rotated.length)} rotated ${noun(rotated.length, 'copy', 'copies')} (${sizeText(size)}) ${tail}`;
 }
 
+/**
+ * #389: the `/logs/truncate` body for the files a confirmation showed. Their active and rotated rows go back with the
+ * server's `identity`, so the server deletes only those and refuses (409) when any changed meanwhile. A list that could
+ * not be read (`null`, the general sentence) sends no list: the server then clears what is there, as the sentence says.
+ */
+export function clearBody(files) {
+    if (!Array.isArray(files)) return {};
+    const expected = files.filter(row => (row?.kind === 'active' || row?.kind === 'rotated') && typeof row.filename === 'string'
+        && typeof row.identity === 'string').map(row => ({ name: row.filename, identity: row.identity }));
+    return { expected };
+}
+
+/** A refused clear (409) says why in the server's words; any other failure the general line. */
+export function clearFailureText(error) {
+    return error?.status === 409 && typeof error.message === 'string' && error.message ? error.message : COPY.clearFailed;
+}
+
 /** CUJ 7: the toast for `/logs/truncate`'s `results` ({truncated: [names], errors: [messages]}). */
 export function clearToast(results) {
     const truncated = Array.isArray(results?.truncated) ? results.truncated : [];
@@ -469,13 +486,14 @@ function logsSurface({ api, activity, scope, drafts, navigate, notify, latestOnl
     const list = el('div', undefined, 'operation-list');
     let listed = null;
     // The confirmation names what Clear deletes now: the files are read again before it opens (a read that fails
-    // gives the general sentence, never an old count).
+    // gives the general sentence, never an old count). Clear sends exactly the files the dialog was built from (#389).
     const clear = operationRow({ scope, title: 'Clear all logs', description: COPY.clearDescription, label: 'Clear all logs…',
         danger: true, onClick: button => pressing(button, async () => {
             await readFiles();
             if (scope.signal.aborted) return;
-            confirmDialog({ scope, trigger: button, title: 'Clear all logs', sentence: clearSentence(listed), label: 'Clear',
-                danger: true, onConfirm: clearLogs });
+            const shown = listed;
+            confirmDialog({ scope, trigger: button, title: 'Clear all logs', sentence: clearSentence(shown), label: 'Clear',
+                danger: true, onConfirm: () => clearLogs(shown) });
         }) });
     files.append(el('summary', 'Log files & retention'), line, review, retention, list, clear);
     const runtime = runtimeRows({ scope, drafts });
@@ -562,12 +580,12 @@ function logsSurface({ api, activity, scope, drafts, navigate, notify, latestOnl
         readConfig();
     }
 
-    async function clearLogs() {
+    async function clearLogs(shown) {
         let answer;
         try {
-            answer = await api.post(TRUNCATE_URL, {});
-        } catch {
-            if (!scope.signal.aborted) notify(COPY.clearFailed);
+            answer = await api.post(TRUNCATE_URL, clearBody(shown));
+        } catch (error) {
+            if (!scope.signal.aborted) notify(clearFailureText(error));
         }
         if (scope.signal.aborted) return;
         if (answer) notify(clearToast(answer.results));
