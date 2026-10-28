@@ -86,6 +86,23 @@ def unavailable_message(model_name: str) -> str:
     return f"{model_name} is not downloaded. {UNAVAILABLE_HINT}"
 
 
+def model_refusal(status: dict, model_type: str, model_name: str):
+    """Why *model_type* cannot run, from ``get_models_status()``, else None.
+
+    Not downloaded first (``unavailable_message``), then a backend package
+    that cannot be imported (#424). Both are a 409 ``model-unavailable``.
+    """
+    entry = status.get(model_type) or {}
+    if not entry.get("downloaded"):
+        return unavailable_message(model_name)
+    missing = entry.get("missing_packages") or []
+    if missing:
+        from ..autotag import missing_packages_message
+
+        return missing_packages_message(model_type, [str(name) for name in missing])
+    return None
+
+
 def run_suggestions(service, capture_path: str, model_type: str, options: dict):
     """Blocking: load (or swap to) *model_type*, then suggest for the capture.
 

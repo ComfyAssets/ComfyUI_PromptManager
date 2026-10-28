@@ -383,6 +383,62 @@ test('manage categories previews real impact before applying',async({page,reques
     expect(after.prompts.filter(row=>row[2]==='Scenery')).toHaveLength(3);
 });
 
+// #332 MC9, MC10: image categories (their own, set on Images) count beside the prompts. The vocabulary fixture has no
+// image files, so these tests add two committed files to the output folder and set their categories through the API.
+async function imageCategories(request,category) {
+    for(const name of ['f02.png','f03.png']) await expect(await request.post('/__test__/add-local-inspect-file',{data:{name}})).toBeOK();
+    const listing=await(await request.get('/prompt_manager/images/output?mode=workspace&subfolder=local-inspect&limit=40')).json();
+    const items=listing.images.map(({root_index,root_scope,path})=>({root_index,root_scope,path}));expect(items).toHaveLength(2);
+    const response=await request.put('/prompt_manager/images/category',{data:{items,category}});await expect(response).toBeOK();
+    expect((await response.json()).updated).toBe(2);
+}
+const ownCategories=async request=>(await(await request.get('/prompt_manager/images/categories')).json()).categories;
+const IMAGE_KEYS=['0:local-inspect/f02.png','0:local-inspect/f03.png'];
+
+test('manage categories renames the images\' own categories too and the preview counts them (#332 CUJ 6)',async({page,request})=>{
+    await imageCategories(request,'Landscapes');
+    const writes=trackWrites(page);await openPage(page);
+    await expect(categoryRow(page,'Landscapes').locator('p')).toHaveText('3 positive prompts · 2 images');
+    const box=await openManage(page);
+    await expect(field(box,'Category')).toHaveValue('Landscapes');
+    await field(box,'Proposed new category name').fill('Landscape');await button(box,'Preview').click();
+    await expect(box.locator('p.small')).toHaveText('“Landscapes” is used by 3 positive prompts and 2 images. Apply renames it to “Landscape”.');
+    await button(box,'Apply').click();
+    await expect(box).toHaveCount(0);await expect(toast(page)).toHaveText('Category renamed.');
+    expect(writes.at(-1)).toMatchObject({url:'/prompt_manager/vocabulary/categories/apply',body:{source:'Landscapes',target:'Landscape'}});
+    await expect(categoryRow(page,'Landscapes')).toHaveCount(0);
+    await expect(categoryRow(page,'Landscape').locator('p')).toHaveText('3 positive prompts · 2 images');
+    // The prompts and both images carry the new name; nothing keeps the old one.
+    expect((await snapshot(request)).prompts.filter(row=>row[2]==='Landscape')).toHaveLength(3);
+    expect(await ownCategories(request)).toEqual(['Landscape']);
+    for(const [category,total] of [['Landscape',2],['Landscapes',0]]) {
+        const listing=await(await request.get(`/prompt_manager/images/output?mode=workspace&limit=40&category=${category}`)).json();
+        expect(listing.images.map(image=>`${image.root_index}:${image.path}`).sort()).toEqual(total?IMAGE_KEYS:[]);
+    }
+});
+
+test('a category only images hold is listed after the prompt-backed ones and Browse opens Images (#332 CUJ 7)',async({page,request})=>{
+    await imageCategories(request,'Scans');
+    await openPage(page);
+    const operations=surfaces(page).nth(1).locator('.operation');
+    await expect(operations.locator('h3')).toHaveText([...CATEGORIES.map(([name])=>name),'Scans','Manage category']);
+    await expect(categoryRow(page,'Scans').locator('p')).toHaveText('2 images');
+    for(const [name,count] of CATEGORIES) await expect(categoryRow(page,name).locator('p')).toHaveText(`${count} positive prompt${count===1?'':'s'}`);
+    // Manage category can rename it: its select lists it last.
+    const box=await openManage(page);
+    await expect(field(box,'Category').locator('option')).toHaveText([...CATEGORIES.map(([name])=>name),'Scans']);
+    await button(box,'Cancel').click();await expect(box).toHaveCount(0);
+    // Browse opens Images filtered by it (its Library would be empty).
+    await categoryRow(page,'Scans').getByRole('button',{name:'Browse',exact:true}).click();
+    await expect(page).toHaveURL(/#\/images$/);
+    await expect(main(page).getByRole('heading',{level:1})).toHaveText('Images');
+    await expect(page.getByRole('combobox',{name:'Filter by category',exact:true})).toHaveValue('Scans');
+    const cards=page.locator('article[data-image-key]');await expect(cards).toHaveCount(2);
+    expect((await cards.evaluateAll(nodes=>nodes.map(node=>node.dataset.imageKey))).sort()).toEqual(IMAGE_KEYS);
+    await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('');
+    await expect(page.locator('#workspace-main search.toolbar').getByRole('button',{name:'Filters',exact:true})).toBeVisible();
+});
+
 test('an edit during a pending preview needs a new Preview; Apply never sends the old values',async({page,request})=>{
     const writes=trackWrites(page);await openPage(page);const before=await snapshot(request);
     let release;const held=new Promise(resolve=>{release=resolve;});

@@ -29,7 +29,7 @@ import { HOST_UNAVAILABLE } from './system-appearance.mjs';
 import { openCloseOnlyReview, openReviewDialog } from './workspace-dialogs.mjs';
 import { BACKUP_COPY, backupText, holding, reviewRefusal } from './maintenance-review.mjs';
 import { busyToast, downloadDatabaseBackup } from './activity-scan.mjs';
-import { MODEL_OPTIONS } from './image-tagging-state.mjs';
+import { MODEL_OPTIONS, installCommand, missingPackages, needsPackages, packageList } from './image-tagging-state.mjs';
 import { openImageTagging } from './image-tagging.mjs';
 import { selectedImage } from './images.mjs';
 import { NO_SELECTION } from './vocabulary.mjs';
@@ -80,6 +80,7 @@ export const STATUS_COPY = Object.freeze({
     loaded: 'Downloaded and loaded.',
     partial: 'Partly downloaded. Download again to finish.',
     missing: size => `Not downloaded. Download size ${size}.`,
+    needs: (names, command, note) => `Downloaded. Needs ${names}: ${command}.${typeof note === 'string' && note.trim() ? ` ${note}` : ''}`,
 });
 
 /** The messages that name a setting the section cannot use (the server's own wording). */
@@ -140,15 +141,21 @@ export function modelOptions(models) {
 
 /**
  * D132: the Tagging model description for `status` (`{phase: loading|loaded|failed, models}`) and the chosen `model`.
- * GGUF with only one of its two files on disk is partly downloaded.
+ * GGUF with only one of its two files on disk is partly downloaded. A backend package the server cannot import (#424)
+ * turns "Downloaded" into "Downloaded. Needs <pkg>: pip install <pkg>." and adds "Also needs <pkg>." otherwise.
  */
 export function modelDescription(status, model) {
     if (status?.phase === 'loading') return STATUS_COPY.loading;
     const entry = status?.models?.[model];
     if (status?.phase !== 'loaded' || !object(entry)) return STATUS_COPY.failed;
-    if (entry.downloaded === true) return entry.loaded === true ? STATUS_COPY.loaded : STATUS_COPY.downloaded;
-    if (partlyDownloaded(model, entry)) return STATUS_COPY.partial;
-    return STATUS_COPY.missing(modelSize(model, entry));
+    // #424: a backend package that cannot be imported; a model on disk without it never reads as ready.
+    const needs = missingPackages(entry).length ? packageList(entry) : '';
+    if (entry.downloaded === true) {
+        if (needs) return STATUS_COPY.needs(needs, installCommand(entry), entry.install_note);
+        return entry.loaded === true ? STATUS_COPY.loaded : STATUS_COPY.downloaded;
+    }
+    const files = partlyDownloaded(model, entry) ? STATUS_COPY.partial : STATUS_COPY.missing(modelSize(model, entry));
+    return needs ? `${files} Also needs ${needs}.` : files;
 }
 
 /** GGUF with only one of its two files on disk (a download that did not finish). */
@@ -316,6 +323,7 @@ export function diskShortNote(disk) {
 export function batchCloseNote(plan) {
     if (plan.review_required === true) return REPLACE_NOTE;
     if (plan.model?.downloaded === false) return notDownloaded(modelLabel(plan.model.type, plan.model));
+    if (missingPackages(plan.model).length) return needsPackages(modelLabel(plan.model.type, plan.model), plan.model);
     if (plan.disk?.sufficient === false) return diskShortNote(plan.disk);
     if (!Number.isSafeInteger(plan.images) || plan.images === 0) return NO_IMAGES;
     if (plan.to_tag === 0) return NOTHING_TO_TAG;
@@ -484,8 +492,9 @@ export function mountTagging(container, { api, activity, scope, drafts, notify =
         unload.disabled = !(status.phase === 'loaded' && status.loadedType);
         if (review.textContent === 'Reviewing…') return;
         const batchProblem = known() ? draftProblem(values, { limit: false }) : unknown;
-        setAvailable(review, entry?.downloaded === false ? notDownloaded(modelLabel(values.autotag_model_type, entry))
-            : batchProblem?.message);
+        const label = modelLabel(values.autotag_model_type, entry);
+        setAvailable(review, entry?.downloaded === false ? notDownloaded(label)
+            : needsPackages(label, entry) || batchProblem?.message);
     };
 
     let reads = 0;

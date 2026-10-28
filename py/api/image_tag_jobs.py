@@ -42,7 +42,7 @@ from .. import model_gate
 from .admin import _plural, _time_left
 from .annotation_suggest import (
     OptionError,
-    unavailable_message,
+    model_refusal,
     validate_options,
 )
 from .annotations import (
@@ -58,7 +58,9 @@ from .annotations import (
 from .autotag_routes import BATCH_CANCELLED, MODEL_BUSY_ERROR, model_busy_response
 from .images import (
     MAX_LISTING_SELECTION,
+    CollectionMissing,
     ListingSourceChanged,
+    collection_not_found,
     _current_fingerprint,
     _listing_posix,
     _public_path,
@@ -510,10 +512,8 @@ class ImageTagJobsMixin:
             )
         )
         label = MODELS[model_type]["label"]
-        if not (status.get(model_type) or {}).get("downloaded"):
-            message = (
-                f"{label} is not downloaded. Download it in System › Auto-tagging."
-            )
+        message = model_refusal(status, model_type, label)
+        if message is not None:
             return None, _refusal(409, "model-unavailable", message)
         if backup_on and short is not None:
             return None, _refusal(507, "insufficient-space", short_space_message(short))
@@ -689,6 +689,8 @@ class ImageTagJobsMixin:
             selection = await self.resolve_listing_filter(spec.filter, cap)
         except ListingSourceChanged:
             return None, _coded("source-changed")
+        except CollectionMissing:
+            return None, collection_not_found()
         except ValueError as exc:
             return None, bad_request(str(exc))
         except Exception:
@@ -788,13 +790,13 @@ class ImageTagJobsMixin:
 
     async def _prepare_tagging_model(self, job, spec: _Spec, owner):
         """The loaded service, or None (logged) when the job cannot run."""
-        from ..autotag import MODELS, get_autotag_service
+        from ..autotag import MODELS, MissingBackendPackages, get_autotag_service
 
         service = get_autotag_service()
         status = await self._run_in_executor(service.get_models_status)
-        if not status.get(spec.model_type, {}).get("downloaded"):
-            name = MODELS.get(spec.model_type, {}).get("name", spec.model_type)
-            message = unavailable_message(name)
+        name = MODELS.get(spec.model_type, {}).get("name", spec.model_type)
+        message = model_refusal(status, spec.model_type, name)
+        if message is not None:
             job.update(status_line=message)
             job.log_line(f"! {message}")
             return None
@@ -806,6 +808,11 @@ class ImageTagJobsMixin:
                 spec.model_type,
                 spec.options["use_gpu"],
             )
+        except MissingBackendPackages as exc:
+            # A package gone since the status read (load_model logged it).
+            job.update(status_line=str(exc))
+            job.log_line(f"! {exc}")
+            return None
         except Exception:
             self.logger.exception("The auto-tag job could not load its model")
             job.update(status_line=INFERENCE_FAILED)

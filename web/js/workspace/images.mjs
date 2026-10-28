@@ -16,6 +16,8 @@ import { RESCAN_FAILED, RESCAN_STARTED, openImportDialog, openRefineDialog, resc
 import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
+import { VIEW_COLLECTION_DELETED, isCollectionGone } from './collections.mjs';
+import { IMAGE_CATEGORIES_URL, mergeCategories } from './images-category.mjs';
 import { displayPreferences } from './preferences.mjs';
 import { onImageTagsSaved } from './image-tagging.mjs';
 import { followImageTagSaves, openCardTagging } from './images-tagging.mjs';
@@ -63,6 +65,8 @@ const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name',
     ['oldest', 'Oldest first'], ['name-desc', 'Name Z–A']]);
 const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
 const RETRY_RESCAN = 'Rescan from Import to retry.';
+// The concept's empty collection (app.js updateImages).
+const NO_MATCHES = 'No matching images. Try another search or category.';
 const RETRY_REFRESH = 'Refresh image collection to retry.';
 /** One alert for whichever of the source discovery and the categories failed, so two failures announce once. */
 function loadFailure(sourcesRetry, categoriesFailed) {
@@ -81,6 +85,17 @@ setFavoriteVisitTarget((key, favorite) => {
 
 // A tag save made while Images is left (Tags › Auto-tag images) may change what a filtered visit lists: it reloads (M6).
 onImageTagsSaved(() => { if (lastVisit?.filters.tags.length || lastVisit?.filters.q) lastVisit = {...lastVisit, stale: true}; });
+// The filter state a Tags & categories Browse hands to the next Images mount (#332 MC10).
+let browseState = null;
+/**
+ * Open Images filtered by `category` only (every other filter at its default), as Browse opens the Library: Tags &
+ * categories' Browse of a category only images use (#332 MC10, D143).
+ */
+export function browseImages({category} = {}) {
+    if (typeof category !== 'string' || !category) throw new TypeError('browseImages needs a category');
+    browseState = {category};
+    window.location.hash = '#/images';
+}
 /** Forget the last Images visit (its listing, scroll and selection): the next visit reads everything again (S9). */
 export function forgetImagesVisit() {
     lastVisit = null;
@@ -96,10 +111,13 @@ export function selectedImage() {
  * caption: its page heading or dialog title already names it, and `focusTarget` takes a stranded focus.
  * `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view.
  * `favorites` is the Favorites page (#249 D51): only favorites are listed, and it neither restores nor replaces the
- * Images last visit.
+ * Images last visit. `collection` (an id) is a collection page (#331 D137): only its members are listed, favorites is
+ * off, and it neither restores nor replaces the last visit either. A listing that answers `collection-not-found` calls
+ * `onCollectionMissing()` when given (the shell shows its deleted-collection page); otherwise (a saved view on a
+ * deleted collection, D140) the page lists nothing and says so.
  */
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null, savedState = null,
-    favorites = false, onSaveView = () => {}, activity = null} = {}) {
+    favorites = false, collection: collectionId = null, onCollectionMissing = null, onSaveView = () => {}, activity = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -113,8 +131,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
+    // A Tags & categories Browse (browseImages) is handed to this mount once: a fresh Images visit filtered by its
+    // category, which becomes the Images return state like any plain visit (as Browse does for the Library).
+    const imagesPage = !embedded && !favorites && collectionId === null;
+    const handed = imagesPage && !savedState ? browseState : null;
+    if (imagesPage) browseState = null;
     const saved = embedded || !savedState ? null : imagesFilters(savedState);
-    const prior = embedded || saved || favorites ? null : lastVisit;
+    // The open collection: the route's, else a saved view's (D140); '' on every other page.
+    const openCollection = embedded ? '' : collectionId !== null ? String(collectionId) : saved?.collection || '';
+    const prior = embedded || saved || favorites || openCollection || handed ? null : lastVisit;
     // A stale visit keeps its filters, layout and size, and lists again instead of restoring (M6).
     const visit = prior?.stale ? null : prior;
     // The layout and size defaults are the Images page's: an embedded gallery (a prompt history's, its dialogs) has no
@@ -126,12 +151,16 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
     // Discovered sources (each with its own folders) and every folder, for "Refine this view" and the scope chip.
     let roots = [], folders = [];
+    // The toolbar's current category list (loadCategories), also the Set category suggestions.
+    let categoryNames = [];
     // The open "Refine this view", so a discovery that settles after it opened still lists its sources and folders.
     let refine = null;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...prior?.filters, ...saved,
-        favorites: favorites || saved?.favorites === true };
+        ...(handed ? {category: handed.category} : {}),
+        // A collection and favorites are never both the filter (DC10).
+        favorites: !openCollection && (favorites || saved?.favorites === true), collection: openCollection };
     filters.tags = [...filters.tags];
     if (!IMAGE_SORT_OPTIONS.some(([value]) => value === filters.sort)) filters.sort = 'newest';
     // A saved Source or Folder is only listed once discovery confirms it still exists; until then nothing is fetched.
@@ -142,7 +171,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
         // A favorites-only collection or a saved view is not the plain Images collection, so it never becomes the
         // Images return state (#249 D51, and M2 for saved views).
-        if (!embedded && !filters.favorites && !saved) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
+        if (!embedded && !filters.favorites && !filters.collection && !saved) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
@@ -237,7 +266,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // The concept's empty collection (app.js updateImages), beside the grid because the grid only holds positioned cards.
     // An embedded gallery shows one only when its page names the concept's copy (the history gallery, app.js a620).
     const showsEmpty = !embedded || typeof emptyText === 'string';
-    const empty = el('div', embedded ? emptyText : 'No matching images. Try another search or category.', 'empty');
+    const empty = el('div', embedded ? emptyText : NO_MATCHES, 'empty');
     empty.hidden = true;
     // D47: the history page's shared gallery and dialogs are named by their own heading or title, so they have no caption.
     if (!embedded) collection.append(caption);
@@ -256,6 +285,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
     const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state?.items ?? [], focusFallback,
         checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys),
+        // The Set category field suggests the toolbar's categories (#332 MC13).
+        getCategories:() => categoryNames,
         // #392 "Select all N matching": the listing's total and its filter, as the server lists them.
         getListing:() => ({total:state?.total ?? 0, hasMore:Boolean(state?.hasMore), positiveCount:state?.positiveCount ?? null}),
         // A Source filter carries its root's scope, so a renumbered source is refused (source-changed), not acted on.
@@ -457,8 +488,16 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!resizeFrame) resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; updateLayout(); });
     });
     scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
+    /**
+     * The listing refused the open collection: it was deleted. A saved view says so in place (MC6, D140); a collection
+     * page reports it (`onCollectionMissing`) once per failed read and meanwhile shows the listing's error and Retry,
+     * so a page whose shell cannot confirm the deletion is never left blank.
+     */
+    const collectionGone = next => Boolean(filters.collection) && !onCollectionMissing && isCollectionGone(next.error);
+    let reportedMissing = null;
     function continuationText(next) {
         if (recovering) return 'Images paused until sources and folders are available.';
+        if (collectionGone(next)) return '';
         if (next.error) return 'Images could not be loaded. Retry or rescan the collection.';
         if (next.loading && !next.loaded) return 'Loading images…';
         if (next.hasMore) return `${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')} · more load as you scroll`;
@@ -492,12 +531,20 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             const added = next.loaded - previous.loaded;
             showWorkspaceToast(`${added.toLocaleString('en-US')} more ${noun(added, 'image')} loaded. ${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')}.`);
         }
+        const gone = collectionGone(next);
         setText(message, continuationText(next));
-        setAttr(message, 'role', next.error ? 'alert' : 'status');
-        retry.hidden = !next.error;
+        setAttr(message, 'role', next.error && !gone ? 'alert' : 'status');
+        retry.hidden = !next.error || gone;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
-        if (showsEmpty) empty.hidden = recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0;
+        if (onCollectionMissing && filters.collection && isCollectionGone(next.error) && reportedMissing !== next.error) {
+            reportedMissing = next.error;
+            queueMicrotask(() => { if (!scope.signal.aborted) onCollectionMissing(); });
+        }
+        if (showsEmpty) {
+            setText(empty, gone ? VIEW_COLLECTION_DELETED : embedded ? emptyText : NO_MATCHES);
+            empty.hidden = !gone && (recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0);
+        }
         if (focusAfterLoad !== null && !next.loading) settleLoadFocus(next);
         if (!selection && next.items.length) inspect(next.items[0]);
         scheduleLoad();
@@ -712,24 +759,27 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             return false;
         }
     }
-    /** The toolbar's categories are the Library's (the linked positive's category, D13). */
+    /**
+     * The toolbar's categories: the Library's (prompts and recipes) and the listed images' own ones (D141, #332), read
+     * in parallel. If only the image list fails, the prompt categories show and the categories alert is raised.
+     */
     async function loadCategories() {
         if (!toolbar) return;
         categoryRequest?.abort();
         const request = new AbortController(); categoryRequest = request;
-        try {
-            const data = await api.get('/prompt_manager/library/options', {signal:request.signal});
-            if (scope.signal.aborted || request !== categoryRequest) return;
-            if (!Array.isArray(data?.categories)) throw new TypeError('Invalid categories');
-            // D36: alphabetical (case-insensitive) whatever order the server sends, a restored category among them.
-            const names = new Set([...data.categories.filter(value => typeof value === 'string' && value), filters.category]);
-            names.delete('');
-            toolbar.setCategories([...names].sort((a, b) => a.localeCompare(b, 'en-US', {sensitivity:'base'}) || (a < b ? -1 : a > b ? 1 : 0)));
-            categoriesFailed = false;
-        } catch {
-            if (scope.signal.aborted || request !== categoryRequest) return;
-            categoriesFailed = true;
-        }
+        const [library, images] = await Promise.allSettled([
+            api.get('/prompt_manager/library/options', {signal:request.signal}),
+            api.get(IMAGE_CATEGORIES_URL, {signal:request.signal}),
+        ]);
+        if (scope.signal.aborted || request !== categoryRequest) return;
+        const valid = result => result.status === 'fulfilled' && Array.isArray(result.value?.categories);
+        if (!valid(library)) { categoriesFailed = true; return; }
+        // D36: alphabetical (case-insensitive) whatever order the server sends, a restored category among them.
+        const names = new Set(mergeCategories(library.value.categories, valid(images) ? images.value.categories : []));
+        if (filters.category) names.add(filters.category);
+        categoryNames = [...names].sort((a, b) => a.localeCompare(b, 'en-US', {sensitivity:'base'}) || (a < b ? -1 : a > b ? 1 : 0));
+        toolbar.setCategories(categoryNames);
+        categoriesFailed = !valid(images);
     }
     scope.cleanup(() => { optionsRequest?.abort(); categoryRequest?.abort(); });
     updateScope();

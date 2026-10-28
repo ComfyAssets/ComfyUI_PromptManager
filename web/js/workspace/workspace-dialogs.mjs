@@ -316,18 +316,29 @@ export function openCopyFallback(text, { scope, trigger = null, title = 'Copy pr
     area.select();
 }
 
+export const INPUT_SUGGESTIONS_ID = 'workspace-input-suggestions';
+
 /**
  * The concept's `simpleInput`: one labelled `input#action-input` (starting at `value`), then Cancel and the primary
  * `action`. The action reports the trimmed value and closes; an empty value keeps the dialog open on its field, or
  * reports `fallback` when one is given (Save view's "Saved view", a1339). A positive `maxLength` limits the field.
  * `validate(value)` may refuse a value with a message: the dialog then stays open with the typed text and the field
- * reports the message (its native validity) until it is edited.
+ * reports the message (its native validity) until it is edited. `suggestions` (text list) offers values in a
+ * `<datalist>` under the field; `secondary` (`{label, onClick}`) adds a button between Cancel and the action that
+ * closes the dialog and runs `onClick` (#332).
  */
 export function openInputDialog({ scope, title, label, action, value = '', maxLength, fallback, onApply, trigger = null,
-    validate = null }) {
+    validate = null, suggestions = null, secondary = null }) {
     requireScope(scope);
     requireCallbacks({ onApply });
     if (validate !== null) requireCallbacks({ validate });
+    if (suggestions !== null && (!Array.isArray(suggestions) || suggestions.some(item => typeof item !== 'string'))) {
+        throw new TypeError('The input dialog suggestions must be text');
+    }
+    if (secondary !== null && (typeof secondary?.label !== 'string' || !secondary.label)) {
+        throw new TypeError('The input dialog secondary action needs a label');
+    }
+    if (secondary !== null) requireCallbacks({ onClick: secondary.onClick });
     for (const [name, text] of Object.entries({ title, label, action })) {
         if (typeof text !== 'string' || !text) throw new TypeError(`The input dialog needs a ${name}`);
     }
@@ -355,8 +366,25 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
         onApply(entered);
     });
     const actions = el('div', undefined, 'dialog-actions');
-    actions.append(cancel, apply);
-    show(title, [field(label, input, 'action-input'), actions], { scope, trigger, focusTarget: input });
+    actions.append(cancel);
+    if (secondary !== null) {
+        // Between Cancel and the primary action; it closes the dialog first (#332 "Use prompt category").
+        const other = createButton(secondary.label);
+        other.addEventListener('click', () => { finish(); secondary.onClick(); });
+        actions.append(other);
+    }
+    actions.append(apply);
+    const nodes = [field(label, input, 'action-input')];
+    if (suggestions?.length) {
+        // Its own id: `datalist#categories` and `#vocabulary-category-options` belong to other pages' fields.
+        const list = el('datalist');
+        list.id = INPUT_SUGGESTIONS_ID;
+        for (const value of suggestions) { const option = el('option'); option.value = value; list.append(option); }
+        input.setAttribute('list', INPUT_SUGGESTIONS_ID);
+        nodes.push(list);
+    }
+    nodes.push(actions);
+    show(title, nodes, { scope, trigger, focusTarget: input });
 }
 
 /**

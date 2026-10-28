@@ -18,6 +18,7 @@ from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations  # noqa: F401 (re-exported)
 from .library import LibraryOperations, titled
 from .image_favorites import ImageFavoriteOperations
+from .image_collections import ImageCollectionOperations
 from .annotations import AnnotationOperations
 from .review import ReviewOperations
 from .review_decisions import ReviewDecisionOperations
@@ -453,6 +454,7 @@ class PromptDatabase(
     ExecutionOutputOperations,
     HistoryReadOperations,
     ImageFavoriteOperations,
+    ImageCollectionOperations,
     AnnotationOperations,
     ReviewOperations,
     ReviewDecisionOperations,

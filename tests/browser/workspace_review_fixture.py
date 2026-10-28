@@ -78,6 +78,8 @@ LIMITED_SAMPLERS = 17
 # More than one queue page (40), so Load more has a second page.
 MAX_ITEMS = 45
 _TABLES = (
+    "image_collection_items",
+    "image_collections",
     "saved_views",
     "image_favorites",
     "media_review_decisions",

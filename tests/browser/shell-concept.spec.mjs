@@ -76,13 +76,41 @@ function savedNav(nav) {
     return {...nav,rows:nav.rows.map(row=>row.text==='Needs review'?{...row,count:{...row.count,text:'0'}}:row)};
 }
 
+/**
+ * D136 (#331): the concept's COLLECTIONS rows (app.js a336–339) as production lists them, by name (DC1): the fixture's
+ * "Landscapes" and "Experiments" hold the concept's 12 and 8 images, so text and counts compare as they are and each
+ * place keeps the concept's row geometry. At <=950px the concept hides the nav, which would leave a phone no way to
+ * open a collection: production shows it as the concept lays out every other sidebar nav there (its SAVED VIEWS nav),
+ * its rows styled as that nav's rows. Text, widths and wrap gaps then follow the rows' own content.
+ */
+function collectionsNav(nav,navs) {
+    const byName=[...nav.rows].sort((a,b)=>a.text<b.text?-1:a.text>b.text?1:0);
+    if(nav.shown)return {...nav,rows:byName.map((row,index)=>({...row,gapAfter:nav.rows[index].gapAfter}))};
+    const saved=navs.find(item=>item.id==='saved-nav');
+    const {id,label,rows,...frame}=saved;
+    return {...nav,...frame,id:nav.id,label:nav.label,rows:byName.map(row=>({...rows[0],text:row.text,
+        count:row.count&&rows[0].count?{...rows[0].count,text:row.count.text}:rows[0].count,
+        icon:rows[0].icon&&row.icon?{...rows[0].icon,d:row.icon.d}:row.icon,
+        width:'(content)',hugs:'(content)',gapAfter:'(content)',current:null}))};
+}
+
+/** The production collections nav at <=950px with its content-sized values replaced, as collectionsNav maps them. */
+function contentFree(navs) {
+    return navs.map(nav=>nav.id!=='collections-nav'||!nav.shown?nav:{...nav,
+        rows:nav.rows.map(row=>({...row,width:'(content)',hugs:'(content)',gapAfter:'(content)'}))});
+}
+
+/** D136: where the concept hides COLLECTIONS, the production rows' content-sized values are not compared. */
+function comparableNavs(reference,navs) {
+    return reference.chrome.navs.find(nav=>nav.id==='collections-nav')?.shown?navs:contentFree(navs);
+}
+
 /** Recorded shell deviations only (spec §8). Everything else in the concept inventory must equal production. */
 function mapShellConcept(reference) {
     const {chrome}=reference;
     const navs=chrome.navs
-        // D28: COLLECTIONS is a proposal with no persisted store, so its nav is not rendered.
-        .filter(nav=>nav.id!=='collections-nav')
         .map(nav=>{
+            if(nav.id==='collections-nav')return collectionsNav(nav,chrome.navs);
             if(nav.id==='saved-nav')return savedNav(nav);
             if(nav.id!=='system-nav')return nav;
             const system=rowNamed(nav,'System');
@@ -99,9 +127,8 @@ function mapShellConcept(reference) {
     return {...reference,chrome:{...chrome,
         // D29: no prototype suffix in the document title.
         title:chrome.title.replace(/ · Prompt Manager concept$/,' · Prompt Manager'),
-        // D28: no COLLECTIONS label. D49: SAVED VIEWS without its "PROPOSED" badge.
-        labels:chrome.labels.filter(label=>label.text!=='COLLECTIONS PROPOSED')
-            .map(label=>label.text==='SAVED VIEWS PROPOSED'?{...label,text:'SAVED VIEWS'}:label),
+        // D49: SAVED VIEWS without its "PROPOSED" badge. D136: COLLECTIONS without it either.
+        labels:chrome.labels.map(label=>label.text.endsWith(' PROPOSED')?{...label,text:label.text.replace(/ PROPOSED$/,'')}:label),
         navs,
         connection:{...chrome.connection,
             // D28: truthful copy instead of "Demo connection · Classic / Nodes 2.0".
@@ -134,8 +161,9 @@ function headingFrame(heading) {
 function compare(route,reference,actual) {
     const expected=mapShellConcept(reference);
     const heading=FULL_HEADING.has(route);
+    const chrome={...actual.chrome,navs:comparableNavs(reference,actual.chrome.navs)};
     return [
-        ...diffInventory({chrome:expected.chrome,noPageScroll:expected.noPageScroll},{chrome:actual.chrome,noPageScroll:actual.noPageScroll}),
+        ...diffInventory({chrome:expected.chrome,noPageScroll:expected.noPageScroll},{chrome,noPageScroll:actual.noPageScroll}),
         ...diffInventory(heading?expected.heading:headingFrame(expected.heading),heading?actual.heading:headingFrame(actual.heading))
             .map(item=>({...item,path:`heading.${item.path}`})),
     ];
@@ -242,7 +270,7 @@ for(const [width,height] of SIZES)test(`a saved view row matches the concept's $
     expect(reference.chrome.navs.find(nav=>nav.id==='saved-nav').rows.map(row=>row.text)).toEqual(['Favorites','Needs review','Golden hour']);
     await openProduction(page,'images','dark');
     const actual=await save('Save','#workspace-main');
-    expect(diffInventory(mapShellConcept(reference).chrome.navs,actual.chrome.navs)).toEqual([]);
+    expect(diffInventory(mapShellConcept(reference).chrome.navs,comparableNavs(reference,actual.chrome.navs))).toEqual([]);
     const referenceRows=reference.chrome.navs.find(nav=>nav.id==='saved-nav').rows;
     expect(actual.chrome.navs.find(nav=>nav.id==='saved-nav').rows.map(row=>[row.text,row.count]))
         .toEqual([['Favorites',referenceRows[0].count],['Needs review',{...referenceRows[1].count,text:'0'}],['Golden hour',null]]);

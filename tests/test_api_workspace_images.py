@@ -2550,3 +2550,207 @@ class TestListingFilterSelection(ImageAPITestCase):
 
         self.assertEqual(response.status, 409)
         self.assertEqual((await response.json())["code"], "source-changed")
+
+
+class TestWorkspaceCollectionFilter(ImageAPITestCase):
+    """#331: ``collection=<id>`` keeps only that collection's listed members."""
+
+    media = TestWorkspaceImages.media
+    get = TestWorkspaceImages.get
+    _names = TestWorkspaceImages._names
+
+    async def tearDownAsync(self):
+        self.api.db.close_all()
+        assert_closed(self, self._temp_db.name, self._output_tmp.name)
+        await super().tearDownAsync()
+
+    def keys(self, root, relative):
+        from py.api.images import _favorite_relative_key, _favorite_root_key
+
+        return (_favorite_root_key(root), _favorite_relative_key(relative))
+
+    def collect(self, name, *members):
+        """A collection holding ``(root, relative)`` members; its id."""
+        result = self.api.db.add_to_collection(
+            name=name, items=[self.keys(root, rel) for root, rel in members]
+        )
+        return result["collection"]["id"]
+
+    def two_sources(self):
+        second = self.comfy_dir / "second"
+        second.mkdir()
+        self.api._get_all_output_dirs = lambda: [self.output_dir, second]
+        return second
+
+    async def test_listing_keeps_only_collection_members(self):
+        second = self.two_sources()
+        self.media("a.png", 300)
+        self.media("b.png", 200)
+        self.media("sub/c.png", 100, root=second)
+        self.media("d.png", 50, root=second)
+        grids = self.collect(
+            "Grids",
+            (self.output_dir, "a.png"),
+            (second, "sub/c.png"),
+            (self.output_dir, "gone.png"),  # stored, never listed
+        )
+        self.collect("Other", (self.output_dir, "b.png"))
+        response, data = await self.get(collection=str(grids))
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(self._names(data), ["a.png", "c.png"])
+        self.assertEqual(data["total"], 2)
+        _, data = await self.get(collection=str(grids), root="1")
+        self.assertEqual(self._names(data), ["c.png"])
+        # Without the filter the listing is unchanged.
+        _, data = await self.get()
+        self.assertEqual(data["total"], 4)
+
+    async def test_collection_filter_combines_with_the_other_filters(self):
+        night = self._save_prompt("Neon zebra", category="Night", tags=["a"])
+        day = self._save_prompt("Morning field", category="Day", tags=["a"])
+        files = {
+            name: self.media(name, 100 + index)
+            for index, name in enumerate(
+                ("night.png", "day.png", "zebra_plain.png", "clip.mp4", "out.png")
+            )
+        }
+        self.api.db.link_image_to_prompt(night, str(files["night.png"]))
+        self.api.db.link_image_to_prompt(day, str(files["day.png"]))
+        members = [(self.output_dir, name) for name in files if name != "out.png"]
+        grids = str(self.collect("Grids", *members))
+        cases = (
+            ({}, ["clip.mp4", "day.png", "night.png", "zebra_plain.png"]),
+            ({"q": "zebra"}, ["night.png", "zebra_plain.png"]),
+            ({"category": "Night"}, ["night.png"]),
+            ({"tags": "a"}, ["day.png", "night.png"]),
+            ({"media": "video"}, ["clip.mp4"]),
+            ({"media": "image", "q": "day"}, ["day.png"]),
+        )
+        for params, expected in cases:
+            with self.subTest(**params):
+                response, data = await self.get(collection=grids, sort="name", **params)
+                self.assertEqual(response.status, 200, data)
+                self.assertEqual(self._names(data), expected)
+                self.assertEqual(data["total"], len(expected))
+
+    async def test_collection_filter_combines_with_an_images_own_category(self):
+        """#331 with #332: a member is admitted by its effective category."""
+        from py.api.images import image_category_key
+
+        night = self._save_prompt("Neon zebra", category="Night")
+        files = {
+            name: self.media(name, 100 + index)
+            for index, name in enumerate(
+                ("linked.png", "overridden.png", "own.png", "outside.png")
+            )
+        }
+        for name in ("linked.png", "overridden.png"):
+            self.api.db.link_image_to_prompt(night, str(files[name]))
+        sources = self.api._get_all_output_dirs()
+
+        def own(name, value):
+            key = image_category_key(sources, files[name])
+            self.api.db.set_image_categories([key], value)
+
+        own("overridden.png", "Portraits")
+        own("own.png", "Night")  # unlinked: only its own category
+        own("outside.png", "Night")  # not a member
+        members = [(self.output_dir, name) for name in files if name != "outside.png"]
+        grids = str(self.collect("Grids", *members))
+        for category, expected in (
+            ("Night", ["linked.png", "own.png"]),
+            ("Portraits", ["overridden.png"]),
+        ):
+            with self.subTest(category=category):
+                response, data = await self.get(
+                    collection=grids, category=category, sort="name"
+                )
+                self.assertEqual(response.status, 200, data)
+                self.assertEqual(self._names(data), expected)
+                self.assertEqual(data["total"], len(expected))
+
+    async def test_invalid_collection_is_a_400(self):
+        for value in ("x", "0", "-1", "1.5", "1234567890", " 1"):
+            with self.subTest(value=value):
+                response, data = await self.get(collection=value)
+                self.assertEqual(response.status, 400, data)
+
+    async def test_unknown_collection_is_a_404(self):
+        self.media("a.png")
+        response, data = await self.get(collection="77")
+        self.assertEqual(response.status, 404)
+        self.assertEqual(data["code"], "collection-not-found")
+        self.assertNotIn("images", data)
+        self.api._get_all_output_dirs = lambda: []
+        response, data = await self.get(collection="77")
+        self.assertEqual((response.status, data["code"]), (404, "collection-not-found"))
+
+    async def test_a_collection_deleted_during_the_read_is_a_404(self):
+        self.media("a.png")
+        grids = self.collect("Grids", (self.output_dir, "a.png"))
+        real = self.api.db.collection_members
+
+        def deleted_meanwhile(collection_id, root_key):
+            self.api.db.delete_collection(collection_id)
+            return real(collection_id, root_key)
+
+        with patch.object(
+            self.api.db, "collection_members", side_effect=deleted_meanwhile
+        ):
+            response, data = await self.get(collection=str(grids))
+        self.assertEqual((response.status, data["code"]), (404, "collection-not-found"))
+
+    async def test_a_failed_members_read_is_a_500_never_an_unfiltered_page(self):
+        self.media("a.png")
+        self.media("b.png")
+        grids = self.collect("Grids", (self.output_dir, "a.png"))
+
+        def broken(*_args, **_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(self.api.db, "collection_members", side_effect=broken):
+            response, data = await self.get(collection=str(grids))
+        self.assertEqual(response.status, 500)
+        self.assertNotIn("images", data)
+        self.assertNotIn("locked", json.dumps(data))
+
+    async def test_reordering_sources_keeps_members(self):
+        second = self.two_sources()
+        self.media("a.png", root=second)
+        self.media("b.png")
+        grids = str(self.collect("Grids", (second, "a.png")))
+        _, data = await self.get(collection=grids)
+        self.assertEqual(
+            [(i["root_index"], i["path"]) for i in data["images"]], [(1, "a.png")]
+        )
+        self.api._get_all_output_dirs = lambda: [second, self.output_dir]
+        _, data = await self.get(collection=grids)
+        self.assertEqual(
+            [(i["root_index"], i["path"]) for i in data["images"]], [(0, "a.png")]
+        )
+
+    async def test_cursor_from_another_collection_is_refused(self):
+        for index, name in enumerate(("a.png", "b.png", "c.png")):
+            self.media(name, 100 + index)
+        everything = [(self.output_dir, name) for name in ("a.png", "b.png", "c.png")]
+        first = str(self.collect("First", *everything))
+        second = str(self.collect("Second", *everything))
+        _, page = await self.get(collection=first, limit=1)
+        token = page["next_cursor"]
+        self.assertIsInstance(token, str)
+        response, _ = await self.get(collection=first, limit=1, cursor=token)
+        self.assertEqual(response.status, 200)
+        for params in ({"collection": second}, {}, {"favorites": "1"}):
+            with self.subTest(**params):
+                response, _ = await self.get(cursor=token, limit=1, **params)
+                self.assertEqual(response.status, 400)
+
+    async def test_collection_wins_over_favorites(self):
+        self.media("a.png")
+        self.media("b.png")
+        grids = str(self.collect("Grids", (self.output_dir, "a.png")))
+        from py.api.images import _favorite_root_key
+
+        self.api.db.set_image_favorite(_favorite_root_key(self.output_dir), "b.png")
+        _, data = await self.get(collection=grids, favorites="1")
+        self.assertEqual(self._names(data), ["a.png"])

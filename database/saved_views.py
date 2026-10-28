@@ -35,6 +35,9 @@ _LIBRARY_SORTS = ("newest", "oldest", "name", "rating")
 _MEDIA = ("all", "image", "video")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _SOURCE = re.compile(r"all|0|[1-9][0-9]{0,8}")
+# A collection id as the listing's ``collection`` query takes it (#331): none
+# ("") or 1 to 9 digits without a leading zero.
+_COLLECTION = re.compile(r"|[1-9][0-9]{0,8}")
 FALLBACK_NAME = "Saved view"
 
 
@@ -55,6 +58,9 @@ _STATE_FIELDS = {
         "tags": ("tags", None, ()),
         # The Favorites page's filter (#249 D51): a view saved there reopens it.
         "favorites": ("bool", None, False),
+        # A view saved on a collection page (#331 D140) reopens that
+        # collection; never together with favorites.
+        "collection": ("collection", None, ""),
     },
     "library": {
         "q": ("text", 500, ""),
@@ -125,6 +131,8 @@ def _validate_value(key: str, kind: str, limit, value: object) -> None:
         raise SavedViewInvalid(f"State '{key}' is not a supported value")
     if kind == "source" and not _SOURCE.fullmatch(value):
         raise SavedViewInvalid(f"State '{key}' must be 'all' or a source index")
+    if kind == "collection" and not _COLLECTION.fullmatch(value):
+        raise SavedViewInvalid(f"State '{key}' must be empty or a collection id")
     if kind == "text" and (len(value) > limit or _CONTROL.search(value)):
         raise SavedViewInvalid(f"State '{key}' is too long or has control characters")
 
@@ -142,6 +150,8 @@ def encode_state(page: object, state: object) -> str:
         )
     for key, (kind, limit, _default) in fields.items():
         _validate_value(key, kind, limit, state[key])
+    if state.get("favorites") is True and state.get("collection"):
+        raise SavedViewInvalid("A view cannot filter by favorites and a collection")
     encoded = json.dumps(
         {key: state[key] for key in fields}, ensure_ascii=False, separators=(",", ":")
     )
@@ -181,6 +191,10 @@ def normalize_state(page: str, raw: object) -> dict:
         except SavedViewInvalid:
             value = default
         state[key] = list(value) if kind == "tags" else value
+    # Never written by this build; a stored row with both opens the collection,
+    # as the listing does for a URL with both (#331 D140).
+    if state.get("favorites") is True and state.get("collection"):
+        state["favorites"] = False
     return state
 
 

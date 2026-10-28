@@ -136,7 +136,8 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await expect(panel.locator('.detail-inner > p.small')).toHaveText('complete.png');
     const badges=panel.locator('.detail-inner > .tags').first();
     await expect(badges.locator('span.chip.blue')).toHaveText('Workflow inferred');
-    await expect(badges.locator('span.chip:not(.blue)')).toHaveText('Recipe category: Inspection');
+    // #332 MC8: the chip names where its value came from, in visible text after the category.
+    await expect(badges.locator('span.chip:not(.blue)')).toHaveText('Recipe category: Inspection · recipe');
     await expect(badges.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Recipe category: ');
     // Recipe tags are not the positive tags the Images Tags filter matches, so they stay plain chips (D21 ruling).
     await expect(panel.locator('.detail-inner > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);
@@ -183,6 +184,53 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await selectFile(page,'malformed.png');
     await expect(panel.locator('.detail-inner > p.small[role="alert"]')).toHaveText('Could not read prompts from this file.');
     await expect(panel.locator('.detail-inner > button')).toHaveText(['Retry prompt details']);
+});
+
+// #332 CUJ 4, CUJ 5 (MC8, D146): every category chip names its origin: the image's own, the prompt's or the recipe's.
+const originChip=scope=>scope.locator('span.chip:has(> span.chip-source)');
+async function expectOrigin(scope,{prefix,category,origin}) {
+    await expect(originChip(scope)).toHaveText(`${prefix}${category} · ${origin}`);
+    await expect(originChip(scope).locator('.ca-visually-hidden')).toHaveText(prefix);
+    expect(await originChip(scope).locator('.chip-source').evaluate(node=>node.textContent)).toBe(` · ${origin}`);
+}
+async function putOwnCategory(request,paths,category) {
+    const {images}=await(await request.get('/prompt_manager/images/output?mode=workspace&subfolder=inspector&limit=40')).json();
+    const items=paths.map(path=>images.find(image=>image.root_index===0&&image.path===path)).map(({root_index,root_scope,path})=>({root_index,root_scope,path}));
+    const response=await request.put('/prompt_manager/images/category',{data:{items,category}});await expect(response).toBeOK();
+}
+
+test('the category chip names its origin in the side panel and the viewer (#332 CUJ 4, CUJ 5)',async({page,request})=>{
+    await page.setViewportSize({width:1600,height:1100});
+    await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();
+    // The positive's own category, set through the legacy prompt route; complete.png's recipe keeps "Inspection".
+    const list=await(await request.get('/prompt_manager/library')).json();const id=list.items.find(item=>item.text.startsWith('Inspector portrait')).id;
+    await expect(await request.post('/prompt_manager/bulk/category',{data:{prompt_ids:[id],category:'Landscapes'}})).toBeOK();
+    await page.goto('/prompt_manager/workspace#/images');const panel=inspector(page);
+    await selectFile(page,'complete.png');await expect(panel.locator('.panel-heading h2')).toHaveText(POSITIVE_TITLE);
+    await expectOrigin(panel,{prefix:'Recipe category: ',category:'Inspection',origin:'recipe'});
+    await selectFile(page,'workflow-only.png');await expect(panel.locator('.detail-inner > p.small')).toHaveText('workflow-only.png');
+    await expectOrigin(panel,{prefix:'Positive prompt category: ',category:'Landscapes',origin:'prompt'});
+    // An unlinked file shows no category until it has its own.
+    await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
+    await expect(originChip(panel)).toHaveCount(0);
+    // Own categories: one overrides the prompt's on a linked file, one sits on an unlinked file.
+    await putOwnCategory(request,['inspector/workflow-only.png'],'Portraits');await putOwnCategory(request,['inspector/empty.png'],'Scans');
+    await page.reload();
+    await selectFile(page,'workflow-only.png');await expect(panel.locator('.detail-inner > p.small')).toHaveText('workflow-only.png');
+    await expectOrigin(panel,{prefix:'Image category: ',category:'Portraits',origin:'this image'});
+    await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
+    await expectOrigin(panel,{prefix:'Image category: ',category:'Scans',origin:'this image'});
+    await selectFile(page,'complete.png');await expect(panel.locator('.panel-heading h2')).toHaveText(POSITIVE_TITLE);
+    await expectOrigin(panel,{prefix:'Recipe category: ',category:'Inspection',origin:'recipe'});
+    // The viewer's full details show the same chips.
+    let details=await viewerDetails(page,'workflow-only.png');
+    await expectOrigin(details,{prefix:'Image category: ',category:'Portraits',origin:'this image'});
+    await page.keyboard.press('Escape');await expect(page.locator('dialog#viewer-dialog[open]')).toHaveCount(0);
+    details=await viewerDetails(page,'complete.png');
+    await expectOrigin(details,{prefix:'Recipe category: ',category:'Inspection',origin:'recipe'});
+    await page.keyboard.press('Escape');await expect(page.locator('dialog#viewer-dialog[open]')).toHaveCount(0);
+    details=await viewerDetails(page,'empty.png');
+    await expectOrigin(details,{prefix:'Image category: ',category:'Scans',origin:'this image'});
 });
 
 test('tag chip filters Images by that tag',async({page,request})=>{
@@ -676,6 +724,9 @@ test('collection viewer uses real public transforms and resets on navigation',as
 async function slideshowFixture(page,request,preferences={videoAutoplay:false,videoMute:true,videoLoop:false}) {
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true,include_video:true}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');
+    // Install the fake clock before the fixture wraps setTimeout: the wrapped timer (which the viewer session captures)
+    // must be the fake one, so page.clock.runFor alone decides when the 3500 ms slideshow deadline fires.
+    await page.clock.install();
     await page.evaluate(async preferences=>{
         if(preferences) localStorage.setItem('gallerySettings',JSON.stringify(preferences));
         const [{createMediaViewer},{createInspectionController},{createScope},{createPromptSender}]=await Promise.all([
@@ -695,7 +746,7 @@ async function slideshowFixture(page,request,preferences={videoAutoplay:false,vi
     },preferences);
     await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
     await expect(mediaDialog(page).locator('#viewer-details > div > p.small')).toHaveText('complete.png');
-    await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+1000));
+    await page.clock.pauseAt(new Date(Date.now()+1000));
 }
 const slideshowButton=page=>mediaDialog(page).locator('#viewer-toolbar').getByRole('button',{name:/^(Play|Pause|Stop) slideshow$/});
 const timerCount=page=>page.evaluate(()=>window.slideshowTimers.size);

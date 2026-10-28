@@ -21,9 +21,9 @@ from aiohttp import web
 from .annotation_suggest import (
     SUGGEST_FIELDS,
     OptionError,
+    model_refusal,
     run_suggestions,
     suggestion_rows,
-    unavailable_message,
     validate_options,
 )
 from .autotag_routes import model_busy_response
@@ -595,7 +595,7 @@ class AnnotationRoutesMixin:
         it, including a legacy batch), never downloads (``model-unavailable``)
         and never writes.
         """
-        from ..autotag import MODELS, get_autotag_service
+        from ..autotag import MODELS, MissingBackendPackages, get_autotag_service
         from ..config import MAX_SUGGESTION_LIMIT, AutotagConfig
 
         data, error = await self._annotation_body(request, SUGGEST_FIELDS)
@@ -633,9 +633,10 @@ class AnnotationRoutesMixin:
                 return error
             service = get_autotag_service()
             status = await self._run_in_executor(service.get_models_status)
-            if not status.get(model_type, {}).get("downloaded"):
-                name = MODELS.get(model_type, {}).get("name", model_type)
-                return _coded("model-unavailable", unavailable_message(name))
+            name = MODELS.get(model_type, {}).get("name", model_type)
+            refusal = model_refusal(status, model_type, name)
+            if refusal is not None:
+                return _coded("model-unavailable", refusal)
             owner = model_gate.new_owner("image-annotations")
             if not model_gate.try_acquire(owner):
                 return model_busy_response()
@@ -654,6 +655,9 @@ class AnnotationRoutesMixin:
                     options,
                     on_skipped=functools.partial(store.release_use, token),
                 )
+            except MissingBackendPackages as exc:
+                # A package gone since the status read (load_model logged it).
+                return _coded("model-unavailable", str(exc))
             except Exception:
                 self.logger.exception("Tag suggestion failed")
                 return _error(
