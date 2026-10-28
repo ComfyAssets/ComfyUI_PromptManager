@@ -272,9 +272,17 @@ class TestSaveToLibrarySteps(unittest.TestCase):
                 self.assertEqual(decision.text, "SECRET OFF TEXT")
 
     def test_an_off_node_on_a_negative_input_name_never_blocks(self):
-        """The walk skips negative inputs by #90's own rule (``neg``,
-        ``neg_text``, ``text_neg``, ``negative_text``)."""
-        for key in ("neg", "neg_text", "text_neg", "negative_text"):
+        """The walk skips negative inputs: #90's own rule (``neg``,
+        ``neg_text``, ``text_neg``) and any name containing "negative"."""
+        for key in (
+            "neg",
+            "neg_text",
+            "text_neg",
+            "negative_text",
+            "negative2",
+            "negativeprompt",
+            "NegativePrompt",
+        ):
             with self.subTest(key=key):
                 graph = {
                     "1": {

@@ -313,6 +313,12 @@ _NOT_TEXT_INPUTS = frozenset(
 _MAX_SWITCH_VISITS = 5000
 
 
+def _negative_name(key: Any) -> bool:
+    """#90's negative rule, plus any name containing "negative"
+    (``negative2``, ``NegativePrompt``)."""
+    return is_negative_input(key) or "negative" in str(key).lower()
+
+
 def _switched_off_upstream(graph: Any) -> Optional[str]:
     """The switch outcome of every PromptManager node upstream of a positive.
 
@@ -340,7 +346,7 @@ def _switched_off_upstream(graph: Any) -> Optional[str]:
             found.add(node_id)
         inputs = node.get("inputs")
         for key, value in (inputs.items() if isinstance(inputs, dict) else ()):
-            if key in _NOT_TEXT_INPUTS or is_negative_input(key):
+            if key in _NOT_TEXT_INPUTS or _negative_name(key):
                 continue
             if isinstance(value, (list, tuple)) and len(value) == 2:
                 if isinstance(value[0], (str, int)) and isinstance(value[1], int):
