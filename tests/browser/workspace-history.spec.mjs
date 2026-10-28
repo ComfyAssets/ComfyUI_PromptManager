@@ -1,6 +1,6 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from './fixtures.mjs';
-import {unseenRestore} from './unseen-restore.mjs';
+import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 
@@ -17,7 +17,7 @@ const marker=(page,id,anchor='10')=>recorded(page).locator(`button[data-run-id="
 const exact=async locator=>locator.evaluate(node=>node.textContent);
 
 test.beforeEach(async({page,request,browserName})=>{
-    await startCoverage(page,browserName);page.historyErrors=[];page.on('pageerror',error=>page.historyErrors.push(error.message));
+    await startCoverage(page,browserName);await armUnseenRestores(page);page.historyErrors=[];page.on('pageerror',error=>page.historyErrors.push(error.message));
     const reset=await request.post('/__test__/reset',{data:{chronological_history:true}});await expect(reset).toBeOK();page.fixture=await reset.json();
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.historyErrors).toEqual([]);});

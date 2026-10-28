@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from './fixtures.mjs';
-import {unseenRestore} from './unseen-restore.mjs';
+import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {inventoryOf,mapConcept,diffInventory} from './library-editor-canonical-comparison.mjs';
 
@@ -14,7 +14,7 @@ const RATINGS=[['5','5 / 5'],['4','4 / 5'],['3','3 / 5'],['2','2 / 5'],['1','1 /
 const editorDialog=page=>page.locator('dialog.library-editor');
 
 test.beforeEach(async({page,request,browserName})=>{
-    await startCoverage(page,browserName);
+    await startCoverage(page,browserName);await armUnseenRestores(page);
     const reset=await request.post('/__test__/library-editor/reset',{data:{}});await expect(reset).toBeOK();page.fixture=await reset.json();
     page.editorErrors=[];page.on('pageerror',error=>page.editorErrors.push(error.message));
     page.writes=[];page.on('request',item=>{if(item.method()!=='GET')page.writes.push({method:item.method(),url:new URL(item.url()).pathname,body:item.postDataJSON()});});

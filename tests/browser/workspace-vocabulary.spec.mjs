@@ -1,7 +1,7 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
-import {unseenRestore} from './unseen-restore.mjs';
+import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog} from './vocabulary-canonical-comparison.mjs';
 
@@ -41,7 +41,7 @@ async function expectLibrary(page,{tags='',category='',count}) {
 
 let manifest;
 test.beforeEach(async({page,request,browserName})=>{
-    await startCoverage(page,browserName);manifest=await seed(request);
+    await startCoverage(page,browserName);await armUnseenRestores(page);manifest=await seed(request);
     page.vocabularyErrors=[];page.on('pageerror',error=>page.vocabularyErrors.push(error.message));
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.vocabularyErrors).toEqual([]);});
