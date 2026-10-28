@@ -1347,7 +1347,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         _, data = await self.get(q="harbor")
         self.assertEqual(self._names(data), ["night_a.png"])
         self.assertEqual(
-            self.api.db.get_image_paths_matching("zebra", None, []),
+            self.api.db.get_image_paths_matching("zebra", []),
             {
                 normalize_image_path(str(files[name]))
                 for name in ("night_ab", "day_ab", "titled")
@@ -1407,8 +1407,10 @@ class TestWorkspaceImages(ImageAPITestCase):
             for query in statements
             if query.lstrip().upper().startswith(("SELECT", "WITH"))
         ]
-        # Plus the one stream of tagged image records q and tags read (B3).
-        self.assertEqual(len(selects), 4, selects)
+        # Plus the one stream of tagged image records q and tags read (B3),
+        # and the category's own-category read of the one source (#332).
+        self.assertEqual(len(selects), 5, selects)
+        self.assertEqual(sum("image_categories" in q for q in selects), 1, selects)
         self.assertEqual(sum("image_favorites" in q for q in selects), 1, selects)
         self.assertEqual(sum("media_image_tags" in q for q in selects), 1, selects)
 
@@ -1528,15 +1530,16 @@ class TestWorkspaceImages(ImageAPITestCase):
         elsewhere = self.api.db.get_prompt_id_for_image("/elsewhere/7.png")
         self.assertEqual(
             self.api.db.get_image_link_matches(
-                "", "Night", [], every_link=True, wanted=wanted
+                "", [], every_link=True, wanted=wanted, category="Night"
             ),
             {
                 normalize_image_path(str(files["night_ab"])): (
                     True,
                     5,
                     self.api.db.get_prompt_id_for_image(str(files["night_ab"])),
+                    "Night",
                 ),
-                "/elsewhere/7.png": (True, 5, elsewhere),
+                "/elsewhere/7.png": (True, 5, elsewhere, "Night"),
             },
         )
 
@@ -1586,6 +1589,24 @@ class TestWorkspaceImages(ImageAPITestCase):
                         normalize_image_path(str(listed[i * 2][0])),
                     )
                     for i in range(links)
+                ],
+            )
+        # 2,000 images (one in 25 at 50,000 files) carry their own category
+        # (#332), so a category filter also reads and matches those.
+        from py.api.images import _favorite_root_key
+
+        root_key = _favorite_root_key(self.output_dir)
+        with self.api.db.model.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO image_categories VALUES(?,?,?,?)",
+                [
+                    (
+                        root_key,
+                        listed[i][0].relative_to(self.output_dir).as_posix(),
+                        f"cat-{i % 10}",
+                        "2026-10-27T00:00:00+00:00",
+                    )
+                    for i in range(1, files, 25)[:2_000]
                 ],
             )
         return listed
@@ -1678,7 +1699,13 @@ class TestWorkspaceImages(ImageAPITestCase):
                     # q and tags also stream the tagged image records once
                     # (#249 B3); none are tagged here, so nothing is stat'ed.
                     streamed = "q" in params or "tags" in params
-                    self.assertEqual(len(found), 2 if streamed else 1, found)
+                    # A category also reads the own categories, one primary
+                    # key range per source (#332).
+                    own = "category" in params
+                    self.assertEqual(len(found), 1 + streamed + own, found)
+                    self.assertEqual(
+                        sum("image_categories" in query for query in found), int(own)
+                    )
                     self.assertEqual(
                         sum("media_image_tags" in query for query in found),
                         int(streamed),
@@ -1739,7 +1766,7 @@ class TestWorkspaceImages(ImageAPITestCase):
             self.assertEqual(self.api._workspace_order_cache, {})
         # The per-row ambiguity probe is an index search, never a scan.
         # The read runs it wrapped in one JSON aggregate (#354): same plan.
-        sql, params = link_filter_query("lantern", "cat-3", ["tag-1"], every_link=True)
+        sql, params = link_filter_query("lantern", ["tag-1"], every_link=True)
         for query in (sql, link_matches_json_query(sql)):
             with self.subTest(wrapped=query is not sql):
                 with self.api.db.model.get_connection() as conn:
@@ -1755,6 +1782,25 @@ class TestWorkspaceImages(ImageAPITestCase):
                 self.assertFalse(
                     [step for step in plan if step.startswith("SCAN other")]
                 )
+        # The category's narrowing clause (#332) keeps every join an index
+        # search, plain and wrapped with the raw categories.
+        sql, params = link_filter_query(
+            "", ["tag-1"], every_link=True, category="cat-3"
+        )
+        for query in (sql, link_matches_json_query(sql, categories=True)):
+            with self.subTest(category_wrapped=query is not sql):
+                with self.api.db.model.get_connection() as conn:
+                    plan = [
+                        row[3]
+                        for row in conn.execute("EXPLAIN QUERY PLAN " + query, params)
+                    ]
+                self.assertIn(
+                    "SEARCH other USING COVERING INDEX idx_image_file_path "
+                    "(file_path=?)",
+                    plan,
+                )
+                scans = [step for step in plan if step.startswith("SCAN")]
+                self.assertTrue(all(step.startswith("SCAN gi") for step in scans), plan)
 
     @unittest.skipUnless(
         PERF_BUDGET and not TRACED,
@@ -2583,6 +2629,42 @@ class TestWorkspaceCollectionFilter(ImageAPITestCase):
         for params, expected in cases:
             with self.subTest(**params):
                 response, data = await self.get(collection=grids, sort="name", **params)
+                self.assertEqual(response.status, 200, data)
+                self.assertEqual(self._names(data), expected)
+                self.assertEqual(data["total"], len(expected))
+
+    async def test_collection_filter_combines_with_an_images_own_category(self):
+        """#331 with #332: a member is admitted by its effective category."""
+        from py.api.images import image_category_key
+
+        night = self._save_prompt("Neon zebra", category="Night")
+        files = {
+            name: self.media(name, 100 + index)
+            for index, name in enumerate(
+                ("linked.png", "overridden.png", "own.png", "outside.png")
+            )
+        }
+        for name in ("linked.png", "overridden.png"):
+            self.api.db.link_image_to_prompt(night, str(files[name]))
+        sources = self.api._get_all_output_dirs()
+
+        def own(name, value):
+            key = image_category_key(sources, files[name])
+            self.api.db.set_image_categories([key], value)
+
+        own("overridden.png", "Portraits")
+        own("own.png", "Night")  # unlinked: only its own category
+        own("outside.png", "Night")  # not a member
+        members = [(self.output_dir, name) for name in files if name != "outside.png"]
+        grids = str(self.collect("Grids", *members))
+        for category, expected in (
+            ("Night", ["linked.png", "own.png"]),
+            ("Portraits", ["overridden.png"]),
+        ):
+            with self.subTest(category=category):
+                response, data = await self.get(
+                    collection=grids, category=category, sort="name"
+                )
                 self.assertEqual(response.status, 200, data)
                 self.assertEqual(self._names(data), expected)
                 self.assertEqual(data["total"], len(expected))

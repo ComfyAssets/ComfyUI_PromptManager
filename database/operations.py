@@ -7,7 +7,12 @@ import json
 import math
 import datetime
 import os
-from typing import Optional, List, Dict, Any, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+try:
+    from ..utils.inspection_response import inherited_category
+except ImportError:
+    from utils.inspection_response import inherited_category
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations  # noqa: F401 (re-exported)
@@ -239,13 +244,17 @@ LEFT JOIN prompt_library_state pls ON pls.prompt_id = pp.positive_prompt_id
 WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
 # One image row describes a card only when no other row claims the same file
 # (as in get_image_link_summaries, several rows are ambiguous). The pair scope
-# and the linked positive follow _LINK_SUMMARY_SQL; category, rating, tags and
-# the searchable text and titles come from that positive (spec D12/D13). Every
+# and the linked positive follow _LINK_SUMMARY_SQL; rating, tags and the
+# searchable text and titles come from that positive (spec D12/D13). The raw
+# recipe and positive categories are read for the inherited category, which
+# Python decides (``inherited_category``, #332 MC4); SQL never filters by
+# category. Every
 # writer since the 3.2.4 migration stores file_path, so it is the path key.
 # The prompt-level conditions are uncorrelated IN sets SQLite builds once, and
 # the CASE evaluates the per-row ambiguity probe only for admitted rows.
 _LINK_FILTER_SQL = """SELECT gi.file_path AS file_path, p.rating AS rating,
-       {hit} AS matched, p.id AS positive
+       {hit} AS matched, p.id AS positive, pp.id IS NOT NULL AS has_pair,
+       pp.category AS pair_category, p.category AS category
 FROM generated_images gi
 LEFT JOIN prompt_pairs pp ON pp.id = (
     SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
@@ -257,20 +266,28 @@ WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
 # _LINK_FILTER_SQL's rows as one JSON array, built by SQLite in one step (#354).
 # Python's sqlite3 releases and retakes the GIL around every step, so a read
 # that steps once per linked row waits on a busy ComfyUI thread thousands of
-# times. A BLOB file_path or rating (no writer stores one) makes the value NULL
-# (or json_array refuses it), and the read streams instead.
+# times. A BLOB value (no writer stores one) makes the value NULL (or
+# json_array refuses it), and the read streams instead. The raw categories are
+# put in only for a category read (#332), so plain reads stay as small as #354
+# measured them.
 _LINK_MATCHES_JSON_SQL = """SELECT CASE
-    WHEN max(typeof(file_path) = 'blob' OR typeof(rating) = 'blob') THEN NULL
-    ELSE json_group_array(json_array(file_path, rating, matched, positive)) END
+    WHEN max({blob}) THEN NULL
+    ELSE json_group_array(json_array({columns})) END
 FROM ({select})"""
+_LINK_PLAIN_COLUMNS = ("file_path", "rating", "matched", "positive")
+_LINK_CATEGORY_COLUMNS = _LINK_PLAIN_COLUMNS + ("has_pair", "pair_category", "category")
+# The columns a BLOB can reach: matched, positive and has_pair are computed.
+_LINK_STORED_COLUMNS = ("file_path", "rating", "pair_category", "category")
 # Set when this SQLite has no JSON functions: every later read streams.
 _one_step_unsupported = False
 # One warning per process when a read falls back to streaming.
 _one_step_warned = False
 # The linked positive of each given path (one unambiguous link, pair scope as
-# in _LINK_FILTER_SQL) with its category; {hit} as in link_filter_query. Used
-# for the few files whose current image tags meet a Tags filter (#249 B3).
-_LINK_FACTS_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id, p.category
+# in _LINK_FILTER_SQL) with the raw categories of its inherited category; {hit}
+# as in link_filter_query. Used for the few files whose current image tags meet
+# a Tags filter (#249 B3).
+_LINK_FACTS_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id,
+pp.id IS NOT NULL, pp.category, p.category
 FROM generated_images gi
 LEFT JOIN prompt_pairs pp ON pp.id = (
     SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
@@ -299,8 +316,24 @@ _LINK_FILTER_TAG = (
 )
 
 
+# One unambiguously linked image's facts for the Images filters, a plain tuple
+# (hit, rating, positive id, inherited category): built per linked row, so no
+# NamedTuple. The category is the inherited one (#332 MC4: the recipe's when
+# set, else the positive's), never the image's own category.
+LinkMatch = Tuple[bool, Optional[int], int, Any]
+
+
+def _link_match(rating, matched, positive, has_pair, pair_category, category):
+    inherited, _scope = inherited_category(category, pair_category, bool(has_pair))
+    return (bool(matched), rating, positive, inherited)
+
+
 def link_filter_query(
-    q: str, category: Optional[str], tags: List[str], *, every_link: bool = False
+    q: str,
+    tags: List[str],
+    *,
+    every_link: bool = False,
+    category: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """The workspace filter SELECT and its named parameters (all bound).
 
@@ -314,7 +347,9 @@ def link_filter_query(
         params["pattern"] = f"%{escape_like(q)}%"
     admitted = []
     if category is not None:
-        admitted.append("p.category = :category")
+        # Only narrows: an inherited category is one of the two raw values;
+        # which one is decided in Python (inherited_category, #332 MC4).
+        admitted.append("(p.category = :category OR pp.category = :category)")
         params["category"] = category
     for index, tag in enumerate(tags):
         admitted.append(_LINK_FILTER_TAG.format(index=index))
@@ -325,9 +360,37 @@ def link_filter_query(
     return sql, params
 
 
-def link_matches_json_query(sql: str) -> str:
-    """*sql* from link_filter_query, wrapped to return its rows as one JSON value."""
-    return _LINK_MATCHES_JSON_SQL.format(select=sql)
+def link_matches_json_query(sql: str, categories: bool = False) -> str:
+    """*sql* from link_filter_query, wrapped to return its rows as one JSON value.
+
+    With *categories* each row also carries the raw values the inherited
+    category is decided from; otherwise only path, rating, hit and positive.
+    """
+    columns = _LINK_CATEGORY_COLUMNS if categories else _LINK_PLAIN_COLUMNS
+    blob = " OR ".join(
+        f"typeof({name}) = 'blob'" for name in _LINK_STORED_COLUMNS if name in columns
+    )
+    return _LINK_MATCHES_JSON_SQL.format(
+        blob=blob, columns=", ".join(columns), select=sql
+    )
+
+
+def _link_matches_from_rows(
+    rows: Iterable[Sequence[Any]], categories: bool, wanted: Optional[Set[str]]
+) -> Dict[str, LinkMatch]:
+    """LinkMatch per wanted path from link rows (one-step or streamed).
+
+    Without *categories* the inherited category is None, as the caller then
+    never compares it.
+    """
+    matches: Dict[str, LinkMatch] = {}
+    for path, rating, matched, positive, *raw in rows:
+        if wanted is None or path in wanted:
+            if categories:
+                matches[path] = _link_match(rating, matched, positive, *raw[:3])
+            else:
+                matches[path] = (bool(matched), rating, positive, None)
+    return matches
 
 
 def _streamed_link_matches(
@@ -335,13 +398,10 @@ def _streamed_link_matches(
     sql: str,
     params: Dict[str, Any],
     wanted: Optional[Set[str]],
-) -> Dict[str, Tuple[bool, Optional[int], int]]:
+    categories: bool = False,
+) -> Dict[str, LinkMatch]:
     """The link read stepped once per row (the fallback of the one-step read)."""
-    matches: Dict[str, Tuple[bool, Optional[int], int]] = {}
-    for path, rating, matched, positive in conn.execute(sql, params):
-        if wanted is None or path in wanted:
-            matches[path] = (bool(matched), rating, positive)
-    return matches
+    return _link_matches_from_rows(conn.execute(sql, params), categories, wanted)
 
 
 _ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -2578,47 +2638,55 @@ class PromptDatabase(
     def get_image_link_matches(
         self,
         q: str,
-        category: Optional[str],
         tags: List[str],
         *,
         every_link: bool = False,
         wanted: Optional[Set[str]] = None,
-    ) -> Dict[str, Tuple[bool, Optional[int], int]]:
-        """Map normalized paths of unambiguously linked images to
-        (hit, rating, positive id).
+        category: Optional[str] = None,
+    ) -> Dict[str, LinkMatch]:
+        """Map normalized paths of unambiguously linked images to a LinkMatch
+        (hit, rating, positive id, inherited category).
 
-        Rows are limited to images whose linked positive has *category* and
-        every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
+        Rows are limited to images whose linked positive has every tag in
+        *tags* (exact names). The category filter is applied by the caller to
+        the effective category (#332). ``hit`` says whether *q* occurs in
         the positive's text, Library title or a tag name; a pair's own title
         names its negative variant and is not searched.
-        Without category or tags only hits are returned, unless *every_link*
+        Without tags only hits are returned, unless *every_link*
         asks for every linked image (the rating sort and the positive count).
-        The positive id is the card's linked positive.
+        The positive id is the card's linked positive. With *category* only
+        links whose raw recipe or positive category is that value are read (a
+        superset of the links that inherit it; the caller compares the
+        inherited value) and the inherited category is decided per row;
+        otherwise it is None, which keeps the plain reads cheap.
 
         One SELECT, returned as one JSON value (#354): SQLite steps once, so
         the read takes the GIL back a constant two or three times instead of
         once per linked row while ComfyUI generates. Peak memory therefore
         grows with the database's matching linked rows (about 530 bytes each,
-        freed on return); the result is bounded by *wanted* (the listing's
-        normalized paths) when given. Where the JSON step fails (no JSON
-        functions, a BLOB value, a JSON text over SQLite's length limit) the
-        rows are streamed as before.
+        more with the raw categories of a category read, freed on return); the
+        result is bounded by *wanted* (the listing's normalized paths) when
+        given. Where the JSON step fails (no JSON functions, a BLOB value, a
+        JSON text over SQLite's length limit) the rows are streamed as before.
         """
-        sql, params = link_filter_query(q, category, tags, every_link=every_link)
+        sql, params = link_filter_query(
+            q, tags, every_link=every_link, category=category
+        )
+        categories = category is not None
         with self.model.get_connection() as conn:
             rows = None
             if not _one_step_unsupported:
-                rows = self._one_step_link_rows(conn, sql, params)
+                rows = self._one_step_link_rows(conn, sql, params, categories)
             if rows is None:
-                return _streamed_link_matches(conn, sql, params, wanted)
-        return {
-            path: (bool(matched), rating, positive)
-            for path, rating, matched, positive in rows
-            if wanted is None or path in wanted
-        }
+                return _streamed_link_matches(conn, sql, params, wanted, categories)
+        return _link_matches_from_rows(rows, categories, wanted)
 
     def _one_step_link_rows(
-        self, conn: sqlite3.Connection, sql: str, params: Dict[str, Any]
+        self,
+        conn: sqlite3.Connection,
+        sql: str,
+        params: Dict[str, Any],
+        categories: bool = False,
     ) -> Optional[List[List[Any]]]:
         """*sql*'s rows from one JSON value, or None when this read must stream.
 
@@ -2628,7 +2696,7 @@ class PromptDatabase(
         global _one_step_unsupported, _one_step_warned
         error: Optional[str] = None
         try:
-            cursor = conn.execute(link_matches_json_query(sql), params)
+            cursor = conn.execute(link_matches_json_query(sql, categories), params)
             try:
                 ((document,),) = cursor.fetchall()
             finally:
@@ -2655,9 +2723,9 @@ class PromptDatabase(
 
     def get_image_link_facts(
         self, paths: List[str], q: str = ""
-    ) -> Dict[str, Tuple[bool, Optional[int], int, Optional[str], Tuple[str, ...]]]:
+    ) -> Dict[str, Tuple[bool, Optional[int], int, Any, Tuple[str, ...]]]:
         """Map each normalized path with one unambiguous link to its positive's
-        (hit, rating, positive id, category, tag names).
+        (hit, rating, positive id, inherited category, tag names).
 
         The link is resolved as in get_image_link_matches, and ``hit`` says
         whether *q* occurs in the positive's text, Library title or a tag
@@ -2668,7 +2736,7 @@ class PromptDatabase(
         if q:
             hit = _LINK_FILTER_HIT
             params["pattern"] = f"%{escape_like(q)}%"
-        rows: Dict[str, Tuple[bool, Optional[int], int, Optional[str]]] = {}
+        rows: Dict[str, LinkMatch] = {}
         names: Dict[int, List[str]] = {}
         unique = list(dict.fromkeys(paths))
         with self.model.get_connection() as conn:
@@ -2677,10 +2745,8 @@ class PromptDatabase(
                 bound = {f"path{i}": path for i, path in enumerate(chunk)}
                 marks = ",".join(f":{key}" for key in bound)
                 sql = _LINK_FACTS_SQL.format(hit=hit, marks=marks)
-                for path, rating, matched, positive, category in conn.execute(
-                    sql, {**params, **bound}
-                ):
-                    rows[path] = (bool(matched), rating, positive, category)
+                for path, *row in conn.execute(sql, {**params, **bound}):
+                    rows[path] = _link_match(*row)
             positives = sorted({row[2] for row in rows.values()})
             for start in range(0, len(positives), _FACTS_CHUNK):
                 chunk = positives[start : start + _FACTS_CHUNK]
@@ -2693,20 +2759,16 @@ class PromptDatabase(
             path: (*row, tuple(names.get(row[2], ()))) for path, row in rows.items()
         }
 
-    def get_image_paths_matching(
-        self, q: str, category: Optional[str], tags: List[str]
-    ) -> Set[str]:
-        """Normalized paths whose linked positive matches *q*, *category* and *tags*.
+    def get_image_paths_matching(self, q: str, tags: List[str]) -> Set[str]:
+        """Normalized paths whose linked positive matches *q* and *tags*.
 
         See get_image_link_matches; an empty *q* matches every linked image
-        the category and tags admit.
+        the tags admit.
         """
         return {
             path
-            for path, (hit, _rating, _positive) in self.get_image_link_matches(
-                q, category, tags
-            ).items()
-            if hit or not q
+            for path, match in self.get_image_link_matches(q, tags).items()
+            if match[0] or not q
         }
 
     def get_prompt_id_for_image(self, image_path: str) -> Optional[int]:
