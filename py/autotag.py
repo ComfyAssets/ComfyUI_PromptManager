@@ -7,6 +7,7 @@ Refactored from standalone_tagger.py for integration with PromptManager API.
 
 import errno
 import gc
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -31,6 +32,35 @@ try:
     from .tagging_defaults import DEFAULT_TAG_TEMPLATE
 except ImportError:
     from py.tagging_defaults import DEFAULT_TAG_TEMPLATE
+
+try:
+    from ..utils import exit_signal
+except ImportError:
+    from utils import exit_signal
+
+
+def _stop_at_exit(download) -> Dict[str, Any]:
+    """Keyword arguments that stop a huggingface_hub download at its next
+    chunk once the interpreter is exiting (#376), or none when this
+    huggingface_hub does not take ``tqdm_class``.
+
+    huggingface_hub 1.x removes its partial temp file on any failure; older
+    versions keep their resumable ``.incomplete`` file. The model's own path
+    is only written by the final rename either way.
+    """
+    try:
+        if "tqdm_class" not in inspect.signature(download).parameters:
+            return {}
+        from huggingface_hub.utils import tqdm as hub_tqdm
+    except (ImportError, TypeError, ValueError):
+        return {}
+
+    class StopAtExit(hub_tqdm):
+        def update(self, n=1):
+            exit_signal.checkpoint()
+            return super().update(n)
+
+    return {"tqdm_class": StopAtExit}
 
 
 def _autotag_config():
@@ -397,6 +427,7 @@ class AutoTagService:
                     filename=filename,
                     local_dir=str(model_dir),
                     local_dir_use_symlinks=False,
+                    **_stop_at_exit(hf_hub_download),
                 )
 
         if progress_callback:
@@ -540,6 +571,11 @@ class AutoTagService:
                 return self._download_wd14_model(model_type, progress_callback)
             else:
                 return self._download_hf_model(progress_callback)
+        except exit_signal.ExitRequested:
+            self.logger.info(
+                f"Model download stopped: ComfyUI is exiting ({model_type})"
+            )
+            return False
         except Exception as e:
             self.logger.error(f"Download failed: {e}")
             if progress_callback:
@@ -570,6 +606,7 @@ class AutoTagService:
                 filename=config["filename"],
                 local_dir=str(gguf_dir),
                 local_dir_use_symlinks=False,
+                **_stop_at_exit(hf_hub_download),
             )
             self.logger.info("GGUF model downloaded")
 
@@ -587,6 +624,7 @@ class AutoTagService:
                 filename=config["mmproj_filename"],
                 local_dir=str(gguf_dir),
                 local_dir_use_symlinks=False,
+                **_stop_at_exit(hf_hub_download),
             )
             self.logger.info("mmproj downloaded")
 
@@ -613,6 +651,7 @@ class AutoTagService:
                 repo_id=config["repo"],
                 local_dir=str(model_dir),
                 local_dir_use_symlinks=False,
+                **_stop_at_exit(snapshot_download),
             )
             self.logger.info("HF model downloaded")
 

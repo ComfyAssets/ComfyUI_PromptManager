@@ -313,6 +313,21 @@ from the tests' package unload (`cleanup_package`), and it removes its own
 ComfyUI-Manager restart through `os.execv`, a closed Windows console, or
 ComfyUI Desktop stopping its server. SQLite's WAL journal covers those.
 
+Jobs running at exit (#376): before any `atexit` callback, Python joins every
+executor thread (`concurrent.futures` registers that join with
+`threading._register_atexit`). The package registers its own callback there
+(`utils/exit_signal.install`, after `concurrent.futures`, so it runs first):
+it sets the exit signal and kills the running encoder processes
+(`shutdown_encoders`, the ffmpeg that never sees Ctrl+C on Windows). The call in
+flight then stops at its next safe point: `Job.cancelled` is True, so every
+check a job already makes between files stops it, `map_parallel` starts no
+further item (`ExitRequested`), the scan walk stops between folders and a
+tagging model download stops before its next chunk (huggingface_hub 1.x removes
+its temp file). No check sits inside a library write. That hook is
+CPython-internal; without it (or when it is refused) `install` returns False and
+exit waits for the call in flight, as before. `tests/test_exit_cancel.py` runs a
+child process with three such calls running and requires its exit within 15 s.
+
 Stop contract: `PromptTracker.shutdown(timeout)`,
 `ImageGenerationHandler.shutdown(timeout)` (restartable),
 `ImageGenerationHandler.close(timeout)` (final: `schedule()` refuses and a

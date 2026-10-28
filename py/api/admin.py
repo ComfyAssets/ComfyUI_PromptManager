@@ -35,6 +35,11 @@ except ImportError:
     from utils.parallel import map_parallel
 
 try:
+    from ...utils import exit_signal
+except ImportError:
+    from utils import exit_signal
+
+try:
     from ...database.pair_ingestion import blank_positive, ingest_resolved_pair
     from ...database.run_attribution import (
         host_output_directory,
@@ -118,6 +123,7 @@ def _collect_media_files(output_dirs, extensions):
         if not os.path.isdir(root):
             continue
         for current, dirnames, filenames in os.walk(root, followlinks=False):
+            exit_signal.checkpoint()  # #376: stop between directories at exit
             depth = 0 if current == root else len(Path(current).relative_to(root).parts)
             dirnames[:] = sorted(
                 d
