@@ -34,6 +34,7 @@ from .review_schema import (
     review_without_annotations_error,
 )
 from .saved_views import migrate_saved_views, saved_views_schema_error
+from .image_categories import image_categories_schema_error, migrate_image_categories
 from .workflow_documents import (
     DOCUMENT_ID_COLUMNS,
     migrate_workflow_documents,
@@ -350,6 +351,8 @@ class PromptModel:
         migrate_annotation_state(conn)
         migrate_review_state(conn)
         migrate_autotag_state(conn)
+        # Image categories (#332): independent of every table above.
+        migrate_image_categories(conn)
         # Last: the older generated_images rebuilds run only before file_path.
         migrate_workflow_documents(conn)
 
@@ -1155,8 +1158,9 @@ class PromptModel:
         Args:
             path: File to inspect
             require_library_state: Also require the tables every current
-                database has (Library state, image favorites, saved views,
-                image annotations and the review queue), as a migrated
+                database has (Library state, image favorites, image
+                categories, saved views, image annotations and the review
+                queue), as a migrated
                 restore stage must; old backups may lack them.
             documents: Read every workflow document and refuse a damaged
                 one. A restore checks its upload without it and repairs
@@ -1220,6 +1224,11 @@ class PromptModel:
             )
             if favorites_error:
                 return False, favorites_error
+            categories_error = image_categories_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if categories_error:
+                return False, categories_error
             views_error = saved_views_schema_error(
                 conn, allow_missing=not require_library_state
             )
