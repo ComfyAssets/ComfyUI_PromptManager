@@ -323,17 +323,24 @@ class TestDefaultProfileStillDecides(InspectionTestCase):
         self.assertEqual(item["resolver_version"], review_capture.RESOLVER_VERSION)
         self.assertEqual(_texts(evidence), ["cat", "dog"])
 
-    async def test_apply_of_a_default_item_never_runs_the_inspection_profile(self):
+    async def test_apply_of_a_default_item_inspects_only_for_the_anchor(
+        self,
+    ):
         self._roots()
         write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         await self._scan()
-        with patch.object(
-            review_capture,
-            "resolve_inspection",
-            side_effect=AssertionError("inspection profile ran"),
+        with (
+            _counted(review_capture, "resolve_inspection") as calls,
+            patch.object(
+                review_capture,
+                "inspection_choice",
+                side_effect=AssertionError("inspection choices were asked"),
+            ),
         ):
             _item, (status, data) = await self._apply("cat")
         self.assertEqual(status, 200, data)
+        # The saver anchor check (#390): with the file's name, nothing matches.
+        self.assertEqual([c[1] for c in calls], ["two.png"])
         self.assertEqual(self._linked_text(self.output_dir / "two.png"), "cat")
 
 

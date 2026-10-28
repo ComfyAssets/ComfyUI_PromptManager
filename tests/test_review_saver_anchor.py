@@ -17,12 +17,18 @@ try:
     from tests.test_review import unlinkable_graph, write_png
     from tests.test_review_inspection import (
         PROMPTS,
+        _counted,
         InspectionTestCase,
         qwen_edit_graph,
     )
 except ImportError:  # discovered with tests/ as the top-level directory
     from test_review import unlinkable_graph, write_png
-    from test_review_inspection import PROMPTS, InspectionTestCase, qwen_edit_graph
+    from test_review_inspection import (
+        PROMPTS,
+        InspectionTestCase,
+        _counted,
+        qwen_edit_graph,
+    )
 
 from utils import review_capture
 
@@ -186,11 +192,48 @@ class TestDefaultItemsAnchor(InspectionTestCase):
         with patch.object(review_capture, "saver_anchored", return_value=False):
             await self._scan()
         self.assertEqual(len(self._items()), 1)  # queued under the old rule
+        self.api._unanchored_inspections = {}  # a restart onto the new rule
 
         job = await self._scan("all")
 
         self.assertEqual(self._items(), [])
         self.assertEqual(job["scope"]["review_untraced"], 1)
+
+    async def test_apply_refuses_a_default_choice_the_anchor_contradicts(self):
+        self._require_routes()
+        self._roots()
+        path = self.output_dir / "side_0_00001_.png"
+        write_png(path, prompt=saved_unlinkable_graph("cat", "dog"))
+        with patch.object(review_capture, "saver_anchored", return_value=False):
+            await self._scan()
+        item, detail, observed = await self._open()
+        # side_0 is the saver of "cat"; choose the other branch.
+        wrong = self._candidate(detail, "dog")
+
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, wrong["hash"])
+        )
+
+        self.assertEqual(status, 409, data)
+        self.assertEqual(data["code"], "review-conflict", data)
+        self.assertIsNone(self._linked_text(path))
+
+    async def test_unanchored_file_is_not_inspected_again_until_it_changes(self):
+        self._roots()
+        path = self.output_dir / "unsaved_00001_.png"
+        write_png(path, prompt=saved_unlinkable_graph("cat", "dog"))
+        with _counted(review_capture, "saver_anchored") as first:
+            await self._scan()
+        self.assertEqual(len(first), 1)
+
+        with _counted(review_capture, "saver_anchored") as again:
+            await self._scan("all")
+        self.assertEqual(again, [])
+
+        write_png(path, prompt=saved_unlinkable_graph("cat", "dog"), color=(0, 9, 0))
+        with _counted(review_capture, "saver_anchored") as changed:
+            await self._scan("all")
+        self.assertEqual(len(changed), 1)
 
     async def test_decided_default_item_of_an_anchored_file_is_kept(self):
         self._require_routes()

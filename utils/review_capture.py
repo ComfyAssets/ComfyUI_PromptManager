@@ -411,8 +411,10 @@ def captured_review(
     JSON-decoded and ``file_info`` (size, dimensions, format) from the
     capture. ``resolution`` comes from ``profile`` (``DEFAULT`` or
     ``INSPECTION``; the latter anchored on ``file_name``, the file's own
-    name, as the item was recorded). None when the capture is gone or
-    carries no prompt metadata.
+    name, as the item was recorded). With ``file_name`` (Apply), a default
+    result its saver anchor resolves (``saver_anchored``) is that anchored
+    result, so no candidate is offered any more. None when the capture is
+    gone or carries no prompt metadata.
     """
     if store.acquire(capture.token) is None:
         return None
@@ -441,7 +443,15 @@ def captured_review(
     canonical["file_info"] = info
     if profile == INSPECTION:
         return canonical, resolve_inspection(canonical, file_name)
-    return canonical, resolve_prompt_pair(canonical)
+    resolution = resolve_prompt_pair(canonical)
+    if (
+        file_name is not None
+        and resolution.get("state") == "ambiguous"
+        and saver_anchored(canonical, file_name)
+    ):
+        # Its saver names its branch (#390): no choice is left to apply.
+        return canonical, resolve_inspection(canonical, file_name)
+    return canonical, resolution
 
 
 def reviewable(resolution: Any) -> bool:
