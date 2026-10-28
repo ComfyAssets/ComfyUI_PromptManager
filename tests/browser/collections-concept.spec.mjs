@@ -42,11 +42,13 @@ function measureAddDialog() {
 
 /**
  * D138: the action is "Add" (the concept's "Apply in prototype"), the field starts empty (no sample "Experiments") and
- * holds at most 100 characters, and a hidden `datalist` of the existing names (the fixture's two) follows the input.
+ * holds at most 100 characters, and a hidden `datalist` of the existing names (the fixture's two) follows the field:
+ * the shared input dialog's suggestions list, as Set category's (#332 D140).
  */
 function mapAddDialogConcept(reference) {
     const [cancel,apply]=reference.actions.buttons;
-    return {...reference,field:{...reference.field,tree:[...reference.field.tree,'datalist']},
+    const [field,...rest]=reference.tree;
+    return {...reference,tree:[field,'datalist',...rest],
         input:{...reference.input,value:'',maxLength:100,list:'workspace-input-suggestions'},
         suggestions:{id:'workspace-input-suggestions',display:'none',options:['Experiments','Landscapes']},
         actions:{...reference.actions,buttons:[cancel,{...apply,text:'Add'}]}};
@@ -93,7 +95,7 @@ test('add to collection comparison detects mutations',async({page})=>{
     expect(diffInventory(expected,production)).toEqual([]);
     // Unmapped, the concept differs only where D138 is recorded.
     expect(diffInventory(concept,production).map(item=>item.path).sort()).toEqual(expect.arrayContaining(
-        ['actions.buttons.1.text','field.tree.2','input.list','input.maxLength','input.value']));
+        ['actions.buttons.1.text','tree.1','input.list','input.maxLength','input.value']));
     const paths=async()=>diffInventory(expected,await page.evaluate(measureAddDialog)).map(item=>item.path);
     await page.evaluate(()=>{document.querySelector('dialog#modal[open] label[for="action-input"]').textContent='Name';});
     expect(await paths()).toEqual(['label.text']);
